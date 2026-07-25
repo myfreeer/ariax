@@ -155,6 +155,53 @@ Approval state and the accepted task pin are not secrets and may be persisted.
 Logs/events include the fingerprint but never authentication credentials or
 private-key material.
 
+## SFTP Authentication, Algorithms, And Session Policy
+
+Authentication runs only after host-key resolution succeeds and tries, in
+order, each configured method the server offers: explicit private key
+(`sftp-private-key`, with `sftp-private-key-passphrase` or an interactive
+prompt for encrypted keys), SSH agent when `sftp-use-agent=true`, then
+password from task options/`.netrc` (FTP credential options apply). There is
+no keyboard-interactive support in the first SFTP slice beyond single-prompt
+password equivalence. A method the server rejects is not retried with the same
+credentials; exhaustion is terminal `AuthFailure`. Passphrases and passwords
+follow the `Secret<T>` and secrets-at-rest rules; decrypted key material lives
+only for the handshake.
+
+Algorithm policy follows russh defaults minus legacy algorithms: no SHA-1 KEX
+(`diffie-hellman-group14-sha1` and older), no `ssh-rsa` (SHA-1 signature) host
+keys or client keys, no CBC ciphers, no `hmac-md5`/`hmac-sha1-96`. The
+accepted set is pinned in the registry (a diagnostic lists the negotiated
+KEX/host-key/cipher/MAC per connection) so a russh default change cannot
+silently widen it. An `unsafe_compat` build flag may re-enable legacy
+algorithms explicitly; there is no runtime silent fallback.
+
+Session behavior:
+
+- `connect-timeout`/`timeout` apply to TCP+handshake and per-request
+  inactivity; rekeying follows russh's RFC 4253 data/time limits,
+- SFTP connections honor the same proxy option surface as other protocols
+  where a tunnel applies (`all-proxy` CONNECT/SOCKS with the SSRF
+  destination-pinning rules); SSH-level jump hosts are out of scope,
+- server `limits@openssh.com`/version responses bound read-request size; the
+  adapter clamps its offset-read size accordingly,
+- remote paths are exchanged as bytes and interpreted as UTF-8 with an
+  explicit failure (no lossy conversion) for display/layout mapping; the
+  remote path is a user input, not attacker metadata, but still passes
+  `SafePathBuilder` for any local output naming derived from it,
+- the adapter never follows a remote symlink for layout decisions: `fstat` on
+  the opened handle (not `stat` on the path) supplies size/mtime, so a
+  symlinked remote file transfers as its target content without local path
+  influence.
+
+Bounded offset pipeline: the adapter keeps at most
+`sftp-max-outstanding-reads` (default 8, capped by the server window and
+`http_ingress_budget`-style byte accounting through the normal `BufferLease`
+budget) offset reads in flight per channel, sized by the current `RatePermit`
+and remaining span. Completions integrate with the standard cancellation,
+generation, retry, and storage-lease contracts; a cancelled request drains to
+its completion before buffers are reused.
+
 ## Retry Classes
 
 FTP/SFTP failures feed the retry engine with protocol-specific classes distinct

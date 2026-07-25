@@ -1,27 +1,26 @@
 # Final Pre-Implementation Review
 
-Status: final review record and implementation gate.
+Status: closed review record. All P0 findings and phase blockers are resolved
+in their normative documents; the design is go for implementation.
 
-Review date: 2026-07-25.
+Review date: 2026-07-25. Amendments completed and committed the same day.
 
 Scope: the complete `design/` set as a standalone Rust downloader design,
 independent of the aria2 C++ implementation repository.
 
 ## Outcome
 
-The overall architecture is coherent and worth implementing, but the transfer,
-storage, scheduler-state, and rate-control contracts are not yet safe to code as
-written. The result is a **conditional no-go** for those modules until the P0
-items below are amended in their normative documents.
+The overall architecture is coherent and ready to implement. The review
+initially returned a **conditional no-go** because the transfer, storage,
+scheduler-state, and rate-control contracts were not safe to code as first
+written. Every P0 item below has since been amended in the named normative
+documents, the outcome is now **go**, and the remaining work is the ordinary
+phase gating in `implementation-plan.md` and `implementation-readiness.md`
+(generated matrices and listed tests come into existence with their phases).
 
-Phase-0 repository scaffolding, generated inventories, option-registry work,
-pure parsing, `SafePathBuilder`, and pure layout/offset types may begin. Starting
-the HTTP/storage vertical slice before the P0 amendments risks silent corruption,
-unbounded recovery cost, incorrect throttling, and state-machine divergence.
-
-This file is a review record, not a replacement source of truth. A finding is
-closed only when the named normative documents contain the chosen rule, their
-generated matrices agree, and the listed tests exist.
+This file is a review record, not a replacement source of truth. Each finding
+records the chosen rule; the named normative documents own it. A finding
+regresses to open only if its normative text is weakened.
 
 ## General Architectural Check
 
@@ -84,18 +83,17 @@ Required tests cover clean settlement, a loser write after candidate validation,
 validation failure, uncertain cancellation, crash during settlement, and
 same-generation overwrite.
 
-### P0-2: A Sequential Transfer Cannot Be One All-Or-Nothing Storage Lease
+### P0-2 (resolved): A Sequential Transfer Cannot Be One All-Or-Nothing Storage Lease
 
 Affected documents: `detailed-http-first-slice.md`, `detailed-ftp-sftp.md`,
 `detailed-storage.md`, `rate-limiting.md`, `retry-policy.md`, and
 `implementation-readiness.md`.
 
-The current sequential HTTP/FTP contract uses one lease for the entire remaining
-file and commits only at exact EOF. A disconnect near the end of a large file
-therefore aborts all progress made by that attempt. It also prevents balanced
-durability from advancing a resumable prefix during a long stream.
+The original sequential HTTP/FTP contract used one lease for the entire
+remaining file and committed only at exact EOF. A disconnect near the end of a
+large file therefore aborted all progress made by that attempt.
 
-Chosen resolution:
+Adopted resolution (now normative in the affected documents):
 
 1. Distinguish a protocol `TransferAttemptId` from a storage `LeaseId`.
 2. A sequential transport attempt opens successive fixed storage subleases,
@@ -111,19 +109,19 @@ Required tests include interruption at every sublease boundary, interruption one
 byte before a boundary, crash after data flush but before the durability record,
 validator change on resume, and final partial extent mismatch.
 
-### P0-3: Rate Limits Must Charge Received Payload, Not Only Committed Bytes
+### P0-3 (resolved): Rate Limits Must Charge Received Payload, Not Only Committed Bytes
 
 Affected documents: `rate-limiting.md`, `detailed-runtime.md`,
 `detailed-http-first-slice.md`, `detailed-ftp-sftp.md`, `split-download.md`,
 `retry-policy.md`, `stats-and-stalls.md`, `backpressure.md`, and `zero-copy.md`.
 
-The current hierarchy debits user token buckets at `CommitLease`. Bytes later
-discarded after an invalid response or failed attempt therefore do not consume
-the configured download limit. Repeated invalid or aborted responses can use
-real network bandwidth outside the user's limit, while a large valid lease can
-wait at commit time even though the network transfer already occurred.
+The pre-review hierarchy debited user token buckets at `CommitLease`. Bytes
+later discarded after an invalid response or failed attempt therefore did not
+consume the configured download limit, while a large valid lease could wait at
+commit time although the network transfer had already occurred. The earlier
+non-debiting wire-pacing compromise is superseded.
 
-Chosen resolution:
+Adopted resolution (now normative in the affected documents):
 
 1. Charge download buckets when application payload bytes are accepted from the
    protocol body/data channel, including bytes later discarded.
@@ -143,45 +141,46 @@ Required tests include endless bad range bodies, hash failures, retries,
 per-task/global bucket composition, pause/resume, low limits below one frame,
 and bounded burst/overshoot behavior for HTTP/1.1 and HTTP/2.
 
-### P0-4: Lease Retry And Slow-Slot Demotion Need Separate Task States
+### P0-4 (resolved): Lease Retry And Slow-Slot Demotion Need Separate Task States
 
 Affected documents: `detailed-core.md`, `retry-policy.md`,
 `download-scheduling.md`, `apis-and-embedding.md`, and generated state/wire
 matrices.
 
-One retryable split-lease failure currently transitions the whole task from
-`Active` to `RetryWait`, although other leases may still be transferring. Slow
-slot `demote` is also represented by `PausedSlow`, while one document says it is
-automatically readmitted and another projects it to aria2 `paused`.
+One retryable split-lease failure previously transitioned the whole task from
+`Active` to `RetryWait` although other leases were still transferring, and slow
+slot `demote` was conflated with `PausedSlow`.
 
-Chosen resolution:
+Adopted resolution (now normative; `detailed-core.md` defines
+`PlannedSpanState` and the `WaitingSlow` state):
 
 - A lease/span has its own retry-wait substate. The task remains `Active` while
   any work is runnable or in flight.
 - Task-level `RetryWait` is used only when no work is runnable/in flight, or for
   a sequential task-level retry.
-- Add an internal `WaitingSlow`/`Demoted` state that projects to aria2 `waiting`
-  and is automatically readmitted by policy.
-- Keep `PausedSlow` only for the explicit slow-slot `pause` policy, projecting
-  to aria2 `paused`.
-- Cancellation of old workers completes and the task generation increments
-  before either state is readmitted. No old-generation completion can become
+- The internal `WaitingSlow` state is produced by slow-slot `demote`, projects
+  to aria2 `waiting`, and is automatically readmitted by policy.
+- `PausedSlow` is kept only for the explicit slow-slot `pause` policy, projects
+  to aria2 `paused`, and never readmits automatically.
+- Admission into `Allocating` increments the generation after the previous
+  generation's cancellation drain completes, uniformly across retry, demotion,
+  pause, and host-key readmission. No old-generation completion can become
   current merely because the task was automatically resumed.
 
 Model tests must cover mixed active/retrying leases, last-active-lease failure,
 demotion/readmission, explicit pause, option restart, and every wire projection.
 
-### P0-5: Internal Completions Cannot Share Saturable External Urgent Capacity
+### P0-5 (resolved): Internal Completions Cannot Share Saturable External Urgent Capacity
 
 Affected documents: `detailed-runtime.md`, `messaging-model.md`,
 `backpressure.md`, and `threading-model.md`.
 
-The split urgent/bulk queue protects urgent work from bulk admission, but the
-urgent queue itself can fill, and a permanently biased drain can starve bulk
-commands. Journal-critical outcomes and accepted disk completions must not
-compete with externally produced pause/remove requests.
+The split urgent/bulk queue protected urgent work from bulk admission, but the
+urgent queue itself could fill, and a permanently biased drain could starve bulk
+commands.
 
-Chosen resolution:
+Adopted resolution (now normative; `messaging-model.md` owns the
+`CompletionPermit` lifecycle):
 
 - Accepted disk/CPU/journal operations carry a move-only `CompletionPermit`
   reserved at submission and consumed by exactly one outcome.
@@ -199,118 +198,109 @@ Model tests must prove exactly-once outcome delivery, permit return on rejected
 submission, shutdown with every ordinary queue full, no bulk starvation, and no
 buffer leak during receiver close.
 
-### P0-6: Recovery Cost Needs Journal Compaction And Bounded Replay
+### P0-6 (resolved): Recovery Cost Needs Journal Compaction And Bounded Replay
 
 Affected documents: `detailed-storage.md`, `session-persistence.md`,
 `security-recovery.md`, and `implementation-plan.md`.
 
-Segment rotation bounds one file but not a task journal's lifetime size or
-startup replay work. Repeated retries, option snapshots, pause/resume cycles, and
-long-lived tasks can grow journals indefinitely. A production design also needs
-a cap on idle journal file descriptors.
+Segment rotation bounded one file but not a task journal's lifetime size or
+startup replay work.
 
-Chosen resolution requirements:
+Adopted resolution (normative in `detailed-storage.md` Checkpoint Compaction
+and Journal Descriptor Budget; v1 record types 19–21):
 
-- Define record-count, byte-count, and measured replay-time compaction triggers.
-- Build a recovery-equivalent checkpoint journal set from canonical current
-  state, sync it, atomically install/update the SQLite pointer, and retain the
-  old set until installation is durable. Old segments are retired only after
-  successful installation.
-- Provisional/in-flight work is not promoted by compaction; it returns to
-  pending unless existing durability rules prove it durable.
-- Define checkpoint chunking for state larger than the maximum record payload,
-  schema/version compatibility, crash points for every install step, and how a
-  partially installed checkpoint is rejected.
-- Cap open journal descriptors and close/reopen idle appenders without violating
-  sequence assignment or durability ordering.
-- Expose journal bytes, segment count, replay time, last compaction, and
-  compaction failure in diagnostics.
+- Record-count, byte-count, segment-count, and measured replay-time compaction
+  triggers with geometric-shrink conditions and failure backoff.
+- A recovery-equivalent checkpoint set is built by the serialized appender from
+  canonical current state, synced, and installed through an explicit SQLite
+  `installing`/`installed` pointer transaction; old segments are retired only
+  after installation is durable.
+- Provisional/in-flight work is never promoted by compaction.
+- `CheckpointStart`/`CheckpointEnd` with a state hash validate the set whole;
+  `LayoutChunk` chunking covers state larger than the record cap; every install
+  crash point recovers to exactly one authoritative set.
+- Idle journal descriptors close under an LRU cap with tail revalidation on
+  reopen.
+- Journal bytes, segment count, replay time, last compaction, failures, and
+  open descriptors are diagnostics.
 
-No implementation should invent the checkpoint format ad hoc. The exact v1
-record/header changes must be added to `detailed-storage.md` first.
-
-### P0-7: HTTP Ingress Memory Is Outside The Current Buffer-Pool Claim
+### P0-7 (resolved): HTTP Ingress Memory Is Outside The Current Buffer-Pool Claim
 
 Affected documents: `zero-copy.md`, `buffer-pool.md`, `detailed-runtime.md`,
 `detailed-http-first-slice.md`, `backpressure.md`, and `performance-profiles.md`.
 
 Hyper exposes response body data as stack-owned immutable `Bytes`; it does not
-fill a project `BufferLease` directly. HTTP/2 also has connection/stream flow
-control and internal buffering. The current wording overstates direct
-socket-to-pool zero-copy and omits those bytes from the memory budget.
+fill a project `BufferLease` directly, and HTTP/2 flow-control windows buffer
+outside the pool.
 
-Chosen resolution:
+Adopted resolution (now normative in the affected documents):
 
 - Baseline HTTP permits one bounded body-frame-to-`BufferLease` copy.
-- Add an explicit global/per-task HTTP ingress budget, maximum frame/chunk size,
-  and bounded HTTP/2 connection and stream windows.
-- Stop polling response bodies before downstream storage, buffer, CPU, and rate
-  credit is exhausted. Delivered frames remain charged to ingress memory until
-  split/copied/released.
-- Do not enable whole-body aggregation. A future immutable foreign-buffer lease
-  is an optimization and cannot bypass registered-buffer, hashing, placement,
-  rate, or cancellation contracts.
-- C10k memory gates include HTTP-stack connection state, TLS buffers, ingress
-  frames, queue descriptors, task metadata, and libtorrent's separately bounded
-  memory, not only `BufferPool` bytes.
+- `http_ingress_budget` plus HTTP/1 read-buffer and HTTP/2 window/frame options
+  (`protocol-modernization.md`) bound framework memory; connection/stream
+  admission reserves against the budget; adaptive windows stay feature-gated.
+- Body polling stops when storage, buffer, CPU, or rate credit is exhausted;
+  delivered frames stay charged to ingress until split/copied/released.
+- Whole-body aggregation stays disabled; a future foreign-buffer lease cannot
+  bypass registered-buffer, hashing, placement, rate, or cancellation
+  contracts.
+- The C10k memory gate is the resident-memory equation in
+  `performance-profiles.md`, which includes HTTP-stack, TLS, ingress, queue,
+  task-metadata, and libtorrent terms, not only `BufferPool` bytes.
 
-### P0-8: Finalization And Persisted Retry Time Need Exact Crash Semantics
+### P0-8 (resolved): Finalization And Persisted Retry Time Need Exact Crash Semantics
 
 Affected documents: `detailed-storage.md`, `retry-policy.md`, and
 `session-persistence.md`.
 
-A crash can occur after the temporary path is renamed to the final path but
-before `TaskComplete` is durable. Recovery needs an unambiguous rule that cannot
-overwrite an unrelated final file. Persisting only `next_retry_unix_ms` also
-cannot support the stated guarantee that wall-clock jumps never skip a wait.
+A crash could occur after the temporary path was renamed to the final path but
+before `TaskComplete` was durable, and persisting only a wall-clock retry
+deadline could not honor wait guarantees across clock jumps.
 
-Chosen resolution requirements:
+Adopted resolution (normative in `detailed-storage.md` Finalization and
+`retry-policy.md` Clock rule; v1 record types 22–23):
 
-- Add explicit finalization intent/installed state or an equivalent idempotent
-  recovery algorithm tied to task id, layout identity, and file identity.
-- Specify rename-before-record and record-before-rename crash handling, existing
-  final-path collision behavior, directory sync ordering, and Windows sharing
-  violations.
-- Persist retry scheduling wall time plus the chosen delay and scheduling
-  context. Live waits use monotonic time. After restart, validate wall-clock
-  plausibility and use a conservative bounded fallback on large jumps.
-- State honestly that monotonic time cannot survive process restart/reboot
-  exactly; recovery preserves policy conservatively rather than claiming the
-  impossible.
+- `FinalizeIntent` (flushed before rename, carrying temp/final paths, layout
+  identity, length, and file-identity evidence) plus `FinalizeDone` make
+  recovery a pure function of `(intent, done, filesystem)`; the redo matrix
+  covers both crash orders, foreign final-path collisions (fail closed),
+  directory sync ordering, Windows sharing violations, and multi-file order.
+- `RetryState` persists `scheduled_at_unix_ms`, `delay_ms`, and the reason.
+  Live waits use monotonic time; recovery clamps elapsed time into
+  `[0, delay_ms]`, re-waits fully on implausible clocks, caps by
+  `retry-max-wait`, and explicitly documents that restart-surviving waits are
+  bounded-conservative, not exact.
 
 ## Phase-Specific Blockers And Caveats
 
-### SFTP Security Contract Before Phase 5
+### SFTP Security Contract Before Phase 5 (resolved)
 
-`detailed-ftp-sftp.md` defines offsets and validators but not the security
-contract implied by the requirements traceability document. Before SFTP code:
+`detailed-ftp-sftp.md` now defines the host-key verification order (pin,
+known-hosts, `ssh-host-key-md` compat, explicit insecure bypass, paused
+approval), the `PausedHostKey` state with task-scoped pinning, the complete
+`sftp-*` option set, interactive/non-TTY CLI behavior, authentication order
+and secret lifetimes, the pinned algorithm policy (no SHA-1 KEX/`ssh-rsa`/CBC
+/weak MACs outside `unsafe_compat`), timeouts/rekey/proxy/server-limit/path
+and remote-symlink rules, and the bounded offset pipeline integrated with
+rate, memory, retry, and cancellation budgets. The Phase-5 interoperability
+matrix remains the implementation gate. The baseline stays russh plus
+russh-sftp, with libssh2 only as the documented fallback.
 
-- host-key verification is strict by default,
-- known-hosts format, default locations, explicit trust-on-first-use behavior,
-  changed-key rejection, and `ssh-host-key-md` compatibility are defined,
-- password, public-key, encrypted-key, and agent authentication order and secret
-  lifetimes are defined,
-- accepted/minimum algorithms, timeouts, rekey, proxy behavior, server limits,
-  path encoding, and remote symlink policy are defined,
-- raw offset requests use project-owned bounded pipelining and integrate with
-  global memory, rate, retry, and cancellation budgets.
+### BitTorrent Path Semantics Before Full Build (resolved)
 
-The selected baseline is russh plus russh-sftp. libssh2 is only an explicit
-fallback after an interoperability matrix demonstrates a blocking gap.
+`libtorrent-integration.md` now rejects torrent symlink entries by default
+with a typed error (future opt-in constrained to validated intra-root
+targets), resolves sanitized-name/case-folding/reserved-name/file-vs-directory
+collisions deterministically in file-index order with a persisted mapping, and
+defines selected-file roots, magnet late-metadata checks, and
+metadata-replacement rejection, with the listed deterministic tests.
 
-### BitTorrent Path Semantics Before Full Build
+### Release Artifact Panic Policy (resolved)
 
-The libtorrent adapter must reject or explicitly map torrent symlink entries,
-not merely sanitize ordinary path components. It also needs deterministic tests
-for sanitized-name collisions, case-folding collisions, reserved Windows names,
-selected-file roots, and late metadata replacement.
-
-### Release Artifact Panic Policy
-
-One profile cannot both use `panic=abort` and catch panics at a C ABI boundary.
-CLI-only artifacts may abort. Any staticlib/cdylib/C-ABI artifact promising
-containment must use unwind and catch at every export. The Cargo profile/artifact
-matrix must encode this distinction.
+The README artifact/profile/panic matrix now encodes the distinction: CLI
+artifacts abort; staticlib/cdylib/C-ABI artifacts use unwind profiles and
+catch at every export; library crates never force a strategy. Phase 0 asserts
+in CI that no C-ABI artifact builds under `panic=abort`.
 
 ## Resolved Implementation Choices
 
@@ -321,17 +311,27 @@ The detailed rationale and research snapshot are in `library-choice.md`.
 | Language/toolchain | Rust 2024, bootstrap Rust 1.97.0, initial MSRV 1.88 | Pin and test in CI; WSL 1.85 is below the full graph's MSRV |
 | Async network runtime | Tokio/Mio | Backend and lag tests on every target |
 | HTTP/1.1 and HTTP/2 | Hyper + hyper-util + hyper-rustls | Custom connector, ingress-budget, and exact-body prototype |
-| TLS | Stable rustls 0.23.x | Platform trust and custom-CA matrix |
+| TLS | Stable rustls 0.23.x, single ring provider (aws-lc optional exclusive) | Platform trust and custom-CA matrix; provider-unification CI check |
 | Async DNS | Hickory Resolver 0.26.x; `trust-dns` input alias only | SSRF pinning, cache, custom resolver tests |
-| Linux disk | tokio-uring behind `DiskBackend` | Fall internally to low-level io-uring if cancellation/secure-open gates fail |
-| Windows disk | Overlapped/IOCP adapter | Native MSVC and all-MinGW secondary tests |
+| Linux disk | tokio-uring behind `DiskBackend` | Fall internally to low-level io-uring if cancellation/secure-open gates fail or dormancy persists |
+| Windows disk | Overlapped/IOCP adapter on windows-sys | Native MSVC and all-MinGW secondary tests |
 | Portable disk fallback | Bounded blocking worker pool | Queue/cancellation/fault gates |
+| FTP/FTPS | SuppaFTP (Tokio, rustls-ring) under owned validation | Offset/EOF and FTPS matrix |
 | SFTP | russh + russh-sftp raw offset pipeline | Security and interoperability matrix |
 | Session DB | rusqlite + bundled SQLite on one bounded thread | WAL/locking/filesystem fallback tests |
 | CPU work | Dedicated project-owned Rayon pool | Bounded admission and cancellation tests |
 | Queues | Bounded Tokio + crossbeam baseline | thingbuf/rtrb only after a measured topology |
+| Timers | tokio-util DelayQueue per shard | Scale test vs per-deadline tasks |
+| Journal CRC | crc32c crate (crc-fast fallback) | Throughput check in Phase 0 baseline |
+| Digests | RustCrypto sha2/sha1/md-5 0.11 | asm/hw feature matrix per target |
+| XML | quick-xml streaming, no DTD | Fuzz targets |
+| Cookies | cookie_store + public_suffix behind owned jar | aria2 cookie-file compat tests |
+| netrc | Project parser (no maintained crate) | Fuzz + aria2 semantics tests |
+| Syscall layer | rustix (Unix) / windows-sys (Windows) | Secure-open probe per platform |
+| Decompression | flate2 (miniz_oxide; zlib-rs upgrade path) | Growing-layout phase only |
+| Supply chain | cargo-deny/audit/auditable/cyclonedx | deny.toml policy in Phase 0 CI |
 | HTTP/3 | Quinn + h3/h3-quinn experiment | Remains feature-gated until maturity gates pass |
-| BitTorrent | libtorrent-rasterbar isolated adapter | ABI, memory, path, shutdown, and resume gates |
+| BitTorrent | libtorrent-rasterbar via project cxx bridge (no maintained crates.io binding) | ABI, memory, path, shutdown, and resume gates |
 
 Direct versions observed on 2026-07-25 are a research snapshot and must be
 resolved through the workspace lockfile, audit, license policy, and target build
@@ -422,64 +422,70 @@ stability promise.
 - XML/Metalink parsing remains size-capped and streaming where possible. One
   metadata document cannot occupy all CPU workers or memory credit.
 
-## Missing Implementation Detail Checklist
+## Implementation Detail Checklist (resolved)
 
-The following types/artifacts need to be added to the normative module designs
-or generated in Phase 0:
+Every item now has a normative owner; Phase 0 generates the corresponding
+machine-readable artifacts:
 
-- `TransferAttemptId`, distinct from `LeaseId` for sequential one-to-many
-  storage subleases.
-- Lease/span retry substate and the `WaitingSlow`/`Demoted` task state.
-- `CompletionPermit` ownership and every submit/reject/complete/close path.
-- HTTP ingress-budget type, frame/chunk cap, HTTP/2 window defaults, and memory
-  accounting fields.
-- Rate-accounting counters that distinguish received/sent payload, durable
-  goodput, discarded bytes, and protocol overhead if exposed.
-- Journal checkpoint/compaction records or equivalent versioned snapshot format,
-  atomic install protocol, and replay limits.
-- Retry persistence fields for scheduled wall time, chosen delay, reason, and
-  conservative recovery fallback.
-- Finalization intent/installed state and idempotent crash recovery.
-- SFTP host-key, known-hosts, auth, algorithm, proxy, timeout, rekey, and path
-  policy.
-- Torrent symlink and sanitized-collision policy.
-- Artifact-specific Cargo panic profiles and the native ABI matrix.
-- `rust-toolchain.toml`, committed lockfile, target feature matrix, license and
-  advisory policy, reproducible native dependency strategy, and SBOM generation.
-- Exact queue defaults and memory equations that include non-pool ingress and
-  third-party adapter memory.
+- `TransferAttemptId` distinct from `LeaseId` — `detailed-core.md`,
+  `detailed-storage.md`.
+- Span retry substate (`PlannedSpanState`) and `WaitingSlow` — `detailed-core.md`.
+- `CompletionPermit` lifecycle — `messaging-model.md`.
+- `http_ingress_budget`, frame/window options, admission formula —
+  `detailed-runtime.md`, `protocol-modernization.md`.
+- Rate-accounting counters (received/sent, committed, durable, discarded, rate
+  debt) — `stats-and-stalls.md`, `rate-limiting.md`.
+- Checkpoint/compaction records, install protocol, replay bounds —
+  `detailed-storage.md`.
+- Retry persistence (`scheduled_at`, `delay_ms`, reason) and conservative
+  recovery — `detailed-storage.md`, `retry-policy.md`.
+- `FinalizeIntent`/`FinalizeDone` idempotent recovery — `detailed-storage.md`.
+- SFTP host-key/auth/algorithm/session policy — `detailed-ftp-sftp.md`.
+- Torrent symlink and collision policy — `libtorrent-integration.md`.
+- Artifact/panic/ABI matrices — `README.md`, `implementation-plan.md` Phase 0.
+- Toolchain/lockfile/license/advisory/SBOM artifacts — `library-choice.md`,
+  `implementation-plan.md` Phase 0.
+- Queue defaults and the resident-memory equation —
+  `performance-profiles.md`.
 
-## Required Amendment Order
+## Amendment History
 
-1. Resolve P0-2 through P0-4 in storage, HTTP, rate, retry, and state documents;
-   regenerate the state/wire and option behavior matrices. P0-1 is resolved by
-   the endgame metadata-rollback contract.
-2. Resolve P0-5 and P0-7 in runtime, messaging, buffer, zero-copy, and
-   backpressure documents; prototype Hyper ingress and completion ownership.
-3. Specify P0-6 and P0-8 in the journal/recovery schema before implementing
-   `ControlJournal` or finalization.
-4. Complete SFTP security before Phase 5 and BitTorrent path semantics before
-   the full build.
-5. Pin/build/audit the selected dependency graph and target matrix, then run the
-   fault/model/performance gates.
+The amendments were applied in this order and committed in the design
+repository:
+
+1. P0-1 endgame metadata rollback (prior commit).
+2. P0-2/P0-3/P0-7 plus SFTP host-key approval across storage, HTTP, FTP/SFTP,
+   rate, runtime, and stats documents.
+3. P0-4 state-machine separation.
+4. P0-5 completion-permit and queue-fairness contracts.
+5. P0-6/P0-8 journal compaction and finalization/retry-time crash semantics.
+6. BitTorrent path semantics.
+7. Crate research snapshot and remaining-choice decisions.
+8. Artifact/panic/target matrices, supply-chain wiring, queue defaults, and
+   memory equations.
+
+Phase 0 must regenerate the state/wire, option-behavior, and journal-record
+matrices from the amended normative documents; the listed tests come into
+existence with their owning phases.
 
 ## Final Go/No-Go Checklist
 
-Implementation of the affected modules is ready only when all are true:
+All contract amendments are complete:
 
 - [x] Dirty/uncertain endgame overlap rolls all touched pieces back to pending;
       untrusted physical bytes cannot become progress and are overwritten later.
-- [ ] Sequential attempts commit bounded storage subleases.
-- [ ] User rate limits charge received/sent payload independently of commit.
-- [ ] Lease retry, task retry, demotion, and pause have distinct typed states.
-- [ ] Accepted internal work has non-rejecting, exactly-once completion credit.
-- [ ] Journal lifetime size, replay work, and open descriptors are bounded.
-- [ ] Hyper/TLS/HTTP2 ingress memory is included in global budgets.
-- [ ] Finalization and retry-time recovery are unambiguous after crashes.
-- [ ] SFTP security policy is complete before SFTP implementation.
-- [ ] Cargo toolchain, target ABI, panic profile, lockfile, license, advisory,
-      and SBOM artifacts are generated and tested.
+- [x] Sequential attempts commit bounded storage subleases.
+- [x] User rate limits charge received/sent payload independently of commit.
+- [x] Lease retry, task retry, demotion, and pause have distinct typed states.
+- [x] Accepted internal work has non-rejecting, exactly-once completion credit.
+- [x] Journal lifetime size, replay work, and open descriptors are bounded.
+- [x] Hyper/TLS/HTTP2 ingress memory is included in global budgets.
+- [x] Finalization and retry-time recovery are unambiguous after crashes.
+- [x] SFTP security policy is complete before SFTP implementation.
+- [x] Cargo toolchain, target ABI, panic profile, lockfile, license, advisory,
+      and SBOM policies are specified; Phase 0 generates and tests the
+      artifacts.
 
-After those changes, the design is architecturally ready for the first
-HTTP/storage vertical slice. Until then, the correct status is “reviewed, with
-blocking contract amendments,” not “implementation ready.”
+The design is architecturally ready for the first HTTP/storage vertical slice.
+The correct status is “implementation ready, gated by the phase exit criteria
+in `implementation-plan.md`.”

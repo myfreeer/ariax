@@ -121,10 +121,9 @@ The detailed first-slice module contracts live in `detailed-core.md`,
 `detailed-config.md`, `detailed-storage.md`, `detailed-runtime.md`, and
 `detailed-http-first-slice.md`.
 
-See `final-preimplementation-review.md` for the final cross-document
-architecture/performance review, resolved library choices, and the remaining
-behavioral blockers that must be amended in the normative documents before the
-affected implementation phases begin.
+See `final-preimplementation-review.md` for the closed final review record:
+the cross-document architecture/performance review, resolved library choices,
+and each P0 finding's adopted resolution with its normative owner.
 
 Selected community components:
 

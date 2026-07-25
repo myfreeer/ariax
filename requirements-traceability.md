@@ -92,8 +92,8 @@ Design coverage:
 - `detailed-http-first-slice.md`: reserved headers, exact response validation,
   provisional lease commit/abort, and body-size limits.
 - `detailed-ftp-sftp.md`: FTP/SFTP offset validation and protocol-specific
-  concurrency limits. Its missing SFTP host-key/authentication/algorithm policy
-  is a Phase-5 blocker recorded in `final-preimplementation-review.md`.
+  concurrency limits, plus the SFTP host-key/authentication/algorithm policy
+  resolved by `final-preimplementation-review.md`.
 - `rate-limiting.md`: ingress-debited payload rate accounting and bounded
   discard budgets.
 - `session-persistence.md`: private file permissions and secrets-at-rest policy.

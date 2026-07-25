@@ -640,6 +640,9 @@ SFTP security (see `detailed-ftp-sftp.md`):
 - `sftp-host-key` (exact public-key pin)
 - `sftp-host-key-sha256` (SHA-256 fingerprint pin)
 - `sftp-known-hosts` (private known-hosts file path)
+- `sftp-private-key` / `sftp-private-key-passphrase`
+- `sftp-use-agent=true|false`
+- `sftp-max-outstanding-reads`
 
 Session and control files:
 

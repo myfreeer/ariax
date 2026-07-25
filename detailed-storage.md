@@ -359,7 +359,10 @@ sanity assertion checked after read, not a switch that reinterprets earlier
 fields; a reader never has to know byte order before parsing `version`.
 
 Each journal consists of one or more immutable-numbered segments. All segments
-for a task share `journal_id`; `sequence` is global across the segment set.
+of one set share `journal_id`; `sequence` is global across the segment set. A
+task has exactly one installed set — a compaction candidate carries a fresh
+`journal_id` until the Checkpoint Compaction install protocol makes it the
+installed set.
 
 Segment header:
 

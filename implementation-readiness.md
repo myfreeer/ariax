@@ -1,23 +1,23 @@
 # Implementation Readiness
 
-Status: final review gate; not ready for storage/transfer implementation until
-the P0 contract blockers in `final-preimplementation-review.md` are resolved in
-their normative documents.
+Status: implementation ready. The P0 contract blockers recorded in
+`final-preimplementation-review.md` are resolved in their normative documents;
+module work proceeds under the phase exit criteria below and in
+`implementation-plan.md`.
 
 This document is the handoff checklist from architecture design to detailed
 module design and implementation.
 
-Repository scaffolding, generated inventories, option-registry work, and pure
-safe-path/layout types may begin. Code that commits transfer, persistence,
-scheduler-state, rate-accounting, or SFTP security behavior must wait for the
-corresponding P0 contract amendments.
+Repository scaffolding, generated inventories, option-registry work, pure
+safe-path/layout types, and the first HTTP/storage vertical slice may begin.
+Each module remains gated by its Definition Of Ready checklist below.
 
 ## Start Here
 
 Implementation should begin from these source-of-truth documents:
 
-- `final-preimplementation-review.md` for the go/no-go result and the exact
-  contract amendments still required.
+- `final-preimplementation-review.md` for the closed review record: each P0
+  finding's adopted rule and its normative owner.
 - `configuration.md` for option metadata, config formats, URL rules, runtime
   update behavior, reload, and dump policy.
 - `implementation-plan.md` for phase order and exit criteria.
