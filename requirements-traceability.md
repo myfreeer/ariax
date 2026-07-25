@@ -24,9 +24,10 @@ detailed contract rather than redefining its types:
   `libtorrent-integration.md`,
 - scheduling/observability: `download-scheduling.md`, `stats-and-stalls.md`.
 
-`review-findings-response.md`, `review-findings-round2.md`,
-`review-findings-round3.md`, and `review-findings-round4.md` are review history;
-resolved rules must live in one of the normative documents above.
+`review-findings-response.md`, `review-findings-round2.md`, and
+`review-findings-round3.md` (which consolidates the round-4 external
+verification) are review history; resolved rules must live in one of the
+normative documents above.
 
 ## Performance
 
@@ -200,7 +201,8 @@ Design coverage:
 - `README.md`: Linux, Windows, macOS desktop target.
 - `event-backends.md`: Tokio/Mio network readiness by supported platform and
   separately probed disk backend capabilities.
-- `README.md`: Cargo/autotools artifact strategy and native/cross-build rules.
+- `README.md`: standalone Cargo workspace artifact strategy and
+  native/cross-build rules.
 
 Acceptance:
 
@@ -372,20 +374,20 @@ Acceptance:
 
 Requirement:
 
-- integrate the Rust design into this autotools repository without silently
-  replacing or breaking the existing C++ release artifact.
+- ship the Rust implementation as a standalone project without breaking or
+  silently replacing the existing aria2 C++ release artifact.
 
 Design coverage:
 
-- `README.md`: parallel `ariax` artifact, Cargo workspace, configure/make bridge,
+- `README.md`: standalone `ariax` workspace, pinned aria2 reference checkout,
   packaging, native and cross-toolchain policy.
 - `implementation-plan.md`: Phase-0 build baseline and Phase-7 parity decision.
 - `library-choice.md`: Tokio/Mio and platform adapter ownership.
 
 Acceptance:
 
-- `--enable-ariax=yes` fails cleanly when its toolchain/dependencies are missing,
-- default C++ builds remain intact during Rust bring-up,
+- the workspace fails cleanly when its toolchain/dependencies are missing,
+- the aria2 C++ tree is used only as a pinned read-only compatibility reference,
 - release CI builds the exact feature profiles on Linux, Windows, and macOS,
 - Cargo.lock and dependency-vendoring policy are represented in release tarballs,
 - an `aria2c` replacement/alias is not shipped until parity, migration, and

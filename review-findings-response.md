@@ -2,7 +2,8 @@
 
 Status: draft.
 
-This document maps `../aria2_rust/REVIEW_FINDINGS.md` to design decisions.
+This document maps the earlier `aria2_rust` prototype's review findings
+(`REVIEW_FINDINGS.md` in that repository) to design decisions.
 
 ## Safety And Security
 

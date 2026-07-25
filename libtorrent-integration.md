@@ -172,8 +172,10 @@ journal/session checkpoint is finalized:
    closed.
 
 There is one bounded timeout for this barrier.  On timeout or a failed
-resume-data request, persist an explicit `DirtyCheckpoint` record with the last
-known safe resume data rather than claiming a clean pause/shutdown.  Recovery
+resume-data request, mark the task's session-store checkpoint explicitly dirty
+(`DirtyCheckpoint`, carrying the last known safe resume data) rather than
+claiming a clean pause/shutdown.  This is a session-store state, not a control
+journal record type; the journal record enum stays HTTP-oriented.  Recovery
 then asks libtorrent to validate or resume conservatively.  It retains durable
 payload/resume data and does not manufacture a clean completion.
 
@@ -185,8 +187,8 @@ HTTP-oriented; BT durability is owned by libtorrent's own resume semantics.
 
 Forced shutdown:
 
-- control plane stops waiting after the barrier timeout and records
-  `DirtyCheckpoint`,
+- control plane stops waiting after the barrier timeout and marks the
+  session-store checkpoint dirty (`DirtyCheckpoint`),
 - next startup treats the BT task as unclean and asks libtorrent to validate or
   resume from the last saved data.
 

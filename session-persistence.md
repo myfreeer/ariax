@@ -11,9 +11,9 @@ Decision: use a hybrid persistence model:
 Do not use only JSON/TOML for active recovery. Do not use RocksDB/LMDB as a
 mandatory dependency.
 
-This intentionally differs from `../aria2_rust`'s JSON `.aria2` session files.
-JSON is acceptable for export/import, but active crash recovery needs a
-torn-write-detectable journal.
+This intentionally differs from the earlier `aria2_rust` prototype's JSON
+`.aria2` session files. JSON is acceptable for export/import, but active crash
+recovery needs a torn-write-detectable journal.
 
 ## Requirements
 

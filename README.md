@@ -4,7 +4,8 @@ Status: draft design, intended to be refined before implementation.
 
 This design is for a new downloader that keeps the mature aria2 user model
 while fixing the major safety, scalability, and completeness problems found in
-`../aria2_rust/REVIEW_FINDINGS.md`.
+the earlier `aria2_rust` prototype's review findings (summarized in
+`review-findings-response.md`).
 
 ## Goals
 
@@ -163,37 +164,35 @@ Binary-size rules:
 
 ## Repository And Build Integration
 
-The Rust implementation is introduced in this repository as a parallel,
-non-default artifact until the compatibility and recovery gates pass. It does not
-silently replace the existing C++ `src/aria2c` binary.
+The Rust implementation lives in its own standalone repository, separate from
+the aria2 C++ tree. This design set moves with it. The aria2 checkout is a
+pinned compatibility reference, not a build host, and the existing C++
+`aria2c` binary is untouched by this project.
 
 Repository layout and artifacts:
 
 ```text
-rust/Cargo.toml              workspace root
-rust/crates/ariax-*          engine and adapter crates
-rust/bin/ariax               experimental CLI/RPC binary
-src/aria2c                   existing C++ binary, unchanged during bring-up
+Cargo.toml                   workspace root
+crates/ariax-*               engine and adapter crates
+bin/ariax                    experimental CLI/RPC binary
 ```
 
-Autotools remains the release entry point:
+Build rules:
 
-- `./configure --enable-ariax=auto|yes|no` discovers Cargo and rustc and records
-  the selected Rust target. `yes` fails cleanly when the toolchain is missing;
-  `auto` disables the Rust artifact with a configure notice.
-- `make ariax` invokes Cargo with the configured target/profile; ordinary
-  `make` keeps building the existing C++ artifact unless the Rust artifact was
-  explicitly enabled.
-- `make check` runs the C++ suite and, when enabled, the Rust workspace tests.
-  Release CI builds the exact `minimal`, `standard`, `full`, and `compat`
+- Cargo is the release entry point; no autotools bridge is required.
+- Phase-0 compatibility inventories (option list, manual text, RPC shapes) are
+  generated from a pinned aria2 source checkout recorded in the repository
+  (commit hash plus generation script), so the compatibility matrix is
+  reproducible without building aria2.
+- Release CI builds the exact `minimal`, `standard`, `full`, and `compat`
   artifacts rather than testing an unrelated developer feature set.
 - Release tarballs include `Cargo.lock` and a reproducible vendored-crate bundle
   or an explicitly documented online-build policy. Cross builds pass toolchain,
-  linker, and native dependency paths through configure; a WSL Linux rustc is
-  never mixed with the native MinGW Rust target.
+  linker, and native dependency paths explicitly; a WSL Linux rustc is never
+  mixed with the native MinGW Rust target.
 
-The Rust binary may replace or provide an `aria2c` compatibility name only after
-the Phase-7 parity decision records RPC/config/session behavior, migration, and
+The Rust binary may provide an `aria2c` compatibility name only after the
+Phase-7 parity decision records RPC/config/session behavior, migration, and
 rollback. Until then it is named `ariax` and packaged as experimental.
 
 ## High-Level Architecture
@@ -254,7 +253,7 @@ keep blocking disk work off event-loop threads.
 ## Request Lifecycle
 
 Request groups follow aria2's proven split between active, reserved, and
-stopped state, similar to `src/RequestGroupMan.cc`.
+stopped state, similar to aria2's `src/RequestGroupMan.cc`.
 
 States:
 
@@ -565,7 +564,7 @@ From aria2:
 - Keep event backend configurability, but remove assert/crash behavior when a
   backend cannot initialize.
 
-From `../aria2_rust/REVIEW_FINDINGS.md`:
+From the `aria2_rust` prototype review (`review-findings-response.md`):
 
 - Do not accept metadata paths without safe path construction.
 - Do not use sequential `await` in the engine dispatch loop.

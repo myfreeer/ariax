@@ -338,6 +338,9 @@ created_at_unix_ms: u64
 header_crc: u32     (covers all header bytes before it)
 ```
 
+All `*_crc` fields are CRC-32C (Castagnoli); the polynomial choice is part of
+the version-1 format.
+
 Record:
 
 ```text
@@ -455,7 +458,11 @@ accepted, but only `PieceDurable` makes a complete piece durable across restart.
 Each task has exactly one serialized `ControlJournalAppender`. It alone assigns
 the next gap-free `sequence`, encodes records, rotates segments, and performs
 journal flushes. Storage/disk/hash completions submit typed facts to this
-appender; the scheduler and protocol adapters never append records themselves.
+appender, and the scheduler-side persistence coordinator submits control facts
+(`TaskCreated`, `OptionsSnapshot`, `GenerationStarted`, `RetryState`,
+`TaskPaused`, `TaskComplete`, `TaskError`, `TaskRemoved`, `CleanShutdown`)
+through the same appender; the scheduler and protocol adapters never append
+records themselves.
 If an append fails after a sequence is assigned, the appender faults the task
 and emits no later sequence until recovery repairs or starts a new segment.
 Sequence numbering begins at 1; segment 0 therefore has `first_sequence = 1`.

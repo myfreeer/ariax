@@ -147,9 +147,9 @@ Backend selection must never use `assert`, `unwrap`, `expect`, or abort paths
 for runtime capability failures. Fatal errors are represented as typed
 configuration errors with actionable messages.
 
-This explicitly avoids the aria2 pattern in `src/DownloadEngineFactory.cc`
-where unsupported or failed event poll selection can throw during construction
-and the final path asserts.
+This explicitly avoids the aria2 pattern in aria2's
+`src/DownloadEngineFactory.cc` where unsupported or failed event poll selection
+can throw during construction and the final path asserts.
 
 ## Benchmarks Per Backend
 

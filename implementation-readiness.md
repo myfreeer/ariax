@@ -15,7 +15,7 @@ Implementation should begin from these source-of-truth documents:
 - `requirements-traceability.md` for acceptance coverage.
 - `security-recovery.md` for invariants that cannot be relaxed.
 - `review-findings-response.md` for regressions that must not reappear from
-  `../aria2_rust`.
+  the earlier `aria2_rust` prototype.
 - `review-findings-round3.md` for the consolidated G/H/V resolutions that must
   be reflected before a module is marked ready.
 
@@ -203,5 +203,5 @@ A feature is done only when:
 - every option marked `implemented` passes its non-default behavioral-fingerprint
   test; a registry test id without observed behavior is insufficient,
 - external API queues have bounded slow-consumer tests,
-- release/build changes produce the declared autotools/Cargo artifacts on every
+- release/build changes produce the declared Cargo release artifacts on every
   supported platform.

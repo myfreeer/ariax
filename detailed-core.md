@@ -303,8 +303,8 @@ pub struct TaskSnapshot {
     pub current_speed: u64,
     pub avg_speed: u64,
     pub active_leases: u32,
-    pub retry_wait_until: Option<Instant>,
-    pub last_progress_at: Option<Instant>,
+    pub retry_wait_until: Option<MonotonicInstant>,
+    pub last_progress_at: Option<MonotonicInstant>,
     pub error: Option<PublicError>,
 }
 ```

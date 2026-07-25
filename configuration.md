@@ -520,7 +520,8 @@ Advanced:
   `event-poll` is accepted as a deprecated option-name alias; legacy values such
   as `epoll`/`kqueue` express the expected Mio platform selector and never create
   a separate raw reactor. `disk-io-backend=auto|uring|iocp|blocking` is selected
-  independently.
+  independently (a test-only `sync` value exists for tests and tiny
+  single-file tools; see `event-backends.md`).
 - `file-allocation`, `no-file-allocation-limit`, `disk-cache`, `enable-mmap`,
   `max-mmap-limit`: implemented with platform capability checks.
 - `max-overall-download-limit`, `max-download-limit`,
@@ -583,6 +584,8 @@ Retry and scheduling:
 - `slow-slot-readmit-after`
 - `slow-slot-readmit-policy=front|original-position|back`
 - `retry-wait-consumes-slot=true|false|auto`
+- `endgame-max-duplicates` (bounded concurrent duplicate attempts in endgame
+  mode; see `split-download.md`)
 
 RPC and embedding:
 

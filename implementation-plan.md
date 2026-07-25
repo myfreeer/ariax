@@ -9,8 +9,9 @@ rewrite pattern.
 
 - Use `implementation-readiness.md` as the readiness gate for all later module
   work.
-- Generate aria2 option inventory from `src/OptionHandlerFactory.cc` and
-  `doc/manual-src/en/aria2c.rst`.
+- Generate aria2 option inventory from a pinned aria2 source checkout
+  (`src/OptionHandlerFactory.cc` and `doc/manual-src/en/aria2c.rst` at a
+  recorded commit hash).
 - Create the machine-readable option/runtime-compatibility matrix, including
   whether aria2 implements each option, aria2's active-change behavior, this
   design's behavior, and whether any difference is intentional.
@@ -26,8 +27,9 @@ rewrite pattern.
   reserved-header policy, and secrets-at-rest policy.
 - Create a new-option inventory from the design docs and fail CI if a
   documented option is missing registry metadata.
-- Add the optional Cargo/autotools bridge and build the experimental `ariax`
-  artifact without replacing `src/aria2c`.
+- Stand up the standalone Cargo workspace and build the experimental `ariax`
+  artifact; record the pinned aria2 reference checkout used for compatibility
+  generation.
 - Record native Linux and Windows baselines for journal/data sync, queue wakeup,
   buffer ownership, and minimal-binary size. WSL/DrvFS numbers are diagnostic,
   not release baselines.
@@ -40,7 +42,7 @@ Exit criteria:
 - Design option inventory and registry metadata are in sync.
 - The state/wire, GID, auth, error, header, persistence-secret, build-artifact,
   and runtime-compatibility contracts have no unresolved entries.
-- `./configure --enable-ariax=yes` either builds the declared Rust target or
+- The workspace builds the declared Rust targets on Linux, Windows, and macOS or
   fails with an actionable toolchain/dependency error.
 
 ## Phase 1: Core Types And Minimal Scheduler
@@ -216,4 +218,4 @@ Exit criteria:
 - No whole-segment buffering.
 - Recovery tests pass across forced kill points.
 - Native Linux, Windows, and macOS release artifacts are built through the
-  documented autotools/Cargo path with reproducible dependencies.
+  documented Cargo release path with reproducible dependencies.

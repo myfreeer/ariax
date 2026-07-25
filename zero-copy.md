@@ -33,8 +33,8 @@ Allowed:
 - BitTorrent full build uses libtorrent's internal zero-copy/cache strategies
   inside the isolated BT lane.
 
-All of these still go through `StorageEngine::write_block` or an equivalent BT
-adapter checkpoint.
+All of these still go through the storage engine's `WriteBlock` command
+(`detailed-storage.md`) or an equivalent BT adapter checkpoint.
 
 ## Disallowed Shortcuts
 
