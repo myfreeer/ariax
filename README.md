@@ -167,11 +167,33 @@ Binary-size rules:
 - features are opt-in, not linked by default,
 - CLI, RPC, BitTorrent, SFTP, XML-RPC, WebSocket, and native TLS are separate
   features,
-- CLI-only packaged binaries use LTO, one codegen unit, panic abort, and stripped
-  symbols. C ABI/staticlib/cdylib artifacts use an unwind-capable profile so
-  exported boundaries can contain panics,
 - generated tables replace duplicated option/help strings where practical,
 - `minimal` is the size baseline and CI tracks binary-size regressions.
+
+Artifact, profile, and panic matrix (normative; Phase 0 encodes it as Cargo
+profiles and CI release jobs):
+
+| Artifact | Crate type | Cargo profile | Panic | Notes |
+| --- | --- | --- | --- | --- |
+| `ariax` CLI (`minimal`/`standard`/`full`/`compat`) | `bin` | `release-cli` | `abort` | fat LTO, `codegen-units=1`, stripped symbols |
+| `ariax` Rust library crates | `rlib` | consumer-selected | `unwind` | semver API; never forces `abort` on embedders |
+| `ariax-capi` | `staticlib` + `cdylib` | `release-capi` | `unwind` | `catch_unwind` at every export; aborts only after a caught panic is reported |
+| dev/test/fuzz | any | `dev`/`test` | `unwind` | debug assertions on |
+
+One build cannot mix the two panic strategies: the C-ABI artifact is produced
+by its own profile/job, never as a side effect of the `panic=abort` CLI build.
+
+Native target/ABI matrix (release CI; MSRV and feature set identical unless
+noted):
+
+| Target | Tier | Notes |
+| --- | --- | --- |
+| `x86_64-unknown-linux-gnu` | primary | io_uring probe at runtime; glibc floor recorded in Phase 0 |
+| `aarch64-unknown-linux-gnu` | primary | same backends as x86_64 Linux |
+| `x86_64-unknown-linux-musl` | secondary | static `minimal`/`standard`; `full` requires a musl-built libtorrent and is gated on that |
+| `x86_64-pc-windows-msvc` | primary Windows | IOCP adapter; MSVC-built libtorrent for `full` |
+| `x86_64-pc-windows-gnu` | secondary | all-MinGW graph including libtorrent; never mixes ABIs |
+| `x86_64-apple-darwin`, `aarch64-apple-darwin` | primary | kqueue via Mio; bounded blocking disk pool |
 
 ## Repository And Build Integration
 

@@ -35,8 +35,16 @@ rewrite pattern.
   native-ABI matrix. Windows MSVC is the primary release ABI; Windows GNU is a
   secondary all-MinGW build and never mixes native ABIs.
 - Pin the direct choices in `library-choice.md`, record feature unification and
-  native dependencies, and run license/advisory/source-policy checks. Produce an
-  SBOM and dependency tree for each release profile.
+  native dependencies, and run license/advisory/source-policy checks with
+  `cargo-deny` (committed `deny.toml` is the normative policy) plus scheduled
+  `cargo-audit`. Build release binaries with `cargo-auditable` and produce a
+  CycloneDX SBOM (`cargo-cyclonedx`) and dependency tree for each release
+  profile.
+- Encode the README artifact/profile/panic matrix as Cargo profiles
+  (`release-cli` abort, `release-capi` unwind) and per-artifact CI release
+  jobs; assert in CI that no job builds the C-ABI artifact under
+  `panic=abort` and that feature unification enables exactly one rustls
+  crypto provider.
 - Record native Linux and Windows baselines for journal/data sync, queue wakeup,
   buffer ownership, and minimal-binary size. WSL/DrvFS numbers are diagnostic,
   not release baselines.
