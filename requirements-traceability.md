@@ -94,7 +94,8 @@ Design coverage:
 - `detailed-ftp-sftp.md`: FTP/SFTP offset validation and protocol-specific
   concurrency limits. Its missing SFTP host-key/authentication/algorithm policy
   is a Phase-5 blocker recorded in `final-preimplementation-review.md`.
-- `rate-limiting.md`: bounded accounting for committed and discarded traffic.
+- `rate-limiting.md`: ingress-debited payload rate accounting and bounded
+  discard budgets.
 - `session-persistence.md`: private file permissions and secrets-at-rest policy.
 - `disk-adapter.md`: offset-only writes, storage validation, fsync/rename
   policy.

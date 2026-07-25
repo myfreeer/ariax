@@ -73,7 +73,9 @@ are available.
 
 For transfer payloads, yes by policy:
 
-- HTTP/FTP/SFTP body bytes enter a `BufferPool` buffer.
+- Raw FTP/SFTP body bytes enter a `BufferPool` buffer. Hyper may first yield a
+  framework-owned immutable `Bytes` frame; the adapter accounts it against the
+  separate HTTP ingress budget and copies/splits it into a `BufferLease`.
 - The same buffer is submitted to `StorageEngine`.
 - Hashing borrows from the same immutable buffer when possible.
 - Disk backend writes from the same buffer or from validated vectored slices.
@@ -84,6 +86,9 @@ Exceptions:
 - HTTP headers and RPC JSON/XML bodies have separate size-capped parsers,
 - decompression may require a second output buffer because bytes change,
 - TLS libraries may maintain internal buffers,
+- Hyper/h2 may maintain configured/hidden ingress buffers and flow-control
+  windows; their effective knobs and measured overhead are reported separately
+  and included in connection admission,
 - libtorrent uses its own buffers inside the isolated BT lane,
 - OS zero-copy paths may use registered pool buffers or backend-owned kernel
   buffers, but still report through the same ownership model.

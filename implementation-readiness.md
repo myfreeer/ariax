@@ -55,9 +55,11 @@ These are not optional implementation details:
   isolated BT adapter lane described in `libtorrent-integration.md`.
 - No cursor-based writes in segmented downloads.
 - No range body is durable unless status, length, and placement validation pass.
-- Every range attempt is identified by `LeaseId`; writes remain provisional until
-  exact response/validator checks issue `CommitLease`, and `AbortLease` is
-  recovery-visible.
+- Every storage attempt span is identified by `LeaseId` under one protocol
+  `TransferAttemptId`; writes remain provisional until validator checks issue
+  `CommitLease` for that exact span, and `AbortLease` is recovery-visible. A
+  sequential stream advances through piece-aligned checkpoint leases, never one
+  all-or-nothing whole-remainder lease.
 - Endgame candidates remain uncommitted until every competing write is fenced.
   A dirty/uncertain overlap group rolls all touched pieces back to pending
   metadata and in-memory state; physical bytes may remain only as untrusted

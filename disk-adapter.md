@@ -35,8 +35,10 @@ network I/O.
 
 Use existing libraries or system APIs for low-level mechanics:
 
-- Linux io_uring: use `io-uring` crate or a small audited wrapper around
-  `liburing`/syscalls.
+- Linux io_uring: use `tokio-uring` behind the project-owned current-thread disk
+  lane first. Keep the low-level `io-uring` crate as an internal replacement if
+  secure-open, accepted-operation draining, cancellation, or quarantine gates
+  fail; neither crate's types escape `DiskBackend`.
 - Windows: use a narrow overlapped I/O / IOCP wrapper.
 - macOS/BSD: use POSIX `pread`, `pwrite`, `fcntl`, `fsync`, and `ftruncate`
   through `std`/`libc`/`rustix`-style wrappers on a bounded disk pool.

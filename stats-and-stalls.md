@@ -55,15 +55,15 @@ Counter meanings are intentionally independent:
 
 - `receivedPayloadBytes` is raw transport telemetry and includes bytes later
   discarded because of short/oversized bodies, aborted leases, checksum failures,
-  redirects, cancellation races, or losing endgame attempts. It never debits a
-  configured user rate bucket.
+  redirects, cancellation races, or losing endgame attempts. These are the
+  download bytes debited from the configured user rate buckets.
 - `acceptedBytes` passed protocol framing/range checks but may still be
   provisional.
 - `committedBytes` won `CommitLease`, count as logical download progress, and
-  are the only bytes debited from the configured user rate buckets.
+  are useful-progress accounting rather than the rate-debit point.
 - `durableBytes` also passed the configured storage/journal durability barrier.
-- `discardedBytes` is diagnostic waste, excluded from user rate accounting, and
-  charged to the separate finite discard guard.
+- `discardedBytes` is diagnostic waste that already consumed user-rate tokens
+  when read and is additionally charged to the separate finite discard guard.
 
 Cumulative received/accepted/submitted counters are monotonic; the in-flight
 provisional gauge decreases when an attempt commits or aborts. Current committed
@@ -83,11 +83,11 @@ condition change); a task whose counters are unchanged republishes nothing
 except a cheap sample-age bump on its existing snapshot. This keeps a 250 ms
 tick affordable at 10,000 mostly idle connections.
 
-For each connection/task, aria2-compatible rate uses committed/user-accounted
-bytes, while raw transport speed remains an extension diagnostic:
+For each connection/task, aria2-compatible rate uses rate-accounted received
+application payload bytes:
 
 ```text
-delta_bytes = committed_total - previous_committed_total
+delta_bytes = received_payload_total - previous_received_payload_total
 delta_time = now - previous_sample_time
 instant_rate = delta_bytes / delta_time
 ```
@@ -97,10 +97,11 @@ also show EWMA speed, but the current speed must not remain frozen.
 
 Recommended fields:
 
-- `currentSpeed`: aria2-compatible short-window committed rate; it reaches zero
-  quickly and matches the bytes governed by `max-*-limit`.
-- `wireSpeed`: extension short-window raw transport-payload rate.
-- `usefulSpeed`: extension alias/diagnostic for newly committed bytes.
+- `currentSpeed`: aria2-compatible short-window received-payload rate; it reaches
+  zero quickly and matches the bytes governed by `max-*-limit`.
+- `wireSpeed`: extension short-window transport-payload rate before useful/
+  discarded reconciliation (normally the same byte basis as `currentSpeed`).
+- `usefulSpeed`: extension short-window newly committed bytes.
 - `durableSpeed`: extension short-window rate of newly durable bytes.
 - `avgSpeed`: task lifetime or active-window average.
 - `smoothedSpeed`: EWMA for stable UI.
@@ -144,9 +145,9 @@ The following are diagnostic conditions, not `TaskState` variants:
 
 - `Backpressured`: downloader intentionally stopped reading because disk,
   buffer, CPU, or journal pressure is high.
-- `RateLimited`: a validated provisional lease is waiting for committed-progress
-  rate credit before `CommitLease`; it does not keep a socket buffer or create a
-  new task state.
+- `RateLimited`: the downloader is deliberately not polling/reading the protocol
+  because ingress rate credit is unavailable; it holds no filled transfer buffer
+  while waiting and creates no new task state.
 - `Stalled`: socket expected progress but no bytes arrived.
 - `Idle`: connection kept alive or waiting for next lease.
 
@@ -200,10 +201,10 @@ Required tests:
 - rate-limited sockets show rateLimited,
 - backpressured/rateLimited diagnostics do not change the closed task state or
   aria2-compatible task-status value,
-- failed/aborted/endgame-loser bytes appear in raw transport and discarded
-  totals but never in user-rate-accounted committed/durable progress,
-- discarded bytes are excluded from `max-*-limit` accounting but exhaust the
-  separate discard guard at its configured finite budget,
+- failed/aborted/endgame-loser bytes appear in received/discarded totals, consume
+  `max-*-limit` tokens, and never enter committed/durable progress,
+- discarded bytes also exhaust the separate discard guard at its configured
+  finite budget,
 - repeated invalid bytes cannot satisfy useful-progress/lowest-speed checks,
 - one endgame winner plus its losers are reconciled without double-counting
   committed bytes,

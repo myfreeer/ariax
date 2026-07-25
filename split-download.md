@@ -135,8 +135,8 @@ Allowed behavior:
 - overlap rollback does not restore or zero the file. The untrusted physical
   bytes remain just like preallocation contents and are overwritten by the next
   ordinary download lease. No `PieceDurable` record is emitted for them,
-- loser bytes are reported against the discard guard, not the user-configured
-  download rate; the bounded duplicate cap prevents unbounded waste,
+- loser bytes consume normal received-payload rate tokens and the discard guard;
+  the bounded duplicate cap prevents unbounded waste,
 - duplicate data is never written over a durable piece,
 - endgame duplicate budget is small and bounded by an explicit
   `endgame-max-duplicates` cap (default small, e.g. 2 concurrent duplicates).
@@ -185,10 +185,12 @@ Errors:
 - `200 OK` to range: if at offset 0 and policy allows, switch task to
   sequential fallback; otherwise mark mirror range-unsupported for split.
 - short body: issue `AbortLease` for the complete attempt and retry the lease
-  span; no prefix from that response becomes committed progress or user-rate
-  accounting, and its raw bytes consume the discard guard.
+  span; no prefix from that response becomes committed progress, and its bytes
+  keep their ingress rate debit, are surfaced as discarded, and consume the
+  discard guard.
 - oversized body: stop the bounded validation read, issue `AbortLease`, reject
-  the response, penalize the mirror, and charge only the discard guard.
+  the response, and penalize the mirror; the bounded overrun keeps its rate
+  debit and consumes the discard guard.
 - disk full/permission: task-level failure or pause, not network retry.
 - checksum failure: redownload the affected verification piece or failed spans
   from a different mirror when

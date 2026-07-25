@@ -71,6 +71,10 @@ The aria2-compatible surface is deliberately closed:
   `min-split-size`, and `lowest-speed-limit` are accepted as an active restart:
   clients observe a transient `waiting` state, no pause event, and eventual
   resume with the pending values.
+- `PausedHostKey` projects to aria2 `paused`. Calling normal `unpause`/resume in
+  that state explicitly approves and task-pins the currently published SFTP host
+  key challenge; if the server presents a different key on reconnect, it remains
+  paused and publishes a new challenge without sending credentials.
 
 ### RPC Authentication
 

@@ -22,11 +22,14 @@ Chosen stack:
   connectors, redirect policy, validation, and backpressure.
 - rustls by default for TLS and Hickory Resolver for the in-process async DNS
   backend.
+- SuppaFTP for Tokio-native FTP/FTPS transport mechanics; downloader-owned
+  validation and storage contracts remain authoritative.
 - russh plus russh-sftp for the standard-build SFTP adapter. libssh2 remains an
   interoperability fallback only if the Phase-5 prototype gate fails.
 - rusqlite on one bounded session-store worker thread.
 - A dedicated, project-owned Rayon pool for CPU-heavy hashing/parsing work;
   never the process-global Rayon pool.
+- quick-xml's streaming reader for Metalink and XML-RPC parsing.
 - Quinn plus h3/h3-quinn as the experimental HTTP/3 candidate only.
 
 ## Runtime Candidates
@@ -170,6 +173,15 @@ budget, and the adapter stops polling a body when downstream queue, memory, or
 rate credit is unavailable. A future foreign-buffer lease may remove that copy
 for backends that do not require registered or mutable buffers.
 
+Framework-owned memory is an accepted cost of choosing Hyper. Hyper does not
+expose one universal client buffer-pool size, but the selected client builder
+does expose HTTP/1 exact/max read-buffer settings and HTTP/2 stream/connection
+window, adaptive-window, and max-frame settings. The corresponding typed options
+in `protocol-modernization.md` are user-visible, included in profile resolution,
+and reported with their effective values. Any remaining hidden per-connection
+overhead is measured, included in admission sizing/diagnostics, and bounded by
+connection/stream limits rather than falsely counted as `BufferPool` memory.
+
 Downloader-owned checks:
 
 - `206` required for range segments,
@@ -202,6 +214,15 @@ do not adopt a `0.24.0-dev` prerelease in the production baseline. Desktop
 builds use the platform trust-verifier integration where supported, while custom
 CA modes remain downloader-owned policy.
 
+Use the ring crypto provider in `minimal`/`standard` by explicitly disabling
+dependency defaults and selecting ring consistently in rustls, hyper-rustls,
+SuppaFTP, and russh. This keeps one provider and the simpler cross-platform
+native build path. An `aws-lc` provider feature is mutually exclusive and
+optional for measured performance, post-quantum preference, or a separately
+validated FIPS build. CI fails if Cargo feature unification enables both
+providers or silently restores a dependency's default provider. The active
+provider is visible in diagnostics.
+
 ## DNS
 
 Use Hickory Resolver for the in-process async resolver, custom upstreams, TTL
@@ -230,6 +251,20 @@ known-hosts handling, authentication ordering, algorithm policy, secrets, proxy
 behavior, and rekey/timeouts must be specified in `detailed-ftp-sftp.md` before
 Phase 5 begins.
 
+## FTP And FTPS
+
+Use SuppaFTP with its Tokio/rustls-ring feature for control/data-channel and
+FTP/FTPS protocol mechanics. It supplies the async Tokio path, passive/active
+commands, restart offsets, and explicit/implicit FTPS integration. The adapter
+still owns `SIZE`/`MDTM` policy, exact offset/EOF accounting, binary-mode
+enforcement, retry classification, rate permits before data reads, and storage
+lease checkpoints. Do not expose a generic remote-filesystem abstraction that
+hides the control/data connection or REST/RETR sequence.
+
+`async_ftp` is not selected: it provides a smaller async FTP surface, but using
+it would not improve the correctness boundary and has a narrower maintained
+feature/integration surface than SuppaFTP for this design.
+
 ## Session Database
 
 Use `rusqlite` with bundled SQLite for reproducible first-slice desktop builds.
@@ -248,6 +283,14 @@ bounded metadata parsing. Admission is controlled by the project's byte/job
 budgets, completions return through project-owned bounded lanes, and jobs carry
 generation/cancellation metadata. Never initialize or depend on Rayon's global
 pool, because an embedding process may already own it.
+
+## XML Parsing
+
+Use quick-xml's pull/streaming reader with no Serde DOM for untrusted Metalink
+and XML-RPC input. Reject DTD/DOCTYPE, entity declarations, unsupported
+encodings, excessive depth/attributes/text, and namespace/element forms outside
+the accepted schemas. Parser input and emitted metadata are size-capped, and the
+same event-level adapter is fuzzed independently of networking.
 
 ## HTTP/3
 

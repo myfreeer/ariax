@@ -23,8 +23,8 @@ Each protocol worker reads only when it has:
 - buffer budget,
 - disk queue budget,
 - task generation still active,
-- finite discard-guard credit; configured user rate tokens are checked at
-  `CommitLease`, not before a provisional body read,
+- finite discard-guard credit,
+- configured user rate credit for the next protocol read/body poll,
 - no cancellation/pause signal.
 
 These signals cross worker-pool boundaries through bounded channels. The

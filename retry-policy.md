@@ -333,11 +333,12 @@ auto-enable `GrowingSequential`. FTP retries resume one sequential stream from
 the contiguous committed durable prefix; they do not schedule arbitrary FTP
 range leases or drain per-lease tails.
 
-Only `CommitLease` bytes debit the user-configured rate buckets. Bytes from a
-failed/aborted attempt are surfaced as discarded and excluded from those buckets;
-they instead consume the finite discard guard. Protocols cancel promptly, and
-discard/retry/endgame budgets prevent retry cycling from becoming an unbounded
-raw-network bypass.
+Every payload byte accepted from the protocol read consumes user-configured rate
+tokens, including failed/aborted attempts. Such bytes are also surfaced as
+discarded and consume the finite discard guard; commit/durable counters remain
+useful-progress accounting only. Protocols cancel promptly, and
+discard/retry/endgame budgets prevent retry cycling from consuming unbounded
+waste even at the configured bandwidth cap.
 
 ## Observability
 

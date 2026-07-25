@@ -207,14 +207,29 @@ Acceptance:
 - `Transfer-Encoding: chunked`, missing length, and non-identity content coding
   are rejected in the first slice,
 - body bytes start at global offset `0`,
-- every buffer is submitted to storage with an exact offset under the
-  sequential attempt's `LeaseId`.
+- one `TransferAttemptId` identifies the response stream, which remains open and
+  is continuously read into bounded buffers and submitted to storage at exact
+  offsets,
+- the stream advances through piece-aligned storage `LeaseId`s. Reaching a lease
+  boundary commits/checkpoints that exact span and immediately opens the next
+  lease on the same response; it does not issue another HTTP request or buffer a
+  whole lease,
+- client download-rate tokens gate response-body polling/`read`. After bytes are
+  accepted and charged, their `write_at`/disk completion is governed only by
+  storage backpressure and is never delayed a second time by the rate limiter.
 
 Completion:
 
-- received length must exactly match the settled length,
-- the response attempt is committed through `CommitLease`; EOF, framing,
-  validator, digest, cancellation, or redirect failure uses `AbortLease`,
+- each complete non-final checkpoint lease commits after its exact span reaches
+  disk under the validated response head,
+- the final lease commits only when received length exactly matches the settled
+  response length and EOF/framing is valid,
+- premature EOF, cancellation, or transport failure aborts only the current
+  incomplete lease. Earlier committed/durable checkpoints remain resumable if
+  the representation validator remains valid,
+- a validator or required whole-representation digest failure invalidates the
+  affected representation through the normal restart/hash-failure rules rather
+  than trusting earlier checkpoints,
 - final validators are persisted,
 - all pieces durable,
 - finalization completes through storage.
@@ -238,10 +253,15 @@ Acceptance:
   is valid for known total,
 - local existing bytes are not truncated.
 
-The resume response is a new provisional lease attempt. Its body cannot make
-any span written or durable until exact EOF/framing and validator checks succeed
-and `CommitLease` accepts the attempt. Redirect, cancellation, short body,
-oversized body, or validator failure issues `AbortLease` before retry/restart.
+The resume response is one new `TransferAttemptId` and a streaming series of
+piece-aligned storage leases beginning at the durable prefix. Intermediate exact
+spans checkpoint on the same response/data stream. Premature EOF, cancellation,
+or transport failure aborts only the current incomplete lease; earlier
+checkpoints remain resumable when `If-Range`/validator policy still proves the
+same representation. The final lease still requires exact EOF/framing.
+Redirect or validator failure before body acceptance aborts the current lease;
+a representation-level validation failure restarts/invalidates the affected
+generation rather than preserving checkpoints from a different entity.
 
 If server returns `200 OK`:
 
@@ -348,6 +368,7 @@ Worker failure emits:
 
 ```rust
 pub struct RetryEvent {
+    pub transfer_attempt: Option<TransferAttemptId>,
     pub lease: Option<LeaseId>,
     pub span: GlobalSpan,
     pub uri: UriId,
@@ -375,10 +396,10 @@ Counters:
 - raw body bytes read from the transport,
 - bytes accepted by HTTP validator,
 - provisional bytes submitted to storage,
-- bytes committed by `CommitLease` (the user-rate-accounted bytes),
+- bytes committed by `CommitLease` (useful logical progress),
 - bytes durable,
-- discarded bytes and discard-budget consumption (excluded from the user rate
-  limit),
+- discarded bytes and discard-budget consumption (already charged at body
+  ingress),
 - retry bytes,
 - current lease progress.
 
@@ -387,16 +408,19 @@ Rules:
 - speed sampler runs on monotonic tick,
 - no packet arrival means current speed reaches zero,
 - backpressure and rate-limit diagnostic conditions are distinct from stalled,
-- a validated lease waits for rate tokens at `CommitLease`, not while holding a
-  socket buffer; discarded bodies consume the separate discard guard,
+- a worker acquires rate credit before body polling. Once a frame/chunk is read
+  and charged, its disk write is not rate-delayed; discarded bodies keep the
+  debit and also consume the separate discard guard,
 - lease retry waits remain visible in status.
 
 ## Storage Integration
 
-Every sequential, resume, or range response attempt has a unique `LeaseId`.
-After response-head validation and before body polling, the worker submits the
-storage-owned `LeaseWritePlan` through `BeginLease`. For each accepted body
-chunk:
+Every HTTP response attempt has a unique `TransferAttemptId`. A closed range
+response normally owns one `LeaseId`; a fresh sequential or open-ended resume
+response advances through many piece-aligned storage leases while the same body
+stream remains open. After response-head validation and before polling bytes for
+each span, the worker submits a storage-owned `LeaseWritePlan` through
+`BeginLease`. For each accepted body chunk:
 
 ```rust
 let block = WriteBlock {
@@ -411,12 +435,15 @@ let block = WriteBlock {
 storage.write(block).await
 ```
 
-At exact successful response completion the worker submits the storage-owned
-`LeaseCommit` through `CommitLease`. On every other exit after `BeginLease` it
-submits `AbortLease { task, generation, lease, reason }`. These commands and
-their journal/recovery semantics are owned by `detailed-storage.md`; the HTTP
-adapter does not create an alternate provisional-state format. `PieceDurable`
-cannot be emitted for bytes belonging only to a begun or aborted lease.
+At an exact intermediate sequential checkpoint, the worker commits that storage
+lease and opens the next one without another HTTP request. A closed range or the
+final sequential lease additionally requires exact response completion. On an
+unsuccessful exit it aborts the current incomplete lease; earlier sequential
+checkpoints remain only when representation-validator policy permits. These
+commands and their journal/recovery semantics are owned by
+`detailed-storage.md`; the HTTP adapter does not create an alternate
+provisional-state format. `PieceDurable` cannot be emitted for bytes belonging
+only to a begun or aborted lease.
 
 HTTP worker must not hold a mutable buffer after submitting it to storage.
 
@@ -461,8 +488,12 @@ Required tests:
 - resume `200 OK` never writes at nonzero offset,
 - range `200 OK` rejected for nonzero lease,
 - invalid `Content-Range` rejected,
-- short and oversized bodies abort the complete provisional lease and expose no
-  committed progress,
+- a short body aborts the current incomplete checkpoint lease, preserves prior
+  committed checkpoints under a valid validator, and exposes no committed
+  progress for the aborted span; a short closed-range body aborts its whole
+  lease,
+- an oversized body stops at the bounded validation read, aborts the current
+  lease, and penalizes the source,
 - `Retry-After` capped and visible,
 - stuck socket speed drops to zero,
 - disk backpressure stops reads,
@@ -484,6 +515,8 @@ Required tests:
   truncating or restoring the file,
 - a mirror whose total length disagrees with the task total is rejected by the
   known-total check,
-- every response path after `BeginLease` ends in exactly one `CommitLease` or
+- every storage lease begun by `BeginLease` ends in exactly one `CommitLease` or
   `AbortLease`, including redirect, pause, short body, and storage rejection,
+- interruption at a checkpoint boundary, one byte before a boundary, and one
+  byte into a new lease resumes from the exact committed prefix,
 - RPC status reflects durable bytes, not just received bytes.

@@ -458,6 +458,9 @@ HTTP/FTP/SFTP:
   `no-netrc`, FTP credentials: implemented.
 - FTP/SFTP: `ftp-user`, `ftp-passwd`, `ftp-pasv`, `ftp-reuse-connection`,
   `ftp-type`, `ssh-host-key-md`: implemented per `detailed-ftp-sftp.md`.
+  Extensions `sftp-check-host-key`, `sftp-host-key`,
+  `sftp-host-key-sha256`, and `sftp-known-hosts` are implemented with strict
+  verification by default; unknown keys use the paused approval flow.
   `ftp-type=ascii` is rejected for split/resume (offset math is invalid in ASCII
   mode) and allowed only for whole-file sequential download.
 - Transfer: `split`, `max-connection-per-server`, `min-split-size`,
@@ -601,6 +604,14 @@ Protocol modernization:
 
 - `http2=true|false|auto`
 - `http2-max-concurrent-streams`
+- `http-ingress-buffer-limit`
+- `http1-read-buffer-size=auto|SIZE`
+- `http1-max-buffer-size`
+- `http2-initial-stream-window-size=SIZE|auto`
+- `http2-initial-connection-window-size=SIZE|auto`
+- `http2-max-frame-size=SIZE|auto`
+- `http2-max-header-list-size=SIZE|auto`
+- `http2-adaptive-window=true|false`
 - `http3=false|true|auto`
 - `quic-max-connections`
 - `ech=false|true|auto`
@@ -621,6 +632,14 @@ Transfer integrity and redirects:
 - `max-redirects` (default 20; see `redirect-policy.md`)
 - `allow-redirect-downgrade=true|false` (default `false`; permit `https -> http`
   redirects)
+
+SFTP security (see `detailed-ftp-sftp.md`):
+
+- `sftp-check-host-key=true|false` (default `true`; `false` is an explicit
+  insecure bypass)
+- `sftp-host-key` (exact public-key pin)
+- `sftp-host-key-sha256` (SHA-256 fingerprint pin)
+- `sftp-known-hosts` (private known-hosts file path)
 
 Session and control files:
 

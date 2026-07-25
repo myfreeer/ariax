@@ -39,6 +39,7 @@ should respect these ownership boundaries.
 pub struct Gid(NonZeroU64);
 pub struct TaskId(NonZeroU64);
 pub struct Generation(u64);
+pub struct TransferAttemptId(NonZeroU64);
 pub struct LeaseId(NonZeroU64);
 pub struct OverlapGroupId(NonZeroU64);
 pub struct PieceId(u64);
@@ -68,6 +69,9 @@ Rules:
   list; retry, lease, and server-stat records reference sources by `UriId`.
 - `Generation` starts at `0` and increments on restart, option generation
   change, stale validator restart, or recovery resume that invalidates workers.
+- `TransferAttemptId` identifies one protocol response/data stream. A range
+  attempt normally owns one storage lease; a sequential response/FTP data stream
+  can advance through many storage leases without opening another connection.
 - `OverlapGroupId` exists only within one task generation and identifies the
   endgame attempts allowed to touch the same provisional verification range.
 - Storage, protocol, retry, journal, and RPC command paths carry `Generation`.
@@ -167,8 +171,8 @@ Task state is controlled only by `RequestScheduler`.
 
 `TaskState` is an internal state.  It is not an RPC enum.  The complete state
 set is `Accepted`, `Waiting`, `Allocating`, `Active`, `RetryWait`, `Paused`,
-`PausedSlow`, `PausedRestarting`, `Verifying`, `Seeding`, `Complete`, `Error`,
-`Removed`, and `StoppedResult`.
+`PausedSlow`, `PausedHostKey`, `PausedRestarting`, `Verifying`, `Seeding`,
+`Complete`, `Error`, `Removed`, and `StoppedResult`.
 
 State transition record:
 
@@ -189,6 +193,9 @@ Rules:
 - All transitions publish a snapshot update.
 - Terminal states persist a stopped result before user-visible completion.
 - `PausedSlow` is only produced by `download-scheduling.md` policy.
+- `PausedHostKey` is produced only before SFTP authentication/data transfer when
+  an otherwise acceptable server key requires explicit user approval. No
+  credential is sent before this state is resolved.
 - `RetryWait` does not imply active slot ownership; slot behavior is controlled
   by `retry-wait-consumes-slot`.
 - `Removed` cancels workers and follows configured partial-file policy.
@@ -209,11 +216,12 @@ provisional storage lease has either committed or been acknowledged by
 | `Accepted` | remove | `Removed` | discard unstarted task, then persist result |
 | `Waiting` | scheduler admission | `Allocating` | reserve slot; construct layout/worker plan |
 | `Waiting` | terminal planning/recovery error | `Error` | persist error/result; no lease exists |
-| `Waiting`, `RetryWait`, `Paused`, `PausedSlow` | accepted non-live option patch | unchanged | update current or pending snapshot according to its runtime class |
+| `Waiting`, `RetryWait`, `Paused`, `PausedSlow`, `PausedHostKey` | accepted non-live option patch | unchanged | update current or pending snapshot according to its runtime class |
 | `Waiting` / `RetryWait` | pause | `Paused` | cancel timers; persist desired pause |
 | `Waiting` / `RetryWait` | remove | `Removed` | cancel timers; persist result |
 | `Allocating` | allocation succeeds | `Active` | start current generation only |
 | `Allocating` | retryable allocation failure | `RetryWait` | release slot if policy requires; persist retry state |
+| `Allocating` | unknown otherwise-acceptable SFTP host key | `PausedHostKey` | release slot; publish/persist challenge; send no credentials |
 | `Allocating` | terminal allocation failure | `Error` | release slot; persist error/result |
 | `Allocating` | pause or remove | `Paused` or `Removed` | cancel allocation; no lease may escape |
 | `Allocating` | active-restart option patch | `PausedRestarting` | cancel allocation, record pending options, then requeue after quiescence |
@@ -227,6 +235,9 @@ provisional storage lease has either committed or been acknowledged by
 | `RetryWait` | retry budget exhausted or terminal retry error | `Error` | cancel timer, release slot, persist error/result |
 | `Paused` / `PausedSlow` | resume | `Waiting` | clear user/slow pause; await normal admission |
 | `Paused` / `PausedSlow` | remove | `Removed` | apply partial-file policy; persist result |
+| `PausedHostKey` | resume | `Waiting` | approve/persist the exact challenged key for this task, increment generation, and reconnect; a changed key creates a new paused challenge |
+| `PausedHostKey` | explicit matching host-key option | `Waiting` | replace the challenge with the configured pin, increment generation, and reconnect |
+| `PausedHostKey` | remove/CLI stop | `Removed` | reject the challenge before authentication and persist the stop reason |
 | `PausedRestarting` | quiescence and option application succeed | `Waiting` | increment generation, clear pause request, emit restart diagnostic only |
 | `PausedRestarting` | user pause | `Paused` | cancel the automatic requeue but retain the accepted pending options |
 | `PausedRestarting` | application/checkpoint failure | `Error` | persist error/result |
@@ -259,7 +270,7 @@ Only this closed set may appear in aria2-compatible `status` fields:
 | `Active`, `Verifying`, `Seeding` | `active` | verification/seeding reason is extension-only |
 | `RetryWait` with a retained slot | `active` | `retryWait` is extension-only |
 | `RetryWait` without a retained slot | `waiting` | selected by `retry-wait-consumes-slot` policy |
-| `Paused`, `PausedSlow` | `paused` | slow reason is extension-only |
+| `Paused`, `PausedSlow`, `PausedHostKey` | `paused` | slow/host-key reason and challenge are extension-only |
 | `PausedRestarting` | `waiting` | no pause event/hook; restart reason is extension-only |
 | non-terminal `NeedsCredentials` condition | `paused` or `waiting` per SQLite desired state | credential requirement is extension-only; the task cannot issue a new lease until credentials arrive |
 | `Error` | `error` | include aria2-compatible error code/message |
@@ -312,9 +323,14 @@ pub struct TaskSnapshot {
     pub active_leases: u32,
     pub retry_wait_until: Option<MonotonicInstant>,
     pub last_progress_at: Option<MonotonicInstant>,
+    pub host_key_challenge: Option<HostKeyChallenge>,
     pub error: Option<PublicError>,
 }
 ```
+
+`HostKeyChallenge` exposes a challenge id, canonical host/port, key algorithm,
+and SHA-256 fingerprint. The scheduler retains the exact presented public key so
+`Resume` can pin it; neither the challenge nor the pin is secret.
 
 Rules:
 

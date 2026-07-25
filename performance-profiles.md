@@ -176,6 +176,8 @@ for:
 
 - worker counts,
 - buffer pool hot reserve and max size class,
+- HTTP ingress budget, HTTP/1 read-buffer policy, and HTTP/2 window/frame
+  defaults (explicit user overrides still win),
 - disk queue bytes and operation caps,
 - adaptive backpressure guardrails,
 - per-task segment windows,

@@ -212,6 +212,7 @@ pub struct WriteBlock {
 pub struct LeaseWritePlan {
     pub task: TaskId,
     pub generation: Generation,
+    pub transfer_attempt: TransferAttemptId,
     pub lease: LeaseId,
     pub span: GlobalSpan,
     pub validator: ValidatorFingerprint,
@@ -238,18 +239,26 @@ pub enum WriteAck {
 }
 ```
 
-Every range or sequential response attempt has a unique `LeaseId` within its
-task generation. `BeginLease` freezes the expected span and validator before
-body bytes are accepted. `ValidatorFingerprint` is the `Hash32` over the
-canonical validator tuple defined under Payload Encoding; `ValidatedDigest` is
-a `Digest` whose value the protocol validator has already checked against the
-received body. Reason enums (`LeaseAbortReason` and similar) are closed sets
-finalized with `error_codes.json` in Phase 0; each variant maps to one `u8`
-journal `reason` value. A `WriteBlock` may change the physical output file,
-but its span remains provisional and is indexed under that lease. The protocol
-validator may issue `CommitLease` only after response framing proves the exact
-body length and all required validator/digest checks pass. `StorageEngine`
-rechecks the commit against the frozen plan and complete disk acknowledgements.
+Every protocol response/data stream has a unique `TransferAttemptId` within its
+task generation. A range response normally owns one `LeaseId`. A sequential
+HTTP/FTP response advances through a series of piece-aligned `LeaseId`s while
+the same transport stream remains open; rotating a storage lease never creates
+a new request or buffers a whole piece. `BeginLease` freezes each storage span
+and validator before bytes for that span are accepted.
+
+`ValidatorFingerprint` is the `Hash32` over the canonical validator tuple
+defined under Payload Encoding; `ValidatedDigest` is a `Digest` whose value the
+protocol validator has already checked against the received body. Reason enums
+(`LeaseAbortReason` and similar) are closed sets finalized with
+`error_codes.json` in Phase 0; each variant maps to one `u8` journal `reason`
+value. A `WriteBlock` may change the physical output file, but its span remains
+provisional and is indexed under that lease. A range lease commits after exact
+response framing/validator checks. A non-final sequential checkpoint lease may
+commit after its exact span is written under the already validated response
+head; the final lease additionally requires exact response EOF/framing. A later
+whole-representation digest failure invalidates the affected verification state
+through the normal hash-failure/new-generation rules. `StorageEngine` rechecks
+each commit against the frozen plan and complete disk acknowledgements.
 
 `AbortLease` removes all provisional visibility for the attempt. Bytes already
 written may remain physically present, but they do not enter trusted progress,
@@ -431,7 +440,7 @@ Record types (first slice; the number is the version-1 `record_type` value):
 2   OptionsSnapshot
 3   LayoutCommitted
 4   GenerationStarted   (advances the generation; the only record that does)
-5   LeaseStarted        (begins a provisional response attempt)
+5   LeaseStarted        (begins one provisional storage span)
 6   PieceStarted        (associates a piece span with that attempt)
 7   PieceWritten
 8   LeaseCommitted
@@ -455,7 +464,7 @@ The payload of every first-version record is normative:
 | `OptionsSnapshot` | `snapshot_hash:Hash32`, `options:OptionMap`; secret-valued entries are forbidden |
 | `LayoutCommitted` | `layout_hash:Hash32`, `total_length:OptionalU64`, `piece_length:u64`, `file_count:u32`, repeated `FileLayoutEntry` |
 | `GenerationStarted` | `previous_generation:u64`, `reason:u8` |
-| `LeaseStarted` | `lease_id:Id`, `span:Span`, `validator_fingerprint:Hash32` |
+| `LeaseStarted` | `transfer_attempt_id:Id`, `lease_id:Id`, `span:Span`, `validator_fingerprint:Hash32` |
 | `PieceStarted` | `lease_id:Id`, `piece_id:Id`, `piece_span:Span` |
 | `PieceWritten` | `lease_id:Id`, `piece_id:Id`, `written_span:Span` |
 | `LeaseCommitted` | `lease_id:Id`, `span:Span`, `validator_fingerprint:Hash32`, `response_digest:OptionalDigest` |

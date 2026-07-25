@@ -1,185 +1,185 @@
 # Rate Limiting Design
 
-Status: draft.
+Status: reviewed streaming contract.
 
-`max-overall-download-limit`, `max-download-limit`, `max-overall-upload-limit`,
-and `max-upload-limit` are listed as implemented-live options, and a token bucket
-is referenced by the stats and runtime docs, but the limiter itself was
-unspecified. This document defines the token-bucket hierarchy, fairness,
-precedence relative to read-backpressure, and reconciliation with libtorrent.
+`max-overall-download-limit`, `max-download-limit`,
+`max-overall-upload-limit`, and `max-upload-limit` are live token-bucket
+controls. The limiter acts at protocol ingress/egress, not at disk completion or
+storage commit.
+
+## Accounting Point
+
+Download tokens are consumed when application payload bytes are accepted from a
+protocol read:
+
+- HTTP response-body poll/read,
+- FTP data-channel read,
+- SFTP file-data response,
+- the corresponding libtorrent payload ingress controlled by its session
+  limiter.
+
+Upload tokens are consumed when application payload bytes are accepted by the
+transport send/write path. Protocol headers, TLS records, and TCP/IP overhead
+are outside the aria2-compatible application payload limit.
+
+Once download bytes have been read and charged, their storage `write_at` is not
+rate-limited. It proceeds as quickly as disk/backpressure credit permits. A
+filled buffer never waits for a second user-rate permit, and `CommitLease` never
+waits for rate tokens.
+
+Tokens are not refunded when a response is aborted, a checksum fails, an
+endgame group rolls back, or bytes are otherwise discarded. This makes the
+configured limit a limit on actual application payload accepted by the client,
+not merely on useful/durable progress. Stats separately expose received/sent
+payload, committed progress, durable progress, and discarded payload.
 
 ## Bucket Hierarchy
 
-Rate limiting is a hierarchy of token buckets, checked from broad to narrow. A
-rate-accounted action may proceed only when every bucket on its path has tokens.
-For downloads, the rate-accounted action is publication through `CommitLease`;
-raw receive is separately bounded by backpressure and the discard guard.
+Rate-accounted reads/sends pass through a hierarchy of token buckets from broad
+to narrow:
 
 ```text
 global (max-overall-*-limit)
-  -> per-host bucket
+  -> per-host fairness bucket
        -> per-task bucket (max-*-limit)
 ```
 
-- The global bucket is the hard ceiling for user-rate-accounted committed
-  progress (both directions have their own global bucket); raw discarded input
-  is instead limited by the separate discard guard.
-- Per-host buckets are optional fairness buckets so one host cannot starve
-  others under a shared global cap.
-- Per-task buckets enforce `max-download-limit`/`max-upload-limit`.
+- The global download/upload buckets are the hard application-payload ceilings
+  across project-owned protocols and the allocated libtorrent share.
+- Per-host buckets are internal fairness controls so one origin cannot consume
+  every global token through many streams.
+- Per-task buckets enforce `max-download-limit` and `max-upload-limit`.
+- A rate of `0` means unlimited and bypasses that bucket, matching aria2.
 
-The configured download buckets account only for bytes that `CommitLease`
-accepts toward a lease/piece. That is the ariax user-facing rate-limit semantic:
-short or oversized responses, aborted provisional writes, losing endgame
-attempts, checksum rollback, redirect/cancellation races, and other discarded
-payload do not consume `max-overall-download-limit` or
-`max-download-limit`. Stats separately report transport, committed, durable, and
-discarded bytes so users can distinguish useful progress from wasted bandwidth.
+A read/send may proceed only with a `RatePermit` covering every configured
+bucket on its path. Permit acquisition is fair and cancellable. Unused reserved
+bytes are returned; bytes actually accepted by the protocol are consumed and
+never refunded.
 
-For accounting purposes, the covered bytes are HTTP body bytes after transfer
-framing and before any content decoding, FTP data-channel bytes, SFTP file-data
-payload, and the corresponding libtorrent payload counter. Protocol headers,
-TLS records, and TCP/IP overhead are outside the aria2-compatible application
-rate limit.
+## Streaming Read Gate
 
-User rate tokens are acquired at `CommitLease`, after exact response framing and
-validator/digest checks have selected the committed span. A completed provisional
-lease waits for bucket credit without holding a socket buffer; when credit is
-available, its commit and the corresponding token debit happen atomically from
-the scheduler's perspective. An aborted lease consumes no user-rate tokens.
+For project-owned downloads, the normal order before a protocol read is:
 
-Large validated leases accumulate a pending commit credit in bounded token
-quanta under the same fair scheduler; no bucket must hold the whole lease length
-at once. Only after credit equal to the exact committed span has accrued does the
-scheduler issue the atomic `CommitLease`. This can delay publication of a fast
-raw response, but it preserves the configured committed-progress rate without
-holding payload buffers or treating an aborted response as user-rate usage.
+1. task/generation and cancellation are valid,
+2. storage queue/byte credit is reserved,
+3. an empty `BufferLease` or bounded HTTP ingress slot is available,
+4. discard-guard credit remains,
+5. a bounded `RatePermit` is acquired,
+6. the protocol performs `response.read`, body polling, or offset-response
+   acceptance,
+7. accepted bytes are immediately charged and streamed to storage.
 
-The read path is instead bounded by storage/backpressure and the separate
-discard guard below. It cannot issue unbounded provisional work: per-task
-in-flight lease and buffer limits still apply, and a worker does not start a
-replacement lease until the prior attempt commits or aborts. This deliberately
-makes `max-*-limit` a committed-progress limit rather than a raw-wire limit.
+If any precondition is unavailable, the worker does not read. It releases
+tentative reservations that cannot safely be held and registers one wakeup for
+the limiting resource. This is a read gate, not a post-read sleep.
 
-## Wire Pacing
+Raw FTP/SFTP/socket reads request no more than the available permit, remaining
+storage span, and buffer capacity. A sequential HTTP/FTP response remains one
+continuous transport stream even while it rotates through piece-aligned storage
+leases; storage checkpoint boundaries do not create new requests or rate waits.
 
-Commit-time debiting alone is not sufficient for large or single-lease
-attempts. A sequential download is one lease covering the whole body; if
-nothing paces reads, the transfer runs at full wire speed and then waits in
-`RateLimited` while commit credit accrues for the entire length — the
-configured limit would not throttle the wire at all. Pacing closes that gap
-without changing the accounting semantics:
+Hyper can already own a bounded body frame before the adapter observes it. The
+adapter therefore:
 
-- When a bucket on a worker's path has a nonzero rate, provisional socket reads
-  consult a non-debiting pacing signal derived from that same bucket hierarchy:
-  approximately bucket level minus the path's outstanding provisional
-  (uncommitted, non-discarded) bytes. If the signal is exhausted, the worker
-  defers the read exactly like a backpressure wait and registers for wakeup on
-  refill; it holds no payload buffer while deferred.
-- Pacing never debits tokens. Actual debits still happen only at `CommitLease`,
-  so aborted/losing attempts still consume no user-rate tokens, and pacing
-  under-admission cannot push committed progress above the configured rate.
-- With pacing, the wire rate converges to the configured rate during the
-  transfer and the commit-time wait shrinks to at most one pacing window, for
-  single-lease sequential downloads as well as many-lease split downloads.
-- The deferred-read condition is reported as the `RateLimited` connection
-  diagnostic (`stats-and-stalls.md`), distinct from `Backpressured`.
+- stops polling the body when rate or downstream credit is unavailable,
+- bounds HTTP/1 body chunks and HTTP/2 connection/stream windows through the
+  separate ingress budget,
+- charges the complete yielded frame immediately,
+- permits at most one bounded frame/window overshoot by recording token debt and
+  polling no further body data until refill repays it,
+- splits/copies the charged frame into storage buffers without another rate
+  check.
+
+The maximum overshoot is an explicit diagnostic and memory/rate test parameter,
+not an unbounded consequence of the HTTP library.
 
 ## Bucket Parameters
 
-- Each bucket has a rate (bytes/sec) and a burst capacity (max accumulated
-  tokens). Default burst is a small multiple of the rate (e.g. 1 second worth),
-  bounded so a long-idle bucket cannot release a huge burst.
-- Refill is computed from the monotonic clock on acquisition (lazy refill), not a
-  timer thread, so the limiter adds no periodic wakeups.
-- A rate of 0 means unlimited (the bucket is bypassed), matching aria2.
+- Each bucket has a rate in bytes/second and a bounded burst capacity.
+- Default burst is a small multiple of the rate, normally up to one second of
+  tokens, with a fixed maximum so long-idle tasks cannot release a huge burst.
+- Refill uses monotonic lazy accounting on permit acquisition/wakeup. There is
+  no per-bucket timer thread or per-byte message.
+- Runtime limit changes re-parameterize the bucket and wake affected waiters
+  without restarting the task.
 
 ## Fairness Across Many Streams
 
-When ~1,000 completed/provisional range streams share one global cap:
+When many streams share a bucket:
 
-- Tokens are handed out in bounded chunks with a fair queue (round-robin or
-  deficit round-robin across waiting workers), so no worker is starved and no
-  worker monopolizes a refill.
-- A lease whose validated commit cannot get tokens does not spin; it registers
-  for wakeup when the bucket next refills enough for its committed span.
-- Fairness is per-host first, then per-task, so a single multi-connection host
-  does not crowd out others under the global cap.
+- ready readers/senders receive bounded quanta through deficit round-robin (or
+  an equivalent starvation-free scheduler),
+- fairness is applied across hosts, then tasks, then active streams,
+- one stream cannot reserve a whole large lease in advance,
+- a waiter sleeps until cancellation, downstream recovery, or the next computed
+  refill deadline; it does not spin,
+- scheduler messages occur per permit quantum/wakeup, never per byte.
 
-## Precedence Relative To Read-Backpressure
+The implementation may adapt quantum size to rate and active-stream count, but
+it remains capped by buffer/frame and burst limits.
 
-Backpressure controls socket reads; the user rate limiter controls publication of
-validated provisional work, so their precedence must be explicit:
+## Precedence Relative To Backpressure
 
-- Backpressure (disk saturated, buffer budget exhausted) takes precedence: if the
-  storage path cannot accept bytes, the worker does not read even if a later
-  commit would have rate credit. Reading would only fill buffers that cannot be
-  drained.
-- The non-debiting wire-pacing signal (above) applies next: a worker with
-  storage credit still defers reads when the pacing signal is exhausted, so the
-  wire does not run unbounded ahead of deferred commits.
-- After a response completes validation, the user limiter applies before
-  `CommitLease`. If tokens are not available, the worker releases its payload
-  buffers and waits with only bounded lease metadata; it does not keep reading
-  another range for that worker.
-- The runtime read flow therefore uses storage queue credit, buffer lease, and
-  pacing checks, while the scheduler/commit flow performs the actual user-token
-  acquisition. `detailed-runtime.md` must model this as a commit gate plus a
-  non-debiting read-pacing signal rather than charge uncommitted body bytes.
+Backpressure and rate limiting both stop protocol reads, but for different
+reasons:
 
-## Discard Bounds
+- Downstream storage, queue, CPU/hash, journal, and memory credit is checked
+  first. Reading without a place to send bytes would only retain filled buffers.
+- Rate credit is checked immediately before the protocol read/body poll.
+- Once the read succeeds, disk submission and completion are never delayed by
+  the user rate limiter; only normal storage backpressure applies.
+- A worker that is deliberately waiting for a permit reports `RateLimited`, not
+  `Stalled` or `Backpressured`.
+- A worker blocked on downstream resources reports `Backpressured`, even if a
+  rate bucket also happens to be empty.
 
-Discarded bytes are excluded from the configured user limit, but they must not
-become an unbounded raw-network bypass. A separate discard guard records raw
-payload and enforces finite per-attempt, per-task, per-host, and global discard
-budgets. These budgets are safety policy, not hidden debits against
-`max-*-limit`; exceeding one cancels the attempt/source or fails the task. The
-resolved budgets and their consumption are visible in diagnostics. In the
-first slice the budget values are registry-controlled internal defaults
-(scaled from lease size, retry caps, and the endgame duplicate cap), not
-user-facing options; a user-facing override may be added later through the
-normal option registry process.
+This ordering keeps memory bounded, makes the network-facing limit effective
+during one long sequential response, and avoids a post-download commit delay.
 
-The guard is bounded at the protocol layer:
+## Discard And Retry Bounds
 
-- reject a known framing/range-length mismatch from response headers before
-  polling the body where possible,
-- after a streamed response exceeds its expected span, read at most the current
-  bounded parser buffer, close/reset the stream, and penalize the source; never
-  drain an unbounded oversized body,
-- cancel endgame losers as soon as one `CommitLease` wins, with the global
-  `endgame-max-duplicates` bound from `split-download.md`,
-- abort provisional attempts promptly on redirect, cancellation, or validation
-  failure,
-- FTP has no artificial split tail to drain because each source uses one
-  sequential stream (`detailed-ftp-sftp.md`).
+Discarded payload consumes normal user-rate tokens because it was actually read
+from the peer. It also consumes a separate finite discard guard. The two controls
+serve different purposes:
 
-The discarded-byte counter includes every raw payload byte that does not enter a
-committed lease. In addition to the fixed discard budgets, oversized responses
-are limited to one parser-buffer validation overrun, endgame is bounded by its
-duplicate cap, and retry/lease-size limits bound short-body waste. A source that
-continues sending after cancellation/reset cannot take effect promptly consumes
-the discard guard and is terminated.
+- rate buckets cap accepted application bandwidth,
+- discard budgets cap cumulative waste/abuse per attempt, task, host, and
+  process and can disable a source or fail a retry cycle.
+
+Protocol rules:
+
+- reject known framing/range mismatches from headers before body polling,
+- after an oversized response crosses its expected span, account the bounded
+  parser/frame overrun, close/reset promptly, and never drain an unbounded tail,
+- charge and cancel endgame losers promptly; dirty overlap rollback does not
+  refund their tokens,
+- charge short, checksum-failed, cancelled, and retry payload normally,
+- expose discard bytes, budget consumption, and source penalties in diagnostics.
+
+The first slice uses registry-controlled internal discard defaults scaled from
+lease size, retry caps, and endgame limits. A user-facing override requires a
+normal option-registry addition.
 
 ## Reconciliation With libtorrent
 
-libtorrent has its own internal rate limiter, which historically causes
-double-counting when a global limit must cover both HTTP and BitTorrent.
+Libtorrent performs its own ingress/egress pacing. The project global limiter is
+the allocation source of truth:
 
-- The global bucket is the single source of truth. libtorrent's session rate
-  limits (`set_download_rate_limit`/`set_upload_rate_limit`) are driven from the
-  global budget: the BT lane is allocated a share of the global rate and
-  libtorrent is configured to that share, rather than running its own independent
-  uncoordinated limit.
-- The BT lane reports bytes that become accepted pieces back through the event
-  bridge so the global accounting reflects committed BT progress and the HTTP
-  share is adjusted. Rejected blocks are accounted by the BT discard guard, not
-  by user rate tokens. This keeps committed HTTP + BT progress within
-  `max-overall-download-limit`.
-- If precise unified accounting is not achievable in the first full build, the
-  conservative fallback is to partition the global cap into an HTTP share and a
-  BT share so the sum never exceeds the global limit, and document that the split
-  is static until dynamic reconciliation lands.
+- the scheduler assigns a bounded download/upload share to the BT lane,
+- libtorrent session rate limits are set to that share,
+- project-owned HTTP/FTP/SFTP buckets use only the remaining global share,
+- allocated shares always sum to no more than the configured global limit,
+- demand and observed throughput may rebalance shares at a bounded control
+  interval without per-packet events.
+
+BT payload is not debited a second time through project token buckets. Accepted
+and rejected BT payload already consumes the libtorrent share; BT events report
+received, useful, discarded, and uploaded counters for reconciliation and
+diagnostics.
+
+If dynamic allocation cannot meet accuracy/fairness gates in the first full
+build, use a documented static HTTP/BT partition whose sum never exceeds the
+global cap. Do not run two independent full-size limiters.
 
 ## Options
 
@@ -190,28 +190,24 @@ double-counting when a global limit must cover both HTTP and BitTorrent.
 --max-upload-limit=SIZE             (per-task upload bucket)
 ```
 
-These are runtime-live: changing a limit re-parameterizes the bucket without
-restarting the task. `lowest-speed-limit` is a retry trigger, not a rate limiter,
-and is handled by `retry-policy.md`.
+`lowest-speed-limit` is a retry trigger, not a rate limiter, and is handled by
+`retry-policy.md`.
 
 ## Tests
 
-- global committed-progress accuracy under 1 stream and under ~1,000 streams
-  (measured within tolerance of the configured rate),
-- per-host fairness: one host cannot starve others under a shared global cap,
-- per-task limit enforced within a higher global limit,
-- a validated lease waiting for tokens holds no socket buffer and does not start
-  a replacement range,
-- a single-lease sequential download under `max-download-limit` transfers at
-  approximately the configured rate on the wire (pacing) and does not stall in
-  a long post-transfer `RateLimited` wait,
-- pacing deferral consumes no tokens: an attempt aborted while paced leaves the
-  bucket level unchanged,
-- limit change at runtime takes effect without task restart,
-- committed HTTP + BT combined stays within the global cap in the full build,
-- short, oversized, checksum-failed, cancelled, and losing-endgame bytes are
-  excluded from user rate accounting but consume the finite discard guard,
-- an oversized response is reset within the bounded discard budget rather than
-  drained to EOF,
-- stats expose raw transport, rate-accounted committed goodput, durable bytes,
-  discarded bytes, and discard-budget consumption as distinct counters.
+- one sequential HTTP/FTP stream stays near the configured rate while
+  continuously streaming response reads to disk,
+- disk writes never wait for user-rate tokens after bytes are read,
+- per-task limits compose under a lower global limit,
+- ~1,000 active streams remain starvation-free and within tolerance,
+- short, oversized, checksum-failed, cancelled, retry, and endgame-loser bytes
+  consume both rate tokens and the appropriate discard budget,
+- abort/rollback never refunds consumed tokens,
+- a low limit below one Hyper frame has a measured overshoot bounded by the
+  configured frame/window budget and then stops polling until debt is repaid,
+- backpressure is reported instead of rate limiting when downstream credit is
+  the first unavailable resource,
+- runtime limit changes take effect without task restart,
+- HTTP/FTP/SFTP plus BT allocated shares never exceed the global cap,
+- stats expose received/sent payload, committed, durable, discarded, rate debt,
+  and discard-budget counters separately.

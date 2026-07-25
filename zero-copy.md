@@ -24,8 +24,10 @@ explicit task generation, global offset, piece/chunk, and durable state.
 
 Allowed:
 
-- Network read fills a `BufferPool` buffer, then ownership moves to
-  `DiskQueued` without copying.
+- Raw protocol reads fill a `BufferPool` buffer, then ownership moves to
+  `DiskQueued` without copying. Hyper may instead yield a framework-owned
+  immutable `Bytes` frame that is separately budgeted and copied/split into the
+  pool baseline.
 - Hashing borrows immutable slices from the same buffer before release.
 - Disk backend writes from that buffer and returns it after completion.
 - io_uring registered buffers are used for repeated reads/writes.
@@ -76,6 +78,12 @@ This still does not do direct network-to-file transfer by default, because the
 downloader must inspect bytes for checksums, content encoding, exact length,
 and recovery state.
 
+For Hyper, insert `Hyper Bytes frame -> BufferLease` before `StorageEngine`;
+this is one explicit bounded user-space copy accepted by the baseline. Exposed
+HTTP/1 read-buffer and HTTP/2 window/frame controls bound the configurable part
+of framework memory. Unexposed stack overhead is measured and included in
+admission/diagnostics rather than described as zero-copy.
+
 ## When True Kernel Zero-Copy Can Be Used
 
 True kernel zero-copy APIs may be used only for cases where all constraints are
@@ -85,9 +93,9 @@ already satisfied:
 - no decompression/filtering is active,
 - no per-chunk hash needs user-space bytes, or hashing can be performed by a
   verified alternate path,
-- the commit gate can debit the exact validated range without retaining
-  unbounded user-space payload buffers; aborted bytes consume only discard
-  budget, not user rate tokens,
+- protocol ingress can acquire/debit rate credit before accepting bytes without
+  retaining unbounded user-space payload buffers; aborted bytes retain that
+  debit and also consume discard budget,
 - cancellation can still prevent durable commit,
 - recovery journal can distinguish begun, written, lease-committed, verified,
   and durable bytes.
@@ -98,11 +106,13 @@ the safer default.
 ## Transaction And Failure Rules
 
 Zero-copy changes neither the `LeaseId` transaction nor the ownership result.
-Every write is provisional until the response validator issues `CommitLease`.
-Short/oversized bodies, stale validators, cancellation, and losing endgame
-attempts issue `AbortLease`; their physical bytes are invisible to recovery and
-may be overwritten. A crash treats every lease lacking `LeaseCommitted` as
-aborted.
+Every write is provisional until its storage lease commits: a range lease after
+exact response validation, a sequential checkpoint lease after its exact span
+is written under the validated response head, and the final sequential lease
+after exact EOF/framing. Short/oversized bodies, stale validators,
+cancellation, and losing endgame attempts issue `AbortLease` for the current
+incomplete lease; their physical bytes are invisible to recovery and may be
+overwritten. A crash treats every lease lacking `LeaseCommitted` as aborted.
 
 An overlapping endgame candidate is not journal-committed until all competitors
 are fenced. If any competitor wrote or remains cancellation-uncertain, the whole

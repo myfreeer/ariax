@@ -60,6 +60,21 @@ aria2 compatibility:
 --enable-http-keep-alive=true|false
 ```
 
+Hyper ingress controls exposed by this implementation:
+
+```text
+--http-ingress-buffer-limit=SIZE
+--http1-read-buffer-size=auto|SIZE
+--http1-max-buffer-size=SIZE
+```
+
+`http1-read-buffer-size=SIZE` selects Hyper's exact read-buffer mode and is
+mutually exclusive with a non-default max-buffer override. The registry rejects
+sizes below Hyper's supported minimum instead of allowing a builder panic.
+`http-ingress-buffer-limit` is the project-wide budget for adapter-held body
+frames plus the configured estimate of framework-owned HTTP ingress memory; it
+is separate from `disk-cache`/`BufferPool`.
+
 ## HTTP/1.1 Pipelining
 
 HTTP/1.1 pipelining should not be enabled by default.
@@ -77,7 +92,8 @@ tests prove it.
 
 ## HTTP/2 Multiplexing
 
-HTTP/2 should be supported when the HTTP client stack provides mature support.
+HTTP/2 is implemented through the selected Hyper client and remains configurable
+per task/origin policy.
 
 Benefits:
 
@@ -100,7 +116,21 @@ Config:
 ```text
 --http2=true|false|auto
 --http2-max-concurrent-streams=N
+--http2-initial-stream-window-size=SIZE|auto
+--http2-initial-connection-window-size=SIZE|auto
+--http2-max-frame-size=SIZE|auto
+--http2-max-header-list-size=SIZE|auto
+--http2-adaptive-window=true|false
 ```
+
+The fixed window/frame settings are passed to Hyper/h2 and exposed in effective
+configuration and diagnostics. `http2-adaptive-window=true` is mutually
+exclusive with explicit initial-window overrides because adaptive mode ignores
+those fixed windows. It is parsed and reported but feature-gated/rejected in the
+first bounded-memory slice until a hard growth cap is proven. Registry validation
+enforces the HTTP/2 frame/window/header ranges. Connection/stream admission uses
+the resolved fixed windows plus measured stack overhead so a high stream count
+cannot exceed `http-ingress-buffer-limit`.
 
 HTTP/2 does not replace `split`; it changes how range workers map to streams
 and connections. A single HTTP/2 connection may carry multiple range leases if
@@ -383,9 +413,12 @@ Regardless of protocol version:
 
 - every range stream is validated independently,
 - `200 OK` to a range request is not accepted as a nonzero offset write,
-- each attempt writes provisionally under a unique `LeaseId`; short,
-  oversized, redirect, cancellation, and validator failure issue `AbortLease`,
-  while only exact successful validation may issue `CommitLease`,
+- each response stream is one `TransferAttemptId`; a range attempt writes
+  provisionally under one `LeaseId`, while a sequential stream advances through
+  piece-aligned checkpoint leases on the same connection,
+- short, oversized, redirect, cancellation, and validator failure issue
+  `AbortLease` for the current incomplete lease, while only exact successful
+  validation of a span may issue its `CommitLease`,
 - per-stream retries map back to range leases,
 - disk placement uses global offsets,
 - stats sampler runs independent of packet/stream events.

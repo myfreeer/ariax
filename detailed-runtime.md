@@ -37,6 +37,7 @@ pub struct ResourceManager {
     pub socket_budget: Budget,
     pub file_budget: Budget,
     pub buffer_budget: ByteBudget,
+    pub http_ingress_budget: ByteBudget,
     pub quarantine_budget: ByteBudget,
     pub disk_queue_budget: QueueBudget,
     pub cpu_queue_budget: QueueBudget,
@@ -55,6 +56,18 @@ Budget rules:
   counts against the pool total (see Buffer Pool),
 - `disk-cache` bytes are retained pooled buffers counted against `buffer_budget`,
   not a separate allocator (see Buffer Pool),
+- Hyper/TLS-owned response frames count against `http_ingress_budget` until
+  copied/split into a `BufferLease` and released; they are never hidden inside
+  the transfer-pool number,
+- HTTP/1 connection admission reserves its resolved Hyper max read-buffer plus
+  measured fixed/TLS overhead. HTTP/2 admission reserves a conservative bound of
+  `min(connection_window, active_streams * stream_window)` plus one configured
+  max frame and header allowance per active stream, plus measured fixed/TLS
+  overhead. The scheduler admits a connection/stream only when this reservation
+  fits `http_ingress_budget`,
+- HTTP/2 adaptive receive windows are feature-gated in the first slice because
+  their growth is not bounded by the fixed reservation formula. Fixed window
+  mode is the default and the only implemented bounded-memory mode,
 - all budgets are visible in diagnostics.
 
 ## Queue Wrappers
@@ -242,10 +255,9 @@ Before an HTTP worker reads body bytes:
 2. range lease is valid,
 3. cancellation token is not cancelled,
 4. storage queue credit is available or reserved,
-5. buffer lease is reserved,
+5. an empty buffer lease or bounded HTTP ingress slot is reserved,
 6. finite discard-guard credit is available for the attempt,
-7. the non-debiting wire-pacing signal from `rate-limiting.md` is not
-   exhausted when a user rate limit is configured on the worker's path.
+7. a bounded `RatePermit` is available for the protocol read/body poll.
 
 The sequence is check-all-or-back-off, not accumulate-and-hold: if any step
 cannot be satisfied, the worker releases anything it tentatively reserved,
@@ -258,15 +270,15 @@ Ordering rationale:
 - Queue credit is reserved (step 4) before the buffer lease (step 5) so a worker
   never holds a pool buffer while blocked on downstream storage capacity, per the
   `messaging-model.md` shared-memory rule.
-- The user rate limiter is a `CommitLease` gate plus a non-debiting read-pacing
-  signal, not a token-debiting pre-read admission test. Once exact response
-  framing and identity validation succeed, a validated provisional lease waits
-  for user tokens with only bounded lease metadata; its buffer has already been
-  returned after the provisional disk write. A failed or aborted lease consumes
-  no user-rate tokens. Step 6 is instead the separate finite discard guard that
-  prevents rejected bodies from becoming an unbounded raw-network bypass, and
-  step 7 keeps the wire near the configured rate without debiting tokens for
-  uncommitted bytes. See `rate-limiting.md`.
+- The user rate limiter is a token-debiting read gate. Raw FTP/SFTP reads are
+  sized by the permit. Hyper body polling requires the permit first; a yielded
+  frame is charged immediately and any bounded one-frame/window overshoot becomes
+  token debt before another poll.
+- Once bytes are accepted from the protocol read, storage writes them without a
+  second rate-limit wait. Unused permit bytes are returned, while bytes later
+  aborted/discarded are not refunded. Step 6 is the additional finite discard
+  guard that bounds cumulative waste independently of bandwidth. See
+  `rate-limiting.md`.
 
 ## Cancellation
 
