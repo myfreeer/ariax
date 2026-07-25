@@ -15,7 +15,7 @@ Chosen stack:
 - First-slice bounded queues: Tokio channels for async/control lanes and
   crossbeam-channel for blocking worker pools. Thingbuf/rtrb are optional
   post-baseline substitutions only for a measured, topology-proven hot lane.
-- Linux `tokio-uring` behind a project-owned disk adapter, Windows
+- Linux low-level `io-uring` behind a project-owned disk adapter, Windows
   overlapped/IOCP, and a bounded blocking fallback everywhere.
 - libtorrent-rasterbar for BitTorrent in full builds.
 - Hyper plus hyper-util for HTTP/1.1 and HTTP/2, with downloader-owned
@@ -27,8 +27,9 @@ Chosen stack:
 - russh plus russh-sftp for the standard-build SFTP adapter. libssh2 remains an
   interoperability fallback only if the Phase-5 prototype gate fails.
 - rusqlite on one bounded session-store worker thread.
-- A dedicated, project-owned Rayon pool for CPU-heavy hashing/parsing work;
-  never the process-global Rayon pool.
+- A dedicated, project-owned Rayon pool for CPU-heavy hashing/parsing work in
+  normal split profiles, never the process-global Rayon pool; the explicit
+  minimum-thread compact profile may use its bounded shared worker instead.
 - quick-xml's streaming reader for Metalink and XML-RPC parsing.
 - Quinn plus h3/h3-quinn as the experimental HTTP/3 candidate only.
 
@@ -106,21 +107,20 @@ wrappers or OS APIs. See `detailed-runtime.md` and `disk-adapter.md`.
 
 Linux:
 
-- Use `tokio-uring` on one or more dedicated current-thread disk lanes behind
-  the project-owned `DiskBackend` API when the runtime probe succeeds. Its
-  ownership-returning buffer operations fit the `BufferLease` contract.
-- Keep the low-level `io-uring` crate as an internal replacement candidate if
-  the prototype cannot meet explicit cancellation, secure-open, or quarantine
-  requirements. Neither crate's types escape the platform adapter.
-- Maintenance-risk note (2026-07-25): `tokio-uring`'s last release (0.5.0) was
-  2024-05 with little activity since, while the low-level `io-uring` crate
-  (0.7.13, tokio-rs) remains actively maintained. The Phase-2 prototype gate
-  therefore evaluates maintenance risk alongside the functional gates, and the
-  project-owned lane over raw `io-uring` is the expected production endpoint
-  if `tokio-uring` remains dormant. `compio`(-fs) is a watched third
-  alternative (active completion-based runtime, 2026 releases) but adopting
-  its runtime wholesale would cut across the Tokio lane architecture; only its
-  driver layer would ever be considered.
+- Use the low-level `io-uring` crate on one or more dedicated project-owned ring
+  lanes behind `DiskBackend` when the runtime probe succeeds. The lane owns ring
+  submission/completion, registered buffers, `OpenAt2`, `AsyncCancel`, fsync,
+  and drain-to-one-outcome behavior; crate types never escape the adapter.
+- This closes the earlier `tokio-uring`-versus-raw choice. As of 2026-07-25,
+  `tokio-uring` remains at 0.5.0 from 2024 while `io-uring` is at 0.7.13 and
+  exposes the lower-level operation surface the design must own anyway. Keeping
+  a Tokio-shaped file API would not remove the cancellation, secure-open,
+  quarantine, and completion-permit work, so it is no longer the production
+  default. It remains useful reference/prototype code only.
+- `compio` 0.19.1 is active and capable, but its completion runtime/driver stack
+  would introduce a second runtime architecture alongside Tokio. It is not a
+  baseline dependency; reconsider only a separable driver layer after a
+  measured raw-ring defect, not as an implicit wholesale runtime replacement.
 - Fall back to bounded blocking pool.
 
 Windows:
@@ -249,6 +249,15 @@ backend for libc/OS resolver behavior. The public option name is `hickory`;
 `trust-dns` may be accepted only as a deprecated compatibility alias because the
 project was renamed.
 
+Do not implement a separate c-ares backend in the baseline. The current
+`c-ares-resolver`/`c-ares` crates are viable and maintained, but they add a C
+library/build/vendoring path while duplicating the custom-upstream, async, and
+cache role already owned by Hickory. Keeping both would also double the SSRF,
+TTL, cancellation, diagnostics, and cross-target test matrix without supplying
+a required compatibility behavior. `cares` is therefore a reserved unsupported
+input, not a parsed-only backend; it can be reconsidered only for a measured
+resolver/interoperability gap that `system` plus Hickory cannot cover.
+
 DNS answers are inputs to the downloader-owned connector, not authorization by
 themselves. The connector pins the selected address through policy validation
 and preserves the original hostname for Host and TLS SNI.
@@ -300,7 +309,10 @@ Use a dedicated `rayon::ThreadPool` for pure CPU-heavy jobs such as hashing and
 bounded metadata parsing. Admission is controlled by the project's byte/job
 budgets, completions return through project-owned bounded lanes, and jobs carry
 generation/cancellation metadata. Never initialize or depend on Rayon's global
-pool, because an embedding process may already own it.
+pool, because an embedding process may already own it. The explicit compact
+minimum-thread profile may route these jobs through its one bounded shared
+disk/CPU worker instead; diagnostics report that it is not the split Rayon
+profile and it carries no C10k claim.
 
 ## XML Parsing
 
@@ -436,7 +448,7 @@ tarballs per the README build rules.
 ## Toolchain And Target Baseline
 
 - Rust edition: 2024.
-- Bootstrap toolchain: pin Rust `1.97.0` in `rust-toolchain.toml` and CI images,
+- Bootstrap toolchain: pin Rust `1.97.1` in `rust-toolchain.toml` and CI images,
   then update deliberately with `Cargo.lock` and dependency-audit changes.
 - Initial declared MSRV: `1.88`, because Hickory Resolver `0.26.1` requires it;
   CI must test the MSRV if the project promises it.

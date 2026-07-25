@@ -30,7 +30,7 @@ rewrite pattern.
 - Stand up the standalone Cargo workspace and build the experimental `ariax`
   artifact; record the pinned aria2 reference checkout used for compatibility
   generation.
-- Add `rust-toolchain.toml` for Rust 1.97.0/edition 2024, commit `Cargo.lock`,
+- Add `rust-toolchain.toml` for Rust 1.97.1/edition 2024, commit `Cargo.lock`,
   declare and test MSRV 1.88, and generate the Linux/macOS/Windows target and
   native-ABI matrix. Windows MSVC is the primary release ABI; Windows GNU is a
   secondary all-MinGW build and never mixes native ABIs.
@@ -102,8 +102,8 @@ Exit criteria:
 
 - Tokio/Mio network runtime using its supported platform readiness backend; no
   second raw network reactor is built into the same runtime.
-- Linux tokio-uring disk adapter prototype with the low-level io-uring crate as
-  an internal fallback and the bounded blocking backend as the runtime fallback.
+- Linux low-level io-uring disk adapter prototype, with the bounded blocking
+  backend as the runtime/capability fallback.
 - Windows overlapped I/O prototype.
 - Bounded blocking disk fallback.
 - `DiskBackendKind` enum dispatch and total `DiskWriteOutcome` buffer ownership.

@@ -67,16 +67,18 @@ Rules:
 - `TaskId` is internal and never reused during one process.
 - `UriId` identifies one source URI/mirror within a task's resolved source
   list; retry, lease, and server-stat records reference sources by `UriId`.
-- `Generation` starts at `0` and increments on restart, option generation
-  change, stale validator restart, and recovery resume that invalidates
-  workers. In addition, admission into `Allocating` increments the generation
-  whenever any earlier generation of this task started a worker — readmission
-  from task-level `RetryWait`, `WaitingSlow`, `Paused`, `PausedSlow`, or
-  `PausedHostKey` therefore always starts a fresh generation. The increment may
-  happen only after the previous generation's cancellation drain has completed,
-  so an old-generation completion can never become current because the task was
-  automatically or manually resumed. Span-level lease retry inside one `Active`
-  generation keeps that generation and takes a fresh `LeaseId`.
+- `Generation` starts at `0`. The only live rollover point is admission into
+  `Allocating`: admission increments the generation whenever any earlier
+  generation of this task started a worker. Restart, stale-validator recovery,
+  task-level retry, demotion, manual resume, host-key approval, and accepted
+  restart-class option changes all stage work for that next admission; they do
+  not increment independently. The increment happens only after the previous
+  generation's cancellation drain has completed and is persisted through
+  `GenerationStarted` before a new worker can start. Thus one logical restart
+  advances exactly once, and an old-generation completion can never become
+  current because the task was automatically or manually resumed. Span-level
+  lease retry inside one `Active` generation keeps that generation and takes a
+  fresh `LeaseId`.
 - `TransferAttemptId` identifies one protocol response/data stream. A range
   attempt normally owns one storage lease; a sequential response/FTP data stream
   can advance through many storage leases without opening another connection.
@@ -114,6 +116,7 @@ pub enum ErrorKind {
     DirtyCheckpoint,
     NeedsCredentials,
     SlowConsumer,
+    ResourceLimit,
     BackendUnavailable,
     Cancelled,
     InternalInvariant,
@@ -165,8 +168,9 @@ Rules:
 
 - Protocol workers receive `TaskOptions` at start.
 - `live` contains only atomics or lock-free handles for values marked `live`.
-- `active_restart` records `pending`, quiesces the old generation, then creates
-  a new `Generation` with the pending values.  Its internal
+- `active_restart` records `pending` and quiesces the old generation. After
+  quiescence it stages the pending values for normal admission; that admission
+  creates the next `Generation` exactly once under the rule above. Its internal
   `PausedRestarting` interval maps to wire status `waiting`, and must not emit a
   user pause event or hook.
 - `waiting_only` updates `pending` for active tasks and `current` for waiting
@@ -181,6 +185,28 @@ Task state is controlled only by `RequestScheduler`.
 set is `Accepted`, `Waiting`, `WaitingSlow`, `Allocating`, `Active`,
 `RetryWait`, `Paused`, `PausedSlow`, `PausedHostKey`, `PausedRestarting`,
 `Verifying`, `Seeding`, `Complete`, `Error`, `Removed`, and `StoppedResult`.
+
+Recoverable admission blockers are orthogonal conditions, not additional task
+states and not overloaded user-pause state:
+
+```rust
+pub struct TaskConditions {
+    pub needs_credentials: Option<CredentialRequirement>,
+    pub no_space: Option<NoSpaceCondition>,
+}
+
+pub struct NoSpaceCondition {
+    pub path: RedactedPath,
+    pub retry_at: Option<MonotonicInstant>,
+}
+```
+
+`TaskConditions` is scheduler-owned, bounded, and included in extension
+snapshots. A condition prevents `Waiting -> Allocating` until its explicit
+clear rule succeeds. It does not overwrite SQLite's desired-pause authority:
+user pause can coexist with either condition, clearing a condition never
+implicitly clears user pause, and recovery reconstructs the task as `Paused`
+or `Waiting` from that desired state before applying the admission gate.
 
 State transition record:
 
@@ -210,6 +236,13 @@ Rules:
   credential is sent before this state is resolved.
 - `RetryWait` does not imply active slot ownership; slot behavior is controlled
   by `retry-wait-consumes-slot`.
+- `needs_credentials` clears only after an accepted credential-bearing option
+  patch or replacement source satisfies the recorded requirement. A generic
+  `Resume` does not manufacture or approve credentials.
+- `no_space` is set only for a mid-transfer ENOSPC/quota result. Explicit
+  `Resume` or its optional timer first probes allocation/write readiness; it
+  clears the condition only on success and otherwise returns/retains `NoSpace`
+  without losing durable progress.
 - `Removed` cancels workers and follows configured partial-file policy.
 
 ### Span Run States And Lease-Level Retry
@@ -258,8 +291,15 @@ provisional storage lease has either committed or been acknowledged by
 | `Accepted` | pause | `Paused` | persist desired pause; validation work is cancelled |
 | `Accepted` | remove | `Removed` | discard unstarted task, then persist result |
 | `Waiting` | scheduler admission | `Allocating` | reserve slot; construct layout/worker plan |
+| `Waiting` with any admission condition | scheduler admission | `Waiting` | admit no worker and reserve no slot; publish the blocking condition |
 | `Waiting` | terminal planning/recovery error | `Error` | persist error/result; no lease exists |
 | `Waiting`, `WaitingSlow`, `RetryWait`, `Paused`, `PausedSlow`, `PausedHostKey` | accepted non-live option patch | unchanged | update current or pending snapshot according to its runtime class |
+| `Waiting` / `Paused` with `needs_credentials` | accepted satisfying credential/source update | unchanged | clear only `needs_credentials`; preserve desired pause and any other condition |
+| `Waiting` with `no_space` | explicit resume or auto-retry probe succeeds | `Waiting` | clear only `no_space`; await normal admission under a fresh generation |
+| `Waiting` with `no_space` | explicit resume or auto-retry probe fails | `Waiting` | retain the condition/durable state and report/update the next retry deadline; wire status remains `paused` |
+| `Paused` with `no_space` | explicit resume probe succeeds | `Waiting` | clear desired pause and `no_space`; await normal admission |
+| `Paused` with `no_space` | explicit resume probe fails | `Waiting` | clear desired pause but retain `no_space`; wire status remains `paused` |
+| `Paused` with `no_space` | auto-retry probe | `Paused` | update or clear `no_space` from the probe, but preserve desired user pause and never admit |
 | `Waiting` / `WaitingSlow` / `RetryWait` | pause | `Paused` | cancel timers; persist desired pause |
 | `Waiting` / `WaitingSlow` / `RetryWait` | remove | `Removed` | cancel timers; persist result |
 | `Allocating` | allocation succeeds | `Active` | start the admitted generation only; the admission-time generation increment rule above applies |
@@ -275,6 +315,7 @@ provisional storage lease has either committed or been acknowledged by
 | `Active` | active-restart option patch | `PausedRestarting` | abort old-generation provisional leases; apply pending only after quiescence |
 | `Active` | slow-slot `demote` policy fires | `WaitingSlow` | abort/drain leases via `abort`, release slot, record readmission deadline |
 | `Active` | pause, slow-slot `pause` policy, or remove | `Paused`, `PausedSlow`, or `Removed` | abort/drain leases, release slot, checkpoint according to reason |
+| `Active` | mid-transfer ENOSPC or quota result | `Waiting` + `no_space` | abort/drain provisional leases, release slot, preserve durable pieces, persist the condition; wire status is `paused` |
 | `Active` | terminal protocol, disk, or policy error | `Error` | abort provisional leases, release slot, persist error/result |
 | `RetryWait` | timer/admission succeeds | `Allocating` | the readmission generation rule applies; stale timer events are ignored |
 | `RetryWait` | retry budget exhausted or terminal retry error | `Error` | cancel timer, release slot, persist error/result |
@@ -282,12 +323,12 @@ provisional storage lease has either committed or been acknowledged by
 | `WaitingSlow` | resume | `Waiting` | user resume overrides the demotion cooldown; normal admission follows |
 | `WaitingSlow` | pause | `Paused` | record user pause; cancel readmission timer |
 | `WaitingSlow` | remove | `Removed` | apply partial-file policy; persist result |
-| `Paused` / `PausedSlow` | resume | `Waiting` | clear user/slow pause; await normal admission |
+| `Paused` / `PausedSlow` | resume | `Waiting` | clear user/slow pause; preserve any admission condition and apply its condition-specific resume rule before admission |
 | `Paused` / `PausedSlow` | remove | `Removed` | apply partial-file policy; persist result |
 | `PausedHostKey` | resume | `Waiting` | approve/persist the exact challenged key for this task and requeue; the readmission generation rule applies; a changed key on reconnect creates a new paused challenge |
 | `PausedHostKey` | explicit matching host-key option | `Waiting` | replace the challenge with the configured pin and requeue under the same rule |
 | `PausedHostKey` | remove/CLI stop | `Removed` | reject the challenge before authentication and persist the stop reason |
-| `PausedRestarting` | quiescence and option application succeed | `Waiting` | increment generation, clear pause request, emit restart diagnostic only |
+| `PausedRestarting` | quiescence and option staging succeed | `Waiting` | stage pending values for the next admission, clear restart quiescence, emit restart diagnostic only; admission performs the sole increment |
 | `PausedRestarting` | user pause | `Paused` | cancel the automatic requeue but retain the accepted pending options |
 | `PausedRestarting` | application/checkpoint failure | `Error` | persist error/result |
 | `PausedRestarting` | remove | `Removed` | cancel pending restart and persist result |
@@ -323,7 +364,8 @@ Only this closed set may appear in aria2-compatible `status` fields:
 | `RetryWait` without a retained slot | `waiting` | selected by `retry-wait-consumes-slot` policy |
 | `Paused`, `PausedSlow`, `PausedHostKey` | `paused` | slow/host-key reason and challenge are extension-only |
 | `PausedRestarting` | `waiting` | no pause event/hook; restart reason is extension-only |
-| non-terminal `NeedsCredentials` condition | `paused` or `waiting` per SQLite desired state | credential requirement is extension-only; the task cannot issue a new lease until credentials arrive |
+| `needs_credentials` condition | `paused` or `waiting` per SQLite desired state | credential requirement is extension-only; the task cannot issue a new lease until the requirement is satisfied |
+| `no_space` condition | `paused` | disk-space reason/retry deadline is extension-only; this does not set or clear SQLite's desired user pause |
 | `Error` | `error` | include aria2-compatible error code/message |
 | `Complete` | `complete` | visible only after completion persistence |
 | `Removed` | `removed` | visible until its stopped result is deleted |
@@ -375,6 +417,7 @@ pub struct TaskSnapshot {
     pub retry_wait_leases: u32,
     pub retry_wait_until: Option<MonotonicInstant>,
     pub last_progress_at: Option<MonotonicInstant>,
+    pub conditions: TaskConditionsSnapshot,
     pub host_key_challenge: Option<HostKeyChallenge>,
     pub error: Option<PublicError>,
 }
@@ -441,8 +484,9 @@ stopped-result row.  The two lists intentionally need not match name-for-name.
 On recovery, the control journal is authoritative for durable layout and
 terminal/durable state, while SQLite is authoritative for queue membership,
 position, and desired pause state.  If secrets were omitted from persisted
-configuration, recovery retains durable pieces and enters internal
-`NeedsCredentials` rather than discarding work or exposing a secret.
+configuration, recovery retains durable pieces, sets the scheduler-owned
+`needs_credentials` condition, and reconstructs `Paused` or `Waiting` from the
+SQLite desired state rather than discarding work or exposing a secret.
 
 Persistence is asynchronous but ordered per task. A task cannot publish
 `Complete` until the required completion persistence has succeeded.
@@ -464,6 +508,13 @@ Required first-slice tests:
 - a span readmitted from span-level retry uses the current generation and a
   fresh `LeaseId`; task readmission from `RetryWait`/`WaitingSlow` increments
   the generation only after old-generation cancellation completes,
+- active restart, stale-validator restart, pause/resume, and recovery each
+  produce exactly one `GenerationStarted` at the subsequent admission, never
+  one increment while staging plus another while admitting,
+- `needs_credentials` blocks admission until a satisfying source/credential
+  update and composes with desired user pause,
+- mid-transfer ENOSPC sets `no_space`, preserves durable pieces, projects
+  `paused`, and clears only after a successful explicit/timed readiness probe,
 - `WaitingSlow` demotion/readmission projects `waiting`, honors
   `slow-slot-readmit-*`, and accepts user pause/resume/remove during the
   cooldown; `PausedSlow` projects `paused` and never readmits automatically,

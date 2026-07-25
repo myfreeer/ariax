@@ -308,12 +308,12 @@ The detailed rationale and research snapshot are in `library-choice.md`.
 
 | Area | Choice | Remaining gate |
 | --- | --- | --- |
-| Language/toolchain | Rust 2024, bootstrap Rust 1.97.0, initial MSRV 1.88 | Pin and test in CI; WSL 1.85 is below the full graph's MSRV |
+| Language/toolchain | Rust 2024, bootstrap Rust 1.97.1, initial MSRV 1.88 | Pin and test in CI; WSL 1.85 is below the full graph's MSRV |
 | Async network runtime | Tokio/Mio | Backend and lag tests on every target |
 | HTTP/1.1 and HTTP/2 | Hyper + hyper-util + hyper-rustls | Custom connector, ingress-budget, and exact-body prototype |
 | TLS | Stable rustls 0.23.x, single ring provider (aws-lc optional exclusive) | Platform trust and custom-CA matrix; provider-unification CI check |
 | Async DNS | Hickory Resolver 0.26.x; `trust-dns` input alias only | SSRF pinning, cache, custom resolver tests |
-| Linux disk | tokio-uring behind `DiskBackend` | Fall internally to low-level io-uring if cancellation/secure-open gates fail or dormancy persists |
+| Linux disk | low-level io-uring crate behind `DiskBackend` | Fall to the bounded blocking backend on probe/cancellation/secure-open failure |
 | Windows disk | Overlapped/IOCP adapter on windows-sys | Native MSVC and all-MinGW secondary tests |
 | Portable disk fallback | Bounded blocking worker pool | Queue/cancellation/fault gates |
 | FTP/FTPS | SuppaFTP (Tokio, rustls-ring) under owned validation | Offset/EOF and FTPS matrix |

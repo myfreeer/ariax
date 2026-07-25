@@ -130,6 +130,7 @@ inside these guardrails.
 | `BufferPool` total (`buffer_budget`) | 256 MiB | 1 GiB | 128 MiB | 32 MiB |
 | quarantine budget (within pool total) | 32 MiB | 64 MiB | 16 MiB | 8 MiB |
 | `http_ingress_budget` | 64 MiB | 256 MiB | 32 MiB | 8 MiB |
+| `piece_metadata_budget` | 128 MiB | 256 MiB | 64 MiB | 16 MiB |
 | default HTTP/2 stream / connection window | 256 KiB / 1 MiB | 2 MiB / 8 MiB | 128 KiB / 512 KiB | 64 KiB / 256 KiB |
 | per-client event queue (events) | 256 | 256 | 512 | 64 |
 | stopped-result retention (`max-download-result`) | 1000 | 1000 | 1000 | 250 |
@@ -139,7 +140,8 @@ Derived invariants CI must assert on the resolved defaults:
 - `CompletionDrain` capacity equals accepted-submission capacity (permits make
   overflow unrepresentable),
 - write-lane bytes ≤ `buffer_budget − quarantine`, and disk-queue bytes ≤
-  write-lane bytes,
+  write-lane bytes. These are overlapping ownership-stage sublimits on the same
+  pooled leases, not three additive resident allocations,
 - HTTP/2 admission reservation per connection
   (`min(connection_window, streams × stream_window)` + frame + header
   allowance) times the connection cap fits `http_ingress_budget`,
@@ -153,32 +155,43 @@ alone. The global memory gate is:
 ```text
 resident_target ≥
     buffer_budget                     (pool incl. disk-cache retention + quarantine)
-  + http_ingress_budget               (Hyper/TLS-held frames and windows)
-  + conn_count × conn_overhead        (HTTP stack + TLS + socket + pool entry state;
+  + http_ingress_budget               (Hyper frames/read buffers, h2 windows,
+                                       response headers, dynamic TLS buffers)
+  + conn_count × conn_overhead        (fixed HTTP/TLS/socket/pool-entry state only;
+                                       excludes ingress-reserved bytes;
                                        measured per platform in Phase 0, budgeted
                                        ≤ 32 KiB idle / ≤ 96 KiB active TLS)
-  + task_count × task_overhead        (snapshots, retry/lease metadata, piece maps;
-                                       budgeted ≤ 32 KiB per active task at default
-                                       piece sizes, bounded caps on URIs/redirects/
-                                       cookies/server stats)
-  + queue_bytes                       (sum of the lane byte caps above)
+  + task_count × task_base_overhead   (snapshots, retry/lease/source metadata;
+                                       budgeted ≤ 32 KiB for the base task,
+                                       with caps on URIs/redirects/cookies/stats)
+  + piece_metadata_budget             (packed durable/verified maps and bounded
+                                       sparse active-piece state)
+  + queue_metadata                    (ring slots, descriptors, permits, and bounded
+                                       non-pooled message payloads; queued
+                                       BufferLeases stay in buffer_budget)
   + journal_state                     (appender buffers + indexes; bounded by
                                        compaction triggers and the FD cap)
   + sqlite_cache                      (page cache, bounded by PRAGMA cache_size)
   + dns_cache + metadata_caches       (bounded entry counts)
-  + cpu_pool_jobs                     (hash lane bytes above)
+  + cpu_job_metadata_and_scratch      (job descriptors and non-pooled private
+                                       scratch only; hash input leases stay in
+                                       buffer_budget)
   + bt_share                          (libtorrent session budget, full build only;
                                        configured into libtorrent settings)
   + fixed_process_overhead            (code, TLS roots, runtime stacks:
                                        thread_count × stack size)
 ```
 
-Every term is individually bounded and exported in diagnostics with the same
-names. The C10k gate for `concurrency` is: 10,000 mostly idle connections with
-default budgets fit in ≈ 1 GiB resident (320 MiB idle-connection overhead +
-256 MiB pool + 64 MiB ingress + caches/queues/fixed), and control p99 stays
-within target. Exceeding a term is backpressure or admission refusal, never
-silent growth.
+Every term is an allocation domain counted exactly once, individually bounded,
+and exported in diagnostics with the same names. Stage byte caps (write lane,
+disk queue, hash reorder, disk-cache retention) may overlap as sublimits on the
+same pooled lease; diagnostics show both the stage charge and its parent
+allocation domain but the resident sum uses only the parent once. The C10k gate
+for `concurrency` is: 10,000 mostly idle connections with default budgets fit in
+approximately 1 GiB resident (320 MiB idle-connection overhead + 256 MiB pool +
+64 MiB ingress + metadata/caches/queues/fixed), and control p99 stays within
+target. Exceeding a term is backpressure or admission refusal, never silent
+growth.
 
 ## Tunables By Profile
 

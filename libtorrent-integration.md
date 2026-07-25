@@ -143,8 +143,13 @@ Per-file path validation (interim guarantee, required in the first full build):
 - For paths that are unsafe but reducible to a safe sanitized name, use
   libtorrent's per-file rename API to pin the sanitized name inside the output
   root before the session starts writing.
-- This runs even though BT disk I/O is delegated to libtorrent, so the
-  path-safety guarantee holds before the delegating storage backend exists.
+- This runs even though BT disk I/O is delegated to libtorrent, so malicious
+  torrent metadata cannot directly choose an escaping path. It is an interim
+  metadata-sanitization guarantee, not the capability-rooted local-attacker
+  guarantee of the project `DiskBackend`: the first full build requires a save
+  root that is not writable by an untrusted local principal while libtorrent is
+  active. Supporting attacker-writable roots requires the deferred custom
+  libtorrent storage backend.
 
 ### Symlink And Attribute Entries
 
@@ -264,6 +269,9 @@ Required adapter tests:
   resume blob or `DirtyCheckpoint`,
 - every torrent file path is validated through `SafePathBuilder::build` before
   libtorrent receives it,
+- the initial adapter rejects or documents an output root writable by an
+  untrusted local principal; a custom-storage test is required before claiming
+  capability-rooted BT path containment,
 - a symlink entry rejects the torrent at add and at magnet metadata-received
   with a typed error before any file is created,
 - sanitized-name, case-folding, reserved-Windows-name, and file-vs-directory

@@ -107,9 +107,15 @@ Use `crossbeam-channel::bounded` for OS-thread worker pools that may block or
 select over multiple queues:
 
 - bounded blocking disk fallback workers,
-- CPU/hash worker pool control,
 - maintenance jobs,
 - shutdown coordination.
+
+The normal split-profile CPU/hash executor is the project-owned Rayon pool.
+Project code places a bounded admission/byte-budget wrapper in front of Rayon,
+then lets Rayon use its own work-stealing queues; it does not build a second
+crossbeam worker pool around Rayon. The compact minimum-thread profile may use
+one crossbeam-backed shared disk/CPU worker as the explicit exception described
+in `threading-model.md`.
 
 Crossbeam is mature, MPMC, supports bounded channels, cloneable receivers, and
 blocking/time-limited operations. It must not be used with blocking `send` or
@@ -151,8 +157,8 @@ control/RPC -> Tokio bounded mpsc -> scheduler
 network worker shard -> bounded HotMpscLane -> disk submit lane
 disk workers/backend -> CompletionDrain<DiskWriteOutcome> -> storage/journal ack
 
-network/hash submitters -> bounded HotMpscLane (Tokio first slice) -> CPU/hash lane
-CPU/hash workers -> crossbeam bounded or SPSC shard -> scheduler
+network/hash submitters -> bounded HotMpscLane (Tokio first slice) -> bounded Rayon admission
+Rayon CPU/hash workers -> reserved CompletionDrain (or measured SPSC shard) -> scheduler
 
 libtorrent session thread -> bounded nonblocking bridge -> scheduler snapshots
 ```

@@ -56,6 +56,26 @@ bucket on its path. Permit acquisition is fair and cancellable. Unused reserved
 bytes are returned; bytes actually accepted by the protocol are consumed and
 never refunded.
 
+## Atomic Hierarchical Admission
+
+One project-owned `RateArbiter` per direction owns the project HTTP/FTP/SFTP
+bucket clocks and waiter queues. A request names its global/host/task/stream
+path and maximum quantum. In one arbiter turn it either reserves the same byte
+count from every enabled bucket and returns one move-only `RatePermit`, or
+reserves nothing and registers exactly one cancellable waiter at the computed
+earliest deadline. Workers never acquire the hierarchy sequentially, never
+hold global tokens while waiting for a host/task bucket, and never hold a
+buffer/queue slot merely because a partial rate reservation succeeded.
+
+The arbiter uses lazy monotonic refill, a timer wheel for the next eligible
+deadlines, and deficit-round-robin ready queues; it emits work per permit
+quantum/wakeup, not per byte. It may be internally sharded after measurement,
+but sharding must preserve one atomic reservation at the global root and the
+same starvation bound. Runtime limit changes are versioned in the arbiter and
+invalidate/recompute sleeping deadlines without revoking already consumed
+bytes. Libtorrent's separately allocated share remains outside these project
+bucket paths as described below.
+
 ## Streaming Read Gate
 
 For project-owned downloads, the normal order before a protocol read is:
@@ -199,6 +219,9 @@ global cap. Do not run two independent full-size limiters.
   continuously streaming response reads to disk,
 - disk writes never wait for user-rate tokens after bytes are read,
 - per-task limits compose under a lower global limit,
+- an unavailable host/task bucket leaves the global bucket unchanged; cancel,
+  timeout, and runtime reconfiguration cannot leak a partial hierarchy
+  reservation,
 - ~1,000 active streams remain starvation-free and within tolerance,
 - short, oversized, checksum-failed, cancelled, retry, and endgame-loser bytes
   consume both rate tokens and the appropriate discard budget,

@@ -79,9 +79,10 @@ on profile.
 Sampler cost is O(active), not O(total): idle connections and idle tasks
 carry no per-tick work. Connections/leases register with the sampler only
 while they have activity to report (counter deltas since last tick or a
-condition change); a task whose counters are unchanged republishes nothing
-except a cheap sample-age bump on its existing snapshot. This keeps a 250 ms
-tick affordable at 10,000 mostly idle connections.
+condition change). Each immutable snapshot stores `sampled_at`; query/render
+code derives sample age from the current monotonic time, so an unchanged task
+requires neither mutation nor republishing merely to make age advance. This
+keeps a 250 ms tick affordable at 10,000 mostly idle connections.
 
 For each connection/task, aria2-compatible rate uses rate-accounted received
 application payload bytes:
@@ -188,7 +189,8 @@ Logs:
 
 Libtorrent stats are imported on a periodic tick as snapshots. If libtorrent
 does not emit a fresh alert, the adapter still republishes a snapshot with
-updated sample age and zero/decayed current speeds as appropriate.
+an updated `sampled_at` and zero/decayed current speeds as appropriate; later
+sample age remains query-derived without periodic snapshot writes.
 
 The main UI must not depend on receiving a peer packet or libtorrent alert to
 update displayed rates.

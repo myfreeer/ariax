@@ -44,9 +44,15 @@ impl SafePathBuilder {
 }
 
 pub struct SafePathOutput {
-    pub root: CanonicalRoot,
+    pub root: Arc<CanonicalRoot>,
     pub relative: SafeRelativePath,
-    pub full: PathBuf,
+    pub display_full: PathBuf,
+}
+
+pub struct CanonicalRoot {
+    pub display: PathBuf,
+    pub identity: RootIdentity,
+    capability: RootDirectoryCapability,
 }
 
 pub enum PathError {
@@ -54,6 +60,7 @@ pub enum PathError {
     OutsideAllowedRoot,
     InvalidComponent,
     UnsafeExistingPath,
+    SafeOpenUnavailable,
     CreateFailed,
 }
 
@@ -63,18 +70,32 @@ pub type SafePath = SafePathOutput;
 
 Algorithm:
 
-1. canonicalize existing output root,
+1. open and canonicalize the existing output root as a directory capability,
+   recording its stable platform identity,
 2. verify root is under `allowed-output-root` if configured,
 3. validate each path component,
 4. reject absolute paths, prefixes, separators, NUL/control, `.` and `..`,
 5. apply Windows reserved-name and trailing-dot/space checks,
-6. create parent directories stepwise with no-follow checks where available,
-7. verify final parent remains under root before opening.
+6. create/open parent directories stepwise relative to the retained root/parent
+   capabilities with no-follow/reparse-point rejection,
+7. return only the capability-rooted relative target; the disk backend opens or
+   renames the final component relative to that capability and verifies the
+   opened identity before any write.
 
 `build` is the only API that converts output options or metadata components into
 a filesystem target. No raw `PathBuf::join` on metadata is allowed outside this
-builder. `SafePathOutput` contains only a path that has passed these checks; it
-does not grant a protocol adapter permission to reopen arbitrary parent paths.
+builder. `display_full` is diagnostics/UI data only and is never filesystem
+authority. Protocol/storage code must pass `root` plus `relative` to
+`DiskBackend::open_safe`/`rename_safe`; reopening `display_full` would reintroduce
+a check/use race and is forbidden.
+
+`RootDirectoryCapability` is process-local and is not serialized. The journal
+persists the root identity/display path and safe relative components. Recovery
+reopens the configured root, verifies its recorded identity and allowed-root
+policy, and reconstructs the capability before any descendant is accessed. A
+supported production backend that cannot provide race-resistant no-follow
+opening fails with `SafeOpenUnavailable`; it does not silently downgrade to a
+check-then-open path for an untrusted metadata-derived target.
 
 ## FileLayout
 
@@ -84,7 +105,7 @@ For first-slice HTTP single-file downloads:
 pub struct FileLayout {
     pub task: TaskId,
     pub generation: Generation,
-    pub root: CanonicalRoot,
+    pub root: Arc<CanonicalRoot>,
     pub files: Vec<FileEntry>,
     pub total_length: Option<u64>,
     pub piece_length: u64,
@@ -141,17 +162,21 @@ Rules:
 ## Piece Model
 
 First slice uses fixed durability pieces for journal progress even when no
-checksum is available:
+checksum is available. The resident representation is compact and sparse:
 
 ```rust
-pub struct PieceState {
-    pub id: PieceId,
-    pub start: u64,
-    pub end: u64,
+pub struct PieceBook {
+    pub piece_length: u64,
+    pub piece_count: u64,
+    pub durable: PackedBitmap,
+    pub verified: PackedBitmap,
+    pub active: BTreeMap<PieceId, ActivePieceState>,
+}
+
+pub struct ActivePieceState {
     pub written: RangeSet,
     pub provisional: BTreeMap<LeaseId, RangeSet>,
-    pub status: PieceStatus,
-    pub verified: VerificationState,
+    pub verification: VerificationState,
 }
 
 pub enum PieceStatus {
@@ -163,9 +188,28 @@ pub enum PieceStatus {
 }
 ```
 
-Piece length default is registry-controlled and may derive from
-`min-split-size`, total length, and durability profile. Exact default can be
-finalized during implementation, but it must be persisted in the journal.
+`Pending` is implicit, and `InFlight`/`Written` are derived from the sparse
+`active` entry. There is no heap allocation, `BTreeMap`, or full `PieceState`
+for every piece. Admission reserves the packed bitmap bytes plus a bounded
+sparse-active allowance from the process `piece_metadata_budget`; the number of
+active entries is bounded by leased spans and hash-reorder limits. If the exact
+layout cannot fit its metadata reservation, admission fails with a typed
+resource-limit error rather than allocating outside the resident-memory gate.
+
+For HTTP/FTP without metadata-defined verification pieces, the exact default
+`piece-length` is **1 MiB**. An explicit valid `piece-length` overrides it.
+Metalink piece hashes define the verification/durable piece length and ignore
+the generic option; BitTorrent uses its metadata-owned piece length inside the
+BT adapter. `min-split-size` and adaptive profile choices size network leases,
+not durability pieces. The resolved piece length and count are persisted in the
+journal and cannot change inside one generation.
+
+On recovery, a configured piece length that differs from the journal fails by
+default (`allow-piece-length-change=false`). With the explicit compatibility
+option enabled, recovery starts a new generation and retains only spans that can
+be re-established as complete under the new boundaries by existing content
+checks or bounded readback; every other affected span returns to pending. It
+never reinterprets old bitmap indexes as new pieces.
 
 No piece is durable until:
 
@@ -469,9 +513,9 @@ The payload of every first-version record is normative:
 | Record | Payload fields, in order |
 | --- | --- |
 | `TaskCreated` | `durability:u8`, `creator_version:u16` |
-| `OptionsSnapshot` | `snapshot_hash:Hash32`, `options:OptionMap`; secret-valued entries are forbidden |
-| `LayoutCommitted` | `layout_hash:Hash32`, `total_length:OptionalU64`, `piece_length:u64`, `file_count:u32`, repeated `FileLayoutEntry` |
-| `GenerationStarted` | `previous_generation:u64`, `reason:u8` |
+| `OptionsSnapshot` | `scope:u8`, `patch_id:OptionalId`, `snapshot_hash:Hash32`, `options:OptionMap`; secret-valued entries are forbidden |
+| `LayoutCommitted` | `layout_hash:Hash32`, `total_length:OptionalU64`, `piece_length:u64`, `total_file_count:u32`, `chunk_count:u32`, `inline_file_count:u32`, repeated inline `FileLayoutEntry` |
+| `GenerationStarted` | `previous_generation:u64`, `reason:u8`, `next_snapshot_hash:Hash32`, `patch_id:OptionalId` |
 | `LeaseStarted` | `transfer_attempt_id:Id`, `lease_id:Id`, `span:Span`, `validator_fingerprint:Hash32` |
 | `PieceStarted` | `lease_id:Id`, `piece_id:Id`, `piece_span:Span` |
 | `PieceWritten` | `lease_id:Id`, `piece_id:Id`, `written_span:Span` |
@@ -488,7 +532,7 @@ The payload of every first-version record is normative:
 | `CleanShutdown` | `checkpoint_sequence:u64`, `shutdown_at_unix_ms:u64` |
 | `CheckpointStart` | `checkpoint_id:[u8;16]`, `source_last_sequence:u64`, `source_segment_hash:Hash32`, `state_record_count:u32`, `created_at_unix_ms:u64` |
 | `CheckpointEnd` | `checkpoint_id:[u8;16]`, `state_record_count:u32`, `state_hash:Hash32` |
-| `LayoutChunk` | `chunk_index:u32`, `chunk_count:u32`, `file_count:u32`, repeated `FileLayoutEntry` |
+| `LayoutChunk` | `layout_hash:Hash32`, `chunk_index:u32`, `chunk_count:u32`, `file_count:u32`, repeated `FileLayoutEntry` |
 | `FinalizeIntent` | `layout_hash:Hash32`, `file_id:Id`, `temp_path:Bytes`, `final_path:Bytes`, `final_length:u64`, `file_identity:Bytes` |
 | `FinalizeDone` | `layout_hash:Hash32`, `file_id:Id`, `final_path:Bytes` |
 
@@ -497,9 +541,28 @@ raw cookie, credential, or header block. `contributors_hash` covers the sorted
 committed `(LeaseId, Span, validator_fingerprint)` tuples that supplied a piece;
 `validator_set_fingerprint` covers their canonical distinct validator set. Thus
 a verification piece assembled from multiple leases does not pretend to have a
-single source lease. `OptionsSnapshot` contains only the sanitized,
-generation-scoped options needed to reproduce layout, verification, and
-recovery decisions. Sensitive values are never legal journal payloads.
+single source lease. `OptionsSnapshot.scope` is `CurrentGeneration` or
+`NextAdmission`. It contains only the sanitized options needed to reproduce
+layout, verification, and recovery decisions; sensitive values are never legal
+journal payloads.
+
+Generation/patch crash rule:
+
+- Generation 0 begins with one `CurrentGeneration` snapshot.
+- Any restart first appends and flushes a `NextAdmission` snapshot while the old
+  generation remains current. For an option patch it carries the accepted
+  `OptionPatchId`; non-option restarts use no patch id. A newer staged snapshot
+  supersedes an older one only through an explicitly accepted complete patch.
+- After the old generation drains, the sole admission rollover appends
+  `GenerationStarted` with the staged snapshot hash/patch id. Replay accepts the
+  advance only when that exact earlier staged snapshot exists, then promotes it
+  to current and clears the pending slot. The worker starts only after this
+  record is flushed.
+- A crash after staging but before `GenerationStarted` retains an accepted
+  pending restart. A crash after `GenerationStarted` recovers the promoted
+  generation. A missing/mismatched staged snapshot makes the generation record
+  invalid at that point; replay stops before the advance rather than combining
+  option versions.
 
 `RetryState` persists the scheduling decision, not a bare deadline:
 `scheduled_at_unix_ms` is the wall-clock time the wait was chosen, `delay_ms`
@@ -513,10 +576,20 @@ before rename (device/inode pair, Windows volume/file index, or empty when the
 platform provides none).
 
 A `LayoutCommitted` whose `FileLayoutEntry` list would exceed the 16 MiB record
-cap stores only the count and first chunk inline and continues in `LayoutChunk`
-records with consecutive `chunk_index`; replay accepts the layout only when all
-`chunk_count` chunks are contiguous and the reassembled list matches
-`layout_hash`. The same chunking rule applies to checkpoint state records.
+cap uses deterministic entry-boundary chunking. The inline entries are chunk
+index 0, and `chunk_count` is the total number of chunks including that inline
+chunk (`1` when no continuation is needed). `LayoutChunk` records then use
+indexes `1..chunk_count-1`, repeat the same `layout_hash`/`chunk_count`, and
+follow immediately with no interleaved record. Packing is greedy in canonical
+file-index order up to the record cap; an entry is never split, and component
+length limits guarantee one entry fits one record. Replay rejects a duplicate,
+gap, mismatch, interleaving record, count overflow, or a sum of per-chunk counts
+different from `total_file_count`. `layout_hash` covers the canonical
+reassembled layout independent of record boundaries.
+
+Checkpoint sets use the same ordinary layout records and therefore the same
+rule. Other version-1 payloads have explicit bounded cardinalities and must fit
+one record; version 1 does not imply an undefined generic continuation format.
 
 Only `GenerationStarted` advances the generation. All other records use the
 current generation. A `LeaseStarted` without `LeaseCommitted`, and any
@@ -546,13 +619,18 @@ The appender may batch facts, but it reports two distinct acknowledgements:
 balanced group checkpoints, finalization, pause/remove checkpoints, and clean
 shutdown.
 
-Write-amplification note: the appender may coalesce adjacent same-lease
-`PieceWritten` spans into one record before encoding (the provisional-progress
-meaning is identical), so a long download does not append one record per
-network buffer. Coalescing changes only record granularity, never ordering,
-sequence continuity, or the data-before-`PieceDurable` barrier. Coalescing plus
-segment rotation bounds a single segment; the Checkpoint Compaction section
-below bounds the lifetime size and replay cost of the whole segment set.
+Write-amplification rule: storage accumulates provisional completion ranges in
+memory per `(generation, lease, piece)` and submits a `PieceWritten` fact only
+when a contiguous run closes, the lease commits/aborts, or a configured
+checkpoint boundary requires a hint. It never sends one appender fact per
+`WriteBlock`/network buffer. Thus the bounded appender inbox is protected before
+enqueue, not merely by batching after it fills. The appender may additionally
+merge adjacent same-lease facts before encoding. Coalescing changes only record
+granularity, never ordering, sequence continuity, or the data-before-
+`PieceDurable` barrier. The accumulator count is bounded by active leases and
+pieces; cancellation flushes or discards each accumulator according to the
+lease outcome. Coalescing plus segment rotation bounds a single segment; the
+Checkpoint Compaction section below bounds lifetime size and replay cost.
 
 `BeginLease`, provisional disk completions, `CommitLease`, and `AbortLease`
 produce `LeaseStarted`, `PieceWritten`, `LeaseCommitted`, and `LeaseAborted`
@@ -739,10 +817,11 @@ Startup:
    redownload them,
 7. verify that each journal-durable span is readable and inside the recorded
    layout,
-8. if persistence omitted an authenticated source or required credential, retain
-   all verified/durable pieces but create the non-terminal task in
-   `NeedsCredentials`; it cannot issue a new lease until the caller supplies a
-   replacement source or credentials,
+8. if persistence omitted an authenticated source or required credential,
+   retain all verified/durable pieces, reconstruct `Waiting` or `Paused` from
+   SQLite desired state, and set the scheduler `needs_credentials` admission
+   condition; it cannot issue a new lease until the caller supplies a satisfying
+   replacement source or credential,
 9. otherwise create the scheduler task in a new generation, subject to
    SQLite's desired pause/queue state. A journal terminal marker still vetoes
    reactivation regardless of that SQLite state.

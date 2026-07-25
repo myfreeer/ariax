@@ -35,14 +35,17 @@ network I/O.
 
 Use existing libraries or system APIs for low-level mechanics:
 
-- Linux io_uring: use `tokio-uring` behind the project-owned current-thread disk
-  lane first. Keep the low-level `io-uring` crate as an internal replacement if
-  secure-open, accepted-operation draining, cancellation, or quarantine gates
-  fail; neither crate's types escape `DiskBackend`.
+- Linux io_uring: use the low-level `io-uring` crate behind the project-owned
+  ring lane. The adapter owns secure open, accepted-operation draining,
+  cancellation, registered-buffer, fsync, and quarantine behavior; crate types
+  do not escape `DiskBackend`. A failed runtime/capability probe falls to the
+  bounded blocking backend rather than selecting a second production API.
 - Windows: use a narrow overlapped I/O / IOCP wrapper.
 - macOS/BSD: use POSIX `pread`, `pwrite`, `fcntl`, `fsync`, and `ftruncate`
   through `std`/`libc`/`rustix`-style wrappers on a bounded disk pool.
-- Path and fd safety: use `openat`/no-follow capable APIs where available.
+- Path and fd safety: consume `SafePathBuilder` root capabilities and validated
+  relative components through race-resistant no-follow/reparse-safe APIs; a
+  display path is never reopened as authority.
 - BitTorrent full build: let libtorrent manage its own swarm disk internals
   unless we need a custom storage backend for unified placement.
 
@@ -77,6 +80,14 @@ move-only `BufferLease`; there is no separate `Buffer` type.
 The backend contract is intentionally offset-based. No protocol worker gets a
 mutable file cursor. Cursor-based writes are a corruption risk in segmented
 downloads.
+
+It is also capability-rooted. `open_safe` and `rename_safe` consume the
+canonical-root capability plus `SafeRelativePath` defined in
+`detailed-storage.md`. Linux uses `openat2`/stepwise `openat`, portable Unix
+holds directory fds through final open, and Windows retains no-share-delete
+directory handles while rejecting reparse points and verifying identity. The
+bounded blocking backend changes scheduling, not path safety. Backends fail
+with a typed capability error if they cannot uphold this contract.
 
 ## Storage Engine Interface
 
@@ -314,15 +325,18 @@ ENOSPC is handled by one policy across the disk adapter, retry engine, and
 backpressure, so the task is not simultaneously described as terminal and
 pausable:
 
-- Mid-transfer ENOSPC pauses the task with durable state intact. It is not a
-  terminal error and not a network retry. Every affected in-flight lease is
-  aborted, and each returned buffer is released or quarantined through its
-  `DiskWriteOutcome`; provisional spans become overwriteable. Already-durable
-  pieces stay durable.
+- Mid-transfer ENOSPC sets the scheduler-owned `no_space` admission condition
+  and projects the task as aria2 `paused`, with durable state intact. It does
+  not set SQLite's desired user-pause flag, is not terminal, and is not a
+  network retry. Every affected in-flight lease is aborted, and each returned
+  buffer is released or quarantined through its `DiskWriteOutcome`;
+  provisional spans become overwriteable. Already-durable pieces stay durable.
 - Preallocation-time ENOSPC fails the allocation cleanly before any transfer
   starts (nothing is durable yet), with an actionable error.
-- A paused-for-space task resumes on explicit user action (or an optional
-  auto-retry timer) after space is freed, re-leasing the pending pieces.
+- Explicit resume (or an optional auto-retry timer) first performs the
+  allocation/write-readiness probe defined by `detailed-core.md`. Only a
+  successful probe clears `no_space` and permits normal readmission; failure
+  retains the condition and does not discard durable progress.
 - Quota errors are treated the same as ENOSPC. Permission errors remain terminal
   because freeing space does not resolve them.
 
@@ -362,8 +376,14 @@ the replace-existing semantics (`ReplaceFile` when both files exist and
 overwrite policy allows); a plain rename fails when the destination exists.
 Sharing violations from concurrent open handles (antivirus, indexers) are a
 retryable finalization error with bounded backoff, not an immediate terminal
-failure. Parent-directory fsync is a POSIX durability requirement; on Windows
-it is a no-op and NTFS metadata journaling covers the rename.
+failure. Use the documented write-through/replace flags where applicable and
+flush the temp data before rename; after rename, revalidate/open the final file
+through the safe capability path and call `FlushFileBuffers` when the selected
+durability mode requires it. Windows has no portable equivalent of POSIX
+parent-directory `fsync`, so the design does not claim identical power-loss
+durability from NTFS metadata journaling. `FinalizeIntent` recovery verifies
+the filesystem identity after a crash and completes or fails closed according
+to `detailed-storage.md`.
 
 ## Multi-File Mapping
 

@@ -223,6 +223,7 @@ creation.
 
 ```rust
 pub struct OptionPatch {
+    pub id: OptionPatchId,
     pub values: BTreeMap<OptionId, OptionValue>,
     pub source: OptionSource,
 }
@@ -236,13 +237,29 @@ Apply algorithm:
 4. classify by `runtime_update`,
 5. if any option requires explicit restart and caller did not request it,
    return a grouped error,
-6. apply live values atomically,
-7. update waiting task snapshots or pending options,
-8. for active restart, persist pause/generation state, cancel workers, requeue.
+6. build one side-effect-free patch plan containing the next live, current,
+   pending, and restart-intent snapshots; if any member cannot be planned,
+   reject the whole patch,
+7. durably accept the patch/restart intent when persistence is required; a
+   failure before this point leaves every old value visible and active,
+8. publish the planned values as one scheduler-owned patch version (including
+   live atomics/handles) and acknowledge the patch,
+9. for active restart, enter `PausedRestarting`, cancel/drain workers, stage the
+   accepted pending values, and requeue. The subsequent scheduler admission is
+   the sole generation increment point defined by `detailed-core.md`.
 
 An active restart is internal quiescence, not a user pause: the wire snapshot is
 `waiting`, the pause hook/event is not emitted, pending options are applied, and
 the task resumes automatically.
+
+Patch atomicity is by accepted version, including a patch that mixes `live`,
+`waiting_only`, and `active_restart` members. No observer may see only a subset
+of one accepted patch, and a rejected patch has no live side effects. The
+acknowledgement means the complete patch version and any required restart intent
+are accepted durably; it does not wait for network/disk cancellation to finish.
+If quiescence or later option application fails after acknowledgement, the task
+follows the `PausedRestarting -> Error` row with the patch id in diagnostics; it
+does not silently roll back only the live members and create a mixed version.
 
 All rejected mutations use the same grouped public error; transport adapters do
 not invent per-option error types:

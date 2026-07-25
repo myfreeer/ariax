@@ -161,6 +161,9 @@ SQLite stores:
 - task gid,
 - queue position,
 - task state: waiting, active, paused, stopped,
+- scheduler admission conditions that must survive restart (`no_space` plus its
+  redacted target/retry parameters; `needs_credentials` is recomputed from the
+  restored redacted option/source set),
 - root output directory,
 - safe relative paths or layout hash,
 - persistence-safe URI/mirror metadata or a redacted source placeholder,
@@ -209,6 +212,7 @@ The stores have deliberately different authorities:
 | begun/committed/aborted leases, written/verified/durable pieces, validators, retry checkpoint | control journal | SQLite must not promote or merge progress |
 | task-local terminal markers (`TaskComplete`, `TaskError`, `TaskRemoved`) and final digest/layout | control journal | terminal marker is a safety veto; required before SQLite publishes the corresponding result |
 | queue membership/order, session id, global desired state, cross-task scheduling | SQLite | journal recovery does not invent queue position |
+| recoverable scheduler admission conditions | SQLite or deterministic recovery derivation | `no_space` is restored and re-probed before admission; `needs_credentials` is derived without persisting a secret |
 | stopped-result index and retention metadata | SQLite, gated by journal completion | recreate from `TaskComplete` when missing; never use it to manufacture completion |
 | mutable non-layout task options and persistence-safe URI/mirror inputs | SQLite | restored after journal generation state is fixed |
 | generation-scoped options affecting layout, validators, verification, or durability | control-journal `OptionsSnapshot` | SQLite stores only a searchable mirror and snapshot hash |
@@ -245,8 +249,10 @@ in `detailed-storage.md`.
 
 Global queue mutation:
 
-1. if the mutation starts a new generation, flush `GenerationStarted` and its
-   sanitized `OptionsSnapshot` first,
+1. if a mutation requires a future generation, append/flush its sanitized
+   `OptionsSnapshot(scope=NextAdmission)` before acknowledging it; after the old
+   generation drains, admission appends/flushes the one `GenerationStarted`
+   record that references and promotes that snapshot,
 2. SQLite transaction updates its queue/desired-state fields and the journal
    snapshot hash,
 3. snapshots are published.
@@ -327,7 +333,7 @@ Consequences:
 - Validator records store a one-way canonical fingerprint needed for comparison,
   never raw cookies, credentials, or signed headers.
 - A recovered task that cannot reconstruct an authenticated source enters an
-  internal `NeedsCredentials` condition and remains paused/waiting until the
+  scheduler-owned `needs_credentials` condition and remains paused/waiting until the
   caller supplies credentials or a replacement URI. Existing durable pieces are
   retained.
 - Plain JSON and aria2-format exports follow the same omission rules and mark
@@ -352,7 +358,7 @@ segments and backups retain the source ACL/mode. Deletion is best-effort and is
 not claimed as secure erasure on copy-on-write, journaled, flash, or cloud-backed
 filesystems; omission is therefore the primary protection. Tests scan the raw
 database, WAL/SHM, journals, metadata, temporary/backup, companion, and export
-files for seeded secret values and verify recovery's `NeedsCredentials` path.
+files for seeded secret values and verify recovery's `needs_credentials` path.
 
 ## Text Export
 
@@ -425,7 +431,13 @@ Defaults:
 --control-file-location=beside-output
 ```
 
-`memory` is only for tests or explicit no-resume mode.
+The first production implementation accepts `hybrid`; `memory` is accepted only
+for tests or explicit no-resume mode. `sqlite` and `control-files` are reserved
+feature-gated values, not parsed-only modes: the baseline registry reports and
+rejects them as unsupported because neither a SQLite hot-piece schema nor a
+control-file-only global queue/index/recovery protocol is defined. They become
+implemented only after those separate designs, migration rules, and fault tests
+exist. No baseline code silently aliases either value to `hybrid`.
 
 ## Schema And Format
 

@@ -22,12 +22,18 @@ disk
 cpu
   hash/checksum and expensive parser workers
 
+session
+  one bounded SQLite owner thread in persistent builds
+
 stats
   periodic sampler, may run on control timer but does not block scheduler
 ```
 
 The first slice does not need a BT lane, but the `ResourceManager` reserves a
 future lane kind so diagnostics and max-thread accounting do not change shape.
+The session lane is present because the default hybrid store is part of the
+first slice; memory-only tests omit it under the reduced thread minimum defined
+by `threading-model.md`.
 
 ## ResourceManager
 
@@ -38,6 +44,7 @@ pub struct ResourceManager {
     pub file_budget: Budget,
     pub buffer_budget: ByteBudget,
     pub http_ingress_budget: ByteBudget,
+    pub piece_metadata_budget: ByteBudget,
     pub quarantine_budget: ByteBudget,
     pub disk_queue_budget: QueueBudget,
     pub cpu_queue_budget: QueueBudget,
@@ -59,15 +66,21 @@ Budget rules:
 - Hyper/TLS-owned response frames count against `http_ingress_budget` until
   copied/split into a `BufferLease` and released; they are never hidden inside
   the transfer-pool number,
-- HTTP/1 connection admission reserves its resolved Hyper max read-buffer plus
-  measured fixed/TLS overhead. HTTP/2 admission reserves a conservative bound of
+- HTTP/1 connection admission reserves its resolved Hyper max read-buffer,
+  response-header allowance, and dynamic TLS record-buffer allowance against
+  `http_ingress_budget`. HTTP/2 admission reserves a conservative bound of
   `min(connection_window, active_streams * stream_window)` plus one configured
-  max frame and header allowance per active stream, plus measured fixed/TLS
-  overhead. The scheduler admits a connection/stream only when this reservation
-  fits `http_ingress_budget`,
+  max frame and header allowance per active stream and dynamic TLS allowance.
+  Fixed connection/TLS/socket/runtime objects are measured and charged once as
+  connection overhead in the resident-memory/admission equation, not again to
+  ingress. The scheduler admits a connection/stream only when both disjoint
+  reservations fit,
 - HTTP/2 adaptive receive windows are feature-gated in the first slice because
   their growth is not bounded by the fixed reservation formula. Fixed window
   mode is the default and the only implemented bounded-memory mode,
+- piece-state admission reserves packed durable/verified maps and bounded sparse
+  active-piece metadata against `piece_metadata_budget`; no task creates one
+  heap object per possible piece,
 - all budgets are visible in diagnostics.
 
 ## Queue Wrappers
@@ -382,7 +395,7 @@ impl DiskBackendKind {
     pub fn name(&self) -> &'static str;
     pub fn capabilities(&self) -> DiskCapabilities;
 
-    pub async fn open(&self, req: OpenRequest) -> Result<FileHandle>;
+    pub async fn open_safe(&self, req: SafeOpenRequest) -> Result<FileHandle>;
     pub async fn allocate(&self, file: FileHandle, off: u64, len: u64,
         mode: AllocationMode) -> Result<()>;
     pub async fn write_at(&self, file: FileHandle, off: u64,
@@ -391,7 +404,7 @@ impl DiskBackendKind {
         -> Result<BufferLease>;
     pub async fn sync_data(&self, file: FileHandle) -> Result<()>;
     pub async fn sync_all(&self, file: FileHandle) -> Result<()>;
-    pub async fn rename(&self, from: SafePath, to: SafePath) -> Result<()>;
+    pub async fn rename_safe(&self, req: SafeRenameRequest) -> Result<()>;
     pub async fn close(&self, file: FileHandle) -> Result<()>;
 }
 ```
@@ -400,11 +413,17 @@ Contract notes:
 
 - The trait is offset-based; no protocol worker ever receives a mutable file
   cursor.
+- `SafeOpenRequest`/`SafeRenameRequest` contain the retained canonical-root
+  capability plus validated relative components from `SafePathBuilder`. A
+  display/serialized absolute `PathBuf` is never reopened as authority. Secure
+  descendant resolution is part of every backend, including the blocking
+  fallback; an unavailable strong primitive is a typed capability failure.
 - `sync_data` maps to `fdatasync` (data only); `sync_all` maps to `fsync` (data
   plus metadata). The durability mode chooses which to call, so the backend does
   not take an fsync-mode enum.
 - `allocate` is required by the preallocation modes in `disk-adapter.md`;
-  `rename` is required by temp-to-final finalization in `detailed-storage.md`.
+  `rename_safe` is required by temp-to-final finalization in
+  `detailed-storage.md`.
 - `name`/`capabilities` back the disk probe/fallback logic in
   `event-backends.md`;
   the rest of the engine depends on `capabilities`, not concrete system APIs.

@@ -227,8 +227,12 @@ For Windows:
 - Sensitive metadata buffers can be zeroed before reuse.
 - Payload buffers are not normally zeroed for performance unless configured.
 - Debug poisoning can catch use-after-release in tests.
-- Buffers returned after failed validation may be quarantined to avoid exposing
-  stale bytes through bugs.
+- A normal protocol/checksum validation failure does not quarantine a buffer:
+  after all owners are known to have released it, the lease is optionally
+  zeroed/poisoned according to policy and returns to its size class. Quarantine
+  is reserved for unresolved external/OS ownership (or an internal ownership
+  invariant violation), so malicious bad payloads cannot exhaust the backend
+  cancellation budget merely by failing validation.
 - Logs never dump payload contents by default.
 
 ## Metrics

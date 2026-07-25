@@ -38,6 +38,9 @@ cpu pool
   hashing, Metalink chunk checksums, full-file checksums, decompression,
   bencode/XML parsing, expensive validation
 
+session-store lane
+  one bounded SQLite owner thread; never runs on a network/control reactor
+
 bt lane
   libtorrent session thread(s), libtorrent callbacks, BT status bridge
 
@@ -71,42 +74,56 @@ Defaults come from one project-owned OS-thread budget rather than sizing every
 lane independently:
 
 ```text
-thread_budget = configured max-threads, otherwise max(2, cpu_count)
+fixed_service_threads = 1 control/network + 1 session-store (persistent builds)
+thread_budget = configured max-threads, otherwise max(3, cpu_count)
 reserve control/network progress first
-assign remaining workers across cpu and blocking-disk lanes
+reserve the session-store owner next
+assign remaining workers across cpu and blocking-disk/completion lanes
 io_uring/IOCP completion work uses the reserved runtime lane, not an additional
   independently sized pool
 bt lane is feature-gated and its configured internal threads count against the
   full-build budget
 ```
 
+`memory` session mode used by tests/no-resume builds has no session-store thread
+and may use the older minimum of 2. A persistent build rejects `max-threads < 3`
+instead of spawning an unreported extra thread. At the minimum, the compact
+profile uses one bounded shared disk/CPU worker and the blocking disk fallback;
+the split Rayon and completion lanes begin only when the total budget can hold
+them without violating the cap.
+
 Small-machine defaults:
 
 ```text
-1 core, budget 2:
+1 core, persistent budget 3:
   1 combined control/network current-thread runtime
+  1 dedicated session-store thread
   1 shared bounded blocking worker for disk/CPU jobs
 
-2 cores, budget 2:
+2 cores, persistent budget 3:
   1 combined control/network current-thread runtime
+  1 dedicated session-store thread
   1 shared bounded blocking worker for disk/CPU jobs
 
 4 cores, budget 4:
-  1 control/network progress thread
-  1 network worker
+  1 combined control/network progress thread
+  1 dedicated session-store thread
   1 CPU worker
   1 blocking-disk worker (or backend completion lane)
 ```
 
-At larger budgets the network pool grows to at most 8 workers, then CPU/disk
+At larger budgets, after the two fixed persistent services and at least one
+disk/CPU progress worker, the network pool grows to at most 8 workers; CPU/disk
 workers split the remainder according to the selected profile. A lane may be a
-logical executor without a dedicated OS thread. The sum of all downloader-owned
-live OS threads, including the configured libtorrent session/disk thread quota,
-must not exceed `thread_budget`. A full build reports that BT share separately
-and reduces other workers or requires an explicit larger budget before startup.
+logical executor without a dedicated OS thread. The sum of all
+downloader-owned live OS threads, including the session-store owner and the
+configured libtorrent session/disk quota, must not exceed `thread_budget`. A
+full build reports the fixed/session/BT shares separately and reduces other
+workers or requires an explicit larger budget before startup.
 
 The exact larger-machine formula is an implementation default, not ABI. It must
-be visible through diagnostics, covered by 1/2/4-core tests, and overrideable.
+be visible through diagnostics, covered by 1/2/4-core tests in persistent and
+memory modes, and overrideable.
 
 ## User Options
 

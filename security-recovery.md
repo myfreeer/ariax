@@ -68,15 +68,22 @@ Unicode characters are not treated as equivalent—there is no stable universal
 homoglyph mapping—but security decisions never depend on rendered similarity,
 and diagnostics escape non-ASCII/bidirectional-sensitive names unambiguously.
 
-After joining, canonicalize the existing parent chain and verify that the final
-path remains under the output root. File creation uses no-follow/openat style
-APIs where available. On platforms without openat, parent directories are
-created and checked step by step.
+The builder retains a capability for the canonical output root and resolves or
+creates every descendant relative to retained directory capabilities. The
+display `PathBuf` is never reopened as authority. Linux uses `openat2` with
+`RESOLVE_BENEATH`/no-symlink constraints when supported and a stepwise
+`openat`/`O_NOFOLLOW` directory-fd walk otherwise. Other Unix targets use the
+same held-directory-fd pattern. Windows opens each directory without
+share-delete, rejects reparse points, retains the handle chain until the final
+handle is acquired, and verifies volume/file identity. All platform-specific
+unsafe/syscall code stays behind the project safe-open adapter.
 
-Known limitation: the step-by-step create/check path on non-openat platforms is
-best-effort and still races an attacker who can plant a symlink between the check
-and the open. For untrusted roots, refuse to descend into a pre-existing
-symlinked directory rather than following it, and prefer openat-class APIs.
+This race-resistant open contract is required on supported production targets,
+including the bounded blocking fallback. If the runtime probe cannot provide
+it, metadata-derived output creation fails closed with `SafeOpenUnavailable`;
+there is no silent best-effort check-then-open mode for an attacker-writable
+root. `detailed-storage.md` owns the canonical capability-bearing API and
+recovery reconstruction rule.
 
 This builder is mandatory for:
 
@@ -87,6 +94,13 @@ This builder is mandatory for:
 - `index-out`,
 - session restore,
 - RPC upload metadata paths.
+
+The initial libtorrent adapter is a documented boundary: libtorrent receives
+sanitized relative paths rather than the project's open file capabilities. Its
+output root therefore must not be writable by an untrusted local principal
+while the session runs. Stronger local-attacker containment for BitTorrent
+requires the deferred custom libtorrent storage backend; metadata sanitization
+alone must not be described as providing that stronger guarantee.
 
 ## No RCE Policy
 

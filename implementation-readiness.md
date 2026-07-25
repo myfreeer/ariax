@@ -173,7 +173,7 @@ feature-gate status must exist from the start:
 - Hyper/hyper-util for HTTP/1.1 and HTTP/2,
 - Hickory Resolver for the in-process async DNS backend,
 - russh/russh-sftp for SFTP,
-- tokio-uring behind the project-owned Linux disk adapter,
+- the low-level io-uring crate behind the project-owned Linux disk adapter,
 - rusqlite on a dedicated session thread, including the first `minimal` build,
 - a dedicated project-owned Rayon pool for CPU-heavy work,
 - bounded Tokio/crossbeam queues for the baseline,
@@ -182,8 +182,9 @@ feature-gate status must exist from the start:
 The remaining prototypes validate an already-defined fallback boundary; they do
 not reopen the public architecture:
 
-- Replace tokio-uring internally with the low-level io-uring crate if secure
-  open, accepted-operation draining, cancellation, or quarantine gates fail.
+- Fall from the low-level io-uring backend to the bounded blocking backend if
+  secure open, accepted-operation draining, cancellation, or quarantine gates
+  fail; correctness contracts remain identical.
 - Enable libssh2 only if documented russh interoperability gaps remain after the
   Phase-5 server matrix.
 - Introduce thingbuf/rtrb only after a measured lane and producer topology prove

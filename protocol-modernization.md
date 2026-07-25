@@ -66,11 +66,16 @@ Hyper ingress controls exposed by this implementation:
 --http-ingress-buffer-limit=SIZE
 --http1-read-buffer-size=auto|SIZE
 --http1-max-buffer-size=SIZE
+--http1-max-headers=N
 ```
 
 `http1-read-buffer-size=SIZE` selects Hyper's exact read-buffer mode and is
 mutually exclusive with a non-default max-buffer override. The registry rejects
 sizes below Hyper's supported minimum instead of allowing a builder panic.
+`http1-max-headers` maps to Hyper's response-parser cap; the default is 100 and
+the project hard maximum is 1024. Its resolved header-entry allowance plus the
+read/max buffer is charged to `http_ingress_budget`, so raising the count can
+reduce connection admission rather than grow memory silently.
 `http-ingress-buffer-limit` is the project-wide budget for adapter-held body
 frames plus the configured estimate of framework-owned HTTP ingress memory; it
 is separate from `disk-cache`/`BufferPool`.
@@ -254,7 +259,7 @@ Baseline:
 Resolver selection:
 
 ```text
---dns-backend=system|cares|hickory|doh|dot
+--dns-backend=system|hickory|doh|dot
 --doh-url=URL
 --dot-server=HOST:PORT
 --dns-cache=true|false
@@ -264,6 +269,10 @@ Resolver selection:
 `hickory` is the in-process async resolver selected in `library-choice.md`.
 Configuration may accept `trust-dns` as a deprecated input alias for migration,
 but dumps, diagnostics, and generated help emit `hickory`.
+
+`cares` is not a baseline backend. If encountered as a reserved compatibility
+value it rejects as unsupported rather than silently selecting Hickory; the
+crate comparison and condition for reconsideration are in `library-choice.md`.
 
 DoH/DoT are feature-gated because they add TLS/HTTP dependency paths and policy
 questions.

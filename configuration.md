@@ -365,7 +365,8 @@ network requests are made during parse.
 - `waiting_only` options update waiting tasks and pending options for active
   tasks, but do not affect already-running workers until a generation change.
 - `active_restart` options transition the task to `PausedRestarting`, save
-  durable state, cancel workers, and requeue the task with a new generation.
+  durable restart intent, cancel/drain workers, stage the accepted values, and
+  requeue the task. Normal admission creates the new generation exactly once.
   `PausedRestarting` is internal: `tellStatus` reports `waiting`, and the pause
   hook/event is not emitted.
 - `new_generation` options require an explicit restart/requeue operation or a
@@ -373,6 +374,13 @@ network requests are made during parse.
   `requires_new_generation` if the caller asks for immediate live mutation.
 - Unsafe shell hook options are rejected unless unsafe compatibility mode was
   enabled at startup and the RPC caller is local/admin.
+
+One `changeOption` request is one atomic patch version even when its members
+have different runtime classes. Validation and the next live/current/pending
+snapshots are computed before effects; any rejection leaves every old value in
+place. The acknowledgement is sent only after the complete patch and any
+restart intent are accepted durably, although worker quiescence may finish
+afterwards. `detailed-config.md` owns the exact application sequence.
 
 `changeGlobalOption`:
 
@@ -395,6 +403,8 @@ slow-slot-policy                   live
 split                              active_restart
 max-connection-per-server          active_restart
 min-split-size                     active_restart
+piece-length                      new_generation
+allow-piece-length-change         waiting_only
 dir,out                            waiting_only or new_generation
 ca-certificate,ca-store            active_restart
 check-certificate                  active_restart
@@ -461,12 +471,21 @@ HTTP/FTP/SFTP:
   Extensions `sftp-check-host-key`, `sftp-host-key`,
   `sftp-host-key-sha256`, and `sftp-known-hosts` are implemented with strict
   verification by default; unknown keys use the paused approval flow.
-  `ftp-type=ascii` is rejected for split/resume (offset math is invalid in ASCII
-  mode) and allowed only for whole-file sequential download.
+  The first standard implementation accepts `ftp-type=binary` only.
+  `ftp-type=ascii` is a visible `feature_gated` value and rejects explicitly:
+  newline transformation is incompatible with the fixed-layout durability and
+  resume model, even for a nominally sequential transfer, until the separate
+  growing/transformed-output mode in `detailed-ftp-sftp.md` is implemented.
 - Transfer: `split`, `max-connection-per-server`, `min-split-size`,
+  `piece-length`, `allow-piece-length-change`,
   `max-tries`, `retry-wait`, `timeout`, `connect-timeout`,
   `lowest-speed-limit`, `max-file-not-found`, `max-resume-failure-tries`:
   implemented.
+- `piece-length` defaults to 1 MiB for HTTP/FTP, is persisted, and is ignored
+  when Metalink/BitTorrent metadata owns the verification piece size.
+  `allow-piece-length-change=false` rejects a recovery mismatch; explicit true
+  uses the conservative remap/readback/new-generation rule in
+  `detailed-storage.md` and may return incompatible progress to pending.
 - Retry policy: aria2-compatible retry options are implemented, and extended
   retry controls are implemented through `retry-policy.md` metadata. Retry
   status-code sets, `Retry-After`, and stale connection/validator behavior must
@@ -607,6 +626,7 @@ Protocol modernization:
 - `http-ingress-buffer-limit`
 - `http1-read-buffer-size=auto|SIZE`
 - `http1-max-buffer-size`
+- `http1-max-headers` (default 100; hard maximum 1024)
 - `http2-initial-stream-window-size=SIZE|auto`
 - `http2-initial-connection-window-size=SIZE|auto`
 - `http2-max-frame-size=SIZE|auto`
@@ -617,8 +637,10 @@ Protocol modernization:
 - `ech=false|true|auto`
 - `ca-store=os|mozilla|custom|os+custom`
 - `ca-directory`
-- `dns-backend=system|cares|hickory|doh|dot` (`trust-dns` is an accepted
+- `dns-backend=system|hickory|doh|dot` (`trust-dns` is an accepted
   deprecated input alias; normalized output is `hickory`)
+- reserved `dns-backend=cares` rejects as unsupported in the baseline; it is
+  neither parsed-only nor silently normalized to Hickory,
 - `doh-url`
 - `dot-server`
 - `dns-cache=true|false`
@@ -646,7 +668,11 @@ SFTP security (see `detailed-ftp-sftp.md`):
 
 Session and control files:
 
-- `session-store=hybrid|sqlite|control-files|memory`
+- `session-store=hybrid|memory` is implemented in the baseline (`memory` is
+  explicit no-resume/test mode). Reserved values `sqlite|control-files` are
+  visible as `feature_gated` compatibility entries and reject as unsupported
+  until their independent hot-progress or global queue/index/recovery designs
+  exist; neither aliases silently to `hybrid`.
 - `session-db`
 - `control-file-dir`
 - `control-file-location=central|beside-output|both`
