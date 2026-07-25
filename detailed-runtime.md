@@ -124,18 +124,31 @@ cpu pool -> ControlQueue<VerificationEvent> -> scheduler/storage
 stats timer -> snapshot store
 ```
 
-The control plane uses two bounded channels rather than a priority-ordered
-primitive (none of the selected queue crates is priority-capable):
+The control plane uses two bounded external channels plus reserved internal
+lanes rather than a priority-ordered primitive (none of the selected queue
+crates is priority-capable):
 
-- `control_urgent` carries pause, remove, cancel, shutdown, and journal-critical
-  commands. Its capacity is a reserve that bulk commands cannot consume.
+- `control_urgent` carries externally produced pause, remove, cancel, and
+  position commands. Its capacity is a reserve that bulk commands cannot
+  consume; duplicate per-task commands are coalesced at admission and overflow
+  is rejected with a typed busy error.
 - `control_bulk` carries `addUri`/`addTorrent` and long status-scan commands.
   Admission backpressure (`backpressure.md` "reject new RPC adds") applies only
   to `control_bulk`.
+- Internal completion/journal acknowledgement lanes are permit-reserved
+  (`CompletionPermit`) and carry only outcomes for already accepted work.
+  External producers cannot enqueue into them, so journal-critical progress
+  never competes with RPC traffic.
+- Shutdown/global cancellation is an out-of-band watch signal observed by every
+  lane, not a queued command slot.
 
-The control loop drains `control_urgent` first using a biased `tokio::select!`
-(poll urgent, then bulk), so `pause`/`remove` enqueue and are serviced
-immediately even when a burst of queued adds fills `control_bulk`. This is the
+The scheduler drains external urgent work in bounded bursts (up to
+`urgent_burst`, default 32 commands) and then services at least one
+`control_bulk` command when one is queued, so `pause`/`remove` are serviced
+promptly even during an add burst while sustained urgent traffic cannot starve
+adds and status scans. Internal completion lanes are polled independently of
+this fairness quota: hard completion progress (disk outcomes, journal
+durability acks) does not wait behind either external queue. This is the
 mechanism behind the "control/journal priority" requirement in
 `threading-model.md` and the "pause/remove enqueue immediately" target in
 `backpressure.md`.
@@ -145,12 +158,16 @@ must keep the wrapper API and benchmark replacement with `thingbuf`/SPSC before
 C10k claims.
 
 The first slice uses one bounded Tokio MPSC `CompletionDrain` with a move-only
-completion permit reserved before each disk operation is accepted. The permit
-travels with the operation and sends exactly one outcome without another
-capacity race. A later measured backend may use one SPSC queue per disk worker
-merged by a single drainer; a blocking pool with N workers never points all N at
-one SPSC ring. Capacity/backpressure lives on disk submission, so an accepted
-completion cannot be dropped or rejected because a bounded ring is full.
+`CompletionPermit` reserved before each disk/CPU/journal operation is accepted.
+The permit travels with the operation and sends exactly one outcome without
+another capacity race; rejection before acceptance returns permit and buffer
+synchronously; cancellation drains the accepted operation to an outcome or
+cancel-confirmation rather than destroying the permit. A later measured backend
+may use one SPSC queue per disk worker merged by a single drainer; a blocking
+pool with N workers never points all N at one SPSC ring. Capacity/backpressure
+lives on disk submission, so an accepted completion cannot be dropped or
+rejected because a bounded ring is full. `messaging-model.md` owns the full
+permit lifecycle (reserve/reject/consume/close).
 
 ## Buffer Pool
 
@@ -329,8 +346,10 @@ Rules:
   a full bounded channel cannot deadlock the control lane that is shutting it
   down. The control lane closes the producer side, lets the consumer drain, then
   joins.
-- `shutdown` is an urgent control command (see Queue Topology) so it is serviced
-  ahead of queued adds.
+- `shutdown` is delivered through the out-of-band watch/cancellation signal
+  (see Queue Topology), so it takes effect even when every ordinary bounded
+  queue is full; the RPC/CLI verb only acknowledges through the normal reply
+  path.
 - A bounded graceful-timeout applies to each step. If an in-flight fsync exceeds
   the timeout, shutdown records the incomplete checkpoint and exits; recovery
   then treats the last un-fsynced pieces as pending rather than durable.
@@ -430,6 +449,13 @@ Required tests:
   growing memory,
 - `pause`/`remove` on `control_urgent` are serviced ahead of a full
   `control_bulk` add burst,
+- a sustained saturating urgent stream still lets queued bulk commands make
+  progress (bounded-burst fairness),
+- duplicate urgent commands for one gid coalesce; urgent overflow returns a
+  typed busy error and never blocks an internal completion lane,
+- shutdown initiates and completes while every ordinary queue is full,
+- disk/CPU/journal completions are delivered exactly once per accepted
+  submission under load, cancellation, and lane close,
 - graceful shutdown flushes and fsyncs the journal before closing the disk lane
   (a kill after the last durable record still recovers it),
 - graceful BT shutdown waits for resume data before the session checkpoint and

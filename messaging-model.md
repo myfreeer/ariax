@@ -48,12 +48,31 @@ backpressure and integrates cleanly with async tasks, but it supports one
 receiver and should not become the universal worker-pool queue.
 
 None of the selected queue crates is priority-capable, so control-plane priority
-is achieved structurally rather than by ordering within one channel: the control
-plane uses two bounded channels, `control_urgent` (pause/remove/cancel/shutdown/
-journal-critical) and `control_bulk` (adds and long status scans). The control
-loop drains `control_urgent` first with a biased `select!`, and its reserved
-capacity cannot be consumed by bulk commands. Admission backpressure applies only
-to `control_bulk`. See `detailed-runtime.md` Queue Topology.
+is achieved structurally rather than by ordering within one channel. The
+scheduler input is three separately bounded sources:
+
+- `control_urgent` (externally produced pause/remove/cancel/position commands),
+- `control_bulk` (adds and long status scans),
+- internal completion lanes (`CompletionDrain` outcomes and journal/durability
+  acknowledgements), which are permit-reserved and are never enqueued by
+  external RPC/CLI/API producers.
+
+Externally produced urgent commands have bounded admission: the transport layer
+coalesces duplicate per-task requests whose semantics allow it (a second
+`pause` of the same gid merges; `remove` supersedes a queued `pause`; `force`
+upgrades a queued non-force twin) and rejects the remainder with a typed
+busy error when the urgent queue is full. Because at most one coalesced
+urgent command per `(gid, kind-class)` plus a small unkeyed reserve is
+admitted, external producers cannot occupy the reserved internal lanes, and
+internal completions never wait behind an external burst. Admission
+backpressure for task creation applies only to `control_bulk`. Drain fairness
+is bounded-burst, not absolute priority; see `detailed-runtime.md` Queue
+Topology.
+
+Shutdown is not an ordinary queued command: it is delivered through an
+out-of-band `watch`/cancellation signal that every lane observes even when all
+bounded queues are full. The `Shutdown` RPC/CLI verb acknowledges through the
+normal reply path but triggers the signal directly.
 
 ### Hot Async MPSC Lanes
 
@@ -98,13 +117,31 @@ blocking/time-limited operations. It must not be used with blocking `send` or
 
 ### Completion Drains
 
-Disk completion delivery is not an admission queue. Once an OS/backend operation
-has been accepted, its outcome and `BufferLease` must always reach storage. The
-first slice uses one bounded Tokio MPSC completion drain and reserves a move-only
-permit with each submission. A measured backend may later use one reserved SPSC
-lane per worker merged by a single drainer. Bound disk submission bytes and
-operations so completion delivery never fails or blocks the reactor
-indefinitely.
+Disk/CPU/journal completion delivery is not an admission queue. Once a backend
+operation has been accepted, its outcome and any carried `BufferLease` must
+always reach its consumer without competing with externally produced commands.
+
+`CompletionPermit` is the mechanism:
+
+- a move-only permit is reserved from the drain's capacity at submission
+  admission, before the operation is handed to the OS/backend/pool,
+- if the backend rejects the submission before acceptance, the submitter
+  consumes the permit by returning it (and the buffer) immediately,
+- if the backend accepts, permit and buffer travel with the operation and the
+  permit is consumed by exactly one outcome send, which cannot fail for
+  capacity reasons because the capacity was pre-reserved,
+- a permit is not `Clone` and has no second consumption path; drop without
+  consumption is a leak bug surfaced by debug assertions and drain accounting,
+- cancellation does not destroy the permit: a cancelled accepted operation still
+  drains to exactly one outcome (or cancel-confirmation), and stale-generation
+  outcomes are discarded by the consumer without losing buffer ownership,
+- closing a drain first stops new permit reservations, then drains outstanding
+  permits to outcomes or quarantine before the receiver is dropped.
+
+The first slice uses one bounded Tokio MPSC completion drain per lane pair. A
+measured backend may later use one reserved SPSC lane per worker merged by a
+single drainer. Bound disk submission bytes and operations so completion
+delivery never fails or blocks the reactor indefinitely.
 
 ## Default Topology
 
@@ -145,8 +182,8 @@ Full queues are not fatal by themselves. They are backpressure.
 Completion drains are the exception to ordinary queue-full handling: capacity is
 reserved before submission, and an already-created completion is never rejected.
 `CompletionPermit` is a move-only reservation acquired with submission
-admission and consumed by exactly one `DiskWriteOutcome`. Rejection before
-backend acceptance returns the permit and buffer immediately; backend acceptance
+admission and consumed by exactly one outcome. Rejection before backend
+acceptance returns the permit and buffer immediately; backend acceptance
 transfers both to the completion path.
 
 ## External Client Event Queues
@@ -214,10 +251,11 @@ The performance target is not "copy Rust values between threads". It is:
 control async command      tokio::sync::mpsc bounded (split urgent/bulk lanes)
 one-shot reply             tokio::sync::oneshot
 state watch                tokio::sync::watch or snapshot atomics
+shutdown/cancel signal     out-of-band watch/cancellation token, never a queued slot
 hot async MPSC             Tokio bounded first; thingbuf only after benchmark
 fixed SPSC hot lane        rtrb only after a proven one-producer/one-consumer benchmark
 blocking MPMC workers      crossbeam-channel bounded
-disk completions           bounded Tokio MPSC CompletionDrain with reserved permits
+disk/cpu/journal completions bounded CompletionDrain with reserved CompletionPermit
 external client events     per-client bounded/coalescing queue
 metrics samples            atomics + periodic snapshot, not per-byte messages
 ```
@@ -259,7 +297,16 @@ Correctness gates:
 - cancellation returns or quarantines leases,
 - late messages from old task generations are rejected by storage.
 - N disk workers never share one SPSC completion ring,
-- every accepted disk submission delivers exactly one outcome,
+- every accepted disk/CPU/journal submission delivers exactly one outcome
+  (exactly-once permit consumption, including under cancellation and close),
+- a rejected submission returns its permit and buffer synchronously,
+- shutdown completes with every ordinary bounded queue full, via the
+  out-of-band signal,
+- a full urgent queue coalesces duplicate per-task commands and rejects the
+  rest with a typed busy error instead of blocking internal completions,
+- sustained urgent traffic cannot starve `control_bulk` (bounded-burst drain),
+- receiver close during in-flight completions neither leaks a buffer nor
+  double-consumes a permit,
 - a stalled WebSocket/stdio client neither grows memory nor stalls internal lanes,
 - coalesced clients can recover through a current-state snapshot.
 

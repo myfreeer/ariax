@@ -123,7 +123,12 @@ Hard actions:
 Control plane targets are independent of transfer throughput:
 
 - RPC status should not wait for disk fsync.
-- Pause/remove should enqueue immediately and cancel workers cooperatively.
+- Pause/remove should enqueue immediately (coalescing a duplicate for the same
+  task) and cancel workers cooperatively; overflow of the urgent queue is a
+  typed busy error, not silent blocking.
+- Backpressure never rejects or delays the completion of already accepted
+  disk/CPU/journal work: internal completion lanes are permit-reserved and
+  external producers cannot consume them.
 - Queue operations should read snapshots, not block on active write locks.
 - Event-loop p99 lag is a health metric and can trigger backpressure.
 

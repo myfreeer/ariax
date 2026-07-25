@@ -229,7 +229,9 @@ Each channel has:
 
 - operation count cap,
 - byte cap where buffers are carried,
-- priority for control/journal messages,
+- structural control/journal priority: split urgent/bulk external lanes with
+  bounded-burst fairness, plus permit-reserved internal completion lanes that
+  external producers cannot consume (`messaging-model.md`),
 - overload error or backpressure behavior.
 
 ## Avoiding Thread Explosion
