@@ -215,6 +215,7 @@ pub struct LeaseWritePlan {
     pub lease: LeaseId,
     pub span: GlobalSpan,
     pub validator: ValidatorFingerprint,
+    pub overlap_group: Option<OverlapGroupId>,
 }
 
 pub struct LeaseCommit {
@@ -228,8 +229,10 @@ pub struct LeaseCommit {
 
 pub enum WriteAck {
     ProvisionalAccepted { lease: LeaseId, span: GlobalSpan },
+    LeaseCommitPending { lease: LeaseId, group: OverlapGroupId },
     LeaseCommitted { lease: LeaseId, span: GlobalSpan },
     LeaseAborted { lease: LeaseId },
+    SpanRolledBack { group: OverlapGroupId, span: GlobalSpan },
     PieceDurable { piece: PieceId, sequence: u64 },
     Rejected { lease: Option<LeaseId>, error: WriteReject },
 }
@@ -249,11 +252,35 @@ body length and all required validator/digest checks pass. `StorageEngine`
 rechecks the commit against the frozen plan and complete disk acknowledgements.
 
 `AbortLease` removes all provisional visibility for the attempt. Bytes already
-written may remain physically present, but they do not enter `written`, are not
-replayed as progress, and may be overwritten in the same generation. A crash
-has the same effect on every begun but uncommitted lease. Overlapping/endgame
-attempts are arbitrated atomically by `CommitLease`: the first eligible commit
-wins the span; all losing attempts are aborted before any durable-piece event.
+written may remain physically present, but they do not enter trusted progress,
+are not replayed as downloaded, and may be overwritten in the same generation.
+A crash has the same effect on every begun but uncommitted lease.
+
+An endgame overlap group uses conservative metadata rollback rather than
+physical byte rollback:
+
+1. The first exact-length, validator/digest-valid `CommitLease` becomes the
+   in-memory commit candidate and receives `LeaseCommitPending`; no
+   `LeaseCommitted` record or acknowledgement exists yet.
+2. Storage freezes the group, rejects new writes, cancels every competing lease,
+   and drains or cancellation-confirms all already accepted disk operations.
+3. If no non-candidate write completed and none remains cancellation-uncertain,
+   storage appends the loser aborts and then the candidate `LeaseCommitted`; the
+   span may proceed toward verification/durability.
+4. If any non-candidate write completed, any member failed validation after
+   writing, or cancellation remains uncertain, storage aborts every group member
+   including the candidate. It clears in-memory written/verified state for every
+   touched verification piece, returns those pieces to `Pending`, and emits
+   `SpanRolledBack` only after the group is fenced.
+5. Rollback never restores or zeroes physical bytes. They are treated like
+   preallocated/undefined file contents and the next ordinary lease overwrites
+   the pending pieces before they can become durable.
+
+This deliberately gives up otherwise valid progress when overlapping write
+ownership is ambiguous. It keeps the baseline simple: no scratch file, undo log,
+or attempt-sized retained buffer is required. Endgame never touches a previously
+durable piece, and no `PieceDurable` event is allowed before its overlap group
+has settled.
 
 Validation order:
 
@@ -490,11 +517,15 @@ bounded relative to the transfer by this coalescing plus segment rotation.
 
 `BeginLease`, provisional disk completions, `CommitLease`, and `AbortLease`
 produce `LeaseStarted`, `PieceWritten`, `LeaseCommitted`, and `LeaseAborted`
-facts through this same appender. `LeaseCommitted` acknowledgement requires the
-record to be accepted as `Appended`, but not flushed; if a crash loses that tail,
-recovery safely treats the physical bytes as pending. A journal append failure
-rejects/faults the transaction rather than allowing an unrecorded commit to win
-endgame arbitration.
+facts through this same appender. An endgame commit candidate remains in memory
+and produces no `LeaseCommitted` fact until every competing write is fenced. A
+dirty overlap rollback appends `LeaseAborted` for every group member and no
+`LeaseCommitted` or `PieceDurable`; replay therefore returns the physical bytes
+to pending without an undo record. `LeaseCommitted` acknowledgement requires
+the record to be accepted as `Appended`, but not flushed; if a crash loses that
+tail, recovery safely treats the physical bytes as pending. A journal append
+failure rejects/faults the transaction rather than allowing an unrecorded commit
+to win endgame arbitration.
 
 Rotation happens only after a flushed record boundary. The appender syncs and
 closes the old segment, hashes its valid bytes, creates the next segment under a
@@ -628,7 +659,13 @@ Required tests:
 - stale generation write rejection,
 - duplicate write policy,
 - exact-length commit, short/oversized abort, stale validator abort, and
-  first-eligible endgame `CommitLease` arbitration,
+  first-eligible endgame candidate arbitration,
+- clean overlap settlement commits the candidate only after every loser is
+  cancellation-confirmed without a completed write,
+- dirty or cancellation-uncertain overlap settlement aborts all members, clears
+  touched in-memory piece state, leaves physical bytes unchanged, and permits a
+  same-generation overwrite,
+- crash at every overlap-settlement point replays the touched pieces as pending,
 - crash after provisional write and after `LeaseCommitted` but before
   `PieceDurable` resets the affected range to pending,
 - hash mismatch appends `PieceFailed`, clears the whole verification range, and

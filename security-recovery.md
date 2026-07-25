@@ -209,6 +209,11 @@ HTTP range write acceptance:
   required validator/digest checks precede `CommitLease`; short/oversized body,
   redirect, cancellation, or validation failure calls `AbortLease`. These
   storage-owned operations, not file length or physical bytes, decide progress.
+- An endgame overlap group cannot become committed or durable until all
+  competing writes are fenced. If any losing attempt wrote or has uncertain
+  cancellation, all touched pieces return to pending metadata and in-memory
+  state; their physical bytes remain untrusted and are overwritten by the next
+  lease rather than restored in place.
 
 Sequential resume:
 

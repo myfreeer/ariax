@@ -99,11 +99,12 @@ blocking/time-limited operations. It must not be used with blocking `send` or
 ### Completion Drains
 
 Disk completion delivery is not an admission queue. Once an OS/backend operation
-has been accepted, its outcome and `BufferLease` must always reach storage. Use
-one MPSC/MPMC completion drain or one reserved SPSC lane per worker merged by a
-single drainer. Bound disk submission bytes/operations; reserve completion
-capacity with the submission so completion delivery never fails or blocks the
-reactor indefinitely.
+has been accepted, its outcome and `BufferLease` must always reach storage. The
+first slice uses one bounded Tokio MPSC completion drain and reserves a move-only
+permit with each submission. A measured backend may later use one reserved SPSC
+lane per worker merged by a single drainer. Bound disk submission bytes and
+operations so completion delivery never fails or blocks the reactor
+indefinitely.
 
 ## Default Topology
 
@@ -216,7 +217,7 @@ state watch                tokio::sync::watch or snapshot atomics
 hot async MPSC             Tokio bounded first; thingbuf only after benchmark
 fixed SPSC hot lane        rtrb only after a proven one-producer/one-consumer benchmark
 blocking MPMC workers      crossbeam-channel bounded
-disk completions           reserved CompletionDrain (MPSC or per-worker SPSC)
+disk completions           bounded Tokio MPSC CompletionDrain with reserved permits
 external client events     per-client bounded/coalescing queue
 metrics samples            atomics + periodic snapshot, not per-byte messages
 ```

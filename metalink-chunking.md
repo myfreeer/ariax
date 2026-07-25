@@ -130,8 +130,10 @@ Interaction rules:
   missing span rather than hashing later bytes first,
 - `AbortLease` removes that lease's queued fragments and restores the last
   committed digest checkpoint if it had begun feeding,
-- an endgame loser is treated exactly as an aborted lease; only the atomic
-  `CommitLease` winner may contribute bytes,
+- an endgame commit is only a candidate until every competing disk write is
+  fenced. If a loser wrote or cannot be cancellation-confirmed, the whole
+  overlap group and each touched Metalink chunk return to pending; physical
+  bytes remain in place for the next lease to overwrite,
 - a checksum mismatch appends `PieceFailed`, invalidates the whole Metalink
   verification chunk, and redownloads/overwrites it under the hash-mismatch
   retry policy,

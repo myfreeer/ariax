@@ -58,6 +58,10 @@ These are not optional implementation details:
 - Every range attempt is identified by `LeaseId`; writes remain provisional until
   exact response/validator checks issue `CommitLease`, and `AbortLease` is
   recovery-visible.
+- Endgame candidates remain uncommitted until every competing write is fenced.
+  A dirty/uncertain overlap group rolls all touched pieces back to pending
+  metadata and in-memory state; physical bytes may remain only as untrusted
+  overwrite targets.
 - No `PieceDurable` record trusted after recovery may precede the required data
   flush. Balanced mode may batch the boundary; strict mode performs it per piece.
 - No active-task option mutation happens without declared `runtime_update`.

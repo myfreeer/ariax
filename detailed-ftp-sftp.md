@@ -96,8 +96,8 @@ way.
 
 ## SFTP Read Model
 
-- SFTP runs over SSH; the library choice (libssh2 vs russh) is per
-  `library-choice.md` and must not block network reactor threads.
+- SFTP runs over SSH through russh plus russh-sftp as selected in
+  `library-choice.md`; the adapter must not block network reactor threads.
 - Reads are random-access (`SSH_FXP_READ` at explicit offsets), so a range lease
   maps to offset reads without a `REST` equivalent. Total length and mtime come
   from `fstat`.

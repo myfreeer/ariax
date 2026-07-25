@@ -104,6 +104,12 @@ attempts issue `AbortLease`; their physical bytes are invisible to recovery and
 may be overwritten. A crash treats every lease lacking `LeaseCommitted` as
 aborted.
 
+An overlapping endgame candidate is not journal-committed until all competitors
+are fenced. If any competitor wrote or remains cancellation-uncertain, the whole
+overlap group rolls back to pending metadata and clears affected in-memory
+piece state. Zero-copy backends do not undo the bytes; the next lease overwrites
+them, exactly as it overwrites untrusted preallocation contents.
+
 Every backend path returns `DiskWriteOutcome { lease, result }`, so success,
 short write, I/O error, and confirmed cancellation all return the submitted
 `BufferLease`. Uncertain OS cancellation quarantines that same lease until a

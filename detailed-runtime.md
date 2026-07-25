@@ -131,11 +131,13 @@ If implementation starts with Tokio bounded channels for some hot lanes, it
 must keep the wrapper API and benchmark replacement with `thingbuf`/SPSC before
 C10k claims.
 
-`CompletionDrain` is either one MPSC/MPMC queue or one SPSC queue per disk worker
-merged by a single drainer. A blocking pool with N workers never points all N at
-one SPSC ring. Capacity/backpressure lives on disk submission; once an operation
-is accepted, its completion has reserved drain capacity and cannot be dropped or
-rejected because a bounded ring is full.
+The first slice uses one bounded Tokio MPSC `CompletionDrain` with a move-only
+completion permit reserved before each disk operation is accepted. The permit
+travels with the operation and sends exactly one outcome without another
+capacity race. A later measured backend may use one SPSC queue per disk worker
+merged by a single drainer; a blocking pool with N workers never points all N at
+one SPSC ring. Capacity/backpressure lives on disk submission, so an accepted
+completion cannot be dropped or rejected because a bounded ring is full.
 
 ## Buffer Pool
 

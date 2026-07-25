@@ -40,6 +40,7 @@ pub struct Gid(NonZeroU64);
 pub struct TaskId(NonZeroU64);
 pub struct Generation(u64);
 pub struct LeaseId(NonZeroU64);
+pub struct OverlapGroupId(NonZeroU64);
 pub struct PieceId(u64);
 pub struct FileId(u32);
 pub struct UriId(u32);
@@ -67,6 +68,8 @@ Rules:
   list; retry, lease, and server-stat records reference sources by `UriId`.
 - `Generation` starts at `0` and increments on restart, option generation
   change, stale validator restart, or recovery resume that invalidates workers.
+- `OverlapGroupId` exists only within one task generation and identifies the
+  endgame attempts allowed to touch the same provisional verification range.
 - Storage, protocol, retry, journal, and RPC command paths carry `Generation`.
 - Late messages with old generations are ignored or reported as stale; they
   never mutate durable state.

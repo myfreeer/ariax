@@ -120,10 +120,21 @@ Allowed behavior:
   Strict mode backed only by a whole-file checksum is not sufficient for this
   same-offset race,
 - when a piece/chunk digest exists, the first exact-length, hash-valid attempt
-  whose `CommitLease` succeeds wins. With no range-verifiable digest, endgame is
-  confined to the same validator-pinned mirror,
-- the storage engine atomically arbitrates competing commits within one
-  generation; every losing attempt is cancelled and receives `AbortLease`,
+  whose `CommitLease` becomes the candidate wins the network race. With no
+  range-verifiable digest, endgame is confined to the same validator-pinned
+  mirror,
+- every duplicate belongs to one `OverlapGroupId`. A candidate commit freezes
+  the group, cancels competitors, and waits for all accepted competing disk
+  operations to complete or receive cancellation confirmation before it can
+  become `LeaseCommitted`,
+- if no competing attempt wrote physical bytes, the candidate commits normally.
+  If a competitor wrote, failed validation after writing, or has uncertain
+  cancellation, storage aborts the whole overlap group, clears in-memory
+  downloaded/verified state for every touched piece, and returns those pieces to
+  pending,
+- overlap rollback does not restore or zero the file. The untrusted physical
+  bytes remain just like preallocation contents and are overwritten by the next
+  ordinary download lease. No `PieceDurable` record is emitted for them,
 - loser bytes are reported against the discard guard, not the user-configured
   download rate; the bounded duplicate cap prevents unbounded waste,
 - duplicate data is never written over a durable piece,
@@ -132,7 +143,10 @@ Allowed behavior:
 
 This is similar in spirit to BitTorrent endgame requests, but for HTTP/SFTP
 ranges. It is not used for the whole download, and FTP does not use it because
-FTP sources are sequential in this design.
+FTP sources are sequential in this design. The conservative dirty-overlap rule
+may discard a candidate that was actually correct; correctness takes precedence
+over preserving ambiguous shared-file bytes, and no scratch/undo store is
+required.
 
 ## Retry Model
 
@@ -347,6 +361,13 @@ Expose per task:
   no committed prefix,
 - same-mirror endgame requires one strong validator and commits at most one
   attempt,
+- an endgame candidate commits only when all competitors are fenced without a
+  completed competing write,
+- a competitor that wrote, failed validation after writing, or has uncertain
+  cancellation rolls every touched piece back to pending while leaving physical
+  bytes in place for the next lease to overwrite,
+- crash during overlap settlement leaves no `LeaseCommitted`/`PieceDurable` and
+  replays the group as pending,
 - cross-mirror endgame is refused without an exact range-verifiable digest,
 - two RFC 9530 responses with the same algorithm but different value, coverage,
   representation, or range fail the strict identity gate,

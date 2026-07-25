@@ -51,35 +51,38 @@ network attempt, a storage lease, physical output bytes, durable progress, and
 task state. Those mismatches must be fixed before the types become expensive to
 change.
 
-## P0 Contract Blockers
+## P0 Findings
 
-### P0-1: Duplicate Endgame Writes Can Corrupt Shared Output
+### P0-1 (resolved): Endgame Overlap Uses Metadata Rollback
 
 Affected documents: `split-download.md`, `detailed-storage.md`,
 `detailed-http-first-slice.md`, `metalink-chunking.md`, and `configuration.md`.
 
-The current endgame design permits duplicate attempts for one span while both
-attempts write provisional bytes to the same final offsets. Commit arbitration
-protects metadata, but it cannot undo physical bytes written by the loser. A
-slow, corrupt, or merely different mirror can overwrite bytes after the winning
-attempt's digest was validated. Aborting the losing lease does not roll those
-bytes back.
+The original endgame design permitted duplicate attempts for one span while both
+attempts wrote provisional bytes to the same final offsets. Commit arbitration
+alone could not undo physical bytes written by a loser after candidate
+validation.
 
-Chosen resolution:
+The normative storage/split/HTTP/Metalink/zero-copy documents now adopt the
+chosen rollback model:
 
-1. The first production slice keeps all physical storage leases non-overlapping
-   and forces `endgame-max-duplicates=0`.
-2. Endgame duplication remains feature-gated until each attempt writes to
-   isolated staging storage: a bounded scratch extent, attempt file, or bounded
-   memory object.
-3. Only the winning attempt's fully validated staged bytes are promoted/copied
-   into the final offsets. Losing attempts never write shared output.
-4. Same-mirror ETag equality is not a substitute for physical isolation, and a
-   cross-mirror range digest validates the candidate bytes before promotion.
+1. The first valid `CommitLease` is only an in-memory candidate; it is not
+   journal-committed or durable yet.
+2. Storage freezes the overlap group, cancels competitors, and drains or
+   cancellation-confirms every accepted disk operation.
+3. If no competitor completed a write, the candidate commits normally.
+4. If a competitor wrote, failed validation after writing, or remains
+   cancellation-uncertain, every group member is aborted and all touched pieces
+   are marked not-downloaded/pending in metadata and in-memory state.
+5. Rollback does not restore, zero, or truncate physical bytes. They remain
+   untrusted like fallocate/`SetFileValidData` contents and the next ordinary
+   connection overwrites them. No `PieceDurable` record can cover the group.
 
-Required tests include a loser that writes after winner validation, conflicting
-mirror bytes, cancellation during promotion, crash during promotion, and
-scratch-budget exhaustion.
+This is conservative and may discard a correct candidate, but it needs no
+scratch file or undo buffer and cannot expose ambiguous shared bytes as progress.
+Required tests cover clean settlement, a loser write after candidate validation,
+validation failure, uncertain cancellation, crash during settlement, and
+same-generation overwrite.
 
 ### P0-2: A Sequential Transfer Cannot Be One All-Or-Nothing Storage Lease
 
@@ -448,8 +451,9 @@ or generated in Phase 0:
 
 ## Required Amendment Order
 
-1. Resolve P0-1 through P0-4 in storage, HTTP, rate, retry, and state documents;
-   regenerate the state/wire and option behavior matrices.
+1. Resolve P0-2 through P0-4 in storage, HTTP, rate, retry, and state documents;
+   regenerate the state/wire and option behavior matrices. P0-1 is resolved by
+   the endgame metadata-rollback contract.
 2. Resolve P0-5 and P0-7 in runtime, messaging, buffer, zero-copy, and
    backpressure documents; prototype Hyper ingress and completion ownership.
 3. Specify P0-6 and P0-8 in the journal/recovery schema before implementing
@@ -463,7 +467,8 @@ or generated in Phase 0:
 
 Implementation of the affected modules is ready only when all are true:
 
-- [ ] Duplicate endgame attempts cannot write shared output bytes.
+- [x] Dirty/uncertain endgame overlap rolls all touched pieces back to pending;
+      untrusted physical bytes cannot become progress and are overwritten later.
 - [ ] Sequential attempts commit bounded storage subleases.
 - [ ] User rate limits charge received/sent payload independently of commit.
 - [ ] Lease retry, task retry, demotion, and pause have distinct typed states.

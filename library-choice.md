@@ -81,8 +81,9 @@ First slice:
 - `tokio::sync::mpsc`/`oneshot`/`watch` for control-plane async commands,
 - bounded Tokio MPSC behind project wrappers for transfer submission,
 - `crossbeam-channel::bounded` for blocking OS-thread worker pools,
-- a reserved MPSC completion drain (or one SPSC per worker) so accepted disk
-  operations can always return their outcome and lease.
+- one bounded Tokio MPSC `CompletionDrain` with a move-only permit reserved for
+  each accepted operation, so disk/CPU work can always return its outcome and
+  lease. Per-worker SPSC drains are post-baseline optimizations only.
 
 After measurement, `thingbuf::mpsc` may replace a hot MPSC lane and `rtrb` may
 replace a proven one-producer/one-consumer lane. `concurrent-queue` is not a

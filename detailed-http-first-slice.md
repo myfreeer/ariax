@@ -291,10 +291,19 @@ Acceptance:
 
 After the response head passes these checks, the worker issues `BeginLease` for
 the unique `(generation, LeaseId, attempt)` before polling body bytes. Every
-body write is provisional under that `LeaseId`. The worker may issue
-`CommitLease` only after the exact expected body length and all applicable
-validator/digest checks pass. Only that atomic commit can win an overlapping
-endgame attempt and make the span eligible for piece durability.
+body write is provisional under that `LeaseId`; endgame duplicates also carry
+their shared `OverlapGroupId`. The worker may issue `CommitLease` only after the
+exact expected body length and all applicable validator/digest checks pass. For
+an overlap group this selects an in-memory candidate, cancels competitors, and
+waits for storage to fence all competing writes before a final
+`LeaseCommitted` acknowledgement.
+
+If a competitor wrote any bytes, failed validation after writing, or cannot be
+cancellation-confirmed, storage rolls back the entire overlap group to pending
+metadata and clears the touched pieces' in-memory written/verified state. It
+does not restore the file contents; the next ordinary lease overwrites those
+untrusted offsets. No affected piece is eligible for `PieceDurable` before this
+settlement.
 
 Each body buffer is mapped to:
 
@@ -470,6 +479,9 @@ Required tests:
 - normal split under `off` retains the documented aria2-compatible residual
   risk, but cross-mirror endgame races and implicit redirect-target pool
   admission are prohibited without the stronger gates in `split-download.md`,
+- a dirty endgame group exposes no committed progress, clears touched in-memory
+  piece state, and is overwritten by a later ordinary range request without
+  truncating or restoring the file,
 - a mirror whose total length disagrees with the task total is rejected by the
   known-total check,
 - every response path after `BeginLease` ends in exactly one `CommitLease` or
