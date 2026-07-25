@@ -47,9 +47,19 @@ Reject:
   as an alternate data stream,
 - reserved Windows names: `CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, and
   `LPT1`-`LPT9`, including when they carry an extension or stream suffix
-  (`CON.txt`, `nul.log` are also reserved),
+  (`CON.txt`, `nul.log` are also reserved), and the superscript-digit forms
+  `COM¹`/`COM²`/`COM³` and `LPT¹`/`LPT²`/`LPT³` that current Windows naming
+  rules also reserve,
 - trailing spaces or dots on Windows,
 - symlink escapes when opening existing directories.
+
+Windows path-length policy: the builder computes the full final path length and
+uses the extended-length (`\\?\`) form when the classic `MAX_PATH` limit would
+otherwise be exceeded and the platform supports it. Because the `\\?\` form
+disables the Win32 normalization that the reject list above compensates for,
+the builder's own component validation is mandatory before that form is used.
+If the final path still exceeds the platform/filesystem limit, path
+construction fails with a typed `PathError`, not a truncated or aliased name.
 
 Reserved-name, trailing-dot/space, and collision checks run after NFC
 normalization. On case-insensitive targets the builder uses the filesystem's
@@ -147,7 +157,9 @@ RPC listener (and always for redirect targets, see `redirect-policy.md`):
   that exact address, so a second resolution cannot swap in a blocked target
   between check and connect. A reconnect or DNS-cache refresh performs a new
   resolution/check and creates a new pin; it never reuses approval for a
-  hostname with a different address.
+  hostname with a different address. Happy Eyeballs may race connection
+  attempts only among addresses that each individually passed the check; the
+  winning connection's address is the pin.
 - Composition: the guardrail applies after `network-allowlist`/`network-denylist`
   and before the connection is made. A user-configured mirror is not exempt when
   RPC is remotely exposed; an explicitly loopback-bound RPC instance may relax

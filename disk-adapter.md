@@ -347,6 +347,15 @@ Finalization:
 - fsync parent directory where supported,
 - remove control file only after final state is durable.
 
+Platform note: POSIX `rename` replaces an existing destination atomically. On
+Windows the backend must use `MoveFileEx`/`SetFileInformationByHandle` with
+the replace-existing semantics (`ReplaceFile` when both files exist and
+overwrite policy allows); a plain rename fails when the destination exists.
+Sharing violations from concurrent open handles (antivirus, indexers) are a
+retryable finalization error with bounded backoff, not an immediate terminal
+failure. Parent-directory fsync is a POSIX durability requirement; on Windows
+it is a no-op and NTFS metadata journaling covers the rename.
+
 ## Multi-File Mapping
 
 `GlobalOffsetMapper` maps one write to one or more file writes:

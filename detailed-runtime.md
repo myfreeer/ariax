@@ -239,7 +239,9 @@ Before an HTTP worker reads body bytes:
 3. cancellation token is not cancelled,
 4. storage queue credit is available or reserved,
 5. buffer lease is reserved,
-6. finite discard-guard credit is available for the attempt.
+6. finite discard-guard credit is available for the attempt,
+7. the non-debiting wire-pacing signal from `rate-limiting.md` is not
+   exhausted when a user rate limit is configured on the worker's path.
 
 The sequence is check-all-or-back-off, not accumulate-and-hold: if any step
 cannot be satisfied, the worker releases anything it tentatively reserved,
@@ -252,13 +254,15 @@ Ordering rationale:
 - Queue credit is reserved (step 4) before the buffer lease (step 5) so a worker
   never holds a pool buffer while blocked on downstream storage capacity, per the
   `messaging-model.md` shared-memory rule.
-- The user rate limiter is a `CommitLease` gate, not a pre-read admission test.
-  Once exact response framing and identity validation succeed, a validated
-  provisional lease waits for user tokens with only bounded lease metadata; its
-  buffer has already been returned after the provisional disk write. A failed or
-  aborted lease consumes no user-rate tokens. Step 6 is instead the separate
-  finite discard guard that prevents rejected bodies from becoming an unbounded
-  raw-network bypass. See `rate-limiting.md`.
+- The user rate limiter is a `CommitLease` gate plus a non-debiting read-pacing
+  signal, not a token-debiting pre-read admission test. Once exact response
+  framing and identity validation succeed, a validated provisional lease waits
+  for user tokens with only bounded lease metadata; its buffer has already been
+  returned after the provisional disk write. A failed or aborted lease consumes
+  no user-rate tokens. Step 6 is instead the separate finite discard guard that
+  prevents rejected bodies from becoming an unbounded raw-network bypass, and
+  step 7 keeps the wire near the configured rate without debiting tokens for
+  uncommitted bytes. See `rate-limiting.md`.
 
 ## Cancellation
 

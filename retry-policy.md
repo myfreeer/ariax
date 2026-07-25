@@ -224,6 +224,12 @@ The scheduler chooses the next action in this order:
 
 Retry wait never sleeps a worker thread and never holds a transfer buffer.
 
+Clock rule: live retry timers use the monotonic clock. The persisted
+`RetryState` deadline (`next_retry_unix_ms`) is wall-clock only because
+monotonic time does not survive restart; on recovery it is re-clamped to at
+most `retry-max-wait` from now, so a wall-clock jump can neither skip a
+mandatory wait entirely nor stall a task far beyond the configured bound.
+
 ## Status Codes
 
 Status-code sets support individual codes and inclusive ranges:

@@ -41,8 +41,8 @@ FTP has no `Range` header. Resume uses `REST`:
 - `SIZE <path>` establishes total length (binary mode only; see Transfer Type).
 - `durable_prefix` is the end of the largest contiguous sequence of committed
   storage spans starting at byte `0`; sparse later pieces never advance it.
-- Resume sends `REST <durable_prefix>`, requires a successful restart reply, and
-  then sends `RETR <path>`. Incoming byte `n` maps to
+- Resume sends `REST <durable_prefix>`, requires the intermediate `350` restart
+  reply, and then sends `RETR <path>`. Incoming byte `n` maps to
   `global_offset = durable_prefix + n` until the known `SIZE` is reached.
 - The server streams from that offset to EOF. The client does not open another
   connection at a later lease boundary and does not read/discard a tail for an

@@ -362,8 +362,9 @@ Storage is global-offset based. Each download has a validated `FileLayout`:
 - `piece_length`: fixed for the task.
 - `total_length`: exact when known.
 
-All disk writes are `WriteBlock { task_id, generation, lease_id, global_offset,
-len, buffer_lease, expected_piece }`. Range-attempt writes are provisional until
+All disk writes are `WriteBlock { task, generation, lease, global_offset,
+expected_len, buffer, piece }` (normative shape in `detailed-storage.md`).
+Range-attempt writes are provisional until
 `CommitLease`; `AbortLease` makes them non-durable and eligible for overwrite.
 The storage engine maps global offsets to one or more file offsets. It rejects
 writes that:

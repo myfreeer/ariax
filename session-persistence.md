@@ -429,7 +429,10 @@ SQLite:
 
 - schema version table,
 - migration scripts,
-- WAL mode by default when supported,
+- WAL mode by default when supported; on filesystems where WAL's shared-memory
+  requirement is unreliable (network filesystems and some FUSE/overlay mounts),
+  detect the failure and fall back to rollback-journal mode with one startup
+  warning rather than risking a corrupt WAL,
 - periodic backup/checkpoint policy.
 
 Control journal:

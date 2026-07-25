@@ -61,6 +61,30 @@ in-flight lease and buffer limits still apply, and a worker does not start a
 replacement lease until the prior attempt commits or aborts. This deliberately
 makes `max-*-limit` a committed-progress limit rather than a raw-wire limit.
 
+## Wire Pacing
+
+Commit-time debiting alone is not sufficient for large or single-lease
+attempts. A sequential download is one lease covering the whole body; if
+nothing paces reads, the transfer runs at full wire speed and then waits in
+`RateLimited` while commit credit accrues for the entire length — the
+configured limit would not throttle the wire at all. Pacing closes that gap
+without changing the accounting semantics:
+
+- When a bucket on a worker's path has a nonzero rate, provisional socket reads
+  consult a non-debiting pacing signal derived from that same bucket hierarchy:
+  approximately bucket level minus the path's outstanding provisional
+  (uncommitted, non-discarded) bytes. If the signal is exhausted, the worker
+  defers the read exactly like a backpressure wait and registers for wakeup on
+  refill; it holds no payload buffer while deferred.
+- Pacing never debits tokens. Actual debits still happen only at `CommitLease`,
+  so aborted/losing attempts still consume no user-rate tokens, and pacing
+  under-admission cannot push committed progress above the configured rate.
+- With pacing, the wire rate converges to the configured rate during the
+  transfer and the commit-time wait shrinks to at most one pacing window, for
+  single-lease sequential downloads as well as many-lease split downloads.
+- The deferred-read condition is reported as the `RateLimited` connection
+  diagnostic (`stats-and-stalls.md`), distinct from `Backpressured`.
+
 ## Bucket Parameters
 
 - Each bucket has a rate (bytes/sec) and a burst capacity (max accumulated
@@ -91,14 +115,17 @@ validated provisional work, so their precedence must be explicit:
   storage path cannot accept bytes, the worker does not read even if a later
   commit would have rate credit. Reading would only fill buffers that cannot be
   drained.
+- The non-debiting wire-pacing signal (above) applies next: a worker with
+  storage credit still defers reads when the pacing signal is exhausted, so the
+  wire does not run unbounded ahead of deferred commits.
 - After a response completes validation, the user limiter applies before
   `CommitLease`. If tokens are not available, the worker releases its payload
   buffers and waits with only bounded lease metadata; it does not keep reading
   another range for that worker.
-- The runtime read flow therefore uses storage queue credit and buffer lease
-  checks, while the scheduler/commit flow performs the user-token acquisition.
-  `detailed-runtime.md` must model this as a commit gate rather than charge
-  uncommitted body bytes.
+- The runtime read flow therefore uses storage queue credit, buffer lease, and
+  pacing checks, while the scheduler/commit flow performs the actual user-token
+  acquisition. `detailed-runtime.md` must model this as a commit gate plus a
+  non-debiting read-pacing signal rather than charge uncommitted body bytes.
 
 ## Discard Bounds
 
@@ -171,6 +198,11 @@ and is handled by `retry-policy.md`.
 - per-task limit enforced within a higher global limit,
 - a validated lease waiting for tokens holds no socket buffer and does not start
   a replacement range,
+- a single-lease sequential download under `max-download-limit` transfers at
+  approximately the configured rate on the wire (pacing) and does not stall in
+  a long post-transfer `RateLimited` wait,
+- pacing deferral consumes no tokens: an attempt aborted while paced leaves the
+  bucket level unchanged,
 - limit change at runtime takes effect without task restart,
 - committed HTTP + BT combined stays within the global cap in the full build,
 - short, oversized, checksum-failed, cancelled, and losing-endgame bytes are
