@@ -221,15 +221,19 @@ Baseline:
 - DNS cache with TTL handling,
 - user-configured DNS servers where supported.
 
-Modern optional resolvers:
+Resolver selection:
 
 ```text
---dns-backend=system|cares|trust-dns|doh|dot
+--dns-backend=system|cares|hickory|doh|dot
 --doh-url=URL
 --dot-server=HOST:PORT
 --dns-cache=true|false
 --happy-eyeballs-timeout=MS
 ```
+
+`hickory` is the in-process async resolver selected in `library-choice.md`.
+Configuration may accept `trust-dns` as a deprecated input alias for migration,
+but dumps, diagnostics, and generated help emit `hickory`.
 
 DoH/DoT are feature-gated because they add TLS/HTTP dependency paths and policy
 questions.

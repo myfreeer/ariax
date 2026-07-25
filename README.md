@@ -1,6 +1,7 @@
 # Downloader Design
 
-Status: draft design, intended to be refined before implementation.
+Status: reviewed design. Implementation readiness is gated by
+`final-preimplementation-review.md`.
 
 This design is for a new downloader that keeps the mature aria2 user model
 while fixing the major safety, scalability, and completeness problems found in
@@ -120,6 +121,11 @@ The detailed first-slice module contracts live in `detailed-core.md`,
 `detailed-config.md`, `detailed-storage.md`, `detailed-runtime.md`, and
 `detailed-http-first-slice.md`.
 
+See `final-preimplementation-review.md` for the final cross-document
+architecture/performance review, resolved library choices, and the remaining
+behavioral blockers that must be amended in the normative documents before the
+affected implementation phases begin.
+
 Selected community components:
 
 - Tokio and Mio for the default async executor and cross-platform network
@@ -130,9 +136,10 @@ Selected community components:
   - macOS/BSD: kqueue-ready network plus bounded disk worker pool, because
     portable non-blocking file I/O is limited.
   - Fallback: bounded blocking disk pool with strict queue limits.
-- hyper or a similarly maintained HTTP stack for HTTP/1.1 and optional HTTP/2.
-  The downloader owns range validation and placement, not the HTTP client.
+- Hyper plus hyper-util for HTTP/1.1 and HTTP/2. The downloader owns the
+  connector, redirects, range validation, placement, and backpressure.
 - rustls for TLS by default, with optional native-tls platform integration.
+- Hickory Resolver for the optional in-process async DNS backend.
 - The first slice uses bounded Tokio channels for async lanes and bounded
   crossbeam channels for blocking workers. Specialized thingbuf/rtrb queues are
   introduced only after a measured lane-specific bottleneck and a producer-count
@@ -141,8 +148,11 @@ Selected community components:
   scalable, supports DHT/PEX/magnet/web seeds, and already handles many BT edge
   cases. The integration must still sanitize paths and translate state through
   the downloader scheduler.
-- libssh2 or russh for SFTP, selected behind a feature flag after prototype
-  benchmarks. SFTP must not block network reactor threads.
+- russh plus russh-sftp for the standard-build SFTP adapter, using a
+  project-owned bounded offset-request pipeline. libssh2 is an interoperability
+  fallback only if the Phase-5 prototype gate fails.
+- rusqlite on a dedicated bounded session-store thread and a dedicated Rayon
+  pool for CPU-heavy work.
 
 Build profiles:
 
@@ -157,8 +167,9 @@ Binary-size rules:
 - features are opt-in, not linked by default,
 - CLI, RPC, BitTorrent, SFTP, XML-RPC, WebSocket, and native TLS are separate
   features,
-- release builds use LTO, one codegen unit, panic abort, and stripped symbols
-  in packaged binaries,
+- CLI-only packaged binaries use LTO, one codegen unit, panic abort, and stripped
+  symbols. C ABI/staticlib/cdylib artifacts use an unwind-capable profile so
+  exported boundaries can contain panics,
 - generated tables replace duplicated option/help strings where practical,
 - `minimal` is the size baseline and CI tracks binary-size regressions.
 
@@ -391,19 +402,11 @@ Completion is not "bytes received". Completion means:
 Poweroff recovery is handled with a journaled control file, not with in-memory
 progress guesses.
 
-Control file contents:
-
-- magic, version, endian marker,
-- task id and stable gid,
-- protocol and metadata hashes,
-- file layout hash,
-- piece length, total length, selected files,
-- validators: ETag, Last-Modified, content digest, torrent info hash, Metalink
-  hashes,
-- durable piece bitset,
-- in-flight generation counter,
-- upload/session counters for BitTorrent,
-- last clean shutdown marker.
+The normative control-journal header, record payloads, versioning, and replay
+rules are in `detailed-storage.md`. Session indexing and BitTorrent adapter
+resume state are separate persistence domains defined by
+`session-persistence.md` and `libtorrent-integration.md`; this overview does not
+duplicate their wire formats.
 
 Write protocol:
 

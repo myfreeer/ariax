@@ -606,7 +606,8 @@ Protocol modernization:
 - `ech=false|true|auto`
 - `ca-store=os|mozilla|custom|os+custom`
 - `ca-directory`
-- `dns-backend=system|cares|trust-dns|doh|dot`
+- `dns-backend=system|cares|hickory|doh|dot` (`trust-dns` is an accepted
+  deprecated input alias; normalized output is `hickory`)
 - `doh-url`
 - `dot-server`
 - `dns-cache=true|false`

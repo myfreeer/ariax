@@ -24,10 +24,10 @@ detailed contract rather than redefining its types:
   `libtorrent-integration.md`,
 - scheduling/observability: `download-scheduling.md`, `stats-and-stalls.md`.
 
-`review-findings-response.md`, `review-findings-round2.md`, and
+`review-findings-response.md`, `review-findings-round2.md`,
 `review-findings-round3.md` (which consolidates the round-4 external
-verification) are review history; resolved rules must live in one of the
-normative documents above.
+verification), and `final-preimplementation-review.md` are review history;
+resolved rules must live in one of the normative documents above.
 
 ## Performance
 
@@ -91,8 +91,9 @@ Design coverage:
   TLS/DNS behavior, and cookie scope.
 - `detailed-http-first-slice.md`: reserved headers, exact response validation,
   provisional lease commit/abort, and body-size limits.
-- `detailed-ftp-sftp.md`: FTP/SFTP authentication, offset validation, and
-  protocol-specific concurrency limits.
+- `detailed-ftp-sftp.md`: FTP/SFTP offset validation and protocol-specific
+  concurrency limits. Its missing SFTP host-key/authentication/algorithm policy
+  is a Phase-5 blocker recorded in `final-preimplementation-review.md`.
 - `rate-limiting.md`: bounded accounting for committed and discarded traffic.
 - `session-persistence.md`: private file permissions and secrets-at-rest policy.
 - `disk-adapter.md`: offset-only writes, storage validation, fsync/rename

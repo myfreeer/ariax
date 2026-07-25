@@ -30,6 +30,13 @@ rewrite pattern.
 - Stand up the standalone Cargo workspace and build the experimental `ariax`
   artifact; record the pinned aria2 reference checkout used for compatibility
   generation.
+- Add `rust-toolchain.toml` for Rust 1.97.0/edition 2024, commit `Cargo.lock`,
+  declare and test MSRV 1.88, and generate the Linux/macOS/Windows target and
+  native-ABI matrix. Windows MSVC is the primary release ABI; Windows GNU is a
+  secondary all-MinGW build and never mixes native ABIs.
+- Pin the direct choices in `library-choice.md`, record feature unification and
+  native dependencies, and run license/advisory/source-policy checks. Produce an
+  SBOM and dependency tree for each release profile.
 - Record native Linux and Windows baselines for journal/data sync, queue wakeup,
   buffer ownership, and minimal-binary size. WSL/DrvFS numbers are diagnostic,
   not release baselines.
@@ -83,7 +90,8 @@ Exit criteria:
 
 - Tokio/Mio network runtime using its supported platform readiness backend; no
   second raw network reactor is built into the same runtime.
-- Linux io_uring disk prototype with fallback.
+- Linux tokio-uring disk adapter prototype with the low-level io-uring crate as
+  an internal fallback and the bounded blocking backend as the runtime fallback.
 - Windows overlapped I/O prototype.
 - Bounded blocking disk fallback.
 - `DiskBackendKind` enum dispatch and total `DiskWriteOutcome` buffer ownership.
@@ -99,6 +107,8 @@ Exit criteria:
 
 ## Phase 3: HTTP(S) Downloader
 
+- Hyper/hyper-util client integration with downloader-owned connector and a
+  separately budgeted body-frame ingress adapter.
 - HTTP/1.1 keep-alive with strict connection identity.
 - HTTPS with TLS 1.2/1.3, OS trust store defaults, and custom CA support.
 - Proxy/no-proxy behavior for HTTP(S), including destination validation at the
@@ -165,7 +175,9 @@ Exit criteria:
   readback fallback.
 - FTP adapter with sequential resume per source by default; concurrency is across
   distinct mirrors rather than overlapping REST-to-EOF streams.
-- SFTP adapter.
+- russh/russh-sftp adapter with project-owned bounded offset-request pipelining,
+  host-key verification, known-hosts policy, authentication ordering, algorithm
+  policy, timeout/rekey handling, and secret redaction.
 - Mirror selection and server stats.
 - Optional HTTP/2 enablement if the selected HTTP stack and tests are mature
   enough.

@@ -18,10 +18,12 @@ Queues carry small messages:
 struct DiskWriteMsg {
     task: TaskId,
     generation: Generation,
+    lease: LeaseId,
     global_offset: u64,
     len: usize,
     buffer: BufferLease,
     piece: PieceId,
+    completion: CompletionPermit,
 }
 ```
 
@@ -141,6 +143,10 @@ Full queues are not fatal by themselves. They are backpressure.
 
 Completion drains are the exception to ordinary queue-full handling: capacity is
 reserved before submission, and an already-created completion is never rejected.
+`CompletionPermit` is a move-only reservation acquired with submission
+admission and consumed by exactly one `DiskWriteOutcome`. Rejection before
+backend acceptance returns the permit and buffer immediately; backend acceptance
+transfers both to the completion path.
 
 ## External Client Event Queues
 

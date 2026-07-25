@@ -1,14 +1,23 @@
 # Implementation Readiness
 
-Status: draft gate.
+Status: final review gate; not ready for storage/transfer implementation until
+the P0 contract blockers in `final-preimplementation-review.md` are resolved in
+their normative documents.
 
 This document is the handoff checklist from architecture design to detailed
 module design and implementation.
+
+Repository scaffolding, generated inventories, option-registry work, and pure
+safe-path/layout types may begin. Code that commits transfer, persistence,
+scheduler-state, rate-accounting, or SFTP security behavior must wait for the
+corresponding P0 contract amendments.
 
 ## Start Here
 
 Implementation should begin from these source-of-truth documents:
 
+- `final-preimplementation-review.md` for the go/no-go result and the exact
+  contract amendments still required.
 - `configuration.md` for option metadata, config formats, URL rules, runtime
   update behavior, reload, and dump policy.
 - `implementation-plan.md` for phase order and exit criteria.
@@ -96,7 +105,8 @@ Phase 0 should generate or maintain:
 - complete state × command/error transition matrix,
 - build-feature matrix,
 - repository artifact/toolchain matrix,
-- documented option inventory extracted from `design/*.md`,
+- documented option inventory extracted from the repository's Markdown design
+  documents,
 - diagnostics field matrix,
 - error-code matrix,
 - control-journal record/schema/version matrix,
@@ -150,23 +160,36 @@ feature-gate status must exist from the start:
 - chunked or content-decoded growing-layout downloads,
 - compact build without SQLite.
 
-## Open Choices Requiring Prototype Data
+## Resolved Ecosystem Choices And Prototype Gates
 
-These are the remaining choices that should be decided by small prototypes and
-benchmarks, not by additional architecture debate:
+`library-choice.md` records the choices made by the 2026-07-25 final review:
 
-- HTTP client stack final selection for HTTP/1.1 and HTTP/2.
-- SFTP library: `libssh2` vs `russh`.
-- Linux disk backend wrapper: direct `io-uring` crate, `tokio-uring`, or a
-  narrow project wrapper.
-- Exact specialized hot-lane queue crate versions and sharding strategy after
-  the bounded Tokio-channel baseline is measured.
-- Whether SQLite is linked in `minimal` or replaced by `control-files` mode for
-  smallest builds.
-- HTTP/3 library maturity and binary-size impact.
+- Hyper/hyper-util for HTTP/1.1 and HTTP/2,
+- Hickory Resolver for the in-process async DNS backend,
+- russh/russh-sftp for SFTP,
+- tokio-uring behind the project-owned Linux disk adapter,
+- rusqlite on a dedicated session thread, including the first `minimal` build,
+- a dedicated project-owned Rayon pool for CPU-heavy work,
+- bounded Tokio/crossbeam queues for the baseline,
+- Quinn plus h3/h3-quinn only as the feature-gated HTTP/3 experiment.
 
-Until those are resolved, option statuses should be `feature_gated` or
-`partial`, not `implemented`.
+The remaining prototypes validate an already-defined fallback boundary; they do
+not reopen the public architecture:
+
+- Replace tokio-uring internally with the low-level io-uring crate if secure
+  open, accepted-operation draining, cancellation, or quarantine gates fail.
+- Enable libssh2 only if documented russh interoperability gaps remain after the
+  Phase-5 server matrix.
+- Introduce thingbuf/rtrb only after a measured lane and producer topology prove
+  a benefit over the bounded baseline.
+- Ship HTTP/3 only after interoperability, proxy, fallback, flow-control, and
+  binary-size gates pass; otherwise its option remains `feature_gated`.
+- Add control-files-only or system-SQLite profiles only after their recovery and
+  packaging behavior is designed and measured.
+
+The exact locked dependency graph, target matrix, licenses, advisories, and MSRV
+are Phase-0 generated artifacts. A prototype failure selects the documented
+fallback and does not permit silently changing correctness contracts.
 
 ## Definition Of Ready For Coding
 
@@ -184,6 +207,7 @@ A module is ready to implement when it has:
 - feature-gate and build-profile behavior,
 - externally visible compatibility behavior and any intentional divergence,
 - on-disk schema/version and migration behavior when persistence is touched.
+- no unresolved P0 item assigned to it by `final-preimplementation-review.md`.
 
 If any item is missing, add it to the design before coding that module.
 

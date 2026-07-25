@@ -293,7 +293,7 @@ credentials are stripped on a cross-origin redirect is undefined — a classic
 secret-exfiltration CVE class — and `security-recovery.md` covers only log
 redaction, not header propagation.
 
-Proposed fix F8 — add `design/redirect-policy.md` (and cross-link from
+Proposed fix F8 — add `redirect-policy.md` (and cross-link from
 `protocol-modernization.md` and `security-recovery.md`):
 
 - Max redirect depth (default bounded, e.g. 20) and loop detection.
@@ -376,7 +376,7 @@ FTPS explicit/implicit TLS on control and data channels, `ftp-type` ASCII/binary
 (ASCII mode corrupts byte offsets), and SFTP random-access reads vs libssh2/russh
 windowing.
 
-Proposed fix F11 — add `design/detailed-ftp-sftp.md` defining resume offset
+Proposed fix F11 — add `detailed-ftp-sftp.md` defining resume offset
 semantics, data-channel/connection model per range, the `SIZE`/`MDTM` validator
 mapping, ASCII-mode prohibition for ranged transfers, FTPS TLS handling, and the
 SFTP read model. Add FTP/SFTP data-channel-drop fault-injection tests.
@@ -410,7 +410,7 @@ build (BT + HTTP double-counting). It also overlaps ambiguously with
 read-backpressure, since both act by removing socket read interest, with no stated
 precedence.
 
-Proposed fix F13 — add `design/rate-limiting.md`: token-bucket hierarchy
+Proposed fix F13 — add `rate-limiting.md`: token-bucket hierarchy
 (global -> per-host -> per-task), fairness policy, precedence relative to
 read-backpressure, and how the global limit is enforced across both the HTTP lanes
 and libtorrent (single accounting point, or libtorrent's own limiter driven from

@@ -2,8 +2,8 @@
 
 Status: draft.
 
-This document maps the earlier `aria2_rust` prototype's review findings
-(`REVIEW_FINDINGS.md` in that repository) to design decisions.
+This document maps the earlier `aria2_rust` prototype's separate review report
+to design decisions.
 
 ## Safety And Security
 
@@ -136,12 +136,12 @@ CLI control operations placeholder:
 
 Configurable like aria2:
 
-- Covered by `design/configuration.md`.
+- Covered by `configuration.md`.
 - Requires generated manual/help/RPC allowlists from typed option metadata.
 
 Best available event API with fallback:
 
-- Covered by `design/event-backends.md`.
+- Covered by `event-backends.md`.
 - Tokio/Mio is the only network reactor; its platform selector is diagnostic,
   not an independently selected project reactor.
 - Runtime probing selects the independent disk backend (`io_uring`, IOCP, or a

@@ -107,7 +107,8 @@ generated/design_option_inventory.json
 generated/error_codes.json
 ```
 
-`design_option_inventory.json` is produced by scanning `design/*.md` for
+`design_option_inventory.json` is produced by scanning the repository's
+Markdown design documents for
 documented option-looking strings, with a small ignore list for CLI-only flags
 such as `ariax config dump --effective`. The literal inventory pattern example
 is written here as `--<option-name>` so it is not mistaken for a real option.

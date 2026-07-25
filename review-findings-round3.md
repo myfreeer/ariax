@@ -12,7 +12,7 @@ not copied verbatim: its claims were rechecked against the aria2 source/manual a
 small WSL/MinGW Rust experiments, and its overclaims are corrected below.
 
 The design remains architecturally strong and clearly written against the
-`aria2_rust/REVIEW_FINDINGS.md` failure classes. The issues below cluster at the
+earlier `aria2_rust` review's failure classes. The issues below cluster at the
 same two seams round 2 identified — (1) two documents specifying the same
 artifact differently, and (2) a stated guarantee with no owning mechanism — plus
 a new third category this round surfaced: **guarantees that hold in `strict`
