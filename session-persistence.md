@@ -1,0 +1,447 @@
+# Session Persistence
+
+Status: draft.
+
+Decision: use a hybrid persistence model:
+
+- append-only per-task control journals for crash-critical download progress,
+- a small SQLite session database for global queue/state/index metadata,
+- optional text export/import for compatibility and debugging.
+
+Do not use only JSON/TOML for active recovery. Do not use RocksDB/LMDB as a
+mandatory dependency.
+
+This intentionally differs from `../aria2_rust`'s JSON `.aria2` session files.
+JSON is acceptable for export/import, but active crash recovery needs a
+torn-write-detectable journal.
+
+## Requirements
+
+Session persistence must support:
+
+- poweroff recovery,
+- many active downloads,
+- queue order,
+- active/waiting/stopped state,
+- per-task options,
+- URI/mirror lists,
+- file layout and selected files,
+- partial piece/range progress,
+- Metalink/torrent metadata references,
+- retry state,
+- RPC-visible stopped results,
+- atomic updates,
+- bounded write amplification,
+- cross-platform packaging.
+
+## Options Considered
+
+## Text Only: JSON/TOML/YAML
+
+Pros:
+
+- human-readable,
+- easy import/export,
+- simple debugging,
+- no database dependency.
+
+Cons:
+
+- expensive to rewrite for frequent progress updates,
+- fragile for power loss unless carefully journaled,
+- poor for many tasks and stopped results,
+- awkward binary bitsets/resume data,
+- easy to corrupt with partial writes,
+- hard to update atomically at high frequency.
+
+Decision: use only for import/export/debug snapshots, not primary active
+recovery.
+
+## aria2-Style Per-File `.aria2` State
+
+Pros:
+
+- proven concept,
+- recovery is local to each output,
+- easy to move partial downloads with their control files,
+- avoids a single central database as the only source of truth,
+- good crash isolation.
+
+Cons:
+
+- global queue/session metadata needs another file,
+- scanning many directories can be slow,
+- per-file state format must evolve carefully,
+- harder to query stopped results or global stats.
+
+Decision: keep this idea, but modernize it as a versioned append-only control
+journal per task/download. Use a new suffix by default, such as `.ariax`, to
+avoid implying byte-level compatibility with aria2's `.aria2` binary control
+format.
+
+## SQLite
+
+Pros:
+
+- mature, ubiquitous, small dependency,
+- transactional,
+- cross-platform,
+- good for queue/index/stopped results/options,
+- easy to inspect with tools,
+- supports WAL,
+- simpler packaging than RocksDB.
+
+Cons:
+
+- not ideal for very high-frequency per-piece writes if abused,
+- needs schema migration discipline,
+- central DB corruption must be mitigated with backups/checks.
+
+Decision: use SQLite for global session metadata and indexes, not for every
+hot data-piece transition.
+
+## LMDB/RocksDB/Other KV Store
+
+Pros:
+
+- high write throughput,
+- good key/value model,
+- can store bitsets and binary state directly.
+
+Cons:
+
+- larger or more complex dependency,
+- harder Windows/macOS packaging,
+- more tuning required,
+- less user-inspectable,
+- overkill for downloader metadata,
+- RocksDB in particular is large for compact binaries.
+
+Decision: not mandatory. Consider only as optional enterprise/large-scale
+backend if real benchmarks show SQLite plus journals is insufficient.
+
+## Recommended Layout
+
+```text
+session.db                  SQLite global metadata
+tasks/
+  <gid>.ctrl                binary control-journal segment 0
+  <gid>.ctrl.00000001       optional rotated segment 1
+  <gid>.meta                optional metadata blob or pointer
+exports/
+  session-export.json       optional user-created export
+```
+
+For aria2-like output locality, a task may also place a companion control file
+next to the output:
+
+```text
+file.iso
+file.iso.ariax              companion segment 0
+file.iso.ariax.00000001     optional rotated segment 1
+```
+
+The central SQLite DB maps `gid` to the base path of the control-journal segment
+set. Segment headers and continuity are normative in `detailed-storage.md`.
+
+A task always has exactly one primary segment set and one appender. With
+`central` or `beside-output`, that location is primary. With `both`, the
+beside-output set is primary and the central copy is a checkpoint replica made
+only after the primary has flushed; it is never appended independently. SQLite
+stores both paths and the replica's last copied sequence. If the primary is
+missing, recovery may promote the replica after validating its complete linked
+prefix. Divergent records at the same journal id/sequence are corruption and
+must not be merged or selected by timestamp.
+
+## SQLite Responsibilities
+
+SQLite stores:
+
+- session id,
+- task gid,
+- queue position,
+- task state: waiting, active, paused, stopped,
+- root output directory,
+- safe relative paths or layout hash,
+- persistence-safe URI/mirror metadata or a redacted source placeholder,
+- mutable per-task options and a mirror of the sanitized generation snapshot,
+- stopped results,
+- aggregate counters,
+- control journal path,
+- metadata blob references,
+- timestamps,
+- compatibility/version info.
+
+SQLite does not store high-frequency per-piece durability transitions in the
+normal path.
+
+## Control Journal Responsibilities
+
+Per-task journal stores:
+
+- layout committed,
+- lease begun/committed/aborted and provisional piece/span writes,
+- piece/span verified,
+- piece/hash failure resets,
+- piece durable,
+- generation changes,
+- pause/remove markers,
+- checksum validator state when needed,
+- torrent/metalink identity hashes,
+- recovery markers.
+
+This journal is append-only and may rotate into linked immutable-numbered
+segments. One serialized per-task appender assigns the global sequence and
+performs every append/flush. Rotation headers, hash links, and replay continuity
+are defined only in `detailed-storage.md`.
+
+## Authority And Reconciliation
+
+The stores have deliberately different authorities:
+
+| Field class | Authority | Duplicate-copy rule |
+| --- | --- | --- |
+| generation, immutable layout/file map/hash, piece length | control journal | overwrite any SQLite cache from the valid journal prefix |
+| begun/committed/aborted leases, written/verified/durable pieces, validators, retry checkpoint | control journal | SQLite must not promote or merge progress |
+| task-local terminal markers (`TaskComplete`, `TaskError`, `TaskRemoved`) and final digest/layout | control journal | terminal marker is a safety veto; required before SQLite publishes the corresponding result |
+| queue membership/order, session id, global desired state, cross-task scheduling | SQLite | journal recovery does not invent queue position |
+| stopped-result index and retention metadata | SQLite, gated by journal completion | recreate from `TaskComplete` when missing; never use it to manufacture completion |
+| mutable non-layout task options and persistence-safe URI/mirror inputs | SQLite | restored after journal generation state is fixed |
+| generation-scoped options affecting layout, validators, verification, or durability | control-journal `OptionsSnapshot` | SQLite stores only a searchable mirror and snapshot hash |
+
+Recovery first establishes the valid journal prefix, then applies SQLite-owned
+queue/session fields. A disagreement is reconciled in the single direction in
+the table; values are never field-by-field merged based on timestamps. SQLite
+is updated transactionally after replay when one of its cached journal-owned
+fields differs.
+
+`TaskPaused` is a task-local checkpoint marker, not queue authority; SQLite's
+desired state decides whether a recovered non-terminal task remains paused or is
+eligible to run. Conversely, SQLite queue membership cannot reactivate a
+journal generation already marked complete, errored, or removed; that requires
+the normal new-generation/new-task operation.
+
+## Atomicity Model
+
+Task progress:
+
+1. append/accept `LeaseStarted` and write blocks provisionally,
+2. after exact response-length and validator checks, append `LeaseCommitted` or
+   `LeaseAborted`,
+3. validate/checksum the complete piece as required,
+4. complete the durability mode's data-file barrier,
+5. append `PieceDurable` through the single task appender,
+6. complete the journal barrier, then publish durable progress.
+
+No journal descriptor flush can substitute for step 4. In `balanced`, steps
+4–6 are grouped; in `strict`, they complete per piece. In `fast`, ordinary
+progress stops at provisional written/verified records and only finalization
+performs the promotion barrier. The exact ordering and primitives are normative
+in `detailed-storage.md`.
+
+Global queue mutation:
+
+1. if the mutation starts a new generation, flush `GenerationStarted` and its
+   sanitized `OptionsSnapshot` first,
+2. SQLite transaction updates its queue/desired-state fields and the journal
+   snapshot hash,
+3. snapshots are published.
+
+If step 2 fails, journal-owned generation state remains authoritative and the
+SQLite mirror is repaired on recovery. If a queue-only mutation has no task
+generation effect, it is a normal SQLite transaction and does not append a
+redundant journal record.
+
+Completion:
+
+1. all selected task pieces durable,
+2. final file rename/fsync,
+3. control journal marks complete,
+4. SQLite stopped result transaction,
+5. optional removal of companion control file.
+
+The terminal state is user-visible only after both the task journal has a valid
+`TaskComplete` record and SQLite has the stopped result. If the process crashes
+after `TaskComplete` but before the SQLite transaction, startup treats the
+journal as authoritative for file completion and recreates the missing stopped
+result. If SQLite says stopped but the journal lacks `TaskComplete`, startup
+must verify/finalize from the journal state before publishing completion.
+
+## Recovery
+
+Startup:
+
+- open SQLite,
+- read task list and journal paths,
+- scan companion control files if configured,
+- replay each task journal to last valid committed record,
+- take generation/layout/progress from the journal and reconcile cached copies
+  to SQLite in the one allowed direction,
+- reset begun, aborted, uncommitted, and non-durable spans to pending,
+- revalidate fast-mode hints or suspicious durable pieces as required,
+- rebuild scheduler queues.
+
+If SQLite is missing but companion control files exist:
+
+- offer/import recovery mode,
+- reconstruct tasks from control journals and metadata where possible.
+
+If SQLite is present but corrupt (failed integrity check or open error):
+
+- do not treat a corrupt DB as authoritative,
+- move it aside (timestamped backup) rather than deleting,
+- rebuild the index from companion control journals exactly as in the
+  missing-DB path, since the per-task journals hold the crash-critical state,
+- if control journals are also unavailable, fall back to needing-revalidation
+  per task rather than silently discarding progress.
+
+If a task journal is missing but SQLite says task was active:
+
+- do not infer progress from file length or allocation,
+- mark the task needing full revalidation or error depending on available
+  output files and content digests.
+
+## Secrets At Rest
+
+Decision: active persistence and plaintext exports omit secrets. The first
+implementation does not encrypt credentials into SQLite, control journals,
+metadata blobs, backups, temporary files, or session exports.
+
+Secrets include RPC credentials, proxy/user passwords, URI userinfo, cookies,
+`Authorization` and signature headers, private-key passphrases, bearer tokens,
+and option values marked secret by the registry. A URI with userinfo or an
+unclassified query string is treated as sensitive because signed URLs commonly
+carry credentials in query parameters. Automatic persistence stores a redacted
+origin/path fingerprint and source placeholder instead of such a URI. A scheme
+or individual query field may be persisted only when the option/protocol
+registry explicitly classifies it as non-secret.
+
+Consequences:
+
+- `OptionsSnapshot` is a canonical sanitized map; secret entries are absent,
+  not replaced with reversible encodings.
+- Validator records store a one-way canonical fingerprint needed for comparison,
+  never raw cookies, credentials, or signed headers.
+- A recovered task that cannot reconstruct an authenticated source enters an
+  internal `NeedsCredentials` condition and remains paused/waiting until the
+  caller supplies credentials or a replacement URI. Existing durable pieces are
+  retained.
+- Plain JSON and aria2-format exports follow the same omission rules and mark
+  entries that require credentials. There is no `include-secrets` plaintext
+  switch.
+- A future encrypted credential store may place opaque key identifiers in
+  SQLite, but requires a separate reviewed design for OS-keyring/user-key
+  encryption, key rotation, locked-key recovery, and export encryption. It does
+  not weaken this default.
+
+Persistence directories are created mode `0700` on Unix and files, including
+SQLite WAL/SHM files, journal segments, temporary replacements, and backups, are
+created mode `0600`. On Windows, their ACL grants the current user and required
+system principals only and disables inherited broad access. Existing artifacts
+with broader access are tightened before use; if that cannot be done, persistent
+mode fails closed with an actionable error instead of writing sensitive task
+metadata insecurely. User-requested export destinations receive the same secure
+creation policy.
+
+Atomic replacement never leaves a broad-permission temporary file. Rotated
+segments and backups retain the source ACL/mode. Deletion is best-effort and is
+not claimed as secure erasure on copy-on-write, journaled, flash, or cloud-backed
+filesystems; omission is therefore the primary protection. Tests scan the raw
+database, WAL/SHM, journals, metadata, temporary/backup, companion, and export
+files for seeded secret values and verify recovery's `NeedsCredentials` path.
+
+## Text Export
+
+Provide:
+
+```text
+ariax session export --format=json
+ariax session import session-export.json
+```
+
+Export includes queue/sanitized options/persistence-safe URIs but not necessarily
+hot progress bitmaps unless requested. Sensitive sources are represented by a
+needs-credentials placeholder. It is for migration and debugging, not the
+primary crash recovery path.
+
+## aria2 `--save-session` Compatibility
+
+aria2 `--save-session` writes a text input-file-like list of unfinished
+downloads and options. This design should support an equivalent compatibility
+export:
+
+```text
+--save-session=FILE
+--save-session-format=aria2|json
+```
+
+Rules:
+
+- `aria2` format is for compatibility with existing tooling.
+- It records enough non-secret URI/options state to re-add unfinished downloads;
+  authenticated sources require credentials to be supplied after import.
+- It is not the crash-critical progress journal.
+- Importing aria2 session text is supported through the input-file parser and
+  option matrix.
+
+The control journal remains the authoritative source for partial byte/piece
+state.
+
+## Why Not One Big SQLite For Everything
+
+SQLite can handle many writes, but per-piece hot progress is better isolated:
+
+- a torn or corrupted task journal affects one task,
+- companion control files support moving partial downloads,
+- strict durability can fsync small task journals without locking global queue
+  metadata,
+- large bitsets and per-piece records do not bloat the global DB.
+
+The global DB remains small and query-friendly.
+
+## Configuration
+
+```text
+--session-store=hybrid|sqlite|control-files|memory
+--session-db=PATH
+--control-file-dir=PATH
+--control-file-location=central|beside-output|both
+--control-file-suffix=.ariax
+--save-session=PATH
+--save-session-format=aria2|json
+--save-session-interval=SEC
+--auto-save-interval=SEC
+--durability=fast|balanced|strict
+```
+
+Defaults:
+
+```text
+--session-store=hybrid
+--control-file-location=beside-output
+```
+
+`memory` is only for tests or explicit no-resume mode.
+
+## Schema And Format
+
+SQLite:
+
+- schema version table,
+- migration scripts,
+- WAL mode by default when supported,
+- periodic backup/checkpoint policy.
+
+Control journal:
+
+The on-disk journal format is defined normatively in `detailed-storage.md`
+(segment header/linkage, record framing, payload layouts, CRC coverage, and
+record-type enum). This document does not restate the field list. The layout
+hash lives in `LayoutCommitted` and `TaskComplete`, not in every record; each
+record carries `generation` and a globally continuous per-task `sequence` per
+the normative spec.
+
+Both formats must be documented and fuzz-tested. Tests also cover segment
+rotation at every boundary, missing/reordered segments, bad previous-segment
+hashes, SQLite/journal snapshot disagreement, permission/ACL creation, and
+absence of seeded secrets from every persistence artifact.
