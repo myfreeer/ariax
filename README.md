@@ -273,12 +273,16 @@ States:
 - `Allocating`: storage layout and file allocation in progress.
 - `Active`: one or more protocol workers are running.
 - `Paused`: durable control file saved, can return to waiting.
-- `PausedSlow`: optional scheduler state for slow-slot demotion. It is enabled
-  only by policy and is distinct from user pause.
+- `WaitingSlow`: internal slow-slot `demote` state; automatically readmitted and
+  rendered as aria2 `waiting`.
+- `PausedSlow`: slow-slot `pause` policy state. It is enabled
+  only by policy, is distinct from user pause, and never readmits automatically.
 - `PausedRestarting`: internal active-option restart quiescence. It is rendered
   as aria2 `waiting` and never emits a pause event.
-- `RetryWait`: waiting for retry policy timer. It may or may not consume an
-  active slot depending on configured scheduling policy.
+- `RetryWait`: waiting for retry policy timer with no span leased or pending.
+  It may or may not consume an active slot depending on configured scheduling
+  policy. A single failing lease among running leases is a span-level retry
+  substate inside `Active`, not this task state.
 - `Verifying`: checksum or piece verification in progress.
 - `Seeding`: BitTorrent only.
 - `Complete`: data durable and final rename done.

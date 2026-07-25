@@ -68,7 +68,15 @@ Rules:
 - `UriId` identifies one source URI/mirror within a task's resolved source
   list; retry, lease, and server-stat records reference sources by `UriId`.
 - `Generation` starts at `0` and increments on restart, option generation
-  change, stale validator restart, or recovery resume that invalidates workers.
+  change, stale validator restart, and recovery resume that invalidates
+  workers. In addition, admission into `Allocating` increments the generation
+  whenever any earlier generation of this task started a worker — readmission
+  from task-level `RetryWait`, `WaitingSlow`, `Paused`, `PausedSlow`, or
+  `PausedHostKey` therefore always starts a fresh generation. The increment may
+  happen only after the previous generation's cancellation drain has completed,
+  so an old-generation completion can never become current because the task was
+  automatically or manually resumed. Span-level lease retry inside one `Active`
+  generation keeps that generation and takes a fresh `LeaseId`.
 - `TransferAttemptId` identifies one protocol response/data stream. A range
   attempt normally owns one storage lease; a sequential response/FTP data stream
   can advance through many storage leases without opening another connection.
@@ -170,9 +178,9 @@ Rules:
 Task state is controlled only by `RequestScheduler`.
 
 `TaskState` is an internal state.  It is not an RPC enum.  The complete state
-set is `Accepted`, `Waiting`, `Allocating`, `Active`, `RetryWait`, `Paused`,
-`PausedSlow`, `PausedHostKey`, `PausedRestarting`, `Verifying`, `Seeding`,
-`Complete`, `Error`, `Removed`, and `StoppedResult`.
+set is `Accepted`, `Waiting`, `WaitingSlow`, `Allocating`, `Active`,
+`RetryWait`, `Paused`, `PausedSlow`, `PausedHostKey`, `PausedRestarting`,
+`Verifying`, `Seeding`, `Complete`, `Error`, `Removed`, and `StoppedResult`.
 
 State transition record:
 
@@ -192,13 +200,48 @@ Rules:
 
 - All transitions publish a snapshot update.
 - Terminal states persist a stopped result before user-visible completion.
-- `PausedSlow` is only produced by `download-scheduling.md` policy.
+- `PausedSlow` is produced only by the `download-scheduling.md` slow-slot
+  `pause` policy. It is user-visible pause semantics: no automatic readmission.
+- `WaitingSlow` is produced only by the slow-slot `demote` policy. It is
+  scheduler-internal queue demotion: the task is automatically readmitted by
+  policy and is never presented as paused.
 - `PausedHostKey` is produced only before SFTP authentication/data transfer when
   an otherwise acceptable server key requires explicit user approval. No
   credential is sent before this state is resolved.
 - `RetryWait` does not imply active slot ownership; slot behavior is controlled
   by `retry-wait-consumes-slot`.
 - `Removed` cancels workers and follows configured partial-file policy.
+
+### Span Run States And Lease-Level Retry
+
+A retryable failure of one lease among several does not change the task state.
+The unit of transfer work inside an `Active` task is the planned span:
+
+```rust
+pub enum PlannedSpanState {
+    Pending,
+    Leased(LeaseId),
+    RetryWait { until: MonotonicInstant, attempt: u32, error: ErrorClass },
+    Done,
+}
+```
+
+Rules:
+
+- A span whose attempt fails retryably completes `AbortLease`, releases its
+  buffers, and enters span-level `RetryWait` with its own timer. Other spans
+  keep transferring; the task remains `Active`.
+- A span whose timer fires returns to `Pending` and is leased through normal
+  worker admission in the current generation; no task-state transition occurs.
+- The task transitions to task-level `RetryWait` only when no span is `Leased`
+  or `Pending` and at least one span is in span-level `RetryWait` — including
+  the sequential single-span case, where lease retry and task retry coincide.
+  Its deadline is the minimum span deadline.
+- A span whose retry budget is exhausted follows failure policy: fail the task,
+  or mark the span terminally failed and fail the task when no eligible source
+  remains.
+- Span retry state is visible as extension diagnostics (`retry_wait_leases`,
+  per-span deadlines); it is never serialized as a task status.
 
 ### Transition Table
 
@@ -216,27 +259,33 @@ provisional storage lease has either committed or been acknowledged by
 | `Accepted` | remove | `Removed` | discard unstarted task, then persist result |
 | `Waiting` | scheduler admission | `Allocating` | reserve slot; construct layout/worker plan |
 | `Waiting` | terminal planning/recovery error | `Error` | persist error/result; no lease exists |
-| `Waiting`, `RetryWait`, `Paused`, `PausedSlow`, `PausedHostKey` | accepted non-live option patch | unchanged | update current or pending snapshot according to its runtime class |
-| `Waiting` / `RetryWait` | pause | `Paused` | cancel timers; persist desired pause |
-| `Waiting` / `RetryWait` | remove | `Removed` | cancel timers; persist result |
-| `Allocating` | allocation succeeds | `Active` | start current generation only |
+| `Waiting`, `WaitingSlow`, `RetryWait`, `Paused`, `PausedSlow`, `PausedHostKey` | accepted non-live option patch | unchanged | update current or pending snapshot according to its runtime class |
+| `Waiting` / `WaitingSlow` / `RetryWait` | pause | `Paused` | cancel timers; persist desired pause |
+| `Waiting` / `WaitingSlow` / `RetryWait` | remove | `Removed` | cancel timers; persist result |
+| `Allocating` | allocation succeeds | `Active` | start the admitted generation only; the admission-time generation increment rule above applies |
 | `Allocating` | retryable allocation failure | `RetryWait` | release slot if policy requires; persist retry state |
 | `Allocating` | unknown otherwise-acceptable SFTP host key | `PausedHostKey` | release slot; publish/persist challenge; send no credentials |
 | `Allocating` | terminal allocation failure | `Error` | release slot; persist error/result |
 | `Allocating` | pause or remove | `Paused` or `Removed` | cancel allocation; no lease may escape |
 | `Allocating` | active-restart option patch | `PausedRestarting` | cancel allocation, record pending options, then requeue after quiescence |
-| `Active` | retryable lease/connection failure | `RetryWait` | abort affected provisional leases; persist retry state |
+| `Active` | retryable failure of one lease while other work is runnable or in flight | `Active` | abort only that lease; enter span-level retry wait; no task transition |
+| `Active` | retryable failure with no span leased or pending | `RetryWait` | abort affected provisional leases; persist retry state with the minimum span deadline |
 | `Active` | all required data received | `Verifying` | stop new work; retain committed pieces |
 | `Active` | BT payload complete with seeding enabled | `Seeding` | hand off only through the BT adapter |
 | `Active` | active-restart option patch | `PausedRestarting` | abort old-generation provisional leases; apply pending only after quiescence |
-| `Active` | pause, slow-slot demotion, or remove | `Paused`, `PausedSlow`, or `Removed` | abort/drain leases, release slot, checkpoint according to reason |
+| `Active` | slow-slot `demote` policy fires | `WaitingSlow` | abort/drain leases via `abort`, release slot, record readmission deadline |
+| `Active` | pause, slow-slot `pause` policy, or remove | `Paused`, `PausedSlow`, or `Removed` | abort/drain leases, release slot, checkpoint according to reason |
 | `Active` | terminal protocol, disk, or policy error | `Error` | abort provisional leases, release slot, persist error/result |
-| `RetryWait` | timer/admission succeeds | `Allocating` | use current generation; stale timer events are ignored |
+| `RetryWait` | timer/admission succeeds | `Allocating` | the readmission generation rule applies; stale timer events are ignored |
 | `RetryWait` | retry budget exhausted or terminal retry error | `Error` | cancel timer, release slot, persist error/result |
+| `WaitingSlow` | readmission policy fires | `Allocating` | the readmission generation rule applies; honor `slow-slot-readmit-*` |
+| `WaitingSlow` | resume | `Waiting` | user resume overrides the demotion cooldown; normal admission follows |
+| `WaitingSlow` | pause | `Paused` | record user pause; cancel readmission timer |
+| `WaitingSlow` | remove | `Removed` | apply partial-file policy; persist result |
 | `Paused` / `PausedSlow` | resume | `Waiting` | clear user/slow pause; await normal admission |
 | `Paused` / `PausedSlow` | remove | `Removed` | apply partial-file policy; persist result |
-| `PausedHostKey` | resume | `Waiting` | approve/persist the exact challenged key for this task, increment generation, and reconnect; a changed key creates a new paused challenge |
-| `PausedHostKey` | explicit matching host-key option | `Waiting` | replace the challenge with the configured pin, increment generation, and reconnect |
+| `PausedHostKey` | resume | `Waiting` | approve/persist the exact challenged key for this task and requeue; the readmission generation rule applies; a changed key on reconnect creates a new paused challenge |
+| `PausedHostKey` | explicit matching host-key option | `Waiting` | replace the challenge with the configured pin and requeue under the same rule |
 | `PausedHostKey` | remove/CLI stop | `Removed` | reject the challenge before authentication and persist the stop reason |
 | `PausedRestarting` | quiescence and option application succeed | `Waiting` | increment generation, clear pause request, emit restart diagnostic only |
 | `PausedRestarting` | user pause | `Paused` | cancel the automatic requeue but retain the accepted pending options |
@@ -267,7 +316,9 @@ Only this closed set may appear in aria2-compatible `status` fields:
 | Internal state | `status` | Visibility rule |
 | --- | --- | --- |
 | `Accepted`, `Waiting`, `Allocating` | `waiting` | transitional states are observable only after command acknowledgement |
+| `WaitingSlow` | `waiting` | demotion reason and readmission deadline are extension-only; never `paused` |
 | `Active`, `Verifying`, `Seeding` | `active` | verification/seeding reason is extension-only |
+| `Active` with spans in span-level retry wait | `active` | per-lease retry diagnostics are extension-only |
 | `RetryWait` with a retained slot | `active` | `retryWait` is extension-only |
 | `RetryWait` without a retained slot | `waiting` | selected by `retry-wait-consumes-slot` policy |
 | `Paused`, `PausedSlow`, `PausedHostKey` | `paused` | slow/host-key reason and challenge are extension-only |
@@ -321,6 +372,7 @@ pub struct TaskSnapshot {
     pub current_speed: u64,
     pub avg_speed: u64,
     pub active_leases: u32,
+    pub retry_wait_leases: u32,
     pub retry_wait_until: Option<MonotonicInstant>,
     pub last_progress_at: Option<MonotonicInstant>,
     pub host_key_challenge: Option<HostKeyChallenge>,
@@ -406,6 +458,15 @@ Required first-slice tests:
   prefixes while normalizing response output,
 - every state/command/error row above is model-tested, including cancel/remove
   during allocation, retry wait, verification, and seeding,
+- one retrying lease among active leases keeps the task `Active` and aria2
+  `active`; the last active lease failing retryably moves the task to
+  `RetryWait` with the minimum span deadline,
+- a span readmitted from span-level retry uses the current generation and a
+  fresh `LeaseId`; task readmission from `RetryWait`/`WaitingSlow` increments
+  the generation only after old-generation cancellation completes,
+- `WaitingSlow` demotion/readmission projects `waiting`, honors
+  `slow-slot-readmit-*`, and accepts user pause/resume/remove during the
+  cooldown; `PausedSlow` projects `paused` and never readmits automatically,
 - active-restart changes `split`, `max-connection-per-server`, and
   `min-split-size` through `waiting` without a pause event,
 - pause/remove race with disk completion preserves durable state,

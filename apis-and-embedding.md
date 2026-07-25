@@ -75,6 +75,10 @@ The aria2-compatible surface is deliberately closed:
   that state explicitly approves and task-pins the currently published SFTP host
   key challenge; if the server presents a different key on reconnect, it remains
   paused and publishes a new challenge without sending credentials.
+- Slow-slot `demote` (`WaitingSlow`) projects to aria2 `waiting` with no pause
+  event and readmits automatically; only the explicit slow-slot `pause` policy
+  (`PausedSlow`) projects to `paused`. A task with some leases in retry wait and
+  any lease transferring stays `active`.
 
 ### RPC Authentication
 

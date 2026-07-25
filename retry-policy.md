@@ -220,9 +220,18 @@ The scheduler chooses the next action in this order:
 5. check global task retry cap,
 6. compute wait using `Retry-After` and backoff,
 7. release transfer buffers,
-8. schedule a timer in the control/scheduler lane with a fresh `LeaseId`.
+8. schedule the span's retry timer in the control/scheduler lane; the retried
+   span is leased later with a fresh `LeaseId`.
 
 Retry wait never sleeps a worker thread and never holds a transfer buffer.
+
+Scope rule (`detailed-core.md` owns the state machine): while any other span of
+the task is leased or pending, this wait is span-level `RetryWait` and the task
+remains `Active` — one failing mirror must not un-schedule healthy leases. The
+task enters task-level `RetryWait` only when no span is leased or pending, which
+includes the ordinary sequential single-stream case. Task-level readmission
+increments the generation after the old generation's cancellation drain
+completes; span-level retry stays inside the current generation.
 
 Clock rule: live retry timers use the monotonic clock. The persisted
 `RetryState` deadline (`next_retry_unix_ms`) is wall-clock only because

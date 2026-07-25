@@ -25,14 +25,17 @@ stable active sets over maximizing useful slots.
 ```text
 waiting queue      tasks not currently admitted
 active set         tasks consuming max-concurrent-downloads slots
-paused-slow queue  tasks intentionally paused/demoted to free a slot
+demoted queue      `WaitingSlow` tasks awaiting automatic readmission
+paused-slow queue  `PausedSlow` tasks parked by the explicit `pause` policy
 retry-wait queue   tasks or leases waiting for retry timers
 stopped results    terminal success/error/removed records
 ```
 
 `max-concurrent-downloads` counts active tasks. By default, a task in
 `RetryWait` still belongs to its active task unless policy explicitly frees the
-slot. This preserves aria2-like behavior.
+slot. This preserves aria2-like behavior. A retryable failure of one lease
+while other leases are transferring is span-level retry inside `Active`
+(`detailed-core.md`) and involves no queue movement at all.
 
 ## Slow Slot Freeing
 
@@ -50,17 +53,20 @@ Option:
 
 `demote`:
 
-- active task leaves the active set and enters `paused-slow`,
+- active task leaves the active set and enters internal `WaitingSlow`,
 - durable state is saved,
 - in-flight leases are cancelled or drained by generation rules,
 - next waiting task may start,
-- the demoted task is eligible for later readmission.
+- the demoted task is automatically readmitted by the readmission policy below,
+- it projects to aria2 `waiting`, never `paused`; no pause event or hook fires.
 
 `pause`:
 
-- like `demote`, but exposed as a user-visible paused state/reason,
-- useful for users who want explicit queue control and no automatic readmission
-  unless configured.
+- active task enters `PausedSlow`, exposed as a user-visible paused state with a
+  slow-slot reason,
+- it projects to aria2 `paused`,
+- there is no automatic readmission: the user (or automation) must resume it,
+- useful for users who want explicit queue control.
 
 Suggested default:
 
@@ -162,7 +168,7 @@ extension fields, not additional aria2 wire statuses.
 
 ## Readmission
 
-Demoted tasks are not lost. The scheduler records:
+Demoted (`WaitingSlow`) tasks are not lost. The scheduler records:
 
 - original queue position,
 - demotion reason,
@@ -171,7 +177,8 @@ Demoted tasks are not lost. The scheduler records:
 - retry state,
 - next eligible readmission time.
 
-Readmission is allowed when:
+Readmission applies only to `WaitingSlow`; `PausedSlow` waits for an explicit
+resume. It is allowed when:
 
 - the cooldown expired,
 - the task still has pending work,
@@ -179,8 +186,9 @@ Readmission is allowed when:
 - queue policy allows its position,
 - global budgets are available.
 
-Readmission must create a new task generation or resume a clean saved
-generation so late completions from old workers cannot write into the new
+Readmission must apply the `detailed-core.md` readmission generation rule: the
+old generation's cancellation drain completes first, then admission increments
+the generation, so late completions from old workers cannot write into the new
 state.
 
 ## Fairness
@@ -199,7 +207,7 @@ Rules:
 Add diagnostic fields in extended RPC/status:
 
 ```text
-slotState: active|waiting|retryWait|pausedSlow|pausedUser|stopped
+slotState: active|waiting|retryWait|waitingSlow|pausedSlow|pausedUser|stopped
 slotReason: none|remoteSlow|retryWait|stalled|user|backpressure
 slowSince
 demotionCount
@@ -216,6 +224,12 @@ Required tests:
 
 - default `off` policy preserves active queue behavior,
 - slow remote task frees a slot only when policy is enabled,
+- `demote` produces `WaitingSlow`, projects aria2 `waiting`, emits no pause
+  event, and readmits automatically after the cooldown,
+- `pause` produces `PausedSlow`, projects aria2 `paused`, and never readmits
+  automatically,
+- user pause/resume/remove during the `WaitingSlow` cooldown wins over the
+  automatic readmission timer,
 - disk backpressure does not trigger slow-slot demotion,
 - rate-limited task does not trigger slow-slot demotion,
 - `retry-on=lowest-speed` cancels/retries the connection and can demote the

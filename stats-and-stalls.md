@@ -151,9 +151,11 @@ The following are diagnostic conditions, not `TaskState` variants:
 - `Stalled`: socket expected progress but no bytes arrived.
 - `Idle`: connection kept alive or waiting for next lease.
 
-`RetryWait`, `PausedSlow`, and other scheduler lifecycle outcomes remain in the
-closed core task-state model. Stats may attach a `connectionCondition` and reason
-to their snapshots, but must not serialize a condition as the task's status.
+`RetryWait`, `WaitingSlow`, `PausedSlow`, and other scheduler lifecycle outcomes
+remain in the closed core task-state model, and span-level retry waits are
+per-lease diagnostics inside `Active`. Stats may attach a `connectionCondition`
+and reason to their snapshots, but must not serialize a condition as the task's
+status.
 
 This distinction prevents false alarms when the downloader itself paused reads.
 It also lets `download-scheduling.md` free slots only for remote slowness, not
