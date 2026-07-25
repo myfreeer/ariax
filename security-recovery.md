@@ -1,6 +1,6 @@
 # Security And Recovery Design
 
-Status: draft.
+Status: reviewed pre-implementation contract. Implementation pending.
 
 This document turns the safety requirements into enforceable design rules.
 

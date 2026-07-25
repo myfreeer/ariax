@@ -1,6 +1,6 @@
 # Retry Policy
 
-Status: draft.
+Status: reviewed pre-implementation contract. Implementation pending.
 
 Retry behavior must be configurable, bounded, observable, and safe. A retry
 policy may decide whether to retry a failed transfer span, but it must not

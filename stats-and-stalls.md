@@ -1,6 +1,6 @@
 # Stats And Stall Detection
 
-Status: draft.
+Status: reviewed pre-implementation contract. Implementation pending.
 
 Problem: many downloaders update speed only when bytes arrive. If a socket gets
 stuck, the displayed speed can freeze at the previous value until another packet

@@ -1,6 +1,6 @@
 # Implementation Plan
 
-Status: draft.
+Status: reviewed pre-implementation contract. Implementation pending.
 
 This is a staged plan for building the design without repeating the incomplete
 rewrite pattern.
@@ -23,10 +23,20 @@ rewrite pattern.
 - Define URL default rules schema and keep it separate from flat config.
 - Create RPC method matrix with source of truth for each response field.
 - Create the complete task-state transition and aria2 wire-projection matrices.
+- Freeze the v1 journal record layouts, checkpoint `PieceStateChunk` encoding,
+  persisted output-root binding/rebind protocol, and exact SQLite v1 schema,
+  pragmas, migration, backup, and recovery-precedence matrices.
 - Freeze the exact 16-hex GID codec, RPC token convention, error-code vocabulary,
   reserved-header policy, and secrets-at-rest policy.
 - Create a new-option inventory from the design docs and fail CI if a
   documented option is missing registry metadata.
+- Generate the profile resource/cap matrix: global resident and named-domain
+  permits, queue bytes/items, handle/socket/file subcaps, parser/metadata
+  cardinality, DNS/cache limits, RPC amplification/work limits, and protocol
+  ingress budgets.
+- Generate the special-purpose-address classifier from a pinned IANA registry
+  snapshot; record source date/hash/license and fail CI when generated policy
+  tables drift from the pinned input or security-policy overrides.
 - Stand up the standalone Cargo workspace and build the experimental `ariax`
   artifact; record the pinned aria2 reference checkout used for compatibility
   generation.
@@ -40,6 +50,21 @@ rewrite pattern.
   `cargo-audit`. Build release binaries with `cargo-auditable` and produce a
   CycloneDX SBOM (`cargo-cyclonedx`) and dependency tree for each release
   profile.
+- Pin the patched russh-sftp and SuppaFTP sources/commits and assert their
+  inbound-frame/control-reply cap diffs and provenance in CI; pin/version/hash/
+  license the bundled Mozilla Public Suffix List and construct a cookie-jar
+  smoke test that rejects public-suffix cookies. Exact prerelease dependencies
+  inherited from selected crates are allowlisted individually, never by a
+  wildcard policy.
+- Assert the SuppaFTP patch never formats raw commands, credentials, paths,
+  welcomes/replies, FEAT text, or listings into logs; canary-secret tests capture
+  every enabled log level. Do not use its workspace-global `no-log` feature.
+- Assert rusqlite's defaults are disabled and its resolved feature set is
+  exactly `bundled+backup+cache+limits`; exercise hot backup and verify every
+  required per-connection SQLite limit before persistent-mode tests run.
+- Assert russh resolves with defaults disabled and exactly ring+flate2+rsa, with
+  no aws-lc/DSA/DES feature; cookie tests install the pinned PSL and exercise the
+  owned SameSite filter across redirect and mirror contexts.
 - Encode the README artifact/profile/panic matrix as Cargo profiles
   (`release-cli` abort, `release-capi` unwind) and per-artifact CI release
   jobs; assert in CI that no job builds the C-ABI artifact under
@@ -62,11 +87,12 @@ Exit criteria:
 
 ## Phase 1: Core Types And Minimal Scheduler
 
-- `SafePathBuilder`
+- `SafePathBuilder` and persisted output-root/file-identity binding
 - `FileLayout`
 - `GlobalOffsetMapper`
-- `ControlJournal`
-- `SessionStore` schema and migration shell
+- `ControlJournal`, including checkpoint-only `PieceStateChunk`
+- Exact SQLite v1 `SessionStore` schema, pragmas, migration, backup, and
+  identity-preserving relocation/digest-verified rebind entry points
 - `OptionRegistry`
 - Flat config parser, config check, and redacted effective-config dump
 - `TaskState`, complete transition table, scheduler queue model, and immutable
@@ -94,6 +120,11 @@ Exit criteria:
 - Journal checkpoint compaction passes its trigger, crash-point, chunking, and
   descriptor-budget tests; replay time after compaction is bounded and
   measured.
+- Root relocation/rebind tests prove that adjacency, names, mtimes, and copied
+  control files cannot authorize progress; retained pieces require matching
+  identities or per-piece digest evidence.
+- SQLite schema creation, every supported migration, unsupported-newer-version
+  rejection, WAL checkpoint/backup, and journal-install pointer crash tests pass.
 - Finalize intent/redo recovery passes every crash-point and collision test.
 - Scheduler model tests cover every state × command/error transition and aria2
   wire projection.
@@ -108,6 +139,9 @@ Exit criteria:
 - Bounded blocking disk fallback.
 - `DiskBackendKind` enum dispatch and total `DiskWriteOutcome` buffer ownership.
 - Bounded submission queues and non-rejecting completion drain topology.
+- Backend-epoch live-failover barrier and generation readmission.
+- Root/data file-handle LRU with process/profile budgets and identity-checked
+  reopen.
 - Backend diagnostics RPC.
 
 Exit criteria:
@@ -116,6 +150,10 @@ Exit criteria:
 - No blocking disk I/O on network runtime threads.
 - Every submitted buffer is returned or quarantined exactly once across success,
   error, cancellation, and shutdown.
+- A settled live failover reopens only under a new backend epoch/generation;
+  cancellation uncertainty faults the affected tasks instead of reusing handles.
+- File-handle pressure never evicts in-flight/dirty handles and never leaves a
+  balanced durability group without its data/journal barrier.
 
 ## Phase 3: HTTP(S) Downloader
 
@@ -149,6 +187,13 @@ Exit criteria:
   header conflict, redirect/proxy SSRF, disk full, process kill, and poweroff
   simulation.
 - 1,000 active HTTP range benchmark with bounded memory.
+- 10,000 concurrent low-activity socket benchmark with the reusable idle HTTP
+  pool still capped at its profile limit; measured accounted reservations and
+  process RSS must fit the profile target/permit envelope and documented native
+  stack/headroom allowance.
+- DNS tests cover positive/negative TTL clamps, TTL=0, answer-count limits,
+  bounded singleflight/waiters, cancellation, two-racer Happy Eyeballs timing,
+  reconnect revalidation, and special-use-address filtering.
 - Stuck socket speed drops to zero without waiting for another packet.
 - The minimal RPC methods drive the real scheduler and expose only aria2's closed
   status/GID/error shapes.
@@ -156,6 +201,8 @@ Exit criteria:
 ## Phase 4: Control Plane And RPC
 
 - Complete control-plane operations over the Phase-1 scheduler.
+- Request/response, batch, list-page, per-client pending-work, and serialized-byte
+  caps with immutable membership indexes for list queries.
 - Optional slow-slot scheduler policy.
 - CLI add/pause/resume/remove/status.
 - JSON-RPC and WebSocket events.
@@ -179,15 +226,21 @@ Exit criteria:
   or startup-only options, and atomic failed reload.
 - WebSocket and stdio clients have bounded event queues with tested coalescing,
   overflow, snapshot recovery, and disconnect behavior.
+- Oversized responses fail as typed complete errors, `system.multicall` obeys
+  work/response caps without claiming transactional semantics, and one client
+  cannot reserve the process RPC budget.
 
 ## Phase 5: Metalink, FTP, SFTP
 
 - Metalink parser with safe XML settings and chunk checksums.
 - Metalink checksum-aligned verification with bounded ordered reassembly and
   readback fallback.
-- FTP adapter with sequential resume per source by default; concurrency is across
-  distinct mirrors rather than overlapping REST-to-EOF streams.
-- russh/russh-sftp adapter with project-owned bounded offset-request pipelining,
+- Patched-SuppaFTP adapter with sequential resume per source by default;
+  concurrency is across distinct mirrors rather than overlapping REST-to-EOF
+  streams.
+- FTP EPSV/PASV and active-mode endpoint validation tied to the approved control
+  peer, with administrator overrides re-running the complete destination policy.
+- russh/patched-russh-sftp adapter with project-owned bounded offset-request pipelining,
   host-key verification, known-hosts policy, authentication ordering, algorithm
   policy, timeout/rekey handling, and secret redaction.
 - Mirror selection and server stats.
@@ -201,6 +254,23 @@ Exit criteria:
 - Metalink chunk hash path avoids disk readback in normal operation.
 - FTP tests prove lease-end connection close/accounting and no unbounded discarded
   tail traffic.
+- FTP tests reject passive bounce/SSRF endpoints and active callbacks from any
+  unapproved peer.
+- FTP integration tests assert control sockets enter only through
+  `connect_with_stream`, passive data sockets only through the owned builder,
+  and active mode uses the patched pre-TLS peer predicate/accept loop; default
+  connect/builder/NAT-workaround paths and proxied active mode are unreachable.
+- FTP parser/source tests prove a line/aggregate/count overflow is rejected
+  before proportional allocation, closes the connection, and includes FEAT
+  continuation handling.
+- FTP dependency-log tests cover USER/PASS/ACCT, SITE/custom commands, paths,
+  greeting/reply/FEAT text, and listings with canaries at every log level.
+- SFTP tests prove generic resume cannot approve a host key, challenge approval
+  is exact and stale-safe, and packet-buffer-plus-returned-vector memory stays
+  inside `sftp_ingress_budget` across cancellation and malformed replies.
+- SFTP source and fault tests prove over-cap framing allocates no payload, a
+  malformed frame closes rather than resynchronizes, and all outstanding raw
+  requests receive exactly one terminal result.
 
 ## Phase 6: BitTorrent Full Build
 
@@ -220,6 +290,9 @@ Exit criteria:
 - BT claims are backed by end-to-end tests.
 - Minimal builds reject BT options clearly.
 - Shutdown timeout/failure produces an explicit dirty checkpoint and recovery test.
+- Command/event/blob queues enforce their exact item/byte caps, alert pressure
+  follows the defined loss/coalescing policy, resume blobs obey size/cadence
+  limits, and the shutdown barrier honors its timeout without unbounded memory.
 
 ## Phase 7: Hardening
 

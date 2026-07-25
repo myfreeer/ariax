@@ -1,6 +1,6 @@
 # Performance Profiles
 
-Status: draft.
+Status: reviewed pre-implementation contract. Implementation pending.
 
 C10k and maximum throughput are related but not identical goals.
 

@@ -1,6 +1,6 @@
 # Split Download Design
 
-Status: draft.
+Status: reviewed pre-implementation contract. Implementation pending.
 
 Decision: use dynamic non-overlapping range leases, not overlapping
 "connection 1 downloads 0-100%, connection 2 downloads 50-100%" style ranges.

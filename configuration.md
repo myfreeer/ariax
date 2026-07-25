@@ -1,6 +1,6 @@
 # Configuration And aria2 Compatibility
 
-Status: draft.
+Status: reviewed pre-implementation contract. Implementation pending.
 
 Configurability is a product requirement. The implementation must be explicit
 about which aria2 options are implemented, unsupported, unsafe-compat only, or
@@ -256,6 +256,7 @@ Defaults and hard maxima are registry data, not ad hoc constants:
 | HTTP/stdio RPC request | 2 MiB | 64 MiB |
 | RPC response / batch calls / list page | 16 MiB / 256 / 1000 | 64 MiB / 1024 / 10000 |
 | Metalink or torrent metadata document | 64 MiB | 256 MiB |
+| FTP control line / complete reply / reply lines | 64 KiB / 1 MiB / 4096 | same (hard internal limits) |
 | emitted layout files / source URIs per task | 262144 / 1024 | same |
 | XML nesting / attributes per element / one attribute | 64 / 128 / 64 KiB | same |
 | XML text node / aggregate emitted canonical layout | 8 MiB / 64 MiB | same |

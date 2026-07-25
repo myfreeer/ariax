@@ -1,6 +1,6 @@
 # Backpressure Design
 
-Status: draft.
+Status: reviewed pre-implementation contract. Implementation pending.
 
 Backpressure means the downloader responds to actual network, disk, CPU, and
 memory conditions. It is not just a fixed rate limit.

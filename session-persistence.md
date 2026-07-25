@@ -1,6 +1,6 @@
 # Session Persistence
 
-Status: draft.
+Status: reviewed pre-implementation contract. Implementation pending.
 
 Decision: use a hybrid persistence model:
 
@@ -548,6 +548,15 @@ SQLite:
 - `cache_size` is set as a negative KiB value from the selected
   `sqlite_cache_budget`; baseline `mmap_size=0` prevents an uncharged mapped
   page cache,
+- the rusqlite build enables `bundled`, `backup`, `cache`, and `limits` with
+  defaults disabled. Every connection sets `SQLITE_LIMIT_LENGTH=80 MiB`,
+  `SQLITE_LIMIT_SQL_LENGTH=1 MiB`, `SQLITE_LIMIT_COLUMN=64`,
+  `SQLITE_LIMIT_EXPR_DEPTH=100`, `SQLITE_LIMIT_COMPOUND_SELECT=16`,
+  `SQLITE_LIMIT_FUNCTION_ARG=32`, `SQLITE_LIMIT_ATTACHED=0`,
+  `SQLITE_LIMIT_LIKE_PATTERN_LENGTH=64 KiB`,
+  `SQLITE_LIMIT_VARIABLE_NUMBER=256`, `SQLITE_LIMIT_TRIGGER_DEPTH=16`, and
+  `SQLITE_LIMIT_WORKER_THREADS=0`; a platform SQLite that cannot apply a
+  required limit fails persistent-mode startup rather than silently widening it,
 - WAL auto-checkpoint is 1000 pages, with a truncate checkpoint at clean
   shutdown and when WAL bytes exceed 64 MiB; checkpoint failure is diagnostic
   and never discards the WAL,

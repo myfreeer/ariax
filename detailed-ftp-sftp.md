@@ -1,6 +1,6 @@
 # Detailed FTP And SFTP Design
 
-Status: draft.
+Status: reviewed pre-implementation contract. Implementation pending.
 
 The HTTP-centric resume/validation model (`EntityValidator` with
 ETag/Last-Modified, the HTTP `StaleValidator` classification, and
@@ -58,16 +58,51 @@ Active PORT/EPRT mode is off unless explicitly selected. The client creates one
 bounded listener on its configured local interface, advertises only that local
 address/ephemeral port, and accepts exactly one data connection before the
 deadline. The peer address must equal the approved control peer (or the same
-explicit administrator allowlist used for PASV); mismatches are closed without
-reading and do not satisfy the transfer. A task/RPC input cannot choose an
-arbitrary bind address or third-party callback target. Passive and active data
-sockets both consume the ordinary socket/host budgets and repeat policy after a
-control reconnect or proxy change.
+explicit administrator allowlist used for PASV); mismatches are closed before
+any FTPS handshake and do not satisfy the transfer. The patched accept loop
+continues until the approved peer or deadline, but fails after 32 rejected peers
+to bound callback abuse. A task/RPC input cannot choose an arbitrary bind
+address or third-party callback target. Active mode is direct-connection only;
+proxy use is rejected because the callback cannot inherit the proxied control
+path. Passive and active data sockets both consume the ordinary socket/host
+budgets and repeat policy after a control reconnect or proxy change.
+
+The adapter always obtains the control socket from the downloader-owned
+connector and calls SuppaFTP `connect_with_stream`, then installs the
+project-owned passive stream builder. It never calls the crate's address-taking
+connect helpers, uses its default passive builder, or enables its NAT workaround.
+The pinned patch exposes the local-bind and active-peer policy hook described
+above; unpatched active mode's first-peer acceptance is forbidden.
 
 These rules prevent PASV bounce/SSRF and active-mode callback abuse without
 changing storage/retry semantics. A rejected data endpoint is
 `UnsafeDestination`, not a transient `DataConnection` error for another blind
 retry to the same endpoint.
+
+## FTP Control-Reply Bounds
+
+The selected patched SuppaFTP parser enforces limits before growing a line or
+aggregate reply buffer. The fixed baseline limits are 64 KiB including CRLF for
+one control line, 1 MiB for one complete single/multiline reply, and 4096 lines.
+They apply to greeting, ordinary replies, errors, and FEAT continuation parsing.
+Every retained byte takes `task_metadata_budget` plus the global resident permit;
+diagnostics keep only the existing capped/redacted message form.
+
+Crates.io SuppaFTP 10.0.1 and current upstream main use unbounded `read_until`
+and FEAT vectors and are forbidden by the dependency-source assertion. The
+pinned patch scans bounded input before append, treats a line/aggregate/count
+overflow or malformed multiline terminator as a fatal source protocol error,
+and closes the control connection. It never tries to resynchronize after an
+over-cap reply. The downloader does not call unbounded directory-list
+convenience APIs; adding directory downloads later requires a separate bounded
+listing contract.
+
+The same patch separates command serialization from diagnostics and removes all
+raw FTP wire/path logging. It emits only safe verbs/status codes and bounded
+length/count metadata; it never formats USER/PASS/ACCT arguments, SITE/custom
+commands, remote paths, welcome/reply/FEAT text, or data listings. Logger-side
+redaction and SuppaFTP's workspace-global `no-log` feature are not accepted as
+substitutes. The project wrapper owns capped/redacted protocol diagnostics.
 
 ## Resume Offset (REST)
 
@@ -132,8 +167,8 @@ way.
 
 ## SFTP Read Model
 
-- SFTP runs over SSH through russh plus russh-sftp as selected in
-  `library-choice.md`; the adapter must not block network reactor threads.
+- SFTP runs over SSH through russh plus the pinned patched russh-sftp selected
+  in `library-choice.md`; the adapter must not block network reactor threads.
 - Reads are random-access (`SSH_FXP_READ` at explicit offsets), so a range lease
   maps to offset reads without a `REST` equivalent. Total length and mtime come
   from `fstat`.
@@ -163,9 +198,10 @@ Resolution order:
 An explicit pin or known-host entry that mismatches is terminal
 `HostKeyMismatch`; it is not converted into an approval prompt.
 
-The `known_hosts` reader uses the selected stable `ssh-key` parser behind an
-owned matcher. It supports canonical host and `[host]:port` patterns, negation,
-wildcards, and OpenSSH hashed-host entries. `@revoked` is a terminal rejection.
+The `known_hosts` reader uses the exact `russh::keys::ssh_key` parser pinned and
+re-exported by the selected russh version, behind an owned matcher. It supports
+canonical host and `[host]:port` patterns, negation, wildcards, and OpenSSH
+hashed-host entries. `@revoked` is a terminal rejection.
 `@cert-authority` is feature-gated until host-certificate principal/time/CA
 validation has its own interoperability matrix; a CA key is never mistaken for
 an ordinary exact host key. The file is streamed/capped at 8 MiB, 65,536
@@ -244,14 +280,18 @@ Bounded offset pipeline: the adapter keeps at most
 the separate `sftp_ingress_budget`) offset reads in flight per channel, sized by
 the current `RatePermit`, server limit, remaining span, and a default 64 KiB
 request cap (hard maximum 1 MiB and never larger than the negotiated packet
-payload). russh-sftp 2.3.0 returns each raw offset response as an owned
-`Data.data: Vec<u8>` after first reading a capped packet buffer. The adapter sets
-the crate's client `max_packet_len` to 128 KiB by default (hard maximum 1 MiB,
-clamped down by the server extension) and rejects a larger length prefix before
-payload allocation. Request admission reserves the packet cap plus requested
-data length—the temporary decode double-allocation worst case—in SFTP ingress
-before send, charges both until the packet/vector are released, then copies the
-data into a reserved `BufferLease` and releases the vector immediately.
+payload). The selected patched russh-sftp 2.3.0 returns each raw offset response
+as an owned `Data.data: Vec<u8>` after first reading a capped packet buffer. The
+unpatched crates.io 2.3.0 receive loop passes `u32::MAX` to its packet reader and
+is forbidden. The pinned patch threads the configured 128 KiB default (hard
+maximum 1 MiB, clamped down by the server extension) into every inbound read;
+an over-cap prefix or malformed frame is fatal before payload allocation,
+cancels the SFTP channel, and completes all outstanding requests with a typed
+error rather than continuing on a desynchronized stream. Request admission
+reserves the packet cap plus requested data length—the temporary decode
+double-allocation worst case—in SFTP ingress before send, charges both until the
+packet/vector are released, then copies the data into a reserved `BufferLease`
+and releases the vector immediately.
 There is no whole-file/high-level `read` path. Completions integrate with the
 standard cancellation, generation, retry, and storage-lease contracts; a
 cancelled request drains to its completion before either allocation is reused.
@@ -285,12 +325,30 @@ from HTTP status codes:
   destination policy,
 - active mode accepts one timely connection only from the approved control peer
   and cannot be configured by untrusted RPC as a third-party callback,
+- a mismatched active peer is closed before TLS and the patched loop can still
+  accept the approved peer; deadline and 32-rejection caps are enforced, while
+  unpatched first-peer acceptance and proxied active mode are rejected,
+- every control connection uses the downloader connector plus
+  `connect_with_stream`, and every passive data connection uses the owned
+  endpoint-validating builder; default connect/build/NAT-workaround paths fail
+  the dependency-use assertion,
+- FTP greeting, ordinary, multiline, and FEAT replies reject a line above
+  64 KiB, an aggregate above 1 MiB, or more than 4096 lines before proportional
+  allocation; overflow closes the connection and the unpatched crate fails the
+  Phase-0 source/provenance assertion,
+- canary user/password/path/custom-command/reply secrets never appear through
+  the patched dependency at any enabled log level; safe records contain only
+  verb/status/length/count metadata,
 - data-channel premature-close preserves earlier durable checkpoints and retries
   from the current pending span,
 - SFTP offset reads place bytes at correct global offsets,
 - SFTP offset admission accounts the packet-buffer plus returned-vector peak;
   an over-cap packet length is rejected before payload allocation and cannot
   exceed `sftp_ingress_budget`,
+- the patched receive driver reads only the four-byte prefix before rejecting an
+  over-cap frame, closes on malformed framing without resynchronization, and
+  completes every pending request exactly once; an unpatched dependency fails
+  the Phase-0 source/provenance assertion,
 - explicit host-key/SHA-256 pin match succeeds and mismatch is terminal before
   authentication,
 - an unknown key pauses before credentials, exposes a stable challenge, and

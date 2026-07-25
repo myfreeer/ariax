@@ -1,9 +1,9 @@
 # Design Review Round 2: Findings and Proposed Fixes
 
-Status: review of the `design/` set, with proposed resolutions. Fixes F1–F18
-have been applied to the affected docs; this document is retained as the rationale
-and audit trail for those changes. Verdicts and line references describe the
-pre-fix state.
+Status: historical, non-normative review record. Fixes F1–F18 were applied;
+current rules live in the focused subsystem contracts and
+`final-preimplementation-review.md`. Verdicts and line references below
+describe the pre-fix state.
 
 This round reviewed all 32 design documents in five thematic clusters, then ran
 an adversarial verification pass that re-read the actual document text and ruled

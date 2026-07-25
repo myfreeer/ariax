@@ -1,6 +1,6 @@
 # APIs, Integrations, And Embedding
 
-Status: draft.
+Status: reviewed pre-implementation contract. Implementation pending.
 
 Decision: expose aria2-compatible RPC for ecosystem compatibility, and expose a
 typed native library API for embedding. Add a stable C ABI only after the core

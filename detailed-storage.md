@@ -1,6 +1,6 @@
 # Detailed Storage And Journal Design
 
-Status: detailed draft for the first implementation slice.
+Status: reviewed first-slice implementation contract. Implementation pending.
 
 This document defines `SafePathBuilder`, `FileLayout`, `GlobalOffsetMapper`,
 `StorageEngine`, and `ControlJournal` contracts for HTTP sequential/range

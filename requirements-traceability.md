@@ -1,6 +1,6 @@
 # Requirements Traceability
 
-Status: draft.
+Status: reviewed pre-implementation contract. Implementation pending.
 
 This maps the requested properties to design documents.
 
@@ -54,7 +54,8 @@ Design coverage:
 - `stats-and-stalls.md`: packet-independent speed sampling and stuck socket
   reporting.
 - `event-backends.md`: backend probing and fallback.
-- `implementation-plan.md`: 10k idle socket and 1k active range benchmarks.
+- `implementation-plan.md`: 10k low-activity socket and 1k active range
+  benchmarks.
 
 Acceptance:
 
@@ -62,7 +63,11 @@ Acceptance:
 - no blocking disk I/O on network runtime threads,
 - no unbounded queues,
 - hot queues pass descriptors/leases, not payload copies,
-- event-loop lag and queue depth are observable.
+- event-loop lag and queue depth are observable,
+- every accounted allocation holds both a named-domain permit and the global
+  resident-byte permit; aggregate reservations remain below the profile limit,
+- C10k means concurrent low-activity sockets, not 10,000 retained HTTP
+  keep-alive entries or per-connection transfer buffers.
 
 Boundary:
 
@@ -92,8 +97,9 @@ Design coverage:
 - `detailed-http-first-slice.md`: reserved headers, exact response validation,
   provisional lease commit/abort, and body-size limits.
 - `detailed-ftp-sftp.md`: FTP/SFTP offset validation and protocol-specific
-  concurrency limits, plus the SFTP host-key/authentication/algorithm policy
-  resolved by `final-preimplementation-review.md`.
+  concurrency limits, FTP data-endpoint validation, plus the SFTP
+  host-key/authentication/algorithm policy resolved by
+  `final-preimplementation-review.md`.
 - `rate-limiting.md`: ingress-debited payload rate accounting and bounded
   discard budgets.
 - `session-persistence.md`: private file permissions and secrets-at-rest policy.
@@ -107,7 +113,21 @@ Acceptance:
 - safe path builder is mandatory,
 - pure Rust crates forbid unsafe code,
 - every write is global-offset validated,
-- crash tests pass for all journal states.
+- crash tests pass for all journal states,
+- persisted progress is accepted only under a matching root/file identity or
+  the explicit per-piece-digest rebind protocol,
+- generic resume cannot approve an SFTP host key; approval names the current
+  challenge id and displayed fingerprint,
+- FTP passive/active data endpoints cannot escape the approved control peer or
+  the complete destination policy,
+- dependency/source gates reject unpatched SuppaFTP/russh-sftp receive paths;
+  FTP control replies and SFTP packet framing fail before over-cap allocation,
+- the FTP dependency never formats credentials, raw commands/replies, paths,
+  FEAT text, or listings into logs at any enabled level,
+- every cookie jar is initialized with the pinned/versioned Mozilla Public
+  Suffix List and cookie support fails closed if it is unavailable or invalid,
+- the owned cookie wrapper, not cookie_store alone, enforces the defined
+  schemeful-site SameSite context and rejects `SameSite=None` without `Secure`,
 - proxy-side DNS/CONNECT cannot bypass private-address policy for untrusted RPC,
 - redirects re-run destination, identity, cookie, and credential checks,
 - user headers cannot override generated framing/range/security headers,
@@ -126,12 +146,16 @@ Design coverage:
 - `README.md`: memory model and binary-size rules.
 - `disk-adapter.md`: buffer ownership and bounded disk fallback.
 - `buffer-pool.md`: lazy/preallocated buffer policy, lifecycle, scaling caps.
+- `performance-profiles.md`: named-domain plus global resident permits,
+  metadata/cache cardinality, protocol ingress, RPC work, and handle budgets.
 - `zero-copy.md`: allowed zero-copy optimizations and forbidden shortcuts.
 - `implementation-plan.md`: memory peak gates.
 
 Acceptance:
 
 - buffer pool has hard budgets,
+- external SFTP vectors and transform output have explicit ingress/domain
+  budgets rather than hiding outside the pool,
 - segment payloads are not stored in state,
 - feature-gated build profiles exist,
 - CI tracks `minimal` binary size.
@@ -183,6 +207,8 @@ Design coverage:
 Acceptance:
 
 - parser and journal fuzz targets exist,
+- every untrusted parser and variable-length metadata path rejects its hard
+  byte/item/depth cap before proportional allocation or work,
 - unsupported options fail explicitly,
 - docs generated from option metadata,
 - every runtime state transition is typed and tested.
@@ -225,7 +251,8 @@ Design coverage:
 - `configuration.md`: typed option registry, layering, input file, RPC changes,
   compatibility matrix, flat config, optional URL default rules, reload, and
   dump/export policy.
-- `review-findings-response.md`: parsed-only options fail CI.
+- `configuration.md`, `detailed-config.md`, and
+  `implementation-readiness.md`: parsed-only options fail CI.
 
 Acceptance:
 
@@ -270,7 +297,10 @@ Acceptance:
 - aria2 token authentication, including `system.multicall`, follows the same
   dispatcher policy on HTTP/WebSocket,
 - each WebSocket/stdio client has a bounded queue, documented coalescing, and a
-  snapshot recovery path after dropped status/stat events.
+  snapshot recovery path after dropped status/stat events,
+- RPC request, response, batch, list, per-client pending-work, and serialized
+  output limits are enforced before dispatch/amplification; list queries clone
+  immutable membership indexes instead of blocking scheduler progress.
 
 ## Protocol Modernization
 
@@ -344,6 +374,12 @@ Acceptance:
 - RocksDB/LMDB are not mandatory dependencies,
 - one serialized appender owns sequence assignment, payloads, and segment
   continuity,
+- checkpoints encode the durable piece map in bounded, canonical
+  `PieceStateChunk` records rather than replaying an unbounded live history,
+- the exact SQLite v1 schema, pragmas, migration policy, backup behavior, and
+  journal-install pointer transitions are crash-tested,
+- every task persists and validates its output-root binding; relocation/rebind
+  is explicit and identity- or digest-proven,
 - provisional range attempts recover as aborted/pending unless a commit record
   is present,
 - journal/layout/options precedence is deterministic when SQLite and task state
@@ -369,6 +405,9 @@ Acceptance:
 - user-selected unavailable supported backend falls back or cleanly errors
   depending on `event-backend-fallback`,
 - fallback reason is logged and exposed via diagnostics,
+- live backend failure uses a stop/drain/abort/close/reopen barrier; only a fully
+  settled old epoch may readmit work under a fresh backend epoch and task
+  generation,
 - legacy `event-poll` configurations are accepted through the documented alias,
 - no independent raw reactor is promised inside the Tokio runtime.
 

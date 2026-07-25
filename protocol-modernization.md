@@ -1,6 +1,6 @@
 # Protocol Modernization
 
-Status: draft.
+Status: reviewed pre-implementation contract. Implementation pending.
 
 Modern protocols should be part of the roadmap, but not all of them belong in
 the mandatory baseline. The downloader must keep the reliable aria2-style
@@ -309,6 +309,11 @@ needs a defined contract:
   than misinterpreting them (this file is untrusted input and has a fuzz target),
 - domain/path matching with public-suffix enforcement so a cookie cannot be set
   for a registrable-suffix domain,
+- every jar is constructed with the repository's versioned, SHA-256-pinned
+  Mozilla Public Suffix List snapshot; the selected `cookie_store` feature does
+  not install a list by default, and failure to parse/load the pinned snapshot
+  disables cookies with a typed error rather than silently accepting suffix
+  cookies,
 - honor `Secure`, `HttpOnly`, and `SameSite`; drop `Secure` cookies on plaintext
   requests,
 - expiry and session-cookie rules; session cookies are not persisted by
@@ -316,8 +321,30 @@ needs a defined contract:
 - cookies are scoped by host and MUST NOT propagate to unrelated mirror hosts in
   a multi-URI/Metalink download (ties into the cross-mirror identity rule in
   `split-download.md`),
-- cookie propagation across redirects follows `redirect-policy.md` (dropped when
-  the redirect crosses to an unrelated origin).
+- cookie propagation across redirects follows `redirect-policy.md`: the prior
+  hop's Cookie header is dropped and the target hop re-derives only cookies that
+  pass domain/path/expiry, Public Suffix List, Secure, and SameSite policy.
+
+`cookie_store::Cookie::matches` is used only for expiry/domain/path/Secure/
+HTTP-scheme filtering; it does not implement SameSite. The owned wrapper applies
+this additional policy:
+
+- Schemeful site is `(http|https scheme, registrable domain from the pinned
+  Public Suffix List)`; an IP literal or host without a registrable domain uses
+  its exact canonical host. The port is not part of site identity.
+- One redirect chain fixes `top_level_site` from the initial explicitly selected
+  source URI. Selecting a different configured mirror starts a new top-level
+  navigation context for that mirror; a redirect never resets the context.
+- Download GET and validator HEAD are top-level safe navigations. `Strict` is
+  sent only when the request site equals `top_level_site`. `Lax` and an omitted
+  SameSite attribute are sent for same-site requests or a top-level GET/HEAD.
+  Any future unsafe method requires same-site context for Lax.
+- `None` may be stored/sent only with `Secure` and only over HTTPS. A
+  `SameSite=None` cookie without `Secure` is rejected when loaded or received.
+- These checks run after ordinary domain/path/expiry matching and before header
+  serialization. Tests cover same-site/cross-site redirects, scheme changes,
+  IP/host-only sites, mirror switching, Strict/Lax/None/unspecified, and
+  HTTPS-to-HTTP downgrade.
 
 ## Cookie And DNS Cache Bounds
 
@@ -340,6 +367,9 @@ needs a defined contract:
   `performance-profiles.md` independently of the selected crate. Expired entries
   are removed first, then least-recently-used non-pinned entries; a single
   oversized cookie is rejected rather than evicting an unbounded set.
+- Diagnostics and release metadata expose the active Public Suffix List snapshot
+  date/hash; updates are reviewed supply-chain changes with domain-boundary
+  regression tests.
 - Happy Eyeballs cancels and closes the losing A/AAAA connection racer so it does
   not leak against the file-descriptor budget.
 

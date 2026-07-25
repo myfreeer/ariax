@@ -1,6 +1,6 @@
 # Thread Messaging And Queues
 
-Status: draft.
+Status: reviewed pre-implementation contract. Implementation pending.
 
 Decision: keep Rust as the implementation language, but do not use one generic
 channel everywhere. The downloader uses bounded, lane-specific queues. Hot data

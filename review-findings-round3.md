@@ -1,13 +1,14 @@
 # Design Review Round 3: Consolidated Findings Through Round 4
 
-Status: review of the `design/` set after the round-2 fixes (F1–F18) were applied,
-including the supplemental cross-document pass and the externally verified round-4
-corrections.
+Status: historical, non-normative review record of the post-round-2 state,
+including the supplemental cross-document pass and externally verified round-4
+corrections. Its resolved rules are superseded by the focused subsystem
+contracts and `final-preimplementation-review.md`.
 The underlying round-3 pass re-read the 34 documents then present in five thematic
 clusters (core runtime, storage/recovery, protocols/download,
 config/API/integration, and process/traceability), then cross-checked findings
 between clusters for contradictions.
-Verdicts and line references describe the current post-round-2 state. Round 4 was
+Verdicts and line references describe that historical post-round-2 state. Round 4 was
 not copied verbatim: its claims were rechecked against the aria2 source/manual and
 small WSL/MinGW Rust experiments, and its overclaims are corrected below.
 

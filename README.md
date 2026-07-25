@@ -1,12 +1,14 @@
 # Downloader Design
 
-Status: reviewed design. Implementation readiness is gated by
-`final-preimplementation-review.md`.
+Status: reviewed pre-implementation architecture. Coding is gated by
+`implementation-readiness.md` and the phase exit criteria in
+`implementation-plan.md`.
 
 This design is for a new downloader that keeps the mature aria2 user model
 while fixing the major safety, scalability, and completeness problems found in
-the earlier `aria2_rust` prototype's review findings (summarized in
-`review-findings-response.md`).
+the earlier `aria2_rust` prototype. `review-findings-response.md` is the
+historical, non-normative audit summary; the focused subsystem documents own the
+current rules.
 
 ## Goals
 
@@ -147,8 +149,9 @@ Selected community components:
   scalable, supports DHT/PEX/magnet/web seeds, and already handles many BT edge
   cases. The integration must still sanitize paths and translate state through
   the downloader scheduler.
-- russh plus russh-sftp for the standard-build SFTP adapter, using a
-  project-owned bounded offset-request pipeline. libssh2 is an interoperability
+- russh plus a pinned inbound-frame-cap patch for russh-sftp 2.3.0 for the
+  standard-build SFTP adapter, using a project-owned bounded offset-request
+  pipeline. Unpatched 2.3.0 is forbidden; libssh2 is an interoperability
   fallback only if the Phase-5 prototype gate fails.
 - rusqlite on a dedicated bounded session-store thread and a dedicated Rayon
   pool for CPU-heavy work.
@@ -300,6 +303,9 @@ States:
   only by policy, is distinct from user pause, and never readmits automatically.
 - `PausedRestarting`: internal active-option restart quiescence. It is rendered
   as aria2 `waiting` and never emits a pause event.
+- `PausedHostKey`: no credential or file request may proceed until an explicit
+  command approves the exact current SFTP challenge id/fingerprint; generic
+  resume cannot approve it.
 - `RetryWait`: waiting for retry policy timer with no span leased or pending.
   It may or may not consume an active slot depending on configured scheduling
   policy. A single failing lease among running leases is a span-level retry
@@ -314,6 +320,9 @@ States:
 
 This is a high-level lifecycle summary. `detailed-core.md` is normative for the
 complete state × command/error matrix and the closed aria2 wire-status mapping.
+`needs_credentials` and `no_space` are orthogonal persisted/derived admission
+conditions, not additional mutually exclusive task states; clearing one never
+implicitly clears user pause or the other condition.
 
 Admission control:
 
@@ -323,7 +332,9 @@ Admission control:
 - Global socket budget limits total open network connections.
 - File descriptor budget limits open files and libtorrent handles.
 - Disk memory budget limits in-flight write buffers.
-- RPC control budget limits large request bodies and long status scans.
+- RPC control budgets limit request and response bytes, batch/list work,
+  per-client accepted state, event queues, and serialization; immutable
+  membership indexes keep list queries out of scheduler actor turns.
 
 Changing an active option either applies live or triggers a controlled restart.
 The option registry defines this per option. Parsed-only behavior is forbidden.
@@ -447,10 +458,14 @@ Write protocol:
 
 On startup:
 
-- Invalid or torn journal records are ignored.
+- Replay stops at the first invalid/torn record or sequence gap and ignores only
+  that record and the newer suffix; it never skips corruption and resumes with a
+  later record.
 - In-flight pieces are reset to pending.
-- Completed pieces are trusted only if the control file, layout hash, and
-  validators match. Otherwise they are rechecked or redownloaded.
+- Completed pieces are trusted only if the control file, layout hash, persisted
+  root/file identity binding, validators, and data-before-journal evidence
+  match. A moved or copied tree enters the explicit identity/digest rebind path;
+  otherwise pieces are rechecked or redownloaded.
 - Existing target files without a matching control file are never truncated by
   default. The user must set `allow-overwrite=true` or choose a new name.
 

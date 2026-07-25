@@ -1,6 +1,6 @@
 # Detailed HTTP First-Slice Design
 
-Status: detailed draft for the first implementation slice.
+Status: reviewed first-slice implementation contract. Implementation pending.
 
 This document defines HTTP(S) sequential download, resume, strict range
 validation, storage integration, retry integration, and stats behavior.

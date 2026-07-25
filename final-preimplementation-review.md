@@ -44,11 +44,11 @@ The strongest parts of the design are:
 - The recovery ordering correctly distinguishes written, committed, flushed,
   and durable data.
 
-The principal architectural problem is not the top-level decomposition. It is a
-small set of cross-document contract mismatches at the boundaries between a
-network attempt, a storage lease, physical output bytes, durable progress, and
-task state. Those mismatches must be fixed before the types become expensive to
-change.
+The principal architectural problem found by the review was not the top-level
+decomposition. It was a set of cross-document contract mismatches at the
+boundaries between a network attempt, a storage lease, physical output bytes,
+durable progress, and task state. The amendments below close those mismatches
+before the types become expensive to change.
 
 ## P0 Findings
 
@@ -207,7 +207,7 @@ Segment rotation bounded one file but not a task journal's lifetime size or
 startup replay work.
 
 Adopted resolution (normative in `detailed-storage.md` Checkpoint Compaction
-and Journal Descriptor Budget; v1 record types 19–21):
+and Journal Descriptor Budget; v1 record types 19–21 and 24):
 
 - Record-count, byte-count, segment-count, and measured replay-time compaction
   triggers with geometric-shrink conditions and failure backoff.
@@ -217,8 +217,9 @@ and Journal Descriptor Budget; v1 record types 19–21):
   after installation is durable.
 - Provisional/in-flight work is never promoted by compaction.
 - `CheckpointStart`/`CheckpointEnd` with a state hash validate the set whole;
-  `LayoutChunk` chunking covers state larger than the record cap; every install
-  crash point recovers to exactly one authoritative set.
+  `LayoutChunk` bounds large file-layout snapshots and `PieceStateChunk` bounds
+  the durable piece map; every install crash point recovers to exactly one
+  authoritative set.
 - Idle journal descriptors close under an LRU cap with tail revalidation on
   reopen.
 - Journal bytes, segment count, replay time, last compaction, failures, and
@@ -260,16 +261,52 @@ deadline could not honor wait guarantees across clock jumps.
 Adopted resolution (normative in `detailed-storage.md` Finalization and
 `retry-policy.md` Clock rule; v1 record types 22–23):
 
-- `FinalizeIntent` (flushed before rename, carrying temp/final paths, layout
-  identity, length, and file-identity evidence) plus `FinalizeDone` make
+- `FinalizeIntent` (flushed before rename, carrying safe temp/final relative
+  paths, root/layout identity, length, and file-identity evidence) plus
+  `FinalizeDone` make
   recovery a pure function of `(intent, done, filesystem)`; the redo matrix
   covers both crash orders, foreign final-path collisions (fail closed),
   directory sync ordering, Windows sharing violations, and multi-file order.
-- `RetryState` persists `scheduled_at_unix_ms`, `delay_ms`, and the reason.
+- `RetryState` persists `scheduled_at_unix_ms`, `delay_ms`,
+  `elapsed_before_wait_ms`, and the reason.
   Live waits use monotonic time; recovery clamps elapsed time into
   `[0, delay_ms]`, re-waits fully on implausible clocks, caps by
   `retry-max-wait`, and explicitly documents that restart-surviving waits are
   bounded-conservative, not exact.
+
+## Final Cross-Pass Amendments (resolved)
+
+The final architecture/resource pass found no new decomposition change, but it
+did close four implementation-critical boundary sets that were under-specified
+in the earlier P0 record:
+
+- **Persistence identity and compact state.** `detailed-storage.md` and
+  `session-persistence.md` now bind progress to a canonical output root and
+  stable file identities, require explicit identity-preserving relocation or
+  per-piece-digest rebind, define checkpoint-only `PieceStateChunk`, and freeze
+  the exact SQLite v1 schema, pragmas, migration, backup, and install-pointer
+  crash rules. Names, adjacency, mtimes, and copied control files convey no
+  ownership.
+- **Resident resources and amplification.** `performance-profiles.md`,
+  `configuration.md`, `buffer-pool.md`, and `apis-and-embedding.md` now require
+  named-domain plus global resident permits, reserve headroom, bound task/piece
+  metadata and caches, account SFTP's external vectors and transform output,
+  cap handles, and cap RPC request/response/batch/list/per-client work before
+  amplification.
+- **Live disk failover.** `disk-adapter.md` and `event-backends.md` now use a
+  `BackendEpoch` stop/drain/abort/close/reopen barrier, identity-check every
+  reopened handle, and readmit only under a fresh task generation. A file-local
+  error does not spuriously fail over the process backend, and cancellation
+  uncertainty fails closed.
+- **Protocol boundary hardening.** FTP passive/active data endpoints are tied to
+  the approved control peer and full destination policy; special-use IP policy
+  is generated from pinned IANA data; SFTP host-key approval names the exact
+  current challenge/fingerprint and generic resume cannot approve it; pinned
+  russh-sftp and SuppaFTP patches enforce SFTP framing and FTP control-reply
+  limits before allocation; every cookie jar receives a pinned Mozilla Public
+  Suffix List; DNS
+  cache/singleflight/Happy-Eyeballs work and libtorrent bridge/resume queues are
+  explicitly bounded.
 
 ## Phase-Specific Blockers And Caveats
 
@@ -283,8 +320,12 @@ and secret lifetimes, the pinned algorithm policy (no SHA-1 KEX/`ssh-rsa`/CBC
 /weak MACs outside `unsafe_compat`), timeouts/rekey/proxy/server-limit/path
 and remote-symlink rules, and the bounded offset pipeline integrated with
 rate, memory, retry, and cancellation budgets. The Phase-5 interoperability
-matrix remains the implementation gate. The baseline stays russh plus
-russh-sftp, with libssh2 only as the documented fallback.
+matrix remains the implementation gate. A generic Resume never approves a host
+key; approval must carry the current challenge id and displayed fingerprint.
+The baseline stays russh plus a pinned inbound-frame-cap patch for russh-sftp
+2.3.0 and uses russh's exact re-exported ssh-key 0.7.0-rc.11 representation;
+libssh2 remains only the documented interoperability fallback. Unpatched
+russh-sftp 2.3.0 cannot satisfy the inbound allocation contract.
 
 ### BitTorrent Path Semantics Before Full Build (resolved)
 
@@ -316,16 +357,16 @@ The detailed rationale and research snapshot are in `library-choice.md`.
 | Linux disk | low-level io-uring crate behind `DiskBackend` | Fall to the bounded blocking backend on probe/cancellation/secure-open failure |
 | Windows disk | Overlapped/IOCP adapter on windows-sys | Native MSVC and all-MinGW secondary tests |
 | Portable disk fallback | Bounded blocking worker pool | Queue/cancellation/fault gates |
-| FTP/FTPS | SuppaFTP (Tokio, rustls-ring) under owned validation | Offset/EOF and FTPS matrix |
-| SFTP | russh + russh-sftp raw offset pipeline | Security and interoperability matrix |
-| Session DB | rusqlite + bundled SQLite on one bounded thread | WAL/locking/filesystem fallback tests |
-| CPU work | Dedicated project-owned Rayon pool | Bounded admission and cancellation tests |
+| FTP/FTPS | patched SuppaFTP 10.0.1 (Tokio, rustls-ring) under owned validation | Control-reply bounds, no-secret-log provenance, offset/EOF, and FTPS matrix |
+| SFTP | russh defaults-off ring+flate2+rsa; patched russh-sftp 2.3.0 raw pipeline; exact ssh-key 0.7.0-rc.11 re-export | Feature/provider, inbound frame-cap/provenance, security, external-vector memory, and interoperability matrix |
+| Session DB | rusqlite 0.40.1, defaults off, bundled+backup+cache+limits, one bounded thread | SQLite-limit, backup, WAL/locking/filesystem fallback tests |
+| CPU work | Dedicated project-owned Rayon pool; compact may use its one bounded shared disk/CPU worker | Bounded admission and cancellation tests |
 | Queues | Bounded Tokio + crossbeam baseline | thingbuf/rtrb only after a measured topology |
 | Timers | tokio-util DelayQueue per shard | Scale test vs per-deadline tasks |
 | Journal CRC | crc32c crate (crc-fast fallback) | Throughput check in Phase 0 baseline |
 | Digests | RustCrypto sha2/sha1/md-5 0.11 | asm/hw feature matrix per target |
 | XML | quick-xml streaming, no DTD | Fuzz targets |
-| Cookies | cookie_store + public_suffix behind owned jar | aria2 cookie-file compat tests |
+| Cookies | cookie_store/publicsuffix behind an owned jar with pinned Mozilla PSL and owned SameSite filtering | PSL load-fail-closed, schemeful-site redirects, and aria2 cookie-file compatibility tests |
 | netrc | Project parser (no maintained crate) | Fuzz + aria2 semantics tests |
 | Syscall layer | rustix (Unix) / windows-sys (Windows) | Secure-open probe per platform |
 | Decompression | flate2 (miniz_oxide; zlib-rs upgrade path) | Growing-layout phase only |
@@ -359,21 +400,29 @@ stability promise.
 
 ### Cache And Memory
 
+- Every accounted allocation requires both its named-domain permit and the
+  global resident permit. Profile limits reserve headroom below the target; the
+  fact that domain maxima sum above the limit never authorizes overcommit.
 - `disk-cache` remains retained `BufferPool` capacity, not a second allocator.
-  LIFO size-class reuse and small bounded lane-local caches are sensible for
-  cache/TLB locality.
+  Its optional verified-span LRU defaults to zero; LIFO size-class reuse and
+  small bounded lane-local caches are sensible for cache/TLB locality.
 - Account HTTP/TLS ingress, DNS cache, connection-pool state, queue storage,
-  retry metadata, journal indexes, CPU jobs, and libtorrent memory outside the
-  transfer pool. Diagnostics need both component totals and the global resident
+  retry/task/piece metadata, journal/SQLite state, CPU scratch/transform jobs,
+  SFTP external vectors, RPC work, file handles, and libtorrent memory outside
+  the transfer pool. Diagnostics need component totals and the global resident
   budget.
 - Avoid a second project-level file-data read cache for ordinary HTTP/FTP writes;
   the OS page cache already retains written pages. Add readback cache only for a
   measured Metalink/hash workload and charge it to the same global memory cap.
 - Bound connection-pool idle entries by both count and estimated memory, not
-  only per-origin count. C10k idle sockets must not retain transfer-size buffers.
+  only per-origin count. C10k low-activity sockets must not imply 10,000 retained
+  idle-pool entries or transfer-size buffers.
 - Bound metadata cardinality: URIs, redirects, DNS answers, cookies, per-host
   statistics, diagnostic top-N entries, and retry history all need explicit
   caps.
+- RPC response serialization reserves bounded output before work, produces into
+  a byte-counting chunk sink, and permits one full response per client;
+  immutable membership indexes keep list queries out of scheduler actor turns.
 - Buffer quarantine remains part of the pool total. When its cap is reached,
   stop accepting cancellation-uncertain I/O instead of allocating replacement
   buffers indefinitely.
@@ -382,6 +431,8 @@ stability promise.
 
 - The downloader-owned connector is required to keep DNS answer validation,
   address pinning, Happy Eyeballs, proxy policy, Host, and TLS SNI consistent.
+- DNS uses bounded singleflight, answer counts, TTLs, and at most the configured
+  immediate Happy-Eyeballs racers; reconnects re-resolve and re-run policy.
 - HTTP/2 connection and stream windows must shrink effective ingress when disk,
   CPU, memory, or rate credit is unavailable; large default windows can defeat
   application backpressure even when body polling stops.
@@ -389,7 +440,19 @@ stability promise.
   identity, credentials, and relevant local binding. Ambiguous protocol errors
   close rather than reuse the connection.
 - SFTP throughput requires multiple bounded offset requests; the high-level
-  sequential reader is not the segmented engine.
+  sequential reader is not the segmented engine. The packet-buffer plus owned
+  returned-vector peak is admitted before each request, and the patched receive
+  driver rejects oversized framing before payload allocation.
+- FTP EPSV/PASV and active-mode callbacks accept only the approved control peer
+  by default; an administrator override still re-runs SSRF/special-use policy.
+- FTP control/passive connections use only the downloader connector and owned
+  builder. The SuppaFTP patch validates active peers before TLS, closes bounded
+  mismatches, and keeps accepting until the approved peer or deadline.
+- FTP greeting/reply/FEAT parsing has fixed line, aggregate, and line-count caps
+  in the pinned SuppaFTP patch; all retained control bytes consume metadata and
+  global resident permits.
+- The SuppaFTP patch never formats raw commands/replies, credentials, paths,
+  FEAT text, or listings; diagnostics are safe verb/status/length/count metadata.
 - Retries consume fresh connection/stream budgets and cannot create unbounded
   parallel speculative attempts.
 
@@ -400,6 +463,9 @@ stability promise.
 - io_uring/IOCP submission depth is bounded by operations and bytes. Accepted
   operations drain to outcomes after cancellation; stale generations discard the
   result without losing buffer ownership.
+- File handles are under a process/profile budget and an identity-checked LRU;
+  in-flight or dirty handles cannot be evicted. Live backend failover changes
+  epochs only after the full settlement barrier.
 - Sequential subleases are necessary for resumability and for balanced
   durability to advance without an entire-file commit.
 - Balanced mode should batch data flush and journal sync by explicit byte/time
@@ -408,6 +474,9 @@ stability promise.
   filesystems without allocation support, and multi-file layouts.
 - Journal compaction, replay time, segment count, and idle file descriptors are
   hard resource concerns, not maintenance work that can be deferred forever.
+- Checkpoints stream canonical `PieceStateChunk` records rather than cloning the
+  complete piece book, and recovery validates the persisted root binding before
+  opening descendants or trusting progress.
 - Hash/readback scheduling must not evict active write buffers or create
   unbounded random I/O on HDD profiles.
 
@@ -421,6 +490,8 @@ stability promise.
   completions; cancellation is cooperative and late results are rejected.
 - XML/Metalink parsing remains size-capped and streaming where possible. One
   metadata document cannot occupy all CPU workers or memory credit.
+- Relocatable decode/decompression output is admitted through the separate
+  `transform_budget`; the fixed-layout baseline keeps that budget at zero.
 
 ## Implementation Detail Checklist (resolved)
 
@@ -437,8 +508,8 @@ machine-readable artifacts:
   debt) — `stats-and-stalls.md`, `rate-limiting.md`.
 - Checkpoint/compaction records, install protocol, replay bounds —
   `detailed-storage.md`.
-- Retry persistence (`scheduled_at`, `delay_ms`, reason) and conservative
-  recovery — `detailed-storage.md`, `retry-policy.md`.
+- Retry persistence (`scheduled_at`, `delay_ms`, `elapsed_before_wait_ms`,
+  reason) and conservative recovery — `detailed-storage.md`, `retry-policy.md`.
 - `FinalizeIntent`/`FinalizeDone` idempotent recovery — `detailed-storage.md`.
 - SFTP host-key/auth/algorithm/session policy — `detailed-ftp-sftp.md`.
 - Torrent symlink and collision policy — `libtorrent-integration.md`.
@@ -447,6 +518,18 @@ machine-readable artifacts:
   `implementation-plan.md` Phase 0.
 - Queue defaults and the resident-memory equation —
   `performance-profiles.md`.
+- Persisted root binding, explicit relocation/rebind, and exact SQLite v1 schema
+  — `detailed-storage.md`, `session-persistence.md`.
+- Compact checkpoint `PieceStateChunk` encoding — `detailed-storage.md`.
+- Global resident/domain permits, parser/cardinality/cache caps, SFTP external
+  vectors, RPC work/response bounds, and handle budgets —
+  `performance-profiles.md`, `configuration.md`, `apis-and-embedding.md`.
+- Backend epoch, live-failover barrier, and identity-checked handle LRU —
+  `disk-adapter.md`, `event-backends.md`.
+- FTP data-endpoint/control-reply caps, explicit SFTP host-key approval, inbound
+  SFTP frame cap, and pinned cookie Public Suffix List rules —
+  `detailed-ftp-sftp.md`,
+  `protocol-modernization.md`, `library-choice.md`.
 
 ## Amendment History
 
@@ -463,6 +546,13 @@ repository:
 7. Crate research snapshot and remaining-choice decisions.
 8. Artifact/panic/target matrices, supply-chain wiring, queue defaults, and
    memory equations.
+9. Cross-document state, path, protocol, and dependency-choice reconciliation
+   (`abf32c3`).
+10. Persistence identity/schema/checkpoint, resource/cardinality/RPC, FTP/SFTP,
+    and live-failover boundaries (`3600223`).
+11. Final crate-source gates for FTP control replies/active-peer policy/secret
+    logging, SFTP inbound framing, russh's exact ssh-key/features, and cookie
+    Public Suffix List plus SameSite policy.
 
 Phase 0 must regenerate the state/wire, option-behavior, and journal-record
 matrices from the amended normative documents; the listed tests come into
@@ -482,6 +572,21 @@ All contract amendments are complete:
 - [x] Hyper/TLS/HTTP2 ingress memory is included in global budgets.
 - [x] Finalization and retry-time recovery are unambiguous after crashes.
 - [x] SFTP security policy is complete before SFTP implementation.
+- [x] Persisted progress is root/file-identity bound; relocation/rebind is
+      explicit and digest-proven when identities differ.
+- [x] Compact checkpoints bound durable-piece state and the exact SQLite v1
+      schema/migration/install protocol is defined.
+- [x] Global resident/domain permits bound transfer, metadata, cache, transform,
+      RPC, SFTP, SQLite, journal, stack, and CPU-scratch memory.
+- [x] Backend epochs, live-failover settlement, and file-handle LRU/reopen rules
+      are explicit and fail closed on uncertainty.
+- [x] FTP data endpoints, generated special-use IP policy, DNS work/cache, and
+      SFTP challenge approval close their network-trust boundaries.
+- [x] Unpatched SuppaFTP/russh-sftp parser allocation paths and SuppaFTP raw
+      secret logging are rejected by the dependency gate, and cookie jars cannot
+      start without the pinned Public Suffix List.
+- [x] RPC request/response/batch/list and per-client work are bounded without
+      blocking the scheduler or constructing an unbounded response tree.
 - [x] Cargo toolchain, target ABI, panic profile, lockfile, license, advisory,
       and SBOM policies are specified; Phase 0 generates and tests the
       artifacts.

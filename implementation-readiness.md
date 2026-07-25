@@ -23,10 +23,11 @@ Implementation should begin from these source-of-truth documents:
 - `implementation-plan.md` for phase order and exit criteria.
 - `requirements-traceability.md` for acceptance coverage.
 - `security-recovery.md` for invariants that cannot be relaxed.
-- `review-findings-response.md` for regressions that must not reappear from
-  the earlier `aria2_rust` prototype.
-- `review-findings-round3.md` for the consolidated G/H/V resolutions that must
-  be reflected before a module is marked ready.
+
+`review-findings-response.md`, `review-findings-round2.md`, and
+`review-findings-round3.md` are historical, non-normative audit records. They
+explain why rules were adopted, but an implementation follows the focused
+subsystem documents and the closed review record above when wording differs.
 
 Focused subsystem docs are then used as module-level design inputs.
 
@@ -49,6 +50,10 @@ These are not optional implementation details:
 
 - No parsed-only implemented options.
 - No metadata path bypasses `SafePathBuilder`.
+- Persisted progress is bound to the canonical output root and stable file
+  identities. Path adjacency, names, mtimes, or a copied control file never
+  authorize reuse; relocation/rebind follows the explicit identity-or-digest
+  protocol in `detailed-storage.md`.
 - No project-owned HTTP/FTP/SFTP/Metalink protocol worker writes directly to a
   final file descriptor. The initial BitTorrent full build is the explicit
   exception: libtorrent may use its own storage internals only inside the
@@ -73,12 +78,21 @@ These are not optional implementation details:
 - GIDs are exactly 16 lowercase hexadecimal characters on the compatibility wire.
 - RPC secret authentication follows aria2's `token:<secret>` positional convention.
 - No unbounded transfer queues or unbounded payload allocation.
+- Every accounted runtime allocation takes both its named domain permit and a
+  global resident-byte permit. Domain caps may sum above the profile limit, but
+  simultaneous reservations may not.
 - No external WebSocket/stdio subscriber can block the scheduler or grow an
   unbounded event queue.
 - No whole HTTP segment, Metalink file, or project-owned payload is buffered in
   a `Vec<u8>` on the normal path. Libtorrent's internal buffers stay behind the
   BT adapter boundary.
+- SFTP's externally owned packet buffer plus returned data vector is reserved
+  before each offset request and charged to `sftp_ingress_budget` until copied
+  into a `BufferLease` and released.
 - No blocking disk I/O on network event-loop threads.
+- Live disk-backend failover stops admission and drains/cancellation-confirms
+  every accepted operation in the old `BackendEpoch` before handles are reopened
+  or work is readmitted under a fresh generation.
 - No RPC method returns synthetic engine state for implemented behavior.
 - No shell execution unless unsafe compatibility is explicitly enabled.
 - No backend runtime failure path panics, asserts, or aborts when fallback or a
@@ -92,6 +106,23 @@ These are not optional implementation details:
   extent; decoded/wire offsets are never mixed.
 - User headers cannot override generated Host, framing, range, encoding,
   validator, integrity, or credential headers.
+- RPC request, response, batch, list, per-client work, and serialized-byte
+  bounds are enforced before amplification; list queries use immutable
+  membership indexes rather than scanning the scheduler in an actor turn.
+- FTP passive endpoints and active callbacks are bound to the approved control
+  peer by default; any administrator override passes the complete destination
+  policy and never trusts a server-advertised endpoint by itself.
+- FTP control sockets use the downloader connector plus `connect_with_stream`;
+  passive data uses an owned endpoint-validating builder, and active mode needs
+  the patched pre-TLS peer predicate/accept loop. Crate default connect/build/
+  NAT-workaround paths are forbidden.
+- FTP control replies are line/aggregate/count capped before proportional
+  allocation; unpatched SuppaFTP 10.0.1 is not an implementation candidate.
+- FTP dependency diagnostics never format raw wire commands/replies,
+  credentials, paths, FEAT text, or listings; canary tests cover every log level.
+- An SFTP host key is accepted only by pin, matching `known_hosts` policy, or an
+  explicit challenge-id/fingerprint approval command. Generic task resume never
+  approves a key.
 - Untrusted remote RPC cannot use proxy-side DNS or arbitrary CONNECT destinations
   without an explicitly trusted, destination-filtering proxy policy.
 - Persisted session/control artifacts never contain plaintext authentication,
@@ -116,6 +147,11 @@ Phase 0 should generate or maintain:
 - diagnostics field matrix,
 - error-code matrix,
 - control-journal record/schema/version matrix,
+- compact-checkpoint and persisted root-binding/rebind matrices,
+- exact SQLite schema, pragma, migration, and backup matrix,
+- runtime resource/cap matrix, including metadata cardinality and global
+  resident-permit accounting,
+- backend-epoch/live-failover and file-handle-budget matrices,
 - reserved-header and proxy trust-policy matrices,
 - secrets-at-rest persistence matrix.
 
@@ -127,12 +163,13 @@ allowlists, config parser, or implementation feature flags.
 The first useful vertical slice spans implementation Phases 1–3 and should be:
 
 1. option registry with flat config parser,
-2. `SafePathBuilder`,
+2. `SafePathBuilder` plus persisted root binding,
 3. `FileLayout` and `GlobalOffsetMapper`,
 4. `BufferPool` and bounded queue wrappers,
-5. `ControlJournal` with lease commit/abort, serialized sequence assignment, and
-   balanced/strict durability ordering,
-6. `SessionStore` shell with schema versioning,
+5. `ControlJournal` with lease commit/abort, serialized sequence assignment,
+   balanced/strict durability ordering, and checkpoint-only `PieceStateChunk`,
+6. `SessionStore` with the exact v1 schema, migrations, root binding, and
+   explicit relocation/rebind entry point,
 7. known-length identity HTTP sequential download through `StorageEngine`,
 8. strict range resume with provisional writes and explicit commit/abort,
 9. packet-independent `StatsSampler`,
@@ -172,9 +209,15 @@ feature-gate status must exist from the start:
 
 - Hyper/hyper-util for HTTP/1.1 and HTTP/2,
 - Hickory Resolver for the in-process async DNS backend,
-- russh/russh-sftp for SFTP,
+- russh plus a pinned receive-cap patch for russh-sftp 2.3.0,
+- russh's exact re-exported ssh-key 0.7.0-rc.11 for one OpenSSH key,
+  certificate, and `known_hosts` representation,
+- russh defaults disabled with exactly ring+flate2+rsa,
+- a pinned control-reply-cap patch for SuppaFTP 10.0.1 with Tokio/rustls for FTP
+  and FTPS protocol mechanics,
 - the low-level io-uring crate behind the project-owned Linux disk adapter,
-- rusqlite on a dedicated session thread, including the first `minimal` build,
+- rusqlite with defaults disabled and `bundled+backup+cache+limits` on a
+  dedicated session thread, including the first `minimal` build,
 - a dedicated project-owned Rayon pool for CPU-heavy work,
 - bounded Tokio/crossbeam queues for the baseline,
 - Quinn plus h3/h3-quinn only as the feature-gated HTTP/3 experiment.
@@ -185,6 +228,12 @@ not reopen the public architecture:
 - Fall from the low-level io-uring backend to the bounded blocking backend if
   secure open, accepted-operation draining, cancellation, or quarantine gates
   fail; correctness contracts remain identical.
+- Ship SFTP only with the pinned russh-sftp receive-cap patch (or an upstream
+  release that passes the identical tests); unpatched 2.3.0 cannot satisfy the
+  allocation bound.
+- Ship FTP only with the pinned SuppaFTP control-reply-cap patch (or an upstream
+  release that passes the identical tests); unpatched 10.0.1 cannot satisfy the
+  parser allocation bound.
 - Enable libssh2 only if documented russh interoperability gaps remain after the
   Phase-5 server matrix.
 - Introduce thingbuf/rtrb only after a measured lane and producer topology prove
@@ -213,7 +262,7 @@ A module is ready to implement when it has:
 - cross-platform behavior,
 - feature-gate and build-profile behavior,
 - externally visible compatibility behavior and any intentional divergence,
-- on-disk schema/version and migration behavior when persistence is touched.
+- on-disk schema/version and migration behavior when persistence is touched,
 - no unresolved P0 item assigned to it by `final-preimplementation-review.md`.
 
 If any item is missing, add it to the design before coding that module.

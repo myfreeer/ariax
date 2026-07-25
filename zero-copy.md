@@ -1,6 +1,6 @@
 # Zero-Copy Policy
 
-Status: draft.
+Status: reviewed pre-implementation contract. Implementation pending.
 
 Zero-copy is allowed by this design, but only as a backend optimization. It is
 not allowed to bypass the storage engine, checksum rules, recovery journal, rate

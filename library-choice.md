@@ -22,11 +22,14 @@ Chosen stack:
   connectors, redirect policy, validation, and backpressure.
 - rustls by default for TLS and Hickory Resolver for the in-process async DNS
   backend.
-- SuppaFTP for Tokio-native FTP/FTPS transport mechanics; downloader-owned
-  validation and storage contracts remain authoritative.
-- russh plus russh-sftp for the standard-build SFTP adapter. libssh2 remains an
-  interoperability fallback only if the Phase-5 prototype gate fails.
-- rusqlite on one bounded session-store worker thread.
+- Pinned bounded-parser/logging patches for SuppaFTP 10.0.1 FTP/FTPS transport
+  mechanics; downloader-owned validation and storage contracts remain
+  authoritative.
+- russh plus a pinned inbound-frame patch for russh-sftp 2.3.0 for the
+  standard-build SFTP adapter. libssh2 remains an interoperability fallback only
+  if the Phase-5 prototype gate fails.
+- rusqlite with explicit bundled/backup/cache/limits features on one bounded
+  session-store worker thread.
 - A dedicated, project-owned Rayon pool for CPU-heavy hashing/parsing work in
   normal split profiles, never the process-global Rayon pool; the explicit
   minimum-thread compact profile may use its bounded shared worker instead.
@@ -264,21 +267,46 @@ and preserves the original hostname for Host and TLS SNI.
 
 ## SFTP
 
-Use `russh` plus `russh-sftp` for the standard build because they integrate with
-Tokio without a native libssh2 dependency. Use the raw offset request API behind
-a project-owned bounded pipeline; do not assume the high-level `AsyncRead`
-wrapper provides enough concurrent requests for bulk transfer throughput.
-The current raw API returns `SSH_FXP_DATA` in an owned `Vec<u8>`, so the
-baseline explicitly budgets that allocation and performs one copy into
-`BufferLease`; it does not claim direct registered-buffer fill. A future
-upstream/forked decoder may remove the copy only behind the same ingress,
-placement, rate, and cancellation contracts.
+Use `russh` plus a project-pinned patched `russh-sftp` for the standard build
+because they integrate with Tokio without a native libssh2 dependency. Use the
+raw offset request API behind a project-owned bounded pipeline; do not assume the
+high-level `AsyncRead` wrapper provides enough concurrent requests for bulk
+transfer throughput.
 
-Use stable `ssh-key` 0.6.x directly for OpenSSH public/private key,
-certificate, and `known_hosts` parsing; it is already in the russh ecosystem and
-avoids a second SSH key representation. Keep matching, marker policy, file-size
-caps, and task-scoped approval in the downloader adapter. Do not adopt the
-0.7.0 release candidates in the initial lockfile.
+The crates.io `russh-sftp` 2.3.0 client must not ship unchanged. Its public
+`Config::max_packet_len` is retained for high-level request sizing, but the raw
+client receive loop calls its length-prefixed reader with `u32::MAX`; an
+attacker-controlled prefix can therefore allocate far beyond the configured
+cap. Its receive loop also logs most framing/parser errors and continues after
+the stream is desynchronized. Phase 0 pins a reviewed fork/commit through
+`[patch.crates-io]` that threads the configured cap into every inbound packet
+read, treats an over-cap or malformed frame as fatal, cancels the channel, and
+completes every outstanding request with a typed error. An upstream release may
+replace the patch only after the same allocation-before-body, malformed-frame,
+pending-request-drain, and cancellation tests pass. The source commit, patch
+diff, license, checksum, and SBOM identity are release artifacts.
+
+The patched raw API still returns `SSH_FXP_DATA` in an owned `Vec<u8>`, so the
+baseline explicitly budgets the packet buffer plus returned vector and performs
+one copy into `BufferLease`; it does not claim direct registered-buffer fill. A
+future decoder may remove the copy only behind the same ingress, placement,
+rate, and cancellation contracts.
+
+Russh 0.62.4 pins and re-exports `ssh-key` 0.7.0-rc.11. Use that exact
+`russh::keys::ssh_key` type/API for OpenSSH public/private keys, certificates,
+and `known_hosts` parsing so the baseline has one key representation. This is a
+documented, exact-lock prerelease exception inherited from the selected russh
+version, not permission for floating prereleases. Keep matching, marker policy,
+file-size caps, and task-scoped approval in the downloader adapter; moving to a
+stable ssh-key line is a deliberate russh/workspace upgrade with compatibility
+tests, not a second direct 0.6.x dependency.
+
+Select russh with `default-features = false` and exactly
+`["ring", "flate2", "rsa"]`. Its defaults select aws-lc-rs; the explicit ring
+feature aligns the one-provider rule used by rustls and SuppaFTP, while RSA key
+support remains available under the adapter's modern-signature algorithm policy.
+CI rejects simultaneous ring/aws-lc providers and any accidental DSA/DES legacy
+feature.
 
 `ssh2`/libssh2 remains a prototype fallback for interoperability gaps. It is not
 linked into the default build, and its seek-based high-level file API is not a
@@ -291,13 +319,45 @@ Phase 5 begins.
 
 ## FTP And FTPS
 
-Use SuppaFTP with its Tokio/rustls-ring feature for control/data-channel and
-FTP/FTPS protocol mechanics. It supplies the async Tokio path, passive/active
-commands, restart offsets, and explicit/implicit FTPS integration. The adapter
-still owns `SIZE`/`MDTM` policy, exact offset/EOF accounting, binary-mode
-enforcement, retry classification, rate permits before data reads, and storage
-lease checkpoints. Do not expose a generic remote-filesystem abstraction that
-hides the control/data connection or REST/RETR sequence.
+Use a project-pinned patched SuppaFTP 10.0.1 with its Tokio/rustls-ring feature
+for control/data-channel and FTP/FTPS protocol mechanics. It supplies the async
+Tokio path, passive/active commands, restart offsets, and explicit/implicit FTPS
+integration. The adapter still owns `SIZE`/`MDTM` policy, exact offset/EOF
+accounting, binary-mode enforcement, retry classification, rate permits before
+data reads, and storage lease checkpoints. Do not expose a generic
+remote-filesystem abstraction that hides the control/data connection or
+REST/RETR sequence.
+
+The crates.io 10.0.1 control parser and current upstream main must not ship
+unchanged: single and multiline replies use `read_until` into growable vectors,
+and FEAT accumulates lines without a byte/line cap. The pinned fork replaces
+that path with pre-allocation checks: at most 64 KiB per control line, 1 MiB and
+4096 lines per complete reply/FEAT response. Bytes reserve
+`task_metadata_budget` plus the global resident permit; overflow or malformed
+multiline framing closes the control connection with a typed protocol/resource
+error. The patch also removes raw command/reply/path/listing logging: wire
+serialization is separate from diagnostics, and the dependency may emit only a
+safe command verb, status code, and bounded byte/line counts. USER/PASS/ACCT,
+SITE/custom arguments, remote paths, welcomes, FEAT text, and data listings are
+never formatted into a log record at any level. Directory-list helpers are not
+used by the downloader; any future use must receive equivalent data-line/
+aggregate bounds. Phase 0 records the source commit, patch diff, checksum,
+license, and SBOM identity, and an upstream release may replace it only after
+the same prefix/line/FEAT allocation and canary-secret log tests pass. SuppaFTP's
+`no-log` feature is not selected because it globally enables `log/max_level_off`
+for the workspace rather than fixing the dependency's diagnostics boundary.
+
+The adapter always creates the policy-approved control `TcpStream` through the
+downloader connector, then calls `connect_with_stream`; it never calls
+SuppaFTP's `connect`/`connect_timeout`, uses the default passive builder, or
+enables the NAT-address rewrite. It immediately installs a project-owned
+`passive_stream_builder` that applies the approved EPSV/PASV endpoint decision.
+The same pinned patch adds an active-data listener hook/predicate because
+upstream active mode accepts the first peer with no policy callback. The patched
+loop binds only the approved local interface, closes mismatched peers before any
+FTPS handshake, accepts the approved control peer until the one deadline, and
+stops after 32 rejected peers. Active mode is unavailable through a proxy and
+fails explicitly when the local bind/advertised address is not policy-valid.
 
 `async_ftp` is not selected: it provides a smaller async FTP surface, but using
 it would not improve the correctness boundary and has a narrower maintained
@@ -305,10 +365,14 @@ feature/integration surface than SuppaFTP for this design.
 
 ## Session Database
 
-Use `rusqlite` with bundled SQLite for reproducible first-slice desktop builds.
-All access runs on one dedicated session-store thread behind a bounded command
-queue; synchronous SQLite calls never run on network/control executor threads.
-Distributions may add a system-SQLite build feature later.
+Use `rusqlite` 0.40.1 with `default-features = false` and exactly
+`["bundled", "backup", "cache", "limits"]` for reproducible first-slice
+desktop builds. `bundled` alone does not expose the hot-backup API, and the
+crate's defaults include an unrelated WASM FFI path; the explicit feature set
+keeps the native dependency graph and required APIs auditable. All access runs
+on one dedicated session-store thread behind a bounded command queue;
+synchronous SQLite calls never run on network/control executor threads.
+Distributions may add a separately tested system-SQLite build feature later.
 
 The `minimal` first implementation still includes SQLite. A control-files-only
 minimal profile remains deferred until it has its own queue/index/recovery
@@ -408,9 +472,19 @@ decompression is only for the future growing-sequential path and RPC gzip:
 - Cookie jar: `cookie_store` (0.22.x) with its `public_suffix` feature (backed
   by `publicsuffix`) for the F14 host-scoping requirement, wrapped behind a
   downloader-owned jar API that enforces the redirect/credential-stripping
-  policy and the aria2 `load-cookies`/`save-cookies` formats. The raw `cookie`
-  crate alone has no storage/matching model. The wrapper owns Netscape/aria2
-  file parsing because `cookie_store`'s native persistence is JSON/RON.
+  policy and the aria2 `load-cookies`/`save-cookies` formats. The feature alone
+  is insufficient: `CookieStore::default()` installs no list and
+  `publicsuffix` no longer downloads/bundles one. The repository therefore pins
+  a versioned Mozilla Public Suffix List snapshot (source, date, SHA-256, and
+  license recorded), parses it at startup, and constructs every jar with that
+  list. Parse/availability failure disables cookie use with a typed startup or
+  option error; it never falls back to `None`. The active snapshot id/hash is in
+  diagnostics and release/SBOM inputs. The raw `cookie` crate alone has no
+  storage/matching model. The wrapper owns Netscape/aria2 file parsing because
+  `cookie_store`'s native persistence is JSON/RON. `Cookie::matches` does not
+  enforce SameSite, so the wrapper also applies the explicit schemeful-site/
+  redirect context in `protocol-modernization.md`; `SameSite=None` without
+  `Secure` is rejected at ingestion.
 - netrc: no maintained crate is adequate (`netrc`/`netrc-rs` dormant for years,
   `rust-netrc` is reqwest-oriented); the format is a ~100-line parser. Implement
   a fuzzed project parser honoring aria2's `.netrc` semantics and permission
@@ -480,8 +554,9 @@ tarballs per the README build rules.
 Exact direct versions observed during the 2026-07-25 review are a research
 snapshot, not unconstrained version requirements: Hyper 1.11.0, hyper-util
 0.1.20, hyper-rustls 0.27.9, Hickory Resolver 0.26.1, rustls 0.23.42 stable,
-Tokio 1.53.1, tokio-util 0.7.19, russh 0.62.4, russh-sftp 2.3.0, SuppaFTP
-10.0.1, quick-xml 0.41.0, tokio-uring 0.5.0, io-uring 0.7.13, rusqlite 0.40.1,
+Tokio 1.53.1, tokio-util 0.7.19, russh 0.62.4, russh-sftp 2.3.0 (patched),
+ssh-key 0.7.0-rc.11 (exact russh dependency), SuppaFTP 10.0.1 (patched),
+quick-xml 0.41.0, tokio-uring 0.5.0, io-uring 0.7.13, rusqlite 0.40.1,
 Rayon 1.12.0, Quinn 0.11.11, h3 0.0.8, h3-quinn 0.0.10, crc32c 0.6.8,
 sha2/sha1/md-5 0.11.x, cookie_store 0.22.1, rustix 1.1.4, windows-sys 0.61.2,
 flate2 1.1.9, tokio-tungstenite 0.30.0, clap 4.6.x, serde 1.0.x, secrecy

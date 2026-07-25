@@ -1,9 +1,11 @@
 # Response To aria2_rust Review Findings
 
-Status: draft.
+Status: historical, non-normative audit record. Superseded by the focused
+subsystem contracts and `final-preimplementation-review.md`.
 
 This document maps the earlier `aria2_rust` prototype's separate review report
-to design decisions.
+to the decisions made at that point. It explains provenance only; current
+implementation behavior comes from the focused subsystem contracts.
 
 ## Safety And Security
 

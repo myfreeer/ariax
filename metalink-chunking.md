@@ -1,6 +1,6 @@
 # Metalink Chunking And Checksums
 
-Status: draft.
+Status: reviewed pre-implementation contract. Implementation pending.
 
 Decision: when Metalink chunk hashes are present and enabled, verification
 chunks are fixed by the Metalink checksum ranges. Network range leases should

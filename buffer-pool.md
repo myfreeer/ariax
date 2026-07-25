@@ -1,6 +1,6 @@
 # Buffer Pool Design
 
-Status: draft.
+Status: reviewed pre-implementation contract. Implementation pending.
 
 Decision: use a bounded hybrid buffer pool. It is lazy/on-demand within hard
 budgets by default, with optional preallocation for benchmarks, high-throughput

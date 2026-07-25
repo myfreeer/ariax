@@ -1,6 +1,6 @@
 # Download Scheduling
 
-Status: draft.
+Status: reviewed pre-implementation contract. Implementation pending.
 
 The scheduler owns active, waiting, paused, and stopped task queues. It should
 preserve aria2-style `max-concurrent-downloads` semantics by default, while

@@ -1,6 +1,6 @@
 # Detailed Runtime, Queues, And Buffer Design
 
-Status: detailed draft for the first implementation slice.
+Status: reviewed first-slice implementation contract. Implementation pending.
 
 This document defines the concrete runtime lanes, bounded queues, buffer leases,
 and cancellation behavior used by HTTP and storage in the first slice.

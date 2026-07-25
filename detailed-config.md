@@ -1,6 +1,6 @@
 # Detailed Config And Option Registry Design
 
-Status: detailed draft for the first implementation slice.
+Status: reviewed first-slice implementation contract. Implementation pending.
 
 This document expands `configuration.md` into concrete artifacts, parsers, and
 runtime update mechanics.

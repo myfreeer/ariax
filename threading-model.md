@@ -1,6 +1,6 @@
 # Threading Model
 
-Status: draft.
+Status: reviewed pre-implementation contract. Implementation pending.
 
 Decision: use split worker pools by default, coordinated by one global resource
 budget. Do not run event loops, disk I/O, libtorrent, and hashing on one shared

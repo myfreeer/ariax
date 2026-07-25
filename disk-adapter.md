@@ -1,6 +1,6 @@
 # Disk Adapter Design
 
-Status: draft.
+Status: reviewed pre-implementation contract. Implementation pending.
 
 Decision: build the downloader's disk adapter in-house, but do not hand-roll
 raw platform syscalls when a small, maintained wrapper is enough.

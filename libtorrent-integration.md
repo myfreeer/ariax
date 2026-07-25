@@ -1,6 +1,6 @@
 # Libtorrent Integration
 
-Status: draft.
+Status: reviewed pre-implementation contract. Implementation pending.
 
 Decision: libtorrent runs outside the main control and HTTP network event loops.
 

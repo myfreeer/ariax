@@ -1,6 +1,6 @@
 # Event Backend And I/O Selection
 
-Status: draft.
+Status: reviewed pre-implementation contract. Implementation pending.
 
 The downloader uses Tokio/Mio as its one network reactor architecture and
 selects disk I/O independently. It must not crash when a preferred disk API is

@@ -1,6 +1,6 @@
 # Redirect Policy
 
-Status: draft.
+Status: reviewed pre-implementation contract. Implementation pending.
 
 Several documents defer to a "redirect policy" (`detailed-http-first-slice.md`,
 `retry-policy.md`, `library-choice.md`) but none defined it. This document owns

@@ -1,6 +1,6 @@
 # Detailed Core Design
 
-Status: detailed draft for the first implementation slice.
+Status: reviewed first-slice implementation contract. Implementation pending.
 
 This document defines the core types and state machines shared by config,
 scheduler, storage, HTTP, RPC, and session persistence.
