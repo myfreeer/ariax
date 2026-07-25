@@ -146,6 +146,65 @@ Per-file path validation (interim guarantee, required in the first full build):
 - This runs even though BT disk I/O is delegated to libtorrent, so the
   path-safety guarantee holds before the delegating storage backend exists.
 
+### Symlink And Attribute Entries
+
+BitTorrent v1/v2 metadata can mark a file entry as a symlink (BEP 47 `attr`
+containing `l`, with a `symlink path` target) or as executable/hidden/padding.
+
+- Symlink entries are rejected by default: the torrent fails at add with a
+  typed metadata error naming the offending entry. There is no sanitized
+  mapping, because a symlink whose target is chosen by the torrent author is a
+  filesystem-escape primitive regardless of where the link itself is placed.
+- A future opt-in (`bt-allow-symlinks`, default `false`, `unsafe_compat`
+  class) may map symlink entries whose *target*, after `SafePathBuilder`
+  validation of every component, resolves inside the same torrent's output
+  root and refers to a file entry of the same torrent. Absolute targets,
+  `..` escapes, targets crossing the root, and dangling targets remain
+  rejected even then. Until that option exists, rejection is unconditional.
+- Padding entries (`attr` `p`) are internal and never mapped to user-visible
+  paths. Executable/hidden attributes are applied only where the platform
+  supports them and never widen permissions beyond the persistence policy.
+- The same policy applies when metadata arrives late (magnet): the check runs
+  before libtorrent may create any file, at metadata-received, with the task
+  failing rather than the entry being skipped silently.
+
+### Deterministic Collision Handling
+
+Sanitization and platform case rules can map distinct metadata paths to one
+filesystem path. Before the session starts writing (and again at magnet
+metadata-received), the adapter builds the complete sanitized path set and
+checks it for collisions:
+
+- exact duplicates after sanitization,
+- case-folding duplicates on case-insensitive filesystems (checked by policy on
+  every platform so a torrent created on Linux fails deterministically on
+  Windows/macOS rather than corrupting one of the two files),
+- Windows reserved names (`CON`, `NUL`, `COM1`…), trailing dots/spaces, and
+  reserved characters, normalized by `SafePathBuilder`,
+- a file path colliding with a directory prefix of another entry.
+
+Collisions are resolved deterministically in file-index order: the
+first-indexed entry keeps the sanitized name and later colliding entries get an
+index-suffixed sanitized name through the per-file rename API; if renaming
+cannot produce a safe unique name, the torrent is rejected. The mapping is
+recorded in the task metadata so RPC `getFiles`, selected-file indexes, and
+resume across restarts remain stable. Resolution is a pure function of the
+metadata file list and platform policy — never of filesystem probe order.
+
+### Selected-File Roots And Late Metadata
+
+- `select-file`/`index-out` operate on metadata file indexes after the
+  sanitized mapping is fixed; deselecting a colliding entry does not change the
+  names assigned to other entries.
+- A single-file torrent uses `out`/`dir` naming rules; a multi-file torrent
+  root name is itself a validated component and cannot be `..`, absolute, or a
+  reserved name.
+- On magnet metadata arrival, if a previously persisted sanitized mapping
+  exists (resume), the newly computed mapping must match it exactly; any
+  difference (changed metadata, moved files) fails the task rather than
+  silently re-mapping onto existing files. Metadata replacement for an active
+  task is rejected outright.
+
 Future option:
 
 - custom libtorrent storage backend delegates file placement to
@@ -204,7 +263,16 @@ Required adapter tests:
 - pause/remove/shutdown all use the same BT barrier and produce either a fresh
   resume blob or `DirtyCheckpoint`,
 - every torrent file path is validated through `SafePathBuilder::build` before
-  libtorrent receives it.
+  libtorrent receives it,
+- a symlink entry rejects the torrent at add and at magnet metadata-received
+  with a typed error before any file is created,
+- sanitized-name, case-folding, reserved-Windows-name, and file-vs-directory
+  collisions resolve deterministically in file-index order on every platform,
+  independent of filesystem state, and persist across restart,
+- selected-file roots keep stable names when other entries are deselected,
+- a resumed magnet whose recomputed sanitized mapping differs from the
+  persisted mapping fails instead of re-mapping onto existing files,
+- metadata replacement for an active task is rejected.
 
 ## Why Isolate It
 
