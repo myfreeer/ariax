@@ -357,7 +357,8 @@ Examples:
   revalidation apply.
 - `401/407`: auth challenge only if credentials policy can change request.
 - `404`: `max-file-not-found` unless user status-code policy overrides.
-- `408/425/429/500-504`: retryable only if policy says so.
+- `408/425/429/500/502/503/504`: retryable only if policy says so; `501` is
+  not in the conservative default set.
 - `503` with `Retry-After`: retry only if status is retryable, then cap delay.
 - invalid `206`: range-invalid mirror, not successful response.
 - `200` to range: sequential fallback only at offset `0` and policy allows.

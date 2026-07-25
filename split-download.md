@@ -139,7 +139,18 @@ Allowed behavior:
   the bounded duplicate cap prevents unbounded waste,
 - duplicate data is never written over a durable piece,
 - endgame duplicate budget is small and bounded by an explicit
-  `endgame-max-duplicates` cap (default small, e.g. 2 concurrent duplicates).
+  `endgame-max-duplicates` task-wide cap (default exactly 2, hard maximum 8).
+  The baseline permits at most one extra attempt for one original lease; the
+  task-wide cap may therefore cover multiple slow tail spans but never creates a
+  three-way same-offset race.
+
+Default endgame admission begins only when pending, non-durable work is at most
+the larger of 8 MiB or two current target leases and at least one original lease
+is already classified remote-slow/stalled by the normal monotonic stall/lowest-
+speed logic, or has no more than `max(1 second, 25% of its original deadline)`
+remaining. If the lease has neither a progress deadline nor a slow diagnosis,
+tail size alone does not duplicate it. The threshold is recalculated when lease
+size/deadline adapts; it does not duplicate healthy early-download work.
 
 This is similar in spirit to BitTorrent endgame requests, but for HTTP/SFTP
 ranges. It is not used for the whole download, and FTP does not use it because
@@ -191,7 +202,9 @@ Errors:
 - oversized body: stop the bounded validation read, issue `AbortLease`, reject
   the response, and penalize the mirror; the bounded overrun keeps its rate
   debit and consumes the discard guard.
-- disk full/permission: task-level failure or pause, not network retry.
+- disk full/quota: set the scheduler `no_space` condition, not a network retry;
+  permission is terminal, and a live backend-failover uncertainty follows the
+  `BackendUnavailable` fail-closed rule in `disk-adapter.md`.
 - checksum failure: redownload the affected verification piece or failed spans
   from a different mirror when
   possible; repeated failures can mark mirror corrupt.

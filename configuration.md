@@ -243,6 +243,40 @@ Defaults:
 --url-rules-strict=true
 ```
 
+## Parser And Metadata Resource Caps
+
+All untrusted parsers reserve input and emitted-state bytes before allocation.
+Defaults and hard maxima are registry data, not ad hoc constants:
+
+| Input/result | Default | Hard maximum |
+| --- | --- | --- |
+| flat config, input-file, or text session document | 16 MiB | 64 MiB |
+| one text line / option value before typed parsing | 64 KiB | 1 MiB |
+| URL-rules document / rule count / one glob | 16 MiB / 4096 / 4096 bytes | 64 MiB / 16384 / 16384 bytes |
+| HTTP/stdio RPC request | 2 MiB | 64 MiB |
+| RPC response / batch calls / list page | 16 MiB / 256 / 1000 | 64 MiB / 1024 / 10000 |
+| Metalink or torrent metadata document | 64 MiB | 256 MiB |
+| emitted layout files / source URIs per task | 262144 / 1024 | same |
+| XML nesting / attributes per element / one attribute | 64 / 128 / 64 KiB | same |
+| XML text node / aggregate emitted canonical layout | 8 MiB / 64 MiB | same |
+| persisted/displayed safe diagnostic message | 8 KiB | 64 KiB |
+
+The exact public options are `rpc-max-request-size`,
+`rpc-stdio-max-request-size`, `rpc-max-response-size`,
+`rpc-max-batch-calls`, `rpc-max-list-items`,
+`metadata-max-document-size`, `metadata-max-files`, and
+`metadata-max-sources`. Structural XML/glob limits are hard internal safety
+limits and cannot be raised at runtime. `known_hosts`, journal records, paths,
+cookies, DNS answers, and BT resume blobs have their protocol-specific caps in
+their owning documents.
+
+Input caps bound bytes read, while emitted structures must separately fit
+`task_metadata_budget`, `piece_metadata_budget`, or `rpc_budget`. A small input
+that expands to too many files/sources/options therefore still fails
+`ResourceLimit` before task publication. Streaming parsers may retain only the
+current bounded token/node plus already budgeted canonical output; they never
+build an unbounded DOM or duplicate the full document.
+
 ## Config Reload
 
 Decision: config reload is useful, but it must be explicit and limited.
@@ -468,6 +502,11 @@ HTTP/FTP/SFTP:
   `no-netrc`, FTP credentials: implemented.
 - FTP/SFTP: `ftp-user`, `ftp-passwd`, `ftp-pasv`, `ftp-reuse-connection`,
   `ftp-type`, `ssh-host-key-md`: implemented per `detailed-ftp-sftp.md`.
+  `ftp-pasv-address=control-peer|server` defaults to `control-peer`; `server`
+  is local-admin compatibility mode and remains subject to destination policy,
+  so untrusted remote RPC cannot enable it. Active PORT/EPRT mode binds and
+  advertises only a locally selected endpoint and accepts only the approved
+  control peer.
   Extensions `sftp-check-host-key`, `sftp-host-key`,
   `sftp-host-key-sha256`, and `sftp-known-hosts` are implemented with strict
   verification by default; unknown keys use the paused approval flow.
@@ -527,7 +566,8 @@ RPC:
 
 - `enable-rpc`, `rpc-listen-all`, `rpc-listen-port`,
   `rpc-listen-address`, `rpc-secret`, `rpc-user`, `rpc-passwd`,
-  `rpc-max-request-size`, CORS options, WebSocket events: implemented.
+  `rpc-max-request-size` (default 2 MiB; hard maximum 64 MiB), CORS options,
+  WebSocket events: implemented.
 - `rpc-secret` uses aria2's first-positional-parameter `token:<secret>` scheme;
   each inner request in `system.multicall` authenticates independently. Legacy
   HTTP Basic Auth is compatibility-only and never overrides the token policy.
@@ -542,10 +582,18 @@ Advanced:
   `event-poll` is accepted as a deprecated option-name alias; legacy values such
   as `epoll`/`kqueue` express the expected Mio platform selector and never create
   a separate raw reactor. `disk-io-backend=auto|uring|iocp|blocking` is selected
-  independently (a test-only `sync` value exists for tests and tiny
-  single-file tools; see `event-backends.md`).
+  independently. Synchronous fakes are constructor-only test utilities and are
+  not accepted by release configuration; see `event-backends.md`.
+- `disk-failover-drain-timeout` defaults to 30 seconds with a hard maximum of
+  300 seconds; it bounds only the live backend-epoch ownership barrier, not
+  ordinary per-file I/O timeouts.
 - `file-allocation`, `no-file-allocation-limit`, `disk-cache`, `enable-mmap`,
   `max-mmap-limit`: implemented with platform capability checks.
+- `disk-cache` defaults to `0` and, when nonzero, is the exact verified-span
+  readback cache in `buffer-pool.md`. It is charged inside `buffer_budget`, is
+  evicted before transfer admission fails, and never proves progress merely
+  because cached bytes exist. This is an intentional bounded implementation
+  difference from treating the value as an advisory write cache.
 - `max-overall-download-limit`, `max-download-limit`,
   `max-overall-upload-limit`, `max-upload-limit`: implemented live.
 - `save-session`, `save-session-interval`, `auto-save-interval`,
@@ -565,6 +613,7 @@ Runtime and backend:
 - `event-backend`
 - `event-backend-fallback`
 - `disk-io-backend`
+- `disk-failover-drain-timeout` (default 30 seconds; hard maximum 300 seconds)
 - `profile=auto|concurrency|throughput|latency|compact`
 - `max-threads`
 - `net-workers`
@@ -607,7 +656,8 @@ Retry and scheduling:
 - `slow-slot-readmit-policy=front|original-position|back`
 - `retry-wait-consumes-slot=true|false|auto`
 - `endgame-max-duplicates` (bounded concurrent duplicate attempts in endgame
-  mode; see `split-download.md`)
+  mode; task-wide default 2, hard maximum 8, and at most one extra attempt per
+  original lease; see `split-download.md`)
 
 RPC and embedding:
 
@@ -617,7 +667,10 @@ RPC and embedding:
 - `rpc-stdio-framing=content-length|ndjson`
 - `rpc-stdio-eof=shutdown|close-transport|ignore`
 - `rpc-stdio-events=true|false`
-- `rpc-stdio-max-request-size`
+- `rpc-stdio-max-request-size` (default 2 MiB; hard maximum 64 MiB)
+- `rpc-max-response-size` (default 16 MiB; hard maximum 64 MiB)
+- `rpc-max-batch-calls` (default 256; hard maximum 1024)
+- `rpc-max-list-items` (default 1000; hard maximum 10000)
 
 Protocol modernization:
 
@@ -625,12 +678,13 @@ Protocol modernization:
 - `http2-max-concurrent-streams`
 - `http-ingress-buffer-limit`
 - `http1-read-buffer-size=auto|SIZE`
-- `http1-max-buffer-size`
+- `http1-max-buffer-size` (default 400 KiB; hard maximum 2 MiB)
 - `http1-max-headers` (default 100; hard maximum 1024)
 - `http2-initial-stream-window-size=SIZE|auto`
 - `http2-initial-connection-window-size=SIZE|auto`
 - `http2-max-frame-size=SIZE|auto`
-- `http2-max-header-list-size=SIZE|auto`
+- `http2-max-header-list-size=SIZE|auto` (auto default 64 KiB; hard maximum
+  1 MiB)
 - `http2-adaptive-window=true|false`
 - `http3=false|true|auto`
 - `quic-max-connections`
@@ -644,7 +698,9 @@ Protocol modernization:
 - `doh-url`
 - `dot-server`
 - `dns-cache=true|false`
-- `happy-eyeballs-timeout`
+- `happy-eyeballs-timeout` (default 250 ms; range 10..=2000 ms)
+- `ftp-pasv-address=control-peer|server` (default `control-peer`; `server` is
+  admin-only compatibility behavior)
 
 Transfer integrity and redirects:
 
@@ -664,7 +720,10 @@ SFTP security (see `detailed-ftp-sftp.md`):
 - `sftp-known-hosts` (private known-hosts file path)
 - `sftp-private-key` / `sftp-private-key-passphrase`
 - `sftp-use-agent=true|false`
-- `sftp-max-outstanding-reads`
+- `sftp-max-outstanding-reads` (default 8; hard maximum 64)
+- `sftp-max-read-size` (default 64 KiB; hard maximum 1 MiB and never larger
+  than the negotiated packet payload)
+- `sftp-max-packet-size` (default 128 KiB; hard maximum 1 MiB)
 
 Session and control files:
 
@@ -680,6 +739,10 @@ Session and control files:
 - `save-session-format=aria2|json`
 
 Config management:
+
+- `metadata-max-document-size` (default 64 MiB; hard maximum 256 MiB)
+- `metadata-max-files` (default/hard maximum 262144)
+- `metadata-max-sources` (default/hard maximum 1024)
 
 - `url-rules-file`
 - `url-rules-mode=off|toml`

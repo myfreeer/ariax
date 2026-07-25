@@ -38,6 +38,9 @@ ShortBody
 OversizedBody
 ChecksumMismatch
 DiskError
+NoSpaceOrQuota
+PermissionDenied
+BackendUnavailable
 UserCancelled
 ProxyConnect
 ControlConnection
@@ -73,6 +76,17 @@ and request-policy failures:
   for that route, not a transient proxy error.
 - `InvalidRequestHeader`: custom-header syntax or a reserved-header conflict was
   rejected before sending. It is terminal until configuration changes.
+- `DiskError`: a file-scoped write/read/media error is terminal for the task
+  unless its owning disk policy maps it to a more specific class; it never
+  consumes a mirror/network retry attempt.
+- `NoSpaceOrQuota`: aborts provisional leases, preserves durable pieces, and
+  sets the scheduler `no_space` condition. Readiness probes are resource
+  recovery, not network retries.
+- `PermissionDenied`: terminal until the filesystem/ACL configuration changes.
+- `BackendUnavailable`: a fully settled live failover may re-admit the task in
+  a fresh generation; cancellation-uncertain failover follows the disk
+  fail-closed rule and does not issue overlapping in-process I/O. Neither path
+  blindly retries a network lease.
 
 `StaleConnection` means a reused HTTP keep-alive connection, pooled TLS session,
 or protocol connection was closed or reset before a valid response/body could
@@ -108,7 +122,7 @@ New options:
 ```text
 --retry-profile=aria2|conservative|aggressive|custom
 --retry-on=reset,eof,timeout,hang,lowest-speed,stale-connection,dns-transient
---retry-on-http-status=408,425,429,500-504
+--retry-on-http-status=408,425,429,500,502-504
 --retry-on-http-status-add=CODE[,CODE|RANGE...]
 --retry-on-http-status-remove=CODE[,CODE|RANGE...]
 --retry-after=respect|ignore
@@ -154,9 +168,28 @@ status-code set to be known in the resolved option snapshot.
 - do not retry `400`, `401`, `403`, `404`, `405`, `409`, `410`, `412`, `416`,
   or invalid range responses as ordinary transient errors.
 
+Resolved conservative defaults are exact: `retry-max-attempts=5`,
+`retry-max-attempts-per-mirror=3`, `retry-max-elapsed=3600`, and
+`retry-backoff=exponential-jitter`. The backoff base is the configured
+`retry-wait`, or 1 second when that value is zero in the conservative profile;
+attempt `n` computes `cap = min(retry-max-wait, base * 2^(n-1))` with saturating
+arithmetic and selects equal jitter in `[cap/2, cap]`. The `aria2` profile keeps
+aria2's exact `retry-wait=0` immediate behavior instead of substituting the
+conservative base.
+
+Attempt caps include the initial try: a value of 5 permits at most four retries.
+The per-mirror cap also includes that mirror's first try. Backoff attempt `n`
+is the one-based retry ordinal after the initial failure, so the first wait uses
+`n=1`. `retry-max-elapsed` starts when the generation first admits transfer work
+and counts retry waits but not user pause; its persisted cumulative elapsed value
+is clamped to the configured maximum on recovery.
+
 `aggressive`:
 
-- larger caps and broader status-code set,
+- exact defaults are 10 total attempts, 5 attempts per mirror, 7200 seconds
+  maximum elapsed, 600 seconds maximum wait/`Retry-After`, exponential equal
+  jitter with the same 1-second zero-base substitution, and HTTP statuses
+  `408,421,425,429,500,502-504`,
 - useful for unreliable mirrors,
 - still cannot retry disk errors, user cancellation, unsafe stale validators,
   invalid placement, or repeated checksum-corrupt mirrors as if they were
@@ -164,7 +197,9 @@ status-code set to be known in the resolved option snapshot.
 
 `custom`:
 
-- user-provided trigger set, status-code set, wait policy, and caps.
+- user-provided trigger set and status-code set are mandatory; omitted scalar
+  caps/wait policy inherit the exact conservative defaults, and effective
+  diagnostics list every inherited value.
 
 ## Retry-After
 
@@ -237,9 +272,11 @@ Clock rule: live retry timers use the monotonic clock; wall-clock changes never
 affect a running wait. Persistence cannot use monotonic time — it does not
 survive process restart or reboot — so `RetryState` stores the scheduling
 decision instead of a bare deadline: `scheduled_at_unix_ms` (wall time when the
-wait was chosen), `delay_ms` (the chosen delay after all clamps), and
-`retry_reason` (backoff, `Retry-After`, or policy clamp). Recovery recomputes
-conservatively rather than trusting recovered wall time exactly:
+wait was chosen), `elapsed_before_wait_ms` (cumulative monotonic retry-budget
+time before this wait, capped by `retry-max-elapsed`), `delay_ms` (the chosen
+delay after all clamps), and `retry_reason` (backoff, `Retry-After`, or policy
+clamp). Recovery recomputes conservatively rather than trusting recovered wall
+time exactly:
 
 - elapsed = `now_wall - scheduled_at_unix_ms`, clamped to `[0, delay_ms]`;
   remaining = `delay_ms - elapsed` runs on a fresh monotonic timer,
@@ -251,6 +288,10 @@ conservatively rather than trusting recovered wall time exactly:
 - a forward jump larger than `delay_ms` releases the wait — after restart the
   wait is complete by wall time and cannot be proven otherwise; the guarantee
   preserved across restart is bounded-conservative, not exact.
+- the recovered retry-budget elapsed value is
+  `min(retry-max-elapsed, elapsed_before_wait_ms + recovered_wait_elapsed)`;
+  it can shorten/stop future retries but can never increase the configured
+  budget after a restart.
 
 The recovered decision context also keeps diagnostics truthful: status shows
 the original reason and delay, not a synthetic deadline.
@@ -260,7 +301,7 @@ the original reason and delay, not a synthetic deadline.
 Status-code sets support individual codes and inclusive ranges:
 
 ```text
-408,425,429,500-504
+408,425,429,500,502-504
 ```
 
 Validation rules:

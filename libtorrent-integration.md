@@ -46,6 +46,11 @@ Commands into BT lane:
 The channel is bounded. If it is full, control operations get backpressure or a
 typed overload error; memory must not grow unbounded.
 
+Baseline full-build bridge caps are 256 command items / 8 MiB encoded payload,
+1024 coalescible event items / 16 MiB, and 64 reliable terminal/checkpoint items
+/ 4 MiB. Raw torrent/resume blobs are not copied through the coalescible event
+lane; they use one tracked sized handoff charged to the BT/session budget.
+
 ## Runtime BT Option Updates
 
 BT settings have their own runtime-update class; they do not reuse HTTP
@@ -97,8 +102,9 @@ delivered.  Libtorrent can drop alerts in its own bounded alert queue before the
 adapter sees them.  The adapter therefore requests resume data on an explicit
 cadence, before pause/remove, and at shutdown; each request has a tracked
 completion that the shutdown barrier awaits.  `resume data ready` is merely a
-wakeup/diagnostic event.  Configure `alert_queue_size` generously, record any
-upstream alert-loss indication, and immediately schedule a status/resume-data
+wakeup/diagnostic event. Configure `alert_queue_size` to 4096 by default
+(bounded by the declared libtorrent memory share), record any upstream
+alert-loss indication, and immediately schedule a status/resume-data
 reconciliation when it occurs.
 
 ## Callback Rules
@@ -239,15 +245,16 @@ There is one bounded timeout for this barrier.  On timeout or a failed
 resume-data request, mark the task's session-store checkpoint explicitly dirty
 (`DirtyCheckpoint`, carrying the last known safe resume data) rather than
 claiming a clean pause/shutdown.  This is a session-store state, not a control
-journal record type; the journal record enum stays HTTP-oriented.  Recovery
+journal record type; the project-owned non-BT transfer journal stays separate
+from libtorrent resume semantics. Recovery
 then asks libtorrent to validate or resume conservatively.  It retains durable
 payload/resume data and does not manufacture a clean completion.
 
 Libtorrent resume data is opaque bencode, not an HTTP-style piece record. It does
 not fit the `detailed-storage.md` record enum and is stored as a sized BT
 resume-data blob in the session store (`session-persistence.md`), keyed by gid,
-rather than as journal piece records. The journal record types remain
-HTTP-oriented; BT durability is owned by libtorrent's own resume semantics.
+rather than as journal piece records. BT durability is owned by libtorrent's
+own resume semantics.
 
 Forced shutdown:
 
@@ -255,6 +262,13 @@ Forced shutdown:
   session-store checkpoint dirty (`DirtyCheckpoint`),
 - next startup treats the BT task as unclean and asks libtorrent to validate or
   resume from the last saved data.
+
+The resume-data request cadence defaults to 60 seconds while payload/seeding
+state is changing. The staged blob defaults to a 16 MiB cap with a 64 MiB hard
+maximum, and the pause/remove/shutdown barrier defaults to 30 seconds with a
+300-second hard maximum. An over-cap blob or expired barrier produces
+`DirtyCheckpoint`; it never allocates an unbounded bencode value or claims a
+clean checkpoint.
 
 ## Tests
 

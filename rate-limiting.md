@@ -93,8 +93,12 @@ If any precondition is unavailable, the worker does not read. It releases
 tentative reservations that cannot safely be held and registers one wakeup for
 the limiting resource. This is a read gate, not a post-read sleep.
 
-Raw FTP/SFTP/socket reads request no more than the available permit, remaining
-storage span, and buffer capacity. A sequential HTTP/FTP response remains one
+Raw FTP/socket reads request no more than the available permit, remaining
+storage span, and buffer capacity. An SFTP `SSH_FXP_READ` is sent only after a
+permit for its requested data length is reserved; the bounded response cannot
+exceed that request, accepted bytes consume the permit, and timeout/cancellation
+returns only the unused remainder. The small per-request quantum/outstanding cap
+prevents high-latency SFTP from hoarding an unbounded share. A sequential HTTP/FTP response remains one
 continuous transport stream even while it rotates through piece-aligned storage
 leases; storage checkpoint boundaries do not create new requests or rate waits.
 

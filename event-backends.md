@@ -11,7 +11,8 @@ missing, blocked by policy, or unsupported by the running kernel.
 ```text
 --event-backend=auto|tokio
 --event-backend-fallback=true|false
---disk-io-backend=auto|uring|iocp|blocking|sync
+--disk-io-backend=auto|uring|iocp|blocking
+--disk-failover-drain-timeout=SEC
 --net-workers=N
 --disk-workers=N
 --cpu-workers=N
@@ -53,6 +54,10 @@ Disk selection is independent:
   blocking pool.
 - macOS/BSD/other supported targets: bounded blocking pool until a maintained
   completion backend passes its own design and benchmark gate.
+
+`sync` is not a production option: test harnesses may instantiate a synchronous
+fake directly, but release configuration never permits transfer file I/O on a
+network/control caller thread.
 
 ## Runtime Probe Requirements
 
@@ -132,6 +137,17 @@ When a disk backend falls back:
   `getBackendInfo` diagnostic RPC method,
 - keep user-configured hard limits unless they exceed backend capabilities, in
   which case reject them with a clean error.
+
+Startup probe fallback and live failover are distinct. A startup probe has no
+accepted operations and may select the fallback immediately. A live backend
+must first enter the disk-adapter failover barrier: stop submissions, cancel and
+drain every accepted operation, return/quarantine every lease exactly once,
+abort provisional spans, and close backend-bound file handles. Only a fully
+settled task may reopen its files through safe capabilities on the fallback and
+requeue under a fresh generation/backend epoch. If any accepted write remains
+completion/cancellation-uncertain, that task fails closed with recoverable
+partial state and receives no overlapping fallback I/O in the same process;
+unaffected/new tasks may use the fallback. `disk-adapter.md` owns the sequence.
 
 Example:
 

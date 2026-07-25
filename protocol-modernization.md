@@ -54,6 +54,11 @@ Rules:
 - preserve per-host connection budgets,
 - support explicit disable for compatibility.
 
+The global/per-origin idle counts, estimated-memory cap, and idle timeout use
+the profile defaults in `performance-profiles.md`. Pool admission must satisfy
+both count and memory caps; eviction closes the least-recently-used eligible
+idle connection and never evicts a connection with an active response.
+
 aria2 compatibility:
 
 ```text
@@ -72,6 +77,9 @@ Hyper ingress controls exposed by this implementation:
 `http1-read-buffer-size=SIZE` selects Hyper's exact read-buffer mode and is
 mutually exclusive with a non-default max-buffer override. The registry rejects
 sizes below Hyper's supported minimum instead of allowing a builder panic.
+`http1-max-buffer-size` defaults to 400 KiB with a project hard maximum of
+2 MiB; the value is included in per-connection ingress admission rather than
+allocated speculatively for every idle socket.
 `http1-max-headers` maps to Hyper's response-parser cap; the default is 100 and
 the project hard maximum is 1024. Its resolved header-entry allowance plus the
 read/max buffer is charged to `http_ingress_budget`, so raising the count can
@@ -136,6 +144,9 @@ first bounded-memory slice until a hard growth cap is proven. Registry validatio
 enforces the HTTP/2 frame/window/header ranges. Connection/stream admission uses
 the resolved fixed windows plus measured stack overhead so a high stream count
 cannot exceed `http-ingress-buffer-limit`.
+`http2-max-header-list-size` defaults to 64 KiB with a hard maximum of 1 MiB;
+raising it consumes the stream's ingress reservation and may reduce admitted
+streams.
 
 HTTP/2 does not replace `split`; it changes how range workers map to streams
 and connections. A single HTTP/2 connection may carry multiple range leases if
@@ -277,6 +288,11 @@ crate comparison and condition for reconsideration are in `library-choice.md`.
 DoH/DoT are feature-gated because they add TLS/HTTP dependency paths and policy
 questions.
 
+`happy-eyeballs-timeout` defaults to 250 ms and is validated in the range
+10..=2000 ms. At most two connection attempts per origin are concurrently in
+the immediate race; additional approved addresses advance through the same
+bounded racer as an earlier attempt fails or the delay fires.
+
 Rules:
 
 - resolver choice is part of the connection identity where needed,
@@ -308,6 +324,22 @@ needs a defined contract:
 - The DNS cache has a size cap with LRU eviction, honors TTL including TTL=0, and
   performs negative/failure caching with a short bounded TTL so a resolver
   outage does not hammer the resolver. Resolver timeout feeds retry policy.
+- Positive TTL is capped at 86400 seconds and negative TTL at 30 seconds.
+  Concurrent identical `(backend, name, type, policy-context)` lookups use one
+  bounded in-flight query with multiple waiters; cancellation removes only that
+  waiter and cancels the resolver query when none remain. In-flight keys and
+  waiters are charged to `metadata_cache_budget`, with at most 4096 total
+  waiters and 1024 waiters on one query, so a miss storm cannot create one DNS
+  task/socket per download.
+- DNS answer cardinality, positive/negative entry counts, and negative TTL use
+  the exact profile/hard caps in `performance-profiles.md`; after destination
+  policy filtering, at most 32 addresses are selected in resolver order while
+  preserving A/AAAA alternation, and excess addresses are ignored with a
+  diagnostic before Happy Eyeballs admission.
+- The cookie wrapper enforces the exact total/per-domain entry and byte caps in
+  `performance-profiles.md` independently of the selected crate. Expired entries
+  are removed first, then least-recently-used non-pinned entries; a single
+  oversized cookie is rejected rather than evicting an unbounded set.
 - Happy Eyeballs cancels and closes the losing A/AAAA connection racer so it does
   not leak against the file-descriptor budget.
 
@@ -350,8 +382,8 @@ proxy socket. Each task resolves one of two modes before connecting:
 - `LocalPinned` is the default and is mandatory for URLs submitted through an
   untrusted non-loopback RPC listener. Resolve locally, canonicalize literals
   (including integer/obscure IPv4 forms and IPv4-mapped IPv6), apply the network
-  allow/deny and private/link-local/loopback/metadata rules to every result, pin
-  an allowed numeric address for that connection attempt, and send that numeric
+  allow/deny and generated non-global/special-use/metadata rules to every
+  result, pin an allowed numeric address for that connection attempt, and send that numeric
   address in SOCKS5 or the HTTP `CONNECT` authority. Preserve the original DNS
   hostname only for TLS SNI, certificate verification, and the generated HTTP
   `Host` field. If the client/proxy stack cannot separate connect address from

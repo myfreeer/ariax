@@ -42,6 +42,33 @@ separate data connection per transfer.
   data connection is closed at EOF or immediately on cancellation/failure and is
   counted against the per-host connection budget.
 
+### FTP Data-Endpoint Authorization
+
+An FTP reply is not authority to connect to an arbitrary address. EPSV is
+preferred because it supplies only a port; the client always combines that port
+with the already resolved, policy-approved control-peer address. For legacy
+PASV, `ftp-pasv-address=control-peer|server` defaults to `control-peer`, ignoring
+the reply's advertised address while honoring its validated port. `server` is
+an explicit local-admin compatibility mode: the advertised address must pass
+the complete allow/deny, non-global/private-address, proxy, DNS-pinning, and
+per-host budget policy before connect, and an untrusted remote RPC caller cannot
+enable it. Hostnames are never accepted inside a numeric PASV tuple.
+
+Active PORT/EPRT mode is off unless explicitly selected. The client creates one
+bounded listener on its configured local interface, advertises only that local
+address/ephemeral port, and accepts exactly one data connection before the
+deadline. The peer address must equal the approved control peer (or the same
+explicit administrator allowlist used for PASV); mismatches are closed without
+reading and do not satisfy the transfer. A task/RPC input cannot choose an
+arbitrary bind address or third-party callback target. Passive and active data
+sockets both consume the ordinary socket/host budgets and repeat policy after a
+control reconnect or proxy change.
+
+These rules prevent PASV bounce/SSRF and active-mode callback abuse without
+changing storage/retry semantics. A rejected data endpoint is
+`UnsafeDestination`, not a transient `DataConnection` error for another blind
+retry to the same endpoint.
+
 ## Resume Offset (REST)
 
 FTP has no `Range` header. Resume uses `REST`:
@@ -136,20 +163,38 @@ Resolution order:
 An explicit pin or known-host entry that mismatches is terminal
 `HostKeyMismatch`; it is not converted into an approval prompt.
 
+The `known_hosts` reader uses the selected stable `ssh-key` parser behind an
+owned matcher. It supports canonical host and `[host]:port` patterns, negation,
+wildcards, and OpenSSH hashed-host entries. `@revoked` is a terminal rejection.
+`@cert-authority` is feature-gated until host-certificate principal/time/CA
+validation has its own interoperability matrix; a CA key is never mistaken for
+an ordinary exact host key. The file is streamed/capped at 8 MiB, 65,536
+entries, and 64 KiB per line. A malformed matching entry fails closed; malformed
+unrelated lines produce one bounded diagnostic and are skipped. Matching uses
+the original canonical hostname/port, never a reverse-DNS name invented from
+the selected address.
+
 The paused challenge contains a challenge id, canonical host and port, key
-algorithm, and SHA-256 fingerprint. The handshake connection may be closed to
-release resources. Calling the normal scheduler/RPC `Resume`/aria2 `unpause` on
-that specific state means “allow the currently displayed key”: the exact key is
-pinned in persistence-safe task metadata, the generation increments, and the
-adapter reconnects. If reconnect presents another key, no credential is sent and
-the task remains paused with a new challenge. Approval is task-scoped and does
-not silently edit a global `known_hosts` file.
+algorithm, and SHA-256 fingerprint. Host/algorithm display strings are at most
+253/64 bytes, the encoded public key blob is at most 16 KiB, and exactly one
+current challenge is retained per task; an over-cap key/challenge is a terminal
+protocol error rather than a persistence allocation. The handshake connection may be closed to
+release resources. Normal scheduler/RPC `Resume`/aria2 `unpause` does **not**
+approve trust; it leaves the task paused and returns
+`HostKeyApprovalRequired`. Approval uses the extension/native
+`ApproveHostKey(gid, challenge_id, fingerprint_sha256)` operation (CLI:
+`ariax approve-host-key ...`). Both displayed values must match the current
+challenge, after which the exact key is pinned in persistence-safe task
+metadata and normal readmission starts a fresh generation. A raced/stale
+challenge fails without sending credentials; if reconnect presents another
+key, the task remains paused with a new challenge. Approval is task-scoped and
+does not silently edit a global `known_hosts` file.
 
 Interactive CLI mode prints host/port, algorithm, and SHA-256 fingerprint and
-asks the user to allow or stop. Allow performs the same task-scoped resume;
-stop removes the task with a host-key-rejected diagnostic. Without an attached
-TTY, the CLI never auto-approves: it leaves the task paused and prints the
-fingerprint plus the explicit resume/bypass/pin choices.
+asks the user to allow or stop. Allow invokes the explicit challenge-bound
+approval operation; stop removes the task with a host-key-rejected diagnostic.
+Without an attached TTY, the CLI never auto-approves: it leaves the task paused
+and prints the fingerprint plus the explicit approve/bypass/pin choices.
 
 Approval state and the accepted task pin are not secrets and may be persisted.
 Logs/events include the fingerprint but never authentication credentials or
@@ -195,12 +240,21 @@ Session behavior:
   influence.
 
 Bounded offset pipeline: the adapter keeps at most
-`sftp-max-outstanding-reads` (default 8, capped by the server window and
-`http_ingress_budget`-style byte accounting through the normal `BufferLease`
-budget) offset reads in flight per channel, sized by the current `RatePermit`
-and remaining span. Completions integrate with the standard cancellation,
-generation, retry, and storage-lease contracts; a cancelled request drains to
-its completion before buffers are reused.
+`sftp-max-outstanding-reads` (default 8, hard maximum 64, further capped by the server window and
+the separate `sftp_ingress_budget`) offset reads in flight per channel, sized by
+the current `RatePermit`, server limit, remaining span, and a default 64 KiB
+request cap (hard maximum 1 MiB and never larger than the negotiated packet
+payload). russh-sftp 2.3.0 returns each raw offset response as an owned
+`Data.data: Vec<u8>` after first reading a capped packet buffer. The adapter sets
+the crate's client `max_packet_len` to 128 KiB by default (hard maximum 1 MiB,
+clamped down by the server extension) and rejects a larger length prefix before
+payload allocation. Request admission reserves the packet cap plus requested
+data length—the temporary decode double-allocation worst case—in SFTP ingress
+before send, charges both until the packet/vector are released, then copies the
+data into a reserved `BufferLease` and releases the vector immediately.
+There is no whole-file/high-level `read` path. Completions integrate with the
+standard cancellation, generation, retry, and storage-lease contracts; a
+cancelled request drains to its completion before either allocation is reused.
 
 ## Retry Classes
 
@@ -226,13 +280,23 @@ from HTTP status codes:
   source can start fresh but cannot resume a partial generation,
 - ASCII mode rejected for fixed-layout/resume,
 - FTPS data connection without `PROT P` rejected when control is encrypted,
+- EPSV/PASV defaults connect only to the approved control peer; a PASV-advertised
+  different host is refused unless explicit admin `server` mode passes the full
+  destination policy,
+- active mode accepts one timely connection only from the approved control peer
+  and cannot be configured by untrusted RPC as a third-party callback,
 - data-channel premature-close preserves earlier durable checkpoints and retries
   from the current pending span,
 - SFTP offset reads place bytes at correct global offsets,
+- SFTP offset admission accounts the packet-buffer plus returned-vector peak;
+  an over-cap packet length is rejected before payload allocation and cannot
+  exceed `sftp_ingress_budget`,
 - explicit host-key/SHA-256 pin match succeeds and mismatch is terminal before
   authentication,
 - an unknown key pauses before credentials, exposes a stable challenge, and
-  `Resume` pins only that exact key for the task,
+  generic `Resume` fails with `HostKeyApprovalRequired`,
+- explicit approval pins only the exact current challenge/fingerprint and a
+  stale challenge fails without authentication,
 - a changed key on reconnect creates a new paused challenge rather than using
   the prior approval,
 - `sftp-check-host-key=false` is explicit, observable, and rejected by untrusted

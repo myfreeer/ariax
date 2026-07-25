@@ -74,6 +74,23 @@ Suggested default:
 --slow-slot-policy=off
 ```
 
+When enabled without explicit overrides, resolved defaults are:
+
+```text
+slow-slot-grace-period=60
+slow-slot-min-active-time=30
+slow-slot-max-demotions=3
+slow-slot-readmit-after=60
+slow-slot-readmit-policy=original-position
+```
+
+If `slow-slot-speed-limit` is not explicit, a nonzero
+`lowest-speed-limit` is reused; otherwise it resolves to 64 KiB/s when the
+policy is enabled. After `slow-slot-max-demotions` is reached, the task is no
+longer automatically demoted in that generation: it keeps its slot until normal
+retry/terminal/user action. An explicit user restart resets the count; an
+automatic readmission does not.
+
 The feature should be easy to enable, but not surprising.
 
 ## Slow Classification
@@ -100,9 +117,8 @@ Options:
 --slow-slot-readmit-policy=front|original-position|back
 ```
 
-If `slow-slot-speed-limit` is unset, the scheduler may derive it from
-`lowest-speed-limit`, but only when the user explicitly enables
-`slow-slot-policy`.
+The resolved threshold above exists only when the user explicitly enables
+`slow-slot-policy`; with the default `off`, it causes no classification work.
 
 ## Interaction With Retry Policy
 

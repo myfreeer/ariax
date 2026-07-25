@@ -194,8 +194,10 @@ transfers both to the completion path.
 
 ## External Client Event Queues
 
-Each WebSocket or stdio event subscriber owns a separate bounded queue. External
-writers never run on or block the scheduler/storage actors.
+Each WebSocket or stdio event subscriber owns a separate queue bounded by both
+event count and serialized bytes using the profile values in
+`performance-profiles.md`. External writers never run on or block the
+scheduler/storage actors.
 
 Event classes:
 

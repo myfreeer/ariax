@@ -83,8 +83,8 @@ Redirect targets are attacker-influenced when RPC is remotely exposed, so they
 flow through the same guardrail as the initial request:
 
 - Resolve and re-check the redirect target against the SSRF guardrail in
-  `security-recovery.md` (private/link-local/loopback/metadata-endpoint denial,
-  resolve-and-pin against DNS rebinding).
+  `security-recovery.md` (generated non-global/special-use and metadata-endpoint
+  denial, resolve-and-pin against DNS rebinding).
 - Redirect targets obey `network-allowlist`/`network-denylist` and no-proxy
   policy exactly as an initial URL does.
 - If the redirect changes proxy selection, validate both the new proxy endpoint

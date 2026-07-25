@@ -33,6 +33,15 @@ If chunk hashes are active:
 - durable completion is recorded per Metalink verification chunk,
 - final file completion requires all selected verification chunks durable.
 
+When metadata offers multiple algorithms for the same range, the baseline
+selects exactly the strongest supported set in this order:
+`sha-512 > sha-256 > sha-1 > md5`. It does not fall back to a weaker digest
+after a stronger mismatch. Unknown algorithms are ignored only when a supported
+set exists; otherwise the checksum requirement is unsupported. A separately
+configured user checksum is additional and must also pass. The selected
+algorithm/value set is persisted in the generation snapshot and cannot change
+mid-generation.
+
 The preferred fast path is:
 
 ```text

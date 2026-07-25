@@ -71,10 +71,12 @@ The aria2-compatible surface is deliberately closed:
   `min-split-size`, and `lowest-speed-limit` are accepted as an active restart:
   clients observe a transient `waiting` state, no pause event, and eventual
   resume with the pending values.
-- `PausedHostKey` projects to aria2 `paused`. Calling normal `unpause`/resume in
-  that state explicitly approves and task-pins the currently published SFTP host
-  key challenge; if the server presents a different key on reconnect, it remains
-  paused and publishes a new challenge without sending credentials.
+- `PausedHostKey` projects to aria2 `paused`, but normal `unpause`/resume returns
+  `HostKeyApprovalRequired` and does not grant trust. The namespaced extension
+  `ariax.approveHostKey(gid, challengeId, fingerprintSha256)` (and the native
+  equivalent) must match the current published challenge before task-scoped
+  pinning/requeue. This is an intentional security divergence so generic
+  “unpause all” automation cannot approve a new server identity.
 - Slow-slot `demote` (`WaitingSlow`) projects to aria2 `waiting` with no pause
   event and readmits automatically; only the explicit slow-slot `pause` policy
   (`PausedSlow`) projects to `paused`. A task with some leases in retry wait and
@@ -103,6 +105,49 @@ New deployments should use a secret over TLS or a local stdio transport.
 Authentication failures use a generic unauthorized response and are rate
 limited; they never reveal whether a user name, password, token, or GID was
 valid.
+
+### Query And Response Work Bounds
+
+Request size alone does not bound response amplification or scheduler work.
+Baseline registry defaults are:
+
+```text
+rpc-max-request-size=2MiB
+rpc-max-response-size=16MiB
+rpc-max-batch-calls=256
+rpc-max-list-items=1000
+```
+
+`system.multicall` rejects more than the configured call count before dispatch.
+`tellWaiting`/`tellStopped` and extension list methods clamp/reject a requested
+page above `rpc-max-list-items`; clients paginate. `tellActive` is bounded by
+task admission, but the same response-byte cap still applies. The scheduler
+publishes immutable active/waiting/stopped membership indexes on membership
+changes. A query clones one index root in O(1), then resolves task snapshots and
+formats outside scheduler/storage actors through the RPC/CPU budget; it never
+walks all tasks while holding an actor turn or scheduler lock. Membership is
+consistent to the index version and each task snapshot exposes its own version,
+rather than pretending a 10,000-task query is one atomic engine instant.
+
+The serializer writes into a byte-counting bounded chunk sink instead of first
+building a second unbounded JSON value tree. Exceeding the cap returns a typed
+`ResponseTooLarge` error and releases all snapshot references; it never sends a
+truncated JSON document.
+
+Per-transport pending response bytes count against `rpc_budget`, and socket/
+stdio backpressure stops further response work. One client cannot reserve the
+whole process budget; per-client and global shares are enforced before
+serialization. Baseline permits one actively serializing/full-size response per
+client; later pipelined requests retain only their bounded parsed command state
+until the prior response releases bytes. Each client has at most four accepted
+requests / 8 MiB of request-plus-command state; further HTTP pipelining or stdio
+frames receive backpressure/a typed busy error before parsing another body.
+
+`system.multicall` is bounded but not transactional. Inner calls execute in
+order and may have side effects before a later inner call fails or the combined
+response exceeds the byte cap. The returned error includes the number of
+completed inner calls without echoing sensitive parameters; clients requiring
+atomic option mutation use the single atomic `changeOption` patch operation.
 
 ### Event Delivery And Slow Consumers
 
@@ -174,7 +219,7 @@ Rules:
 - logs go to stderr or configured log files,
 - binary torrent/metalink payloads are base64 or passed through documented
   file/URI APIs, not raw mixed bytes in the stream,
-- request-size, auth policy, and unsafe-hook restrictions still apply.
+- request-size, auth policy, and unsafe-hook restrictions still apply,
 - when `rpc-secret` is configured, stdio uses the same `token:<secret>` method
   parameter convention as network RPC; local process ownership does not bypass
   an explicitly configured secret.

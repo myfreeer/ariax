@@ -40,11 +40,19 @@ by `threading-model.md`.
 ```rust
 pub struct ResourceManager {
     pub max_threads: usize,
+    pub resident_budget: ByteBudget,
     pub socket_budget: Budget,
     pub file_budget: Budget,
     pub buffer_budget: ByteBudget,
     pub http_ingress_budget: ByteBudget,
+    pub sftp_ingress_budget: ByteBudget,
     pub piece_metadata_budget: ByteBudget,
+    pub task_metadata_budget: ByteBudget,
+    pub transform_budget: ByteBudget,
+    pub journal_state_budget: ByteBudget,
+    pub sqlite_cache_budget: ByteBudget,
+    pub metadata_cache_budget: ByteBudget,
+    pub cpu_scratch_budget: ByteBudget,
     pub quarantine_budget: ByteBudget,
     pub disk_queue_budget: QueueBudget,
     pub cpu_queue_budget: QueueBudget,
@@ -55,6 +63,10 @@ pub struct ResourceManager {
 Budget rules:
 
 - budget acquisition is explicit,
+- every resident allocation acquires both its domain permit and one disjoint
+  byte charge from `resident_budget`; domain maxima may intentionally sum above
+  the resident target for workload flexibility, but simultaneous reservations
+  cannot. Releasing either permit without the other is an accounting defect,
 - failed acquisition returns backpressure, not allocation growth,
 - control/journal priority reserves cannot be consumed by bulk writes; this is
   enforced structurally by the split control queue (see Queue Topology), not by a
@@ -66,6 +78,11 @@ Budget rules:
 - Hyper/TLS-owned response frames count against `http_ingress_budget` until
   copied/split into a `BufferLease` and released; they are never hidden inside
   the transfer-pool number,
+- russh-sftp-owned `SSH_FXP_DATA` vectors count against
+  `sftp_ingress_budget` from request admission until their bytes are copied into
+  a `BufferLease` and the vector is released. Outstanding offset requests
+  reserve the configured packet-buffer cap plus requested data length first, so
+  the decoder's temporary double allocation cannot create unbudgeted ingress,
 - HTTP/1 connection admission reserves its resolved Hyper max read-buffer,
   response-header allowance, and dynamic TLS record-buffer allowance against
   `http_ingress_budget`. HTTP/2 admission reserves a conservative bound of
@@ -81,6 +98,21 @@ Budget rules:
 - piece-state admission reserves packed durable/verified maps and bounded sparse
   active-piece metadata against `piece_metadata_budget`; no task creates one
   heap object per possible piece,
+- variable file-layout, URI/source, option, retry-history, and task diagnostic
+  structures reserve `task_metadata_budget`; the fixed per-task shell is
+  separately accounted in the resident equation,
+- relocatable decompression/decoding output uses the separate
+  `transform_budget`, which is zero while growing/transformed output is
+  feature-gated. A feature cannot enable `TransformBuffer` allocation without a
+  nonzero bounded profile entry and resident-memory term,
+- appender buffers/indexes, SQLite page cache, DNS/cookie/server-stat caches,
+  CPU-private scratch, and serialized/pending RPC responses use their named
+  budgets rather than disappearing into a generic overhead estimate.
+  `rpc_budget` has both item and byte limits; bytes are charged from the first
+  serializer chunk until the transport releases them,
+- the accounted resident limit keeps a fixed headroom fraction for allocator
+  fragmentation and measured framework overhead. A periodic RSS observer may
+  stop new admission sooner, but it never authorizes allocation beyond permits,
 - all budgets are visible in diagnostics.
 
 ## Queue Wrappers
@@ -300,10 +332,11 @@ Ordering rationale:
 - Queue credit is reserved (step 4) before the buffer lease (step 5) so a worker
   never holds a pool buffer while blocked on downstream storage capacity, per the
   `messaging-model.md` shared-memory rule.
-- The user rate limiter is a token-debiting read gate. Raw FTP/SFTP reads are
-  sized by the permit. Hyper body polling requires the permit first; a yielded
-  frame is charged immediately and any bounded one-frame/window overshoot becomes
-  token debt before another poll.
+- The user rate limiter is a token-debiting read gate. Raw FTP reads are sized
+  by the permit; an SFTP offset request is sent only after reserving its bounded
+  response quantum and charges the returned data on acceptance. Hyper body
+  polling requires the permit first; a yielded frame is charged immediately and
+  any bounded one-frame/window overshoot becomes token debt before another poll.
 - Once bytes are accepted from the protocol read, storage writes them without a
   second rate-limit wait. Unused permit bytes are returned, while bytes later
   aborted/discarded are not refunded. Step 6 is the additional finite discard
@@ -387,6 +420,7 @@ pub enum DiskBackendKind {
 }
 
 pub struct DiskWriteOutcome {
+    pub backend_epoch: BackendEpoch,
     pub lease: BufferLease,
     pub result: Result<DiskCompletion, DiskErrorKind>,
 }
@@ -418,6 +452,11 @@ Contract notes:
   display/serialized absolute `PathBuf` is never reopened as authority. Secure
   descendant resolution is part of every backend, including the blocking
   fallback; an unavailable strong primitive is a typed capability failure.
+- `FileHandle` is bound to one `BackendEpoch`; it cannot be submitted to or
+  reinterpreted by another backend. Every outcome repeats the epoch. Live
+  failover follows the stop/drain/abort/close/reopen barrier in
+  `disk-adapter.md`, and a stale-epoch result may release ownership but never
+  mutate storage state.
 - `sync_data` maps to `fdatasync` (data only); `sync_all` maps to `fsync` (data
   plus metadata). The durability mode chooses which to call, so the backend does
   not take an fsync-mode enum.

@@ -119,6 +119,9 @@ inside these guardrails.
 
 | Lane / budget | concurrency | throughput | latency | compact |
 | --- | --- | --- | --- | --- |
+| accounted resident target / permit limit | 1 GiB / 896 MiB | 2 GiB / 1792 MiB | 768 MiB / 672 MiB | 128 MiB / 112 MiB |
+| process handle target | 16384 | 8192 | 8192 | 1024 |
+| logical socket / file subcaps | 12288 / 4096 | 4096 / 4096 | 4096 / 2048 | 512 / 512 |
 | `control_urgent` capacity (commands) | 256 | 256 | 256 | 64 |
 | `control_bulk` capacity (commands) | 1024 | 1024 | 512 | 128 |
 | `urgent_burst` (drain fairness) | 32 | 32 | 16 | 8 |
@@ -127,13 +130,55 @@ inside these guardrails.
 | `CompletionDrain` capacity | = disk-queue-ops (permit-reserved) | = | = | = |
 | hash lane (jobs / bytes) | 64 / 32 MiB | 128 / 128 MiB | 32 / 16 MiB | 16 / 4 MiB |
 | journal appender inbox (facts) | 1024 | 2048 | 512 | 256 |
+| balanced durability group (bytes / max age / pieces) | 16 MiB / 1 s / 1024 | 64 MiB / 2 s / 4096 | 4 MiB / 250 ms / 256 | 8 MiB / 2 s / 512 |
 | `BufferPool` total (`buffer_budget`) | 256 MiB | 1 GiB | 128 MiB | 32 MiB |
 | quarantine budget (within pool total) | 32 MiB | 64 MiB | 16 MiB | 8 MiB |
+| `disk-cache` retained-span default (within pool total) | 0 | 0 | 0 | 0 |
 | `http_ingress_budget` | 64 MiB | 256 MiB | 32 MiB | 8 MiB |
+| `sftp_ingress_budget` | 32 MiB | 128 MiB | 16 MiB | 4 MiB |
 | `piece_metadata_budget` | 128 MiB | 256 MiB | 64 MiB | 16 MiB |
+| `task_metadata_budget` | 64 MiB | 256 MiB | 32 MiB | 8 MiB |
+| `transform_budget` (baseline feature set) | 0 | 0 | 0 | 0 |
+| RPC pending work (`rpc_budget`, items / bytes) | 128 / 64 MiB | 128 / 64 MiB | 256 / 128 MiB | 32 / 32 MiB |
+| `journal_state_budget` | 32 MiB | 64 MiB | 32 MiB | 20 MiB |
+| `sqlite_cache_budget` | 16 MiB | 32 MiB | 8 MiB | 4 MiB |
+| `metadata_cache_budget` | 32 MiB | 64 MiB | 16 MiB | 4 MiB |
+| `cpu_scratch_budget` | 32 MiB | 128 MiB | 16 MiB | 4 MiB |
+| downloader worker stack reservation | 2 MiB/thread | 2 MiB/thread | 2 MiB/thread | 1 MiB/thread |
 | default HTTP/2 stream / connection window | 256 KiB / 1 MiB | 2 MiB / 8 MiB | 128 KiB / 512 KiB | 64 KiB / 256 KiB |
-| per-client event queue (events) | 256 | 256 | 512 | 64 |
+| per-client event queue (events / serialized bytes) | 256 / 4 MiB | 256 / 4 MiB | 512 / 8 MiB | 64 / 1 MiB |
 | stopped-result retention (`max-download-result`) | 1000 | 1000 | 1000 | 250 |
+
+Cache/cardinality defaults are also registry-owned and admission-visible:
+
+| Cache / metadata cap | concurrency | throughput | latency | compact |
+| --- | --- | --- | --- | --- |
+| HTTP idle connections (global / per origin) | 512 / 2 | 256 / 8 | 128 / 2 | 32 / 1 |
+| HTTP idle-pool estimated memory / timeout | 32 MiB / 60 s | 32 MiB / 60 s | 16 MiB / 30 s | 4 MiB / 30 s |
+| DNS positive / negative entries | 4096 / 512 | 4096 / 512 | 2048 / 256 | 512 / 64 |
+| cookie jar total entries | 3000 | 3000 | 3000 | 512 |
+| server-stat entries | 4096 | 4096 | 2048 | 512 |
+| exported per-entity metric top-N | 100 | 100 | 100 | 32 |
+
+Additional hard cardinality rules are profile-independent: at most 32 addresses
+from one DNS answer enter Happy Eyeballs; TTL=0 is not cached, a positive TTL is
+clamped to at most 86400 seconds, and a negative entry lives no longer than 30
+seconds. A cookie is at most 4096 bytes, at most
+180 cookies and 64 KiB of cookie bytes are retained per registrable domain, and
+expired cookies are evicted before LRU pressure. One task accepts at most 1024
+source URIs/mirrors; a larger metadata/input set fails with `ResourceLimit`
+before task creation. One task has at most 262,144 file-layout entries and
+64 MiB of canonical layout data; all variable task metadata also needs a
+`task_metadata_budget` reservation. Server statistics expire under
+`server-stat-timeout`
+(default 86400 seconds) and then LRU-evict. Detailed diagnostics retain aggregate
+counters plus only the 16 most recent per-task error/retry events; exported
+metrics use the top-N plus one `other` bucket, never an unbounded URL/host label.
+
+HTTP idle-pool memory is an admission sublimit on `conn_overhead`, and cache
+entries are sublimits on `metadata_cache_budget`; they are not additional
+resident-equation terms. Raising a count without enough parent memory budget
+reduces admission rather than permitting silent growth.
 
 Derived invariants CI must assert on the resolved defaults:
 
@@ -145,53 +190,82 @@ Derived invariants CI must assert on the resolved defaults:
 - HTTP/2 admission reservation per connection
   (`min(connection_window, streams × stream_window)` + frame + header
   allowance) times the connection cap fits `http_ingress_budget`,
-- every queue capacity above is finite and visible in diagnostics.
+- SFTP admission proves `(packet_buffer_cap + requested_data_len)` for every
+  outstanding request fits `sftp_ingress_budget`; the default per-channel
+  request count is 8 and the hard count maximum is 64,
+- RPC serialization reserves one response item and bytes before producing
+  chunks; one client is capped at one 16 MiB response, four accepted requests /
+  8 MiB request state, plus its event-queue byte share and cannot consume the
+  process budget,
+- logical socket/file subcaps share the process handle target and resolve down
+  to the native `RLIMIT_NOFILE`/handle capability minus a 64-handle control
+  reserve; C10k admission fails explicitly when the OS limit is lower,
+- every queue capacity above is finite and visible in diagnostics,
+- a balanced durability group closes at the first resolved byte, age, or piece
+  threshold (and always on pause/remove/finalize/shutdown), so tuning cannot
+  leave verified data waiting indefinitely for a data/journal barrier.
 
 ## Resident Memory Equation
 
 C10k claims are evaluated against the whole resident budget, not `BufferPool`
-alone. The global memory gate is:
+alone. Every allocation takes a domain permit and a global resident permit.
+Domain caps are workload guardrails and may sum above the resident target;
+actual simultaneous reservations may not. The global gate is:
 
 ```text
-resident_target ≥
-    buffer_budget                     (pool incl. disk-cache retention + quarantine)
-  + http_ingress_budget               (Hyper frames/read buffers, h2 windows,
+accounted_resident_limit ≥
+    buffer_reserved                   (pool incl. disk-cache retention + quarantine)
+  + http_ingress_reserved             (Hyper frames/read buffers, h2 windows,
                                        response headers, dynamic TLS buffers)
+  + sftp_ingress_reserved             (russh-sftp DATA vectors and bounded
+                                       response framing before pool copy)
   + conn_count × conn_overhead        (fixed HTTP/TLS/socket/pool-entry state only;
                                        excludes ingress-reserved bytes;
                                        measured per platform in Phase 0, budgeted
                                        ≤ 32 KiB idle / ≤ 96 KiB active TLS)
-  + task_count × task_base_overhead   (snapshots, retry/lease/source metadata;
+  + task_count × task_base_overhead   (fixed snapshot/scheduler shell;
                                        budgeted ≤ 32 KiB for the base task,
-                                       with caps on URIs/redirects/cookies/stats)
-  + piece_metadata_budget             (packed durable/verified maps and bounded
+                                       excluding variable metadata below)
+  + task_metadata_reserved            (layouts, sources, options, bounded history)
+  + piece_metadata_reserved           (packed durable/verified maps and bounded
                                        sparse active-piece state)
-  + queue_metadata                    (ring slots, descriptors, permits, and bounded
+  + transform_reserved                (relocatable decode/decompress output;
+                                       zero while the feature is gated)
+  + rpc_response_reserved             (serializer chunks and transport-pending bytes)
+  + queue_metadata_reserved           (ring slots, descriptors, permits, and bounded
                                        non-pooled message payloads; queued
-                                       BufferLeases stay in buffer_budget)
-  + journal_state                     (appender buffers + indexes; bounded by
+                                       BufferLeases stay in buffer_reserved;
+                                       excludes RPC bytes above)
+  + journal_state_reserved            (appender buffers + indexes; bounded by
                                        compaction triggers and the FD cap)
-  + sqlite_cache                      (page cache, bounded by PRAGMA cache_size)
-  + dns_cache + metadata_caches       (bounded entry counts)
-  + cpu_job_metadata_and_scratch      (job descriptors and non-pooled private
+  + sqlite_cache_reserved             (page cache, bounded by PRAGMA cache_size)
+  + metadata_cache_reserved           (DNS/cookies/server stats, bounded counts)
+  + cpu_metadata_and_scratch_reserved (job descriptors and non-pooled private
                                        scratch only; hash input leases stay in
-                                       buffer_budget)
-  + bt_share                          (libtorrent session budget, full build only;
+                                       buffer_reserved)
+  + bt_reserved                       (libtorrent session budget, full build only;
                                        configured into libtorrent settings)
-  + fixed_process_overhead            (code, TLS roots, runtime stacks:
+  + fixed_process_reserve             (TLS roots and runtime stacks:
                                        thread_count × stack size)
 ```
 
 Every term is an allocation domain counted exactly once, individually bounded,
-and exported in diagnostics with the same names. Stage byte caps (write lane,
-disk queue, hash reorder, disk-cache retention) may overlap as sublimits on the
-same pooled lease; diagnostics show both the stage charge and its parent
-allocation domain but the resident sum uses only the parent once. The C10k gate
-for `concurrency` is: 10,000 mostly idle connections with default budgets fit in
-approximately 1 GiB resident (320 MiB idle-connection overhead + 256 MiB pool +
-64 MiB ingress + metadata/caches/queues/fixed), and control p99 stays within
-target. Exceeding a term is backpressure or admission refusal, never silent
-growth.
+and exported in diagnostics with the same names. `accounted_resident_limit` is
+7/8 of `resident_target`; the remaining 1/8 is non-allocatable headroom for
+allocator fragmentation and measured framework/process overhead. Stage byte
+caps (write lane, disk queue, hash reorder, disk-cache retention) may overlap as
+sublimits on the same pooled lease; diagnostics show both the stage charge and
+its parent allocation domain but the resident sum uses only the parent once.
+RSS sampling is a defensive earlier-stop signal, not permission to allocate
+outside these charges.
+
+The `concurrency` C10k gate is 10,000 concurrently open low-activity sockets,
+not 10,000 retained HTTP keep-alive pool entries (that pool remains capped at
+512). The modeled idle-connection reserve is at most 320 MiB, leaving the rest
+of the 896 MiB accounted limit for buffers, active ingress, task state, queues,
+caches, and fixed reserves. Admission reduces those active domains as the
+socket count rises. Exceeding any domain or the global limit is backpressure or
+admission refusal, never silent growth.
 
 ## Tunables By Profile
 
@@ -288,7 +362,8 @@ specific setting.
 
 C10k profile success:
 
-- 10,000 idle sockets with bounded memory,
+- 10,000 concurrent low-activity sockets with bounded memory; no claim to keep
+  10,000 fully idle reusable HTTP connections,
 - RPC p99 latency under target,
 - no event-loop starvation,
 - no unbounded queues.

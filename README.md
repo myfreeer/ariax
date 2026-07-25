@@ -472,6 +472,9 @@ Durability modes:
 
 Memory is budgeted, not accidental.
 
+- Every allocation takes both a named domain permit and a global resident-byte
+  permit; domain maxima may be overcommitted for workload flexibility, but
+  simultaneous reservations cannot exceed the profile's accounted limit.
 - One global transfer buffer pool with size classes: 16 KiB, 64 KiB, 256 KiB,
   1 MiB.
 - The pool is lazy/on-demand within hard caps by default, with optional
@@ -489,8 +492,9 @@ Memory is budgeted, not accidental.
 
 Default target envelope:
 
-- 10,000 idle connections: bounded primarily by socket/task overhead, no per
-  connection megabyte allocations.
+- 10,000 concurrent low-activity connections: bounded primarily by socket/task
+  overhead, no per-connection megabyte allocations. The reusable HTTP idle pool
+  remains deliberately much smaller.
 - 1,000 active range streams: at most one or two borrowed buffers each, subject
   to disk backpressure.
 - Metadata size limits are configurable and enforced before allocation.
@@ -567,7 +571,8 @@ Required before production claims:
   fsync, torn/rotated control journals, and process kill during every recovery
   state.
 - Internal scalability validation:
-  - 10,000 idle HTTP sockets.
+  - 10,000 concurrent low-activity HTTP sockets (not 10,000 retained
+    keep-alive pool entries).
   - 1,000 active range streams writing to disk.
   - 10 GiB allocation while polling RPC at 100 QPS.
   - 1,000 BitTorrent peer simulators in full build.

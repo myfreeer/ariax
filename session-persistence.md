@@ -141,8 +141,24 @@ file.iso.ariax              companion segment 0
 file.iso.ariax.00000001     optional rotated segment 1
 ```
 
+The companion basename is deterministic and reserved by the safe-path layer:
+
+- single-file layout: `<final-output-name><control-file-suffix>`, even while
+  payload bytes are still in a temporary output,
+- multi-file layout: `<canonical-root>/.ariax-<16-hex-gid>.ctrl` (rotated
+  suffixes follow the same numbering rule).
+
+The builder checks the reserved companion name against metadata/output
+collisions before creating payload files. Control artifacts are opened relative
+to the same retained root capability with no-follow/reparse rejection; a
+symlinked companion is never followed. A user-selected suffix that collides
+with the final payload name fails configuration/layout creation rather than
+silently moving the journal elsewhere.
+
 The central SQLite DB maps `gid` to the base path of the control-journal segment
 set. Segment headers and continuity are normative in `detailed-storage.md`.
+SQLite paths use the same tagged `PlatformPath` byte encoding as the journal,
+not lossy UTF-8 strings.
 
 A task always has exactly one primary segment set and one appender. With
 `central` or `beside-output`, that location is primary. With `both`, the
@@ -177,6 +193,56 @@ SQLite stores:
 
 SQLite does not store high-frequency per-piece durability transitions in the
 normal path.
+
+### SQLite Schema Version 1
+
+`PRAGMA user_version=1` is the authoritative schema version. Version-1 tables
+are `STRICT`, enable foreign keys, and use closed integer enums generated from
+the same state/error matrices as the API. A `u64` that may exceed SQLite's
+signed integer range is stored as an exactly 8-byte little-endian BLOB; hashes,
+ids, and platform paths have exact length/codec checks before binding.
+
+| Table | Version-1 columns and key |
+| --- | --- |
+| `session` | `session_id BLOB(16) PRIMARY KEY`, `created_ms INTEGER`, `updated_ms INTEGER`, `clean_shutdown INTEGER` |
+| `task` | `gid TEXT PRIMARY KEY`, `session_id BLOB(16)`, `queue_state INTEGER`, `queue_position INTEGER`, `desired_paused INTEGER`, `primary_journal_id BLOB(16)`, `primary_journal_path BLOB`, nullable `replica_journal_path BLOB`, nullable `replica_sequence BLOB(8)`, `root_display BLOB`, nullable `cached_layout_hash BLOB(32)`, nullable `cached_root_binding_hash BLOB(32)`, `cached_snapshot_hash BLOB(32)`, nullable `no_space_target BLOB`, nullable `no_space_scheduled_at_ms INTEGER`, nullable `no_space_delay_ms BLOB(8)`, `created_ms INTEGER`, `updated_ms INTEGER`; foreign key to `session` |
+| `task_option` | `gid TEXT`, `scope INTEGER`, `key TEXT`, `canonical_value BLOB`, primary key `(gid, scope, key)`; secret-class registry keys are rejected before SQL |
+| `task_source` | `gid TEXT`, `uri_id INTEGER`, nullable `persistence_safe_uri TEXT`, `redacted_fingerprint BLOB(32)`, `needs_credentials INTEGER`, `priority INTEGER`, primary key `(gid, uri_id)` |
+| `host_key_challenge` | `gid TEXT PRIMARY KEY`, `challenge_id BLOB(16)`, `canonical_host TEXT`, `port INTEGER`, `algorithm TEXT`, `presented_public_key BLOB`, `fingerprint_sha256 BLOB(32)`, `created_ms INTEGER`; public key/challenge caps come from `detailed-ftp-sftp.md` |
+| `stopped_result` | `gid TEXT PRIMARY KEY`, `terminal_status INTEGER`, `error_code INTEGER`, `safe_message TEXT`, nullable `total_length BLOB(8)`, nullable `layout_hash BLOB(32)`, `completed_ms INTEGER`; RPC output is rendered from these canonical fields, not stored arbitrary JSON |
+| `journal_install` | `gid TEXT PRIMARY KEY`, `checkpoint_id BLOB(16)`, `old_journal_id BLOB(16)`, `old_path BLOB`, `new_journal_id BLOB(16)`, `new_path BLOB`, `source_last_sequence BLOB(8)`, `phase INTEGER`, `created_ms INTEGER` |
+| `bt_resume` | `gid TEXT PRIMARY KEY`, `resume_blob BLOB`, `dirty INTEGER`, `saved_ms INTEGER`; baseline default maximum 16 MiB, hard maximum 64 MiB |
+
+`gid` is validated as exactly 16 lowercase hexadecimal characters by the
+application codec before SQL. `queue_position` is indexed with `queue_state`;
+temporary duplicate positions are allowed only inside the one reorder
+transaction, whose final state is dense and deterministic. All child tables
+except `stopped_result` cascade on live-task deletion. A stopped-result
+retention transaction inserts the independent canonical result and removes the
+live `task` row only after the journal terminal record is valid.
+
+`NoSpaceCondition.retry_at` is live monotonic state and is never serialized as
+an instant. SQLite stores the wall scheduling decision
+(`no_space_scheduled_at_ms`, `no_space_delay_ms`) and recovery applies the same
+bounded-conservative clock rule as `RetryState`; absent/expired scheduling data
+causes one immediate readiness probe, not automatic admission.
+
+The host-key challenge table allows a paused challenge to survive process
+restart without persisting a credential. Approval still requires the exact
+challenge id and fingerprint, persists the resulting task pin through the
+option snapshot, and reconnects/rechecks that pin before any authentication.
+Deleting/replacing the current challenge makes an old approval stale.
+
+Schema migration rules are fail-closed:
+
+- migration runs on the dedicated session thread inside `BEGIN IMMEDIATE` and
+  takes a private timestamped backup before any non-additive change,
+- a binary that sees a newer `user_version` leaves the database and journals
+  untouched and exits persistent mode with a typed version error,
+- a future binary keeps version-1 journal readers; after successful replay it
+  may write a newer checkpoint set and retires version-1 segments only through
+  the normal install protocol,
+- downgrade is export/import only; no older binary rewrites a newer database.
 
 ## Control Journal Responsibilities
 
@@ -285,6 +351,8 @@ Startup:
 - read task list and journal paths,
 - scan companion control files if configured,
 - replay each task journal to last valid committed record,
+- rebuild and verify its root binding before any payload descendant is opened;
+  a mismatch enters the explicit import/rebind path rather than using adjacency,
 - take generation/layout/progress from the journal and reconcile cached copies
   to SQLite in the one allowed direction,
 - reset begun, aborted, uncommitted, and non-durable spans to pending,
@@ -310,6 +378,31 @@ If a task journal is missing but SQLite says task was active:
 - do not infer progress from file length or allocation,
 - mark the task needing full revalidation or error depending on available
   output files and content digests.
+
+### Companion Import And Output-Root Rebinding
+
+The explicit recovery surface is:
+
+```text
+ariax session import-control CONTROL_PATH --output-root=ROOT \
+  --rebind=identity|verify
+```
+
+The native API exposes the same typed operation; remote RPC does not expose it
+unless a startup administrator policy explicitly allows local filesystem
+imports. `identity` is the default and succeeds only when the stable root and
+selected-file identities match, allowing a path-only move/rename. `verify`
+permits a different root identity but follows `detailed-storage.md`: it rebuilds
+all safe paths and retains only pieces whose recorded per-piece content digest
+passes readback. Everything else returns to pending.
+
+Scanning a companion file never authorizes a rebind by adjacency or mtime. The
+journal's gid/id/linkage and root binding are validated first, the target root
+must satisfy allowed-root and safe-open policy, and a live task with the same gid
+must be quiesced or rejected as a collision. Import installs the journal/index
+transaction only after the new generation and root binding are flushed. A crash
+before that point leaves the old installed task authoritative; a crash after it
+repairs/creates the SQLite row from the journal.
 
 ## Secrets At Rest
 
@@ -402,7 +495,8 @@ state.
 SQLite can handle many writes, but per-piece hot progress is better isolated:
 
 - a torn or corrupted task journal affects one task,
-- companion control files support moving partial downloads,
+- companion control files support identity-checked moves and explicit
+  digest-verified rebinding of partial downloads,
 - strict durability can fsync small task journals without locking global queue
   metadata,
 - large bitsets and per-piece records do not bloat the global DB.
@@ -443,13 +537,22 @@ exist. No baseline code silently aliases either value to `hybrid`.
 
 SQLite:
 
-- schema version table,
-- migration scripts,
+- the exact version-1 tables and migration rules are defined under SQLite
+  Responsibilities above,
 - WAL mode by default when supported; on filesystems where WAL's shared-memory
   requirement is unreliable (network filesystems and some FUSE/overlay mounts),
   detect the failure and fall back to rollback-journal mode with one startup
   warning rather than risking a corrupt WAL,
-- periodic backup/checkpoint policy.
+- `synchronous=FULL`, `foreign_keys=ON`, a 5-second busy timeout, and new
+  databases use 4096-byte pages,
+- `cache_size` is set as a negative KiB value from the selected
+  `sqlite_cache_budget`; baseline `mmap_size=0` prevents an uncharged mapped
+  page cache,
+- WAL auto-checkpoint is 1000 pages, with a truncate checkpoint at clean
+  shutdown and when WAL bytes exceed 64 MiB; checkpoint failure is diagnostic
+  and never discards the WAL,
+- periodic private backup policy uses the SQLite backup API on the dedicated
+  session thread and retains a bounded two generations by default.
 
 Control journal:
 

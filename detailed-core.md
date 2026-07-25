@@ -109,6 +109,8 @@ pub enum ErrorKind {
     InvalidRange,
     StaleValidator,
     ChecksumMismatch,
+    HostKeyApprovalRequired,
+    StaleChallenge,
     Disk,
     NoSpace,
     Permission,
@@ -116,6 +118,7 @@ pub enum ErrorKind {
     DirtyCheckpoint,
     NeedsCredentials,
     SlowConsumer,
+    ResponseTooLarge,
     ResourceLimit,
     BackendUnavailable,
     Cancelled,
@@ -325,7 +328,8 @@ provisional storage lease has either committed or been acknowledged by
 | `WaitingSlow` | remove | `Removed` | apply partial-file policy; persist result |
 | `Paused` / `PausedSlow` | resume | `Waiting` | clear user/slow pause; preserve any admission condition and apply its condition-specific resume rule before admission |
 | `Paused` / `PausedSlow` | remove | `Removed` | apply partial-file policy; persist result |
-| `PausedHostKey` | resume | `Waiting` | approve/persist the exact challenged key for this task and requeue; the readmission generation rule applies; a changed key on reconnect creates a new paused challenge |
+| `PausedHostKey` | generic resume/unpause | `PausedHostKey` | reject with `HostKeyApprovalRequired`; generic queue automation must not grant trust |
+| `PausedHostKey` | explicit matching host-key approval | `Waiting` | require the current challenge id and displayed SHA-256 fingerprint, pin the exact challenged key for this task, and requeue; stale/mismatched approval fails without sending credentials |
 | `PausedHostKey` | explicit matching host-key option | `Waiting` | replace the challenge with the configured pin and requeue under the same rule |
 | `PausedHostKey` | remove/CLI stop | `Removed` | reject the challenge before authentication and persist the stop reason |
 | `PausedRestarting` | quiescence and option staging succeed | `Waiting` | stage pending values for the next admission, clear restart quiescence, emit restart diagnostic only; admission performs the sole increment |
@@ -380,6 +384,11 @@ pub enum SchedulerCommand {
     AddUri(AddUri),
     Pause { gid: Gid, force: bool },
     Resume { gid: Gid },
+    ApproveHostKey {
+        gid: Gid,
+        challenge: HostKeyChallengeId,
+        fingerprint_sha256: HostKeyFingerprint,
+    },
     Remove { gid: Gid, force: bool },
     ChangeOption { gid: Gid, patch: OptionPatch },
     ChangeGlobalOption { patch: OptionPatch },
@@ -425,7 +434,7 @@ pub struct TaskSnapshot {
 
 `HostKeyChallenge` exposes a challenge id, canonical host/port, key algorithm,
 and SHA-256 fingerprint. The scheduler retains the exact presented public key so
-`Resume` can pin it; neither the challenge nor the pin is secret.
+`ApproveHostKey` can pin it; neither the challenge nor the pin is secret.
 
 Rules:
 
@@ -513,6 +522,8 @@ Required first-slice tests:
   one increment while staging plus another while admitting,
 - `needs_credentials` blocks admission until a satisfying source/credential
   update and composes with desired user pause,
+- generic resume cannot approve `PausedHostKey`; explicit approval requires the
+  current challenge id and fingerprint and rejects a raced/new challenge,
 - mid-transfer ENOSPC sets `no_space`, preserves durable pieces, projects
   `paused`, and clears only after a successful explicit/timed readiness probe,
 - `WaitingSlow` demotion/readmission projects `waiting`, honors

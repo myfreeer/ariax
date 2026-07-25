@@ -115,7 +115,8 @@ Hard actions:
 - remove read interest from sockets,
 - stop accepting new body chunks for a task,
 - pause a task and save control state,
-- fail on disk-full or repeated unrecoverable write error,
+- set the recoverable `no_space` condition on disk-full/quota, or fail on a
+  repeated unrecoverable write/backend error,
 - reject new RPC adds when configured global budgets are exhausted.
 
 ## Responsiveness Targets

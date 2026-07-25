@@ -268,6 +268,17 @@ Use `russh` plus `russh-sftp` for the standard build because they integrate with
 Tokio without a native libssh2 dependency. Use the raw offset request API behind
 a project-owned bounded pipeline; do not assume the high-level `AsyncRead`
 wrapper provides enough concurrent requests for bulk transfer throughput.
+The current raw API returns `SSH_FXP_DATA` in an owned `Vec<u8>`, so the
+baseline explicitly budgets that allocation and performs one copy into
+`BufferLease`; it does not claim direct registered-buffer fill. A future
+upstream/forked decoder may remove the copy only behind the same ingress,
+placement, rate, and cancellation contracts.
+
+Use stable `ssh-key` 0.6.x directly for OpenSSH public/private key,
+certificate, and `known_hosts` parsing; it is already in the russh ecosystem and
+avoids a second SSH key representation. Keep matching, marker policy, file-size
+caps, and task-scoped approval in the downloader adapter. Do not adopt the
+0.7.0 release candidates in the initial lockfile.
 
 `ssh2`/libssh2 remains a prototype fallback for interoperability gaps. It is not
 linked into the default build, and its seek-based high-level file API is not a
@@ -319,8 +330,10 @@ profile and it carries no C10k claim.
 Use quick-xml's pull/streaming reader with no Serde DOM for untrusted Metalink
 and XML-RPC input. Reject DTD/DOCTYPE, entity declarations, unsupported
 encodings, excessive depth/attributes/text, and namespace/element forms outside
-the accepted schemas. Parser input and emitted metadata are size-capped, and the
-same event-level adapter is fuzzed independently of networking.
+the accepted schemas. Parser input and emitted metadata use the exact document,
+depth, attribute, file, and source caps in `configuration.md` and reserve
+`task_metadata_budget`; the same event-level adapter is fuzzed independently of
+networking.
 
 ## HTTP/3
 
@@ -350,6 +363,9 @@ Metalink metadata, `md5`/`sha-1` must exist for compatibility regardless of
 TLS provider, and keeping verification independent of the TLS provider choice
 avoids feature-coupling. BLAKE3 is not exposed: aria2 compatibility defines
 the accepted checksum vocabulary.
+When Metalink offers several algorithms for one range, the project selects
+`sha-512 > sha-256 > sha-1 > md5` and never downgrades after a stronger
+mismatch; `metalink-chunking.md` owns the persistence/verification rule.
 
 ## Timers
 

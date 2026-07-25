@@ -73,8 +73,9 @@ not double-count an endgame winner and loser.
 
 ## Sampler
 
-The stats sampler runs at a fixed interval, for example 250 ms or 1 s depending
-on profile.
+The stats sampler interval is profile-owned: concurrency 1 s, throughput 500 ms,
+latency 250 ms, and compact 1 s. An explicit override is clamped to
+100 ms..=10 s.
 
 Sampler cost is O(active), not O(total): idle connections and idle tasks
 carry no per-tick work. Connections/leases register with the sampler only
@@ -187,10 +188,10 @@ Logs:
 
 ## BitTorrent
 
-Libtorrent stats are imported on a periodic tick as snapshots. If libtorrent
-does not emit a fresh alert, the adapter still republishes a snapshot with
-an updated `sampled_at` and zero/decayed current speeds as appropriate; later
-sample age remains query-derived without periodic snapshot writes.
+Libtorrent cumulative counters are imported when alerts/snapshots arrive. While
+a BT task is active, it remains registered with the ordinary sampler, which can
+publish a zero/decayed rate sample even when no new libtorrent alert arrived;
+stopped/idle BT tasks require no tick work, and sample age remains query-derived.
 
 The main UI must not depend on receiving a peer packet or libtorrent alert to
 update displayed rates.
@@ -213,5 +214,6 @@ Required tests:
 - one endgame winner plus its losers are reconciled without double-counting
   committed bytes,
 - stuck socket triggers retry timeout without waiting for another packet,
-- RPC status snapshot changes over time even with no network events,
+- rendered RPC status age/rate changes over time even with no network events;
+  an idle unchanged task need not republish merely to advance age,
 - libtorrent adapter stats age and speed update without alerts.

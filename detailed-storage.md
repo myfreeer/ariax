@@ -115,6 +115,7 @@ pub struct FileLayout {
 pub struct FileEntry {
     pub id: FileId,
     pub safe_path: SafePathOutput,
+    pub identity: Option<FileIdentity>,
     pub length: u64,
     pub global_start: u64,
     pub global_end: u64,
@@ -128,6 +129,14 @@ Rules:
 - layout is immutable per generation,
 - unknown total length is allowed only before range/split planning,
 - once total length is known, layout hash changes require a new generation,
+- every selected existing/created target is opened through its safe capability
+  before `LayoutCommitted`; its platform file identity is recorded in the
+  binding. An unselected/nonexistent entry carries no identity until a later
+  generation selects and opens it,
+- one task has at most 262,144 layout entries and at most 64 MiB of canonical
+  encoded layout data. Variable layout/source/option metadata is charged to
+  `task_metadata_budget`; exceeding either the per-task cap or the global
+  reservation fails with `ResourceLimit` before a worker starts,
 - zero-length file completion still persists terminal state.
 
 ## GlobalOffsetMapper
@@ -463,6 +472,7 @@ Payloads use the following versioned primitives:
 Id               u64
 Span             offset:u64, len:u64
 Hash32           [u8; 32]
+PlatformPath     platform:u8, len:u32, native canonical path bytes
 OptionalId       present:u8, value:u64 when present
 OptionalU64      present:u8, value:u64 when present
 Bytes            len:u32, data:[u8; len]
@@ -470,15 +480,30 @@ Digest           algorithm:Bytes, value:Bytes
 OptionalDigest   present:u8, Digest when present
 OptionMap        count:u32, repeated key:Bytes/value:Bytes sorted by key
 FileLayoutEntry  file_id:Id, global_start:u64, global_end:u64, length:u64,
-                 selected:u8, safe_relative_path:Bytes
+                 selected:u8, safe_relative_path:Bytes, file_identity:Bytes
+DurableEvidenceRun first_piece_delta:u32, piece_count:u32,
+                 validator_set_fingerprint:Hash32, digest_algorithm:Bytes,
+                 digest_value_len:u16, digest_values:Bytes
 ```
 
-Strings are UTF-8. Boolean and enum values are `u8` unless a field says
+Strings are UTF-8. `PlatformPath` is the explicit exception: Unix stores raw
+path bytes and Windows stores canonical UTF-16LE code units, tagged by platform;
+it is display/recovery-location data and is never reopened without the safe-root
+binding check. Boolean and enum values are `u8` unless a field says
 otherwise. Decoders reject invalid tags, duplicate `OptionMap` keys, unsorted
 keys, non-canonical lengths, invalid UTF-8, and trailing payload bytes.
 `Hash32` is SHA-256 over domain-separated canonical bytes; the domain tag is
 fixed by each field (`layout`, `options`, `validator`, or `segment`) so hashes
 from different namespaces cannot be substituted.
+
+Version-1 field caps are checked before allocation: `PlatformPath` and a safe
+relative path are at most 64 KiB each, a platform identity is at most 256
+bytes, a digest algorithm name is at most 32 bytes, and a digest value is at
+most 64 bytes. `OptionMap` has at most 4096 entries, 256 bytes per key, 64 KiB
+per value, and 4 MiB total canonical bytes. A layout has at most 262,144 files
+and 64 MiB of canonical entries across its chunks. These are in addition to the
+16 MiB single-record cap; counts and `count * element_size` products are
+overflow-checked before reserving memory.
 
 Record types (first slice; the number is the version-1 `record_type` value):
 
@@ -506,6 +531,7 @@ Record types (first slice; the number is the version-1 `record_type` value):
 21  LayoutChunk         (continuation of a large LayoutCommitted entry list)
 22  FinalizeIntent      (declares the temp -> final rename about to happen)
 23  FinalizeDone        (rename observed complete)
+24  PieceStateChunk     (checkpoint-only compact durable-piece state)
 ```
 
 The payload of every first-version record is normative:
@@ -514,7 +540,7 @@ The payload of every first-version record is normative:
 | --- | --- |
 | `TaskCreated` | `durability:u8`, `creator_version:u16` |
 | `OptionsSnapshot` | `scope:u8`, `patch_id:OptionalId`, `snapshot_hash:Hash32`, `options:OptionMap`; secret-valued entries are forbidden |
-| `LayoutCommitted` | `layout_hash:Hash32`, `total_length:OptionalU64`, `piece_length:u64`, `total_file_count:u32`, `chunk_count:u32`, `inline_file_count:u32`, repeated inline `FileLayoutEntry` |
+| `LayoutCommitted` | `layout_hash:Hash32`, `root_binding_hash:Hash32`, `root_display:PlatformPath`, `root_identity:Bytes`, `total_length:OptionalU64`, `piece_length:u64`, `total_file_count:u32`, `chunk_count:u32`, `inline_file_count:u32`, repeated inline `FileLayoutEntry` |
 | `GenerationStarted` | `previous_generation:u64`, `reason:u8`, `next_snapshot_hash:Hash32`, `patch_id:OptionalId` |
 | `LeaseStarted` | `transfer_attempt_id:Id`, `lease_id:Id`, `span:Span`, `validator_fingerprint:Hash32` |
 | `PieceStarted` | `lease_id:Id`, `piece_id:Id`, `piece_span:Span` |
@@ -524,7 +550,7 @@ The payload of every first-version record is normative:
 | `PieceVerified` | `piece_id:Id`, `piece_span:Span`, `contributors_hash:Hash32`, `digest:Digest` |
 | `PieceFailed` | `lease_id:OptionalId`, `piece_id:Id`, `piece_span:Span`, `error_class:u8`, `attempt:u32` |
 | `PieceDurable` | `piece_id:Id`, `piece_span:Span`, `contributors_hash:Hash32`, `validator_set_fingerprint:Hash32`, `digest:OptionalDigest`, `data_barrier:u8` |
-| `RetryState` | `scope:u8`, `scope_id:Id`, `attempt:u32`, `scheduled_at_unix_ms:u64`, `delay_ms:u64`, `error_class:u8`, `retry_reason:u8` |
+| `RetryState` | `scope:u8`, `scope_id:Id`, `attempt:u32`, `elapsed_before_wait_ms:u64`, `scheduled_at_unix_ms:u64`, `delay_ms:u64`, `error_class:u8`, `retry_reason:u8` |
 | `TaskPaused` | `reason:u8` |
 | `TaskComplete` | `layout_hash:Hash32`, `final_length:u64`, `final_digest:OptionalDigest`, `completed_at_unix_ms:u64` |
 | `TaskError` | `error_class:u8`, `retriable:u8`, `diagnostic_id:u64` |
@@ -532,9 +558,10 @@ The payload of every first-version record is normative:
 | `CleanShutdown` | `checkpoint_sequence:u64`, `shutdown_at_unix_ms:u64` |
 | `CheckpointStart` | `checkpoint_id:[u8;16]`, `source_last_sequence:u64`, `source_segment_hash:Hash32`, `state_record_count:u32`, `created_at_unix_ms:u64` |
 | `CheckpointEnd` | `checkpoint_id:[u8;16]`, `state_record_count:u32`, `state_hash:Hash32` |
-| `LayoutChunk` | `layout_hash:Hash32`, `chunk_index:u32`, `chunk_count:u32`, `file_count:u32`, repeated `FileLayoutEntry` |
-| `FinalizeIntent` | `layout_hash:Hash32`, `file_id:Id`, `temp_path:Bytes`, `final_path:Bytes`, `final_length:u64`, `file_identity:Bytes` |
-| `FinalizeDone` | `layout_hash:Hash32`, `file_id:Id`, `final_path:Bytes` |
+| `LayoutChunk` | `layout_hash:Hash32`, `root_binding_hash:Hash32`, `chunk_index:u32`, `chunk_count:u32`, `file_count:u32`, repeated `FileLayoutEntry` |
+| `FinalizeIntent` | `layout_hash:Hash32`, `root_binding_hash:Hash32`, `file_id:Id`, `temp_relative_path:Bytes`, `final_relative_path:Bytes`, `final_length:u64`, `file_identity:Bytes` |
+| `FinalizeDone` | `layout_hash:Hash32`, `root_binding_hash:Hash32`, `file_id:Id`, `final_relative_path:Bytes` |
+| `PieceStateChunk` | `layout_hash:Hash32`, `root_binding_hash:Hash32`, `chunk_index:u32`, `chunk_count:u32`, `first_piece_id:Id`, `covered_piece_count:u32`, `durable_bitmap:Bytes`, `evidence_run_count:u32`, repeated `DurableEvidenceRun` |
 
 `validator_fingerprint` is a fixed hash of the canonical validator tuple, not a
 raw cookie, credential, or header block. `contributors_hash` covers the sorted
@@ -545,6 +572,14 @@ single source lease. `OptionsSnapshot.scope` is `CurrentGeneration` or
 `NextAdmission`. It contains only the sanitized options needed to reproduce
 layout, verification, and recovery decisions; sensitive values are never legal
 journal payloads.
+
+The only lease-free durable promotion is explicit different-identity rebind
+readback. It uses the canonical empty contributor hash, a domain-separated
+validator-set fingerprint over `(rebind, prior_root_binding_hash,
+new_root_binding_hash, piece_digest)`, a required nonempty digest, and the
+`RecoveryReadback` data-barrier tag. It is legal only during admission before a
+network worker starts. Ordinary recovery without content proof cannot manufacture
+this form.
 
 Generation/patch crash rule:
 
@@ -564,10 +599,20 @@ Generation/patch crash rule:
   invalid at that point; replay stops before the advance rather than combining
   option versions.
 
+`layout_hash` covers the canonical relative file map, lengths, selection, and
+piece geometry but deliberately excludes the filesystem location.
+`root_binding_hash` covers the platform tag, canonical root path, stable root
+identity, and each opened file identity. Recovery may count journal progress
+only after rebuilding the root capability and matching that binding. Finalize
+records contain safe relative paths and the binding hash; a raw absolute path in
+a finalization record is invalid and can never bypass `rename_safe`.
+
 `RetryState` persists the scheduling decision, not a bare deadline:
+`elapsed_before_wait_ms` is the capped generation retry-budget elapsed time,
 `scheduled_at_unix_ms` is the wall-clock time the wait was chosen, `delay_ms`
 is the chosen delay, and `retry_reason` distinguishes backoff, `Retry-After`,
-and policy-clamped waits. Live waits always run on the monotonic clock;
+and policy-clamped waits. Live waits and elapsed accounting always use the
+monotonic clock;
 `retry-policy.md` defines how these fields are validated against wall-clock
 jumps at recovery. A `FinalizeIntent`/`FinalizeDone` pair brackets each final
 rename; the Finalization section defines the idempotent crash rules.
@@ -579,13 +624,40 @@ A `LayoutCommitted` whose `FileLayoutEntry` list would exceed the 16 MiB record
 cap uses deterministic entry-boundary chunking. The inline entries are chunk
 index 0, and `chunk_count` is the total number of chunks including that inline
 chunk (`1` when no continuation is needed). `LayoutChunk` records then use
-indexes `1..chunk_count-1`, repeat the same `layout_hash`/`chunk_count`, and
-follow immediately with no interleaved record. Packing is greedy in canonical
-file-index order up to the record cap; an entry is never split, and component
-length limits guarantee one entry fits one record. Replay rejects a duplicate,
-gap, mismatch, interleaving record, count overflow, or a sum of per-chunk counts
-different from `total_file_count`. `layout_hash` covers the canonical
-reassembled layout independent of record boundaries.
+indexes `1..chunk_count-1`, repeat the same `layout_hash`,
+`root_binding_hash`, and `chunk_count`, and follow immediately with no
+interleaved record. Packing is greedy in canonical file-index order up to the
+record cap; an entry is never split, and component length limits guarantee one
+entry fits one record. Replay rejects a duplicate, gap, binding/hash mismatch,
+interleaving record, count overflow, or a sum of per-chunk counts different
+from `total_file_count`. `layout_hash` covers the canonical reassembled layout
+independent of record boundaries; `root_binding_hash` covers the reassembled
+identity-bearing entries.
+
+`PieceStateChunk` is legal only inside a complete checkpoint set. It replaces
+one-record-per-piece checkpoint output; ordinary live progress still uses
+`PieceDurable`. Encoding is deterministic:
+
+- chunks are ordered by piece id and numbered `0..chunk_count-1`; each begins
+  at the first durable piece not covered by the previous chunk,
+- one chunk covers the largest prefix of at most 131,072 consecutive piece ids
+  whose complete encoding fits the record cap; its bitmap is exactly
+  `ceil(covered_piece_count / 8)` bytes, least-significant bit first,
+- evidence runs cover every set bit exactly once in increasing order. A run
+  contains consecutive durable pieces with the same validator-set fingerprint,
+  digest algorithm, and digest length. With no per-piece digest, algorithm,
+  length, and values are empty/zero; otherwise `digest_values` is exactly
+  `piece_count * digest_value_len` canonical bytes,
+- a run may be split only at a piece boundary to meet the record cap; gaps,
+  overlaps, unset-bit evidence, missing evidence, noncanonical splitting, or a
+  binding/layout mismatch reject the entire checkpoint set.
+
+Lease contributor hashes are deliberately omitted from a checkpoint: they
+prove the original live commit history, not future recovery state. The
+checkpoint's `state_hash`, the retained validator-set fingerprint, optional
+per-piece digest, layout/root binding, and data-before-journal invariant are the
+canonical replacement evidence. This makes checkpoint replay proportional to
+compact state rather than the historical count of `PieceDurable` records.
 
 Checkpoint sets use the same ordinary layout records and therefore the same
 rule. Other version-1 payloads have explicit bounded cardinalities and must fit
@@ -667,16 +739,30 @@ registry-controlled internal defaults, visible in effective diagnostics):
   checkpoint record count,
 - segment count exceeds 16,
 - the measured replay time of the most recent recovery exceeded 2 seconds
-  (compact once immediately after that recovery reaches a flushed boundary).
+  (compact once after that recovery reaches a flushed boundary only when the
+  canonical encoding is projected to reduce bytes or record count by at least
+  25%).
 
 The double-size conditions guarantee geometric shrink and prevent thrash; a
 per-task minimum interval (default 60 s) plus exponential failure backoff
 bounds retry cost. Pause, remove-with-retained-data, and clean shutdown may
 also compact opportunistically when a size trigger holds.
+The replay-time trigger is recorded against the installed `journal_id`; it does
+not rewrite an already compact checkpoint on every startup when irreducible
+canonical state itself takes longer than 2 seconds. That case is a measured
+startup diagnostic and must remain within the metadata/admission budgets.
 
 Checkpoint build, performed by the same serialized appender (facts arriving
 during the build wait in its bounded inbox; the pause is sized by state, not
 by history):
+
+The builder streams canonical records and updates `state_hash` incrementally;
+it never materializes a second full checkpoint/state copy. A bounded sizing
+pass computes deterministic layout/piece chunk counts, then encoding retains at
+most one 16 MiB record buffer plus iterator/hash state, all charged to
+`journal_state_budget`. If the appender inbox fills during the task-local pause,
+normal storage backpressure stops that task; no fact is dropped and other tasks/
+control actors continue.
 
 1. Complete the durability-mode flush for the active segment; freeze
    `source_last_sequence` and the current canonical state: generation,
@@ -688,11 +774,14 @@ by history):
    `segment_index = 0`, `first_sequence = 1`, and the frozen generation.
 3. Append `CheckpointStart`, the state records encoded with the ordinary
    version-1 record types (`TaskCreated`, `OptionsSnapshot`,
-   `LayoutCommitted`/`LayoutChunk`, `RetryState`, `PieceDurable` per durable
-   piece, `TaskPaused`/`FinalizeIntent`/`FinalizeDone`/terminal markers as
-   applicable), then `CheckpointEnd` whose `state_hash` covers the canonical
-   encoded state records. Records larger than the 16 MiB cap use the defined
-   chunking records.
+   `LayoutCommitted`/`LayoutChunk`, `RetryState`, the checkpoint-only compact
+   `PieceStateChunk` set, and
+   `TaskPaused`/`FinalizeIntent`/`FinalizeDone`/terminal markers as applicable),
+   then `CheckpointEnd` whose `state_hash` covers the canonical encoded state
+   records. Live `PieceDurable` history is represented by `PieceStateChunk` in
+   the checkpoint rather than copied one record per piece. Layout and durable-
+   piece state use only their defined deterministic chunking formats; every
+   other version-1 payload must fit one bounded record.
 4. `sync_all` the checkpoint segment and its directory where supported.
 
 Installation is a pointer/name switch with explicit crash points:
@@ -767,6 +856,13 @@ sync_all active journal segment once for the group
 emit PieceDurable acks for the flushed records
 ```
 
+The balanced group closes at the first of its profile's byte, elapsed-time, or
+piece-count thresholds in `performance-profiles.md`, and unconditionally on
+pause, remove, finalization, clean shutdown, or a file-handle/failover barrier.
+Only a task with a nonempty candidate group registers a deadline, so the time
+bound does not create one idle timer/task per download. Threshold changes are
+registry-controlled internal tuning and never weaken the ordering above.
+
 Strict durability:
 
 ```text
@@ -802,27 +898,82 @@ finalization, fast mode performs a data flush, appends `PieceDurable` for every
 piece that passes final verification, flushes the journal, and only then appends
 and flushes `TaskComplete`.
 
+## Admission, Root Binding, And Relocation
+
+No protocol worker starts with an uncommitted filesystem target. Initial
+admission appends and flushes `TaskCreated` and the current `OptionsSnapshot`,
+opens the selected targets through `SafePath` capabilities, collects their
+identities, then appends and flushes `LayoutCommitted` plus any `LayoutChunk`s
+before polling a body. A later admission first appends and flushes
+`GenerationStarted`; when its promoted option snapshot changes layout,
+selection, or output root, the newly opened binding is also appended and
+flushed before a worker starts. If those fields are unchanged, the prior
+committed layout/binding may be reused after identity revalidation.
+
+A companion journal is portable state, not portable filesystem authority.
+Recovery/rebinding has two cases:
+
+- **Identity-preserving relocation.** If the canonical display path changed
+  because the same directory was renamed/moved but the stable root identity and
+  every selected file identity still match, recovery may automatically rebuild
+  the root capability after allowed-root checks. It starts a new generation and
+  writes a new root binding (the path is part of the binding hash) before any
+  I/O; existing durable pieces remain valid.
+- **Different or missing identity.** A copied tree, another filesystem, or a
+  replaced output requires an explicit session import/rebind operation. The
+  caller supplies the new root and chooses content verification. Every relative
+  path is rebuilt through `SafePathBuilder`; symlinks/reparse points, collisions,
+  foreign extra targets, and paths outside policy fail closed. A durable piece
+  is retained only when its recorded per-piece digest exists and readback under
+  the new capability matches it. A piece without such content evidence returns
+  to pending; file length, timestamps, adjacency to the control file, or a
+  whole-file digest for an incomplete file are not proof. Cross-file pieces are
+  retained only when the complete piece verifies.
+
+The rebind sequence is: quiesce/drain the old generation, append and flush the
+complete `NextAdmission` option snapshot naming the candidate root, perform all
+safe opens and read-only verification, append and flush `GenerationStarted`,
+append and flush the new `LayoutCommitted`/chunks, complete the selected
+durability data barrier and append/flush one lease-free `PieceDurable` for each
+digest-proven retained piece in a different-identity rebind, transactionally
+update SQLite's path/index cache, then start workers. An identity-preserving
+path-only relocation may carry prior durable state because the same root/file
+identities were revalidated. A crash after generation
+promotion but before the new layout binding leaves an incomplete admission:
+replay never falls back to the previous generation's root for writes, and
+recovery repeats safe allocation/rebinding from the promoted snapshot. A crash
+after the layout flush but before SQLite update repairs SQLite from the journal.
+If a crash interrupts digest-proven piece promotion, replay retains only the
+new-generation promotions already flushed and leaves the rest pending.
+
+Automatic scanning may propose a companion file and candidate root, but it may
+not select the different-identity case without the explicit import/rebind
+operation. `session-persistence.md` owns its control-plane/API surface; this
+section owns the byte-trust rule.
+
 ## Recovery
 
 Startup:
 
 1. read SQLite queue membership and locate the task's segment set,
 2. validate and replay the journal's global valid prefix,
-3. take generation, layout, validator snapshot, lease/piece progress, and task
+3. rebuild and validate the recorded root binding (or enter the explicit
+   relocation/rebind path above) before opening any descendant,
+4. take generation, layout, validator snapshot, lease/piece progress, and task
    completion from that prefix,
-4. use SQLite only for its authoritative queue/cross-task fields and reconcile
+5. use SQLite only for its authoritative queue/cross-task fields and reconcile
    any duplicated journal-owned fields from journal to SQLite,
-5. reset begun/aborted/uncommitted leases and every non-durable piece to pending,
-6. re-read and rehash fast-mode hints where a checksum can prove them; otherwise
+6. reset begun/aborted/uncommitted leases and every non-durable piece to pending,
+7. re-read and rehash fast-mode hints where a checksum can prove them; otherwise
    redownload them,
-7. verify that each journal-durable span is readable and inside the recorded
+8. verify that each journal-durable span is readable and inside the recorded
    layout,
-8. if persistence omitted an authenticated source or required credential,
+9. if persistence omitted an authenticated source or required credential,
    retain all verified/durable pieces, reconstruct `Waiting` or `Paused` from
    SQLite desired state, and set the scheduler `needs_credentials` admission
    condition; it cannot issue a new lease until the caller supplies a satisfying
    replacement source or credential,
-9. otherwise create the scheduler task in a new generation, subject to
+10. otherwise create the scheduler task in a new generation, subject to
    SQLite's desired pause/queue state. A journal terminal marker still vetoes
    reactivation regardless of that SQLite state.
 
@@ -844,7 +995,8 @@ all pieces durable
   -> final full checksum if configured
   -> fsync data according to durability
   -> if temp naming is active:
-       append FinalizeIntent (temp path, final path, layout/file identity)
+       append FinalizeIntent (root binding, safe temp/final relative paths,
+                              layout/file identity)
        flush journal through FinalizeIntent
        rename temp to final
        fsync parent directory where supported
@@ -910,6 +1062,13 @@ fresh finalization verification.
 Required tests:
 
 - path traversal corpus across Unix/Windows forms,
+- initial admission cannot start a worker before its layout/root binding is
+  flushed,
+- identity-preserving directory relocation writes a new binding and retains
+  durable pieces; a copied/different-identity tree requires explicit rebind and
+  retains only digest-proven pieces,
+- crash at each rebind step never writes through the old root and repairs the
+  SQLite cache from the journal after the binding is durable,
 - `${out}` and Content-Disposition path sanitization,
 - global offset overflow rejection,
 - stale generation write rejection,
@@ -947,8 +1106,12 @@ Required tests:
   set with no lost durable state,
 - a checkpoint set with a missing/invalid `CheckpointEnd` or `state_hash`
   mismatch is rejected whole and the old set recovers,
-- oversized layout/state chunking round-trips and rejects gaps or hash
-  mismatch,
+- deterministic `LayoutChunk` packing/reassembly covers inline chunk index 0,
+  exact total count, cap boundaries, missing/duplicate/interleaved chunks, and
+  mismatched layout/root-binding hashes,
+- checkpoint `PieceStateChunk` round-trips sparse/dense durable maps, canonical
+  evidence runs, digest/no-digest pieces, and cap splits, and rejects every
+  gap/overlap/noncanonical or binding-mismatched set,
 - idle journal descriptors close under the FD cap and reopen validates the
   tail; a truncated tail faults instead of appending,
 - compaction failure backs off, keeps the old set authoritative, and surfaces

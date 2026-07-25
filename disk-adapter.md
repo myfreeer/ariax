@@ -112,11 +112,12 @@ normatively in `detailed-storage.md`; this document does not restate their
 shape. The buffer field is always the move-only `BufferLease`.
 
 Every backend write returns the runtime-defined
-`DiskWriteOutcome { lease, result }`. Both successful and failed outcomes carry
-exactly the submitted `BufferLease`; a short write is a failure outcome that
-still carries it. Only `StorageEngine` can turn a successful low-level result
-into a committed lease or durable-piece acknowledgement after layout,
-generation, exact-length, checksum, and journal rules pass.
+`DiskWriteOutcome { backend_epoch, lease, result }`. Both successful and failed
+outcomes carry exactly the submitted `BufferLease`; a short write is a failure
+outcome that still carries it. Only `StorageEngine` can turn a successful
+current-epoch low-level result into a committed lease or durable-piece
+acknowledgement after layout, generation, exact-length, checksum, and journal
+rules pass.
 
 `StorageEngine` verifies:
 
@@ -140,7 +141,8 @@ Disk-specific order:
 - Windows `auto`: overlapped file I/O/IOCP if probe passes, otherwise bounded
   blocking pool.
 - macOS/BSD `auto`: bounded blocking pool with `pread`/`pwrite`.
-- Any platform: `sync` only for tests and very small single-file tools.
+- Synchronous fakes exist only in tests; release configuration has no `sync`
+  transfer backend.
 
 If the user requests a backend:
 
@@ -165,6 +167,30 @@ It has:
 
 If the disk queue is full, protocol workers stop reading more network bytes
 until buffers return. This is how memory remains bounded.
+
+## File-Handle Budget And Reopen
+
+Root capabilities and data/journal handles count against `file_budget`; a
+multi-file layout never opens every file permanently. Active tasks retain the
+root capability needed for race-resistant descendant access. Selected data-file
+handles live in a backend-epoch-bound LRU cache and are evictable only when they
+have no accepted operation, registered-buffer reference, pending durability
+group, or finalization intent.
+
+The journal/control reserve is
+`max(16, min(1024, file_budget / 4))`; the remaining file subcap is available to
+data/root handles. If the reserve or an active task's root capability cannot fit,
+admission waits/fails with `ResourceLimit` rather than opening beyond the OS
+limit. Waiting tasks may close reconstructed root/file handles after a flushed
+boundary and rebuild them through `SafePathBuilder` at admission.
+
+Reopening a data file always starts from the retained/rebuilt root capability
+and safe relative path, verifies the recorded root/file identity, and binds the
+handle to the current `BackendEpoch`. An identity mismatch faults/rebinds the
+task; it never silently adopts a replacement file. Eviction closes a nonempty
+balanced durability group first so handle pressure cannot strand verified bytes
+past their flush deadline. Diagnostics expose root/data/journal handle counts,
+cache hits/misses/evictions, and admission waits.
 
 ## Adaptive Backpressure
 
@@ -210,6 +236,42 @@ stop pulling more body bytes except for small control/protocol frames and let
 TCP backpressure propagate. In `Faulted`, affected downloads follow the ENOSPC
 policy for disk-full/quota (pause with durable state intact) and fail for
 non-recoverable errors such as permission denial.
+
+### Live Backend Failover Barrier
+
+Every opened file handle and accepted disk operation carries a monotonically
+increasing `BackendEpoch`. Startup fallback needs no barrier because no work was
+accepted. Runtime failover does:
+
+1. atomically stop new submissions to the faulted epoch,
+2. issue cancellation for all accepted operations and drain each to one
+   completion/cancel-confirmation while preserving its `CompletionPermit` and
+   `BufferLease`,
+3. abort all provisional leases touched by that epoch; durable pieces remain
+   valid,
+4. close/unregister all epoch-bound file handles and buffers,
+5. only when every accepted write is terminal-confirmed, probe/select the
+   fallback, reopen through `SafePath` capabilities, increment the backend
+   epoch, and requeue affected tasks through normal fresh-generation admission.
+
+A stale-epoch outcome is ownership-drained and diagnosed but cannot mutate
+storage state. If any write remains cancellation/completion-uncertain at the
+barrier timeout, its memory stays retired/quarantined and the affected task
+fails closed with `BackendUnavailable`; no fallback operation may target that
+task's files in the same process because the old write could still land later.
+The partial journal/output remains recoverable after process restart. Unaffected
+tasks and new tasks may use the selected fallback. This safety rule takes
+precedence over availability.
+
+Only a backend-wide health/capability failure starts this barrier: a fatal
+submission/completion-queue failure, disabled ring/port, irrecoverable driver
+state, or repeated backend-internal invariant/capability error. File-scoped
+ENOSPC/quota, permission, path, media, checksum, and ordinary `EIO` outcomes stay
+with the affected task and never cause a global backend switch. The default
+failover drain timeout is 30 seconds (hard maximum 300 seconds); it is measured
+from submission stop and is visible in diagnostics. With runtime fallback
+disabled, a backend-wide failure still performs the ownership drain, then
+returns `BackendUnavailable` instead of selecting another backend.
 
 ## HDD, SSD, And NVMe Behavior
 
@@ -432,6 +494,14 @@ Required tests:
   quarantine each submitted `BufferLease` exactly once,
 - forced crash after every journal/write/finalize step,
 - backend fallback tests,
+- live failover with every accepted operation terminal-confirmed reopens only
+  after the epoch barrier and uses a fresh task generation,
+- one cancellation-uncertain old-epoch write prevents fallback I/O to the same
+  task/file and fails closed while unrelated work continues,
+- file-scoped ENOSPC/permission/EIO does not trigger global failover, while a
+  backend-wide fatal signal does and honors fallback-disabled behavior,
+- data/root handle LRU never evicts an in-flight/dirty handle and every reopen
+  verifies binding identity under the current backend epoch,
 - concurrent writes to same and different pieces,
 - buffer reuse after cancellation,
 - fsync/rename behavior with temp files,

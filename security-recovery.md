@@ -148,7 +148,11 @@ Remote RPC guardrails:
   non-empty allowlist means "only these match". Defaults: both empty.
 - Private-address blocking to reduce SSRF risk when RPC is exposed:
   `rpc-allow-private-address-downloads`, default `false`. When false, downloads
-  whose resolved address is private/link-local/loopback are refused.
+  whose resolved address is non-global or special-use are refused. Setting it
+  true relaxes only RFC 1918 IPv4 and IPv6 unique-local destinations; loopback,
+  link-local, unspecified, multicast, broadcast, documentation/benchmark,
+  reserved ranges, and cloud-metadata endpoints still require an explicit
+  startup administrator allowlist.
 - CORS disabled by default; wildcard CORS requires explicit insecure opt-in.
 - `changeGlobalOption` cannot mutate startup-only listener security.
 
@@ -160,10 +164,15 @@ guardrails when RPC is remotely exposed. This section defines the mechanism.
 The guardrail runs whenever a download target is submitted over a non-loopback
 RPC listener (and always for redirect targets, see `redirect-policy.md`):
 
-- Resolve the host, then evaluate every resolved address against the deny set:
-  loopback (`127.0.0.0/8`, `::1`), private ranges (`10/8`, `172.16/12`,
-  `192.168/16`, `fc00::/7`), link-local (`169.254/16`, `fe80::/10`), and the
-  cloud metadata endpoint `169.254.169.254` specifically.
+- Resolve the host, then evaluate every resolved address against a generated,
+  pinned IANA special-purpose prefix table. Default remote-RPC policy permits
+  only globally routable unicast and denies unspecified/current-network,
+  loopback, RFC 1918/unique-local, carrier-grade NAT, link-local, protocol/
+  benchmarking/documentation ranges, multicast, reserved/future-use, IPv4
+  broadcast, IPv4-mapped forms of any denied IPv4 address, and known cloud
+  metadata endpoints (including `169.254.169.254`) before connect. The table
+  update is reviewed like a dependency update; code does not rely on an
+  incomplete hand-written trio of private ranges.
 - Canonicalize numeric hosts before classification, including unusual integer/
   legacy IPv4 spellings and IPv4-mapped IPv6. Policy is applied to the canonical
   address, so alternate textual forms do not bypass the deny set.
@@ -177,7 +186,9 @@ RPC listener (and always for redirect targets, see `redirect-policy.md`):
 - Composition: the guardrail applies after `network-allowlist`/`network-denylist`
   and before the connection is made. A user-configured mirror is not exempt when
   RPC is remotely exposed; an explicitly loopback-bound RPC instance may relax
-  private-address blocking via `rpc-allow-private-address-downloads=true`.
+  only RFC 1918/unique-local blocking via
+  `rpc-allow-private-address-downloads=true`; other special-use ranges still
+  require an explicit startup allowlist.
 - Proxy interaction: the guardrail validates both the proxy endpoint and the
   final origin. For an untrusted remote-RPC task, locally resolve and validate
   the origin, pass its pinned numeric address to SOCKS5 or HTTP `CONNECT`, and
@@ -252,7 +263,7 @@ Disk placement:
 - `out`/`index-out` split relative subdirectories into validated components and
   reject absolute, drive, UNC, `.` and `..` forms,
 - decimal/legacy IPv4 and IPv4-mapped IPv6 forms of private, loopback,
-  link-local, and metadata addresses are denied,
+  link-local, special-use, and metadata addresses are denied,
 - DNS rebinding on reconnect triggers a new resolution and policy decision,
 - untrusted `socks5h` and hostname `CONNECT` are refused, while local resolution
   uses the pinned numeric connect address with the original Host/SNI,

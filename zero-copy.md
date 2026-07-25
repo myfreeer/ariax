@@ -24,10 +24,11 @@ explicit task generation, global offset, piece/chunk, and durable state.
 
 Allowed:
 
-- Raw protocol reads fill a `BufferPool` buffer, then ownership moves to
-  `DiskQueued` without copying. Hyper may instead yield a framework-owned
-  immutable `Bytes` frame that is separately budgeted and copied/split into the
-  pool baseline.
+- Raw protocol reads that accept a caller buffer (including FTP) fill a
+  `BufferPool` lease, then ownership moves to `DiskQueued` without copying.
+  Hyper instead yields a framework-owned immutable `Bytes` frame and
+  russh-sftp 2.3.0 yields an owned `SSH_FXP_DATA` vector; each is separately
+  ingress-budgeted and copied/split into the pool in the baseline.
 - Hashing borrows immutable slices from the same buffer before release.
 - Disk backend writes from that buffer and returns it after completion.
 - io_uring registered buffers are used for repeated reads/writes.
@@ -78,10 +79,11 @@ This still does not do direct network-to-file transfer by default, because the
 downloader must inspect bytes for checksums, content encoding, exact length,
 and recovery state.
 
-For Hyper, insert `Hyper Bytes frame -> BufferLease` before `StorageEngine`;
-this is one explicit bounded user-space copy accepted by the baseline. Exposed
-HTTP/1 read-buffer and HTTP/2 window/frame controls bound the configurable part
-of framework memory. Unexposed stack overhead is measured and included in
+For Hyper, insert `Hyper Bytes frame -> BufferLease`; for SFTP, insert
+`SSH_FXP_DATA Vec -> BufferLease` before `StorageEngine`. Each is one explicit
+bounded user-space copy accepted by the baseline. Exposed HTTP window/buffer
+controls and reserved SFTP request lengths bound the configurable framework
+memory. Unexposed stack overhead is measured and included in
 admission/diagnostics rather than described as zero-copy.
 
 ## When True Kernel Zero-Copy Can Be Used
@@ -120,11 +122,13 @@ overlap group rolls back to pending metadata and clears affected in-memory
 piece state. Zero-copy backends do not undo the bytes; the next lease overwrites
 them, exactly as it overwrites untrusted preallocation contents.
 
-Every backend path returns `DiskWriteOutcome { lease, result }`, so success,
-short write, I/O error, and confirmed cancellation all return the submitted
-`BufferLease`. Uncertain OS cancellation quarantines that same lease until a
-completion or cancellation confirmation resolves ownership. No zero-copy
-backend may report a lease-less error.
+Every backend path returns
+`DiskWriteOutcome { backend_epoch, lease, result }`, so success, short write,
+I/O error, and confirmed cancellation all return the submitted `BufferLease`.
+Uncertain OS cancellation quarantines that same lease until a completion or
+cancellation confirmation resolves ownership. A stale backend epoch can release
+ownership but cannot commit storage state, and no zero-copy backend may report a
+lease-less error.
 
 If a required piece/chunk hash fails after bytes were written, storage appends
 `PieceFailed`, clears committed/provisional state for that verification range,

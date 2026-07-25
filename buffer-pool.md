@@ -44,7 +44,42 @@ Free-list order is LIFO per size class: the most recently released buffer is
 reused first, so hot buffers stay cache/TLB-warm and cold surplus naturally
 sinks to the tail where the idle-timeout release trims it. Per-lane/thread
 small local caches in front of the shared free list are a permitted
-optimization as long as budget accounting stays global.
+optimization as long as budget accounting stays global. The baseline cap is
+two free leases per size class per lane; registered/quarantined leases are never
+eligible. A global waiter or high-watermark signal flushes lane-local surplus
+back to the shared list before allocating or reporting exhaustion, so local
+cache warmth cannot starve another lane.
+
+## `disk-cache` Compatibility Cache
+
+`disk-cache` is an optional verified-span readback cache implemented by
+retaining immutable `BufferLease`s inside this same pool, not a second
+allocator. The default is `0` in every profile because the OS page cache already
+retains ordinary written file data; users may opt in for measured repeated
+Metalink/checksum readback workloads.
+
+Rules:
+
+- the key is `(layout_hash, generation, global_span, verification_identity)`;
+  cached bytes never establish downloaded/durable progress and are not returned
+  for a mismatched generation/layout/hash,
+- only exact committed-and-verified spans enter; abort, hash failure, overwrite,
+  layout/generation invalidation, or finalization identity change evicts the
+  affected entries,
+- lookup may satisfy only an internal verification/readback request that would
+  otherwise read the same exact span from disk; protocol workers never use it
+  as a source of network progress,
+- byte accounting is part of `buffer_budget` and the configured `disk-cache`
+  sublimit; entry metadata is charged to `piece_metadata_budget`,
+- cache leases are lowest-priority reclaimable ownership. A transfer-buffer
+  waiter, quarantine pressure, or parent high watermark evicts LRU entries
+  synchronously before admission fails; cache retention never reserves a hard
+  minimum,
+- diagnostics expose hit/miss/eviction bytes and distinguish cache retention
+  from free/in-flight/quarantined pool bytes.
+
+This gives the aria2-named option observable bounded behavior without claiming
+that duplicating the OS file cache is normally beneficial.
 
 ## Size Classes
 
@@ -73,9 +108,10 @@ are available.
 
 For transfer payloads, yes by policy:
 
-- Raw FTP/SFTP body bytes enter a `BufferPool` buffer. Hyper may first yield a
-  framework-owned immutable `Bytes` frame; the adapter accounts it against the
-  separate HTTP ingress budget and copies/splits it into a `BufferLease`.
+- Raw FTP body bytes enter a `BufferPool` buffer. Hyper may first yield a
+  framework-owned immutable `Bytes` frame, and russh-sftp returns an owned
+  `SSH_FXP_DATA` vector; the adapters account these against their separate HTTP
+  or SFTP ingress budgets and copy/split them into a `BufferLease`.
 - The same buffer is submitted to `StorageEngine`.
 - Hashing borrows from the same immutable buffer when possible.
 - Disk backend writes from the same buffer or from validated vectored slices.
@@ -199,7 +235,7 @@ C10k target:
 Example envelope:
 
 ```text
-10,000 idle sockets: near-zero payload buffers
+10,000 low-activity sockets: near-zero payload buffers
 1,000 active streams * 64 KiB: about 64 MiB payload buffers
 plus disk/hash/journal in-flight caps, bounded by config
 ```

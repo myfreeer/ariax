@@ -142,7 +142,7 @@ name=value
 
 Parser stages:
 
-1. read UTF-8 text with size cap,
+1. read UTF-8 text under the document/line caps in `configuration.md`,
 2. split lines,
 3. trim trailing CR,
 4. ignore empty/comment lines,
@@ -195,6 +195,8 @@ Validation:
 - at least one match key is required,
 - only documented match keys are allowed,
 - glob syntax is linear-time and size-capped,
+- document, rule-count, and glob-byte caps are the exact registry/hard values in
+  `configuration.md`; emitted option maps reserve `task_metadata_budget`,
 - no regex in first slice,
 - options must have `per_download` scope,
 - `startup_only`, `unsafe_compat_only`, backend, RPC listener, and shell hook
