@@ -134,7 +134,11 @@ become an unbounded raw-network bypass. A separate discard guard records raw
 payload and enforces finite per-attempt, per-task, per-host, and global discard
 budgets. These budgets are safety policy, not hidden debits against
 `max-*-limit`; exceeding one cancels the attempt/source or fails the task. The
-resolved budgets and their consumption are visible in diagnostics.
+resolved budgets and their consumption are visible in diagnostics. In the
+first slice the budget values are registry-controlled internal defaults
+(scaled from lease size, retry caps, and the endgame duplicate cap), not
+user-facing options; a user-facing override may be added later through the
+normal option registry process.
 
 The guard is bounded at the protocol layer:
 

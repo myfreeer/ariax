@@ -89,7 +89,9 @@ Rules:
 - completion drains never reject a completion after the OS has accepted the
   operation; submissions are bounded before I/O is issued,
 - close returns queued `BufferLease`s or sends them to quarantine,
-- queue metrics include p95/p99 wait where measurable.
+- queue metrics include p95/p99 wait where measurable; per-message metric work
+  on hot lanes is limited to relaxed atomic counters and coarse timestamp
+  sampling (e.g. every Nth message), not a per-message histogram insert.
 
 ## Queue Topology
 

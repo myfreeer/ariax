@@ -40,6 +40,12 @@ Rationale:
 - Hard caps prevent C10k from turning into unbounded memory use.
 - Preallocation is useful for stable p99 latency and registered I/O.
 
+Free-list order is LIFO per size class: the most recently released buffer is
+reused first, so hot buffers stay cache/TLB-warm and cold surplus naturally
+sinks to the tail where the idle-timeout release trims it. Per-lane/thread
+small local caches in front of the shared free list are a permitted
+optimization as long as budget accounting stays global.
+
 ## Size Classes
 
 Default classes:

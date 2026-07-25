@@ -76,6 +76,13 @@ not double-count an endgame winner and loser.
 The stats sampler runs at a fixed interval, for example 250 ms or 1 s depending
 on profile.
 
+Sampler cost is O(active), not O(total): idle connections and idle tasks
+carry no per-tick work. Connections/leases register with the sampler only
+while they have activity to report (counter deltas since last tick or a
+condition change); a task whose counters are unchanged republishes nothing
+except a cheap sample-age bump on its existing snapshot. This keeps a 250 ms
+tick affordable at 10,000 mostly idle connections.
+
 For each connection/task, aria2-compatible rate uses committed/user-accounted
 bytes, while raw transport speed remains an extension diagnostic:
 

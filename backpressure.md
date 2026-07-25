@@ -45,7 +45,10 @@ Measured continuously:
 - journal save latency.
 
 The scheduler uses rolling windows rather than single samples to avoid
-oscillation.
+oscillation. Adaptive adjustments also use hysteresis: the enter threshold for
+a pressure state is higher than its exit threshold, and window/queue targets
+change by bounded steps per evaluation tick, so the controller converges
+instead of flapping between `Busy` and `Healthy` on a noisy latency signal.
 
 ## Network Signals
 

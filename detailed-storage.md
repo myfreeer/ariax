@@ -237,7 +237,12 @@ pub enum WriteAck {
 
 Every range or sequential response attempt has a unique `LeaseId` within its
 task generation. `BeginLease` freezes the expected span and validator before
-body bytes are accepted. A `WriteBlock` may change the physical output file,
+body bytes are accepted. `ValidatorFingerprint` is the `Hash32` over the
+canonical validator tuple defined under Payload Encoding; `ValidatedDigest` is
+a `Digest` whose value the protocol validator has already checked against the
+received body. Reason enums (`LeaseAbortReason` and similar) are closed sets
+finalized with `error_codes.json` in Phase 0; each variant maps to one `u8`
+journal `reason` value. A `WriteBlock` may change the physical output file,
 but its span remains provisional and is indexed under that lease. The protocol
 validator may issue `CommitLease` only after response framing proves the exact
 body length and all required validator/digest checks pass. `StorageEngine`
@@ -474,6 +479,14 @@ The appender may batch facts, but it reports two distinct acknowledgements:
 `Appended`. An explicit `flush(up_to_sequence)` is awaitable for strict pieces,
 balanced group checkpoints, finalization, pause/remove checkpoints, and clean
 shutdown.
+
+Write-amplification note: the appender may coalesce adjacent same-lease
+`PieceWritten` spans into one record before encoding (the provisional-progress
+meaning is identical), so a long download does not append one record per
+network buffer. Coalescing changes only record granularity, never ordering,
+sequence continuity, or the data-before-`PieceDurable` barrier. Journal
+compaction remains out of scope for format version 1; the journal's size is
+bounded relative to the transfer by this coalescing plus segment rotation.
 
 `BeginLease`, provisional disk completions, `CommitLease`, and `AbortLease`
 produce `LeaseStarted`, `PieceWritten`, `LeaseCommitted`, and `LeaseAborted`

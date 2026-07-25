@@ -42,6 +42,7 @@ pub struct Generation(u64);
 pub struct LeaseId(NonZeroU64);
 pub struct PieceId(u64);
 pub struct FileId(u32);
+pub struct UriId(u32);
 pub struct BufferId(NonZeroU64);
 ```
 
@@ -62,6 +63,8 @@ Rules:
   the full 16-digit form.  A persisted GID survives restart and is never
   regenerated during recovery.
 - `TaskId` is internal and never reused during one process.
+- `UriId` identifies one source URI/mirror within a task's resolved source
+  list; retry, lease, and server-stat records reference sources by `UriId`.
 - `Generation` starts at `0` and increments on restart, option generation
   change, stale validator restart, or recovery resume that invalidates workers.
 - Storage, protocol, retry, journal, and RPC command paths carry `Generation`.
@@ -255,6 +258,7 @@ Only this closed set may appear in aria2-compatible `status` fields:
 | `RetryWait` without a retained slot | `waiting` | selected by `retry-wait-consumes-slot` policy |
 | `Paused`, `PausedSlow` | `paused` | slow reason is extension-only |
 | `PausedRestarting` | `waiting` | no pause event/hook; restart reason is extension-only |
+| non-terminal `NeedsCredentials` condition | `paused` or `waiting` per SQLite desired state | credential requirement is extension-only; the task cannot issue a new lease until credentials arrive |
 | `Error` | `error` | include aria2-compatible error code/message |
 | `Complete` | `complete` | visible only after completion persistence |
 | `Removed` | `removed` | visible until its stopped result is deleted |

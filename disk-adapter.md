@@ -253,7 +253,14 @@ Coalescing target:
 - piece/block-aligned for BitTorrent,
 - chunk-hash-aligned for Metalink.
 
-On Unix fallback, coalesced writes prefer vectored I/O where practical.
+On Unix fallback, coalesced writes prefer vectored I/O (`pwritev`) where
+practical, so adjacent buffers are submitted in one syscall without an
+intermediate copy. io_uring submits the same shape as one vectored SQE or a
+linked batch. Windows overlapped writes have no vectored equivalent for
+arbitrary user buffers (`WriteFileGather` requires page-aligned,
+page-granular buffers), so IOCP either issues adjacent writes as separate
+overlapped operations or copies into one registered batch buffer when the
+copy is measurably cheaper than the extra completions.
 
 ## Buffer Ownership
 
