@@ -311,13 +311,25 @@ Power loss after disk write before journal:
 Power loss after journal before final rename:
 
 - piece remains complete,
-- startup resumes finalization.
+- startup resumes finalization through the `FinalizeIntent` redo rule in
+  `detailed-storage.md`.
 
 Power loss during final rename:
 
-- startup checks temp and final paths against journal state,
-- exactly one finalization path is selected,
-- no existing unrelated file is overwritten.
+- the flushed `FinalizeIntent` plus temp/final presence, recorded length, and
+  file-identity evidence select exactly one finalization outcome
+  (`detailed-storage.md` Idempotent Rename Recovery),
+- no existing unrelated file is overwritten; a foreign final-path object fails
+  closed as a collision.
+
+Power loss during journal checkpoint compaction:
+
+- until the SQLite pointer is `installed`, the old segment set remains
+  authoritative and the candidate checkpoint is discarded on any validation
+  failure,
+- after `installed`, the checkpoint set is authoritative and stale old
+  segments are unreachable garbage,
+- compaction never promotes provisional/in-flight state to durable.
 
 Power loss during control save:
 

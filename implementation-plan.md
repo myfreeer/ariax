@@ -83,6 +83,10 @@ Exit criteria:
   sets, and HTTP range parser.
 - Journal replay covers sequence gaps, segment rotation, provisional lease abort,
   hash failure, and store-precedence conflicts.
+- Journal checkpoint compaction passes its trigger, crash-point, chunking, and
+  descriptor-budget tests; replay time after compaction is bounded and
+  measured.
+- Finalize intent/redo recovery passes every crash-point and collision test.
 - Scheduler model tests cover every state × command/error transition and aria2
   wire projection.
 

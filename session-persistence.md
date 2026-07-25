@@ -192,8 +192,12 @@ Per-task journal stores:
 
 This journal is append-only and may rotate into linked immutable-numbered
 segments. One serialized per-task appender assigns the global sequence and
-performs every append/flush. Rotation headers, hash links, and replay continuity
-are defined only in `detailed-storage.md`.
+performs every append/flush. Rotation headers, hash links, replay continuity,
+checkpoint compaction (including the SQLite `installing`/`installed` pointer
+protocol and old-set retirement), finalize intent/done, and the journal
+descriptor budget are defined only in `detailed-storage.md`. SQLite stores the
+installed journal id/path plus any pending installation intent; compaction
+never merges divergent copies.
 
 ## Authority And Reconciliation
 

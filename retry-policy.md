@@ -233,11 +233,27 @@ includes the ordinary sequential single-stream case. Task-level readmission
 increments the generation after the old generation's cancellation drain
 completes; span-level retry stays inside the current generation.
 
-Clock rule: live retry timers use the monotonic clock. The persisted
-`RetryState` deadline (`next_retry_unix_ms`) is wall-clock only because
-monotonic time does not survive restart; on recovery it is re-clamped to at
-most `retry-max-wait` from now, so a wall-clock jump can neither skip a
-mandatory wait entirely nor stall a task far beyond the configured bound.
+Clock rule: live retry timers use the monotonic clock; wall-clock changes never
+affect a running wait. Persistence cannot use monotonic time — it does not
+survive process restart or reboot — so `RetryState` stores the scheduling
+decision instead of a bare deadline: `scheduled_at_unix_ms` (wall time when the
+wait was chosen), `delay_ms` (the chosen delay after all clamps), and
+`retry_reason` (backoff, `Retry-After`, or policy clamp). Recovery recomputes
+conservatively rather than trusting recovered wall time exactly:
+
+- elapsed = `now_wall - scheduled_at_unix_ms`, clamped to `[0, delay_ms]`;
+  remaining = `delay_ms - elapsed` runs on a fresh monotonic timer,
+- a backwards or implausible wall clock (negative elapsed, or
+  `scheduled_at_unix_ms` in the future) waits the full `delay_ms` again,
+- remaining is always clamped to `retry-max-wait`, so a forward jump cannot
+  extend a wait beyond the configured bound and a stale record cannot stall a
+  task indefinitely,
+- a forward jump larger than `delay_ms` releases the wait — after restart the
+  wait is complete by wall time and cannot be proven otherwise; the guarantee
+  preserved across restart is bounded-conservative, not exact.
+
+The recovered decision context also keeps diagnostics truthful: status shows
+the original reason and delay, not a synthetic deadline.
 
 ## Status Codes
 

@@ -454,6 +454,11 @@ Record types (first slice; the number is the version-1 `record_type` value):
 16  TaskError
 17  TaskRemoved
 18  CleanShutdown
+19  CheckpointStart     (first record of a compaction checkpoint set)
+20  CheckpointEnd       (validates the checkpoint state records)
+21  LayoutChunk         (continuation of a large LayoutCommitted entry list)
+22  FinalizeIntent      (declares the temp -> final rename about to happen)
+23  FinalizeDone        (rename observed complete)
 ```
 
 The payload of every first-version record is normative:
@@ -472,12 +477,17 @@ The payload of every first-version record is normative:
 | `PieceVerified` | `piece_id:Id`, `piece_span:Span`, `contributors_hash:Hash32`, `digest:Digest` |
 | `PieceFailed` | `lease_id:OptionalId`, `piece_id:Id`, `piece_span:Span`, `error_class:u8`, `attempt:u32` |
 | `PieceDurable` | `piece_id:Id`, `piece_span:Span`, `contributors_hash:Hash32`, `validator_set_fingerprint:Hash32`, `digest:OptionalDigest`, `data_barrier:u8` |
-| `RetryState` | `scope:u8`, `scope_id:Id`, `attempt:u32`, `next_retry_unix_ms:u64`, `error_class:u8` |
+| `RetryState` | `scope:u8`, `scope_id:Id`, `attempt:u32`, `scheduled_at_unix_ms:u64`, `delay_ms:u64`, `error_class:u8`, `retry_reason:u8` |
 | `TaskPaused` | `reason:u8` |
 | `TaskComplete` | `layout_hash:Hash32`, `final_length:u64`, `final_digest:OptionalDigest`, `completed_at_unix_ms:u64` |
 | `TaskError` | `error_class:u8`, `retriable:u8`, `diagnostic_id:u64` |
 | `TaskRemoved` | `reason:u8` |
 | `CleanShutdown` | `checkpoint_sequence:u64`, `shutdown_at_unix_ms:u64` |
+| `CheckpointStart` | `checkpoint_id:[u8;16]`, `source_last_sequence:u64`, `source_segment_hash:Hash32`, `state_record_count:u32`, `created_at_unix_ms:u64` |
+| `CheckpointEnd` | `checkpoint_id:[u8;16]`, `state_record_count:u32`, `state_hash:Hash32` |
+| `LayoutChunk` | `chunk_index:u32`, `chunk_count:u32`, `file_count:u32`, repeated `FileLayoutEntry` |
+| `FinalizeIntent` | `layout_hash:Hash32`, `file_id:Id`, `temp_path:Bytes`, `final_path:Bytes`, `final_length:u64`, `file_identity:Bytes` |
+| `FinalizeDone` | `layout_hash:Hash32`, `file_id:Id`, `final_path:Bytes` |
 
 `validator_fingerprint` is a fixed hash of the canonical validator tuple, not a
 raw cookie, credential, or header block. `contributors_hash` covers the sorted
@@ -487,6 +497,23 @@ a verification piece assembled from multiple leases does not pretend to have a
 single source lease. `OptionsSnapshot` contains only the sanitized,
 generation-scoped options needed to reproduce layout, verification, and
 recovery decisions. Sensitive values are never legal journal payloads.
+
+`RetryState` persists the scheduling decision, not a bare deadline:
+`scheduled_at_unix_ms` is the wall-clock time the wait was chosen, `delay_ms`
+is the chosen delay, and `retry_reason` distinguishes backoff, `Retry-After`,
+and policy-clamped waits. Live waits always run on the monotonic clock;
+`retry-policy.md` defines how these fields are validated against wall-clock
+jumps at recovery. A `FinalizeIntent`/`FinalizeDone` pair brackets each final
+rename; the Finalization section defines the idempotent crash rules.
+`file_identity` is the platform identity evidence captured for the temp file
+before rename (device/inode pair, Windows volume/file index, or empty when the
+platform provides none).
+
+A `LayoutCommitted` whose `FileLayoutEntry` list would exceed the 16 MiB record
+cap stores only the count and first chunk inline and continues in `LayoutChunk`
+records with consecutive `chunk_index`; replay accepts the layout only when all
+`chunk_count` chunks are contiguous and the reassembled list matches
+`layout_hash`. The same chunking rule applies to checkpoint state records.
 
 Only `GenerationStarted` advances the generation. All other records use the
 current generation. A `LeaseStarted` without `LeaseCommitted`, and any
@@ -520,9 +547,9 @@ Write-amplification note: the appender may coalesce adjacent same-lease
 `PieceWritten` spans into one record before encoding (the provisional-progress
 meaning is identical), so a long download does not append one record per
 network buffer. Coalescing changes only record granularity, never ordering,
-sequence continuity, or the data-before-`PieceDurable` barrier. Journal
-compaction remains out of scope for format version 1; the journal's size is
-bounded relative to the transfer by this coalescing plus segment rotation.
+sequence continuity, or the data-before-`PieceDurable` barrier. Coalescing plus
+segment rotation bounds a single segment; the Checkpoint Compaction section
+below bounds the lifetime size and replay cost of the whole segment set.
 
 `BeginLease`, provisional disk completions, `CommitLease`, and `AbortLease`
 produce `LeaseStarted`, `PieceWritten`, `LeaseCommitted`, and `LeaseAborted`
@@ -542,8 +569,99 @@ temporary name with `segment_index + 1`, `first_sequence = last_sequence + 1`,
 the current generation, and the previous segment's last-sequence/hash link,
 then syncs and atomically installs the new segment, syncs its parent directory
 where supported, and only then appends to it. Old segments remain immutable and
-are not removed by rotation. Journal compaction and segment retirement are
-outside the first format version.
+are removed only by checkpoint retirement below.
+
+### Checkpoint Compaction
+
+Rotation bounds one segment; compaction bounds the segment set. Record types
+`CheckpointStart`/`CheckpointEnd` are part of format version 1 — there is no
+shipped version-1 reader that predates them.
+
+Triggers, evaluated by the appender at flushed record boundaries (all values
+registry-controlled internal defaults, visible in effective diagnostics):
+
+- total live segment-set bytes exceed `journal-compact-min-bytes`
+  (default 64 MiB) and exceed twice the estimated checkpoint size,
+- total live record count exceeds 262,144 and exceeds twice the estimated
+  checkpoint record count,
+- segment count exceeds 16,
+- the measured replay time of the most recent recovery exceeded 2 seconds
+  (compact once immediately after that recovery reaches a flushed boundary).
+
+The double-size conditions guarantee geometric shrink and prevent thrash; a
+per-task minimum interval (default 60 s) plus exponential failure backoff
+bounds retry cost. Pause, remove-with-retained-data, and clean shutdown may
+also compact opportunistically when a size trigger holds.
+
+Checkpoint build, performed by the same serialized appender (facts arriving
+during the build wait in its bounded inbox; the pause is sized by state, not
+by history):
+
+1. Complete the durability-mode flush for the active segment; freeze
+   `source_last_sequence` and the current canonical state: generation,
+   sanitized generation options, layout, durable pieces, retry state, pause
+   marker, finalize intent/done state, and any terminal marker.
+   Provisional/in-flight leases and non-durable pieces are excluded — they are
+   pending by definition and compaction must not promote them.
+2. Create a new segment set under a temporary name with a fresh `journal_id`,
+   `segment_index = 0`, `first_sequence = 1`, and the frozen generation.
+3. Append `CheckpointStart`, the state records encoded with the ordinary
+   version-1 record types (`TaskCreated`, `OptionsSnapshot`,
+   `LayoutCommitted`/`LayoutChunk`, `RetryState`, `PieceDurable` per durable
+   piece, `TaskPaused`/`FinalizeIntent`/`FinalizeDone`/terminal markers as
+   applicable), then `CheckpointEnd` whose `state_hash` covers the canonical
+   encoded state records. Records larger than the 16 MiB cap use the defined
+   chunking records.
+4. `sync_all` the checkpoint segment and its directory where supported.
+
+Installation is a pointer/name switch with explicit crash points:
+
+1. Write an `installing` intent row to SQLite: gid, old journal id and path,
+   new checkpoint id, journal id, path, and `source_last_sequence`.
+2. Install the new set as primary: in `central` mode, update the SQLite journal
+   path/journal-id fields in the same transaction that clears the intent to
+   `installed`; in `beside-output` mode, atomically rename the checkpoint
+   segment over the companion base name, then mark `installed` in SQLite. The
+   `both` replica is refreshed from the new primary before `installed`.
+3. Only after `installed` is durable in SQLite: retire (delete) the old
+   segments and any older orphaned checkpoint temporaries. Retirement failures
+   are diagnostics, not correctness failures — stale sets are unreachable
+   because their `journal_id` no longer matches the installed pointer.
+4. The appender continues appending post-checkpoint facts to the new set;
+   subsequent segments extend it with the normal rotation linkage.
+
+Recovery with a pending `installing` intent validates the new set's complete
+linked prefix; the checkpoint is acceptable only if that prefix ends at or
+after its `CheckpointEnd` and the reassembled state matches `state_hash`.
+If acceptable, recovery completes the installation; otherwise it deletes the
+temporaries and recovers from the retained old set, which remains authoritative
+until `installed`. A `CheckpointStart` without a matching valid `CheckpointEnd`
+invalidates the whole candidate set, never just a suffix. Divergent copies at
+the same checkpoint id are corruption and fail closed to the old set.
+
+A compaction failure (build, sync, or install) leaves the old set
+authoritative, cleans up temporaries, backs off, and raises a diagnostic; it
+never faults the task unless the active journal itself faults. Version
+compatibility follows the ordinary rules: a checkpoint is written in the
+writer's current format version, and a reader that rejects the version rejects
+the whole set.
+
+### Journal Descriptor Budget
+
+Open journal files count against the process file budget
+(`detailed-runtime.md`). The appender object (sequence counter, tail state,
+rotation state) is always resident, but its file descriptor is closable: an
+LRU cap (`journal-open-fds`, default derived from the file budget, minimum 16)
+closes idle appender descriptors after a flushed boundary. Reopen validates
+the tail (last record readable, sequence equals the in-memory expectation)
+before the next append; a mismatch faults the task journal rather than
+appending after unnoticed truncation. Closing and reopening never reorders
+facts or skips the durability barrier because both are owned by the still-
+resident appender object.
+
+Diagnostics expose per task and globally: journal bytes, segment count, record
+count, estimated checkpoint size, last replay duration, last compaction time
+and outcome, compaction failure count, and open journal descriptors.
 
 Recovery orders segments by `segment_index` and verifies task id, journal id,
 header CRC, previous-segment link, `first_sequence`, and global sequence
@@ -643,14 +761,61 @@ Completion flow:
 all pieces durable
   -> final full checksum if configured
   -> fsync data according to durability
-  -> rename temp to final if temp naming is active
-  -> fsync parent directory where supported
+  -> if temp naming is active:
+       append FinalizeIntent (temp path, final path, layout/file identity)
+       flush journal through FinalizeIntent
+       rename temp to final
+       fsync parent directory where supported
+       append FinalizeDone
   -> append TaskComplete through ControlJournalAppender
   -> flush journal through TaskComplete
   -> persist stopped result
   -> publish terminal Complete snapshot
   -> optionally remove companion control file
 ```
+
+Without temp naming there is no rename step; `TaskComplete` alone finalizes.
+
+### Idempotent Rename Recovery
+
+`FinalizeIntent` is appended and flushed strictly before the rename syscall;
+`FinalizeDone` and `TaskComplete` may lag arbitrarily behind it. Recovery
+therefore decides from `(intent, done, filesystem)`:
+
+- No `FinalizeIntent` in the valid prefix: no rename can have happened
+  (record-before-rename). Normal recovery; a stray file at the final path is an
+  unrelated existing file protected by overwrite policy.
+- `FinalizeIntent` without `FinalizeDone`:
+  - temp exists, final absent: redo the rename, then append
+    `FinalizeDone`/`TaskComplete`. The redo is safe because the intent proves
+    the earlier attempt was ours and either failed or never ran.
+  - temp absent, final exists: the rename happened before the crash. Accept the
+    final file only if it matches the recorded `final_length`, the layout hash,
+    and — where the platform records it — the `file_identity` evidence or the
+    configured digest; then append `FinalizeDone`/`TaskComplete`. On mismatch,
+    treat the final path as an unrelated existing file: fail finalization with
+    a collision error rather than overwrite.
+  - both exist: the final-path file was not produced by this intent (our rename
+    would have consumed the temp). Verify per the previous point using identity
+    /length/digest against the *temp* file for redo and treat the final path as
+    a collision unless auto-renaming policy resolves it.
+  - both absent: the output is gone; downgrade to the corruption/missing-output
+    policy (revalidate/redownload in a new generation), never fabricate
+    completion.
+- `FinalizeIntent` and `FinalizeDone` present: rename is settled; recovery only
+  finishes `TaskComplete`/stopped-result publication if the crash hit between
+  them.
+
+Collision policy at first finalization (not recovery) checks the final path
+before appending `FinalizeIntent`: an existing file is resolved by
+`allow-overwrite`/`auto-file-renaming` policy first, so the recovery rules
+above can always treat an unexpected final-path object as foreign. On Windows,
+a rename rejected with a sharing violation retries on a bounded schedule and
+then fails finalization with a typed error; recovery may retry the same
+idempotent step. Directory fsync ordering is: temp file data flush, rename,
+parent directory sync, then `FinalizeDone`. Multi-file layouts repeat the
+intent/rename/done triple per selected file in deterministic `FileId` order;
+recovery replays the remaining files from the first missing `FinalizeDone`.
 
 `TaskComplete` records task-local file completion. User-visible completion
 requires both `TaskComplete` and the global stopped result transaction. Crash
@@ -692,6 +857,26 @@ Required tests:
 - crash after journal bytes but before the required data barrier is never
   constructible through the appender API,
 - crash after journal before final rename,
+- checkpoint compaction: every size/count/replay trigger fires, provisional
+  state is never promoted, and replay of checkpoint + tail equals replay of the
+  full original set,
+- crash at every compaction step (build, checkpoint sync, installing intent,
+  pointer/rename install, retirement) recovers to exactly one authoritative
+  set with no lost durable state,
+- a checkpoint set with a missing/invalid `CheckpointEnd` or `state_hash`
+  mismatch is rejected whole and the old set recovers,
+- oversized layout/state chunking round-trips and rejects gaps or hash
+  mismatch,
+- idle journal descriptors close under the FD cap and reopen validates the
+  tail; a truncated tail faults instead of appending,
+- compaction failure backs off, keeps the old set authoritative, and surfaces
+  diagnostics,
+- finalize intent/redo: crash before rename, after rename before
+  `FinalizeDone`, after `FinalizeDone` before `TaskComplete`, and after
+  `TaskComplete` before the stopped result each recover to exactly one
+  outcome; final-path collision with a foreign file fails closed; Windows
+  sharing violation retries bounded and fails typed; multi-file finalization
+  resumes at the first missing `FinalizeDone`,
 - disk-full write rejection returns/quarantines buffer,
 - `trunc` logical length and zero-filled reads never create completed ranges,
 - completion requires stopped result persistence.
