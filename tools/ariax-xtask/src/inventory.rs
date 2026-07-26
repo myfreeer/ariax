@@ -536,7 +536,7 @@ impl ConditionStack {
     }
 }
 
-fn apply_outputs(
+pub(crate) fn apply_outputs(
     workspace_root: &Path,
     outputs: &[(PathBuf, String)],
     mode: GenerationMode,
@@ -717,7 +717,7 @@ fn write_str_array(output: &mut String, values: &[&str]) {
     output.push(']');
 }
 
-fn json_string(value: &str) -> String {
+pub(crate) fn json_string(value: &str) -> String {
     let mut output = String::with_capacity(value.len() + 2);
     output.push('"');
     for character in value.chars() {
@@ -737,7 +737,7 @@ fn json_string(value: &str) -> String {
     output
 }
 
-fn comma(index: usize, len: usize) -> &'static str {
+pub(crate) fn comma(index: usize, len: usize) -> &'static str {
     if index + 1 == len { "" } else { "," }
 }
 

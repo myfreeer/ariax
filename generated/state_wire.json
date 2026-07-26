@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "wire_statuses": ["active", "waiting", "paused", "error", "complete", "removed"],
+  "states": [
+    {"internal": "accepted", "default_status": "waiting"},
+    {"internal": "waiting", "default_status": "waiting"},
+    {"internal": "waiting_slow", "default_status": "waiting"},
+    {"internal": "allocating", "default_status": "waiting"},
+    {"internal": "active", "default_status": "active"},
+    {"internal": "retry_wait", "default_status": "waiting", "status_when_slot_retained": "active"},
+    {"internal": "paused", "default_status": "paused"},
+    {"internal": "paused_slow", "default_status": "paused"},
+    {"internal": "paused_host_key", "default_status": "paused"},
+    {"internal": "paused_restarting", "default_status": "waiting"},
+    {"internal": "verifying", "default_status": "active"},
+    {"internal": "seeding", "default_status": "active"},
+    {"internal": "complete", "default_status": "complete"},
+    {"internal": "error", "default_status": "error"},
+    {"internal": "removed", "default_status": "removed"},
+    {"internal": "stopped_result", "default_status": null, "retained_terminal_statuses": ["error", "complete", "removed"]}
+  ],
+  "condition_overrides": [
+    {"condition": "no_space", "status": "paused"},
+    {"condition": "needs_credentials", "desired_paused": false, "status": "waiting"},
+    {"condition": "needs_credentials", "desired_paused": true, "status": "paused"}
+  ]
+}

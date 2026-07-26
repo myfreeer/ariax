@@ -1,8 +1,9 @@
 # Downloader Design
 
-Status: implementation ready; Phase 0 scaffolding is in progress. Module work
-is gated by `implementation-readiness.md` and the phase exit criteria in
-`implementation-plan.md`.
+Status: implementation ready; Phase 0 contract generation is in progress, and
+the gated Phase 1 core identifier/error/state vocabulary is implemented. Module
+work remains governed by `implementation-readiness.md` and the phase exit
+criteria in `implementation-plan.md`.
 
 This design is for a new downloader that keeps the mature aria2 user model
 while fixing the major safety, scalability, and completeness problems found in

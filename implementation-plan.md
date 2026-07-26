@@ -1,6 +1,7 @@
 # Implementation Plan
 
-Status: reviewed implementation contract. Phase 0 is in progress.
+Status: reviewed implementation contract. Phase 0 is in progress; the gated
+Phase 1 core identifier/error/state vocabulary has started.
 
 This is a staged plan for building the design without repeating the incomplete
 rewrite pattern.

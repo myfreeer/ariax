@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "errors": [
+    {"code": "Config"},
+    {"code": "UnsupportedOption"},
+    {"code": "OptionPatchRejected"},
+    {"code": "InvalidGid"},
+    {"code": "GidAmbiguous"},
+    {"code": "GidNotFound"},
+    {"code": "GidCollision"},
+    {"code": "InvalidPath"},
+    {"code": "PathEscape"},
+    {"code": "Network"},
+    {"code": "Timeout"},
+    {"code": "Retryable"},
+    {"code": "InvalidRange"},
+    {"code": "StaleValidator"},
+    {"code": "ChecksumMismatch"},
+    {"code": "HostKeyApprovalRequired"},
+    {"code": "StaleChallenge"},
+    {"code": "Disk"},
+    {"code": "NoSpace"},
+    {"code": "Permission"},
+    {"code": "JournalCorrupt"},
+    {"code": "DirtyCheckpoint"},
+    {"code": "NeedsCredentials"},
+    {"code": "SlowConsumer"},
+    {"code": "ResponseTooLarge"},
+    {"code": "ResourceLimit"},
+    {"code": "BackendUnavailable"},
+    {"code": "Cancelled"},
+    {"code": "InternalInvariant"}
+  ],
+  "option_patch_rejection_reasons": [
+    {"code": "invalid_value"},
+    {"code": "unsupported"},
+    {"code": "not_runtime_mutable"},
+    {"code": "requires_new_generation"},
+    {"code": "requires_explicit_bt_restart"},
+    {"code": "unsafe_compat_required"}
+  ]
+}

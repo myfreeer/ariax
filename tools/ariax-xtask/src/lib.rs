@@ -2,6 +2,7 @@
 
 //! Repository maintenance tasks that must remain deterministic and testable.
 
+mod core_contracts;
 mod inventory;
 
 use std::ffi::OsString;
@@ -9,6 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use core_contracts::generate_core_contracts;
 use inventory::{GenerationMode, generate_aria2_inventory};
 
 /// Canonical upstream repository for the compatibility reference.
@@ -137,26 +139,27 @@ where
         XtaskCommand::Generate { source_dir, check } => {
             let source_dir = source_dir.unwrap_or_else(|| default_aria2_source(workspace_root));
             verify_aria2_checkout(&reference, &source_dir)?;
-            generate_aria2_inventory(
-                workspace_root,
-                &source_dir,
-                &reference,
-                if check {
-                    GenerationMode::Check
-                } else {
-                    GenerationMode::Write
-                },
-            )
+            let mode = if check {
+                GenerationMode::Check
+            } else {
+                GenerationMode::Write
+            };
+            let inventory =
+                generate_aria2_inventory(workspace_root, &source_dir, &reference, mode)?;
+            let core = generate_core_contracts(workspace_root, mode)?;
+            Ok(format!("{inventory}; {core}"))
         }
         XtaskCommand::VerifyContracts { source_dir } => {
             let source_dir = source_dir.unwrap_or_else(|| default_aria2_source(workspace_root));
             verify_aria2_checkout(&reference, &source_dir)?;
-            generate_aria2_inventory(
+            let inventory = generate_aria2_inventory(
                 workspace_root,
                 &source_dir,
                 &reference,
                 GenerationMode::Check,
-            )
+            )?;
+            let core = generate_core_contracts(workspace_root, GenerationMode::Check)?;
+            Ok(format!("{inventory}; {core}"))
         }
         XtaskCommand::PrintAria2Pin => Ok(reference.commit),
         XtaskCommand::PrintAria2Repository => Ok(reference.repository),

@@ -9,5 +9,8 @@ publish.workspace = true
 name = "xtask"
 path = "src/main.rs"
 
+[dependencies]
+ariax-core.workspace = true
+
 [lints]
 workspace = true
