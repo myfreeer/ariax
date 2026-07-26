@@ -9,6 +9,13 @@ pub struct UnknownJournalTag {
 }
 
 impl UnknownJournalTag {
+    pub(crate) const fn new_for_contract() -> Self {
+        Self {
+            vocabulary: "contract",
+            value: 0,
+        }
+    }
+
     #[must_use]
     pub const fn vocabulary(self) -> &'static str {
         self.vocabulary

@@ -1,9 +1,10 @@
 # Session Persistence
 
 Status: first-slice implementation in progress. The control-journal v1 framing,
-segment linkage, bounded replay, and torn-tail valid-prefix rules are executable.
-Typed state reconstruction, durable file appending, checkpoint compaction, and
-the SQLite session store remain pending.
+segment linkage, bounded replay, torn-tail valid-prefix rules, and 18 scalar
+record payload codecs are executable. Collection payloads, typed state
+reconstruction, durable file appending, checkpoint compaction, and the SQLite
+session store remain pending.
 
 Decision: use a hybrid persistence model:
 

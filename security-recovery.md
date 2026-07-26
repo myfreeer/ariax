@@ -2,9 +2,9 @@
 
 Status: reviewed contract with implementation in progress. Portable path
 normalization/rejection, persisted root bindings, and bounded control-journal
-framing/replay are executable. Native capability acquisition, safe descendant
-open, typed state recovery, durable appending, and reconciliation remain
-pending.
+framing/replay plus scalar typed payload decoding are executable. Native
+capability acquisition, safe descendant open, collection payloads, typed state
+recovery, durable appending, and reconciliation remain pending.
 
 This document turns the safety requirements into enforceable design rules.
 

@@ -14,8 +14,9 @@ comes from executable path, root-binding, layout, and offset-mapper contracts.
 budget, quarantine, queue-credit, and completion-permit rules.
 `journal_v1.json` freezes the executable segment/record framing, CRC and commit
 coverage, record numbers, persisted enum tags, replay caps, and valid-prefix
-rules. `error_codes.json` includes the stable journal numeric value for each
-closed error class.
+rules. It also reports exactly which typed payload codecs are implemented or
+pending, their scalar/digest caps, and rejection vocabulary. `error_codes.json`
+includes the stable journal numeric value for each closed error class.
 
 Run `cargo xtask generate ../aria2` to update the files and
 `cargo xtask generate --check ../aria2` to verify that committed output is

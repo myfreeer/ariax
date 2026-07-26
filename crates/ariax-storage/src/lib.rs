@@ -3,6 +3,7 @@
 //! Portable storage contracts shared by safe-open and disk backends.
 
 mod journal;
+mod journal_payload;
 mod journal_tags;
 mod layout;
 mod path;
@@ -15,6 +16,12 @@ pub use journal::{
     MAX_RECORD_PAYLOAD, RECORD_MAGIC, RECORD_OVERHEAD, RECORD_PREFIX_LEN, RecordStopReason,
     RecordType, ReplayLimits, ReplayResource, ReplayStop, SEGMENT_HASH_DOMAIN, SEGMENT_HEADER_LEN,
     SegmentEncoder, SegmentHash, SegmentHeader, replay_ordered_segments,
+};
+pub use journal_payload::{
+    ALL_JOURNAL_DIGEST_ALGORITHMS, ALL_PAYLOAD_CODEC_ERROR_CLASSES, AppendPayloadError,
+    CheckpointId, JournalDigest, JournalDigestAlgorithm, JournalHash, JournalPayload,
+    MAX_DIGEST_ALGORITHM_BYTES, MAX_DIGEST_VALUE_BYTES, PAYLOAD_CODEC_RECORD_TYPES,
+    PayloadCodecError, PersistedId, PersistedSpan,
 };
 pub use journal_tags::{
     ALL_DATA_BARRIER_KINDS, ALL_DURABILITY_MODES, ALL_GENERATION_START_REASONS,

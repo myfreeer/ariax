@@ -2,11 +2,14 @@ use crate::inventory::{GenerationMode, apply_outputs, comma, json_string};
 use ariax_core::ALL_ERROR_KINDS;
 use ariax_storage::{
     ALL_DATA_BARRIER_KINDS, ALL_DURABILITY_MODES, ALL_GENERATION_START_REASONS,
-    ALL_HEADER_DECODE_ERRORS, ALL_LEASE_ABORT_REASONS, ALL_OPTIONS_SNAPSHOT_SCOPES,
-    ALL_RECORD_STOP_REASONS, ALL_RECORD_TYPES, ALL_REPLAY_RESOURCES, ALL_RETRY_REASONS,
-    ALL_RETRY_SCOPES, ALL_TASK_PAUSE_REASONS, ALL_TASK_REMOVE_REASONS, COMMIT_MAGIC, HEADER_MAGIC,
-    JOURNAL_ENDIANNESS_ASSERTION, JOURNAL_FORMAT_VERSION, MAX_RECORD_PAYLOAD, RECORD_MAGIC,
-    RECORD_OVERHEAD, RECORD_PREFIX_LEN, ReplayLimits, SEGMENT_HASH_DOMAIN, SEGMENT_HEADER_LEN,
+    ALL_HEADER_DECODE_ERRORS, ALL_JOURNAL_DIGEST_ALGORITHMS, ALL_LEASE_ABORT_REASONS,
+    ALL_OPTIONS_SNAPSHOT_SCOPES, ALL_PAYLOAD_CODEC_ERROR_CLASSES, ALL_RECORD_STOP_REASONS,
+    ALL_RECORD_TYPES, ALL_REPLAY_RESOURCES, ALL_RETRY_REASONS, ALL_RETRY_SCOPES,
+    ALL_TASK_PAUSE_REASONS, ALL_TASK_REMOVE_REASONS, COMMIT_MAGIC, HEADER_MAGIC,
+    JOURNAL_ENDIANNESS_ASSERTION, JOURNAL_FORMAT_VERSION, MAX_DIGEST_ALGORITHM_BYTES,
+    MAX_DIGEST_VALUE_BYTES, MAX_RECORD_PAYLOAD, PAYLOAD_CODEC_RECORD_TYPES, RECORD_MAGIC,
+    RECORD_OVERHEAD, RECORD_PREFIX_LEN, RecordType, ReplayLimits, SEGMENT_HASH_DOMAIN,
+    SEGMENT_HEADER_LEN,
 };
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -152,7 +155,41 @@ fn render_journal_contracts() -> String {
             .map(|value| (value.number(), value.code())),
         false,
     );
-    output.push_str("  },\n  \"header_rejections\": [");
+    output.push_str("  },\n  \"payload_codec\": {\n");
+    output.push_str("    \"implemented_record_types\": [");
+    write_record_type_codes(&mut output, PAYLOAD_CODEC_RECORD_TYPES.iter().copied());
+    output.push_str("],\n    \"pending_record_types\": [");
+    write_record_type_codes(
+        &mut output,
+        ALL_RECORD_TYPES
+            .iter()
+            .copied()
+            .filter(|record_type| !PAYLOAD_CODEC_RECORD_TYPES.contains(record_type)),
+    );
+    writeln!(
+        output,
+        "],\n    \"caps\": {{\"digest_algorithm_bytes\": {MAX_DIGEST_ALGORITHM_BYTES}, \"digest_value_bytes\": {MAX_DIGEST_VALUE_BYTES}}},"
+    )
+    .expect("write to string");
+    output.push_str("    \"digest_algorithms\": [\n");
+    for (index, algorithm) in ALL_JOURNAL_DIGEST_ALGORITHMS.iter().copied().enumerate() {
+        writeln!(
+            output,
+            "      {{\"code\": {}, \"value_bytes\": {}}}{}",
+            json_string(algorithm.code()),
+            algorithm.value_len(),
+            comma(index, ALL_JOURNAL_DIGEST_ALGORITHMS.len())
+        )
+        .expect("write to string");
+    }
+    output.push_str("    ],\n    \"rejections\": [");
+    for (index, error) in ALL_PAYLOAD_CODEC_ERROR_CLASSES.iter().copied().enumerate() {
+        if index > 0 {
+            output.push_str(", ");
+        }
+        output.push_str(&json_string(error.code()));
+    }
+    output.push_str("],\n    \"rules\": {\"exact_little_endian_scalars\": true, \"nonzero_typed_ids\": true, \"nonempty_nonoverflowing_spans\": true, \"unknown_tags_rejected\": true, \"trailing_bytes_rejected\": true, \"typed_append_prevents_record_type_mismatch\": true}\n  },\n  \"header_rejections\": [");
     for (index, error) in ALL_HEADER_DECODE_ERRORS.iter().copied().enumerate() {
         if index > 0 {
             output.push_str(", ");
@@ -184,6 +221,15 @@ fn render_journal_contracts() -> String {
         "],\n  \"replay_contract\": {\"caller_orders_by_segment_index\": true, \"validates_task_and_journal_identity\": true, \"validates_previous_segment_hash\": true, \"global_sequence_contiguous\": true, \"stop_at_first_invalid_byte\": true, \"valid_prefix_authoritative\": true, \"newer_segments_after_failure_ignored\": true}\n}\n",
     );
     output
+}
+
+fn write_record_type_codes(output: &mut String, values: impl Iterator<Item = RecordType>) {
+    for (index, record_type) in values.enumerate() {
+        if index > 0 {
+            output.push_str(", ");
+        }
+        output.push_str(&json_string(record_type.code()));
+    }
 }
 
 fn write_tag_vocabulary<'a>(
@@ -236,6 +282,9 @@ mod tests {
         assert!(contract.contains("\"algorithm\": \"crc-32c-castagnoli\""));
         assert!(contract.contains("\"generation_start_reason\""));
         assert!(contract.contains("\"number\": 29, \"code\": \"InternalInvariant\""));
+        assert!(contract.contains("\"typed_append_prevents_record_type_mismatch\": true"));
+        assert!(contract.contains("\"pending_record_types\": [\"options_snapshot\""));
+        assert!(contract.contains("\"code\": \"sha-512\", \"value_bytes\": 64"));
         assert!(contract.contains("\"valid_prefix_authoritative\": true"));
         assert!(contract.contains("\"payload_too_large\""));
     }
