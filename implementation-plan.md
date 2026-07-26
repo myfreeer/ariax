@@ -4,7 +4,9 @@ Status: reviewed implementation contract. Phase 0 is in progress; the gated
 Phase 1 core identifier/error/state vocabulary, first config slice, and portable
 storage layout/path, bounded runtime ownership, and journal v1 framing/replay
 plus all 24 typed journal payload contracts, semantic recovery, and the
-file-backed serialized append/flush/rotation primitive are implemented.
+file-backed serialized append/flush/rotation primitive are implemented. The
+exact SQLite v1 strict schema, connection policy, core records, reconciliation,
+journal-install pointer, and hot-backup primitives are also executable.
 
 This is a staged plan for building the design without repeating the incomplete
 rewrite pattern.

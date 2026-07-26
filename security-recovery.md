@@ -5,9 +5,12 @@ normalization/rejection, persisted root bindings, and bounded control-journal
 framing/replay plus all 24 bounded typed payload codecs are executable. Native
 policy-gated option-secret rejection and typed semantic state recovery are also
 executable, including digest-bound different-identity rebind records. Native
-capability acquisition, safe descendant open/revalidation, and SQLite/filesystem
-reconciliation remain pending. Durable journal append/flush, latched appender
-failure, tail-validated descriptor reopen, and linked rotation are executable.
+capability acquisition, safe descendant open/revalidation, and complete startup
+filesystem/journal reconciliation remain pending. Durable journal append/flush,
+latched appender failure, tail-validated descriptor reopen, and linked rotation
+are executable. SQLite v1 rejects newer/unversioned schemas fail-closed,
+verifies its hard limits, rejects secret-class task options before SQL, and
+transactionally rechecks journal-install pointers.
 
 This document turns the safety requirements into enforceable design rules.
 

@@ -10,6 +10,7 @@ mod journal_tags;
 mod layout;
 mod path;
 mod root_binding;
+mod session_store;
 
 pub use journal::{
     ALL_HEADER_DECODE_ERRORS, ALL_RECORD_STOP_REASONS, ALL_RECORD_TYPES, ALL_REPLAY_RESOURCES,
@@ -66,4 +67,17 @@ pub use root_binding::{
     ALL_ROOT_BINDING_ERROR_CLASSES, FileIdentity, MAX_IDENTITY_BYTES, MAX_PLATFORM_PATH_BYTES,
     PlatformPath, ROOT_BINDING_HASH_DOMAIN, RootBinding, RootBindingError, RootBindingHash,
     RootIdentity,
+};
+pub use session_store::{
+    ALL_SESSION_IO_OPERATIONS, ALL_SESSION_SQLITE_LIMITS, ALL_SESSION_STORE_ERROR_CODES,
+    JournalInstallIntent, JournalInstallPhase, SESSION_BUNDLED_SQLITE_FLAGS,
+    SESSION_BUSY_TIMEOUT_MS, SESSION_DEFAULT_CACHE_KIB, SESSION_MAX_ALGORITHM_BYTES,
+    SESSION_MAX_BT_RESUME_BYTES, SESSION_MAX_CACHE_KIB, SESSION_MAX_HOST_KEY_BYTES,
+    SESSION_MAX_SAFE_MESSAGE_BYTES, SESSION_MAX_SAFE_URI_BYTES, SESSION_MIN_CACHE_KIB,
+    SESSION_MMAP_SIZE_BYTES, SESSION_PAGE_SIZE_BYTES, SESSION_RUSQLITE_FEATURES,
+    SESSION_RUSQLITE_VERSION, SESSION_SCHEMA_OBJECTS, SESSION_SCHEMA_VERSION,
+    SESSION_WAL_AUTO_CHECKPOINT_PAGES, SessionCacheReconciliation, SessionId, SessionIoOperation,
+    SessionJournalCache, SessionJournalMode, SessionNoSpaceCondition, SessionQueueState,
+    SessionRecord, SessionSchemaObject, SessionSchemaObjectKind, SessionSqliteLimit, SessionStore,
+    SessionStoreConfig, SessionStoreError, SessionStoreSettings, SessionTaskRecord,
 };

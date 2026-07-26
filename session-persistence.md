@@ -8,7 +8,14 @@ reconstruction, exact generation/layout/lease/finalization validation, and
 whole-checkpoint hash validation are also executable. File-backed typed append,
 flush acknowledgement, descriptor reopen validation, and durable linked
 rotation are executable. Native root identity revalidation, checkpoint
-compaction writing, and the SQLite session store remain pending.
+compaction writing, and cross-store startup orchestration remain pending. The
+SQLite v1 synchronous primitive is now executable: it creates and validates
+the exact strict schema, applies and verifies all connection limits/pragmas,
+stores core session/task and policy-filtered option records, preserves dense
+queue ordering, reconciles journal-owned cache fields in one direction, runs
+the journal-install pointer protocol, and produces integrity-checked hot
+backups. The dedicated bounded session thread, full startup filesystem/journal
+orchestration, stopped-result publication, and later migrations remain pending.
 
 Decision: use a hybrid persistence model:
 
@@ -203,6 +210,11 @@ SQLite does not store high-frequency per-piece durability transitions in the
 normal path.
 
 ### SQLite Schema Version 1
+
+Implementation status: executable and generated as `generated/session_v1.json`.
+An empty version-0 file is initialized in `BEGIN IMMEDIATE`; a nonempty
+unversioned database and every newer `user_version` are rejected without schema
+rewrites. Version 1 currently has no older nonempty migration input.
 
 `PRAGMA user_version=1` is the authoritative schema version. Version-1 tables
 are `STRICT`, enable foreign keys, and use closed integer enums generated from
@@ -565,6 +577,10 @@ SQLite:
   `SQLITE_LIMIT_VARIABLE_NUMBER=256`, `SQLITE_LIMIT_TRIGGER_DEPTH=16`, and
   `SQLITE_LIMIT_WORKER_THREADS=0`; a platform SQLite that cannot apply a
   required limit fails persistent-mode startup rather than silently widening it,
+- the bundled SQLite compile uses
+  `-DSQLITE_MAX_LIKE_PATTERN_LENGTH=65536`; without that repository-scoped
+  hard ceiling SQLite clamps the required runtime limit to 50,000 and startup
+  correctly fails closed,
 - WAL auto-checkpoint is 1000 pages, with a truncate checkpoint at clean
   shutdown and when WAL bytes exceed 64 MiB; checkpoint failure is diagnostic
   and never discards the WAL,

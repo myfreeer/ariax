@@ -3,8 +3,8 @@
 Files in this directory are deterministic implementation inputs generated from
 the pinned aria2 Git objects and ariax's executable core and option registries.
 The compatibility artifacts expose unreviewed upstream coverage instead of
-silently implying parity. Later checkpoints add persistence contracts. Do not
-edit generated JSON by hand.
+silently implying parity. Executable journal and SQLite persistence contracts
+are included. Do not edit generated JSON by hand.
 
 `options.json`, `aria2_compat.json`, `runtime_updates.json`, and
 `runtime_compatibility.json` come from `ariax-config`. The aria2 inventory files
@@ -19,6 +19,9 @@ identity, and bitmap caps, canonicalization rules, semantic recovery limits,
 hash domains/coverage, and both codec and cross-record rejection vocabularies.
 It also freezes the serialized appender's segment naming, acknowledgement,
 latched-fault, tail-reopen, and flushed-boundary rotation rules.
+`session_v1.json` freezes the strict SQLite v1 schema SQL, direct rusqlite
+feature/build contract, pragmas, hard connection limits, queue/install enums,
+caps, reconciliation rules, and failure vocabularies.
 `error_codes.json` includes the stable journal numeric value for each closed
 error class.
 

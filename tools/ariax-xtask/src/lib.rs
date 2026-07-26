@@ -7,6 +7,7 @@ mod core_contracts;
 mod inventory;
 mod journal_contracts;
 mod runtime_contracts;
+mod session_contracts;
 mod storage_contracts;
 
 use std::ffi::OsString;
@@ -19,6 +20,7 @@ use core_contracts::generate_core_contracts;
 use inventory::{GenerationMode, generate_aria2_inventory};
 use journal_contracts::generate_journal_contracts;
 use runtime_contracts::generate_runtime_contracts;
+use session_contracts::generate_session_contracts;
 use storage_contracts::generate_storage_contracts;
 
 /// Canonical upstream repository for the compatibility reference.
@@ -159,9 +161,10 @@ where
                 generate_config_contracts(workspace_root, &reference, &upstream_options, mode)?;
             let storage = generate_storage_contracts(workspace_root, mode)?;
             let journal = generate_journal_contracts(workspace_root, mode)?;
+            let session = generate_session_contracts(workspace_root, mode)?;
             let runtime = generate_runtime_contracts(workspace_root, mode)?;
             Ok(format!(
-                "{inventory}; {core}; {config}; {storage}; {journal}; {runtime}"
+                "{inventory}; {core}; {config}; {storage}; {journal}; {session}; {runtime}"
             ))
         }
         XtaskCommand::VerifyContracts { source_dir } => {
@@ -182,9 +185,10 @@ where
             )?;
             let storage = generate_storage_contracts(workspace_root, GenerationMode::Check)?;
             let journal = generate_journal_contracts(workspace_root, GenerationMode::Check)?;
+            let session = generate_session_contracts(workspace_root, GenerationMode::Check)?;
             let runtime = generate_runtime_contracts(workspace_root, GenerationMode::Check)?;
             Ok(format!(
-                "{inventory}; {core}; {config}; {storage}; {journal}; {runtime}"
+                "{inventory}; {core}; {config}; {storage}; {journal}; {session}; {runtime}"
             ))
         }
         XtaskCommand::PrintAria2Pin => Ok(reference.commit),
@@ -526,6 +530,17 @@ mod tests {
             let workspace = root.join("ariax");
             let aria2 = root.join("aria2");
             fs::create_dir_all(workspace.join("compat")).expect("create workspace fixture");
+            fs::create_dir_all(workspace.join(".cargo")).expect("create Cargo config fixture");
+            fs::write(
+                workspace.join("Cargo.toml"),
+                "[workspace.dependencies]\nrusqlite = { version = \"=0.40.1\", default-features = false, features = [\"bundled\", \"backup\", \"cache\", \"limits\"] }\n",
+            )
+            .expect("write workspace manifest fixture");
+            fs::write(
+                workspace.join(".cargo/config.toml"),
+                "[env]\nLIBSQLITE3_FLAGS = \"-DSQLITE_MAX_LIKE_PATTERN_LENGTH=65536\"\n",
+            )
+            .expect("write Cargo config fixture");
             fs::create_dir_all(&aria2).expect("create aria2 fixture");
             run_git(&aria2, &["init", "--quiet"]);
 

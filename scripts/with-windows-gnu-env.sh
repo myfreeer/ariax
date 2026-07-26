@@ -31,10 +31,25 @@ exec "$msys_env" \
         test -x "$toolchain_root/bin/cargo.exe"
         test -x "$toolchain_root/bin/rustc.exe"
         mkdir -p -- "$cargo_home" "$target_dir"
-        export PATH="$toolchain_root/bin:/mingw64/bin:/usr/local/bin:/usr/bin"
+        export PATH="/mingw64/bin:/usr/local/bin:/usr/bin:$toolchain_root/bin"
         export RUSTC="$toolchain_root/bin/rustc.exe"
+        export RUSTDOC="$toolchain_root/bin/rustdoc.exe"
+        export RUSTFMT="$toolchain_root/bin/rustfmt.exe"
+        export CLIPPY_DRIVER="$toolchain_root/bin/clippy-driver.exe"
         export CARGO_HOME="$cargo_home"
         export CARGO_TARGET_DIR="$target_dir"
         cd -- "$repo_root"
-        exec "$@"
+        command_name=$1
+        shift
+        case "$command_name" in
+            cargo.exe)
+                exec "$toolchain_root/bin/cargo.exe" "$@"
+                ;;
+            rustc.exe)
+                exec "$toolchain_root/bin/rustc.exe" "$@"
+                ;;
+            *)
+                exec "$command_name" "$@"
+                ;;
+        esac
     ' ariax-windows-gnu "$@"

@@ -15,6 +15,10 @@ appender now provides gap-free typed append, explicit flush acknowledgement,
 latched failure, tail-validated descriptor reopen, and flushed-boundary
 rotation without whole-segment buffering.
 
+The SQLite side of checkpoint installation now has transactional
+`installing`/`installed` pointer primitives with old-pointer revalidation; the
+checkpoint state writer and cross-store orchestration remain pending.
+
 This document defines `SafePathBuilder`, `FileLayout`, `GlobalOffsetMapper`,
 `StorageEngine`, and `ControlJournal` contracts for HTTP sequential/range
 downloads. It is compatible with later Metalink and BitTorrent work but does

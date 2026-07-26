@@ -24,13 +24,17 @@ scripts/cargo-local.sh linux --version
 scripts/cargo-local.sh windows-gnu --version
 
 windows_environment=$(scripts/with-windows-gnu-env.sh /usr/bin/bash -c '
-    printf "cargo=%s\n" "$(command -v cargo.exe)"
-    printf "rustc=%s\n" "$(command -v rustc.exe)"
+    printf "rustc=%s\n" "$RUSTC"
+    printf "rustdoc=%s\n" "$RUSTDOC"
+    printf "rustfmt=%s\n" "$RUSTFMT"
+    printf "clippy=%s\n" "$CLIPPY_DRIVER"
     printf "gcc=%s\n" "$(command -v gcc.exe)"
     printf "target=%s\n" "$CARGO_TARGET_DIR"
 ')
-[[ "$windows_environment" == *"cargo="*"/toolchains/installed/windows-gnu/bin/cargo.exe"* ]]
 [[ "$windows_environment" == *"rustc="*"/toolchains/installed/windows-gnu/bin/rustc.exe"* ]]
+[[ "$windows_environment" == *"rustdoc="*"/toolchains/installed/windows-gnu/bin/rustdoc.exe"* ]]
+[[ "$windows_environment" == *"rustfmt="*"/toolchains/installed/windows-gnu/bin/rustfmt.exe"* ]]
+[[ "$windows_environment" == *"clippy="*"/toolchains/installed/windows-gnu/bin/clippy-driver.exe"* ]]
 [[ "$windows_environment" == *"gcc=/mingw64/bin/gcc.exe"* ]]
 [[ "$windows_environment" == *"target="*"/toolchains/target/windows-gnu"* ]]
 

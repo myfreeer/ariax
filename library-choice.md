@@ -373,6 +373,9 @@ keeps the native dependency graph and required APIs auditable. All access runs
 on one dedicated session-store thread behind a bounded command queue;
 synchronous SQLite calls never run on network/control executor threads.
 Distributions may add a separately tested system-SQLite build feature later.
+The bundled build is compiled with
+`-DSQLITE_MAX_LIKE_PATTERN_LENGTH=65536` from repository Cargo configuration so
+the required 64 KiB runtime limit is attainable and verified exactly.
 
 The `minimal` first implementation still includes SQLite. A control-files-only
 minimal profile remains deferred until it has its own queue/index/recovery
