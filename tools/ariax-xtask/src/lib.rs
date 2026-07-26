@@ -5,6 +5,7 @@
 mod config_contracts;
 mod core_contracts;
 mod inventory;
+mod journal_contracts;
 mod runtime_contracts;
 mod storage_contracts;
 
@@ -16,6 +17,7 @@ use std::process::Command;
 use config_contracts::generate_config_contracts;
 use core_contracts::generate_core_contracts;
 use inventory::{GenerationMode, generate_aria2_inventory};
+use journal_contracts::generate_journal_contracts;
 use runtime_contracts::generate_runtime_contracts;
 use storage_contracts::generate_storage_contracts;
 
@@ -156,9 +158,10 @@ where
             let config =
                 generate_config_contracts(workspace_root, &reference, &upstream_options, mode)?;
             let storage = generate_storage_contracts(workspace_root, mode)?;
+            let journal = generate_journal_contracts(workspace_root, mode)?;
             let runtime = generate_runtime_contracts(workspace_root, mode)?;
             Ok(format!(
-                "{inventory}; {core}; {config}; {storage}; {runtime}"
+                "{inventory}; {core}; {config}; {storage}; {journal}; {runtime}"
             ))
         }
         XtaskCommand::VerifyContracts { source_dir } => {
@@ -178,9 +181,10 @@ where
                 GenerationMode::Check,
             )?;
             let storage = generate_storage_contracts(workspace_root, GenerationMode::Check)?;
+            let journal = generate_journal_contracts(workspace_root, GenerationMode::Check)?;
             let runtime = generate_runtime_contracts(workspace_root, GenerationMode::Check)?;
             Ok(format!(
-                "{inventory}; {core}; {config}; {storage}; {runtime}"
+                "{inventory}; {core}; {config}; {storage}; {journal}; {runtime}"
             ))
         }
         XtaskCommand::PrintAria2Pin => Ok(reference.commit),

@@ -1,6 +1,9 @@
 # Session Persistence
 
-Status: reviewed pre-implementation contract. Implementation pending.
+Status: first-slice implementation in progress. The control-journal v1 framing,
+segment linkage, bounded replay, and torn-tail valid-prefix rules are executable.
+Typed state reconstruction, durable file appending, checkpoint compaction, and
+the SQLite session store remain pending.
 
 Decision: use a hybrid persistence model:
 

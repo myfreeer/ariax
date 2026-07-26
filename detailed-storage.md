@@ -2,8 +2,11 @@
 
 Status: first-slice implementation in progress. Portable NFC path validation,
 persisted root/file identity binding, immutable layout hashing, and global
-offset mapping are implemented. Native capability opening, storage execution,
-piece state, journaling, and finalization remain pending.
+offset mapping are implemented. Journal v1 segment/record framing, CRC-32C and
+commit validation, linked rotation, bounded replay, and valid-prefix recovery
+are executable. Typed payload codecs, native capability opening, storage
+execution, piece state, durable appending/flush, compaction, and finalization
+remain pending.
 
 This document defines `SafePathBuilder`, `FileLayout`, `GlobalOffsetMapper`,
 `StorageEngine`, and `ControlJournal` contracts for HTTP sequential/range

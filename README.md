@@ -1,7 +1,8 @@
 # Downloader Design
 
 Status: implementation ready; Phase 0 contract generation is in progress, and
-the gated Phase 1 core identifier/error/state vocabulary is implemented. Module
+the gated Phase 1 core/config, portable storage layout, bounded runtime
+ownership, and journal v1 framing/replay foundations are implemented. Module
 work remains governed by `implementation-readiness.md` and the phase exit
 criteria in `implementation-plan.md`.
 

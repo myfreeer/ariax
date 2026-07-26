@@ -416,7 +416,7 @@ is slow but the algorithm is frozen; if a maintenance or performance issue
 appears, `crc-fast` (SIMD, all Rocksoft variants, active in 2026) is the
 documented replacement behind the same internal `Crc32c` newtype. The generic
 `crc` crate is table-based (~0.5 GiB/s) and not selected for the hot journal
-path.
+path. The first journal slice pins `crc32c` 0.6.8 exactly.
 
 Content digests: RustCrypto `sha2`/`sha1`/`md-5` (0.11.x stable line, `digest`
 0.11 traits) for Metalink/aria2 checksum compatibility (`sha-256`, `sha-512`,
