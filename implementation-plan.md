@@ -3,7 +3,8 @@
 Status: reviewed implementation contract. Phase 0 is in progress; the gated
 Phase 1 core identifier/error/state vocabulary, first config slice, and portable
 storage layout/path, bounded runtime ownership, and journal v1 framing/replay
-plus all 24 typed journal payload contracts are implemented.
+plus all 24 typed journal payload contracts and semantic recovery are
+implemented.
 
 This is a staged plan for building the design without repeating the incomplete
 rewrite pattern.

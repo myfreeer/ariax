@@ -2,17 +2,19 @@ use crate::inventory::{GenerationMode, apply_outputs, comma, json_string};
 use ariax_core::ALL_ERROR_KINDS;
 use ariax_storage::{
     ALL_DATA_BARRIER_KINDS, ALL_DURABILITY_MODES, ALL_GENERATION_START_REASONS,
-    ALL_HEADER_DECODE_ERRORS, ALL_JOURNAL_DIGEST_ALGORITHMS, ALL_LEASE_ABORT_REASONS,
-    ALL_OPTIONS_SNAPSHOT_SCOPES, ALL_PAYLOAD_CODEC_ERROR_CLASSES, ALL_RECORD_STOP_REASONS,
-    ALL_RECORD_TYPES, ALL_REPLAY_RESOURCES, ALL_RETRY_REASONS, ALL_RETRY_SCOPES,
-    ALL_TASK_PAUSE_REASONS, ALL_TASK_REMOVE_REASONS, COMMIT_MAGIC, HEADER_MAGIC,
-    JOURNAL_ENDIANNESS_ASSERTION, JOURNAL_FORMAT_VERSION, MAX_DIGEST_ALGORITHM_BYTES,
-    MAX_DIGEST_VALUE_BYTES, MAX_IDENTITY_BYTES, MAX_LAYOUT_BYTES, MAX_LAYOUT_ENTRIES,
-    MAX_OPTION_KEY_BYTES, MAX_OPTION_MAP_BYTES, MAX_OPTION_MAP_ENTRIES, MAX_OPTION_VALUE_BYTES,
-    MAX_PIECE_STATE_BITMAP_BYTES, MAX_PIECE_STATE_COVERED_PIECES, MAX_PLATFORM_PATH_BYTES,
-    MAX_RECORD_PAYLOAD, MAX_SAFE_RELATIVE_BYTES, PAYLOAD_CODEC_RECORD_TYPES, RECORD_MAGIC,
-    RECORD_OVERHEAD, RECORD_PREFIX_LEN, RecordType, ReplayLimits, SEGMENT_HASH_DOMAIN,
-    SEGMENT_HEADER_LEN,
+    ALL_HEADER_DECODE_ERRORS, ALL_JOURNAL_DIGEST_ALGORITHMS, ALL_JOURNAL_STATE_ERROR_CODES,
+    ALL_LEASE_ABORT_REASONS, ALL_OPTIONS_SNAPSHOT_SCOPES, ALL_PAYLOAD_CODEC_ERROR_CLASSES,
+    ALL_RECORD_STOP_REASONS, ALL_RECORD_TYPES, ALL_REPLAY_RESOURCES, ALL_RETRY_REASONS,
+    ALL_RETRY_SCOPES, ALL_TASK_PAUSE_REASONS, ALL_TASK_REMOVE_REASONS,
+    CHECKPOINT_STATE_HASH_DOMAIN, COMMIT_MAGIC, CONTRIBUTORS_HASH_DOMAIN, HEADER_MAGIC,
+    JOURNAL_ENDIANNESS_ASSERTION, JOURNAL_FORMAT_VERSION, JournalStateLimits,
+    MAX_DIGEST_ALGORITHM_BYTES, MAX_DIGEST_VALUE_BYTES, MAX_IDENTITY_BYTES, MAX_LAYOUT_BYTES,
+    MAX_LAYOUT_ENTRIES, MAX_OPTION_KEY_BYTES, MAX_OPTION_MAP_BYTES, MAX_OPTION_MAP_ENTRIES,
+    MAX_OPTION_VALUE_BYTES, MAX_PIECE_STATE_BITMAP_BYTES, MAX_PIECE_STATE_COVERED_PIECES,
+    MAX_PLATFORM_PATH_BYTES, MAX_RECORD_PAYLOAD, MAX_SAFE_RELATIVE_BYTES,
+    OPTIONS_SNAPSHOT_HASH_DOMAIN, PAYLOAD_CODEC_RECORD_TYPES, REBIND_VALIDATOR_SET_HASH_DOMAIN,
+    RECORD_MAGIC, RECORD_OVERHEAD, RECORD_PREFIX_LEN, RecordType, ReplayLimits,
+    SEGMENT_HASH_DOMAIN, SEGMENT_HEADER_LEN, VALIDATOR_SET_HASH_DOMAIN,
 };
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -26,19 +28,21 @@ pub(crate) fn generate_journal_contracts(
     let outputs = [(PathBuf::from(JOURNAL_OUTPUT), render_journal_contracts())];
     apply_outputs(workspace_root, &outputs, mode)?;
     Ok(format!(
-        "{} journal v1 contracts: {} record types, {} header rejections, {} record stop reasons",
+        "{} journal v1 contracts: {} record types, {} header rejections, {} record stop reasons, {} semantic rejections",
         match mode {
             GenerationMode::Write => "generated",
             GenerationMode::Check => "verified",
         },
         ALL_RECORD_TYPES.len(),
         ALL_HEADER_DECODE_ERRORS.len(),
-        ALL_RECORD_STOP_REASONS.len()
+        ALL_RECORD_STOP_REASONS.len(),
+        ALL_JOURNAL_STATE_ERROR_CODES.len(),
     ))
 }
 
 fn render_journal_contracts() -> String {
     let limits = ReplayLimits::default();
+    let state_limits = JournalStateLimits::default();
     let mut output = String::new();
     writeln!(output, "{{\n  \"schema\": 1,").expect("write to string");
     writeln!(
@@ -192,7 +196,36 @@ fn render_journal_contracts() -> String {
         }
         output.push_str(&json_string(error.code()));
     }
-    output.push_str("],\n    \"rules\": {\"exact_little_endian_scalars\": true, \"nonzero_typed_ids\": true, \"nonempty_nonoverflowing_spans\": true, \"unknown_tags_rejected\": true, \"trailing_bytes_rejected\": true, \"typed_append_prevents_record_type_mismatch\": true, \"counts_bounded_before_allocation\": true, \"option_map_utf8_sorted_unique\": true, \"layout_entries_sorted_contiguous\": true, \"piece_state_bitmap_exact_length\": true, \"piece_state_evidence_exact_coverage\": true}\n  },\n  \"header_rejections\": [");
+    output.push_str("],\n    \"rules\": {\"exact_little_endian_scalars\": true, \"nonzero_typed_ids\": true, \"nonempty_nonoverflowing_spans\": true, \"unknown_tags_rejected\": true, \"trailing_bytes_rejected\": true, \"typed_append_prevents_record_type_mismatch\": true, \"counts_bounded_before_allocation\": true, \"option_map_utf8_sorted_unique\": true, \"layout_entries_sorted_contiguous\": true, \"piece_state_bitmap_exact_length\": true, \"piece_state_evidence_exact_coverage\": true}\n  },\n  \"semantic_recovery\": {\n");
+    writeln!(
+        output,
+        "    \"hash_domains\": {{\"options_snapshot\": {}, \"contributors\": {}, \"validator_set\": {}, \"rebind_validator_set\": {}, \"checkpoint_state\": {}}},",
+        json_string(&hex_bytes(OPTIONS_SNAPSHOT_HASH_DOMAIN.as_bytes())),
+        json_string(&hex_bytes(CONTRIBUTORS_HASH_DOMAIN.as_bytes())),
+        json_string(&hex_bytes(VALIDATOR_SET_HASH_DOMAIN.as_bytes())),
+        json_string(&hex_bytes(REBIND_VALIDATOR_SET_HASH_DOMAIN.as_bytes())),
+        json_string(&hex_bytes(CHECKPOINT_STATE_HASH_DOMAIN.as_bytes())),
+    )
+    .expect("write to string");
+    output.push_str("    \"hash_coverage\": {\"options_snapshot\": [\"domain\", \"entry_count_le_u32\", \"sorted_key_length_key_value_length_value\"], \"contributors\": [\"domain\", \"contributor_count_le_u32\", \"sorted_lease_id_span_validator_fingerprint\"], \"validator_set\": [\"domain\", \"distinct_validator_count_le_u32\", \"sorted_distinct_validator_fingerprints\"], \"rebind_validator_set\": [\"domain\", \"previous_root_binding_hash\", \"new_root_binding_hash\", \"digest_algorithm_and_value\"], \"checkpoint_state\": [\"domain\", \"state_record_count_le_u32\", \"repeated_record_type_generation_payload_length_payload\"]},\n");
+    writeln!(
+        output,
+        "    \"limits\": {{\"records\": {}, \"leases\": {}, \"durable_pieces\": {}, \"retry_states\": {}, \"finalizations\": {}}},",
+        state_limits.max_records,
+        state_limits.max_leases,
+        state_limits.max_durable_pieces,
+        state_limits.max_retry_states,
+        state_limits.max_finalizations,
+    )
+    .expect("write to string");
+    output.push_str("    \"rejections\": [");
+    for (index, code) in ALL_JOURNAL_STATE_ERROR_CODES.iter().copied().enumerate() {
+        if index > 0 {
+            output.push_str(", ");
+        }
+        output.push_str(&json_string(code));
+    }
+    output.push_str("],\n    \"rules\": {\"live_invalid_record_preserves_prior_semantic_prefix\": true, \"invalid_checkpoint_rejected_whole\": true, \"checkpoint_hash_excludes_sequence_crc_commit\": true, \"generation_started_only_advancer\": true, \"staged_snapshot_exact_match_required\": true, \"option_policy_required\": true, \"layout_chunks_immediate_and_recomputed\": true, \"provisional_leases_never_recovered_as_durable\": true, \"contributors_and_validator_sets_recomputed\": true, \"durability_barrier_must_match_task_mode\": true, \"piece_state_checkpoint_only\": true, \"different_identity_rebind_requires_digest_bound_lease_free_evidence\": true, \"terminal_marker_is_safety_veto\": true, \"finalization_pairs_exact\": true}\n  },\n  \"header_rejections\": [");
     for (index, error) in ALL_HEADER_DECODE_ERRORS.iter().copied().enumerate() {
         if index > 0 {
             output.push_str(", ");
@@ -290,6 +323,11 @@ mod tests {
         assert!(contract.contains("\"option_map_entries\": 4096"));
         assert!(contract.contains("\"piece_state_bitmap_bytes\": 16384"));
         assert!(contract.contains("\"piece_state_evidence_exact_coverage\": true"));
+        assert!(contract.contains("\"semantic_recovery\""));
+        assert!(contract.contains("\"durable_pieces\": 262144"));
+        assert!(contract.contains("\"checkpoint_hash_excludes_sequence_crc_commit\": true"));
+        assert!(contract.contains("\"forbidden_persisted_option\""));
+        assert!(contract.contains("\"noncanonical_contributors\""));
         assert!(contract.contains("\"code\": \"sha-512\", \"value_bytes\": 64"));
         assert!(contract.contains("\"valid_prefix_authoritative\": true"));
         assert!(contract.contains("\"payload_too_large\""));

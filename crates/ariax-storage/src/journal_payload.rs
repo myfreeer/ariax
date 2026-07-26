@@ -8,6 +8,7 @@ use crate::{
 use ariax_core::{
     ErrorKind, FileId, Generation, LeaseId, OptionPatchId, PieceId, TransferAttemptId,
 };
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
@@ -21,6 +22,7 @@ pub const MAX_OPTION_VALUE_BYTES: usize = 64 * 1024;
 pub const MAX_OPTION_MAP_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_PIECE_STATE_COVERED_PIECES: usize = 131_072;
 pub const MAX_PIECE_STATE_BITMAP_BYTES: usize = MAX_PIECE_STATE_COVERED_PIECES.div_ceil(8);
+pub const OPTIONS_SNAPSHOT_HASH_DOMAIN: &str = "ariax/options-snapshot/v1\0";
 
 /// Every record payload with a complete version-1 typed codec.
 pub const PAYLOAD_CODEC_RECORD_TYPES: [RecordType; 24] = crate::ALL_RECORD_TYPES;
@@ -264,6 +266,21 @@ impl SanitizedOptionMap {
     #[must_use]
     pub const fn canonical_bytes(&self) -> usize {
         self.canonical_bytes
+    }
+
+    /// Hashes the canonical option map independently of its journal scope or patch ID.
+    #[must_use]
+    pub fn snapshot_hash(&self) -> JournalHash {
+        let mut digest = Sha256::new();
+        digest.update(OPTIONS_SNAPSHOT_HASH_DOMAIN.as_bytes());
+        digest.update((self.entries.len() as u32).to_le_bytes());
+        for (key, value) in self.entries() {
+            digest.update((key.len() as u32).to_le_bytes());
+            digest.update(key.as_bytes());
+            digest.update((value.len() as u32).to_le_bytes());
+            digest.update(value.as_bytes());
+        }
+        JournalHash::new(digest.finalize().into()).expect("SHA-256 output is nonzero")
     }
 }
 
@@ -2370,6 +2387,27 @@ mod tests {
                 Err(PayloadCodecError::TrailingBytes)
             );
         }
+    }
+
+    #[test]
+    fn option_snapshot_hash_is_order_independent_and_value_sensitive() {
+        let first = SanitizedOptionMap::new([
+            ("piece-length".to_owned(), "1M".to_owned()),
+            ("continue".to_owned(), "true".to_owned()),
+        ])
+        .expect("options");
+        let reordered = SanitizedOptionMap::new([
+            ("continue".to_owned(), "true".to_owned()),
+            ("piece-length".to_owned(), "1M".to_owned()),
+        ])
+        .expect("options");
+        let changed = SanitizedOptionMap::new([
+            ("continue".to_owned(), "false".to_owned()),
+            ("piece-length".to_owned(), "1M".to_owned()),
+        ])
+        .expect("options");
+        assert_eq!(first.snapshot_hash(), reordered.snapshot_hash());
+        assert_ne!(first.snapshot_hash(), changed.snapshot_hash());
     }
 
     #[test]

@@ -6,9 +6,11 @@ offset mapping are implemented. Journal v1 segment/record framing, CRC-32C and
 commit validation, linked rotation, bounded replay, and valid-prefix recovery
 are executable. Exact typed payload codecs cover all 24 v1 records, including
 bounded option maps, chunked layouts, finalization paths, and checkpoint
-`PieceStateChunk` bitmaps/evidence runs. Registry-aware secret filtering,
-cross-record typed recovery, native capability opening, storage execution,
-durable appending/flush, and compaction remain pending.
+`PieceStateChunk` bitmaps/evidence runs. Policy-gated cross-record recovery now
+verifies snapshot/contributor/state hashes, generation promotion, reassembled
+layout/root hashes, lease/piece evidence, finalization pairs, and whole compact
+checkpoints. Native capability opening and identity revalidation, storage
+execution, durable appending/flush, and compaction writing remain pending.
 
 This document defines `SafePathBuilder`, `FileLayout`, `GlobalOffsetMapper`,
 `StorageEngine`, and `ControlJournal` contracts for HTTP sequential/range
@@ -528,6 +530,14 @@ keys, non-canonical lengths, invalid UTF-8, and trailing payload bytes.
 fixed by each field (`layout`, `options`, `validator`, or `segment`) so hashes
 from different namespaces cannot be substituted.
 
+The executable v1 semantic domains are `ariax/options-snapshot/v1\0`,
+`ariax/contributors/v1\0`, `ariax/validator-set/v1\0`,
+`ariax/rebind-validator-set/v1\0`, and `ariax/checkpoint-state/v1\0`.
+Option hashes cover the sorted map; contributor hashes cover the sorted
+`(LeaseId, Span, validator_fingerprint)` tuples; validator-set hashes cover the
+sorted distinct validator fingerprints. Different-identity rebind evidence
+covers the prior/new root-binding hashes and exact piece digest.
+
 Version-1 field caps are checked before allocation: `PlatformPath` and a safe
 relative path are at most 64 KiB each, a platform identity is at most 256
 bytes, a digest algorithm name is at most 32 bytes, and a digest value is at
@@ -815,6 +825,14 @@ control actors continue.
    piece state use only their defined deterministic chunking formats; every
    other version-1 payload must fit one bounded record.
 4. `sync_all` the checkpoint segment and its directory where supported.
+
+The v1 checkpoint state hash covers its domain, `state_record_count:u32`, then
+each state record's `record_type:u16`, `generation:u64`, `payload_len:u32`, and
+canonical payload bytes. It deliberately excludes sequence numbers, CRCs, and
+commit markers so the same frozen state is deterministic when written into a
+fresh segment set. Semantic recovery preserves the trusted prefix before an
+invalid live record, but rejects an invalid checkpoint envelope or state set as
+a whole.
 
 Installation is a pointer/name switch with explicit crash points:
 

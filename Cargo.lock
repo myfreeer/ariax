@@ -31,6 +31,7 @@ dependencies = [
 name = "ariax-storage"
 version = "0.1.0"
 dependencies = [
+ "ariax-config",
  "ariax-core",
  "crc32c",
  "sha2",

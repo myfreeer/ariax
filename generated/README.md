@@ -15,7 +15,8 @@ budget, quarantine, queue-credit, and completion-permit rules.
 `journal_v1.json` freezes the executable segment/record framing, CRC and commit
 coverage, record numbers, persisted enum tags, replay caps, and valid-prefix
 rules. It also reports exact typed-payload coverage, scalar, collection, path,
-identity, and bitmap caps, canonicalization rules, and rejection vocabulary.
+identity, and bitmap caps, canonicalization rules, semantic recovery limits,
+hash domains/coverage, and both codec and cross-record rejection vocabularies.
 `error_codes.json` includes the stable journal numeric value for each closed
 error class.
 
