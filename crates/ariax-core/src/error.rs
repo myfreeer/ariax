@@ -3,36 +3,37 @@ use std::fmt;
 
 /// Stable error categories shared by CLI, RPC, the native API, and persistence.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[repr(u8)]
 pub enum ErrorKind {
-    Config,
-    UnsupportedOption,
-    OptionPatchRejected,
-    InvalidGid,
-    GidAmbiguous,
-    GidNotFound,
-    GidCollision,
-    InvalidPath,
-    PathEscape,
-    Network,
-    Timeout,
-    Retryable,
-    InvalidRange,
-    StaleValidator,
-    ChecksumMismatch,
-    HostKeyApprovalRequired,
-    StaleChallenge,
-    Disk,
-    NoSpace,
-    Permission,
-    JournalCorrupt,
-    DirtyCheckpoint,
-    NeedsCredentials,
-    SlowConsumer,
-    ResponseTooLarge,
-    ResourceLimit,
-    BackendUnavailable,
-    Cancelled,
-    InternalInvariant,
+    Config = 1,
+    UnsupportedOption = 2,
+    OptionPatchRejected = 3,
+    InvalidGid = 4,
+    GidAmbiguous = 5,
+    GidNotFound = 6,
+    GidCollision = 7,
+    InvalidPath = 8,
+    PathEscape = 9,
+    Network = 10,
+    Timeout = 11,
+    Retryable = 12,
+    InvalidRange = 13,
+    StaleValidator = 14,
+    ChecksumMismatch = 15,
+    HostKeyApprovalRequired = 16,
+    StaleChallenge = 17,
+    Disk = 18,
+    NoSpace = 19,
+    Permission = 20,
+    JournalCorrupt = 21,
+    DirtyCheckpoint = 22,
+    NeedsCredentials = 23,
+    SlowConsumer = 24,
+    ResponseTooLarge = 25,
+    ResourceLimit = 26,
+    BackendUnavailable = 27,
+    Cancelled = 28,
+    InternalInvariant = 29,
 }
 
 /// Every stable error kind in canonical matrix order.
@@ -69,6 +70,12 @@ pub const ALL_ERROR_KINDS: &[ErrorKind] = &[
 ];
 
 impl ErrorKind {
+    /// Returns the stable version-1 journal numeric value.
+    #[must_use]
+    pub const fn number(self) -> u8 {
+        self as u8
+    }
+
     /// Returns the stable transport-independent error code name.
     #[must_use]
     pub const fn code(self) -> &'static str {
@@ -103,6 +110,18 @@ impl ErrorKind {
             Self::Cancelled => "Cancelled",
             Self::InternalInvariant => "InternalInvariant",
         }
+    }
+}
+
+impl TryFrom<u8> for ErrorKind {
+    type Error = ();
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        ALL_ERROR_KINDS
+            .iter()
+            .copied()
+            .find(|kind| kind.number() == value)
+            .ok_or(())
     }
 }
 
@@ -219,7 +238,15 @@ mod tests {
     #[test]
     fn stable_error_codes_are_unique_and_complete() {
         let codes: BTreeSet<_> = ALL_ERROR_KINDS.iter().map(|kind| kind.code()).collect();
+        let numbers: BTreeSet<_> = ALL_ERROR_KINDS.iter().map(|kind| kind.number()).collect();
         assert_eq!(codes.len(), ALL_ERROR_KINDS.len());
+        assert_eq!(numbers.len(), ALL_ERROR_KINDS.len());
+        for (index, kind) in ALL_ERROR_KINDS.iter().copied().enumerate() {
+            assert_eq!(kind.number(), index as u8 + 1);
+            assert_eq!(ErrorKind::try_from(kind.number()), Ok(kind));
+        }
+        assert!(ErrorKind::try_from(0).is_err());
+        assert!(ErrorKind::try_from(30).is_err());
         assert!(codes.contains(ErrorKind::JournalCorrupt.code()));
         assert!(codes.contains(ErrorKind::InternalInvariant.code()));
     }

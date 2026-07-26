@@ -30,6 +30,101 @@
     {"number": 23, "code": "finalize_done"},
     {"number": 24, "code": "piece_state_chunk"}
   ],
+  "tag_vocabularies": {
+    "durability": [
+      {"number": 1, "code": "fast"},
+      {"number": 2, "code": "balanced"},
+      {"number": 3, "code": "strict"}
+    ],
+    "options_snapshot_scope": [
+      {"number": 1, "code": "current_generation"},
+      {"number": 2, "code": "next_admission"}
+    ],
+    "generation_start_reason": [
+      {"number": 1, "code": "option_patch"},
+      {"number": 2, "code": "retry_readmission"},
+      {"number": 3, "code": "representation_restart"},
+      {"number": 4, "code": "backend_failover"},
+      {"number": 5, "code": "root_rebind"},
+      {"number": 6, "code": "recovery_repair"},
+      {"number": 7, "code": "explicit_restart"}
+    ],
+    "lease_abort_reason": [
+      {"number": 1, "code": "cancelled"},
+      {"number": 2, "code": "redirect"},
+      {"number": 3, "code": "short_body"},
+      {"number": 4, "code": "oversized_body"},
+      {"number": 5, "code": "invalid_range"},
+      {"number": 6, "code": "stale_validator"},
+      {"number": 7, "code": "digest_mismatch"},
+      {"number": 8, "code": "storage_rejected"},
+      {"number": 9, "code": "overlap_lost"},
+      {"number": 10, "code": "overlap_uncertain"},
+      {"number": 11, "code": "retry"},
+      {"number": 12, "code": "generation_drain"}
+    ],
+    "data_barrier": [
+      {"number": 1, "code": "balanced_group"},
+      {"number": 2, "code": "strict_piece"},
+      {"number": 3, "code": "fast_finalization"},
+      {"number": 4, "code": "recovery_readback"}
+    ],
+    "retry_scope": [
+      {"number": 1, "code": "task"},
+      {"number": 2, "code": "uri"},
+      {"number": 3, "code": "span"},
+      {"number": 4, "code": "piece"}
+    ],
+    "retry_reason": [
+      {"number": 1, "code": "backoff"},
+      {"number": 2, "code": "retry_after"},
+      {"number": 3, "code": "policy_clamp"}
+    ],
+    "task_pause_reason": [
+      {"number": 1, "code": "user"},
+      {"number": 2, "code": "no_space"},
+      {"number": 3, "code": "slow_slot"},
+      {"number": 4, "code": "host_key_approval"},
+      {"number": 5, "code": "restarting"},
+      {"number": 6, "code": "recovery_hold"}
+    ],
+    "task_remove_reason": [
+      {"number": 1, "code": "user"},
+      {"number": 2, "code": "session_cleanup"},
+      {"number": 3, "code": "replaced"}
+    ],
+    "error_class": [
+      {"number": 1, "code": "Config"},
+      {"number": 2, "code": "UnsupportedOption"},
+      {"number": 3, "code": "OptionPatchRejected"},
+      {"number": 4, "code": "InvalidGid"},
+      {"number": 5, "code": "GidAmbiguous"},
+      {"number": 6, "code": "GidNotFound"},
+      {"number": 7, "code": "GidCollision"},
+      {"number": 8, "code": "InvalidPath"},
+      {"number": 9, "code": "PathEscape"},
+      {"number": 10, "code": "Network"},
+      {"number": 11, "code": "Timeout"},
+      {"number": 12, "code": "Retryable"},
+      {"number": 13, "code": "InvalidRange"},
+      {"number": 14, "code": "StaleValidator"},
+      {"number": 15, "code": "ChecksumMismatch"},
+      {"number": 16, "code": "HostKeyApprovalRequired"},
+      {"number": 17, "code": "StaleChallenge"},
+      {"number": 18, "code": "Disk"},
+      {"number": 19, "code": "NoSpace"},
+      {"number": 20, "code": "Permission"},
+      {"number": 21, "code": "JournalCorrupt"},
+      {"number": 22, "code": "DirtyCheckpoint"},
+      {"number": 23, "code": "NeedsCredentials"},
+      {"number": 24, "code": "SlowConsumer"},
+      {"number": 25, "code": "ResponseTooLarge"},
+      {"number": 26, "code": "ResourceLimit"},
+      {"number": 27, "code": "BackendUnavailable"},
+      {"number": 28, "code": "Cancelled"},
+      {"number": 29, "code": "InternalInvariant"}
+    ]
+  },
   "header_rejections": ["truncated", "invalid_magic", "bad_crc", "unsupported_version", "invalid_endianness", "unknown_flags", "zero_gid", "zero_journal_id", "invalid_first_sequence", "unexpected_previous_link", "missing_previous_link"],
   "record_stop_reasons": ["truncated_framing", "invalid_magic", "payload_too_large", "unknown_record_type", "unknown_flags", "sequence_gap", "generation_before_segment", "length_overflow", "truncated_record", "bad_crc", "missing_commit"],
   "replay_limits": {"segments": 1024, "records": 262144, "payload_bytes": 67108864},

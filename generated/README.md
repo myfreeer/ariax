@@ -13,7 +13,9 @@ comes from executable path, root-binding, layout, and offset-mapper contracts.
 `runtime_buffers.json` records the closed buffer lifecycle, size classes,
 budget, quarantine, queue-credit, and completion-permit rules.
 `journal_v1.json` freezes the executable segment/record framing, CRC and commit
-coverage, record numbers, replay caps, and valid-prefix rules.
+coverage, record numbers, persisted enum tags, replay caps, and valid-prefix
+rules. `error_codes.json` includes the stable journal numeric value for each
+closed error class.
 
 Run `cargo xtask generate ../aria2` to update the files and
 `cargo xtask generate --check ../aria2` to verify that committed output is

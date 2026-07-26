@@ -126,6 +126,11 @@ pub enum ErrorKind {
 }
 ```
 
+The declaration order is also the stable 1-based version-1 journal number:
+`Config=1` through `InternalInvariant=29`. Zero and values above 29 are
+rejected. `generated/error_codes.json` is produced from the executable enum and
+is the machine-readable source for persistence and API adapters.
+
 `OptionPatchRejected` is the only public option-change failure vocabulary.
 Its stable reason is one of `invalid_value`, `unsupported`,
 `not_runtime_mutable`, `requires_new_generation`,

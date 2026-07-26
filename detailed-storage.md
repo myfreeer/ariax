@@ -492,6 +492,30 @@ DurableEvidenceRun first_piece_delta:u32, piece_count:u32,
                  digest_value_len:u16, digest_values:Bytes
 ```
 
+Version-1 enum tags are 1-based and closed; zero and unlisted values are
+invalid. The executable mapping is generated in `generated/journal_v1.json`:
+
+- `durability`: `1=fast`, `2=balanced`, `3=strict`;
+- `OptionsSnapshot.scope`: `1=current_generation`, `2=next_admission`;
+- `GenerationStarted.reason`: `1=option_patch`, `2=retry_readmission`,
+  `3=representation_restart`, `4=backend_failover`, `5=root_rebind`,
+  `6=recovery_repair`, `7=explicit_restart`;
+- `LeaseAborted.reason`: `1=cancelled`, `2=redirect`, `3=short_body`,
+  `4=oversized_body`, `5=invalid_range`, `6=stale_validator`,
+  `7=digest_mismatch`, `8=storage_rejected`, `9=overlap_lost`,
+  `10=overlap_uncertain`, `11=retry`, `12=generation_drain`;
+- `PieceDurable.data_barrier`: `1=balanced_group`, `2=strict_piece`,
+  `3=fast_finalization`, `4=recovery_readback`;
+- `RetryState.scope`: `1=task`, `2=uri`, `3=span`, `4=piece`;
+- `RetryState.retry_reason`: `1=backoff`, `2=retry_after`,
+  `3=policy_clamp`;
+- `TaskPaused.reason`: `1=user`, `2=no_space`, `3=slow_slot`,
+  `4=host_key_approval`, `5=restarting`, `6=recovery_hold`;
+- `TaskRemoved.reason`: `1=user`, `2=session_cleanup`, `3=replaced`.
+
+Every `error_class` uses the stable 1-based `ErrorKind` number in
+`generated/error_codes.json`; it is not an unrelated record-local enum.
+
 Strings are UTF-8. `PlatformPath` is the explicit exception: Unix stores raw
 path bytes and Windows stores canonical UTF-16LE code units, tagged by platform;
 it is display/recovery-location data and is never reopened without the safe-root

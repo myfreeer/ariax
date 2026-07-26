@@ -1,9 +1,12 @@
 use crate::inventory::{GenerationMode, apply_outputs, comma, json_string};
+use ariax_core::ALL_ERROR_KINDS;
 use ariax_storage::{
-    ALL_HEADER_DECODE_ERRORS, ALL_RECORD_STOP_REASONS, ALL_RECORD_TYPES, ALL_REPLAY_RESOURCES,
-    COMMIT_MAGIC, HEADER_MAGIC, JOURNAL_ENDIANNESS_ASSERTION, JOURNAL_FORMAT_VERSION,
-    MAX_RECORD_PAYLOAD, RECORD_MAGIC, RECORD_OVERHEAD, RECORD_PREFIX_LEN, ReplayLimits,
-    SEGMENT_HASH_DOMAIN, SEGMENT_HEADER_LEN,
+    ALL_DATA_BARRIER_KINDS, ALL_DURABILITY_MODES, ALL_GENERATION_START_REASONS,
+    ALL_HEADER_DECODE_ERRORS, ALL_LEASE_ABORT_REASONS, ALL_OPTIONS_SNAPSHOT_SCOPES,
+    ALL_RECORD_STOP_REASONS, ALL_RECORD_TYPES, ALL_REPLAY_RESOURCES, ALL_RETRY_REASONS,
+    ALL_RETRY_SCOPES, ALL_TASK_PAUSE_REASONS, ALL_TASK_REMOVE_REASONS, COMMIT_MAGIC, HEADER_MAGIC,
+    JOURNAL_ENDIANNESS_ASSERTION, JOURNAL_FORMAT_VERSION, MAX_RECORD_PAYLOAD, RECORD_MAGIC,
+    RECORD_OVERHEAD, RECORD_PREFIX_LEN, ReplayLimits, SEGMENT_HASH_DOMAIN, SEGMENT_HEADER_LEN,
 };
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -68,7 +71,88 @@ fn render_journal_contracts() -> String {
         )
         .expect("write to string");
     }
-    output.push_str("  ],\n  \"header_rejections\": [");
+    output.push_str("  ],\n  \"tag_vocabularies\": {\n");
+    write_tag_vocabulary(
+        &mut output,
+        "durability",
+        ALL_DURABILITY_MODES
+            .iter()
+            .map(|value| (value.number(), value.code())),
+        true,
+    );
+    write_tag_vocabulary(
+        &mut output,
+        "options_snapshot_scope",
+        ALL_OPTIONS_SNAPSHOT_SCOPES
+            .iter()
+            .map(|value| (value.number(), value.code())),
+        true,
+    );
+    write_tag_vocabulary(
+        &mut output,
+        "generation_start_reason",
+        ALL_GENERATION_START_REASONS
+            .iter()
+            .map(|value| (value.number(), value.code())),
+        true,
+    );
+    write_tag_vocabulary(
+        &mut output,
+        "lease_abort_reason",
+        ALL_LEASE_ABORT_REASONS
+            .iter()
+            .map(|value| (value.number(), value.code())),
+        true,
+    );
+    write_tag_vocabulary(
+        &mut output,
+        "data_barrier",
+        ALL_DATA_BARRIER_KINDS
+            .iter()
+            .map(|value| (value.number(), value.code())),
+        true,
+    );
+    write_tag_vocabulary(
+        &mut output,
+        "retry_scope",
+        ALL_RETRY_SCOPES
+            .iter()
+            .map(|value| (value.number(), value.code())),
+        true,
+    );
+    write_tag_vocabulary(
+        &mut output,
+        "retry_reason",
+        ALL_RETRY_REASONS
+            .iter()
+            .map(|value| (value.number(), value.code())),
+        true,
+    );
+    write_tag_vocabulary(
+        &mut output,
+        "task_pause_reason",
+        ALL_TASK_PAUSE_REASONS
+            .iter()
+            .map(|value| (value.number(), value.code())),
+        true,
+    );
+    write_tag_vocabulary(
+        &mut output,
+        "task_remove_reason",
+        ALL_TASK_REMOVE_REASONS
+            .iter()
+            .map(|value| (value.number(), value.code())),
+        true,
+    );
+    write_tag_vocabulary(
+        &mut output,
+        "error_class",
+        ALL_ERROR_KINDS
+            .iter()
+            .map(|value| (value.number(), value.code())),
+        false,
+    );
+    output.push_str("  },\n  \"header_rejections\": [");
     for (index, error) in ALL_HEADER_DECODE_ERRORS.iter().copied().enumerate() {
         if index > 0 {
             output.push_str(", ");
@@ -102,6 +186,26 @@ fn render_journal_contracts() -> String {
     output
 }
 
+fn write_tag_vocabulary<'a>(
+    output: &mut String,
+    name: &str,
+    values: impl ExactSizeIterator<Item = (u8, &'a str)>,
+    trailing_comma: bool,
+) {
+    let length = values.len();
+    writeln!(output, "    {}: [", json_string(name)).expect("write to string");
+    for (index, (number, code)) in values.enumerate() {
+        writeln!(
+            output,
+            "      {{\"number\": {number}, \"code\": {}}}{}",
+            json_string(code),
+            comma(index, length)
+        )
+        .expect("write to string");
+    }
+    writeln!(output, "    ]{}", if trailing_comma { "," } else { "" }).expect("write to string");
+}
+
 fn ascii_magic(magic: [u8; 4]) -> &'static str {
     match magic {
         HEADER_MAGIC => "ARXJ",
@@ -130,6 +234,8 @@ mod tests {
         assert!(contract.contains("\"commit\": \"CMIT\""));
         assert!(contract.contains("\"number\": 24, \"code\": \"piece_state_chunk\""));
         assert!(contract.contains("\"algorithm\": \"crc-32c-castagnoli\""));
+        assert!(contract.contains("\"generation_start_reason\""));
+        assert!(contract.contains("\"number\": 29, \"code\": \"InternalInvariant\""));
         assert!(contract.contains("\"valid_prefix_authoritative\": true"));
         assert!(contract.contains("\"payload_too_large\""));
     }

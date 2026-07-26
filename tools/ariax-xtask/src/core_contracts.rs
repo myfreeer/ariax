@@ -37,7 +37,8 @@ fn render_errors() -> String {
     for (index, kind) in ALL_ERROR_KINDS.iter().enumerate() {
         writeln!(
             output,
-            "    {{\"code\": {}}}{}",
+            "    {{\"number\": {}, \"code\": {}}}{}",
+            kind.number(),
             json_string(kind.code()),
             comma(index, ALL_ERROR_KINDS.len())
         )
