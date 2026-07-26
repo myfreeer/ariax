@@ -83,6 +83,7 @@ jobs:
           git -C "$source_dir" fetch --depth=1 origin "$commit"
           git -C "$source_dir" checkout --detach FETCH_HEAD
           cargo +1.97.1 xtask verify-aria2 "$source_dir"
+          cargo +1.97.1 xtask verify-contracts "$source_dir"
 
   tag-gate:
     if: always() && startsWith(github.ref, 'refs/tags/')

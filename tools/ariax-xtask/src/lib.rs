@@ -2,10 +2,14 @@
 
 //! Repository maintenance tasks that must remain deterministic and testable.
 
+mod inventory;
+
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use inventory::{GenerationMode, generate_aria2_inventory};
 
 /// Canonical upstream repository for the compatibility reference.
 pub const ARIA2_REPOSITORY: &str = "https://github.com/aria2/aria2";
@@ -122,12 +126,7 @@ where
 
     match command {
         XtaskCommand::VerifyAria2 { source_dir } => {
-            let source_dir = source_dir.unwrap_or_else(|| {
-                workspace_root
-                    .parent()
-                    .unwrap_or(workspace_root)
-                    .join("aria2")
-            });
+            let source_dir = source_dir.unwrap_or_else(|| default_aria2_source(workspace_root));
             verify_aria2_checkout(&reference, &source_dir)?;
             Ok(format!(
                 "verified aria2 {} at {}",
@@ -135,9 +134,40 @@ where
                 source_dir.display()
             ))
         }
+        XtaskCommand::Generate { source_dir, check } => {
+            let source_dir = source_dir.unwrap_or_else(|| default_aria2_source(workspace_root));
+            verify_aria2_checkout(&reference, &source_dir)?;
+            generate_aria2_inventory(
+                workspace_root,
+                &source_dir,
+                &reference,
+                if check {
+                    GenerationMode::Check
+                } else {
+                    GenerationMode::Write
+                },
+            )
+        }
+        XtaskCommand::VerifyContracts { source_dir } => {
+            let source_dir = source_dir.unwrap_or_else(|| default_aria2_source(workspace_root));
+            verify_aria2_checkout(&reference, &source_dir)?;
+            generate_aria2_inventory(
+                workspace_root,
+                &source_dir,
+                &reference,
+                GenerationMode::Check,
+            )
+        }
         XtaskCommand::PrintAria2Pin => Ok(reference.commit),
         XtaskCommand::PrintAria2Repository => Ok(reference.repository),
     }
+}
+
+fn default_aria2_source(workspace_root: &Path) -> PathBuf {
+    workspace_root
+        .parent()
+        .unwrap_or(workspace_root)
+        .join("aria2")
 }
 
 /// Verifies that a checkout matches the pin and contains every extraction input.
@@ -168,7 +198,16 @@ pub fn verify_aria2_checkout(reference: &Aria2Reference, source_dir: &Path) -> R
 
 #[derive(Debug, Eq, PartialEq)]
 enum XtaskCommand {
-    VerifyAria2 { source_dir: Option<PathBuf> },
+    VerifyAria2 {
+        source_dir: Option<PathBuf>,
+    },
+    Generate {
+        source_dir: Option<PathBuf>,
+        check: bool,
+    },
+    VerifyContracts {
+        source_dir: Option<PathBuf>,
+    },
     PrintAria2Pin,
     PrintAria2Repository,
 }
@@ -190,6 +229,14 @@ where
             }
             Ok(XtaskCommand::VerifyAria2 { source_dir })
         }
+        Some("generate") => parse_generate(arguments),
+        Some("verify-contracts") => {
+            let source_dir = arguments.next().map(PathBuf::from);
+            if arguments.next().is_some() {
+                return Err("verify-contracts accepts at most one source path".to_owned());
+            }
+            Ok(XtaskCommand::VerifyContracts { source_dir })
+        }
         Some("print-aria2-pin") => parse_argumentless(arguments, XtaskCommand::PrintAria2Pin),
         Some("print-aria2-repository") => {
             parse_argumentless(arguments, XtaskCommand::PrintAria2Repository)
@@ -197,6 +244,22 @@ where
         Some(other) => Err(format!("unknown command {other}")),
         None => Err("command is not valid UTF-8".to_owned()),
     }
+}
+
+fn parse_generate(mut arguments: impl Iterator<Item = OsString>) -> Result<XtaskCommand, String> {
+    let mut check = false;
+    let mut source_dir = None;
+    for argument in arguments.by_ref() {
+        if argument == "--check" {
+            if check {
+                return Err("generate accepts --check only once".to_owned());
+            }
+            check = true;
+        } else if source_dir.replace(PathBuf::from(argument)).is_some() {
+            return Err("generate accepts at most one source path".to_owned());
+        }
+    }
+    Ok(XtaskCommand::Generate { source_dir, check })
 }
 
 fn parse_argumentless(
@@ -237,6 +300,24 @@ fn git_output(source_dir: &Path, arguments: &[&str]) -> Result<String, String> {
 
 fn git_success(source_dir: &Path, arguments: &[&str]) -> Result<(), String> {
     git_output(source_dir, arguments).map(|_| ())
+}
+
+fn git_blob(source_dir: &Path, commit: &str, path: &str) -> Result<String, String> {
+    let object = format!("{commit}:{path}");
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(source_dir)
+        .args(["show", &object])
+        .output()
+        .map_err(|error| format!("failed to run git: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "git show {object} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    String::from_utf8(output.stdout)
+        .map_err(|error| format!("git show {object} output was not UTF-8: {error}"))
 }
 
 #[cfg(test)]
@@ -354,6 +435,51 @@ mod tests {
         assert!(execute(["unknown"], &fixture.workspace).is_err());
         assert!(execute(["print-aria2-pin", "extra"], &fixture.workspace).is_err());
         assert!(execute(["verify-aria2", "one", "two"], &fixture.workspace).is_err());
+        assert!(execute(["verify-contracts", "one", "two"], &fixture.workspace).is_err());
+        assert!(execute(["generate", "--check", "--check"], &fixture.workspace).is_err());
+        assert!(execute(["generate", "one", "two"], &fixture.workspace).is_err());
+    }
+
+    #[test]
+    fn generation_writes_checks_and_uses_pinned_git_objects() {
+        let fixture = Fixture::new(None);
+        let source = fixture.aria2.as_os_str().to_owned();
+        let output = execute(
+            [OsString::from("generate"), source.clone()],
+            &fixture.workspace,
+        )
+        .expect("generate inventories");
+        assert!(output.contains("2 preferences, 2 handlers, 2 manual directives"));
+
+        let options_path = fixture.workspace.join("generated/aria2_options.json");
+        let rpc_path = fixture.workspace.join("generated/aria2_rpc.json");
+        let options = fs::read_to_string(&options_path).expect("read option inventory");
+        let rpc = fs::read_to_string(&rpc_path).expect("read RPC inventory");
+        assert!(options.contains("\"name\": \"dir\""));
+        assert!(rpc.contains("\"name\": \"aria2.addUri\""));
+
+        execute(
+            [
+                OsString::from("generate"),
+                OsString::from("--check"),
+                source.clone(),
+            ],
+            &fixture.workspace,
+        )
+        .expect("check generated inventories");
+
+        fs::write(fixture.aria2.join("src/prefs.cc"), "dirty worktree input\n")
+            .expect("dirty source worktree");
+        execute(
+            [OsString::from("verify-contracts"), source],
+            &fixture.workspace,
+        )
+        .expect("check reads committed object rather than worktree");
+
+        fs::write(&options_path, "stale\n").expect("make generated output stale");
+        let error = execute(["verify-contracts"], &fixture.workspace)
+            .expect_err("stale generated output must fail");
+        assert!(error.contains("aria2_options.json is out of date"));
     }
 
     struct Fixture {
@@ -381,7 +507,7 @@ mod tests {
                 let destination = aria2.join(path);
                 fs::create_dir_all(destination.parent().expect("fixture parent"))
                     .expect("create source parent");
-                fs::write(destination, format!("fixture for {path}\n")).expect("write source");
+                fs::write(destination, fixture_content(path)).expect("write source");
             }
             let mut fixture = Self {
                 root,
@@ -450,5 +576,48 @@ mod tests {
             .expect("git output UTF-8")
             .trim()
             .to_owned()
+    }
+
+    fn fixture_content(path: &str) -> String {
+        match path {
+            "src/prefs.cc" => r#"
+PrefPtr PREF_DIR = makePref("dir");
+PrefPtr PREF_SPLIT =
+    makePref("split");
+"#
+            .to_owned(),
+            "src/OptionHandlerFactory.cc" => r#"
+{
+  OptionHandler* op(new LocalFilePathOptionHandler(PREF_DIR, TEXT_DIR));
+  op->addTag(TAG_BASIC);
+  op->setInitialOption(true);
+  handlers.push_back(op);
+}
+#ifdef ENABLE_SPLIT
+{
+  OptionHandler* op(new NumberOptionHandler(PREF_SPLIT, TEXT_SPLIT, "5", 1));
+  op->setChangeGlobalOption(true);
+  handlers.push_back(op);
+}
+#endif
+"#
+            .to_owned(),
+            "doc/manual-src/en/aria2c.rst" => {
+                ".. option:: -d, --dir=<DIR>\n\n.. option:: -s, --split=<N>\n".to_owned()
+            }
+            "src/RpcMethodFactory.cc" => r#"
+std::vector<std::string> rpcMethodNames = {
+    "aria2.addUri",
+#ifdef ENABLE_BITTORRENT
+    "aria2.addTorrent",
+#endif
+};
+std::vector<std::string> rpcNotificationsNames = {
+    "aria2.onDownloadStart",
+};
+"#
+            .to_owned(),
+            _ => format!("fixture for {path}\n"),
+        }
     }
 }

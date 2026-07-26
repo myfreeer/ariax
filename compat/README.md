@@ -14,6 +14,11 @@ pin. Generators must read with `git show <commit>:<path>` instead of reading
 worktree files. This prevents ignored or generated aria2 build artifacts from
 changing compatibility output.
 
+Run `cargo xtask generate ../aria2` to refresh the checked-in upstream option,
+manual, RPC method, and notification inventories. CI uses
+`cargo xtask verify-contracts <checkout>` (equivalent to generation in
+`--check` mode) and fails on missing or stale output.
+
 Primary inputs are `src/OptionHandlerFactory.cc`, `src/prefs.cc`,
 `src/OptionHandlerImpl.{h,cc}`, `src/usage_text.h`, `src/help_tags.{h,cc}`,
 `src/RpcMethodFactory.cc`, `src/RpcMethodImpl.{h,cc}`, `src/RpcMethod.cc`, the
