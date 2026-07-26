@@ -1,6 +1,8 @@
 # Security And Recovery Design
 
-Status: reviewed pre-implementation contract. Implementation pending.
+Status: reviewed contract with implementation in progress. Portable path
+normalization/rejection and persisted root bindings are executable; native
+capability acquisition, safe descendant open, and recovery remain pending.
 
 This document turns the safety requirements into enforceable design rules.
 

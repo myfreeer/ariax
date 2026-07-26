@@ -431,6 +431,12 @@ When Metalink offers several algorithms for one range, the project selects
 `sha-512 > sha-256 > sha-1 > md5` and never downgrades after a stronger
 mismatch; `metalink-chunking.md` owns the persistence/verification rule.
 
+Portable path normalization uses `unicode-normalization` 0.1.25 for NFC before
+validation, collision checks, persistence, and display. The first storage slice
+pins `sha2` 0.11.0 with default features disabled and
+`unicode-normalization` 0.1.25 exactly; both are MIT OR Apache-2.0 and support
+the workspace MSRV.
+
 ## Timers
 
 Retry, stall, idle-connection, and lease-expiry deadlines use
@@ -558,7 +564,8 @@ Tokio 1.53.1, tokio-util 0.7.19, russh 0.62.4, russh-sftp 2.3.0 (patched),
 ssh-key 0.7.0-rc.11 (exact russh dependency), SuppaFTP 10.0.1 (patched),
 quick-xml 0.41.0, tokio-uring 0.5.0, io-uring 0.7.13, rusqlite 0.40.1,
 Rayon 1.12.0, Quinn 0.11.11, h3 0.0.8, h3-quinn 0.0.10, crc32c 0.6.8,
-sha2/sha1/md-5 0.11.x, cookie_store 0.22.1, rustix 1.1.4, windows-sys 0.61.2,
+sha2 0.11.0, sha1/md-5 0.11.x, unicode-normalization 0.1.25,
+cookie_store 0.22.1, rustix 1.1.4, windows-sys 0.61.2,
 flate2 1.1.9, tokio-tungstenite 0.30.0, clap 4.6.x, serde 1.0.x, secrecy
 0.10.3, zeroize 1.9.0, cxx 1.0.x, cargo-deny 0.20.2, cargo-audit 0.22.2,
 cargo-auditable 0.7.5, and cargo-cyclonedx 0.5.9. Phase 0 must pin, audit,

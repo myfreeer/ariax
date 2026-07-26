@@ -1,6 +1,9 @@
 # Detailed Storage And Journal Design
 
-Status: reviewed first-slice implementation contract. Implementation pending.
+Status: first-slice implementation in progress. Portable NFC path validation,
+persisted root/file identity binding, immutable layout hashing, and global
+offset mapping are implemented. Native capability opening, storage execution,
+piece state, journaling, and finalization remain pending.
 
 This document defines `SafePathBuilder`, `FileLayout`, `GlobalOffsetMapper`,
 `StorageEngine`, and `ControlJournal` contracts for HTTP sequential/range

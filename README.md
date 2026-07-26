@@ -223,6 +223,9 @@ Build rules:
 - The typed ariax option registry generates option and runtime-compatibility
   contracts. Coverage files list every pinned aria2 handler not yet reviewed;
   registry presence alone never upgrades an option to `implemented`.
+- Portable storage contracts normalize and reject metadata paths before native
+  opening, bind durable progress to root/file identities, hash immutable layouts,
+  and reject overflowing, outside, cross-file, or unselected write spans.
 - Release CI builds the exact `minimal`, `standard`, `full`, and `compat`
   artifacts rather than testing an unrelated developer feature set.
 - Release tarballs include `Cargo.lock` and a reproducible vendored-crate bundle

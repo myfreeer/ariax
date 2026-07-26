@@ -8,7 +8,8 @@ edit generated JSON by hand.
 
 `options.json`, `aria2_compat.json`, `runtime_updates.json`, and
 `runtime_compatibility.json` come from `ariax-config`. The aria2 inventory files
-come only from immutable blobs at the pinned commit.
+come only from immutable blobs at the pinned commit. `storage_layout.json`
+comes from executable path, root-binding, layout, and offset-mapper contracts.
 
 Run `cargo xtask generate ../aria2` to update the files and
 `cargo xtask generate --check ../aria2` to verify that committed output is

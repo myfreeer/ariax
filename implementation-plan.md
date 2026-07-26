@@ -1,8 +1,8 @@
 # Implementation Plan
 
 Status: reviewed implementation contract. Phase 0 is in progress; the gated
-Phase 1 core identifier/error/state vocabulary and first config slice have
-started.
+Phase 1 core identifier/error/state vocabulary, first config slice, and portable
+storage layout/path contracts have started.
 
 This is a staged plan for building the design without repeating the incomplete
 rewrite pattern.
