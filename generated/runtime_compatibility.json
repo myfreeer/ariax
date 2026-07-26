@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "source": {"repository": "https://github.com/aria2/aria2", "commit": "9e7273583f83e881e3ec067b523ba88724088d2f"},
+  "difference_classes": ["none", "required", "intentional", "unresolved"],
+  "counts": {"options": 20, "unresolved": 0},
+  "options": [
+    {"name": "allow-overwrite", "aria2_available": true, "aria2_runtime_update": "waiting_only", "ariax_runtime_update": "waiting_only", "difference": "none"},
+    {"name": "continue", "aria2_available": true, "aria2_runtime_update": "waiting_only", "ariax_runtime_update": "waiting_only", "difference": "none"},
+    {"name": "dir", "aria2_available": true, "aria2_runtime_update": "waiting_only", "ariax_runtime_update": "new_generation", "difference": "required"},
+    {"name": "disk-io-backend", "aria2_available": false, "aria2_runtime_update": "none", "ariax_runtime_update": "startup_only", "difference": "intentional"},
+    {"name": "durability", "aria2_available": false, "aria2_runtime_update": "none", "ariax_runtime_update": "new_generation", "difference": "intentional"},
+    {"name": "enable-http-pipelining", "aria2_available": true, "aria2_runtime_update": "waiting_only", "ariax_runtime_update": "none", "difference": "required"},
+    {"name": "event-backend", "aria2_available": false, "aria2_runtime_update": "none", "ariax_runtime_update": "startup_only", "difference": "required"},
+    {"name": "lowest-speed-limit", "aria2_available": true, "aria2_runtime_update": "active_restart", "ariax_runtime_update": "active_restart", "difference": "none"},
+    {"name": "max-connection-per-server", "aria2_available": true, "aria2_runtime_update": "active_restart", "ariax_runtime_update": "active_restart", "difference": "none"},
+    {"name": "max-download-limit", "aria2_available": true, "aria2_runtime_update": "live", "ariax_runtime_update": "live", "difference": "none"},
+    {"name": "max-overall-download-limit", "aria2_available": true, "aria2_runtime_update": "live", "ariax_runtime_update": "live", "difference": "none"},
+    {"name": "min-split-size", "aria2_available": true, "aria2_runtime_update": "active_restart", "ariax_runtime_update": "active_restart", "difference": "none"},
+    {"name": "on-download-complete", "aria2_available": true, "aria2_runtime_update": "startup_only", "ariax_runtime_update": "unsafe_compat_only", "difference": "required"},
+    {"name": "out", "aria2_available": true, "aria2_runtime_update": "waiting_only", "ariax_runtime_update": "new_generation", "difference": "required"},
+    {"name": "piece-length", "aria2_available": true, "aria2_runtime_update": "waiting_only", "ariax_runtime_update": "new_generation", "difference": "required"},
+    {"name": "retry-on-http-status", "aria2_available": false, "aria2_runtime_update": "none", "ariax_runtime_update": "live", "difference": "intentional"},
+    {"name": "rpc-secret", "aria2_available": true, "aria2_runtime_update": "startup_only", "ariax_runtime_update": "startup_only", "difference": "none"},
+    {"name": "session-store", "aria2_available": false, "aria2_runtime_update": "none", "ariax_runtime_update": "startup_only", "difference": "intentional"},
+    {"name": "split", "aria2_available": true, "aria2_runtime_update": "active_restart", "ariax_runtime_update": "active_restart", "difference": "none"},
+    {"name": "verify-mirror-identity", "aria2_available": false, "aria2_runtime_update": "none", "ariax_runtime_update": "active_restart", "difference": "intentional"}
+  ]
+}

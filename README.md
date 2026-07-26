@@ -220,6 +220,9 @@ Build rules:
   generated from a pinned aria2 source checkout recorded in the repository
   (commit hash plus generation script), so the compatibility matrix is
   reproducible without building aria2.
+- The typed ariax option registry generates option and runtime-compatibility
+  contracts. Coverage files list every pinned aria2 handler not yet reviewed;
+  registry presence alone never upgrades an option to `implemented`.
 - Release CI builds the exact `minimal`, `standard`, `full`, and `compat`
   artifacts rather than testing an unrelated developer feature set.
 - Release tarballs include `Cargo.lock` and a reproducible vendored-crate bundle

@@ -1,6 +1,8 @@
 # Detailed Config And Option Registry Design
 
-Status: reviewed first-slice implementation contract. Implementation pending.
+Status: first-slice implementation in progress. The typed registry, bounded
+value parser, aria2-style flat parser, and generated option/runtime contracts
+are implemented; URL rules, reload, and config dumps remain pending.
 
 This document expands `configuration.md` into concrete artifacts, parsers, and
 runtime update mechanics.

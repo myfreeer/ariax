@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "allowed_runtime_updates": ["none", "live", "waiting_only", "active_restart", "new_generation", "startup_only", "unsafe_compat_only", "bt_live", "bt_restart_required"],
+  "options": [
+    {"name": "allow-overwrite", "runtime_update": "waiting_only", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
+    {"name": "continue", "runtime_update": "waiting_only", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
+    {"name": "dir", "runtime_update": "new_generation", "scopes": ["startup", "global", "per_download", "input_file", "rpc_change", "rpc_global"]},
+    {"name": "disk-io-backend", "runtime_update": "startup_only", "scopes": ["startup"]},
+    {"name": "durability", "runtime_update": "new_generation", "scopes": ["startup", "global", "per_download", "input_file", "rpc_change", "rpc_global"]},
+    {"name": "enable-http-pipelining", "runtime_update": "none", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
+    {"name": "event-backend", "runtime_update": "startup_only", "scopes": ["startup"]},
+    {"name": "lowest-speed-limit", "runtime_update": "active_restart", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
+    {"name": "max-connection-per-server", "runtime_update": "active_restart", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
+    {"name": "max-download-limit", "runtime_update": "live", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
+    {"name": "max-overall-download-limit", "runtime_update": "live", "scopes": ["global", "rpc_global"]},
+    {"name": "min-split-size", "runtime_update": "active_restart", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
+    {"name": "on-download-complete", "runtime_update": "unsafe_compat_only", "scopes": ["startup", "global", "per_download", "input_file", "rpc_change", "rpc_global"]},
+    {"name": "out", "runtime_update": "new_generation", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
+    {"name": "piece-length", "runtime_update": "new_generation", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
+    {"name": "retry-on-http-status", "runtime_update": "live", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
+    {"name": "rpc-secret", "runtime_update": "startup_only", "scopes": ["startup"]},
+    {"name": "session-store", "runtime_update": "startup_only", "scopes": ["startup"]},
+    {"name": "split", "runtime_update": "active_restart", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
+    {"name": "verify-mirror-identity", "runtime_update": "active_restart", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]}
+  ]
+}

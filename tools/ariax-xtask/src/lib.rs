@@ -2,6 +2,7 @@
 
 //! Repository maintenance tasks that must remain deterministic and testable.
 
+mod config_contracts;
 mod core_contracts;
 mod inventory;
 
@@ -10,6 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use config_contracts::generate_config_contracts;
 use core_contracts::generate_core_contracts;
 use inventory::{GenerationMode, generate_aria2_inventory};
 
@@ -144,22 +146,30 @@ where
             } else {
                 GenerationMode::Write
             };
-            let inventory =
+            let (inventory, upstream_options) =
                 generate_aria2_inventory(workspace_root, &source_dir, &reference, mode)?;
             let core = generate_core_contracts(workspace_root, mode)?;
-            Ok(format!("{inventory}; {core}"))
+            let config =
+                generate_config_contracts(workspace_root, &reference, &upstream_options, mode)?;
+            Ok(format!("{inventory}; {core}; {config}"))
         }
         XtaskCommand::VerifyContracts { source_dir } => {
             let source_dir = source_dir.unwrap_or_else(|| default_aria2_source(workspace_root));
             verify_aria2_checkout(&reference, &source_dir)?;
-            let inventory = generate_aria2_inventory(
+            let (inventory, upstream_options) = generate_aria2_inventory(
                 workspace_root,
                 &source_dir,
                 &reference,
                 GenerationMode::Check,
             )?;
             let core = generate_core_contracts(workspace_root, GenerationMode::Check)?;
-            Ok(format!("{inventory}; {core}"))
+            let config = generate_config_contracts(
+                workspace_root,
+                &reference,
+                &upstream_options,
+                GenerationMode::Check,
+            )?;
+            Ok(format!("{inventory}; {core}; {config}"))
         }
         XtaskCommand::PrintAria2Pin => Ok(reference.commit),
         XtaskCommand::PrintAria2Repository => Ok(reference.repository),

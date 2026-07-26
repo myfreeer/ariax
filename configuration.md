@@ -1,6 +1,8 @@
 # Configuration And aria2 Compatibility
 
-Status: reviewed pre-implementation contract. Implementation pending.
+Status: reviewed contract with first-slice implementation in progress. Typed
+option metadata, bounded values, flat config parsing, and generated compatibility
+coverage exist; runtime application and the remaining registry are pending.
 
 Configurability is a product requirement. The implementation must be explicit
 about which aria2 options are implemented, unsupported, unsafe-compat only, or

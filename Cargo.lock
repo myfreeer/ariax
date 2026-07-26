@@ -10,6 +10,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ariax-config"
+version = "0.1.0"
+dependencies = [
+ "ariax-core",
+]
+
+[[package]]
 name = "ariax-core"
 version = "0.1.0"
 
@@ -17,5 +24,6 @@ version = "0.1.0"
 name = "ariax-xtask"
 version = "0.1.0"
 dependencies = [
+ "ariax-config",
  "ariax-core",
 ]

@@ -22,7 +22,7 @@ pub(crate) fn generate_aria2_inventory(
     source_dir: &Path,
     reference: &Aria2Reference,
     mode: GenerationMode,
-) -> Result<String, String> {
+) -> Result<(String, BTreeSet<String>), String> {
     let preferences = parse_preferences(&git_blob(source_dir, &reference.commit, PREFS_PATH)?)?;
     let handlers = parse_option_handlers(
         &git_blob(source_dir, &reference.commit, OPTION_FACTORY_PATH)?,
@@ -55,13 +55,21 @@ pub(crate) fn generate_aria2_inventory(
         GenerationMode::Write => "generated",
         GenerationMode::Check => "verified",
     };
-    Ok(format!(
-        "{action} aria2 inventories: {} preferences, {} handlers, {} manual directives, {} RPC methods, {} notifications",
-        inventory.preferences.len(),
-        inventory.handlers.len(),
-        inventory.manual.len(),
-        inventory.methods.len(),
-        inventory.notifications.len()
+    let option_names = inventory
+        .handlers
+        .iter()
+        .map(|handler| handler.name.clone())
+        .collect();
+    Ok((
+        format!(
+            "{action} aria2 inventories: {} preferences, {} handlers, {} manual directives, {} RPC methods, {} notifications",
+            inventory.preferences.len(),
+            inventory.handlers.len(),
+            inventory.manual.len(),
+            inventory.methods.len(),
+            inventory.notifications.len()
+        ),
+        option_names,
     ))
 }
 
