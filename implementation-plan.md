@@ -1,6 +1,6 @@
 # Implementation Plan
 
-Status: reviewed pre-implementation contract. Implementation pending.
+Status: reviewed implementation contract. Phase 0 is in progress.
 
 This is a staged plan for building the design without repeating the incomplete
 rewrite pattern.

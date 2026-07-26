@@ -1,0 +1,32 @@
+[workspace]
+members = ["bin/ariax", "crates/ariax-core", "tools/ariax-xtask"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+
+[workspace.dependencies]
+ariax-core = { path = "crates/ariax-core" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+
+[profile.release-cli]
+inherits = "release"
+panic = "abort"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+
+[profile.release-capi]
+inherits = "release"
+panic = "unwind"

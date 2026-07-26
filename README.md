@@ -1,7 +1,7 @@
 # Downloader Design
 
-Status: reviewed pre-implementation architecture. Coding is gated by
-`implementation-readiness.md` and the phase exit criteria in
+Status: implementation ready; Phase 0 scaffolding is in progress. Module work
+is gated by `implementation-readiness.md` and the phase exit criteria in
 `implementation-plan.md`.
 
 This design is for a new downloader that keeps the mature aria2 user model

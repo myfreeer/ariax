@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - name: Install Rust 1.97.1
+        run: rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt
+      - run: cargo +1.97.1 fmt --all -- --check
+      - run: cargo +1.97.1 clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - run: cargo +1.97.1 test --locked --workspace
+      - run: cargo +1.97.1 test --locked --workspace --all-features
+      - run: cargo +1.97.1 build --locked -p ariax-core --profile release-capi
+
+  feature-bundles:
+    strategy:
+      fail-fast: false
+      matrix:
+        feature: [minimal, standard, full, compat]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - run: rustup toolchain install 1.97.1 --profile minimal
+      - name: Test exact feature bundle
+        run: cargo +1.97.1 test --locked -p ariax-cli --no-default-features --features "${{ matrix.feature }}"
+      - name: Build exact release artifact
+        run: cargo +1.97.1 build --locked -p ariax-cli --profile release-cli --no-default-features --features "${{ matrix.feature }}"
+
+  platforms:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - run: rustup toolchain install 1.97.1 --profile minimal
+      - run: cargo +1.97.1 test --locked --workspace --all-features
+
+  windows-gnu:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - run: rustup toolchain install 1.97.1-x86_64-pc-windows-gnu --profile minimal
+      - run: rustup run 1.97.1-x86_64-pc-windows-gnu cargo test --locked --workspace --all-features
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - run: rustup toolchain install 1.88.0 --profile minimal
+      - run: cargo +1.88.0 check --locked --workspace --all-targets --all-features
+
+  aria2-reference:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - run: rustup toolchain install 1.97.1 --profile minimal
+      - name: Fetch pinned aria2 commit
+        shell: bash
+        run: |
+          commit=$(cargo +1.97.1 xtask print-aria2-pin)
+          repository=$(cargo +1.97.1 xtask print-aria2-repository)
+          source_dir="$RUNNER_TEMP/aria2-reference"
+          git init "$source_dir"
+          git -C "$source_dir" remote add origin "$repository"
+          git -C "$source_dir" fetch --depth=1 origin "$commit"
+          git -C "$source_dir" checkout --detach FETCH_HEAD
+          cargo +1.97.1 xtask verify-aria2 "$source_dir"
+
+  tag-gate:
+    if: always() && startsWith(github.ref, 'refs/tags/')
+    needs: [quality, feature-bundles, platforms, windows-gnu, msrv, aria2-reference]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require complete test matrix
+        env:
+          QUALITY: ${{ needs.quality.result }}
+          FEATURE_BUNDLES: ${{ needs.feature-bundles.result }}
+          PLATFORMS: ${{ needs.platforms.result }}
+          WINDOWS_GNU: ${{ needs.windows-gnu.result }}
+          MSRV: ${{ needs.msrv.result }}
+          ARIA2_REFERENCE: ${{ needs.aria2-reference.result }}
+        run: |
+          test "$QUALITY" = success
+          test "$FEATURE_BUNDLES" = success
+          test "$PLATFORMS" = success
+          test "$WINDOWS_GNU" = success
+          test "$MSRV" = success
+          test "$ARIA2_REFERENCE" = success
+          printf '%s\n' 'Tagging remains disabled until the full Phase 0 target and supply-chain matrix lands.' >&2
+          exit 1

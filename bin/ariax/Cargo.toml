@@ -1,0 +1,23 @@
+[package]
+name = "ariax-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "ariax"
+path = "src/main.rs"
+
+[features]
+default = []
+minimal = []
+standard = ["minimal"]
+full = ["standard"]
+compat = ["full"]
+
+[dependencies]
+ariax-core.workspace = true
+
+[lints]
+workspace = true

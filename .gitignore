@@ -1,0 +1,4 @@
+/target/
+/toolchains/
+/_reference/
+*.profraw
