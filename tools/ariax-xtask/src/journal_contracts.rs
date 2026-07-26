@@ -2,19 +2,21 @@ use crate::inventory::{GenerationMode, apply_outputs, comma, json_string};
 use ariax_core::ALL_ERROR_KINDS;
 use ariax_storage::{
     ALL_DATA_BARRIER_KINDS, ALL_DURABILITY_MODES, ALL_GENERATION_START_REASONS,
-    ALL_HEADER_DECODE_ERRORS, ALL_JOURNAL_DIGEST_ALGORITHMS, ALL_JOURNAL_STATE_ERROR_CODES,
-    ALL_LEASE_ABORT_REASONS, ALL_OPTIONS_SNAPSHOT_SCOPES, ALL_PAYLOAD_CODEC_ERROR_CLASSES,
-    ALL_RECORD_STOP_REASONS, ALL_RECORD_TYPES, ALL_REPLAY_RESOURCES, ALL_RETRY_REASONS,
-    ALL_RETRY_SCOPES, ALL_TASK_PAUSE_REASONS, ALL_TASK_REMOVE_REASONS,
-    CHECKPOINT_STATE_HASH_DOMAIN, COMMIT_MAGIC, CONTRIBUTORS_HASH_DOMAIN, HEADER_MAGIC,
-    JOURNAL_ENDIANNESS_ASSERTION, JOURNAL_FORMAT_VERSION, JournalStateLimits,
-    MAX_DIGEST_ALGORITHM_BYTES, MAX_DIGEST_VALUE_BYTES, MAX_IDENTITY_BYTES, MAX_LAYOUT_BYTES,
-    MAX_LAYOUT_ENTRIES, MAX_OPTION_KEY_BYTES, MAX_OPTION_MAP_BYTES, MAX_OPTION_MAP_ENTRIES,
-    MAX_OPTION_VALUE_BYTES, MAX_PIECE_STATE_BITMAP_BYTES, MAX_PIECE_STATE_COVERED_PIECES,
-    MAX_PLATFORM_PATH_BYTES, MAX_RECORD_PAYLOAD, MAX_SAFE_RELATIVE_BYTES,
-    OPTIONS_SNAPSHOT_HASH_DOMAIN, PAYLOAD_CODEC_RECORD_TYPES, REBIND_VALIDATOR_SET_HASH_DOMAIN,
-    RECORD_MAGIC, RECORD_OVERHEAD, RECORD_PREFIX_LEN, RecordType, ReplayLimits,
-    SEGMENT_HASH_DOMAIN, SEGMENT_HEADER_LEN, VALIDATOR_SET_HASH_DOMAIN,
+    ALL_HEADER_DECODE_ERRORS, ALL_JOURNAL_APPENDER_ERROR_CODES, ALL_JOURNAL_APPENDER_FAULTS,
+    ALL_JOURNAL_DIGEST_ALGORITHMS, ALL_JOURNAL_IO_OPERATIONS, ALL_JOURNAL_STATE_ERROR_CODES,
+    ALL_JOURNAL_TAIL_MISMATCHES, ALL_LEASE_ABORT_REASONS, ALL_OPTIONS_SNAPSHOT_SCOPES,
+    ALL_PAYLOAD_CODEC_ERROR_CLASSES, ALL_RECORD_STOP_REASONS, ALL_RECORD_TYPES,
+    ALL_REPLAY_RESOURCES, ALL_RETRY_REASONS, ALL_RETRY_SCOPES, ALL_TASK_PAUSE_REASONS,
+    ALL_TASK_REMOVE_REASONS, CHECKPOINT_STATE_HASH_DOMAIN, COMMIT_MAGIC, CONTRIBUTORS_HASH_DOMAIN,
+    HEADER_MAGIC, JOURNAL_ENDIANNESS_ASSERTION, JOURNAL_FORMAT_VERSION,
+    JOURNAL_SEGMENT_FILE_PREFIX, JOURNAL_SEGMENT_FILE_SUFFIX, JOURNAL_TEMP_FILE_SUFFIX,
+    JournalStateLimits, MAX_DIGEST_ALGORITHM_BYTES, MAX_DIGEST_VALUE_BYTES, MAX_IDENTITY_BYTES,
+    MAX_LAYOUT_BYTES, MAX_LAYOUT_ENTRIES, MAX_OPTION_KEY_BYTES, MAX_OPTION_MAP_BYTES,
+    MAX_OPTION_MAP_ENTRIES, MAX_OPTION_VALUE_BYTES, MAX_PIECE_STATE_BITMAP_BYTES,
+    MAX_PIECE_STATE_COVERED_PIECES, MAX_PLATFORM_PATH_BYTES, MAX_RECORD_PAYLOAD,
+    MAX_SAFE_RELATIVE_BYTES, OPTIONS_SNAPSHOT_HASH_DOMAIN, PAYLOAD_CODEC_RECORD_TYPES,
+    REBIND_VALIDATOR_SET_HASH_DOMAIN, RECORD_MAGIC, RECORD_OVERHEAD, RECORD_PREFIX_LEN, RecordType,
+    ReplayLimits, SEGMENT_HASH_DOMAIN, SEGMENT_HEADER_LEN, VALIDATOR_SET_HASH_DOMAIN,
 };
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -28,7 +30,7 @@ pub(crate) fn generate_journal_contracts(
     let outputs = [(PathBuf::from(JOURNAL_OUTPUT), render_journal_contracts())];
     apply_outputs(workspace_root, &outputs, mode)?;
     Ok(format!(
-        "{} journal v1 contracts: {} record types, {} header rejections, {} record stop reasons, {} semantic rejections",
+        "{} journal v1 contracts: {} record types, {} header rejections, {} record stop reasons, {} semantic rejections, {} appender fault classes",
         match mode {
             GenerationMode::Write => "generated",
             GenerationMode::Check => "verified",
@@ -37,6 +39,7 @@ pub(crate) fn generate_journal_contracts(
         ALL_HEADER_DECODE_ERRORS.len(),
         ALL_RECORD_STOP_REASONS.len(),
         ALL_JOURNAL_STATE_ERROR_CODES.len(),
+        ALL_JOURNAL_APPENDER_FAULTS.len(),
     ))
 }
 
@@ -225,7 +228,45 @@ fn render_journal_contracts() -> String {
         }
         output.push_str(&json_string(code));
     }
-    output.push_str("],\n    \"rules\": {\"live_invalid_record_preserves_prior_semantic_prefix\": true, \"invalid_checkpoint_rejected_whole\": true, \"checkpoint_hash_excludes_sequence_crc_commit\": true, \"generation_started_only_advancer\": true, \"staged_snapshot_exact_match_required\": true, \"option_policy_required\": true, \"layout_chunks_immediate_and_recomputed\": true, \"provisional_leases_never_recovered_as_durable\": true, \"contributors_and_validator_sets_recomputed\": true, \"durability_barrier_must_match_task_mode\": true, \"piece_state_checkpoint_only\": true, \"different_identity_rebind_requires_digest_bound_lease_free_evidence\": true, \"terminal_marker_is_safety_veto\": true, \"finalization_pairs_exact\": true}\n  },\n  \"header_rejections\": [");
+    output.push_str("],\n    \"rules\": {\"live_invalid_record_preserves_prior_semantic_prefix\": true, \"invalid_checkpoint_rejected_whole\": true, \"checkpoint_hash_excludes_sequence_crc_commit\": true, \"generation_started_only_advancer\": true, \"staged_snapshot_exact_match_required\": true, \"option_policy_required\": true, \"layout_chunks_immediate_and_recomputed\": true, \"provisional_leases_never_recovered_as_durable\": true, \"contributors_and_validator_sets_recomputed\": true, \"durability_barrier_must_match_task_mode\": true, \"piece_state_checkpoint_only\": true, \"different_identity_rebind_requires_digest_bound_lease_free_evidence\": true, \"terminal_marker_is_safety_veto\": true, \"finalization_pairs_exact\": true}\n  },\n  \"serialized_appender\": {\n");
+    writeln!(
+        output,
+        "    \"segment_file_name\": {{\"prefix\": {}, \"decimal_index_width\": 10, \"suffix\": {}, \"temporary_suffix\": {}}},",
+        json_string(JOURNAL_SEGMENT_FILE_PREFIX),
+        json_string(JOURNAL_SEGMENT_FILE_SUFFIX),
+        json_string(JOURNAL_TEMP_FILE_SUFFIX),
+    )
+    .expect("write to string");
+    output.push_str("    \"acknowledgements\": {\"appended\": \"complete_record_bytes_written_to_active_handle\", \"flushed\": \"sync_all_completed_through_sequence\"},\n    \"errors\": [");
+    write_codes(
+        &mut output,
+        ALL_JOURNAL_APPENDER_ERROR_CODES.iter().copied(),
+    );
+    output.push_str("],\n    \"faults\": [");
+    write_codes(
+        &mut output,
+        ALL_JOURNAL_APPENDER_FAULTS
+            .iter()
+            .copied()
+            .map(|value| value.code()),
+    );
+    output.push_str("],\n    \"io_operations\": [");
+    write_codes(
+        &mut output,
+        ALL_JOURNAL_IO_OPERATIONS
+            .iter()
+            .copied()
+            .map(|value| value.code()),
+    );
+    output.push_str("],\n    \"tail_mismatches\": [");
+    write_codes(
+        &mut output,
+        ALL_JOURNAL_TAIL_MISMATCHES
+            .iter()
+            .copied()
+            .map(|value| value.code()),
+    );
+    output.push_str("],\n    \"rules\": {\"single_sequence_owner\": true, \"typed_payloads_only\": true, \"codec_rejection_does_not_consume_sequence\": true, \"write_or_reopen_failure_latches_fault\": true, \"fault_blocks_later_sequences\": true, \"flush_may_cover_later_already_appended_records\": true, \"close_requires_fully_flushed_tail\": true, \"reopen_validates_length_header_tail_sequence_and_fingerprint\": true, \"rotation_requires_nonempty_fully_flushed_segment\": true, \"rotation_hashes_without_whole_segment_buffering\": true, \"new_header_synced_before_atomic_install\": true, \"parent_directory_synced_where_supported\": true, \"old_segments_immutable_after_rotation\": true}\n  },\n  \"header_rejections\": [");
     for (index, error) in ALL_HEADER_DECODE_ERRORS.iter().copied().enumerate() {
         if index > 0 {
             output.push_str(", ");
@@ -265,6 +306,15 @@ fn write_record_type_codes(output: &mut String, values: impl Iterator<Item = Rec
             output.push_str(", ");
         }
         output.push_str(&json_string(record_type.code()));
+    }
+}
+
+fn write_codes<'a>(output: &mut String, values: impl Iterator<Item = &'a str>) {
+    for (index, code) in values.enumerate() {
+        if index > 0 {
+            output.push_str(", ");
+        }
+        output.push_str(&json_string(code));
     }
 }
 
@@ -328,6 +378,10 @@ mod tests {
         assert!(contract.contains("\"checkpoint_hash_excludes_sequence_crc_commit\": true"));
         assert!(contract.contains("\"forbidden_persisted_option\""));
         assert!(contract.contains("\"noncanonical_contributors\""));
+        assert!(contract.contains("\"serialized_appender\""));
+        assert!(contract.contains("\"single_sequence_owner\": true"));
+        assert!(contract.contains("\"rotation_hashes_without_whole_segment_buffering\": true"));
+        assert!(contract.contains("\"decimal_index_width\": 10"));
         assert!(contract.contains("\"code\": \"sha-512\", \"value_bytes\": 64"));
         assert!(contract.contains("\"valid_prefix_authoritative\": true"));
         assert!(contract.contains("\"payload_too_large\""));

@@ -17,6 +17,8 @@ coverage, record numbers, persisted enum tags, replay caps, and valid-prefix
 rules. It also reports exact typed-payload coverage, scalar, collection, path,
 identity, and bitmap caps, canonicalization rules, semantic recovery limits,
 hash domains/coverage, and both codec and cross-record rejection vocabularies.
+It also freezes the serialized appender's segment naming, acknowledgement,
+latched-fault, tail-reopen, and flushed-boundary rotation rules.
 `error_codes.json` includes the stable journal numeric value for each closed
 error class.
 

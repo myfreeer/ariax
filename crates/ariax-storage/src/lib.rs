@@ -3,6 +3,7 @@
 //! Portable storage contracts shared by safe-open and disk backends.
 
 mod journal;
+mod journal_appender;
 mod journal_payload;
 mod journal_state;
 mod journal_tags;
@@ -17,6 +18,13 @@ pub use journal::{
     MAX_RECORD_PAYLOAD, RECORD_MAGIC, RECORD_OVERHEAD, RECORD_PREFIX_LEN, RecordStopReason,
     RecordType, ReplayLimits, ReplayResource, ReplayStop, SEGMENT_HASH_DOMAIN, SEGMENT_HEADER_LEN,
     SegmentEncoder, SegmentHash, SegmentHeader, replay_ordered_segments,
+};
+pub use journal_appender::{
+    ALL_JOURNAL_APPENDER_ERROR_CODES, ALL_JOURNAL_APPENDER_FAULTS, ALL_JOURNAL_IO_OPERATIONS,
+    ALL_JOURNAL_TAIL_MISMATCHES, Appended, ControlJournalAppender, Flushed,
+    JOURNAL_SEGMENT_FILE_PREFIX, JOURNAL_SEGMENT_FILE_SUFFIX, JOURNAL_TEMP_FILE_SUFFIX,
+    JournalAppenderError, JournalAppenderFault, JournalIoOperation, JournalRotation,
+    JournalTailMismatch, journal_segment_file_name, journal_segment_path,
 };
 pub use journal_payload::{
     ALL_JOURNAL_DIGEST_ALGORITHMS, ALL_PAYLOAD_CODEC_ERROR_CLASSES, AppendPayloadError,

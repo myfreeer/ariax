@@ -5,9 +5,10 @@ segment linkage, bounded replay, torn-tail valid-prefix rules, and 18 scalar
 record payload codecs are executable, as are the six bounded collection/path
 payloads that complete all 24 v1 record types. Policy-gated typed state
 reconstruction, exact generation/layout/lease/finalization validation, and
-whole-checkpoint hash validation are also executable. Native root identity
-revalidation, durable file appending, checkpoint compaction writing, and the
-SQLite session store remain pending.
+whole-checkpoint hash validation are also executable. File-backed typed append,
+flush acknowledgement, descriptor reopen validation, and durable linked
+rotation are executable. Native root identity revalidation, checkpoint
+compaction writing, and the SQLite session store remain pending.
 
 Decision: use a hybrid persistence model:
 

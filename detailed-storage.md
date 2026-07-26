@@ -10,7 +10,10 @@ bounded option maps, chunked layouts, finalization paths, and checkpoint
 verifies snapshot/contributor/state hashes, generation promotion, reassembled
 layout/root hashes, lease/piece evidence, finalization pairs, and whole compact
 checkpoints. Native capability opening and identity revalidation, storage
-execution, durable appending/flush, and compaction writing remain pending.
+execution, and compaction writing remain pending. The file-backed serialized
+appender now provides gap-free typed append, explicit flush acknowledgement,
+latched failure, tail-validated descriptor reopen, and flushed-boundary
+rotation without whole-segment buffering.
 
 This document defines `SafePathBuilder`, `FileLayout`, `GlobalOffsetMapper`,
 `StorageEngine`, and `ControlJournal` contracts for HTTP sequential/range
@@ -712,6 +715,12 @@ and resets to pending during recovery. `LeaseCommitted` makes a span logically
 accepted, but only `PieceDurable` makes a complete piece durable across restart.
 
 ### Appender Ownership And Rotation
+
+Implementation status: the synchronous storage primitive is executable. It
+creates `segment-{index:010}.arxj` through an exclusive `.tmp` candidate,
+syncs the header before install, syncs the parent directory where supported,
+and never overwrites an existing segment path. Async inbox ownership and
+storage-engine fact wiring remain later integration work.
 
 Each task has exactly one serialized `ControlJournalAppender`. It alone assigns
 the next gap-free `sequence`, encodes records, rotates segments, and performs

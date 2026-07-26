@@ -5,8 +5,9 @@ normalization/rejection, persisted root bindings, and bounded control-journal
 framing/replay plus all 24 bounded typed payload codecs are executable. Native
 policy-gated option-secret rejection and typed semantic state recovery are also
 executable, including digest-bound different-identity rebind records. Native
-capability acquisition, safe descendant open/revalidation, durable appending,
-and SQLite/filesystem reconciliation remain pending.
+capability acquisition, safe descendant open/revalidation, and SQLite/filesystem
+reconciliation remain pending. Durable journal append/flush, latched appender
+failure, tail-validated descriptor reopen, and linked rotation are executable.
 
 This document turns the safety requirements into enforceable design rules.
 

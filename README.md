@@ -3,9 +3,11 @@
 Status: implementation ready; Phase 0 contract generation is in progress, and
 the gated Phase 1 core/config, portable storage layout, bounded runtime
 ownership, journal v1 framing/replay, and all 24 typed journal payload codecs
-plus bounded cross-record semantic recovery are implemented. Module work remains
-governed by `implementation-readiness.md` and the phase exit criteria in
-`implementation-plan.md`.
+plus bounded cross-record semantic recovery are implemented. The file-backed
+single-owner appender also implements typed sequence assignment, flush
+acknowledgement, descriptor-tail validation, and linked rotation. Module work
+remains governed by `implementation-readiness.md` and the phase exit criteria
+in `implementation-plan.md`.
 
 This design is for a new downloader that keeps the mature aria2 user model
 while fixing the major safety, scalability, and completeness problems found in

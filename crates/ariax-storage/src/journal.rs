@@ -52,6 +52,11 @@ impl SegmentHash {
     pub const ZERO: Self = Self([0; 32]);
 
     #[must_use]
+    pub(crate) const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
@@ -288,6 +293,35 @@ impl SegmentHeader {
             created_at_unix_ms,
         })
     }
+
+    pub(crate) fn successor(
+        self,
+        previous_segment_last_sequence: u64,
+        previous_segment_hash: SegmentHash,
+        starting_generation: Generation,
+        created_at_unix_ms: u64,
+    ) -> Result<Self, JournalEncodeError> {
+        if previous_segment_last_sequence < self.first_sequence {
+            return Err(JournalEncodeError::CannotRotateEmptySegment);
+        }
+        let segment_index = self
+            .segment_index
+            .checked_add(1)
+            .ok_or(JournalEncodeError::SegmentIndexExhausted)?;
+        let first_sequence = previous_segment_last_sequence
+            .checked_add(1)
+            .ok_or(JournalEncodeError::SequenceExhausted)?;
+        Ok(Self {
+            task_gid: self.task_gid,
+            journal_id: self.journal_id,
+            segment_index,
+            first_sequence,
+            starting_generation,
+            previous_segment_last_sequence,
+            previous_segment_hash,
+            created_at_unix_ms,
+        })
+    }
 }
 
 /// Why a segment header was not a canonical version-1 header.
@@ -391,28 +425,13 @@ impl EncodedSegment {
         starting_generation: Generation,
         created_at_unix_ms: u64,
     ) -> Result<SegmentEncoder, JournalEncodeError> {
-        if self.last_sequence < self.header.first_sequence {
-            return Err(JournalEncodeError::CannotRotateEmptySegment);
-        }
-        let segment_index = self
-            .header
-            .segment_index
-            .checked_add(1)
-            .ok_or(JournalEncodeError::SegmentIndexExhausted)?;
-        let first_sequence = self
-            .last_sequence
-            .checked_add(1)
-            .ok_or(JournalEncodeError::SequenceExhausted)?;
-        Ok(SegmentEncoder::from_header(SegmentHeader {
-            task_gid: self.header.task_gid,
-            journal_id: self.header.journal_id,
-            segment_index,
-            first_sequence,
+        let header = self.header.successor(
+            self.last_sequence,
+            self.hash,
             starting_generation,
-            previous_segment_last_sequence: self.last_sequence,
-            previous_segment_hash: self.hash,
             created_at_unix_ms,
-        }))
+        )?;
+        Ok(SegmentEncoder::from_header(header))
     }
 }
 
@@ -519,7 +538,7 @@ impl fmt::Display for JournalEncodeError {
 
 impl Error for JournalEncodeError {}
 
-fn encode_record(
+pub(crate) fn encode_record(
     record_type: RecordType,
     generation: Generation,
     sequence: u64,
@@ -887,7 +906,15 @@ fn decode_record(
     })
 }
 
-fn hash_segment(bytes: &[u8]) -> SegmentHash {
+pub(crate) fn validate_record(
+    input: &[u8],
+    expected_sequence: u64,
+    starting_generation: Generation,
+) -> Result<usize, RecordStopReason> {
+    decode_record(input, expected_sequence, starting_generation).map(|record| record.consumed)
+}
+
+pub(crate) fn hash_segment(bytes: &[u8]) -> SegmentHash {
     let mut digest = Sha256::new();
     digest.update(SEGMENT_HASH_DOMAIN.as_bytes());
     digest.update((bytes.len() as u64).to_le_bytes());
