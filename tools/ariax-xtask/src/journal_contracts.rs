@@ -7,7 +7,10 @@ use ariax_storage::{
     ALL_RECORD_TYPES, ALL_REPLAY_RESOURCES, ALL_RETRY_REASONS, ALL_RETRY_SCOPES,
     ALL_TASK_PAUSE_REASONS, ALL_TASK_REMOVE_REASONS, COMMIT_MAGIC, HEADER_MAGIC,
     JOURNAL_ENDIANNESS_ASSERTION, JOURNAL_FORMAT_VERSION, MAX_DIGEST_ALGORITHM_BYTES,
-    MAX_DIGEST_VALUE_BYTES, MAX_RECORD_PAYLOAD, PAYLOAD_CODEC_RECORD_TYPES, RECORD_MAGIC,
+    MAX_DIGEST_VALUE_BYTES, MAX_IDENTITY_BYTES, MAX_LAYOUT_BYTES, MAX_LAYOUT_ENTRIES,
+    MAX_OPTION_KEY_BYTES, MAX_OPTION_MAP_BYTES, MAX_OPTION_MAP_ENTRIES, MAX_OPTION_VALUE_BYTES,
+    MAX_PIECE_STATE_BITMAP_BYTES, MAX_PIECE_STATE_COVERED_PIECES, MAX_PLATFORM_PATH_BYTES,
+    MAX_RECORD_PAYLOAD, MAX_SAFE_RELATIVE_BYTES, PAYLOAD_CODEC_RECORD_TYPES, RECORD_MAGIC,
     RECORD_OVERHEAD, RECORD_PREFIX_LEN, RecordType, ReplayLimits, SEGMENT_HASH_DOMAIN,
     SEGMENT_HEADER_LEN,
 };
@@ -168,7 +171,7 @@ fn render_journal_contracts() -> String {
     );
     writeln!(
         output,
-        "],\n    \"caps\": {{\"digest_algorithm_bytes\": {MAX_DIGEST_ALGORITHM_BYTES}, \"digest_value_bytes\": {MAX_DIGEST_VALUE_BYTES}}},"
+        "],\n    \"caps\": {{\"digest_algorithm_bytes\": {MAX_DIGEST_ALGORITHM_BYTES}, \"digest_value_bytes\": {MAX_DIGEST_VALUE_BYTES}, \"option_map_entries\": {MAX_OPTION_MAP_ENTRIES}, \"option_key_bytes\": {MAX_OPTION_KEY_BYTES}, \"option_value_bytes\": {MAX_OPTION_VALUE_BYTES}, \"option_map_bytes\": {MAX_OPTION_MAP_BYTES}, \"layout_entries\": {MAX_LAYOUT_ENTRIES}, \"layout_canonical_bytes\": {MAX_LAYOUT_BYTES}, \"safe_relative_path_bytes\": {MAX_SAFE_RELATIVE_BYTES}, \"platform_path_bytes\": {MAX_PLATFORM_PATH_BYTES}, \"identity_bytes\": {MAX_IDENTITY_BYTES}, \"piece_state_covered_pieces\": {MAX_PIECE_STATE_COVERED_PIECES}, \"piece_state_bitmap_bytes\": {MAX_PIECE_STATE_BITMAP_BYTES}}},"
     )
     .expect("write to string");
     output.push_str("    \"digest_algorithms\": [\n");
@@ -189,7 +192,7 @@ fn render_journal_contracts() -> String {
         }
         output.push_str(&json_string(error.code()));
     }
-    output.push_str("],\n    \"rules\": {\"exact_little_endian_scalars\": true, \"nonzero_typed_ids\": true, \"nonempty_nonoverflowing_spans\": true, \"unknown_tags_rejected\": true, \"trailing_bytes_rejected\": true, \"typed_append_prevents_record_type_mismatch\": true}\n  },\n  \"header_rejections\": [");
+    output.push_str("],\n    \"rules\": {\"exact_little_endian_scalars\": true, \"nonzero_typed_ids\": true, \"nonempty_nonoverflowing_spans\": true, \"unknown_tags_rejected\": true, \"trailing_bytes_rejected\": true, \"typed_append_prevents_record_type_mismatch\": true, \"counts_bounded_before_allocation\": true, \"option_map_utf8_sorted_unique\": true, \"layout_entries_sorted_contiguous\": true, \"piece_state_bitmap_exact_length\": true, \"piece_state_evidence_exact_coverage\": true}\n  },\n  \"header_rejections\": [");
     for (index, error) in ALL_HEADER_DECODE_ERRORS.iter().copied().enumerate() {
         if index > 0 {
             output.push_str(", ");
@@ -283,7 +286,10 @@ mod tests {
         assert!(contract.contains("\"generation_start_reason\""));
         assert!(contract.contains("\"number\": 29, \"code\": \"InternalInvariant\""));
         assert!(contract.contains("\"typed_append_prevents_record_type_mismatch\": true"));
-        assert!(contract.contains("\"pending_record_types\": [\"options_snapshot\""));
+        assert!(contract.contains("\"pending_record_types\": []"));
+        assert!(contract.contains("\"option_map_entries\": 4096"));
+        assert!(contract.contains("\"piece_state_bitmap_bytes\": 16384"));
+        assert!(contract.contains("\"piece_state_evidence_exact_coverage\": true"));
         assert!(contract.contains("\"code\": \"sha-512\", \"value_bytes\": 64"));
         assert!(contract.contains("\"valid_prefix_authoritative\": true"));
         assert!(contract.contains("\"payload_too_large\""));

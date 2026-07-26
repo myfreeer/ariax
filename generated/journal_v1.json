@@ -126,17 +126,17 @@
     ]
   },
   "payload_codec": {
-    "implemented_record_types": ["task_created", "generation_started", "lease_started", "piece_started", "piece_written", "lease_committed", "lease_aborted", "piece_verified", "piece_failed", "piece_durable", "retry_state", "task_paused", "task_complete", "task_error", "task_removed", "clean_shutdown", "checkpoint_start", "checkpoint_end"],
-    "pending_record_types": ["options_snapshot", "layout_committed", "layout_chunk", "finalize_intent", "finalize_done", "piece_state_chunk"],
-    "caps": {"digest_algorithm_bytes": 32, "digest_value_bytes": 64},
+    "implemented_record_types": ["task_created", "options_snapshot", "layout_committed", "generation_started", "lease_started", "piece_started", "piece_written", "lease_committed", "lease_aborted", "piece_verified", "piece_failed", "piece_durable", "retry_state", "task_paused", "task_complete", "task_error", "task_removed", "clean_shutdown", "checkpoint_start", "checkpoint_end", "layout_chunk", "finalize_intent", "finalize_done", "piece_state_chunk"],
+    "pending_record_types": [],
+    "caps": {"digest_algorithm_bytes": 32, "digest_value_bytes": 64, "option_map_entries": 4096, "option_key_bytes": 256, "option_value_bytes": 65536, "option_map_bytes": 4194304, "layout_entries": 262144, "layout_canonical_bytes": 67108864, "safe_relative_path_bytes": 65536, "platform_path_bytes": 65536, "identity_bytes": 256, "piece_state_covered_pieces": 131072, "piece_state_bitmap_bytes": 16384},
     "digest_algorithms": [
       {"code": "md5", "value_bytes": 16},
       {"code": "sha-1", "value_bytes": 20},
       {"code": "sha-256", "value_bytes": 32},
       {"code": "sha-512", "value_bytes": 64}
     ],
-    "rejections": ["unsupported_record_type", "payload_too_large", "truncated", "trailing_bytes", "invalid_presence", "invalid_boolean", "zero_id", "zero_checkpoint_id", "zero_hash", "zero_span_length", "span_overflow", "invalid_digest_algorithm", "invalid_digest_length", "invalid_utf8", "invalid_tag", "invalid_error_kind", "zero_creator_version", "zero_attempt", "zero_source_sequence", "zero_state_record_count", "allocation_failed"],
-    "rules": {"exact_little_endian_scalars": true, "nonzero_typed_ids": true, "nonempty_nonoverflowing_spans": true, "unknown_tags_rejected": true, "trailing_bytes_rejected": true, "typed_append_prevents_record_type_mismatch": true}
+    "rejections": ["payload_too_large", "truncated", "trailing_bytes", "invalid_presence", "invalid_boolean", "zero_id", "zero_checkpoint_id", "zero_hash", "zero_span_length", "span_overflow", "invalid_digest_algorithm", "invalid_digest_length", "invalid_utf8", "invalid_tag", "invalid_error_kind", "invalid_option_key", "option_key_too_long", "option_value_too_long", "too_many_options", "duplicate_option_key", "noncanonical_option_order", "option_map_too_large", "field_too_long", "invalid_platform_tag", "invalid_platform_path", "invalid_root_identity", "relative_path_too_long", "invalid_relative_path", "invalid_file_id", "too_many_layout_entries", "invalid_layout_entry", "invalid_file_identity", "noncanonical_layout_order", "zero_piece_length", "invalid_file_count", "invalid_chunk", "invalid_finalization", "invalid_bitmap", "too_many_evidence_runs", "invalid_evidence_run", "zero_creator_version", "zero_attempt", "zero_source_sequence", "zero_state_record_count", "allocation_failed"],
+    "rules": {"exact_little_endian_scalars": true, "nonzero_typed_ids": true, "nonempty_nonoverflowing_spans": true, "unknown_tags_rejected": true, "trailing_bytes_rejected": true, "typed_append_prevents_record_type_mismatch": true, "counts_bounded_before_allocation": true, "option_map_utf8_sorted_unique": true, "layout_entries_sorted_contiguous": true, "piece_state_bitmap_exact_length": true, "piece_state_evidence_exact_coverage": true}
   },
   "header_rejections": ["truncated", "invalid_magic", "bad_crc", "unsupported_version", "invalid_endianness", "unknown_flags", "zero_gid", "zero_journal_id", "invalid_first_sequence", "unexpected_previous_link", "missing_previous_link"],
   "record_stop_reasons": ["truncated_framing", "invalid_magic", "payload_too_large", "unknown_record_type", "unknown_flags", "sequence_gap", "generation_before_segment", "length_overflow", "truncated_record", "bad_crc", "missing_commit"],

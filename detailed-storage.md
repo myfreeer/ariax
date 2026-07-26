@@ -4,11 +4,11 @@ Status: first-slice implementation in progress. Portable NFC path validation,
 persisted root/file identity binding, immutable layout hashing, and global
 offset mapping are implemented. Journal v1 segment/record framing, CRC-32C and
 commit validation, linked rotation, bounded replay, and valid-prefix recovery
-are executable. Exact typed payload codecs cover 18 scalar task/generation,
-lease, piece, retry, terminal, shutdown, and checkpoint-boundary records.
-Options/layout collections, finalization paths, `PieceStateChunk`, native
-capability opening, storage execution, typed recovery, durable appending/flush,
-and compaction remain pending.
+are executable. Exact typed payload codecs cover all 24 v1 records, including
+bounded option maps, chunked layouts, finalization paths, and checkpoint
+`PieceStateChunk` bitmaps/evidence runs. Registry-aware secret filtering,
+cross-record typed recovery, native capability opening, storage execution,
+durable appending/flush, and compaction remain pending.
 
 This document defines `SafePathBuilder`, `FileLayout`, `GlobalOffsetMapper`,
 `StorageEngine`, and `ControlJournal` contracts for HTTP sequential/range

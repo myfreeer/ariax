@@ -19,9 +19,12 @@ pub use journal::{
 };
 pub use journal_payload::{
     ALL_JOURNAL_DIGEST_ALGORITHMS, ALL_PAYLOAD_CODEC_ERROR_CLASSES, AppendPayloadError,
-    CheckpointId, JournalDigest, JournalDigestAlgorithm, JournalHash, JournalPayload,
-    MAX_DIGEST_ALGORITHM_BYTES, MAX_DIGEST_VALUE_BYTES, PAYLOAD_CODEC_RECORD_TYPES,
-    PayloadCodecError, PersistedId, PersistedSpan,
+    CheckpointId, DurableEvidenceRun, JournalDigest, JournalDigestAlgorithm,
+    JournalFileLayoutEntry, JournalHash, JournalPayload, JournalRelativePath,
+    MAX_DIGEST_ALGORITHM_BYTES, MAX_DIGEST_VALUE_BYTES, MAX_OPTION_KEY_BYTES, MAX_OPTION_MAP_BYTES,
+    MAX_OPTION_MAP_ENTRIES, MAX_OPTION_VALUE_BYTES, MAX_PIECE_STATE_BITMAP_BYTES,
+    MAX_PIECE_STATE_COVERED_PIECES, PAYLOAD_CODEC_RECORD_TYPES, PayloadCodecError, PersistedId,
+    PersistedSpan, SanitizedOptionMap,
 };
 pub use journal_tags::{
     ALL_DATA_BARRIER_KINDS, ALL_DURABILITY_MODES, ALL_GENERATION_START_REASONS,

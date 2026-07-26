@@ -2,9 +2,10 @@
 
 Status: first-slice implementation in progress. The control-journal v1 framing,
 segment linkage, bounded replay, torn-tail valid-prefix rules, and 18 scalar
-record payload codecs are executable. Collection payloads, typed state
-reconstruction, durable file appending, checkpoint compaction, and the SQLite
-session store remain pending.
+record payload codecs are executable, as are the six bounded collection/path
+payloads that complete all 24 v1 record types. Registry-aware secret filtering,
+typed state reconstruction, durable file appending, checkpoint compaction, and
+the SQLite session store remain pending.
 
 Decision: use a hybrid persistence model:
 
