@@ -1,6 +1,10 @@
 # Buffer Pool Design
 
-Status: reviewed pre-implementation contract. Implementation pending.
+Status: baseline implementation in progress. Lazy bounded size classes, LIFO
+reuse, stable-capacity leases, checked ownership transitions, dual resident
+accounting, quarantine resolution/retirement, and fault-on-exhaustion exist.
+Registered buffers, local caches, trimming, and compatibility readback cache
+remain pending.
 
 Decision: use a bounded hybrid buffer pool. It is lazy/on-demand within hard
 budgets by default, with optional preallocation for benchmarks, high-throughput

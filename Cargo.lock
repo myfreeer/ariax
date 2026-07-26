@@ -21,6 +21,13 @@ name = "ariax-core"
 version = "0.1.0"
 
 [[package]]
+name = "ariax-runtime"
+version = "0.1.0"
+dependencies = [
+ "ariax-core",
+]
+
+[[package]]
 name = "ariax-storage"
 version = "0.1.0"
 dependencies = [
@@ -35,6 +42,7 @@ version = "0.1.0"
 dependencies = [
  "ariax-config",
  "ariax-core",
+ "ariax-runtime",
  "ariax-storage",
 ]
 

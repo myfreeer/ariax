@@ -10,6 +10,8 @@ edit generated JSON by hand.
 `runtime_compatibility.json` come from `ariax-config`. The aria2 inventory files
 come only from immutable blobs at the pinned commit. `storage_layout.json`
 comes from executable path, root-binding, layout, and offset-mapper contracts.
+`runtime_buffers.json` records the closed buffer lifecycle, size classes,
+budget, quarantine, queue-credit, and completion-permit rules.
 
 Run `cargo xtask generate ../aria2` to update the files and
 `cargo xtask generate --check ../aria2` to verify that committed output is

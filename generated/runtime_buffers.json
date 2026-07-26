@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "size_classes": [
+    {"code": "16_kib", "capacity": 16384},
+    {"code": "64_kib", "capacity": 65536},
+    {"code": "256_kib", "capacity": 262144},
+    {"code": "1_mib", "capacity": 1048576}
+  ],
+  "owners": ["pool", "network", "transform", "storage", "disk", "cpu", "journal", "quarantine"],
+  "buffer_states": [
+    {"code": "free", "mutable": false, "readable": false, "transitions_to": []},
+    {"code": "reserved", "mutable": true, "readable": false, "transitions_to": ["network_fill", "transform_owned", "releasable"]},
+    {"code": "network_fill", "mutable": true, "readable": false, "transitions_to": ["transform_owned", "filled", "releasable"]},
+    {"code": "transform_owned", "mutable": true, "readable": false, "transitions_to": ["filled", "releasable"]},
+    {"code": "filled", "mutable": false, "readable": true, "transitions_to": ["validating", "disk_queued", "hash_borrowed", "journal_pending", "releasable"]},
+    {"code": "validating", "mutable": false, "readable": true, "transitions_to": ["disk_queued", "hash_borrowed", "journal_pending", "releasable"]},
+    {"code": "disk_queued", "mutable": false, "readable": true, "transitions_to": ["disk_in_flight", "releasable"]},
+    {"code": "disk_in_flight", "mutable": false, "readable": true, "transitions_to": ["disk_done"]},
+    {"code": "disk_done", "mutable": false, "readable": true, "transitions_to": ["hash_borrowed", "journal_pending", "releasable"]},
+    {"code": "hash_borrowed", "mutable": false, "readable": true, "transitions_to": ["disk_queued", "disk_done", "journal_pending", "releasable"]},
+    {"code": "journal_pending", "mutable": false, "readable": true, "transitions_to": ["releasable"]},
+    {"code": "releasable", "mutable": false, "readable": true, "transitions_to": []}
+  ],
+  "budget_contract": {"domain_and_resident_permits_required": true, "zero_byte_reservation_allowed": false},
+  "pool_contract": {"free_list": "lifo_per_size_class", "stable_capacity": true, "drop_destination": "quarantine", "quarantine_exhaustion": "fault_backend", "timeout_reclamation": "retire_without_releasing_pool_budget"},
+  "queue_contract": {"item_bounded": true, "byte_bounded": true, "credit_before_read": true, "close_returns_queued_ownership": true},
+  "completion_contract": {"reserve_before_backend_acceptance": true, "send_after_admission_close": true, "capacity_failure_after_acceptance": false}
+}

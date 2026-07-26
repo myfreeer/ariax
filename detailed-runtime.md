@@ -1,6 +1,9 @@
 # Detailed Runtime, Queues, And Buffer Design
 
-Status: reviewed first-slice implementation contract. Implementation pending.
+Status: first-slice implementation in progress. Dual byte permits, the stable
+`BufferLease` state machine, bounded lazy pool/quarantine, item+byte queue
+credits, and reserved completion delivery are implemented. Async Tokio lanes,
+native cancellation, runtime topology, and percentile timing remain pending.
 
 This document defines the concrete runtime lanes, bounded queues, buffer leases,
 and cancellation behavior used by HTTP and storage in the first slice.

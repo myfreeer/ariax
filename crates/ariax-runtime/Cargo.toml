@@ -1,19 +1,12 @@
 [package]
-name = "ariax-xtask"
+name = "ariax-runtime"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
-[[bin]]
-name = "xtask"
-path = "src/main.rs"
-
 [dependencies]
-ariax-config.workspace = true
 ariax-core.workspace = true
-ariax-runtime.workspace = true
-ariax-storage.workspace = true
 
 [lints]
 workspace = true

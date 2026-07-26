@@ -5,6 +5,7 @@
 mod config_contracts;
 mod core_contracts;
 mod inventory;
+mod runtime_contracts;
 mod storage_contracts;
 
 use std::ffi::OsString;
@@ -15,6 +16,7 @@ use std::process::Command;
 use config_contracts::generate_config_contracts;
 use core_contracts::generate_core_contracts;
 use inventory::{GenerationMode, generate_aria2_inventory};
+use runtime_contracts::generate_runtime_contracts;
 use storage_contracts::generate_storage_contracts;
 
 /// Canonical upstream repository for the compatibility reference.
@@ -154,7 +156,10 @@ where
             let config =
                 generate_config_contracts(workspace_root, &reference, &upstream_options, mode)?;
             let storage = generate_storage_contracts(workspace_root, mode)?;
-            Ok(format!("{inventory}; {core}; {config}; {storage}"))
+            let runtime = generate_runtime_contracts(workspace_root, mode)?;
+            Ok(format!(
+                "{inventory}; {core}; {config}; {storage}; {runtime}"
+            ))
         }
         XtaskCommand::VerifyContracts { source_dir } => {
             let source_dir = source_dir.unwrap_or_else(|| default_aria2_source(workspace_root));
@@ -173,7 +178,10 @@ where
                 GenerationMode::Check,
             )?;
             let storage = generate_storage_contracts(workspace_root, GenerationMode::Check)?;
-            Ok(format!("{inventory}; {core}; {config}; {storage}"))
+            let runtime = generate_runtime_contracts(workspace_root, GenerationMode::Check)?;
+            Ok(format!(
+                "{inventory}; {core}; {config}; {storage}; {runtime}"
+            ))
         }
         XtaskCommand::PrintAria2Pin => Ok(reference.commit),
         XtaskCommand::PrintAria2Repository => Ok(reference.repository),

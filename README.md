@@ -226,6 +226,10 @@ Build rules:
 - Portable storage contracts normalize and reject metadata paths before native
   opening, bind durable progress to root/file identities, hash immutable layouts,
   and reject overflowing, outside, cross-file, or unselected write spans.
+- Runtime ownership primitives require both domain and resident byte permits,
+  move stable-capacity leases through a checked lifecycle, quarantine uncertain
+  ownership within hard bounds, and reserve completion capacity before work is
+  accepted.
 - Release CI builds the exact `minimal`, `standard`, `full`, and `compat`
   artifacts rather than testing an unrelated developer feature set.
 - Release tarballs include `Cargo.lock` and a reproducible vendored-crate bundle

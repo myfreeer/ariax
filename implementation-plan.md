@@ -2,7 +2,7 @@
 
 Status: reviewed implementation contract. Phase 0 is in progress; the gated
 Phase 1 core identifier/error/state vocabulary, first config slice, and portable
-storage layout/path contracts have started.
+storage layout/path and bounded runtime ownership contracts have started.
 
 This is a staged plan for building the design without repeating the incomplete
 rewrite pattern.

@@ -3,6 +3,7 @@ members = [
     "bin/ariax",
     "crates/ariax-config",
     "crates/ariax-core",
+    "crates/ariax-runtime",
     "crates/ariax-storage",
     "tools/ariax-xtask",
 ]
@@ -17,6 +18,7 @@ publish = false
 [workspace.dependencies]
 ariax-config = { path = "crates/ariax-config" }
 ariax-core = { path = "crates/ariax-core" }
+ariax-runtime = { path = "crates/ariax-runtime" }
 ariax-storage = { path = "crates/ariax-storage" }
 sha2 = { version = "=0.11.0", default-features = false }
 unicode-normalization = "=0.1.25"

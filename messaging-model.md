@@ -1,6 +1,9 @@
 # Thread Messaging And Queues
 
-Status: reviewed pre-implementation contract. Implementation pending.
+Status: bounded ownership primitives implemented; lane integration pending.
+Item+byte queue credit, close-time ownership return, and move-only reserved
+completion delivery are executable. Tokio/crossbeam adapters, control fairness,
+async waits, and shutdown orchestration remain pending.
 
 Decision: keep Rust as the implementation language, but do not use one generic
 channel everywhere. The downloader uses bounded, lane-specific queues. Hot data
