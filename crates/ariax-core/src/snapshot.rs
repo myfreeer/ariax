@@ -1,6 +1,6 @@
 use crate::{
     Aria2Status, Generation, Gid, HostKeyChallengeId, HostKeyFingerprint, MonotonicInstant,
-    PublicError, TaskConditionsSnapshot, TaskState,
+    PublicError, TaskConditionsSnapshot, TaskState, WireProjection, WireProjectionError,
 };
 
 /// A bounded, non-secret SFTP host-key challenge exposed for explicit approval.
@@ -18,7 +18,6 @@ pub struct HostKeyChallenge {
 pub struct TaskSnapshot {
     pub gid: Gid,
     pub state: TaskState,
-    pub wire_status: Aria2Status,
     pub generation: Generation,
     pub total_length: Option<u64>,
     pub completed_length: u64,
@@ -30,11 +29,31 @@ pub struct TaskSnapshot {
     pub retry_wait_until: Option<MonotonicInstant>,
     pub last_progress_at: Option<MonotonicInstant>,
     pub conditions: TaskConditionsSnapshot,
+    pub desired_paused: bool,
+    pub retry_wait_holds_slot: bool,
+    pub stopped_status: Option<Aria2Status>,
     pub host_key_challenge: Option<HostKeyChallenge>,
     pub error: Option<PublicError>,
+    pub terminal_persisted: bool,
 }
 
 impl TaskSnapshot {
+    /// Derives the public aria2 status from scheduler-owned state and context.
+    pub fn wire_status(&self) -> Result<Aria2Status, WireProjectionError> {
+        let status = WireProjection {
+            conditions: self.conditions,
+            desired_paused: self.desired_paused,
+            retry_wait_holds_slot: self.retry_wait_holds_slot,
+            stopped_status: self.stopped_status,
+            terminal_persisted: self.terminal_persisted,
+        }
+        .project(self.state)?;
+        if self.state.is_terminal_pending() {
+            return Err(WireProjectionError::TerminalPendingRetention);
+        }
+        Ok(status)
+    }
+
     /// Validates invariants required before a snapshot can be published.
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.durable_length > self.completed_length {
@@ -51,9 +70,32 @@ impl TaskSnapshot {
         if self.state != TaskState::PausedHostKey && self.host_key_challenge.is_some() {
             return Err("host-key challenge is visible outside paused host-key state");
         }
-        if self.state == TaskState::Error && self.error.is_none() {
-            return Err("error state has no public error");
+        if (self.state == TaskState::Error
+            || (self.state == TaskState::StoppedResult
+                && self.stopped_status == Some(Aria2Status::Error)))
+            && self.error.is_none()
+        {
+            return Err("error terminal result has no public error");
         }
+        if self.state != TaskState::StoppedResult && self.stopped_status.is_some() {
+            return Err("retained terminal status is visible outside stopped-result state");
+        }
+        if self.state.is_terminal_pending() {
+            return Err(if self.terminal_persisted {
+                "terminal-pending snapshot must be retained before publication"
+            } else {
+                "terminal snapshot is not persistence-acknowledged"
+            });
+        }
+        if self.state.is_retained_result() != self.terminal_persisted {
+            return Err(if self.state.is_retained_result() {
+                "stopped-result snapshot is not persistence-acknowledged"
+            } else {
+                "nonterminal snapshot claims terminal persistence"
+            });
+        }
+        self.wire_status()
+            .map_err(|_| "snapshot state cannot be projected to a wire status")?;
         Ok(())
     }
 }
@@ -61,13 +103,14 @@ impl TaskSnapshot {
 #[cfg(test)]
 mod tests {
     use super::TaskSnapshot;
-    use crate::{Aria2Status, Generation, Gid, TaskConditionsSnapshot, TaskState};
+    use crate::{
+        Aria2Status, Generation, Gid, TaskConditionsSnapshot, TaskState, WireProjectionError,
+    };
 
     fn snapshot() -> TaskSnapshot {
         TaskSnapshot {
             gid: Gid::new(1).expect("GID"),
             state: TaskState::Active,
-            wire_status: Aria2Status::Active,
             generation: Generation::INITIAL,
             total_length: Some(100),
             completed_length: 50,
@@ -79,14 +122,20 @@ mod tests {
             retry_wait_until: None,
             last_progress_at: None,
             conditions: TaskConditionsSnapshot::default(),
+            desired_paused: false,
+            retry_wait_holds_slot: false,
+            stopped_status: None,
             host_key_challenge: None,
             error: None,
+            terminal_persisted: false,
         }
     }
 
     #[test]
     fn valid_snapshot_passes_contract_checks() {
-        assert_eq!(snapshot().validate(), Ok(()));
+        let value = snapshot();
+        assert_eq!(value.validate(), Ok(()));
+        assert_eq!(value.wire_status(), Ok(Aria2Status::Active));
     }
 
     #[test]
@@ -102,6 +151,55 @@ mod tests {
         assert_eq!(
             value.validate(),
             Err("completed length exceeds total length")
+        );
+    }
+
+    #[test]
+    fn snapshot_derives_wire_projection_and_gates_terminal_visibility() {
+        let mut value = snapshot();
+        value.state = TaskState::PausedRestarting;
+        value.conditions.no_space = true;
+        assert_eq!(
+            value.validate(),
+            Err("snapshot state cannot be projected to a wire status")
+        );
+
+        value = snapshot();
+        value.state = TaskState::Complete;
+        assert_eq!(
+            value.validate(),
+            Err("terminal snapshot is not persistence-acknowledged")
+        );
+        value.terminal_persisted = true;
+        assert_eq!(
+            value.validate(),
+            Err("terminal-pending snapshot must be retained before publication")
+        );
+        assert_eq!(
+            value.wire_status(),
+            Err(WireProjectionError::TerminalPendingRetention)
+        );
+
+        value.state = TaskState::StoppedResult;
+        value.stopped_status = Some(Aria2Status::Complete);
+        assert_eq!(value.validate(), Ok(()));
+        assert_eq!(value.wire_status(), Ok(Aria2Status::Complete));
+
+        value = snapshot();
+        value.state = TaskState::RetryWait;
+        value.retry_wait_holds_slot = true;
+        assert_eq!(value.wire_status(), Ok(Aria2Status::Active));
+    }
+
+    #[test]
+    fn retained_error_requires_the_public_error_payload() {
+        let mut value = snapshot();
+        value.state = TaskState::StoppedResult;
+        value.stopped_status = Some(Aria2Status::Error);
+        value.terminal_persisted = true;
+        assert_eq!(
+            value.validate(),
+            Err("error terminal result has no public error")
         );
     }
 }

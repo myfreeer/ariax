@@ -1,6 +1,8 @@
 # Detailed Core Design
 
-Status: reviewed first-slice implementation contract. Implementation pending.
+Status: reviewed first-slice implementation contract. The exhaustive core
+transition-contract checkpoint is implemented; scheduler execution remains
+pending.
 
 This document defines the core types and state machines shared by config,
 scheduler, storage, HTTP, RPC, and session persistence.
@@ -189,6 +191,14 @@ Rules:
 
 Task state is controlled only by `RequestScheduler`.
 
+The current checkpoint implements the closed command/event/action vocabularies,
+the exhaustive state × semantic-action contract, wire projection, and generated
+`state_wire.json` artifact. It does not yet implement `RequestScheduler`
+command/event execution, construct and order the required `TransitionEffect`
+values, validate pending barriers or generation/timer/readmission/probe tokens,
+or enforce `MAX_SCHEDULER_EFFECTS`. Those behaviors and their success/rejection
+tests remain required before the minimal scheduler is complete.
+
 `TaskState` is an internal state.  It is not an RPC enum.  The complete state
 set is `Accepted`, `Waiting`, `WaitingSlow`, `Allocating`, `Active`,
 `RetryWait`, `Paused`, `PausedSlow`, `PausedHostKey`, `PausedRestarting`,
@@ -232,7 +242,10 @@ pub struct StateTransition {
 
 Rules:
 
-- All transitions publish a snapshot update.
+- Every externally publishable transition replaces the immutable snapshot.
+  `Complete`, `Error`, and `Removed` are internal terminal-pending states: they
+  emit terminal persistence first and do not publish a snapshot until the
+  matching acknowledgement moves the task to `StoppedResult`.
 - Terminal states persist a stopped result before user-visible completion.
 - `PausedSlow` is produced only by the `download-scheduling.md` slow-slot
   `pause` policy. It is user-visible pause semantics: no automatic readmission.
@@ -248,9 +261,11 @@ Rules:
   patch or replacement source satisfies the recorded requirement. A generic
   `Resume` does not manufacture or approve credentials.
 - `no_space` is set only for a mid-transfer ENOSPC/quota result. Explicit
-  `Resume` or its optional timer first probes allocation/write readiness; it
-  clears the condition only on success and otherwise returns/retains `NoSpace`
-  without losing durable progress.
+  `Resume` first records and persists unpaused intent, then issues an identified
+  allocation/write readiness probe without admitting work. A later `Pause`
+  records paused intent and wins over that outstanding probe. Probe completion
+  consults the current desired-pause authority, clears the condition only on
+  success, and otherwise retains `NoSpace` without losing durable progress.
 - `Removed` cancels workers and follows configured partial-file policy.
 
 ### Span Run States And Lease-Level Retry
@@ -305,9 +320,11 @@ provisional storage lease has either committed or been acknowledged by
 | `Waiting` / `Paused` with `needs_credentials` | accepted satisfying credential/source update | unchanged | clear only `needs_credentials`; preserve desired pause and any other condition |
 | `Waiting` with `no_space` | explicit resume or auto-retry probe succeeds | `Waiting` | clear only `no_space`; await normal admission under a fresh generation |
 | `Waiting` with `no_space` | explicit resume or auto-retry probe fails | `Waiting` | retain the condition/durable state and report/update the next retry deadline; wire status remains `paused` |
-| `Paused` with `no_space` | explicit resume probe succeeds | `Waiting` | clear desired pause and `no_space`; await normal admission |
-| `Paused` with `no_space` | explicit resume probe fails | `Waiting` | clear desired pause but retain `no_space`; wire status remains `paused` |
-| `Paused` with `no_space` | auto-retry probe | `Paused` | update or clear `no_space` from the probe, but preserve desired user pause and never admit |
+| `Paused` with `no_space` | explicit resume requests a probe | `Paused` | persist `desired_paused=false`, issue a fresh identified probe, and admit no work while the result is pending |
+| `Paused` with `no_space` and current `desired_paused=false` | probe succeeds | `Waiting` | clear only `no_space`; await normal admission |
+| `Paused` with `no_space` and current `desired_paused=false` | probe fails | `Waiting` | retain `no_space`; wire status remains `paused` even though user-pause intent is clear |
+| `Paused` with `no_space` and current `desired_paused=true` | explicit-resume or auto-retry probe completes | `Paused` | update or clear only `no_space`; preserve the later/repeated user pause and never admit |
+| `Paused`, `PausedSlow`, or `PausedHostKey` | pause | unchanged | persist desired user pause; invalidate or supersede any earlier resume/probe intent |
 | `Waiting` / `WaitingSlow` / `RetryWait` | pause | `Paused` | cancel timers; persist desired pause |
 | `Waiting` / `WaitingSlow` / `RetryWait` | remove | `Removed` | cancel timers; persist result |
 | `Allocating` | allocation succeeds | `Active` | start the admitted generation only; the admission-time generation increment rule above applies |
@@ -375,9 +392,9 @@ Only this closed set may appear in aria2-compatible `status` fields:
 | `PausedRestarting` | `waiting` | no pause event/hook; restart reason is extension-only |
 | `needs_credentials` condition | `paused` or `waiting` per SQLite desired state | credential requirement is extension-only; the task cannot issue a new lease until the requirement is satisfied |
 | `no_space` condition | `paused` | disk-space reason/retry deadline is extension-only; this does not set or clear SQLite's desired user pause |
-| `Error` | `error` | include aria2-compatible error code/message |
-| `Complete` | `complete` | visible only after completion persistence |
-| `Removed` | `removed` | visible until its stopped result is deleted |
+| `Error` | `error` | internal projection only; no snapshot is published before retained-result persistence |
+| `Complete` | `complete` | internal projection only; no snapshot is published before retained-result persistence |
+| `Removed` | `removed` | internal projection only; no snapshot is published before retained-result persistence |
 | `StoppedResult` | stored terminal status | exposed through stopped-result queries, not as a new live status |
 
 ## Scheduler Commands
@@ -420,20 +437,23 @@ Hot status reads use immutable snapshots:
 pub struct TaskSnapshot {
     pub gid: Gid,
     pub state: TaskState,
-    pub wire_status: Aria2Status,
     pub generation: Generation,
     pub total_length: Option<u64>,
     pub completed_length: u64,
     pub durable_length: u64,
     pub current_speed: u64,
-    pub avg_speed: u64,
+    pub average_speed: u64,
     pub active_leases: u32,
     pub retry_wait_leases: u32,
     pub retry_wait_until: Option<MonotonicInstant>,
     pub last_progress_at: Option<MonotonicInstant>,
     pub conditions: TaskConditionsSnapshot,
+    pub desired_paused: bool,
+    pub retry_wait_holds_slot: bool,
+    pub stopped_status: Option<Aria2Status>,
     pub host_key_challenge: Option<HostKeyChallenge>,
     pub error: Option<PublicError>,
+    pub terminal_persisted: bool,
 }
 ```
 
@@ -446,9 +466,15 @@ Rules:
 - snapshots are replaced atomically,
 - RPC formatting never holds scheduler or storage locks,
 - extension fields carry backend, stall, slot, retry, and buffer diagnostics,
-- aria2-compatible fields are rendered from the same snapshot.
-- `wire_status` is produced only by the projection table above; RPC formatters
-  must never stringify `TaskState` directly.
+- aria2-compatible fields are rendered from the same snapshot,
+- `TaskSnapshot::wire_status()` derives status from `state`, conditions,
+  desired-pause authority, retry-slot ownership, and retained terminal status;
+  RPC formatters must never stringify `TaskState` directly,
+- `stopped_status` is present only for `StoppedResult`, and
+  `terminal_persisted` is true exactly for that retained result,
+- terminal-pending snapshots are rejected even after the persistence
+  acknowledgement; the acknowledgement and transition to `StoppedResult` form
+  one publication boundary.
 
 ## Cancellation
 
@@ -531,6 +557,8 @@ Required first-slice tests:
   current challenge id and fingerprint and rejects a raced/new challenge,
 - mid-transfer ENOSPC sets `no_space`, preserves durable pieces, projects
   `paused`, and clears only after a successful explicit/timed readiness probe,
+- a pause or re-pause racing an explicit no-space probe remains authoritative;
+  the later probe completion may update `no_space` but cannot requeue the task,
 - `WaitingSlow` demotion/readmission projects `waiting`, honors
   `slow-slot-readmit-*`, and accepts user pause/resume/remove during the
   cooldown; `PausedSlow` projects `paused` and never readmits automatically,

@@ -96,6 +96,18 @@ impl TaskState {
             Self::Complete | Self::Error | Self::Removed | Self::StoppedResult
         )
     }
+
+    /// Returns whether this is an internal terminal state awaiting stopped-result retention.
+    #[must_use]
+    pub const fn is_terminal_pending(self) -> bool {
+        matches!(self, Self::Complete | Self::Error | Self::Removed)
+    }
+
+    /// Returns whether this state is the persisted, queryable stopped result.
+    #[must_use]
+    pub const fn is_retained_result(self) -> bool {
+        matches!(self, Self::StoppedResult)
+    }
 }
 
 /// The closed aria2-compatible status vocabulary.
@@ -206,11 +218,17 @@ pub struct WireProjection {
     pub desired_paused: bool,
     pub retry_wait_holds_slot: bool,
     pub stopped_status: Option<Aria2Status>,
+    pub terminal_persisted: bool,
 }
 
 impl WireProjection {
     /// Projects one internal state without exposing internal state names.
     pub fn project(self, state: TaskState) -> Result<Aria2Status, WireProjectionError> {
+        if (self.conditions.no_space || self.conditions.needs_credentials)
+            && !matches!(state, TaskState::Waiting | TaskState::Paused)
+        {
+            return Err(WireProjectionError::InvalidConditionState);
+        }
         let terminal = match state {
             TaskState::Complete => Some(Aria2Status::Complete),
             TaskState::Error => Some(Aria2Status::Error),
@@ -227,6 +245,9 @@ impl WireProjection {
             _ => None,
         };
         if let Some(status) = terminal {
+            if !self.terminal_persisted {
+                return Err(WireProjectionError::TerminalNotPersisted);
+            }
             return Ok(status);
         }
 
@@ -261,9 +282,12 @@ impl WireProjection {
     }
 }
 
-/// An invalid attempt to project a retained stopped result.
+/// An invalid attempt to project scheduler state onto a public wire status.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WireProjectionError {
+    InvalidConditionState,
+    TerminalNotPersisted,
+    TerminalPendingRetention,
     MissingStoppedStatus,
     InvalidStoppedStatus,
 }
@@ -271,6 +295,15 @@ pub enum WireProjectionError {
 impl fmt::Display for WireProjectionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::InvalidConditionState => {
+                "admission condition is attached to a state that cannot retain it"
+            }
+            Self::TerminalNotPersisted => {
+                "terminal status cannot be published before terminal persistence"
+            }
+            Self::TerminalPendingRetention => {
+                "terminal-pending state must become a stopped result before publication"
+            }
             Self::MissingStoppedStatus => "stopped result has no retained terminal status",
             Self::InvalidStoppedStatus => "stopped result retained a nonterminal status",
         })
@@ -304,6 +337,14 @@ mod tests {
     fn task_state_codes_are_unique() {
         let codes: BTreeSet<_> = ALL_TASK_STATES.iter().map(|state| state.code()).collect();
         assert_eq!(codes.len(), ALL_TASK_STATES.len());
+        for state in [TaskState::Complete, TaskState::Error, TaskState::Removed] {
+            assert!(state.is_terminal());
+            assert!(state.is_terminal_pending());
+            assert!(!state.is_retained_result());
+        }
+        assert!(TaskState::StoppedResult.is_terminal());
+        assert!(!TaskState::StoppedResult.is_terminal_pending());
+        assert!(TaskState::StoppedResult.is_retained_result());
     }
 
     #[test]
@@ -327,7 +368,15 @@ mod tests {
             (TaskState::Removed, Aria2Status::Removed),
         ];
         for (state, expected) in cases {
-            assert_eq!(projection.project(state), Ok(expected), "{state:?}");
+            assert_eq!(
+                WireProjection {
+                    terminal_persisted: state.is_terminal(),
+                    ..projection
+                }
+                .project(state),
+                Ok(expected),
+                "{state:?}"
+            );
         }
     }
 
@@ -369,12 +418,17 @@ mod tests {
     #[test]
     fn stopped_results_require_a_terminal_retained_status() {
         assert_eq!(
-            WireProjection::default().project(TaskState::StoppedResult),
+            WireProjection {
+                terminal_persisted: true,
+                ..WireProjection::default()
+            }
+            .project(TaskState::StoppedResult),
             Err(WireProjectionError::MissingStoppedStatus)
         );
         assert_eq!(
             WireProjection {
                 stopped_status: Some(Aria2Status::Waiting),
+                terminal_persisted: true,
                 ..WireProjection::default()
             }
             .project(TaskState::StoppedResult),
@@ -383,9 +437,37 @@ mod tests {
         assert_eq!(
             WireProjection {
                 stopped_status: Some(Aria2Status::Complete),
+                terminal_persisted: true,
                 ..WireProjection::default()
             }
             .project(TaskState::StoppedResult),
+            Ok(Aria2Status::Complete)
+        );
+    }
+
+    #[test]
+    fn invalid_condition_states_and_unpersisted_terminals_do_not_project() {
+        assert_eq!(
+            WireProjection {
+                conditions: TaskConditionsSnapshot {
+                    needs_credentials: false,
+                    no_space: true,
+                },
+                ..WireProjection::default()
+            }
+            .project(TaskState::PausedRestarting),
+            Err(WireProjectionError::InvalidConditionState)
+        );
+        assert_eq!(
+            WireProjection::default().project(TaskState::Complete),
+            Err(WireProjectionError::TerminalNotPersisted)
+        );
+        assert_eq!(
+            WireProjection {
+                terminal_persisted: true,
+                ..WireProjection::default()
+            }
+            .project(TaskState::Complete),
             Ok(Aria2Status::Complete)
         );
     }

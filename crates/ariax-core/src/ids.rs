@@ -37,6 +37,9 @@ nonzero_id!(LeaseId, "a provisional storage lease identifier");
 nonzero_id!(OverlapGroupId, "an endgame overlap-group identifier");
 nonzero_id!(BufferId, "a pooled buffer identifier");
 nonzero_id!(OptionPatchId, "an atomic option-patch identifier");
+nonzero_id!(RetryTimerId, "a scheduler retry-timer identifier");
+nonzero_id!(SlowReadmissionId, "a slow-slot readmission identifier");
+nonzero_id!(NoSpaceProbeId, "a disk-space readiness-probe identifier");
 
 /// A stable aria2-compatible task identifier.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
