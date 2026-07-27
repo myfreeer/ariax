@@ -9,8 +9,10 @@ capability acquisition, safe descendant open/revalidation, and complete startup
 filesystem/journal reconciliation remain pending. Durable journal append/flush,
 latched appender failure, tail-validated descriptor reopen, and linked rotation
 are executable. SQLite v1 rejects newer/unversioned schemas fail-closed,
-verifies its hard limits, rejects secret-class task options before SQL, and
-transactionally rechecks journal-install pointers.
+verifies its hard limits and bounded persisted records, rechecks task-option
+policy on read, enforces private database artifacts, and transactionally
+rechecks tokenized journal-install pointers. The bounded session-store owner
+thread remains pending.
 
 This document turns the safety requirements into enforceable design rules.
 
@@ -312,6 +314,63 @@ The primary persistence model is described in `session-persistence.md`: global
 queue/session metadata in SQLite, crash-critical progress in per-task control
 journals.
 
+## Session Database Boundary
+
+The SQLite file and backups live in a dedicated private directory. Every
+existing path component must be a directory, not a symlink or Windows reparse
+point. An existing configured parent with broad Unix permissions or an
+inherited/foreign Windows allow ACL is rejected without being modified; a
+missing owned chain is created privately at each step. Database, WAL, SHM,
+rollback-journal, `${db}.ariax-owner-lock`, temporary, and backup artifacts must
+be private, uniquely linked regular files. Symlinks, hard-link aliases, and
+non-regular artifacts fail closed so a path-derived owner lock cannot protect a
+different name for the same database inode. If the main database is missing or
+empty, orphan `-wal`, `-shm`, or `-journal` files are rejected before SQLite can
+initialize or recover it. Windows ACL operations are direct Win32 calls isolated in
+`ariax-windows-security`; persistence startup does not spawn a shell or
+PowerShell process.
+
+Before SQLite opens an existing database, streaming, fixed-buffer raw preflight
+recovers the committed header from a hot rollback journal's page-one
+before-image, the main header, and valid committed WAL frames. This permits supported rollback
+recovery even when the main page-one header is damaged. A legacy rollback
+journal with encoded page size zero fails closed. A newer committed version is
+rejected before chmod/ACL changes, owner-lock creation, SQLite recovery, or
+journal-mode changes.
+
+Ariax then exclusively holds `${db}.ariax-owner-lock` for the `SessionStore`
+lifetime and repeats preflight under the lock. This is cooperative single-writer
+exclusion among Ariax processes, not a SQLite-enforced boundary: external raw
+SQLite writers bypass it and are unsupported. Supported v1 databases are then
+opened read/write for rollback recovery before exact schema, integrity,
+foreign-key, dense-queue, decoded task/install record, and install-pointer
+validation.
+
+Persisted task and install reads have explicit count/byte budgets, and option
+reads reapply the current persistence policy. Queue moves, including cross-queue
+moves, shift source and target positions and validate dense final queues inside
+one immediate transaction. Journal installation is the only primary-pointer
+mutation path: completion is bound to gid/checkpoint/new-journal identity and
+rechecks the old pointer in the same transaction.
+
+WAL and DELETE each receive a real `BEGIN IMMEDIATE` page-one write/rollback
+probe; WAL falls back to DELETE only when DELETE passes the same check. Truncate
+checkpoint reports busy rather than discarding WAL state. Backups are written
+privately, integrity/schema/semantic validated, file-synced, and published with
+a no-clobber hard link. Every destination filename ending in `-wal`, `-shm`, or
+`-journal`, matched ASCII-case-insensitively, is rejected before filesystem
+mutation; pre-existing destination sidecars are also rejected rather than
+adopted. Unix syncs the parent directory; Windows does not yet claim
+crash-durable directory-entry publication. The successful-return path removes
+the temporary name, but a crash or unlink failure at any point from
+destination-link publication until temporary-link removal is durably synced can
+leave or resurrect both names for one inode. Normal unique-link validation then
+rejects the backup until a future recovery step verifies and removes only the
+generated same-file alias. A native atomic no-replace publication primitive is
+also acceptable. This recovery, full crash-point window, and unlink-error
+injection are required before production use or tagging.
+Scheduling these primitives on the dedicated store thread remains pending.
+
 ## Durable Completion
 
 A piece is complete only after:
@@ -364,6 +423,8 @@ Power loss during journal checkpoint compaction:
   failure,
 - after `installed`, the checkpoint set is authoritative and stale old
   segments are unreachable garbage,
+- stale completion/intent-clear commands cannot act on a newer install because
+  they require the gid/checkpoint/new-journal token,
 - compaction never promotes provisional/in-flight state to durable.
 
 Power loss during control save:
@@ -396,6 +457,8 @@ Pure Rust crates forbid unsafe code.
 
 Allowed unsafe crates:
 
+- `ariax-windows-security`: narrow Win32 security-descriptor creation and ACL
+  verification used by otherwise-safe persistence code,
 - `platform-io`: system calls, IOCP, io_uring, openat wrappers.
 - `bt-libtorrent`: C++ bridge.
 

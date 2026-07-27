@@ -1,13 +1,15 @@
 use crate::inventory::{GenerationMode, apply_outputs, comma, json_string};
 use ariax_storage::{
     ALL_SESSION_IO_OPERATIONS, ALL_SESSION_SQLITE_LIMITS, ALL_SESSION_STORE_ERROR_CODES,
-    JournalInstallPhase, SESSION_BUNDLED_SQLITE_FLAGS, SESSION_BUSY_TIMEOUT_MS,
-    SESSION_DEFAULT_CACHE_KIB, SESSION_MAX_ALGORITHM_BYTES, SESSION_MAX_BT_RESUME_BYTES,
-    SESSION_MAX_CACHE_KIB, SESSION_MAX_HOST_KEY_BYTES, SESSION_MAX_SAFE_MESSAGE_BYTES,
-    SESSION_MAX_SAFE_URI_BYTES, SESSION_MIN_CACHE_KIB, SESSION_MMAP_SIZE_BYTES,
-    SESSION_PAGE_SIZE_BYTES, SESSION_RUSQLITE_FEATURES, SESSION_RUSQLITE_VERSION,
-    SESSION_SCHEMA_OBJECTS, SESSION_SCHEMA_VERSION, SESSION_WAL_AUTO_CHECKPOINT_PAGES,
-    SessionQueueState, SessionSchemaObjectKind,
+    JournalInstallPhase, MAX_OPTION_MAP_BYTES, SESSION_BUNDLED_SQLITE_FLAGS,
+    SESSION_BUSY_TIMEOUT_MS, SESSION_DEFAULT_CACHE_KIB, SESSION_INSTALL_READ_BUDGET_BYTES,
+    SESSION_MAX_ALGORITHM_BYTES, SESSION_MAX_BT_RESUME_BYTES, SESSION_MAX_CACHE_KIB,
+    SESSION_MAX_HOST_KEY_BYTES, SESSION_MAX_OPTIONS_PER_TASK, SESSION_MAX_SAFE_MESSAGE_BYTES,
+    SESSION_MAX_SAFE_URI_BYTES, SESSION_MAX_TASKS, SESSION_MIN_CACHE_KIB, SESSION_MMAP_SIZE_BYTES,
+    SESSION_OWNER_LOCK_SUFFIX, SESSION_PAGE_SIZE_BYTES, SESSION_RUSQLITE_FEATURES,
+    SESSION_RUSQLITE_VERSION, SESSION_SCHEMA_OBJECTS, SESSION_SCHEMA_VERSION,
+    SESSION_TASK_READ_BUDGET_BYTES, SESSION_WAL_AUTO_CHECKPOINT_PAGES, SessionQueueState,
+    SessionSchemaObjectKind,
 };
 use std::fmt::Write as _;
 use std::fs;
@@ -43,7 +45,13 @@ pub(crate) fn generate_session_contracts(
 fn validate_build_contract(workspace_root: &Path) -> Result<(), String> {
     let manifest = fs::read_to_string(workspace_root.join("Cargo.toml"))
         .map_err(|error| format!("failed to read workspace Cargo.toml: {error}"))?;
-    let expected_dependency = format!(
+    let cargo_config = fs::read_to_string(workspace_root.join(".cargo/config.toml"))
+        .map_err(|error| format!("failed to read .cargo/config.toml: {error}"))?;
+    validate_build_contract_text(&manifest, &cargo_config)
+}
+
+fn expected_rusqlite_dependency() -> String {
+    format!(
         "rusqlite = {{ version = \"={}\", default-features = false, features = [{}] }}",
         SESSION_RUSQLITE_VERSION,
         SESSION_RUSQLITE_FEATURES
@@ -51,21 +59,27 @@ fn validate_build_contract(workspace_root: &Path) -> Result<(), String> {
             .map(|feature| json_string(feature))
             .collect::<Vec<_>>()
             .join(", ")
-    );
+    )
+}
+
+fn expected_bundled_sqlite_flags_config() -> String {
+    format!(
+        "LIBSQLITE3_FLAGS = {{ value = {}, force = true }}",
+        json_string(SESSION_BUNDLED_SQLITE_FLAGS)
+    )
+}
+
+fn validate_build_contract_text(manifest: &str, cargo_config: &str) -> Result<(), String> {
+    let expected_dependency = expected_rusqlite_dependency();
     if !manifest.lines().any(|line| line == expected_dependency) {
         return Err(format!(
             "workspace rusqlite dependency must be exactly: {expected_dependency}"
         ));
     }
-    let cargo_config = fs::read_to_string(workspace_root.join(".cargo/config.toml"))
-        .map_err(|error| format!("failed to read .cargo/config.toml: {error}"))?;
-    let expected_flag = format!(
-        "LIBSQLITE3_FLAGS = {}",
-        json_string(SESSION_BUNDLED_SQLITE_FLAGS)
-    );
+    let expected_flag = expected_bundled_sqlite_flags_config();
     if !cargo_config.lines().any(|line| line == expected_flag) {
         return Err(format!(
-            "bundled SQLite compile flag must be exactly: {expected_flag}"
+            "bundled SQLite compile flag must be forced exactly: {expected_flag}"
         ));
     }
     Ok(())
@@ -138,7 +152,7 @@ fn render_session_contracts() -> String {
     }
     writeln!(
         output,
-        "  ],\n  \"caps\": {{\"safe_uri_bytes\": {SESSION_MAX_SAFE_URI_BYTES}, \"safe_message_bytes\": {SESSION_MAX_SAFE_MESSAGE_BYTES}, \"host_key_bytes\": {SESSION_MAX_HOST_KEY_BYTES}, \"algorithm_bytes\": {SESSION_MAX_ALGORITHM_BYTES}, \"bt_resume_bytes\": {SESSION_MAX_BT_RESUME_BYTES}}},"
+        "  ],\n  \"caps\": {{\"safe_uri_bytes\": {SESSION_MAX_SAFE_URI_BYTES}, \"safe_message_bytes\": {SESSION_MAX_SAFE_MESSAGE_BYTES}, \"host_key_bytes\": {SESSION_MAX_HOST_KEY_BYTES}, \"algorithm_bytes\": {SESSION_MAX_ALGORITHM_BYTES}, \"bt_resume_bytes\": {SESSION_MAX_BT_RESUME_BYTES}, \"tasks\": {SESSION_MAX_TASKS}, \"options_per_task\": {SESSION_MAX_OPTIONS_PER_TASK}, \"option_map_bytes\": {MAX_OPTION_MAP_BYTES}, \"task_read_budget_bytes\": {SESSION_TASK_READ_BUDGET_BYTES}, \"journal_install_read_budget_bytes\": {SESSION_INSTALL_READ_BUDGET_BYTES}}},"
     )
     .expect("write to string");
     output.push_str("  \"io_operations\": [");
@@ -151,7 +165,12 @@ fn render_session_contracts() -> String {
     );
     output.push_str("],\n  \"errors\": [");
     write_codes(&mut output, ALL_SESSION_STORE_ERROR_CODES.iter().copied());
-    output.push_str("],\n  \"rules\": {\"strict_tables\": true, \"u64_may_use_exact_le_blob8\": true, \"tagged_platform_path_matches_journal_codec\": true, \"newer_schema_rejected_before_database_mutation\": true, \"unversioned_nonempty_database_rejected\": true, \"required_limits_verified_exactly\": true, \"wal_failure_falls_back_to_delete\": true, \"queue_reorder_is_one_immediate_dense_transaction\": true, \"secret_options_rejected_before_sql\": true, \"journal_cache_reconciliation_never_changes_queue_authority\": true, \"journal_install_begin_checks_old_pointer\": true, \"journal_install_complete_rechecks_old_pointer\": true, \"installed_pointer_and_phase_change_share_transaction\": true, \"hot_backup_refuses_overwrite_and_runs_integrity_check\": true, \"unix_database_mode\": \"0600\"}\n}\n");
+    writeln!(
+        output,
+        "],\n  \"journal_install_token_fields\": [\"gid\", \"checkpoint_id\", \"new_journal_id\"],\n  \"rules\": {{\"strict_tables\": true, \"u64_may_use_exact_le_blob8\": true, \"tagged_platform_path_matches_journal_codec\": true, \"newer_schema_rejected_before_database_mutation\": true, \"v1_schema_validated_before_journal_mode_change\": true, \"hot_rollback_recovery_supported\": true, \"rollback_journal_page_one_preflight\": true, \"wal_user_version_preflight_validates_committed_frames\": true, \"unversioned_nonempty_database_rejected\": true, \"required_limits_verified_exactly\": true, \"journal_modes_require_transactional_page_one_write_probe\": true, \"wal_write_probe_failure_falls_back_to_delete\": true, \"wal_truncate_checkpoint_reports_busy\": true, \"persistence_paths_require_explicit_parent\": true, \"existing_parent_must_be_private\": true, \"created_directories_private_at_creation\": true, \"created_directory_mode\": \"0700\", \"unix_database_mode\": \"0600\", \"windows_acl_uses_native_adapter_without_subprocesses\": true, \"owner_lock_suffix\": {}, \"owner_lock_is_cooperative_single_writer\": true, \"orphan_sidecars_rejected_when_database_missing_or_empty\": true, \"orphan_sidecars_rejected_before_backup_publish\": true, \"backup_reserved_sqlite_suffixes_rejected_ascii_insensitively\": true, \"hard_linked_persistence_artifacts_rejected\": true, \"artifact_symlinks_and_nonregular_files_rejected\": true, \"intermediate_links_and_windows_reparse_points_rejected\": true, \"queue_reorder_is_one_immediate_dense_transaction\": true, \"queue_transition_is_one_immediate_dense_transaction\": true, \"secret_options_rejected_before_sql\": true, \"task_option_policy_rechecked_on_read\": true, \"bounded_task_and_install_reads\": true, \"journal_cache_reconciliation_never_changes_queue_authority\": true, \"task_queue_and_pointer_immutable_via_put\": true, \"journal_install_begin_checks_old_pointer\": true, \"journal_install_commands_require_identity_token\": true, \"journal_install_complete_rechecks_old_pointer\": true, \"journal_install_pointer_relation_validated_on_open\": true, \"installed_pointer_and_phase_change_share_transaction\": true, \"hot_backup_refuses_overwrite_and_runs_integrity_check\": true, \"hot_backup_flushes_file_before_publish\": true, \"hot_backup_publishes_with_no_clobber\": true}}\n}}",
+        json_string(SESSION_OWNER_LOCK_SUFFIX),
+    )
+    .expect("write to string");
     output
 }
 
@@ -166,7 +185,12 @@ fn write_codes<'a>(output: &mut String, values: impl Iterator<Item = &'a str>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{render_session_contracts, validate_build_contract};
+    use super::{
+        SESSION_BUNDLED_SQLITE_FLAGS, SESSION_OUTPUT, expected_bundled_sqlite_flags_config,
+        expected_rusqlite_dependency, render_session_contracts, validate_build_contract,
+        validate_build_contract_text,
+    };
+    use std::fs;
     use std::path::Path;
 
     #[test]
@@ -176,7 +200,30 @@ mod tests {
         assert!(contract.contains("\"name\": \"journal_install\""));
         assert!(contract.contains("\"code\": \"like_pattern_length\", \"value\": 65536"));
         assert!(contract.contains("SQLITE_MAX_LIKE_PATTERN_LENGTH=65536"));
+        assert!(contract.contains("\"tasks\": 100000"));
+        assert!(contract.contains("\"option_map_bytes\": 4194304"));
+        assert!(contract.contains("\"task_read_budget_bytes\": 67108864"));
+        assert!(contract.contains(
+            "\"journal_install_token_fields\": [\"gid\", \"checkpoint_id\", \"new_journal_id\"]"
+        ));
         assert!(contract.contains("\"journal_install_complete_rechecks_old_pointer\": true"));
+        assert!(contract.contains("\"journal_install_pointer_relation_validated_on_open\": true"));
+        assert!(contract.contains("\"queue_transition_is_one_immediate_dense_transaction\": true"));
+        assert!(contract.contains("\"owner_lock_suffix\": \".ariax-owner-lock\""));
+        assert!(contract.contains("\"rollback_journal_page_one_preflight\": true"));
+        assert!(
+            contract.contains("\"orphan_sidecars_rejected_when_database_missing_or_empty\": true")
+        );
+        assert!(contract.contains("\"orphan_sidecars_rejected_before_backup_publish\": true"));
+        assert!(
+            contract
+                .contains("\"backup_reserved_sqlite_suffixes_rejected_ascii_insensitively\": true")
+        );
+        assert!(contract.contains("\"hard_linked_persistence_artifacts_rejected\": true"));
+        assert!(
+            contract.contains("\"windows_acl_uses_native_adapter_without_subprocesses\": true")
+        );
+        assert!(contract.contains("\"task_option_policy_rechecked_on_read\": true"));
         assert!(contract.contains("\"secret_options_rejected_before_sql\": true"));
         assert!(
             contract.contains("\"hot_backup_refuses_overwrite_and_runs_integrity_check\": true")
@@ -190,5 +237,37 @@ mod tests {
             .and_then(Path::parent)
             .expect("xtask is nested under the workspace");
         validate_build_contract(workspace_root).expect("build contract");
+    }
+
+    #[test]
+    fn committed_session_contract_matches_the_renderer() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("xtask is nested under the workspace");
+        let committed = fs::read_to_string(workspace_root.join(SESSION_OUTPUT))
+            .expect("read committed session contract");
+        assert_eq!(committed, render_session_contracts());
+    }
+
+    #[test]
+    fn bundled_sqlite_flags_must_override_ambient_environment() {
+        let manifest = expected_rusqlite_dependency();
+        let forced = expected_bundled_sqlite_flags_config();
+        validate_build_contract_text(&manifest, &forced).expect("forced build contract");
+
+        let unforced = forced
+            .strip_suffix(", force = true }")
+            .map(|prefix| format!("{prefix} }}"))
+            .expect("forced config shape");
+        assert!(validate_build_contract_text(&manifest, &unforced).is_err());
+    }
+
+    #[test]
+    fn cargo_build_uses_repository_sqlite_flags() {
+        assert_eq!(
+            option_env!("LIBSQLITE3_FLAGS"),
+            Some(SESSION_BUNDLED_SQLITE_FLAGS)
+        );
     }
 }

@@ -2,4 +2,4 @@
 xtask = "run --locked --package ariax-xtask --"
 
 [env]
-LIBSQLITE3_FLAGS = "-DSQLITE_MAX_LIKE_PATTERN_LENGTH=65536"
+LIBSQLITE3_FLAGS = { value = "-DSQLITE_MAX_LIKE_PATTERN_LENGTH=65536", force = true }

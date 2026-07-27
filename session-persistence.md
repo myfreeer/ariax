@@ -7,15 +7,18 @@ payloads that complete all 24 v1 record types. Policy-gated typed state
 reconstruction, exact generation/layout/lease/finalization validation, and
 whole-checkpoint hash validation are also executable. File-backed typed append,
 flush acknowledgement, descriptor reopen validation, and durable linked
-rotation are executable. Native root identity revalidation, checkpoint
-compaction writing, and cross-store startup orchestration remain pending. The
-SQLite v1 synchronous primitive is now executable: it creates and validates
-the exact strict schema, applies and verifies all connection limits/pragmas,
-stores core session/task and policy-filtered option records, preserves dense
-queue ordering, reconciles journal-owned cache fields in one direction, runs
-the journal-install pointer protocol, and produces integrity-checked hot
-backups. The dedicated bounded session thread, full startup filesystem/journal
-orchestration, stopped-result publication, and later migrations remain pending.
+rotation are executable. Native root identity revalidation and checkpoint
+compaction writing remain pending. The SQLite v1 synchronous primitive is now
+executable: it creates and validates
+the exact strict schema, rejects newer versions before SQLite can mutate
+an existing database, applies and verifies all connection limits/pragmas,
+stores bounded core records, preserves dense queues across atomic cross-queue
+moves, rechecks persisted option policy on read, enforces tokenized
+journal-install pointer changes, and produces validated, file-synced,
+no-clobber hot backups.
+The dedicated bounded session thread, full startup filesystem/journal
+orchestration, checkpoint state writer, stopped-result publication, and later
+migrations remain pending.
 
 Decision: use a hybrid persistence model:
 
@@ -216,6 +219,26 @@ An empty version-0 file is initialized in `BEGIN IMMEDIATE`; a nonempty
 unversioned database and every newer `user_version` are rejected without schema
 rewrites. Version 1 currently has no older nonempty migration input.
 
+For an existing database, startup performs a streaming, fixed-buffer raw
+preflight before opening SQLite. A hot rollback journal contributes its last
+valid page-one before-image, then valid committed WAL frames are applied in commit order;
+uncommitted frames and torn or invalid tails cannot authorize a version. This
+also permits SQLite to recover a supported hot rollback transaction when the
+main page-one header is damaged. A legacy rollback-journal header whose encoded
+page size is zero fails closed. A newer committed version is rejected before
+permission changes, owner-lock creation, SQLite open, or journal-mode changes,
+leaving the database and sidecars untouched.
+
+After this first preflight, Ariax exclusively locks the private regular file
+`${db}.ariax-owner-lock` and repeats version inspection under that lock. The
+lock is held for the `SessionStore` lifetime and provides cooperative
+single-writer ownership among Ariax processes only. A program that opens the
+SQLite database directly does not honor this lock; concurrent raw SQLite
+writers are unsupported. A supported database is opened read/write so SQLite
+can complete rollback recovery, then the exact v1 schema, integrity, foreign
+keys, queue density, decoded task/install records, and install-pointer relation
+are validated before connection journal policy is changed.
+
 `PRAGMA user_version=1` is the authoritative schema version. Version-1 tables
 are `STRICT`, enable foreign keys, and use closed integer enums generated from
 the same state/error matrices as the API. A `u64` that may exceed SQLite's
@@ -241,6 +264,19 @@ except `stopped_result` cascade on live-task deletion. A stopped-result
 retention transaction inserts the independent canonical result and removes the
 live `task` row only after the journal terminal record is valid.
 
+The synchronous primitive caps a store at 100,000 tasks, task materialization
+at 64 MiB, pending-install materialization at 16 MiB, and each option map at
+4,096 entries/4 MiB. Reads stream rows against those budgets and decode every
+persisted value. Task-option reads also reapply the current
+`PersistedOptionPolicy`; direct database tampering cannot turn a formerly or
+newly forbidden key into an accepted option.
+
+Ordinary task upserts cannot change queue membership/position or the primary
+journal id/path. Queue changes use one `BEGIN IMMEDIATE` transaction that
+closes the source gap, opens the target slot, changes desired pause state, and
+validates every affected queue as dense before commit. Primary journal changes
+are allowed only through the install protocol below.
+
 `NoSpaceCondition.retry_at` is live monotonic state and is never serialized as
 an instant. SQLite stores the wall scheduling decision
 (`no_space_scheduled_at_ms`, `no_space_delay_ms`) and recovery applies the same
@@ -262,6 +298,10 @@ Schema migration rules are fail-closed:
 - a future binary keeps version-1 journal readers; after successful replay it
   may write a newer checkpoint set and retires version-1 segments only through
   the normal install protocol,
+- before adding version 2, migration tests must retain raw hot-rollback
+  page-one and committed-WAL preflight coverage; legacy rollback journals with
+  an encoded page size of zero remain fail-closed until a reviewed compatibility
+  rule exists,
 - downgrade is export/import only; no older binary rewrites a newer database.
 
 ## Control Journal Responsibilities
@@ -286,7 +326,14 @@ checkpoint compaction (including the SQLite `installing`/`installed` pointer
 protocol and old-set retirement), finalize intent/done, and the journal
 descriptor budget are defined only in `detailed-storage.md`. SQLite stores the
 installed journal id/path plus any pending installation intent; compaction
-never merges divergent copies.
+never merges divergent copies. Beginning an install returns a
+`JournalInstallToken` bound to gid, checkpoint id, and new journal id. Completion
+requires that token, re-decodes the persisted intent, and rechecks that the task
+still points to the old set before changing the pointer and phase atomically.
+Startup validates that `installing` points to the old set and `installed` to the
+new set; clearing an installed row requires the same identity token and installed
+phase. Stale commands and ordinary task upserts cannot replace the primary
+pointer.
 
 ## Authority And Reconciliation
 
@@ -339,8 +386,9 @@ Global queue mutation:
    `OptionsSnapshot(scope=NextAdmission)` before acknowledging it; after the old
    generation drains, admission appends/flushes the one `GenerationStarted`
    record that references and promotes that snapshot,
-2. SQLite transaction updates its queue/desired-state fields and the journal
-   snapshot hash,
+2. one SQLite `BEGIN IMMEDIATE` transaction updates its queue/desired-state
+   fields and journal snapshot hash; a cross-queue move shifts both queues and
+   validates their final dense positions before commit,
 3. snapshots are published.
 
 If step 2 fails, journal-owned generation state remains authoritative and the
@@ -367,7 +415,18 @@ must verify/finalize from the journal state before publishing completion.
 
 Startup:
 
-- open SQLite,
+- require a dedicated private persistence directory; reject intermediate
+  symlink/reparse components, non-regular database/sidecar artifacts, and
+  orphan `-wal`, `-shm`, or `-journal` files when the main database is missing
+  or empty,
+- inspect committed `user_version` from a hot rollback page-one before-image,
+  the raw main header, and committed WAL frames before SQLite open; reject a
+  newer version unchanged and reject legacy page-size-zero rollback journals,
+- acquire `${db}.ariax-owner-lock`, repeat version inspection under the
+  cooperative Ariax-only lock, then open a supported version so SQLite can
+  complete hot rollback-journal recovery,
+- validate the exact schema, integrity, foreign keys, decoded bounded records,
+  dense queues, and journal-install pointer relation,
 - read task list and journal paths,
 - scan companion control files if configured,
 - replay each task journal to last valid committed record,
@@ -457,14 +516,30 @@ Consequences:
   encryption, key rotation, locked-key recovery, and export encryption. It does
   not weaken this default.
 
-Persistence directories are created mode `0700` on Unix and files, including
-SQLite WAL/SHM files, journal segments, temporary replacements, and backups, are
-created mode `0600`. On Windows, their ACL grants the current user and required
-system principals only and disables inherited broad access. Existing artifacts
-with broader access are tightened before use; if that cannot be done, persistent
-mode fails closed with an actionable error instead of writing sensitive task
-metadata insecurely. User-requested export destinations receive the same secure
-creation policy.
+The SQLite database and backups require a dedicated private parent directory.
+Every existing path component must be a real directory rather than a Unix
+symlink or Windows reparse point. If the exact parent already exists with
+group/other access on Unix or inherited or foreign allow entries on Windows,
+startup rejects it without changing the directory. A missing owned directory
+chain is created one component at a time with mode `0700` on Unix or a protected
+Windows ACL granting only the current user, SYSTEM, and Administrators. This
+avoids silently applying `chmod` or a new ACL to `/tmp`, a project directory, or
+another caller-owned broad parent. Windows creation and verification use the
+native `ariax-windows-security` adapter with no shell or PowerShell subprocess.
+
+Database, WAL, SHM, rollback-journal, `${db}.ariax-owner-lock`,
+temporary-backup, and published-backup files are private regular files (`0600`
+on Unix and the corresponding protected Windows ACL). Hard-linked persistence
+artifacts are rejected so path-derived owner locks cannot be bypassed by opening
+the same file through another name. Existing
+supported-version files inside an accepted private directory may be tightened
+before use, but symlinks and non-regular artifacts are rejected rather than
+followed or replaced. When the main database is absent, existing SQLite
+sidecars are rejected as orphans rather than adopted. The same rule applies to
+an empty main file, so SQLite cannot silently initialize it while discarding an
+untrusted WAL, SHM, or rollback journal. A newer schema is rejected before any
+such file-permission change. Journal, companion, metadata, and export artifacts
+follow their owning safe-creation rules.
 
 Atomic replacement never leaves a broad-permission temporary file. Rotated
 segments and backups retain the source ACL/mode. Deletion is best-effort and is
@@ -559,10 +634,10 @@ SQLite:
 
 - the exact version-1 tables and migration rules are defined under SQLite
   Responsibilities above,
-- WAL mode by default when supported; on filesystems where WAL's shared-memory
-  requirement is unreliable (network filesystems and some FUSE/overlay mounts),
-  detect the failure and fall back to rollback-journal mode with one startup
-  warning rather than risking a corrupt WAL,
+- WAL mode by default when supported; WAL and DELETE are each verified with a
+  `BEGIN IMMEDIATE` transaction that writes page-one `user_version` and rolls
+  back. A failed WAL selection or probe falls back to DELETE and requires the
+  same probe rather than assuming the pragma string proves the filesystem works,
 - `synchronous=FULL`, `foreign_keys=ON`, a 5-second busy timeout, and new
   databases use 4096-byte pages,
 - `cache_size` is set as a negative KiB value from the selected
@@ -581,11 +656,26 @@ SQLite:
   `-DSQLITE_MAX_LIKE_PATTERN_LENGTH=65536`; without that repository-scoped
   hard ceiling SQLite clamps the required runtime limit to 50,000 and startup
   correctly fails closed,
-- WAL auto-checkpoint is 1000 pages, with a truncate checkpoint at clean
-  shutdown and when WAL bytes exceed 64 MiB; checkpoint failure is diagnostic
-  and never discards the WAL,
-- periodic private backup policy uses the SQLite backup API on the dedicated
-  session thread and retains a bounded two generations by default.
+- WAL auto-checkpoint is 1000 pages. The executable truncate-checkpoint primitive
+  reports a busy checkpoint and is a no-op in DELETE mode; clean-shutdown and
+  size-trigger scheduling remain part of the pending session-thread
+  orchestration,
+- the hot-backup primitive writes a private temporary database, validates its
+  integrity, exact schema, and persisted semantics, then `sync_all`s that file
+  and publishes it with a no-clobber hard link. It never overwrites an existing
+  destination, deletes a raced destination replacement, or accepts a
+  destination filename ending in `-wal`, `-shm`, or `-journal` under
+  ASCII-insensitive comparison;
+  pre-existing destination sidecars are rejected rather than adopted. Unix also
+  syncs the parent directory around temporary-link cleanup; Windows does not
+  currently claim crash-durable directory-entry publication. A crash or
+  temporary-unlink failure at any point from destination-link publication until
+  removal is durably synced can leave or resurrect two names for one inode;
+  normal unique-link validation rejects that residue. Verified recovery of only
+  the generated same-file alias, or a native atomic no-replace publication
+  primitive, plus crash-point and unlink-error tests across that entire window
+  is required before production use or tagging. Periodic scheduling and bounded
+  generation retention remain pending with the dedicated session thread.
 
 Control journal:
 

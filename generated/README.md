@@ -21,7 +21,12 @@ It also freezes the serialized appender's segment naming, acknowledgement,
 latched-fault, tail-reopen, and flushed-boundary rotation rules.
 `session_v1.json` freezes the strict SQLite v1 schema SQL, direct rusqlite
 feature/build contract, pragmas, hard connection limits, queue/install enums,
-caps, reconciliation rules, and failure vocabularies.
+caps, reconciliation rules, and failure vocabularies. It also records the
+private-artifact policy, bounded read budgets, tokenized install-pointer rules,
+dense queue transitions, cooperative owner-lock, hard-link rejection, and
+orphan-sidecar rules, hot rollback page-one plus committed-WAL preflight,
+WAL/DELETE probe and checkpoint behavior, and validated file-synced no-clobber
+backup contract.
 `error_codes.json` includes the stable journal numeric value for each closed
 error class.
 

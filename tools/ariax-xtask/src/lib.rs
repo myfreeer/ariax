@@ -538,7 +538,7 @@ mod tests {
             .expect("write workspace manifest fixture");
             fs::write(
                 workspace.join(".cargo/config.toml"),
-                "[env]\nLIBSQLITE3_FLAGS = \"-DSQLITE_MAX_LIKE_PATTERN_LENGTH=65536\"\n",
+                "[env]\nLIBSQLITE3_FLAGS = { value = \"-DSQLITE_MAX_LIKE_PATTERN_LENGTH=65536\", force = true }\n",
             )
             .expect("write Cargo config fixture");
             fs::create_dir_all(&aria2).expect("create aria2 fixture");

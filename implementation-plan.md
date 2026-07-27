@@ -6,7 +6,16 @@ storage layout/path, bounded runtime ownership, and journal v1 framing/replay
 plus all 24 typed journal payload contracts, semantic recovery, and the
 file-backed serialized append/flush/rotation primitive are implemented. The
 exact SQLite v1 strict schema, connection policy, core records, reconciliation,
-journal-install pointer, and hot-backup primitives are also executable.
+journal-install pointer, and hot-backup primitives are also executable. The
+store now includes private-artifact enforcement, raw committed-version
+preflight across hot rollback page-one state and committed WAL, cooperative
+Ariax-only owner locking, bounded semantic reads, tokenized pointer installation,
+atomic dense cross-queue transitions, verified WAL/DELETE write probes, a
+truncate-checkpoint primitive, and validated file-synced no-clobber backup on
+successful return. Recovery of a temporary hard-link alias that survives a
+crash or cleanup failure from destination-link publication until cleanup is
+durably synced remains a production/tag gate, together with the dedicated
+bounded owner thread and cross-store startup orchestration.
 
 This is a staged plan for building the design without repeating the incomplete
 rewrite pattern.
@@ -65,9 +74,11 @@ rewrite pattern.
 - Assert the SuppaFTP patch never formats raw commands, credentials, paths,
   welcomes/replies, FEAT text, or listings into logs; canary-secret tests capture
   every enabled log level. Do not use its workspace-global `no-log` feature.
-- Assert rusqlite's defaults are disabled and its resolved feature set is
-  exactly `bundled+backup+cache+limits`; exercise hot backup and verify every
-  required per-connection SQLite limit before persistent-mode tests run.
+- Assert rusqlite's defaults are disabled and its direct feature roots are
+  exactly `bundled+backup+cache+limits`; freeze the resolved rusqlite closure as
+  `backup+bundled+cache+hashlink+limits+modern_sqlite` and the corresponding
+  `libsqlite3-sys` closure. Exercise hot backup and verify every required
+  per-connection SQLite limit before persistent-mode tests run.
 - Assert russh resolves with defaults disabled and exactly ring+flate2+rsa, with
   no aws-lc/DSA/DES feature; cookie tests install the pinned PSL and exercise the
   owned SameSite filter across redirect and mirror contexts.
@@ -129,8 +140,20 @@ Exit criteria:
 - Root relocation/rebind tests prove that adjacency, names, mtimes, and copied
   control files cannot authorize progress; retained pieces require matching
   identities or per-piece digest evidence.
-- SQLite schema creation, every supported migration, unsupported-newer-version
-  rejection, WAL checkpoint/backup, and journal-install pointer crash tests pass.
+- SQLite schema creation, every supported migration, raw hot-rollback page-one
+  and committed-WAL unsupported-newer-version rejection without artifact
+  mutation, supported hot rollback recovery, legacy page-size-zero fail-closed
+  behavior, owner-lock contention, private-path/artifact rejection, sidecar
+  rejection beside a missing or empty main database, case-insensitive reserved
+  backup-suffix rejection, bounded semantic reads, dense cross-queue
+  transitions, WAL/DELETE write probes and
+  checkpointing, file-synced no-clobber validated backup, and tokenized
+  journal-install pointer transaction/reopen, stale-command, and crash-point
+  tests pass. Backup crash-point coverage must prove that every crash from
+  destination-link publication until temporary-link removal is durably synced
+  either leaves a directly usable destination or performs verified recovery
+  without deleting a raced destination replacement. The same matrix must inject
+  temporary unlink failures after publication.
 - Finalize intent/redo recovery passes every crash-point and collision test.
 - Scheduler model tests cover every state × command/error transition and aria2
   wire projection.

@@ -1,17 +1,20 @@
 use crate::{
-    CheckpointId, JournalHash, JournalId, MAX_PLATFORM_PATH_BYTES, OptionsSnapshotScope,
-    PathPlatform, PersistedOptionPolicy, PlatformPath, SanitizedOptionMap,
+    CheckpointId, JournalHash, JournalId, MAX_OPTION_MAP_BYTES, MAX_OPTION_MAP_ENTRIES,
+    MAX_PLATFORM_PATH_BYTES, OptionsSnapshotScope, PathPlatform, PersistedOptionPolicy,
+    PlatformPath, SanitizedOptionMap,
 };
 use ariax_core::Gid;
+use fs2::FileExt as _;
 use rusqlite::limits::Limit;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use std::collections::{BTreeMap, HashSet};
 use std::error::Error;
 use std::fmt;
-use std::fs::{self, OpenOptions};
-use std::io;
-use std::path::{Path, PathBuf};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Seek, SeekFrom};
+use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 pub const SESSION_SCHEMA_VERSION: u32 = 1;
@@ -30,10 +33,16 @@ pub const SESSION_MAX_SAFE_MESSAGE_BYTES: usize = 4096;
 pub const SESSION_MAX_SAFE_URI_BYTES: usize = 64 * 1024;
 pub const SESSION_MAX_HOST_KEY_BYTES: usize = 1024 * 1024;
 pub const SESSION_MAX_ALGORITHM_BYTES: usize = 128;
+pub const SESSION_MAX_TASKS: usize = 100_000;
+pub const SESSION_MAX_OPTIONS_PER_TASK: usize = MAX_OPTION_MAP_ENTRIES;
+pub const SESSION_TASK_READ_BUDGET_BYTES: usize = 64 * 1024 * 1024;
+pub const SESSION_INSTALL_READ_BUDGET_BYTES: usize = 16 * 1024 * 1024;
+pub const SESSION_OWNER_LOCK_SUFFIX: &str = ".ariax-owner-lock";
 
 const PLATFORM_PATH_ENCODING_OVERHEAD: usize = 5;
 const MAX_ENCODED_PLATFORM_PATH_BYTES: usize =
     MAX_PLATFORM_PATH_BYTES + PLATFORM_PATH_ENCODING_OVERHEAD;
+static BACKUP_TEMP_ID: AtomicU64 = AtomicU64::new(1);
 
 const SESSION_TABLE_SQL: &str = r#"CREATE TABLE session (
     session_id BLOB PRIMARY KEY NOT NULL CHECK(typeof(session_id) = 'blob' AND length(session_id) = 16),
@@ -485,6 +494,25 @@ pub struct JournalInstallIntent {
     pub created_ms: u64,
 }
 
+/// Identity token that prevents stale install completion or retirement commands.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct JournalInstallToken {
+    pub gid: Gid,
+    pub checkpoint_id: CheckpointId,
+    pub new_journal_id: JournalId,
+}
+
+impl JournalInstallIntent {
+    #[must_use]
+    pub const fn token(&self) -> JournalInstallToken {
+        JournalInstallToken {
+            gid: self.gid,
+            checkpoint_id: self.checkpoint_id,
+            new_journal_id: self.new_journal_id,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionStoreSettings {
     pub journal_mode: SessionJournalMode,
@@ -502,6 +530,7 @@ pub enum SessionIoOperation {
     InspectPath,
     CreateDirectory,
     CreateDatabase,
+    AcquireOwnerLock,
     TightenPermissions,
     CreateBackup,
     RemoveFailedBackup,
@@ -514,6 +543,7 @@ impl SessionIoOperation {
             Self::InspectPath => "inspect_path",
             Self::CreateDirectory => "create_directory",
             Self::CreateDatabase => "create_database",
+            Self::AcquireOwnerLock => "acquire_owner_lock",
             Self::TightenPermissions => "tighten_permissions",
             Self::CreateBackup => "create_backup",
             Self::RemoveFailedBackup => "remove_failed_backup",
@@ -521,10 +551,11 @@ impl SessionIoOperation {
     }
 }
 
-pub const ALL_SESSION_IO_OPERATIONS: [SessionIoOperation; 6] = [
+pub const ALL_SESSION_IO_OPERATIONS: [SessionIoOperation; 7] = [
     SessionIoOperation::InspectPath,
     SessionIoOperation::CreateDirectory,
     SessionIoOperation::CreateDatabase,
+    SessionIoOperation::AcquireOwnerLock,
     SessionIoOperation::TightenPermissions,
     SessionIoOperation::CreateBackup,
     SessionIoOperation::RemoveFailedBackup,
@@ -554,6 +585,8 @@ pub enum SessionStoreError {
     InvalidRecord(&'static str),
     SessionConflict,
     QueueInvariant,
+    QueueTransitionRequired,
+    OwnerLockBusy,
     NotFound,
     ForbiddenPersistedOption,
     JournalPointerMismatch,
@@ -578,6 +611,8 @@ impl SessionStoreError {
             Self::InvalidRecord(_) => "invalid_record",
             Self::SessionConflict => "session_conflict",
             Self::QueueInvariant => "queue_invariant",
+            Self::QueueTransitionRequired => "queue_transition_required",
+            Self::OwnerLockBusy => "owner_lock_busy",
             Self::NotFound => "not_found",
             Self::ForbiddenPersistedOption => "forbidden_persisted_option",
             Self::JournalPointerMismatch => "journal_pointer_mismatch",
@@ -588,7 +623,7 @@ impl SessionStoreError {
     }
 }
 
-pub const ALL_SESSION_STORE_ERROR_CODES: [&str; 18] = [
+pub const ALL_SESSION_STORE_ERROR_CODES: [&str; 20] = [
     "sqlite",
     "io",
     "invalid_config",
@@ -601,6 +636,8 @@ pub const ALL_SESSION_STORE_ERROR_CODES: [&str; 18] = [
     "invalid_record",
     "session_conflict",
     "queue_invariant",
+    "queue_transition_required",
+    "owner_lock_busy",
     "not_found",
     "forbidden_persisted_option",
     "journal_pointer_mismatch",
@@ -641,6 +678,10 @@ impl fmt::Display for SessionStoreError {
             Self::InvalidRecord(field) => write!(formatter, "invalid session record: {field}"),
             Self::SessionConflict => formatter.write_str("a different session already exists"),
             Self::QueueInvariant => formatter.write_str("queue positions are not dense and unique"),
+            Self::QueueTransitionRequired => {
+                formatter.write_str("task queue changes require an atomic queue transition")
+            }
+            Self::OwnerLockBusy => formatter.write_str("another process owns the session database"),
             Self::NotFound => formatter.write_str("session record was not found"),
             Self::ForbiddenPersistedOption => {
                 formatter.write_str("option policy forbids persistence")
@@ -672,11 +713,26 @@ impl From<rusqlite::Error> for SessionStoreError {
     }
 }
 
+struct SessionOwnerLock {
+    file: File,
+}
+
+impl Drop for SessionOwnerLock {
+    fn drop(&mut self) {
+        // `flock` locks follow duplicated open-file descriptions on Unix. A
+        // concurrently spawned child can briefly inherit such a descriptor,
+        // so closing only this handle can retain the lock past store teardown.
+        // Explicit unlock also gives Windows a deterministic release point.
+        let _ = fs2::FileExt::unlock(&self.file);
+    }
+}
+
 pub struct SessionStore {
     path: PathBuf,
     connection: Connection,
     journal_mode: SessionJournalMode,
     config: SessionStoreConfig,
+    _owner_lock: SessionOwnerLock,
 }
 
 impl SessionStore {
@@ -686,10 +742,32 @@ impl SessionStore {
     ) -> Result<Self, SessionStoreError> {
         validate_config(config)?;
         let path = path.as_ref().to_path_buf();
+        validate_persistence_file_name(&path)?;
+        prepare_private_directory(required_private_parent(&path)?)?;
+        let path = canonicalize_database_path(path)?;
+        let existed_before_lock = validate_database_artifacts(&path)?;
+        if existed_before_lock {
+            let version = inspect_persisted_user_version(&path)?;
+            if version > SESSION_SCHEMA_VERSION {
+                return Err(SessionStoreError::NewerSchema {
+                    found: version,
+                    supported: SESSION_SCHEMA_VERSION,
+                });
+            }
+        }
+        let owner_lock = acquire_session_owner_lock(&path)?;
         let existed = prepare_database_path(&path)?;
-        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
-            | OpenFlags::SQLITE_OPEN_CREATE
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        if existed {
+            let version = inspect_persisted_user_version(&path)?;
+            if version > SESSION_SCHEMA_VERSION {
+                return Err(SessionStoreError::NewerSchema {
+                    found: version,
+                    supported: SESSION_SCHEMA_VERSION,
+                });
+            }
+            tighten_sqlite_artifact_permissions(&path)?;
+        }
+        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
         let mut connection = Connection::open_with_flags(&path, flags)?;
         apply_limits(&connection)?;
         connection.busy_timeout(Duration::from_millis(config.busy_timeout_ms))?;
@@ -703,11 +781,10 @@ impl SessionStore {
         if version == 0 && count_schema_objects(&connection)? != 0 {
             return Err(SessionStoreError::UnversionedDatabase);
         }
-        if existed {
-            tighten_database_permissions(&path)?;
-        }
         if version == SESSION_SCHEMA_VERSION {
+            validate_schema(&connection)?;
             validate_integrity(&connection)?;
+            validate_persisted_semantics(&connection)?;
         } else {
             connection.pragma_update(None, "page_size", SESSION_PAGE_SIZE_BYTES)?;
         }
@@ -717,12 +794,14 @@ impl SessionStore {
         }
         validate_schema(&connection)?;
         validate_integrity(&connection)?;
-        tighten_database_permissions(&path)?;
+        validate_persisted_semantics(&connection)?;
+        tighten_sqlite_artifact_permissions(&path)?;
         Ok(Self {
             path,
             connection,
             journal_mode,
             config,
+            _owner_lock: owner_lock,
         })
     }
 
@@ -760,9 +839,11 @@ impl SessionStore {
 
     pub fn put_session(&mut self, record: &SessionRecord) -> Result<(), SessionStoreError> {
         validate_time_order(record.created_ms, record.updated_ms)?;
-        let existing = self
+        let transaction = self
             .connection
-            .prepare("SELECT session_id FROM session ORDER BY session_id")?
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing = transaction
+            .prepare("SELECT session_id FROM session ORDER BY session_id LIMIT 2")?
             .query_map([], |row| row.get::<_, Vec<u8>>(0))?
             .collect::<Result<Vec<_>, _>>()?;
         if existing.len() > 1
@@ -772,7 +853,7 @@ impl SessionStore {
         {
             return Err(SessionStoreError::SessionConflict);
         }
-        self.connection.execute(
+        transaction.execute(
             "INSERT INTO session(session_id, created_ms, updated_ms, clean_shutdown) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(session_id) DO UPDATE SET created_ms = excluded.created_ms, updated_ms = excluded.updated_ms, clean_shutdown = excluded.clean_shutdown",
             params![
                 record.session_id.as_bytes().as_slice(),
@@ -781,6 +862,7 @@ impl SessionStore {
                 bool_to_i64(record.clean_shutdown),
             ],
         )?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -788,7 +870,7 @@ impl SessionStore {
         let rows = self
             .connection
             .prepare(
-                "SELECT session_id, created_ms, updated_ms, clean_shutdown FROM session ORDER BY session_id",
+                "SELECT session_id, created_ms, updated_ms, clean_shutdown FROM session ORDER BY session_id LIMIT 2",
             )?
             .query_map([], |row| {
                 Ok((
@@ -840,8 +922,32 @@ impl SessionStore {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing = transaction
+            .query_row(
+                "SELECT queue_state, queue_position, primary_journal_id, primary_journal_path FROM task WHERE gid = ?1",
+                [task.gid.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                        row.get::<_, Vec<u8>>(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+        if let Some((queue_state, queue_position, journal_id, journal_path)) = existing {
+            if queue_state != task.queue_state as i64
+                || queue_position != i64::from(task.queue_position)
+            {
+                return Err(SessionStoreError::QueueTransitionRequired);
+            }
+            if journal_id != task.primary_journal_id.as_bytes() || journal_path != primary_path {
+                return Err(SessionStoreError::JournalPointerMismatch);
+            }
+        }
         transaction.execute(
-            "INSERT INTO task(gid, session_id, queue_state, queue_position, desired_paused, primary_journal_id, primary_journal_path, replica_journal_path, replica_sequence, root_display, cached_layout_hash, cached_root_binding_hash, cached_snapshot_hash, no_space_target, no_space_scheduled_at_ms, no_space_delay_ms, created_ms, updated_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18) ON CONFLICT(gid) DO UPDATE SET session_id = excluded.session_id, queue_state = excluded.queue_state, queue_position = excluded.queue_position, desired_paused = excluded.desired_paused, primary_journal_id = excluded.primary_journal_id, primary_journal_path = excluded.primary_journal_path, replica_journal_path = excluded.replica_journal_path, replica_sequence = excluded.replica_sequence, root_display = excluded.root_display, cached_layout_hash = excluded.cached_layout_hash, cached_root_binding_hash = excluded.cached_root_binding_hash, cached_snapshot_hash = excluded.cached_snapshot_hash, no_space_target = excluded.no_space_target, no_space_scheduled_at_ms = excluded.no_space_scheduled_at_ms, no_space_delay_ms = excluded.no_space_delay_ms, created_ms = excluded.created_ms, updated_ms = excluded.updated_ms",
+            "INSERT INTO task(gid, session_id, queue_state, queue_position, desired_paused, primary_journal_id, primary_journal_path, replica_journal_path, replica_sequence, root_display, cached_layout_hash, cached_root_binding_hash, cached_snapshot_hash, no_space_target, no_space_scheduled_at_ms, no_space_delay_ms, created_ms, updated_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18) ON CONFLICT(gid) DO UPDATE SET session_id = excluded.session_id, desired_paused = excluded.desired_paused, replica_journal_path = excluded.replica_journal_path, replica_sequence = excluded.replica_sequence, root_display = excluded.root_display, cached_layout_hash = excluded.cached_layout_hash, cached_root_binding_hash = excluded.cached_root_binding_hash, cached_snapshot_hash = excluded.cached_snapshot_hash, no_space_target = excluded.no_space_target, no_space_scheduled_at_ms = excluded.no_space_scheduled_at_ms, no_space_delay_ms = excluded.no_space_delay_ms, created_ms = excluded.created_ms, updated_ms = excluded.updated_ms",
             params![
                 task.gid.to_string(),
                 task.session_id.as_bytes().as_slice(),
@@ -869,13 +975,8 @@ impl SessionStore {
     }
 
     pub fn tasks(&self) -> Result<Vec<SessionTaskRecord>, SessionStoreError> {
-        let mut statement = self.connection.prepare(
-            "SELECT gid, session_id, queue_state, queue_position, desired_paused, primary_journal_id, primary_journal_path, replica_journal_path, replica_sequence, root_display, cached_layout_hash, cached_root_binding_hash, cached_snapshot_hash, no_space_target, no_space_scheduled_at_ms, no_space_delay_ms, created_ms, updated_ms FROM task ORDER BY queue_state, queue_position, gid",
-        )?;
-        let raw = statement
-            .query_map([], RawTaskRow::from_row)?
-            .collect::<Result<Vec<_>, _>>()?;
-        raw.into_iter().map(RawTaskRow::decode).collect()
+        validate_dense_queues(&self.connection)?;
+        read_task_records(&self.connection)
     }
 
     pub fn reorder_queue(
@@ -884,6 +985,9 @@ impl SessionStore {
         ordered_gids: &[Gid],
         updated_ms: u64,
     ) -> Result<(), SessionStoreError> {
+        if ordered_gids.len() > SESSION_MAX_TASKS {
+            return Err(SessionStoreError::QueueInvariant);
+        }
         let requested = ordered_gids.iter().copied().collect::<HashSet<_>>();
         if requested.len() != ordered_gids.len() {
             return Err(SessionStoreError::QueueInvariant);
@@ -924,6 +1028,86 @@ impl SessionStore {
         Ok(())
     }
 
+    pub fn transition_task_queue(
+        &mut self,
+        gid: Gid,
+        expected_state: SessionQueueState,
+        target_state: SessionQueueState,
+        target_position: u32,
+        desired_paused: bool,
+        updated_ms: u64,
+    ) -> Result<(), SessionStoreError> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (current_state, current_position): (i64, i64) = transaction
+            .query_row(
+                "SELECT queue_state, queue_position FROM task WHERE gid = ?1",
+                [gid.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .ok_or(SessionStoreError::NotFound)?;
+        if SessionQueueState::try_from(current_state)? != expected_state {
+            return Err(SessionStoreError::QueueTransitionRequired);
+        }
+        let target_len: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM task WHERE queue_state = ?1",
+            [target_state as i64],
+            |row| row.get(0),
+        )?;
+        let target_position = i64::from(target_position);
+        let maximum = if expected_state == target_state {
+            target_len.saturating_sub(1)
+        } else {
+            target_len
+        };
+        if target_position < 0 || target_position > maximum {
+            return Err(SessionStoreError::QueueInvariant);
+        }
+        let updated_ms = time_to_i64(updated_ms, "task.updated_ms")?;
+        if expected_state == target_state {
+            if target_position < current_position {
+                transaction.execute(
+                    "UPDATE task SET queue_position = queue_position + 1, updated_ms = ?1 WHERE queue_state = ?2 AND queue_position >= ?3 AND queue_position < ?4",
+                    params![updated_ms, target_state as i64, target_position, current_position],
+                )?;
+            } else if target_position > current_position {
+                transaction.execute(
+                    "UPDATE task SET queue_position = queue_position - 1, updated_ms = ?1 WHERE queue_state = ?2 AND queue_position > ?3 AND queue_position <= ?4",
+                    params![updated_ms, target_state as i64, current_position, target_position],
+                )?;
+            }
+        } else {
+            transaction.execute(
+                "UPDATE task SET queue_position = queue_position - 1, updated_ms = ?1 WHERE queue_state = ?2 AND queue_position > ?3",
+                params![updated_ms, expected_state as i64, current_position],
+            )?;
+            transaction.execute(
+                "UPDATE task SET queue_position = queue_position + 1, updated_ms = ?1 WHERE queue_state = ?2 AND queue_position >= ?3",
+                params![updated_ms, target_state as i64, target_position],
+            )?;
+        }
+        let changed = transaction.execute(
+            "UPDATE task SET queue_state = ?1, queue_position = ?2, desired_paused = ?3, updated_ms = ?4 WHERE gid = ?5 AND queue_state = ?6 AND queue_position = ?7",
+            params![
+                target_state as i64,
+                target_position,
+                bool_to_i64(desired_paused),
+                updated_ms,
+                gid.to_string(),
+                expected_state as i64,
+                current_position,
+            ],
+        )?;
+        if changed != 1 {
+            return Err(SessionStoreError::QueueInvariant);
+        }
+        validate_dense_queues(&transaction)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn replace_task_options(
         &mut self,
         gid: Gid,
@@ -931,6 +1115,9 @@ impl SessionStore {
         options: &SanitizedOptionMap,
         policy: &impl PersistedOptionPolicy,
     ) -> Result<(), SessionStoreError> {
+        if options.entries().len() > SESSION_MAX_OPTIONS_PER_TASK {
+            return Err(SessionStoreError::InvalidRecord("task_option.count"));
+        }
         if options.entries().any(|(key, _)| !policy.permits(key)) {
             return Err(SessionStoreError::ForbiddenPersistedOption);
         }
@@ -962,24 +1149,54 @@ impl SessionStore {
         &self,
         gid: Gid,
         scope: OptionsSnapshotScope,
+        policy: &impl PersistedOptionPolicy,
     ) -> Result<SanitizedOptionMap, SessionStoreError> {
-        let entries = self
-            .connection
-            .prepare(
-                "SELECT key, canonical_value FROM task_option WHERE gid = ?1 AND scope = ?2 ORDER BY key",
-            )?
-            .query_map(params![gid.to_string(), scope.number()], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+        let count: i64 = self.connection.query_row(
+            "SELECT COUNT(*) FROM task_option WHERE gid = ?1 AND scope = ?2",
+            params![gid.to_string(), scope.number()],
+            |row| row.get(0),
+        )?;
+        let count = bounded_count(count, SESSION_MAX_OPTIONS_PER_TASK, "task_option.count")?;
+        let mut statement = self.connection.prepare(
+            "SELECT key, canonical_value FROM task_option WHERE gid = ?1 AND scope = ?2 ORDER BY key",
+        )?;
+        let mut rows = statement.query(params![gid.to_string(), scope.number()])?;
         let mut decoded = Vec::new();
         decoded
-            .try_reserve_exact(entries.len())
+            .try_reserve_exact(count)
             .map_err(|_| SessionStoreError::InvalidPersistedValue("task_option.allocation"))?;
-        for (key, value) in entries {
+        let mut canonical_bytes = 4_usize;
+        while let Some(row) = rows.next()? {
+            let key = row.get::<_, String>(0)?;
+            let value = row.get::<_, Vec<u8>>(1)?;
+            if !policy.permits(&key) {
+                return Err(SessionStoreError::ForbiddenPersistedOption);
+            }
+            canonical_bytes = canonical_bytes
+                .checked_add(8)
+                .and_then(|total| total.checked_add(key.len()))
+                .and_then(|total| total.checked_add(value.len()))
+                .ok_or(SessionStoreError::InvalidPersistedValue(
+                    "task_option.bytes",
+                ))?;
+            if canonical_bytes > MAX_OPTION_MAP_BYTES {
+                return Err(SessionStoreError::InvalidPersistedValue(
+                    "task_option.bytes",
+                ));
+            }
             let value = String::from_utf8(value)
                 .map_err(|_| SessionStoreError::InvalidPersistedValue("task_option.value"))?;
             decoded.push((key, value));
+            if decoded.len() > count {
+                return Err(SessionStoreError::InvalidPersistedValue(
+                    "task_option.count",
+                ));
+            }
+        }
+        if decoded.len() != count {
+            return Err(SessionStoreError::InvalidPersistedValue(
+                "task_option.count",
+            ));
         }
         SanitizedOptionMap::new(decoded)
             .map_err(|_| SessionStoreError::InvalidPersistedValue("task_option"))
@@ -1048,7 +1265,7 @@ impl SessionStore {
     pub fn begin_journal_install(
         &mut self,
         intent: &JournalInstallIntent,
-    ) -> Result<(), SessionStoreError> {
+    ) -> Result<JournalInstallToken, SessionStoreError> {
         validate_install_intent(intent)?;
         let old_path = encode_platform_path(&intent.old_path)?;
         let new_path = encode_platform_path(&intent.new_path)?;
@@ -1089,135 +1306,109 @@ impl SessionStore {
             ],
         )?;
         transaction.commit()?;
-        Ok(())
+        Ok(intent.token())
     }
 
     pub fn complete_journal_install(
         &mut self,
-        gid: Gid,
+        token: JournalInstallToken,
         updated_ms: u64,
     ) -> Result<(), SessionStoreError> {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let install = transaction
-            .query_row(
-                "SELECT old_journal_id, old_path, new_journal_id, new_path, phase FROM journal_install WHERE gid = ?1",
-                [gid.to_string()],
-                |row| {
-                    Ok((
-                        row.get::<_, Vec<u8>>(0)?,
-                        row.get::<_, Vec<u8>>(1)?,
-                        row.get::<_, Vec<u8>>(2)?,
-                        row.get::<_, Vec<u8>>(3)?,
-                        row.get::<_, i64>(4)?,
-                    ))
-                },
-            )
-            .optional()?
-            .ok_or(SessionStoreError::NotFound)?;
-        if JournalInstallPhase::try_from(install.4)? != JournalInstallPhase::Installing {
+        let install = read_journal_install_for_gid(&transaction, token.gid)?;
+        if install.phase != JournalInstallPhase::Installing {
+            return Err(SessionStoreError::JournalInstallConflict);
+        }
+        validate_install_intent(&install)?;
+        if install.token() != token {
             return Err(SessionStoreError::JournalInstallConflict);
         }
         let current = transaction
             .query_row(
                 "SELECT primary_journal_id, primary_journal_path FROM task WHERE gid = ?1",
-                [gid.to_string()],
+                [token.gid.to_string()],
                 |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?)),
             )
             .optional()?
             .ok_or(SessionStoreError::NotFound)?;
-        if current.0 != install.0 || current.1 != install.1 {
+        if decode_journal_id(&current.0, "task.primary_journal_id")? != install.old_journal_id
+            || decode_platform_path(&current.1, "task.primary_journal_path")? != install.old_path
+        {
             return Err(SessionStoreError::JournalPointerMismatch);
         }
         let changed = transaction.execute(
             "UPDATE task SET primary_journal_id = ?1, primary_journal_path = ?2, updated_ms = ?3 WHERE gid = ?4",
             params![
-                install.2,
-                install.3,
+                install.new_journal_id.as_bytes().as_slice(),
+                encode_platform_path(&install.new_path)?,
                 time_to_i64(updated_ms, "task.updated_ms")?,
-                gid.to_string(),
+                token.gid.to_string(),
             ],
         )?;
         if changed != 1 {
             return Err(SessionStoreError::NotFound);
         }
-        transaction.execute(
-            "UPDATE journal_install SET phase = ?1 WHERE gid = ?2",
-            params![JournalInstallPhase::Installed as i64, gid.to_string()],
+        let phase_changed = transaction.execute(
+            "UPDATE journal_install SET phase = ?1 WHERE gid = ?2 AND checkpoint_id = ?3 AND new_journal_id = ?4",
+            params![
+                JournalInstallPhase::Installed as i64,
+                token.gid.to_string(),
+                token.checkpoint_id.as_bytes().as_slice(),
+                token.new_journal_id.as_bytes().as_slice(),
+            ],
         )?;
+        if phase_changed != 1 {
+            return Err(SessionStoreError::JournalInstallConflict);
+        }
         transaction.commit()?;
         Ok(())
     }
 
-    pub fn clear_installed_journal(&mut self, gid: Gid) -> Result<(), SessionStoreError> {
-        let changed = self.connection.execute(
-            "DELETE FROM journal_install WHERE gid = ?1 AND phase = ?2",
-            params![gid.to_string(), JournalInstallPhase::Installed as i64],
-        )?;
-        if changed == 1 {
-            Ok(())
-        } else {
-            Err(SessionStoreError::JournalInstallConflict)
+    pub fn clear_installed_journal(
+        &mut self,
+        token: JournalInstallToken,
+    ) -> Result<(), SessionStoreError> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let install = read_journal_install_for_gid(&transaction, token.gid)?;
+        if install.phase != JournalInstallPhase::Installed || install.token() != token {
+            return Err(SessionStoreError::JournalInstallConflict);
         }
+        validate_install_values(&install)?;
+        let current = transaction
+            .query_row(
+                "SELECT primary_journal_id, primary_journal_path FROM task WHERE gid = ?1",
+                [token.gid.to_string()],
+                |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?)),
+            )
+            .optional()?
+            .ok_or(SessionStoreError::NotFound)?;
+        if decode_journal_id(&current.0, "task.primary_journal_id")? != install.new_journal_id
+            || decode_platform_path(&current.1, "task.primary_journal_path")? != install.new_path
+        {
+            return Err(SessionStoreError::JournalPointerMismatch);
+        }
+        let changed = transaction.execute(
+            "DELETE FROM journal_install WHERE gid = ?1 AND checkpoint_id = ?2 AND new_journal_id = ?3 AND phase = ?4",
+            params![
+                token.gid.to_string(),
+                token.checkpoint_id.as_bytes().as_slice(),
+                token.new_journal_id.as_bytes().as_slice(),
+                JournalInstallPhase::Installed as i64,
+            ],
+        )?;
+        if changed != 1 {
+            return Err(SessionStoreError::JournalInstallConflict);
+        }
+        transaction.commit()?;
+        Ok(())
     }
 
     pub fn journal_installs(&self) -> Result<Vec<JournalInstallIntent>, SessionStoreError> {
-        let raw = self
-            .connection
-            .prepare(
-                "SELECT gid, checkpoint_id, old_journal_id, old_path, new_journal_id, new_path, source_last_sequence, phase, created_ms FROM journal_install ORDER BY gid",
-            )?
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, Vec<u8>>(1)?,
-                    row.get::<_, Vec<u8>>(2)?,
-                    row.get::<_, Vec<u8>>(3)?,
-                    row.get::<_, Vec<u8>>(4)?,
-                    row.get::<_, Vec<u8>>(5)?,
-                    row.get::<_, Vec<u8>>(6)?,
-                    row.get::<_, i64>(7)?,
-                    row.get::<_, i64>(8)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        raw.into_iter()
-            .map(
-                |(
-                    gid,
-                    checkpoint,
-                    old_id,
-                    old_path,
-                    new_id,
-                    new_path,
-                    sequence,
-                    phase,
-                    created,
-                )| {
-                    Ok(JournalInstallIntent {
-                        gid: decode_gid(&gid)?,
-                        checkpoint_id: decode_checkpoint_id(&checkpoint)?,
-                        old_journal_id: decode_journal_id(
-                            &old_id,
-                            "journal_install.old_journal_id",
-                        )?,
-                        old_path: decode_platform_path(&old_path, "journal_install.old_path")?,
-                        new_journal_id: decode_journal_id(
-                            &new_id,
-                            "journal_install.new_journal_id",
-                        )?,
-                        new_path: decode_platform_path(&new_path, "journal_install.new_path")?,
-                        source_last_sequence: decode_u64(
-                            &sequence,
-                            "journal_install.source_last_sequence",
-                        )?,
-                        phase: JournalInstallPhase::try_from(phase)?,
-                        created_ms: nonnegative_i64(created, "journal_install.created_ms")?,
-                    })
-                },
-            )
-            .collect()
+        read_journal_installs(&self.connection)
     }
 
     pub fn integrity_check(&self) -> Result<(), SessionStoreError> {
@@ -1241,30 +1432,115 @@ impl SessionStore {
     }
 
     pub fn backup_to(&self, destination: impl AsRef<Path>) -> Result<(), SessionStoreError> {
-        let destination = destination.as_ref();
-        if destination
-            .try_exists()
-            .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))?
-        {
+        let destination = destination.as_ref().to_path_buf();
+        validate_persistence_file_name(&destination)?;
+        if backup_name_has_reserved_sqlite_suffix(&destination) {
+            return Err(SessionStoreError::InvalidPersistedValue(
+                "backup.reserved_sqlite_companion",
+            ));
+        }
+        prepare_private_directory(required_private_parent(&destination)?)?;
+        let destination = canonicalize_persistence_parent(destination)?;
+        if path_entry_exists(&destination)? {
             return Err(SessionStoreError::BackupPathExists);
         }
-        create_secure_file(destination, SessionIoOperation::CreateBackup)?;
-        if let Err(error) = self.connection.backup(rusqlite::MAIN_DB, destination, None) {
-            if let Err(remove_error) = fs::remove_file(destination) {
-                return Err(session_io_error(
-                    SessionIoOperation::RemoveFailedBackup,
-                    remove_error,
-                ));
-            }
-            return Err(SessionStoreError::Sqlite(error));
+        if validate_existing_sqlite_sidecars(&destination)? {
+            return Err(SessionStoreError::InvalidPersistedValue(
+                "backup.orphan_sqlite_sidecar",
+            ));
         }
-        tighten_database_permissions(destination)?;
-        let backup = Connection::open_with_flags(destination, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        apply_limits(&backup)?;
-        validate_integrity(&backup)?;
-        validate_schema(&backup)?;
-        Ok(())
+        let temporary = backup_temporary_path(&destination);
+        if validate_existing_sqlite_sidecars(&temporary)? {
+            return Err(SessionStoreError::InvalidPersistedValue(
+                "backup.orphan_sqlite_sidecar",
+            ));
+        }
+        create_secure_file(&temporary, SessionIoOperation::CreateBackup)?;
+        tighten_database_permissions(&temporary)?;
+        let mut installed = false;
+        let result = (|| {
+            self.connection
+                .backup(rusqlite::MAIN_DB, &temporary, None)?;
+            tighten_database_permissions(&temporary)?;
+            {
+                let backup = Connection::open_with_flags(
+                    &temporary,
+                    OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                )?;
+                apply_limits(&backup)?;
+                validate_integrity(&backup)?;
+                validate_schema(&backup)?;
+                validate_persisted_semantics(&backup)?;
+            }
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&temporary)
+                .and_then(|file| file.sync_all())
+                .map_err(|error| session_io_error(SessionIoOperation::CreateBackup, error))?;
+            fs::hard_link(&temporary, &destination).map_err(|error| {
+                if error.kind() == io::ErrorKind::AlreadyExists {
+                    SessionStoreError::BackupPathExists
+                } else {
+                    session_io_error(SessionIoOperation::CreateBackup, error)
+                }
+            })?;
+            installed = true;
+            sync_parent_directory(&destination, SessionIoOperation::CreateBackup)?;
+            Ok(())
+        })();
+        if let Err(remove_error) = fs::remove_file(&temporary) {
+            if installed {
+                // Never risk deleting a raced destination replacement. A failed
+                // temporary-link cleanup leaves two names for one inode, so the
+                // operation cannot report success under the unique-link contract.
+                return match result {
+                    Ok(()) => Err(session_io_error(
+                        SessionIoOperation::RemoveFailedBackup,
+                        remove_error,
+                    )),
+                    Err(error) => Err(error),
+                };
+            }
+            return Err(session_io_error(
+                SessionIoOperation::RemoveFailedBackup,
+                remove_error,
+            ));
+        }
+        if installed {
+            sync_parent_directory(&destination, SessionIoOperation::CreateBackup)?;
+        }
+        result
     }
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(
+    path: &Path,
+    operation: SessionIoOperation,
+) -> Result<(), SessionStoreError> {
+    File::open(required_private_parent(path)?)
+        .map_err(|error| session_io_error(operation, error))?
+        .sync_all()
+        .map_err(|error| session_io_error(operation, error))
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(
+    _path: &Path,
+    _operation: SessionIoOperation,
+) -> Result<(), SessionStoreError> {
+    Ok(())
+}
+
+fn backup_temporary_path(destination: &Path) -> PathBuf {
+    let identifier = BACKUP_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+    let mut name = destination.as_os_str().to_os_string();
+    name.push(format!(
+        ".ariax-backup-{}-{identifier}.tmp",
+        std::process::id()
+    ));
+    PathBuf::from(name)
 }
 
 struct RawTaskRow {
@@ -1383,47 +1659,554 @@ impl RawTaskRow {
             updated_ms: nonnegative_i64(self.updated_ms, "task.updated_ms")?,
         })
     }
+
+    fn estimated_read_bytes(&self) -> Result<usize, SessionStoreError> {
+        let variable = [
+            self.gid.len(),
+            self.session_id.len(),
+            self.primary_journal_id.len(),
+            self.primary_journal_path.len(),
+            self.replica_journal_path.as_ref().map_or(0, Vec::len),
+            self.replica_sequence.as_ref().map_or(0, Vec::len),
+            self.root_display.len(),
+            self.cached_layout_hash.as_ref().map_or(0, Vec::len),
+            self.cached_root_binding_hash.as_ref().map_or(0, Vec::len),
+            self.cached_snapshot_hash.len(),
+            self.no_space_target.as_ref().map_or(0, Vec::len),
+            self.no_space_delay_ms.as_ref().map_or(0, Vec::len),
+        ];
+        variable.into_iter().try_fold(
+            std::mem::size_of::<SessionTaskRecord>() + std::mem::size_of::<Self>(),
+            |total, value| {
+                total
+                    .checked_add(value)
+                    .ok_or(SessionStoreError::InvalidPersistedValue("task.read_budget"))
+            },
+        )
+    }
+}
+
+fn read_task_records(connection: &Connection) -> Result<Vec<SessionTaskRecord>, SessionStoreError> {
+    let count: i64 = connection.query_row("SELECT COUNT(*) FROM task", [], |row| row.get(0))?;
+    let count = bounded_count(count, SESSION_MAX_TASKS, "task.count")?;
+    let mut statement = connection.prepare(
+        "SELECT gid, session_id, queue_state, queue_position, desired_paused, primary_journal_id, primary_journal_path, replica_journal_path, replica_sequence, root_display, cached_layout_hash, cached_root_binding_hash, cached_snapshot_hash, no_space_target, no_space_scheduled_at_ms, no_space_delay_ms, created_ms, updated_ms FROM task ORDER BY queue_state, queue_position, gid",
+    )?;
+    let mut rows = statement.query([])?;
+    let mut tasks = Vec::new();
+    tasks
+        .try_reserve_exact(count)
+        .map_err(|_| SessionStoreError::InvalidPersistedValue("task.allocation"))?;
+    let mut read_bytes = 0_usize;
+    while let Some(row) = rows.next()? {
+        let raw = RawTaskRow::from_row(row)?;
+        read_bytes = read_bytes
+            .checked_add(raw.estimated_read_bytes()?)
+            .ok_or(SessionStoreError::InvalidPersistedValue("task.read_budget"))?;
+        if read_bytes > SESSION_TASK_READ_BUDGET_BYTES {
+            return Err(SessionStoreError::InvalidPersistedValue("task.read_budget"));
+        }
+        let task = raw.decode()?;
+        validate_task(&task)?;
+        tasks.push(task);
+        if tasks.len() > count {
+            return Err(SessionStoreError::InvalidPersistedValue("task.count"));
+        }
+    }
+    if tasks.len() != count {
+        return Err(SessionStoreError::InvalidPersistedValue("task.count"));
+    }
+    Ok(tasks)
+}
+
+fn read_journal_install_for_gid(
+    connection: &Connection,
+    gid: Gid,
+) -> Result<JournalInstallIntent, SessionStoreError> {
+    let raw = connection
+        .query_row(
+            "SELECT checkpoint_id, old_journal_id, old_path, new_journal_id, new_path, source_last_sequence, phase, created_ms FROM journal_install WHERE gid = ?1",
+            [gid.to_string()],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                    row.get::<_, Vec<u8>>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or(SessionStoreError::NotFound)?;
+    let intent = JournalInstallIntent {
+        gid,
+        checkpoint_id: decode_checkpoint_id(&raw.0)?,
+        old_journal_id: decode_journal_id(&raw.1, "journal_install.old_journal_id")?,
+        old_path: decode_platform_path(&raw.2, "journal_install.old_path")?,
+        new_journal_id: decode_journal_id(&raw.3, "journal_install.new_journal_id")?,
+        new_path: decode_platform_path(&raw.4, "journal_install.new_path")?,
+        source_last_sequence: decode_u64(&raw.5, "journal_install.source_last_sequence")?,
+        phase: JournalInstallPhase::try_from(raw.6)?,
+        created_ms: nonnegative_i64(raw.7, "journal_install.created_ms")?,
+    };
+    validate_install_values(&intent)?;
+    Ok(intent)
+}
+
+fn read_journal_installs(
+    connection: &Connection,
+) -> Result<Vec<JournalInstallIntent>, SessionStoreError> {
+    let count: i64 =
+        connection.query_row("SELECT COUNT(*) FROM journal_install", [], |row| row.get(0))?;
+    let count = bounded_count(count, SESSION_MAX_TASKS, "journal_install.count")?;
+    let mut statement = connection.prepare(
+        "SELECT gid, checkpoint_id, old_journal_id, old_path, new_journal_id, new_path, source_last_sequence, phase, created_ms FROM journal_install ORDER BY gid",
+    )?;
+    let mut rows = statement.query([])?;
+    let mut intents = Vec::new();
+    intents
+        .try_reserve_exact(count)
+        .map_err(|_| SessionStoreError::InvalidPersistedValue("journal_install.allocation"))?;
+    let mut read_bytes = 0_usize;
+    while let Some(row) = rows.next()? {
+        let gid = row.get::<_, String>(0)?;
+        let checkpoint = row.get::<_, Vec<u8>>(1)?;
+        let old_id = row.get::<_, Vec<u8>>(2)?;
+        let old_path = row.get::<_, Vec<u8>>(3)?;
+        let new_id = row.get::<_, Vec<u8>>(4)?;
+        let new_path = row.get::<_, Vec<u8>>(5)?;
+        let sequence = row.get::<_, Vec<u8>>(6)?;
+        let row_bytes = [
+            gid.len(),
+            checkpoint.len(),
+            old_id.len(),
+            old_path.len(),
+            new_id.len(),
+            new_path.len(),
+            sequence.len(),
+            std::mem::size_of::<JournalInstallIntent>(),
+        ]
+        .into_iter()
+        .try_fold(0_usize, |total, value| total.checked_add(value))
+        .ok_or(SessionStoreError::InvalidPersistedValue(
+            "journal_install.read_budget",
+        ))?;
+        read_bytes =
+            read_bytes
+                .checked_add(row_bytes)
+                .ok_or(SessionStoreError::InvalidPersistedValue(
+                    "journal_install.read_budget",
+                ))?;
+        if read_bytes > SESSION_INSTALL_READ_BUDGET_BYTES {
+            return Err(SessionStoreError::InvalidPersistedValue(
+                "journal_install.read_budget",
+            ));
+        }
+        let intent = JournalInstallIntent {
+            gid: decode_gid(&gid)?,
+            checkpoint_id: decode_checkpoint_id(&checkpoint)?,
+            old_journal_id: decode_journal_id(&old_id, "journal_install.old_journal_id")?,
+            old_path: decode_platform_path(&old_path, "journal_install.old_path")?,
+            new_journal_id: decode_journal_id(&new_id, "journal_install.new_journal_id")?,
+            new_path: decode_platform_path(&new_path, "journal_install.new_path")?,
+            source_last_sequence: decode_u64(&sequence, "journal_install.source_last_sequence")?,
+            phase: JournalInstallPhase::try_from(row.get::<_, i64>(7)?)?,
+            created_ms: nonnegative_i64(row.get::<_, i64>(8)?, "journal_install.created_ms")?,
+        };
+        validate_install_values(&intent)?;
+        intents.push(intent);
+    }
+    if intents.len() != count {
+        return Err(SessionStoreError::InvalidPersistedValue(
+            "journal_install.count",
+        ));
+    }
+    Ok(intents)
 }
 
 fn validate_config(config: SessionStoreConfig) -> Result<(), SessionStoreError> {
     if !(SESSION_MIN_CACHE_KIB..=SESSION_MAX_CACHE_KIB).contains(&config.cache_kib) {
         return Err(SessionStoreError::InvalidConfig("cache_kib"));
     }
-    if config.busy_timeout_ms == 0 || config.busy_timeout_ms > 60_000 {
+    if config.busy_timeout_ms != SESSION_BUSY_TIMEOUT_MS {
         return Err(SessionStoreError::InvalidConfig("busy_timeout_ms"));
     }
     Ok(())
 }
 
 fn prepare_database_path(path: &Path) -> Result<bool, SessionStoreError> {
-    let existed = path
-        .try_exists()
-        .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))?;
+    prepare_private_directory(required_private_parent(path)?)?;
+    let existed = validate_database_artifacts(path)?;
     if existed {
         return Ok(true);
     }
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        fs::create_dir_all(parent)
-            .map_err(|error| session_io_error(SessionIoOperation::CreateDirectory, error))?;
-    }
     create_secure_file(path, SessionIoOperation::CreateDatabase)?;
+    tighten_database_permissions(path)?;
     Ok(false)
 }
 
+fn validate_database_artifacts(path: &Path) -> Result<bool, SessionStoreError> {
+    let existed = path_entry_exists(path)?;
+    let main_is_empty = if existed {
+        validate_regular_artifact(path)?.len() == 0
+    } else {
+        true
+    };
+    let has_sidecars = validate_existing_sqlite_sidecars(path)?;
+    if main_is_empty && has_sidecars {
+        return Err(SessionStoreError::InvalidPersistedValue(
+            "orphan_sqlite_sidecar",
+        ));
+    }
+    Ok(existed)
+}
+
+fn session_owner_lock_path(database_path: &Path) -> PathBuf {
+    let mut value = database_path.as_os_str().to_os_string();
+    value.push(SESSION_OWNER_LOCK_SUFFIX);
+    PathBuf::from(value)
+}
+
+fn acquire_session_owner_lock(database_path: &Path) -> Result<SessionOwnerLock, SessionStoreError> {
+    let lock_path = session_owner_lock_path(database_path);
+    if !path_entry_exists(&lock_path)? {
+        match create_secure_file(&lock_path, SessionIoOperation::AcquireOwnerLock) {
+            Ok(())
+            | Err(SessionStoreError::Io {
+                operation: SessionIoOperation::AcquireOwnerLock,
+                kind: io::ErrorKind::AlreadyExists,
+            }) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    validate_regular_artifact(&lock_path)?;
+    tighten_database_permissions(&lock_path)?;
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|error| session_io_error(SessionIoOperation::AcquireOwnerLock, error))?;
+    match lock.try_lock_exclusive() {
+        Ok(()) => Ok(SessionOwnerLock { file: lock }),
+        Err(error) if is_lock_contended(&error) => Err(SessionStoreError::OwnerLockBusy),
+        Err(error) => Err(session_io_error(
+            SessionIoOperation::AcquireOwnerLock,
+            error,
+        )),
+    }
+}
+
+fn is_lock_contended(error: &io::Error) -> bool {
+    let expected = fs2::lock_contended_error();
+    error.kind() == io::ErrorKind::WouldBlock
+        || matches!(
+            (error.raw_os_error(), expected.raw_os_error()),
+            (Some(actual), Some(expected)) if actual == expected
+        )
+}
+
+#[cfg(not(windows))]
+fn validate_persistence_file_name(_path: &Path) -> Result<(), SessionStoreError> {
+    Ok(())
+}
+
+#[cfg(windows)]
+fn validate_persistence_file_name(path: &Path) -> Result<(), SessionStoreError> {
+    use std::os::windows::ffi::OsStrExt as _;
+
+    let name = path
+        .file_name()
+        .ok_or_else(|| invalid_persistence_file_name("persistence path has no final filename"))?;
+    let units = name.encode_wide().collect::<Vec<_>>();
+    if units.is_empty()
+        || units.iter().any(|unit| *unit == u16::from(b':'))
+        || units
+            .last()
+            .is_some_and(|unit| matches!(*unit, 0x20 | 0x2e))
+        || is_windows_reserved_file_name(&units)
+    {
+        return Err(invalid_persistence_file_name(
+            "persistence filename has an unsafe Win32 alias form",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn invalid_persistence_file_name(message: &'static str) -> SessionStoreError {
+    session_io_error(
+        SessionIoOperation::InspectPath,
+        io::Error::new(io::ErrorKind::InvalidInput, message),
+    )
+}
+
+#[cfg(windows)]
+fn is_windows_reserved_file_name(units: &[u16]) -> bool {
+    let stem = units
+        .split(|unit| *unit == u16::from(b'.'))
+        .next()
+        .unwrap_or_default();
+    windows_ascii_name_eq(stem, b"CON")
+        || windows_ascii_name_eq(stem, b"PRN")
+        || windows_ascii_name_eq(stem, b"AUX")
+        || windows_ascii_name_eq(stem, b"NUL")
+        || (stem.len() == 4
+            && (windows_ascii_name_eq(&stem[..3], b"COM")
+                || windows_ascii_name_eq(&stem[..3], b"LPT"))
+            && matches!(stem[3], 0x31..=0x39 | 0x00b2 | 0x00b3 | 0x00b9))
+}
+
+#[cfg(windows)]
+fn windows_ascii_name_eq(units: &[u16], expected_uppercase: &[u8]) -> bool {
+    units.len() == expected_uppercase.len()
+        && units
+            .iter()
+            .zip(expected_uppercase)
+            .all(|(actual, expected)| {
+                let actual = if (u16::from(b'a')..=u16::from(b'z')).contains(actual) {
+                    *actual - u16::from(b'a' - b'A')
+                } else {
+                    *actual
+                };
+                actual == u16::from(*expected)
+            })
+}
+
+#[cfg(not(windows))]
+fn canonicalize_database_path(path: PathBuf) -> Result<PathBuf, SessionStoreError> {
+    Ok(path)
+}
+
+#[cfg(windows)]
+fn canonicalize_database_path(path: PathBuf) -> Result<PathBuf, SessionStoreError> {
+    let path = canonicalize_persistence_parent(path)?;
+    if !path_entry_exists(&path)? {
+        return Ok(path);
+    }
+    validate_regular_artifact(&path)?;
+    fs::canonicalize(path).map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))
+}
+
+#[cfg(not(windows))]
+fn canonicalize_persistence_parent(path: PathBuf) -> Result<PathBuf, SessionStoreError> {
+    Ok(path)
+}
+
+#[cfg(windows)]
+fn canonicalize_persistence_parent(path: PathBuf) -> Result<PathBuf, SessionStoreError> {
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| invalid_persistence_file_name("persistence path has no final filename"))?
+        .to_os_string();
+    let parent = fs::canonicalize(required_private_parent(&path)?)
+        .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))?;
+    Ok(parent.join(file_name))
+}
+
+fn required_private_parent(path: &Path) -> Result<&Path, SessionStoreError> {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| {
+            session_io_error(
+                SessionIoOperation::InspectPath,
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "persistence path must include an explicit parent directory",
+                ),
+            )
+        })
+}
+
+fn path_entry_exists(path: &Path) -> Result<bool, SessionStoreError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(session_io_error(SessionIoOperation::InspectPath, error)),
+    }
+}
+
+fn validate_existing_sqlite_sidecars(path: &Path) -> Result<bool, SessionStoreError> {
+    let mut found = false;
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let sidecar = sqlite_sidecar_path(path, suffix);
+        if path_entry_exists(&sidecar)? {
+            validate_regular_artifact(&sidecar)?;
+            found = true;
+        }
+    }
+    Ok(found)
+}
+
+fn validate_regular_artifact(path: &Path) -> Result<fs::Metadata, SessionStoreError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))?;
+    if metadata_is_link_like(&metadata) || !metadata.is_file() {
+        return Err(session_io_error(
+            SessionIoOperation::InspectPath,
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "persistence artifact is not a uniquely linked regular file",
+            ),
+        ));
+    }
+    validate_unique_file_identity(path, &metadata)?;
+    Ok(metadata)
+}
+
+#[cfg(unix)]
+fn validate_unique_file_identity(
+    _path: &Path,
+    metadata: &fs::Metadata,
+) -> Result<(), SessionStoreError> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    if metadata.nlink() == 1 {
+        Ok(())
+    } else {
+        Err(session_io_error(
+            SessionIoOperation::InspectPath,
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "persistence artifact is not a uniquely linked regular file",
+            ),
+        ))
+    }
+}
+
+#[cfg(windows)]
+fn validate_unique_file_identity(
+    path: &Path,
+    _metadata: &fs::Metadata,
+) -> Result<(), SessionStoreError> {
+    ariax_windows_security::verify_single_link_regular_file(path)
+        .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))
+}
+
+fn prepare_private_directory(path: &Path) -> Result<(), SessionStoreError> {
+    validate_directory_path_components(path)?;
+    let mut missing = Vec::new();
+    let mut cursor = path;
+    while !path_entry_exists(cursor)? {
+        missing.push(cursor.to_path_buf());
+        cursor = cursor.parent().ok_or_else(|| {
+            session_io_error(
+                SessionIoOperation::CreateDirectory,
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "directory has no existing ancestor",
+                ),
+            )
+        })?;
+    }
+    let ancestor = fs::symlink_metadata(cursor)
+        .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))?;
+    if ancestor.file_type().is_symlink() || !ancestor.is_dir() {
+        return Err(session_io_error(
+            SessionIoOperation::InspectPath,
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "persistence directory ancestor is not a real directory",
+            ),
+        ));
+    }
+    if missing.is_empty() {
+        return verify_private_directory(path);
+    }
+    for directory in missing.into_iter().rev() {
+        create_private_directory(&directory)?;
+        tighten_directory_permissions(&directory)?;
+    }
+    Ok(())
+}
+
+fn validate_directory_path_components(path: &Path) -> Result<(), SessionStoreError> {
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        if component == Component::ParentDir {
+            return Err(session_io_error(
+                SessionIoOperation::InspectPath,
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "persistence paths cannot contain parent traversal",
+                ),
+            ));
+        }
+        current.push(component.as_os_str());
+        if matches!(component, Component::Prefix(_)) {
+            continue;
+        }
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) => {
+                if metadata_is_link_like(&metadata) || !metadata.is_dir() {
+                    return Err(session_io_error(
+                        SessionIoOperation::InspectPath,
+                        io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "persistence path contains a linked or non-directory component",
+                        ),
+                    ));
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(session_io_error(SessionIoOperation::InspectPath, error));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn metadata_is_link_like(metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+
+#[cfg(windows)]
+fn metadata_is_link_like(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt as _;
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    metadata.file_type().is_symlink()
+        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(unix)]
+fn create_private_directory(path: &Path) -> Result<(), SessionStoreError> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    let mut builder = fs::DirBuilder::new();
+    builder.mode(0o700);
+    builder
+        .create(path)
+        .map_err(|error| session_io_error(SessionIoOperation::CreateDirectory, error))
+}
+
+#[cfg(windows)]
+fn create_private_directory(path: &Path) -> Result<(), SessionStoreError> {
+    ariax_windows_security::create_private_directory(path)
+        .map_err(|error| session_io_error(SessionIoOperation::CreateDirectory, error))
+}
+
+#[cfg(unix)]
 fn create_secure_file(path: &Path, operation: SessionIoOperation) -> Result<(), SessionStoreError> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
+    use std::os::unix::fs::OpenOptionsExt;
+    options.mode(0o600);
     options
         .open(path)
         .map(|_| ())
+        .map_err(|error| session_io_error(operation, error))
+}
+
+#[cfg(windows)]
+fn create_secure_file(path: &Path, operation: SessionIoOperation) -> Result<(), SessionStoreError> {
+    ariax_windows_security::create_private_file(path)
+        .map(drop)
         .map_err(|error| session_io_error(operation, error))
 }
 
@@ -1435,12 +2218,566 @@ fn tighten_database_permissions(path: &Path) -> Result<(), SessionStoreError> {
         .permissions();
     permissions.set_mode(0o600);
     fs::set_permissions(path, permissions)
+        .map_err(|error| session_io_error(SessionIoOperation::TightenPermissions, error))?;
+    verify_private_file_permissions(path)
+}
+
+#[cfg(unix)]
+fn tighten_directory_permissions(path: &Path) -> Result<(), SessionStoreError> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions = fs::metadata(path)
+        .map_err(|error| session_io_error(SessionIoOperation::TightenPermissions, error))?
+        .permissions();
+    permissions.set_mode(0o700);
+    fs::set_permissions(path, permissions)
+        .map_err(|error| session_io_error(SessionIoOperation::TightenPermissions, error))?;
+    verify_private_directory(path)
+}
+
+#[cfg(unix)]
+fn verify_private_file_permissions(path: &Path) -> Result<(), SessionStoreError> {
+    use std::os::unix::fs::PermissionsExt;
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))?;
+    if metadata_is_link_like(&metadata)
+        || !metadata.is_file()
+        || metadata.permissions().mode() & 0o077 != 0
+    {
+        return Err(session_io_error(
+            SessionIoOperation::TightenPermissions,
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "persistence file is not a private regular file",
+            ),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn verify_private_directory(path: &Path) -> Result<(), SessionStoreError> {
+    use std::os::unix::fs::PermissionsExt;
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))?;
+    if !metadata.is_dir() || metadata_is_link_like(&metadata) {
+        return Err(session_io_error(
+            SessionIoOperation::InspectPath,
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "persistence directory is not a real directory",
+            ),
+        ));
+    }
+    if metadata.permissions().mode() & 0o077 == 0 {
+        Ok(())
+    } else {
+        Err(session_io_error(
+            SessionIoOperation::TightenPermissions,
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "existing persistence directory is accessible by group or other users",
+            ),
+        ))
+    }
+}
+
+#[cfg(windows)]
+fn tighten_database_permissions(path: &Path) -> Result<(), SessionStoreError> {
+    ariax_windows_security::apply_private_file_acl(path)
+        .map_err(|error| session_io_error(SessionIoOperation::TightenPermissions, error))?;
+    verify_private_file_permissions(path)
+}
+
+#[cfg(windows)]
+fn tighten_directory_permissions(path: &Path) -> Result<(), SessionStoreError> {
+    verify_private_directory(path)
+}
+
+#[cfg(windows)]
+fn verify_private_directory(path: &Path) -> Result<(), SessionStoreError> {
+    ariax_windows_security::verify_private_directory(path)
         .map_err(|error| session_io_error(SessionIoOperation::TightenPermissions, error))
 }
 
-#[cfg(not(unix))]
-fn tighten_database_permissions(_path: &Path) -> Result<(), SessionStoreError> {
+#[cfg(windows)]
+fn verify_private_file_permissions(path: &Path) -> Result<(), SessionStoreError> {
+    ariax_windows_security::verify_private_file(path)
+        .map_err(|error| session_io_error(SessionIoOperation::TightenPermissions, error))
+}
+
+fn sqlite_sidecar_path(path: &Path, suffix: &str) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(suffix);
+    PathBuf::from(value)
+}
+
+fn backup_name_has_reserved_sqlite_suffix(path: &Path) -> bool {
+    let Some(name) = path.file_name() else {
+        return false;
+    };
+    let name = name.to_string_lossy();
+    ["-wal", "-shm", "-journal"].iter().any(|suffix| {
+        name.as_bytes()
+            .get(name.len().saturating_sub(suffix.len())..)
+            .is_some_and(|tail| tail.eq_ignore_ascii_case(suffix.as_bytes()))
+    })
+}
+
+fn tighten_sqlite_artifact_permissions(path: &Path) -> Result<(), SessionStoreError> {
+    tighten_database_permissions(path)?;
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let sidecar = sqlite_sidecar_path(path, suffix);
+        if path_entry_exists(&sidecar)? {
+            validate_regular_artifact(&sidecar)?;
+            tighten_database_permissions(&sidecar)?;
+        }
+    }
     Ok(())
+}
+
+fn inspect_persisted_user_version(path: &Path) -> Result<u32, SessionStoreError> {
+    const DATABASE_HEADER_BYTES: usize = 100;
+
+    let metadata = fs::metadata(path)
+        .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))?;
+    if metadata.len() == 0 {
+        return Ok(0);
+    }
+    let rollback = inspect_rollback_journal(path)?;
+    if matches!(
+        rollback,
+        RollbackJournalPreflight::Hot {
+            database_pages: 0,
+            ..
+        }
+    ) {
+        return Ok(0);
+    }
+    let raw_header = match rollback {
+        RollbackJournalPreflight::Hot {
+            page_one: Some(header),
+            database_pages: _,
+        } => Some(header),
+        RollbackJournalPreflight::Cold
+        | RollbackJournalPreflight::Hot {
+            page_one: None,
+            database_pages: _,
+        } => {
+            if metadata.len() < DATABASE_HEADER_BYTES as u64 {
+                None
+            } else {
+                let mut database = File::open(path)
+                    .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))?;
+                let mut header = [0_u8; DATABASE_HEADER_BYTES];
+                database
+                    .read_exact(&mut header)
+                    .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))?;
+                Some(header)
+            }
+        }
+    };
+    let valid_header = raw_header.filter(|header| decode_database_header(header).is_ok());
+    let recovered_header = inspect_wal_database_header(path, valid_header)?;
+    let header = recovered_header
+        .or(raw_header)
+        .ok_or(SessionStoreError::InvalidPersistedValue("database.header"))?;
+    let (_, version) = decode_database_header(&header)?;
+    Ok(version)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RollbackJournalPreflight {
+    Cold,
+    Hot {
+        page_one: Option<[u8; 100]>,
+        database_pages: u64,
+    },
+}
+
+fn inspect_rollback_journal(
+    database_path: &Path,
+) -> Result<RollbackJournalPreflight, SessionStoreError> {
+    const JOURNAL_MAGIC: [u8; 8] = [0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7];
+    const JOURNAL_HEADER_BYTES: u64 = 28;
+    const MAX_SECTOR_SIZE: usize = 65_536;
+
+    let journal_path = sqlite_sidecar_path(database_path, "-journal");
+    if !path_entry_exists(&journal_path)? {
+        return Ok(RollbackJournalPreflight::Cold);
+    }
+    validate_regular_artifact(&journal_path)?;
+    let journal_length = fs::metadata(&journal_path)
+        .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))?
+        .len();
+    if journal_length < JOURNAL_HEADER_BYTES {
+        return Ok(RollbackJournalPreflight::Cold);
+    }
+    let mut journal = File::open(&journal_path)
+        .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))?;
+    let mut first_header = [0_u8; JOURNAL_HEADER_BYTES as usize];
+    journal
+        .read_exact(&mut first_header)
+        .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))?;
+    if first_header[..JOURNAL_MAGIC.len()] != JOURNAL_MAGIC {
+        return Ok(RollbackJournalPreflight::Cold);
+    }
+    let sector_size = usize::try_from(decode_be_u32(&first_header[20..24]))
+        .map_err(|_| SessionStoreError::InvalidPersistedValue("rollback_journal.sector_size"))?;
+    let encoded_page_size = decode_be_u32(&first_header[24..28]);
+    if encoded_page_size == 0 {
+        return Err(SessionStoreError::InvalidPersistedValue(
+            "rollback_journal.legacy_page_size",
+        ));
+    }
+    let page_size = usize::try_from(encoded_page_size)
+        .map_err(|_| SessionStoreError::InvalidPersistedValue("rollback_journal.page_size"))?;
+    if !(32..=MAX_SECTOR_SIZE).contains(&sector_size)
+        || !sector_size.is_power_of_two()
+        || !(512..=65_536).contains(&page_size)
+        || !page_size.is_power_of_two()
+    {
+        return Ok(RollbackJournalPreflight::Cold);
+    }
+    let sector_size = u64::try_from(sector_size)
+        .map_err(|_| SessionStoreError::InvalidPersistedValue("rollback_journal.sector_size"))?;
+    if journal_length < sector_size {
+        return Ok(RollbackJournalPreflight::Cold);
+    }
+    let page_bytes = u64::try_from(page_size)
+        .map_err(|_| SessionStoreError::InvalidPersistedValue("rollback_journal.page_size"))?;
+    let record_bytes =
+        page_bytes
+            .checked_add(8)
+            .ok_or(SessionStoreError::InvalidPersistedValue(
+                "rollback_journal.record_size",
+            ))?;
+    let pending_lock_page = (0x4000_0000_u64 / page_bytes) + 1;
+    reject_super_journal_trailer(&mut journal, journal_length, &JOURNAL_MAGIC)?;
+    let mut page = vec![0_u8; page_size];
+    let mut page_one = None;
+    let mut header_offset = 0_u64;
+    let mut initial_database_pages = None;
+    loop {
+        if header_offset
+            .checked_add(sector_size)
+            .is_none_or(|end| end > journal_length)
+        {
+            break;
+        }
+        journal
+            .seek(SeekFrom::Start(header_offset))
+            .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))?;
+        let mut header = [0_u8; JOURNAL_HEADER_BYTES as usize];
+        journal
+            .read_exact(&mut header)
+            .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))?;
+        if header[..JOURNAL_MAGIC.len()] != JOURNAL_MAGIC {
+            break;
+        }
+        let record_count = decode_be_u32(&header[8..12]);
+        let checksum_seed = decode_be_u32(&header[12..16]);
+        let database_pages = u64::from(decode_be_u32(&header[16..20]));
+        let original_database_pages = *initial_database_pages.get_or_insert(database_pages);
+        let mut record_offset = header_offset.checked_add(sector_size).ok_or(
+            SessionStoreError::InvalidPersistedValue("rollback_journal.offset"),
+        )?;
+        let available_records = journal_length.saturating_sub(record_offset) / record_bytes;
+        let records = if record_count == u32::MAX {
+            available_records
+        } else {
+            u64::from(record_count)
+        };
+        journal
+            .seek(SeekFrom::Start(record_offset))
+            .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))?;
+        for _ in 0..records {
+            if record_offset
+                .checked_add(record_bytes)
+                .is_none_or(|end| end > journal_length)
+            {
+                return Ok(RollbackJournalPreflight::Hot {
+                    page_one,
+                    database_pages: original_database_pages,
+                });
+            }
+            let mut page_number = [0_u8; 4];
+            journal
+                .read_exact(&mut page_number)
+                .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))?;
+            journal
+                .read_exact(&mut page)
+                .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))?;
+            let mut checksum = [0_u8; 4];
+            journal
+                .read_exact(&mut checksum)
+                .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))?;
+            let page_number = u64::from(decode_be_u32(&page_number));
+            if page_number == 0 || page_number == pending_lock_page {
+                return Ok(RollbackJournalPreflight::Hot {
+                    page_one,
+                    database_pages: original_database_pages,
+                });
+            }
+            if page_number > original_database_pages {
+                record_offset = record_offset.checked_add(record_bytes).ok_or(
+                    SessionStoreError::InvalidPersistedValue("rollback_journal.offset"),
+                )?;
+                continue;
+            }
+            if rollback_journal_checksum(&page, checksum_seed) != decode_be_u32(&checksum) {
+                return Ok(RollbackJournalPreflight::Hot {
+                    page_one,
+                    database_pages: original_database_pages,
+                });
+            }
+            if page_number == 1 {
+                let mut header = [0_u8; 100];
+                header.copy_from_slice(&page[..100]);
+                page_one = Some(header);
+            }
+            record_offset = record_offset.checked_add(record_bytes).ok_or(
+                SessionStoreError::InvalidPersistedValue("rollback_journal.offset"),
+            )?;
+        }
+        if record_count == u32::MAX {
+            break;
+        }
+        header_offset = round_up_to_sector(record_offset, sector_size)?;
+    }
+    Ok(RollbackJournalPreflight::Hot {
+        page_one,
+        database_pages: initial_database_pages.unwrap_or(0),
+    })
+}
+
+fn reject_super_journal_trailer(
+    journal: &mut File,
+    journal_length: u64,
+    journal_magic: &[u8; 8],
+) -> Result<(), SessionStoreError> {
+    const TRAILER_BYTES: u64 = 16;
+    if journal_length < TRAILER_BYTES {
+        return Ok(());
+    }
+    journal
+        .seek(SeekFrom::Start(journal_length - TRAILER_BYTES))
+        .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))?;
+    let mut trailer = [0_u8; TRAILER_BYTES as usize];
+    journal
+        .read_exact(&mut trailer)
+        .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))?;
+    let name_length = u64::from(decode_be_u32(&trailer[..4]));
+    if trailer[8..] != *journal_magic || name_length == 0 {
+        return Ok(());
+    }
+    let Some(name_offset) = journal_length
+        .checked_sub(TRAILER_BYTES)
+        .and_then(|offset| offset.checked_sub(name_length))
+    else {
+        return Ok(());
+    };
+    let name_length = usize::try_from(name_length)
+        .map_err(|_| SessionStoreError::InvalidPersistedValue("rollback_journal.super_journal"))?;
+    if name_length > MAX_PLATFORM_PATH_BYTES {
+        return Err(SessionStoreError::InvalidPersistedValue(
+            "rollback_journal.super_journal",
+        ));
+    }
+    journal
+        .seek(SeekFrom::Start(name_offset))
+        .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))?;
+    let mut name = vec![0_u8; name_length];
+    journal
+        .read_exact(&mut name)
+        .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))?;
+    let expected_checksum = decode_be_u32(&trailer[4..8]);
+    let unsigned_checksum = name.iter().fold(0_u32, |checksum, byte| {
+        checksum.wrapping_add(u32::from(*byte))
+    });
+    let signed_checksum = name.iter().fold(0_u32, |checksum, byte| {
+        checksum.wrapping_add((*byte as i8 as i32) as u32)
+    });
+    if expected_checksum == unsigned_checksum || expected_checksum == signed_checksum {
+        return Err(SessionStoreError::InvalidPersistedValue(
+            "rollback_journal.super_journal",
+        ));
+    }
+    Ok(())
+}
+
+fn rollback_journal_checksum(page: &[u8], seed: u32) -> u32 {
+    let mut checksum = seed;
+    let mut index = page.len().saturating_sub(200);
+    while index > 0 {
+        checksum = checksum.wrapping_add(u32::from(page[index]));
+        index = index.saturating_sub(200);
+    }
+    checksum
+}
+
+fn round_up_to_sector(offset: u64, sector_size: u64) -> Result<u64, SessionStoreError> {
+    if offset == 0 {
+        return Ok(0);
+    }
+    offset
+        .checked_sub(1)
+        .and_then(|value| value.checked_div(sector_size))
+        .and_then(|value| value.checked_add(1))
+        .and_then(|value| value.checked_mul(sector_size))
+        .ok_or(SessionStoreError::InvalidPersistedValue(
+            "rollback_journal.offset",
+        ))
+}
+
+fn decode_database_header(header: &[u8; 100]) -> Result<(usize, u32), SessionStoreError> {
+    const DATABASE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
+    if &header[..DATABASE_MAGIC.len()] != DATABASE_MAGIC {
+        return Err(SessionStoreError::InvalidPersistedValue("database.header"));
+    }
+    Ok((
+        decode_database_page_size(&header[16..18])?,
+        decode_be_u32(&header[60..64]),
+    ))
+}
+
+fn inspect_wal_database_header(
+    database_path: &Path,
+    main_header: Option<[u8; 100]>,
+) -> Result<Option<[u8; 100]>, SessionStoreError> {
+    const WAL_HEADER_BYTES: u64 = 32;
+    const WAL_FRAME_HEADER_BYTES: u64 = 24;
+    const WAL_MAGIC_LITTLE_CHECKSUM: u32 = 0x377f_0682;
+    const WAL_MAGIC_BIG_CHECKSUM: u32 = 0x377f_0683;
+    const WAL_FORMAT_VERSION: u32 = 3_007_000;
+
+    let wal_path = sqlite_sidecar_path(database_path, "-wal");
+    if !path_entry_exists(&wal_path)? {
+        return Ok(main_header);
+    }
+    validate_regular_artifact(&wal_path)?;
+    let wal_length = fs::metadata(&wal_path)
+        .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))?
+        .len();
+    if wal_length < WAL_HEADER_BYTES {
+        return Ok(main_header);
+    }
+    let mut wal = File::open(&wal_path)
+        .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))?;
+    let mut header = [0_u8; WAL_HEADER_BYTES as usize];
+    wal.read_exact(&mut header)
+        .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))?;
+    let checksum_big_endian = match decode_be_u32(&header[0..4]) {
+        WAL_MAGIC_LITTLE_CHECKSUM => false,
+        WAL_MAGIC_BIG_CHECKSUM => true,
+        _ => return Ok(main_header),
+    };
+    let mut checksum = (0_u32, 0_u32);
+    wal_checksum(&header[..24], checksum_big_endian, &mut checksum);
+    if checksum.0 != decode_be_u32(&header[24..28]) || checksum.1 != decode_be_u32(&header[28..32])
+    {
+        return Ok(main_header);
+    }
+    if decode_be_u32(&header[4..8]) != WAL_FORMAT_VERSION {
+        return Err(SessionStoreError::InvalidPersistedValue(
+            "wal.format_version",
+        ));
+    }
+    let wal_page_size = usize::try_from(decode_be_u32(&header[8..12]))
+        .map_err(|_| SessionStoreError::InvalidPersistedValue("wal.page_size"))?;
+    if !(512..=65_536).contains(&wal_page_size) || !wal_page_size.is_power_of_two() {
+        return Err(SessionStoreError::InvalidPersistedValue("wal.page_size"));
+    }
+    if main_header
+        .as_ref()
+        .map(decode_database_header)
+        .transpose()?
+        .is_some_and(|(database_page_size, _)| wal_page_size != database_page_size)
+    {
+        return Err(SessionStoreError::InvalidPersistedValue("wal.page_size"));
+    }
+    let salt_1 = [header[16], header[17], header[18], header[19]];
+    let salt_2 = [header[20], header[21], header[22], header[23]];
+    let frame_bytes = WAL_FRAME_HEADER_BYTES
+        .checked_add(
+            u64::try_from(wal_page_size)
+                .map_err(|_| SessionStoreError::InvalidPersistedValue("wal.page_size"))?,
+        )
+        .ok_or(SessionStoreError::InvalidPersistedValue("wal.frame_size"))?;
+    let mut frame_header = [0_u8; WAL_FRAME_HEADER_BYTES as usize];
+    let mut page = vec![0_u8; wal_page_size];
+    let mut offset = WAL_HEADER_BYTES;
+    let mut committed_header = main_header;
+    let mut pending_header = main_header;
+    while offset
+        .checked_add(frame_bytes)
+        .is_some_and(|end| end <= wal_length)
+    {
+        wal.read_exact(&mut frame_header)
+            .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))?;
+        wal.read_exact(&mut page)
+            .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))?;
+        if frame_header[8..12] != salt_1 || frame_header[12..16] != salt_2 {
+            break;
+        }
+        if decode_be_u32(&frame_header[0..4]) == 0 {
+            break;
+        }
+        wal_checksum(&frame_header[..8], checksum_big_endian, &mut checksum);
+        wal_checksum(&page, checksum_big_endian, &mut checksum);
+        if checksum.0 != decode_be_u32(&frame_header[16..20])
+            || checksum.1 != decode_be_u32(&frame_header[20..24])
+        {
+            break;
+        }
+        if decode_be_u32(&frame_header[0..4]) == 1 {
+            let mut header = [0_u8; 100];
+            header.copy_from_slice(&page[..100]);
+            pending_header = Some(header);
+        }
+        if decode_be_u32(&frame_header[4..8]) != 0 {
+            committed_header = pending_header;
+        }
+        offset += frame_bytes;
+    }
+    Ok(committed_header)
+}
+
+fn decode_database_page_size(bytes: &[u8]) -> Result<usize, SessionStoreError> {
+    let encoded = u16::from_be_bytes([bytes[0], bytes[1]]);
+    let page_size = if encoded == 1 {
+        65_536
+    } else {
+        usize::from(encoded)
+    };
+    if (512..=65_536).contains(&page_size) && page_size.is_power_of_two() {
+        Ok(page_size)
+    } else {
+        Err(SessionStoreError::InvalidPersistedValue(
+            "database.page_size",
+        ))
+    }
+}
+
+fn decode_be_u32(bytes: &[u8]) -> u32 {
+    u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
+fn wal_checksum(bytes: &[u8], big_endian: bool, checksum: &mut (u32, u32)) {
+    debug_assert_eq!(bytes.len() % 8, 0);
+    for words in bytes.chunks_exact(8) {
+        let first = if big_endian {
+            decode_be_u32(&words[..4])
+        } else {
+            u32::from_le_bytes([words[0], words[1], words[2], words[3]])
+        };
+        let second = if big_endian {
+            decode_be_u32(&words[4..8])
+        } else {
+            u32::from_le_bytes([words[4], words[5], words[6], words[7]])
+        };
+        checksum.0 = checksum.0.wrapping_add(first).wrapping_add(checksum.1);
+        checksum.1 = checksum.1.wrapping_add(second).wrapping_add(checksum.0);
+    }
 }
 
 fn configure_pragmas(
@@ -1452,8 +2789,13 @@ fn configure_pragmas(
         match connection
             .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0))
         {
-            Ok(mode) if mode.eq_ignore_ascii_case("wal") => SessionJournalMode::Wal,
+            Ok(mode)
+                if mode.eq_ignore_ascii_case("wal") && probe_journal_write(connection).is_ok() =>
+            {
+                SessionJournalMode::Wal
+            }
             Ok(_) | Err(_) => {
+                let _ = connection.execute_batch("ROLLBACK");
                 let mode =
                     connection.pragma_update_and_check(None, "journal_mode", "DELETE", |row| {
                         row.get::<_, String>(0)
@@ -1461,6 +2803,7 @@ fn configure_pragmas(
                 if !mode.eq_ignore_ascii_case("delete") {
                     return Err(SessionStoreError::InvalidPersistedValue("journal_mode"));
                 }
+                probe_journal_write(connection)?;
                 SessionJournalMode::Delete
             }
         }
@@ -1471,6 +2814,7 @@ fn configure_pragmas(
         if !mode.eq_ignore_ascii_case("delete") {
             return Err(SessionStoreError::InvalidPersistedValue("journal_mode"));
         }
+        probe_journal_write(connection)?;
         SessionJournalMode::Delete
     };
     connection.pragma_update(None, "synchronous", "FULL")?;
@@ -1490,6 +2834,16 @@ fn configure_pragmas(
         return Err(SessionStoreError::InvalidPersistedValue("required_pragma"));
     }
     Ok(journal_mode)
+}
+
+fn probe_journal_write(connection: &Connection) -> Result<(), rusqlite::Error> {
+    let user_version: u32 =
+        connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    connection.execute_batch("BEGIN IMMEDIATE")?;
+    let write = connection.pragma_update(None, "user_version", user_version);
+    let rollback = connection.execute_batch("ROLLBACK");
+    write?;
+    rollback
 }
 
 fn apply_limits(connection: &Connection) -> Result<(), SessionStoreError> {
@@ -1524,7 +2878,7 @@ fn validate_schema(connection: &Connection) -> Result<(), SessionStoreError> {
     }
     let mut found = HashSet::new();
     let mut statement = connection.prepare(
-        "SELECT type, name, sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
+        "SELECT type, name, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY type, name",
     )?;
     let rows = statement.query_map([], |row| {
         Ok((
@@ -1552,15 +2906,59 @@ fn validate_schema(connection: &Connection) -> Result<(), SessionStoreError> {
 }
 
 fn validate_integrity(connection: &Connection) -> Result<(), SessionStoreError> {
-    let results = connection
-        .prepare("PRAGMA integrity_check")?
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
-    if results.as_slice() == ["ok"] {
-        Ok(())
-    } else {
-        Err(SessionStoreError::IntegrityCheckFailed)
+    let mut statement = connection.prepare("PRAGMA integrity_check")?;
+    let mut rows = statement.query([])?;
+    let first = rows
+        .next()?
+        .ok_or(SessionStoreError::IntegrityCheckFailed)?
+        .get::<_, String>(0)?;
+    if first != "ok" || rows.next()?.is_some() {
+        return Err(SessionStoreError::IntegrityCheckFailed);
     }
+    Ok(())
+}
+
+fn validate_persisted_semantics(connection: &Connection) -> Result<(), SessionStoreError> {
+    validate_dense_queues(connection)?;
+    let session_rows: i64 =
+        connection.query_row("SELECT COUNT(*) FROM session", [], |row| row.get(0))?;
+    if !(0..=1).contains(&session_rows) {
+        return Err(SessionStoreError::InvalidPersistedValue(
+            "multiple_session_rows",
+        ));
+    }
+    let foreign_key_failures: i64 =
+        connection.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })?;
+    if foreign_key_failures != 0 {
+        return Err(SessionStoreError::InvalidPersistedValue(
+            "foreign_key_check",
+        ));
+    }
+    read_task_records(connection)?;
+    for intent in read_journal_installs(connection)? {
+        let current = connection
+            .query_row(
+                "SELECT primary_journal_id, primary_journal_path FROM task WHERE gid = ?1",
+                [intent.gid.to_string()],
+                |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?)),
+            )
+            .optional()?
+            .ok_or(SessionStoreError::InvalidPersistedValue(
+                "journal_install.task",
+            ))?;
+        let current_id = decode_journal_id(&current.0, "task.primary_journal_id")?;
+        let current_path = decode_platform_path(&current.1, "task.primary_journal_path")?;
+        let expected = match intent.phase {
+            JournalInstallPhase::Installing => (intent.old_journal_id, &intent.old_path),
+            JournalInstallPhase::Installed => (intent.new_journal_id, &intent.new_path),
+        };
+        if current_id != expected.0 || current_path != *expected.1 {
+            return Err(SessionStoreError::JournalPointerMismatch);
+        }
+    }
+    Ok(())
 }
 
 fn normalize_sql(sql: &str) -> String {
@@ -1572,7 +2970,7 @@ fn normalize_sql(sql: &str) -> String {
 
 fn count_schema_objects(connection: &Connection) -> Result<u32, SessionStoreError> {
     let count: i64 = connection.query_row(
-        "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'",
+        "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'",
         [],
         |row| row.get(0),
     )?;
@@ -1614,6 +3012,10 @@ fn validate_install_intent(intent: &JournalInstallIntent) -> Result<(), SessionS
     if intent.phase != JournalInstallPhase::Installing {
         return Err(SessionStoreError::InvalidRecord("journal_install.phase"));
     }
+    validate_install_values(intent)
+}
+
+fn validate_install_values(intent: &JournalInstallIntent) -> Result<(), SessionStoreError> {
     if intent.source_last_sequence == 0 {
         return Err(SessionStoreError::InvalidRecord(
             "journal_install.source_last_sequence",
@@ -1628,20 +3030,30 @@ fn validate_install_intent(intent: &JournalInstallIntent) -> Result<(), SessionS
 }
 
 fn validate_dense_queues(connection: &Connection) -> Result<(), SessionStoreError> {
-    let rows = connection
-        .prepare("SELECT queue_state, queue_position FROM task ORDER BY queue_state, queue_position, gid")?
-        .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?
-        .collect::<Result<Vec<_>, _>>()?;
+    let count: i64 = connection.query_row("SELECT COUNT(*) FROM task", [], |row| row.get(0))?;
+    let maximum = bounded_count(count, SESSION_MAX_TASKS, "task.count")?;
+    let mut statement = connection.prepare(
+        "SELECT queue_state, queue_position FROM task ORDER BY queue_state, queue_position, gid",
+    )?;
+    let mut rows = statement.query([])?;
     let mut next = BTreeMap::<i64, i64>::new();
-    for (state, position) in rows {
+    let mut seen = 0_usize;
+    while let Some(row) = rows.next()? {
+        let state = row.get::<_, i64>(0)?;
+        let position = row.get::<_, i64>(1)?;
         SessionQueueState::try_from(state)?;
         let expected = next.entry(state).or_insert(0);
         if position != *expected {
             return Err(SessionStoreError::QueueInvariant);
         }
         *expected += 1;
+        seen += 1;
     }
-    Ok(())
+    if seen == maximum {
+        Ok(())
+    } else {
+        Err(SessionStoreError::InvalidPersistedValue("task.count"))
+    }
 }
 
 fn validate_time_order(created_ms: u64, updated_ms: u64) -> Result<(), SessionStoreError> {
@@ -1649,6 +3061,20 @@ fn validate_time_order(created_ms: u64, updated_ms: u64) -> Result<(), SessionSt
         Err(SessionStoreError::InvalidRecord("updated_before_created"))
     } else {
         Ok(())
+    }
+}
+
+fn bounded_count(
+    count: i64,
+    maximum: usize,
+    field: &'static str,
+) -> Result<usize, SessionStoreError> {
+    let count =
+        usize::try_from(count).map_err(|_| SessionStoreError::InvalidPersistedValue(field))?;
+    if count > maximum {
+        Err(SessionStoreError::InvalidPersistedValue(field))
+    } else {
+        Ok(count)
     }
 }
 
@@ -1784,9 +3210,12 @@ mod tests {
     use ariax_config::{SecurityClass, builtin_registry};
     use ariax_core::Gid;
     use rusqlite::Connection;
-    use std::collections::HashSet;
+    use std::collections::{BTreeMap, HashSet};
+    use std::ffi::OsString;
     use std::fs;
+    use std::io::{Seek, SeekFrom, Write};
     use std::path::{Path, PathBuf};
+    use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_DIRECTORY_ID: AtomicU64 = AtomicU64::new(1);
@@ -1800,7 +3229,13 @@ mod tests {
             let id = TEST_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed);
             let path = std::env::temp_dir()
                 .join(format!("ariax-session-store-{}-{id}", std::process::id()));
-            fs::create_dir_all(&path).expect("create test directory");
+            #[cfg(unix)]
+            {
+                fs::create_dir_all(&path).expect("create test directory");
+                super::tighten_directory_permissions(&path).expect("secure test directory");
+            }
+            #[cfg(windows)]
+            super::create_private_directory(&path).expect("create private test directory");
             Self { path }
         }
 
@@ -1817,6 +3252,194 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
         }
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct DirectorySnapshot {
+        entries: Vec<OsString>,
+        contents: BTreeMap<OsString, Vec<u8>>,
+        #[cfg(unix)]
+        modes: BTreeMap<OsString, u32>,
+    }
+
+    fn directory_entry_names(path: &Path) -> Vec<OsString> {
+        let mut entries = fs::read_dir(path)
+            .expect("read snapshot directory")
+            .map(|entry| entry.expect("directory entry").file_name())
+            .collect::<Vec<_>>();
+        entries.sort();
+        entries
+    }
+
+    fn snapshot_directory(path: &Path) -> DirectorySnapshot {
+        let entries = directory_entry_names(path);
+        let mut contents = BTreeMap::new();
+        #[cfg(unix)]
+        let mut modes = BTreeMap::new();
+        for name in &entries {
+            let artifact = path.join(name);
+            let metadata = fs::symlink_metadata(&artifact).expect("artifact metadata");
+            if metadata.is_file() {
+                contents.insert(name.clone(), fs::read(&artifact).expect("artifact bytes"));
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                modes.insert(name.clone(), metadata.permissions().mode() & 0o7777);
+            }
+        }
+        DirectorySnapshot {
+            entries,
+            contents,
+            #[cfg(unix)]
+            modes,
+        }
+    }
+
+    fn synthetic_wal(
+        database: &Path,
+        checksum_big_endian: bool,
+        frames: &[(u32, bool)],
+    ) -> Vec<u8> {
+        let frames = frames
+            .iter()
+            .map(|(version, committed)| (1_u32, *version, *committed))
+            .collect::<Vec<_>>();
+        synthetic_wal_frames(database, checksum_big_endian, &frames)
+    }
+
+    fn synthetic_wal_frames(
+        database: &Path,
+        checksum_big_endian: bool,
+        frames: &[(u32, u32, bool)],
+    ) -> Vec<u8> {
+        let database_bytes = fs::read(database).expect("database bytes");
+        let page_size =
+            super::decode_database_page_size(&database_bytes[16..18]).expect("database page size");
+        let page_count = u32::try_from(database_bytes.len() / page_size).expect("page count");
+        let page = &database_bytes[..page_size];
+        let mut output = vec![0_u8; 32];
+        output[0..4].copy_from_slice(
+            &(if checksum_big_endian {
+                0x377f_0683_u32
+            } else {
+                0x377f_0682_u32
+            })
+            .to_be_bytes(),
+        );
+        output[4..8].copy_from_slice(&3_007_000_u32.to_be_bytes());
+        output[8..12].copy_from_slice(
+            &u32::try_from(page_size)
+                .expect("page size u32")
+                .to_be_bytes(),
+        );
+        output[16..20].copy_from_slice(&0x1122_3344_u32.to_be_bytes());
+        output[20..24].copy_from_slice(&0x5566_7788_u32.to_be_bytes());
+        let mut checksum = (0_u32, 0_u32);
+        super::wal_checksum(&output[..24], checksum_big_endian, &mut checksum);
+        output[24..28].copy_from_slice(&checksum.0.to_be_bytes());
+        output[28..32].copy_from_slice(&checksum.1.to_be_bytes());
+        for (page_number, version, committed) in frames {
+            let mut frame_header = [0_u8; 24];
+            frame_header[0..4].copy_from_slice(&page_number.to_be_bytes());
+            frame_header[4..8]
+                .copy_from_slice(&(if *committed { page_count } else { 0 }).to_be_bytes());
+            frame_header[8..12].copy_from_slice(&output[16..20]);
+            frame_header[12..16].copy_from_slice(&output[20..24]);
+            let mut frame_page = page.to_vec();
+            frame_page[60..64].copy_from_slice(&version.to_be_bytes());
+            super::wal_checksum(&frame_header[..8], checksum_big_endian, &mut checksum);
+            super::wal_checksum(&frame_page, checksum_big_endian, &mut checksum);
+            frame_header[16..20].copy_from_slice(&checksum.0.to_be_bytes());
+            frame_header[20..24].copy_from_slice(&checksum.1.to_be_bytes());
+            output.extend_from_slice(&frame_header);
+            output.extend_from_slice(&frame_page);
+        }
+        output
+    }
+
+    fn write_wal(database: &Path, bytes: &[u8]) {
+        let wal = super::sqlite_sidecar_path(database, "-wal");
+        let mut file = fs::File::create(wal).expect("create synthetic WAL");
+        file.write_all(bytes).expect("write synthetic WAL");
+        file.sync_all().expect("sync synthetic WAL");
+    }
+
+    fn recompute_wal_header_checksum(wal: &mut [u8], checksum_big_endian: bool) {
+        let mut checksum = (0_u32, 0_u32);
+        super::wal_checksum(&wal[..24], checksum_big_endian, &mut checksum);
+        wal[24..28].copy_from_slice(&checksum.0.to_be_bytes());
+        wal[28..32].copy_from_slice(&checksum.1.to_be_bytes());
+    }
+
+    fn set_wal_format_version(wal: &mut [u8], version: u32, checksum_big_endian: bool) {
+        wal[4..8].copy_from_slice(&version.to_be_bytes());
+        recompute_wal_header_checksum(wal, checksum_big_endian);
+    }
+
+    fn synthetic_rollback_journal(
+        database: &Path,
+        original_database_pages: u32,
+        records: &[(u32, u32, bool)],
+    ) -> Vec<u8> {
+        const JOURNAL_MAGIC: [u8; 8] = [0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7];
+        const SECTOR_SIZE: usize = 512;
+        const CHECKSUM_SEED: u32 = 0x1234_5678;
+
+        let database_bytes = fs::read(database).expect("database bytes");
+        let page_size =
+            super::decode_database_page_size(&database_bytes[16..18]).expect("database page size");
+        let mut output = vec![0_u8; SECTOR_SIZE];
+        output[..8].copy_from_slice(&JOURNAL_MAGIC);
+        output[8..12].copy_from_slice(
+            &u32::try_from(records.len())
+                .expect("record count")
+                .to_be_bytes(),
+        );
+        output[12..16].copy_from_slice(&CHECKSUM_SEED.to_be_bytes());
+        output[16..20].copy_from_slice(&original_database_pages.to_be_bytes());
+        output[20..24].copy_from_slice(&(SECTOR_SIZE as u32).to_be_bytes());
+        output[24..28].copy_from_slice(
+            &u32::try_from(page_size)
+                .expect("page size u32")
+                .to_be_bytes(),
+        );
+        for (page_number, version, valid_checksum) in records {
+            let mut page = database_bytes[..page_size].to_vec();
+            page[60..64].copy_from_slice(&version.to_be_bytes());
+            output.extend_from_slice(&page_number.to_be_bytes());
+            output.extend_from_slice(&page);
+            let mut checksum = super::rollback_journal_checksum(&page, CHECKSUM_SEED);
+            if !valid_checksum {
+                checksum ^= 1;
+            }
+            output.extend_from_slice(&checksum.to_be_bytes());
+        }
+        output
+    }
+
+    fn append_super_journal_trailer(
+        journal: &mut Vec<u8>,
+        marker: u32,
+        name: &[u8],
+        valid_checksum: bool,
+    ) {
+        const JOURNAL_MAGIC: [u8; 8] = [0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7];
+        journal.extend_from_slice(&marker.to_be_bytes());
+        journal.extend_from_slice(name);
+        journal.extend_from_slice(
+            &u32::try_from(name.len())
+                .expect("super-journal name length")
+                .to_be_bytes(),
+        );
+        let mut checksum = name
+            .iter()
+            .fold(0_u32, |value, byte| value.wrapping_add(u32::from(*byte)));
+        if !valid_checksum {
+            checksum ^= 1;
+        }
+        journal.extend_from_slice(&checksum.to_be_bytes());
+        journal.extend_from_slice(&JOURNAL_MAGIC);
     }
 
     fn gid(value: u64) -> Gid {
@@ -1876,6 +3499,42 @@ mod tests {
         store
     }
 
+    fn seed_owner_lock(database: &Path) {
+        drop(super::acquire_session_owner_lock(database).expect("seed owner lock"));
+    }
+
+    fn copy_hot_rollback_fixture(source: &Path, destination: &Path) {
+        fs::copy(source, destination).expect("copy hot database");
+        fs::copy(
+            super::sqlite_sidecar_path(source, "-journal"),
+            super::sqlite_sidecar_path(destination, "-journal"),
+        )
+        .expect("copy hot rollback journal");
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum MainHeaderCorruption {
+        Magic,
+        PageSize,
+        UserVersion,
+    }
+
+    fn corrupt_main_header(database: &Path, corruption: MainHeaderCorruption) {
+        let (offset, bytes): (u64, &[u8]) = match corruption {
+            MainHeaderCorruption::Magic => (0, &[0_u8; 16]),
+            MainHeaderCorruption::PageSize => (16, &[0_u8; 2]),
+            MainHeaderCorruption::UserVersion => (60, &[0_u8, 0, 0, 2]),
+        };
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .open(database)
+            .expect("open main database for corruption");
+        file.seek(SeekFrom::Start(offset))
+            .expect("seek main header");
+        file.write_all(bytes).expect("corrupt main header");
+        file.sync_all().expect("sync main corruption");
+    }
+
     #[test]
     fn creates_exact_strict_schema_pragmas_and_limits() {
         let directory = TestDirectory::new();
@@ -1924,6 +3583,398 @@ mod tests {
     }
 
     #[test]
+    fn owner_lock_excludes_other_processes_until_drop() {
+        let directory = TestDirectory::new();
+        let store = SessionStore::open(directory.database(), SessionStoreConfig::default())
+            .expect("open owning store");
+        let status = Command::new(std::env::current_exe().expect("current test executable"))
+            .args([
+                "--ignored",
+                "--exact",
+                "session_store::tests::owner_lock_child",
+                "--nocapture",
+            ])
+            .env("ARIAX_OWNER_LOCK_CHILD", directory.database())
+            .status()
+            .expect("spawn owner-lock child");
+        assert!(status.success());
+        drop(store);
+        SessionStore::open(directory.database(), SessionStoreConfig::default())
+            .expect("lock released with owner");
+    }
+
+    #[test]
+    fn owner_lock_drop_unlocks_before_duplicated_handles_close() {
+        let directory = TestDirectory::new();
+        let owner =
+            super::acquire_session_owner_lock(&directory.database()).expect("acquire owner lock");
+        let inherited = owner.file.try_clone().expect("duplicate lock handle");
+
+        drop(owner);
+
+        drop(
+            super::acquire_session_owner_lock(&directory.database())
+                .expect("explicit unlock permits immediate reacquisition"),
+        );
+        drop(inherited);
+    }
+
+    #[test]
+    #[ignore = "spawned by owner_lock_excludes_other_processes_until_drop"]
+    fn owner_lock_child() {
+        let Some(database) = std::env::var_os("ARIAX_OWNER_LOCK_CHILD") else {
+            return;
+        };
+        assert!(matches!(
+            SessionStore::open(PathBuf::from(database), SessionStoreConfig::default()),
+            Err(SessionStoreError::OwnerLockBusy)
+        ));
+    }
+
+    #[test]
+    fn session_identity_check_and_write_are_one_transaction() {
+        let directory = TestDirectory::new();
+        let mut store = SessionStore::open(directory.database(), SessionStoreConfig::default())
+            .expect("open store");
+        let first = session_record();
+        store.put_session(&first).expect("first session");
+        let second = SessionRecord {
+            session_id: SessionId::new([2; 16]),
+            created_ms: 100,
+            updated_ms: 100,
+            clean_shutdown: false,
+        };
+        assert!(matches!(
+            store.put_session(&second),
+            Err(SessionStoreError::SessionConflict)
+        ));
+        assert_eq!(store.session().expect("session"), Some(first));
+    }
+
+    #[test]
+    fn creates_private_directory_tree_and_sqlite_artifacts() {
+        let directory = TestDirectory::new();
+        let persistence = directory.path().join("nested").join("private");
+        let database = persistence.join("session.db");
+        let mut store = SessionStore::open(&database, SessionStoreConfig::default())
+            .expect("open nested store");
+        store.put_session(&session_record()).expect("write session");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for path in [directory.path().join("nested"), persistence.clone()] {
+                assert_eq!(
+                    fs::metadata(path)
+                        .expect("directory metadata")
+                        .permissions()
+                        .mode()
+                        & 0o777,
+                    0o700
+                );
+            }
+            for path in [
+                database.clone(),
+                super::sqlite_sidecar_path(&database, "-wal"),
+                super::sqlite_sidecar_path(&database, "-shm"),
+            ] {
+                if path.exists() {
+                    assert_eq!(
+                        fs::metadata(path)
+                            .expect("file metadata")
+                            .permissions()
+                            .mode()
+                            & 0o777,
+                        0o600
+                    );
+                }
+            }
+        }
+        #[cfg(windows)]
+        {
+            super::verify_private_directory(&persistence).expect("private directory ACL");
+            super::verify_private_file_permissions(&database).expect("private database ACL");
+            for suffix in ["-wal", "-shm"] {
+                let sidecar = super::sqlite_sidecar_path(&database, suffix);
+                if sidecar.exists() {
+                    super::verify_private_file_permissions(&sidecar).expect("private sidecar ACL");
+                }
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_unsafe_windows_database_and_backup_names_without_mutation() {
+        let invalid_names = [
+            "session.db:metadata",
+            "session.db.",
+            "session.db ",
+            "NUL.db",
+            "con",
+            "COM1.sqlite",
+            "LPT¹.db",
+        ];
+        for name in invalid_names {
+            let directory = TestDirectory::new();
+            let before = directory_entry_names(directory.path());
+            assert!(matches!(
+                SessionStore::open(directory.path().join(name), SessionStoreConfig::default()),
+                Err(SessionStoreError::Io {
+                    operation: super::SessionIoOperation::InspectPath,
+                    kind: std::io::ErrorKind::InvalidInput,
+                })
+            ));
+            assert_eq!(directory_entry_names(directory.path()), before, "{name}");
+
+            let mut store = open_store(&directory);
+            store
+                .put_task(&task_record(gid(1), 0))
+                .expect("seed backup source");
+            let before = directory_entry_names(directory.path());
+            assert!(matches!(
+                store.backup_to(directory.path().join(name)),
+                Err(SessionStoreError::Io {
+                    operation: super::SessionIoOperation::InspectPath,
+                    kind: std::io::ErrorKind::InvalidInput,
+                })
+            ));
+            assert_eq!(directory_entry_names(directory.path()), before, "{name}");
+        }
+
+        for name in [
+            "資料.db",
+            ".session.db",
+            "my session.v1.db",
+            "com10.db",
+            "report.con.db",
+        ] {
+            let directory = TestDirectory::new();
+            SessionStore::open(directory.path().join(name), SessionStoreConfig::default())
+                .expect("safe Windows persistence filename");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn canonicalizes_existing_windows_aliases_before_owner_locking() {
+        let directory = TestDirectory::new();
+        let database = directory.path().join("CanonicalSession.db");
+        let store = SessionStore::open(&database, SessionStoreConfig::default())
+            .expect("open canonical database");
+        let canonical = fs::canonicalize(&database).expect("canonical database path");
+        assert_eq!(store.path(), canonical);
+
+        let alias = directory.path().join("canonicalsession.db");
+        assert!(matches!(
+            SessionStore::open(&alias, SessionStoreConfig::default()),
+            Err(SessionStoreError::OwnerLockBusy)
+        ));
+        drop(store);
+
+        let reopened = SessionStore::open(alias, SessionStoreConfig::default())
+            .expect("reopen through alternate spelling");
+        assert_eq!(reopened.path(), canonical);
+    }
+
+    #[test]
+    fn rejects_parentless_database_and_backup_paths() {
+        assert!(matches!(
+            SessionStore::open("session.db", SessionStoreConfig::default()),
+            Err(SessionStoreError::Io {
+                operation: super::SessionIoOperation::InspectPath,
+                kind: std::io::ErrorKind::InvalidInput,
+            })
+        ));
+
+        let directory = TestDirectory::new();
+        let store = SessionStore::open(directory.database(), SessionStoreConfig::default())
+            .expect("open store");
+        assert!(matches!(
+            store.backup_to("session.backup.db"),
+            Err(SessionStoreError::Io {
+                operation: super::SessionIoOperation::InspectPath,
+                kind: std::io::ErrorKind::InvalidInput,
+            })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_broad_existing_parent_without_changing_its_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = TestDirectory::new();
+        let broad = directory.path().join("shared");
+        fs::create_dir(&broad).expect("create broad directory");
+        fs::set_permissions(&broad, fs::Permissions::from_mode(0o777))
+            .expect("make directory broad");
+        assert!(matches!(
+            SessionStore::open(broad.join("session.db"), SessionStoreConfig::default()),
+            Err(SessionStoreError::Io {
+                operation: super::SessionIoOperation::TightenPermissions,
+                kind: std::io::ErrorKind::PermissionDenied,
+            })
+        ));
+        assert_eq!(
+            fs::metadata(&broad)
+                .expect("broad metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o777
+        );
+        assert!(!broad.join("session.db").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_database_and_sidecar_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let directory = TestDirectory::new();
+        let target = directory.path().join("target.db");
+        fs::write(&target, b"not a database").expect("target file");
+        let database = directory.database();
+        symlink(&target, &database).expect("database symlink");
+        assert!(matches!(
+            SessionStore::open(&database, SessionStoreConfig::default()),
+            Err(SessionStoreError::Io {
+                operation: super::SessionIoOperation::InspectPath,
+                kind: std::io::ErrorKind::PermissionDenied,
+            })
+        ));
+        fs::remove_file(&database).expect("remove database symlink");
+
+        let store = SessionStore::open(&database, SessionStoreConfig::default())
+            .expect("create real database");
+        drop(store);
+        let wal = super::sqlite_sidecar_path(&database, "-wal");
+        symlink(directory.path().join("missing-wal-target"), &wal).expect("dangling WAL symlink");
+        assert!(matches!(
+            SessionStore::open(&database, SessionStoreConfig::default()),
+            Err(SessionStoreError::Io {
+                operation: super::SessionIoOperation::InspectPath,
+                kind: std::io::ErrorKind::PermissionDenied,
+            })
+        ));
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn rejects_hard_linked_database_aliases_before_owner_locking() {
+        let source = TestDirectory::new();
+        let store = SessionStore::open(source.database(), SessionStoreConfig::default())
+            .expect("create source store");
+        drop(store);
+
+        let alias = TestDirectory::new();
+        #[cfg(unix)]
+        fs::hard_link(source.database(), alias.database()).expect("create database hard link");
+        #[cfg(windows)]
+        {
+            fs::write(
+                alias.database(),
+                fs::read(source.database()).expect("read source database"),
+            )
+            .expect("create inherited-ACL database");
+            assert!(
+                ariax_windows_security::verify_private_file(&alias.database()).is_err(),
+                "test database must begin with an inherited ACL"
+            );
+            fs::hard_link(alias.database(), alias.path().join("session-hard-link.db"))
+                .expect("create database hard link");
+        }
+        let before = snapshot_directory(alias.path());
+        assert!(matches!(
+            SessionStore::open(alias.database(), SessionStoreConfig::default()),
+            Err(SessionStoreError::Io {
+                operation: super::SessionIoOperation::InspectPath,
+                kind: std::io::ErrorKind::PermissionDenied,
+            })
+        ));
+        assert_eq!(snapshot_directory(alias.path()), before);
+        assert!(!super::session_owner_lock_path(&alias.database()).exists());
+
+        #[cfg(unix)]
+        fs::remove_file(alias.database()).expect("remove database alias");
+        #[cfg(windows)]
+        {
+            fs::remove_file(alias.path().join("session-hard-link.db"))
+                .expect("remove database alias");
+            assert!(
+                ariax_windows_security::verify_private_file(&alias.database()).is_err(),
+                "rejected database ACL must remain unchanged"
+            );
+        }
+        SessionStore::open(source.database(), SessionStoreConfig::default())
+            .expect("source reopens after alias removal");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlinks_in_intermediate_path_components() {
+        use std::os::unix::fs::symlink;
+
+        let directory = TestDirectory::new();
+        let target = directory.path().join("target");
+        let private = target.join("private");
+        fs::create_dir(&target).expect("create target");
+        super::tighten_directory_permissions(&target).expect("secure target");
+        fs::create_dir(&private).expect("create private target");
+        super::tighten_directory_permissions(&private).expect("secure private target");
+        let link = directory.path().join("link");
+        symlink(&target, &link).expect("create intermediate symlink");
+        let database = link.join("private").join("session.db");
+        assert!(matches!(
+            SessionStore::open(&database, SessionStoreConfig::default()),
+            Err(SessionStoreError::Io {
+                operation: super::SessionIoOperation::InspectPath,
+                kind: std::io::ErrorKind::PermissionDenied,
+            })
+        ));
+        assert!(!private.join("session.db").exists());
+    }
+
+    #[test]
+    fn rejects_orphan_sidecars_before_creating_a_database() {
+        let directory = TestDirectory::new();
+        let database = directory.database();
+        let wal = super::sqlite_sidecar_path(&database, "-wal");
+        fs::write(&wal, b"orphan WAL").expect("write orphan WAL");
+        let before = snapshot_directory(directory.path());
+        assert!(matches!(
+            SessionStore::open(&database, SessionStoreConfig::default()),
+            Err(SessionStoreError::InvalidPersistedValue(
+                "orphan_sqlite_sidecar"
+            ))
+        ));
+        assert!(!database.exists());
+        assert_eq!(snapshot_directory(directory.path()), before);
+    }
+
+    #[test]
+    fn rejects_sidecars_beside_an_empty_database_before_mutation() {
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let directory = TestDirectory::new();
+            let database = directory.database();
+            fs::write(&database, []).expect("create empty database");
+            let sidecar = super::sqlite_sidecar_path(&database, suffix);
+            fs::write(&sidecar, b"untrusted sidecar").expect("write sidecar");
+            let before = snapshot_directory(directory.path());
+
+            assert!(matches!(
+                SessionStore::open(&database, SessionStoreConfig::default()),
+                Err(SessionStoreError::InvalidPersistedValue(
+                    "orphan_sqlite_sidecar"
+                ))
+            ));
+            assert_eq!(snapshot_directory(directory.path()), before);
+            assert!(!super::session_owner_lock_path(&database).exists());
+        }
+    }
+
+    #[test]
     fn rejects_newer_schema_without_rewriting_database_bytes() {
         let directory = TestDirectory::new();
         let connection = Connection::open(directory.database()).expect("create newer");
@@ -1943,6 +3994,317 @@ mod tests {
     }
 
     #[test]
+    fn rejects_newer_schema_committed_in_wal_without_touching_artifacts() {
+        let directory = TestDirectory::new();
+        let connection = Connection::open(directory.database()).expect("create WAL database");
+        connection
+            .execute_batch(
+                "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE sentinel(value TEXT); PRAGMA user_version=2; INSERT INTO sentinel VALUES ('wal');",
+            )
+            .expect("seed newer WAL schema");
+        let wal = super::sqlite_sidecar_path(&directory.database(), "-wal");
+        assert!(wal.exists());
+        assert_eq!(
+            super::inspect_persisted_user_version(&directory.database()).expect("preflight"),
+            2
+        );
+        let before = snapshot_directory(directory.path());
+        assert!(matches!(
+            SessionStore::open(directory.database(), SessionStoreConfig::default()),
+            Err(SessionStoreError::NewerSchema {
+                found: 2,
+                supported: 1,
+            })
+        ));
+        assert_eq!(snapshot_directory(directory.path()), before);
+        drop(connection);
+    }
+
+    #[test]
+    fn wal_version_preflight_handles_commits_endianness_and_corruption() {
+        let directory = TestDirectory::new();
+        let database = directory.database();
+        let connection = Connection::open(&database).expect("create main database");
+        connection
+            .execute_batch("PRAGMA journal_mode=DELETE; PRAGMA user_version=1;")
+            .expect("seed main version");
+        drop(connection);
+
+        for checksum_big_endian in [false, true] {
+            let uncommitted = synthetic_wal(&database, checksum_big_endian, &[(2, false)]);
+            write_wal(&database, &uncommitted);
+            assert_eq!(
+                super::inspect_persisted_user_version(&database).expect("uncommitted preflight"),
+                1
+            );
+
+            let committed = synthetic_wal(&database, checksum_big_endian, &[(2, true), (3, true)]);
+            write_wal(&database, &committed);
+            assert_eq!(
+                super::inspect_persisted_user_version(&database).expect("committed preflight"),
+                3
+            );
+
+            let deferred_commit = synthetic_wal_frames(
+                &database,
+                checksum_big_endian,
+                &[(1, 2, false), (2, 0, true)],
+            );
+            write_wal(&database, &deferred_commit);
+            assert_eq!(
+                super::inspect_persisted_user_version(&database)
+                    .expect("non-page-one commit preflight"),
+                2
+            );
+
+            let page_zero_commit = synthetic_wal_frames(
+                &database,
+                checksum_big_endian,
+                &[(1, 2, false), (0, 0, true)],
+            );
+            write_wal(&database, &page_zero_commit);
+            assert_eq!(
+                super::inspect_persisted_user_version(&database)
+                    .expect("page-zero frame preflight"),
+                1
+            );
+
+            let mut torn = committed.clone();
+            torn.extend_from_slice(&[0xaa; 17]);
+            write_wal(&database, &torn);
+            assert_eq!(
+                super::inspect_persisted_user_version(&database).expect("torn preflight"),
+                3
+            );
+
+            let first_only = synthetic_wal(&database, checksum_big_endian, &[(2, true)]);
+            let mut bad_second = committed.clone();
+            let second_page_offset = first_only.len() + 24;
+            bad_second[second_page_offset + 70] ^= 0x80;
+            write_wal(&database, &bad_second);
+            assert_eq!(
+                super::inspect_persisted_user_version(&database).expect("bad checksum preflight"),
+                2
+            );
+
+            let mut bad_salt = committed.clone();
+            bad_salt[first_only.len() + 8] ^= 1;
+            write_wal(&database, &bad_salt);
+            assert_eq!(
+                super::inspect_persisted_user_version(&database).expect("bad salt preflight"),
+                2
+            );
+
+            let mut bad_format = committed.clone();
+            bad_format[4..8].copy_from_slice(&0_u32.to_be_bytes());
+            write_wal(&database, &bad_format);
+            assert_eq!(
+                super::inspect_persisted_user_version(&database).expect("bad format preflight"),
+                1
+            );
+
+            let mut unsupported_format = committed.clone();
+            set_wal_format_version(&mut unsupported_format, 3_007_001, checksum_big_endian);
+            write_wal(&database, &unsupported_format);
+            assert!(matches!(
+                super::inspect_persisted_user_version(&database),
+                Err(SessionStoreError::InvalidPersistedValue(
+                    "wal.format_version"
+                ))
+            ));
+
+            let mut bad_page_size = committed.clone();
+            bad_page_size[8..12].copy_from_slice(&512_u32.to_be_bytes());
+            recompute_wal_header_checksum(&mut bad_page_size, checksum_big_endian);
+            write_wal(&database, &bad_page_size);
+            assert!(matches!(
+                super::inspect_persisted_user_version(&database),
+                Err(SessionStoreError::InvalidPersistedValue("wal.page_size"))
+            ));
+        }
+
+        let database_bytes = fs::read(&database).expect("database bytes");
+        let page_size =
+            super::decode_database_page_size(&database_bytes[16..18]).expect("page size");
+        let database_pages =
+            u32::try_from(database_bytes.len() / page_size).expect("database pages");
+        let journal = synthetic_rollback_journal(
+            &database,
+            database_pages,
+            &[(1, SESSION_SCHEMA_VERSION, true)],
+        );
+        fs::write(super::sqlite_sidecar_path(&database, "-journal"), journal)
+            .expect("write hot rollback fixture");
+        write_wal(&database, &synthetic_wal(&database, false, &[(2, true)]));
+        assert_eq!(
+            super::inspect_persisted_user_version(&database)
+                .expect("rollback followed by WAL preflight"),
+            2
+        );
+    }
+
+    #[test]
+    fn rejects_checksum_valid_unsupported_wal_format_without_mutation() {
+        let directory = TestDirectory::new();
+        let database = directory.database();
+        let connection = Connection::open(&database).expect("create main database");
+        connection
+            .execute_batch("PRAGMA journal_mode=DELETE; PRAGMA user_version=1;")
+            .expect("seed main version");
+        drop(connection);
+
+        let mut wal = synthetic_wal(&database, false, &[(2, true)]);
+        set_wal_format_version(&mut wal, 3_007_001, false);
+        write_wal(&database, &wal);
+        let before = snapshot_directory(directory.path());
+
+        assert!(matches!(
+            SessionStore::open(&database, SessionStoreConfig::default()),
+            Err(SessionStoreError::InvalidPersistedValue(
+                "wal.format_version"
+            ))
+        ));
+        assert_eq!(snapshot_directory(directory.path()), before);
+    }
+
+    #[test]
+    fn committed_wal_page_one_recovers_a_corrupt_main_header() {
+        let source = TestDirectory::new();
+        let mut store = SessionStore::open(source.database(), SessionStoreConfig::default())
+            .expect("create source store");
+        store.put_session(&session_record()).expect("session");
+        store.put_task(&task_record(gid(1), 0)).expect("task");
+        drop(store);
+
+        let connection = Connection::open(source.database()).expect("open source database");
+        connection
+            .execute_batch(
+                "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; PRAGMA user_version=0; PRAGMA wal_checkpoint(TRUNCATE); PRAGMA user_version=1;",
+            )
+            .expect("create committed page-one WAL");
+        let source_wal = super::sqlite_sidecar_path(&source.database(), "-wal");
+        assert!(
+            fs::metadata(&source_wal)
+                .expect("source WAL metadata")
+                .len()
+                > 32
+        );
+
+        for corruption in [
+            MainHeaderCorruption::Magic,
+            MainHeaderCorruption::PageSize,
+            MainHeaderCorruption::UserVersion,
+        ] {
+            let direct_directory = TestDirectory::new();
+            let direct_database = direct_directory.database();
+            fs::copy(source.database(), &direct_database).expect("copy direct main database");
+            fs::copy(
+                &source_wal,
+                super::sqlite_sidecar_path(&direct_database, "-wal"),
+            )
+            .expect("copy direct WAL");
+            corrupt_main_header(&direct_database, corruption);
+            let direct = Connection::open(&direct_database).expect("SQLite WAL recovery");
+            let direct_version: u32 = direct
+                .pragma_query_value(None, "user_version", |row| row.get(0))
+                .expect("direct recovered version");
+            assert_eq!(direct_version, SESSION_SCHEMA_VERSION, "{corruption:?}");
+            drop(direct);
+
+            let store_directory = TestDirectory::new();
+            let store_database = store_directory.database();
+            fs::copy(source.database(), &store_database).expect("copy store main database");
+            fs::copy(
+                &source_wal,
+                super::sqlite_sidecar_path(&store_database, "-wal"),
+            )
+            .expect("copy store WAL");
+            corrupt_main_header(&store_database, corruption);
+            let recovered = SessionStore::open(&store_database, SessionStoreConfig::default())
+                .expect("SessionStore WAL recovery");
+            assert_eq!(recovered.tasks().expect("recovered tasks").len(), 1);
+        }
+        drop(connection);
+    }
+
+    #[test]
+    fn wal_preflight_mutation_corpus_never_panics_or_authorizes_partial_frames() {
+        let directory = TestDirectory::new();
+        let database = directory.database();
+        let connection = Connection::open(&database).expect("create mutation database");
+        connection
+            .execute_batch("PRAGMA journal_mode=DELETE; PRAGMA user_version=1;")
+            .expect("seed main version");
+        drop(connection);
+        let valid = synthetic_wal(&database, false, &[(2, true)]);
+
+        for length in (0..valid.len()).step_by(17) {
+            write_wal(&database, &valid[..length]);
+            let result = super::inspect_persisted_user_version(&database);
+            assert!(
+                result.is_ok()
+                    || matches!(&result, Err(SessionStoreError::InvalidPersistedValue(_)))
+            );
+            assert!(
+                !matches!(result, Ok(2)),
+                "partial WAL length {length} was authorized"
+            );
+        }
+        for index in (0..valid.len()).step_by(17) {
+            let mut mutated = valid.clone();
+            mutated[index] ^= 0x5a;
+            write_wal(&database, &mutated);
+            let result = super::inspect_persisted_user_version(&database);
+            assert!(
+                result.is_ok()
+                    || matches!(result, Err(SessionStoreError::InvalidPersistedValue(_)))
+            );
+        }
+    }
+
+    #[test]
+    fn wal_preflight_streams_valid_wal_above_checkpoint_trigger() {
+        let directory = TestDirectory::new();
+        let database = directory.database();
+        let connection = Connection::open(&database).expect("create large-WAL database");
+        connection
+            .execute_batch(
+                "PRAGMA journal_mode=DELETE; PRAGMA page_size=65536; VACUUM; PRAGMA user_version=1;",
+            )
+            .expect("seed large-page database");
+        drop(connection);
+        let frames = vec![(2_u32, true); 1025];
+        let wal = synthetic_wal(&database, false, &frames);
+        assert!(wal.len() > 64 * 1024 * 1024);
+        write_wal(&database, &wal);
+        assert_eq!(
+            super::inspect_persisted_user_version(&database).expect("large WAL preflight"),
+            2
+        );
+    }
+
+    #[test]
+    fn rejects_v1_schema_mismatch_before_changing_database_artifacts() {
+        let directory = TestDirectory::new();
+        let connection = Connection::open(directory.database()).expect("create mismatched v1");
+        connection
+            .execute_batch(
+                "CREATE TABLE sqliteevil(value TEXT); INSERT INTO sqliteevil VALUES ('keep'); PRAGMA user_version=1;",
+            )
+            .expect("seed mismatched v1");
+        drop(connection);
+        super::tighten_sqlite_artifact_permissions(&directory.database())
+            .expect("normalize fixture permissions");
+        seed_owner_lock(&directory.database());
+        let before = snapshot_directory(directory.path());
+        assert!(matches!(
+            SessionStore::open(directory.database(), SessionStoreConfig::default()),
+            Err(SessionStoreError::SchemaMismatch("unexpected_object"))
+        ));
+        assert_eq!(snapshot_directory(directory.path()), before);
+    }
+
+    #[test]
     fn rejects_unversioned_nonempty_database() {
         let directory = TestDirectory::new();
         Connection::open(directory.database())
@@ -1953,6 +4315,72 @@ mod tests {
             SessionStore::open(directory.database(), SessionStoreConfig::default()),
             Err(SessionStoreError::UnversionedDatabase)
         ));
+    }
+
+    #[test]
+    fn rejects_persisted_queue_corruption_during_preflight() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        store.put_task(&task_record(gid(1), 0)).expect("task");
+        drop(store);
+        let connection = Connection::open(directory.database()).expect("open raw database");
+        connection
+            .execute("UPDATE task SET queue_position = 2", [])
+            .expect("corrupt queue");
+        drop(connection);
+        super::tighten_sqlite_artifact_permissions(&directory.database())
+            .expect("normalize fixture permissions");
+        let before = snapshot_directory(directory.path());
+        assert!(matches!(
+            SessionStore::open(directory.database(), SessionStoreConfig::default()),
+            Err(SessionStoreError::QueueInvariant)
+        ));
+        assert_eq!(snapshot_directory(directory.path()), before);
+    }
+
+    #[test]
+    fn rejects_foreign_key_corruption_during_preflight() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        store.put_task(&task_record(gid(1), 0)).expect("task");
+        drop(store);
+        let connection = Connection::open(directory.database()).expect("open raw database");
+        connection
+            .execute_batch("PRAGMA foreign_keys=OFF")
+            .expect("disable foreign keys");
+        connection
+            .execute(
+                "UPDATE task SET session_id = ?1 WHERE gid = ?2",
+                rusqlite::params![[99_u8; 16].as_slice(), gid(1).to_string()],
+            )
+            .expect("corrupt foreign key");
+        drop(connection);
+        super::tighten_sqlite_artifact_permissions(&directory.database())
+            .expect("normalize fixture permissions");
+        let before = snapshot_directory(directory.path());
+        assert!(matches!(
+            SessionStore::open(directory.database(), SessionStoreConfig::default()),
+            Err(SessionStoreError::InvalidPersistedValue(
+                "foreign_key_check"
+            ))
+        ));
+        assert_eq!(snapshot_directory(directory.path()), before);
+    }
+
+    #[test]
+    fn busy_timeout_is_an_exact_contract() {
+        let directory = TestDirectory::new();
+        assert!(matches!(
+            SessionStore::open(
+                directory.database(),
+                SessionStoreConfig {
+                    busy_timeout_ms: super::SESSION_BUSY_TIMEOUT_MS - 1,
+                    ..SessionStoreConfig::default()
+                },
+            ),
+            Err(SessionStoreError::InvalidConfig("busy_timeout_ms"))
+        ));
+        assert!(!directory.database().exists());
     }
 
     #[test]
@@ -2007,6 +4435,217 @@ mod tests {
     }
 
     #[test]
+    fn queue_transition_moves_between_dense_queues_and_rolls_back_invalid_positions() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        for (position, value) in [1_u64, 2, 3].into_iter().enumerate() {
+            store
+                .put_task(&task_record(gid(value), position as u32))
+                .expect("insert waiting task");
+        }
+        store
+            .transition_task_queue(
+                gid(2),
+                SessionQueueState::Waiting,
+                SessionQueueState::Paused,
+                0,
+                true,
+                300,
+            )
+            .expect("move task to paused queue");
+        let tasks = store.tasks().expect("transitioned tasks");
+        let waiting = tasks
+            .iter()
+            .filter(|task| task.queue_state == SessionQueueState::Waiting)
+            .map(|task| (task.gid, task.queue_position))
+            .collect::<Vec<_>>();
+        let paused = tasks
+            .iter()
+            .filter(|task| task.queue_state == SessionQueueState::Paused)
+            .map(|task| (task.gid, task.queue_position, task.desired_paused))
+            .collect::<Vec<_>>();
+        assert_eq!(waiting, vec![(gid(1), 0), (gid(3), 1)]);
+        assert_eq!(paused, vec![(gid(2), 0, true)]);
+
+        let before = tasks;
+        assert!(matches!(
+            store.transition_task_queue(
+                gid(1),
+                SessionQueueState::Waiting,
+                SessionQueueState::Active,
+                1,
+                false,
+                400,
+            ),
+            Err(SessionStoreError::QueueInvariant)
+        ));
+        assert_eq!(store.tasks().expect("rolled back tasks"), before);
+
+        let mut bypass = store.tasks().expect("tasks")[0].clone();
+        bypass.queue_state = SessionQueueState::Stopped;
+        assert!(matches!(
+            store.put_task(&bypass),
+            Err(SessionStoreError::QueueTransitionRequired)
+        ));
+    }
+
+    #[test]
+    fn queue_transition_reorders_within_one_queue_and_supports_noop_updates() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        for (position, value) in [1_u64, 2, 3].into_iter().enumerate() {
+            store
+                .put_task(&task_record(gid(value), position as u32))
+                .expect("insert waiting task");
+        }
+
+        store
+            .transition_task_queue(
+                gid(3),
+                SessionQueueState::Waiting,
+                SessionQueueState::Waiting,
+                0,
+                true,
+                300,
+            )
+            .expect("move upward");
+        assert_eq!(
+            store
+                .tasks()
+                .expect("upward tasks")
+                .into_iter()
+                .map(|task| (task.gid, task.queue_position))
+                .collect::<Vec<_>>(),
+            vec![(gid(3), 0), (gid(1), 1), (gid(2), 2)]
+        );
+
+        store
+            .transition_task_queue(
+                gid(3),
+                SessionQueueState::Waiting,
+                SessionQueueState::Waiting,
+                2,
+                false,
+                400,
+            )
+            .expect("move downward");
+        assert_eq!(
+            store
+                .tasks()
+                .expect("downward tasks")
+                .into_iter()
+                .map(|task| (task.gid, task.queue_position))
+                .collect::<Vec<_>>(),
+            vec![(gid(1), 0), (gid(2), 1), (gid(3), 2)]
+        );
+
+        store
+            .transition_task_queue(
+                gid(2),
+                SessionQueueState::Waiting,
+                SessionQueueState::Waiting,
+                1,
+                true,
+                500,
+            )
+            .expect("same-position update");
+        let task = store
+            .tasks()
+            .expect("no-op tasks")
+            .into_iter()
+            .find(|task| task.gid == gid(2))
+            .expect("updated task");
+        assert_eq!(task.queue_position, 1);
+        assert!(task.desired_paused);
+        assert_eq!(task.updated_ms, 500);
+    }
+
+    #[test]
+    fn queue_transition_inserts_into_nonempty_targets_and_rejects_stale_state() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        for (position, value) in [1_u64, 2, 3].into_iter().enumerate() {
+            store
+                .put_task(&task_record(gid(value), position as u32))
+                .expect("insert waiting task");
+        }
+        for (position, value) in [4_u64, 5].into_iter().enumerate() {
+            let mut task = task_record(gid(value), position as u32);
+            task.queue_state = SessionQueueState::Paused;
+            task.desired_paused = true;
+            store.put_task(&task).expect("insert paused task");
+        }
+
+        store
+            .transition_task_queue(
+                gid(2),
+                SessionQueueState::Waiting,
+                SessionQueueState::Paused,
+                1,
+                true,
+                300,
+            )
+            .expect("insert in middle");
+        let before_stale = store.tasks().expect("middle tasks");
+        assert!(matches!(
+            store.transition_task_queue(
+                gid(2),
+                SessionQueueState::Waiting,
+                SessionQueueState::Active,
+                0,
+                false,
+                400,
+            ),
+            Err(SessionStoreError::QueueTransitionRequired)
+        ));
+        assert_eq!(store.tasks().expect("stale rollback"), before_stale);
+
+        store
+            .transition_task_queue(
+                gid(1),
+                SessionQueueState::Waiting,
+                SessionQueueState::Paused,
+                0,
+                true,
+                500,
+            )
+            .expect("insert at beginning");
+        store
+            .transition_task_queue(
+                gid(3),
+                SessionQueueState::Waiting,
+                SessionQueueState::Paused,
+                4,
+                true,
+                600,
+            )
+            .expect("insert at end");
+
+        let tasks = store.tasks().expect("final queues");
+        let waiting = tasks
+            .iter()
+            .filter(|task| task.queue_state == SessionQueueState::Waiting)
+            .map(|task| (task.gid, task.queue_position))
+            .collect::<Vec<_>>();
+        let paused = tasks
+            .iter()
+            .filter(|task| task.queue_state == SessionQueueState::Paused)
+            .map(|task| (task.gid, task.queue_position))
+            .collect::<Vec<_>>();
+        assert!(waiting.is_empty());
+        assert_eq!(
+            paused,
+            vec![
+                (gid(1), 0),
+                (gid(4), 1),
+                (gid(2), 2),
+                (gid(5), 3),
+                (gid(3), 4),
+            ]
+        );
+    }
+
+    #[test]
     fn option_replacement_is_atomic_and_registry_policy_gated() {
         let directory = TestDirectory::new();
         let mut store = open_store(&directory);
@@ -2041,7 +4680,7 @@ mod tests {
         ));
         assert_eq!(
             store
-                .task_options(gid(1), OptionsSnapshotScope::CurrentGeneration)
+                .task_options(gid(1), OptionsSnapshotScope::CurrentGeneration, &policy)
                 .expect("load options"),
             safe
         );
@@ -2051,6 +4690,35 @@ mod tests {
                 .windows(b"seeded-secret".len())
                 .any(|window| window == b"seeded-secret")
         );
+    }
+
+    #[test]
+    fn option_reads_reapply_policy_to_tampered_rows() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        store.put_task(&task_record(gid(1), 0)).expect("task");
+        store
+            .connection
+            .execute(
+                "INSERT INTO task_option(gid, scope, key, canonical_value) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![
+                    gid(1).to_string(),
+                    OptionsSnapshotScope::CurrentGeneration.number(),
+                    "rpc-secret",
+                    b"tampered-secret".as_slice(),
+                ],
+            )
+            .expect("tamper option row");
+        let registry = builtin_registry();
+        let policy = |name: &str| {
+            registry
+                .find(name)
+                .is_some_and(|definition| definition.security == SecurityClass::Normal)
+        };
+        assert!(matches!(
+            store.task_options(gid(1), OptionsSnapshotScope::CurrentGeneration, &policy),
+            Err(SessionStoreError::ForbiddenPersistedOption)
+        ));
     }
 
     #[test]
@@ -2102,7 +4770,7 @@ mod tests {
             phase: JournalInstallPhase::Installing,
             created_ms: 300,
         };
-        store.begin_journal_install(&intent).expect("begin install");
+        let token = store.begin_journal_install(&intent).expect("begin install");
         assert_eq!(
             store.journal_installs().expect("intents"),
             vec![intent.clone()]
@@ -2112,7 +4780,7 @@ mod tests {
             intent.old_journal_id
         );
         store
-            .complete_journal_install(gid(1), 400)
+            .complete_journal_install(token, 400)
             .expect("complete install");
         let installed = store.journal_installs().expect("installed");
         assert_eq!(installed[0].phase, JournalInstallPhase::Installed);
@@ -2120,9 +4788,67 @@ mod tests {
         assert_eq!(updated.primary_journal_id, intent.new_journal_id);
         assert_eq!(updated.primary_journal_path, intent.new_path);
         store
-            .clear_installed_journal(gid(1))
+            .clear_installed_journal(token)
             .expect("retirement complete");
         assert!(store.journal_installs().expect("cleared").is_empty());
+    }
+
+    #[test]
+    fn journal_install_tokens_survive_reopen_and_reject_stale_commands() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        let first_task = task_record(gid(1), 0);
+        store.put_task(&first_task).expect("task");
+        let first = JournalInstallIntent {
+            gid: first_task.gid,
+            checkpoint_id: CheckpointId::new([31; 16]).expect("checkpoint"),
+            old_journal_id: first_task.primary_journal_id,
+            old_path: first_task.primary_journal_path.clone(),
+            new_journal_id: journal(32),
+            new_path: path(b"/journal/first"),
+            source_last_sequence: 10,
+            phase: JournalInstallPhase::Installing,
+            created_ms: 300,
+        };
+        let first_token = store.begin_journal_install(&first).expect("begin first");
+        drop(store);
+
+        let mut store = SessionStore::open(directory.database(), SessionStoreConfig::default())
+            .expect("recover installing intent");
+        store
+            .complete_journal_install(first_token, 400)
+            .expect("complete recovered intent");
+        drop(store);
+
+        let mut store = SessionStore::open(directory.database(), SessionStoreConfig::default())
+            .expect("recover installed intent");
+        store
+            .clear_installed_journal(first_token)
+            .expect("retire recovered intent");
+        let current = store.tasks().expect("current task").remove(0);
+        let second = JournalInstallIntent {
+            gid: current.gid,
+            checkpoint_id: CheckpointId::new([33; 16]).expect("checkpoint"),
+            old_journal_id: current.primary_journal_id,
+            old_path: current.primary_journal_path,
+            new_journal_id: journal(34),
+            new_path: path(b"/journal/second"),
+            source_last_sequence: 20,
+            phase: JournalInstallPhase::Installing,
+            created_ms: 500,
+        };
+        let second_token = store.begin_journal_install(&second).expect("begin second");
+        assert!(matches!(
+            store.complete_journal_install(first_token, 600),
+            Err(SessionStoreError::JournalInstallConflict)
+        ));
+        assert!(matches!(
+            store.clear_installed_journal(first_token),
+            Err(SessionStoreError::JournalInstallConflict)
+        ));
+        store
+            .complete_journal_install(second_token, 600)
+            .expect("complete current intent");
     }
 
     #[test]
@@ -2142,13 +4868,28 @@ mod tests {
             phase: JournalInstallPhase::Installing,
             created_ms: 300,
         };
-        store.begin_journal_install(&intent).expect("begin install");
+        let token = store.begin_journal_install(&intent).expect("begin install");
         task.primary_journal_id = journal(23);
         task.primary_journal_path = path(b"/journal/other-authority");
         task.updated_ms = 350;
-        store.put_task(&task).expect("change pointer");
         assert!(matches!(
-            store.complete_journal_install(gid(1), 400),
+            store.put_task(&task),
+            Err(SessionStoreError::JournalPointerMismatch)
+        ));
+        store
+            .connection
+            .execute(
+                "UPDATE task SET primary_journal_id = ?1, primary_journal_path = ?2, updated_ms = ?3 WHERE gid = ?4",
+                rusqlite::params![
+                    task.primary_journal_id.as_bytes().as_slice(),
+                    super::encode_platform_path(&task.primary_journal_path).expect("encode path"),
+                    350_i64,
+                    task.gid.to_string(),
+                ],
+            )
+            .expect("simulate external pointer corruption");
+        assert!(matches!(
+            store.complete_journal_install(token, 400),
             Err(SessionStoreError::JournalPointerMismatch)
         ));
         assert_eq!(
@@ -2159,6 +4900,132 @@ mod tests {
             store.journal_installs().expect("intent")[0].phase,
             JournalInstallPhase::Installing
         );
+    }
+
+    #[test]
+    fn journal_install_retirement_rechecks_the_new_authoritative_pointer() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        let task = task_record(gid(1), 0);
+        store.put_task(&task).expect("task");
+        let intent = JournalInstallIntent {
+            gid: task.gid,
+            checkpoint_id: CheckpointId::new([41; 16]).expect("checkpoint"),
+            old_journal_id: task.primary_journal_id,
+            old_path: task.primary_journal_path.clone(),
+            new_journal_id: journal(42),
+            new_path: path(b"/journal/installed"),
+            source_last_sequence: 11,
+            phase: JournalInstallPhase::Installing,
+            created_ms: 300,
+        };
+        let token = store.begin_journal_install(&intent).expect("begin install");
+        store
+            .complete_journal_install(token, 400)
+            .expect("complete install");
+        store
+            .connection
+            .execute(
+                "UPDATE task SET primary_journal_id = ?1, primary_journal_path = ?2, updated_ms = ?3 WHERE gid = ?4",
+                rusqlite::params![
+                    task.primary_journal_id.as_bytes().as_slice(),
+                    super::encode_platform_path(&task.primary_journal_path).expect("encode path"),
+                    450_i64,
+                    task.gid.to_string(),
+                ],
+            )
+            .expect("simulate external pointer corruption");
+        assert!(matches!(
+            store.clear_installed_journal(token),
+            Err(SessionStoreError::JournalPointerMismatch)
+        ));
+        assert_eq!(store.journal_installs().expect("intent").len(), 1);
+    }
+
+    #[test]
+    fn journal_install_pointer_relations_are_validated_on_reopen() {
+        let installing_directory = TestDirectory::new();
+        let mut installing_store = open_store(&installing_directory);
+        let installing_task = task_record(gid(1), 0);
+        installing_store
+            .put_task(&installing_task)
+            .expect("installing task");
+        let installing = JournalInstallIntent {
+            gid: installing_task.gid,
+            checkpoint_id: CheckpointId::new([51; 16]).expect("checkpoint"),
+            old_journal_id: installing_task.primary_journal_id,
+            old_path: installing_task.primary_journal_path.clone(),
+            new_journal_id: journal(52),
+            new_path: path(b"/journal/installing-new"),
+            source_last_sequence: 12,
+            phase: JournalInstallPhase::Installing,
+            created_ms: 300,
+        };
+        installing_store
+            .begin_journal_install(&installing)
+            .expect("begin installing intent");
+        installing_store
+            .connection
+            .execute(
+                "UPDATE task SET primary_journal_id = ?1, primary_journal_path = ?2 WHERE gid = ?3",
+                rusqlite::params![
+                    installing.new_journal_id.as_bytes().as_slice(),
+                    super::encode_platform_path(&installing.new_path).expect("encode new path"),
+                    installing.gid.to_string(),
+                ],
+            )
+            .expect("corrupt installing pointer");
+        drop(installing_store);
+        assert!(matches!(
+            SessionStore::open(
+                installing_directory.database(),
+                SessionStoreConfig::default()
+            ),
+            Err(SessionStoreError::JournalPointerMismatch)
+        ));
+
+        let installed_directory = TestDirectory::new();
+        let mut installed_store = open_store(&installed_directory);
+        let installed_task = task_record(gid(2), 0);
+        installed_store
+            .put_task(&installed_task)
+            .expect("installed task");
+        let installed = JournalInstallIntent {
+            gid: installed_task.gid,
+            checkpoint_id: CheckpointId::new([53; 16]).expect("checkpoint"),
+            old_journal_id: installed_task.primary_journal_id,
+            old_path: installed_task.primary_journal_path.clone(),
+            new_journal_id: journal(54),
+            new_path: path(b"/journal/installed-new"),
+            source_last_sequence: 13,
+            phase: JournalInstallPhase::Installing,
+            created_ms: 300,
+        };
+        let installed_token = installed_store
+            .begin_journal_install(&installed)
+            .expect("begin installed intent");
+        installed_store
+            .complete_journal_install(installed_token, 400)
+            .expect("complete installed intent");
+        installed_store
+            .connection
+            .execute(
+                "UPDATE task SET primary_journal_id = ?1, primary_journal_path = ?2 WHERE gid = ?3",
+                rusqlite::params![
+                    installed.old_journal_id.as_bytes().as_slice(),
+                    super::encode_platform_path(&installed.old_path).expect("encode old path"),
+                    installed.gid.to_string(),
+                ],
+            )
+            .expect("corrupt installed pointer");
+        drop(installed_store);
+        assert!(matches!(
+            SessionStore::open(
+                installed_directory.database(),
+                SessionStoreConfig::default()
+            ),
+            Err(SessionStoreError::JournalPointerMismatch)
+        ));
     }
 
     #[test]
@@ -2181,6 +5048,478 @@ mod tests {
         )
         .expect("open backup");
         assert_eq!(backup_store.tasks().expect("backup tasks").len(), 1);
+    }
+
+    #[test]
+    fn backup_rejects_orphan_destination_sidecars_without_mutation() {
+        let directory = TestDirectory::new();
+        let store = open_store(&directory);
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let destination = directory.path().join(format!("orphan-{}.db", &suffix[1..]));
+            fs::write(
+                super::sqlite_sidecar_path(&destination, suffix),
+                b"orphan sidecar",
+            )
+            .expect("write orphan backup sidecar");
+            let sidecar = super::sqlite_sidecar_path(&destination, suffix);
+            let before_entries = directory_entry_names(directory.path());
+            let before_sidecar = fs::read(&sidecar).expect("read orphan backup sidecar");
+            assert!(matches!(
+                store.backup_to(&destination),
+                Err(SessionStoreError::InvalidPersistedValue(
+                    "backup.orphan_sqlite_sidecar"
+                ))
+            ));
+            assert!(!destination.exists());
+            assert_eq!(directory_entry_names(directory.path()), before_entries);
+            assert_eq!(
+                fs::read(&sidecar).expect("read unchanged backup sidecar"),
+                before_sidecar
+            );
+        }
+    }
+
+    #[test]
+    fn backup_rejects_reserved_sqlite_companion_suffixes_in_wal_and_delete_modes() {
+        for prefer_wal in [true, false] {
+            let directory = TestDirectory::new();
+            let store = SessionStore::open(
+                directory.database(),
+                SessionStoreConfig {
+                    prefer_wal,
+                    ..SessionStoreConfig::default()
+                },
+            )
+            .expect("open store");
+            assert_eq!(
+                store.journal_mode(),
+                if prefer_wal {
+                    SessionJournalMode::Wal
+                } else {
+                    SessionJournalMode::Delete
+                }
+            );
+
+            for suffix in ["-wal", "-shm", "-journal"] {
+                let mut destinations =
+                    vec![super::sqlite_sidecar_path(&directory.database(), suffix)];
+                destinations.push(
+                    directory
+                        .path()
+                        .join(format!("SESSION.DB{}", suffix.to_ascii_uppercase())),
+                );
+
+                for destination in destinations {
+                    let before_entries = directory_entry_names(directory.path());
+                    assert!(matches!(
+                        store.backup_to(&destination),
+                        Err(SessionStoreError::InvalidPersistedValue(
+                            "backup.reserved_sqlite_companion"
+                        ))
+                    ));
+                    assert_eq!(directory_entry_names(directory.path()), before_entries);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn wal_checkpoint_truncates_and_delete_mode_is_a_noop() {
+        let wal_directory = TestDirectory::new();
+        let mut wal_store = open_store(&wal_directory);
+        assert_eq!(wal_store.journal_mode(), SessionJournalMode::Wal);
+        wal_store
+            .put_task(&task_record(gid(1), 0))
+            .expect("write WAL task");
+        wal_store
+            .checkpoint_wal_truncate()
+            .expect("truncate WAL checkpoint");
+        let wal = super::sqlite_sidecar_path(&wal_directory.database(), "-wal");
+        if wal.exists() {
+            assert_eq!(fs::metadata(wal).expect("WAL metadata").len(), 0);
+        }
+
+        let delete_directory = TestDirectory::new();
+        let mut delete_store = SessionStore::open(
+            delete_directory.database(),
+            SessionStoreConfig {
+                prefer_wal: false,
+                ..SessionStoreConfig::default()
+            },
+        )
+        .expect("open DELETE store");
+        assert_eq!(delete_store.journal_mode(), SessionJournalMode::Delete);
+        delete_store
+            .put_session(&session_record())
+            .expect("write DELETE session");
+        delete_store
+            .checkpoint_wal_truncate()
+            .expect("DELETE checkpoint no-op");
+        assert!(!super::sqlite_sidecar_path(&delete_directory.database(), "-wal").exists());
+    }
+
+    #[test]
+    fn wal_checkpoint_reports_busy_until_read_snapshot_is_released() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        store.put_task(&task_record(gid(1), 0)).expect("first task");
+
+        let reader = Connection::open(directory.database()).expect("open reader");
+        reader.execute_batch("BEGIN").expect("begin read snapshot");
+        let count: i64 = reader
+            .query_row("SELECT COUNT(*) FROM task", [], |row| row.get(0))
+            .expect("establish read snapshot");
+        assert_eq!(count, 1);
+
+        store
+            .put_task(&task_record(gid(2), 1))
+            .expect("second task");
+        assert!(matches!(
+            store.checkpoint_wal_truncate(),
+            Err(SessionStoreError::WalCheckpointBusy)
+        ));
+        reader.execute_batch("ROLLBACK").expect("release snapshot");
+        store
+            .checkpoint_wal_truncate()
+            .expect("checkpoint after reader release");
+    }
+
+    #[test]
+    fn unsupported_journal_modes_fail_closed() {
+        let connection = Connection::open_in_memory().expect("memory database");
+        assert!(matches!(
+            super::configure_pragmas(&connection, SessionStoreConfig::default()),
+            Err(SessionStoreError::InvalidPersistedValue("journal_mode"))
+        ));
+    }
+
+    #[test]
+    fn rollback_preflight_uses_last_valid_page_one_and_skips_out_of_range_records() {
+        let directory = TestDirectory::new();
+        let store = SessionStore::open(
+            directory.database(),
+            SessionStoreConfig {
+                prefer_wal: false,
+                ..SessionStoreConfig::default()
+            },
+        )
+        .expect("create DELETE store");
+        drop(store);
+        let database_bytes = fs::read(directory.database()).expect("database bytes");
+        let page_size =
+            super::decode_database_page_size(&database_bytes[16..18]).expect("page size");
+        let database_pages =
+            u32::try_from(database_bytes.len() / page_size).expect("database pages");
+        let journal_path = super::sqlite_sidecar_path(&directory.database(), "-journal");
+
+        let duplicate = synthetic_rollback_journal(
+            &directory.database(),
+            database_pages,
+            &[(1, 2, true), (1, 1, true)],
+        );
+        fs::write(&journal_path, duplicate).expect("write duplicate page-one journal");
+        let super::RollbackJournalPreflight::Hot {
+            page_one: Some(header),
+            ..
+        } = super::inspect_rollback_journal(&directory.database()).expect("duplicate preflight")
+        else {
+            panic!("expected recovered page one");
+        };
+        assert_eq!(super::decode_database_header(&header).expect("header").1, 1);
+
+        let duplicate = synthetic_rollback_journal(
+            &directory.database(),
+            database_pages,
+            &[(1, 1, true), (1, 2, true)],
+        );
+        fs::write(&journal_path, duplicate).expect("write reversed duplicate journal");
+        let super::RollbackJournalPreflight::Hot {
+            page_one: Some(header),
+            ..
+        } = super::inspect_rollback_journal(&directory.database())
+            .expect("reversed duplicate preflight")
+        else {
+            panic!("expected last recovered page one");
+        };
+        assert_eq!(super::decode_database_header(&header).expect("header").1, 2);
+
+        let out_of_range = synthetic_rollback_journal(
+            &directory.database(),
+            database_pages,
+            &[(database_pages + 1, 1, false), (1, 2, true)],
+        );
+        fs::write(&journal_path, out_of_range).expect("write out-of-range journal");
+        let super::RollbackJournalPreflight::Hot {
+            page_one: Some(header),
+            ..
+        } = super::inspect_rollback_journal(&directory.database()).expect("range preflight")
+        else {
+            panic!("expected page one after ignored out-of-range record");
+        };
+        assert_eq!(super::decode_database_header(&header).expect("header").1, 2);
+    }
+
+    #[test]
+    fn rollback_preflight_handles_empty_legacy_and_super_journal_cases() {
+        let directory = TestDirectory::new();
+        let store = SessionStore::open(
+            directory.database(),
+            SessionStoreConfig {
+                prefer_wal: false,
+                ..SessionStoreConfig::default()
+            },
+        )
+        .expect("create DELETE store");
+        drop(store);
+        let database_bytes = fs::read(directory.database()).expect("database bytes");
+        let page_size =
+            super::decode_database_page_size(&database_bytes[16..18]).expect("page size");
+        let database_pages =
+            u32::try_from(database_bytes.len() / page_size).expect("database pages");
+        let journal_path = super::sqlite_sidecar_path(&directory.database(), "-journal");
+
+        let empty = synthetic_rollback_journal(&directory.database(), 0, &[]);
+        fs::write(&journal_path, empty).expect("write empty-origin journal");
+        fs::write(directory.database(), &database_bytes[..32])
+            .expect("truncate main database header");
+        assert_eq!(
+            super::inspect_persisted_user_version(&directory.database())
+                .expect("empty-origin preflight"),
+            0
+        );
+        fs::write(directory.database(), &database_bytes).expect("restore main database");
+
+        let mut legacy = synthetic_rollback_journal(&directory.database(), database_pages, &[]);
+        legacy[24..28].fill(0);
+        fs::write(&journal_path, legacy).expect("write legacy journal");
+        let before_legacy = snapshot_directory(directory.path());
+        assert!(matches!(
+            super::inspect_rollback_journal(&directory.database()),
+            Err(SessionStoreError::InvalidPersistedValue(
+                "rollback_journal.legacy_page_size"
+            ))
+        ));
+        assert_eq!(snapshot_directory(directory.path()), before_legacy);
+
+        let mut super_journal =
+            synthetic_rollback_journal(&directory.database(), database_pages, &[(1, 1, true)]);
+        append_super_journal_trailer(
+            &mut super_journal,
+            0xfeed_beef,
+            b"-mjabcdef9ab\0ignored",
+            true,
+        );
+        fs::write(&journal_path, &super_journal).expect("write super-journal trailer");
+        assert!(matches!(
+            super::inspect_rollback_journal(&directory.database()),
+            Err(SessionStoreError::InvalidPersistedValue(
+                "rollback_journal.super_journal"
+            ))
+        ));
+
+        let mut checksum_collision =
+            synthetic_rollback_journal(&directory.database(), database_pages, &[(1, 1, true)]);
+        append_super_journal_trailer(
+            &mut checksum_collision,
+            0xfeed_beef,
+            b"ordinary-page-tail",
+            false,
+        );
+        fs::write(&journal_path, checksum_collision).expect("write false trailer");
+        assert_eq!(
+            super::inspect_persisted_user_version(&directory.database())
+                .expect("false trailer preflight"),
+            SESSION_SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn hot_rollback_journal_is_recovered_before_v1_validation() {
+        let directory = TestDirectory::new();
+        let mut store = SessionStore::open(
+            directory.database(),
+            SessionStoreConfig {
+                prefer_wal: false,
+                ..SessionStoreConfig::default()
+            },
+        )
+        .expect("create DELETE store");
+        store.put_session(&session_record()).expect("session");
+        store.put_task(&task_record(gid(1), 0)).expect("task");
+        drop(store);
+
+        let status = Command::new(std::env::current_exe().expect("current test executable"))
+            .args([
+                "--ignored",
+                "--exact",
+                "session_store::tests::hot_rollback_journal_child",
+                "--nocapture",
+            ])
+            .env("ARIAX_HOT_JOURNAL_CHILD", directory.database())
+            .status()
+            .expect("spawn hot-journal child");
+        assert_eq!(status.code(), Some(91));
+        let journal = super::sqlite_sidecar_path(&directory.database(), "-journal");
+        assert!(fs::metadata(&journal).expect("hot journal metadata").len() > 0);
+
+        let store = SessionStore::open(
+            directory.database(),
+            SessionStoreConfig {
+                prefer_wal: false,
+                ..SessionStoreConfig::default()
+            },
+        )
+        .expect("recover hot rollback journal");
+        assert_eq!(store.tasks().expect("recovered tasks").len(), 1);
+        assert!(
+            store
+                .task_options(
+                    gid(1),
+                    OptionsSnapshotScope::CurrentGeneration,
+                    &|_: &str| true,
+                )
+                .expect("rolled back options")
+                .entries()
+                .next()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn hot_rollback_page_one_recovers_corrupt_main_headers() {
+        let source = TestDirectory::new();
+        let mut store = SessionStore::open(
+            source.database(),
+            SessionStoreConfig {
+                prefer_wal: false,
+                ..SessionStoreConfig::default()
+            },
+        )
+        .expect("create DELETE source store");
+        store.put_session(&session_record()).expect("session");
+        store.put_task(&task_record(gid(1), 0)).expect("task");
+        drop(store);
+
+        let status = Command::new(std::env::current_exe().expect("current test executable"))
+            .args([
+                "--ignored",
+                "--exact",
+                "session_store::tests::hot_rollback_page_one_child",
+                "--nocapture",
+            ])
+            .env("ARIAX_HOT_PAGE_ONE_CHILD", source.database())
+            .status()
+            .expect("spawn page-one hot-journal child");
+        assert_eq!(status.code(), Some(92));
+        let journal = super::sqlite_sidecar_path(&source.database(), "-journal");
+        assert!(fs::metadata(&journal).expect("hot journal metadata").len() > 0);
+        assert!(matches!(
+            super::inspect_rollback_journal(&source.database()).expect("rollback preflight"),
+            super::RollbackJournalPreflight::Hot {
+                page_one: Some(_),
+                ..
+            }
+        ));
+
+        for corruption in [
+            MainHeaderCorruption::Magic,
+            MainHeaderCorruption::PageSize,
+            MainHeaderCorruption::UserVersion,
+        ] {
+            let direct_directory = TestDirectory::new();
+            let direct_database = direct_directory.database();
+            copy_hot_rollback_fixture(&source.database(), &direct_database);
+            corrupt_main_header(&direct_database, corruption);
+            let direct = Connection::open(&direct_database).expect("SQLite direct recovery");
+            let version: u32 = direct
+                .pragma_query_value(None, "user_version", |row| row.get(0))
+                .expect("direct recovered version");
+            let crash_table: i64 = direct
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_schema WHERE name = 'crash_fill'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("direct recovered schema");
+            assert_eq!(version, SESSION_SCHEMA_VERSION, "{corruption:?}");
+            assert_eq!(crash_table, 0, "{corruption:?}");
+            drop(direct);
+
+            let store_directory = TestDirectory::new();
+            let store_database = store_directory.database();
+            copy_hot_rollback_fixture(&source.database(), &store_database);
+            corrupt_main_header(&store_database, corruption);
+            let recovered = SessionStore::open(
+                &store_database,
+                SessionStoreConfig {
+                    prefer_wal: false,
+                    ..SessionStoreConfig::default()
+                },
+            )
+            .expect("SessionStore hot rollback recovery");
+            assert_eq!(recovered.tasks().expect("recovered tasks").len(), 1);
+            assert!(!super::sqlite_sidecar_path(&store_database, "-journal").exists());
+        }
+    }
+
+    #[test]
+    #[ignore = "spawned by hot_rollback_journal_is_recovered_before_v1_validation"]
+    fn hot_rollback_journal_child() {
+        let Some(database) = std::env::var_os("ARIAX_HOT_JOURNAL_CHILD") else {
+            return;
+        };
+        let connection = Connection::open(PathBuf::from(database)).expect("child open database");
+        connection
+            .execute_batch(
+                "PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA cache_size=5; PRAGMA cache_spill=ON; BEGIN IMMEDIATE;",
+            )
+            .expect("child begin transaction");
+        let value = vec![b'x'; 1024];
+        for index in 0..2048_u32 {
+            connection
+                .execute(
+                    "INSERT INTO task_option(gid, scope, key, canonical_value) VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![
+                        gid(1).to_string(),
+                        OptionsSnapshotScope::CurrentGeneration.number(),
+                        format!("child-{index:04}"),
+                        value.as_slice(),
+                    ],
+                )
+                .expect("child insert option");
+        }
+        std::process::exit(91);
+    }
+
+    #[test]
+    #[ignore = "spawned by hot_rollback_page_one_recovers_corrupt_main_headers"]
+    fn hot_rollback_page_one_child() {
+        let Some(database) = std::env::var_os("ARIAX_HOT_PAGE_ONE_CHILD") else {
+            return;
+        };
+        let connection = Connection::open(PathBuf::from(database)).expect("child open database");
+        connection
+            .execute_batch(
+                "PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA cache_size=1; PRAGMA cache_spill=ON; BEGIN IMMEDIATE; PRAGMA user_version=2; CREATE TABLE crash_fill(value BLOB); INSERT INTO crash_fill VALUES(zeroblob(8388608));",
+            )
+            .expect("child create page-one hot journal");
+        std::process::exit(92);
+    }
+
+    #[test]
+    fn bounded_count_rejects_negative_and_excessive_rows() {
+        assert!(matches!(
+            super::bounded_count(-1, 10, "test.count"),
+            Err(SessionStoreError::InvalidPersistedValue("test.count"))
+        ));
+        assert!(matches!(
+            super::bounded_count(11, 10, "test.count"),
+            Err(SessionStoreError::InvalidPersistedValue("test.count"))
+        ));
+        assert_eq!(
+            super::bounded_count(10, 10, "test.count").expect("bounded count"),
+            10
+        );
     }
 
     #[test]

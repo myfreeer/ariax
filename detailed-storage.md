@@ -16,8 +16,13 @@ latched failure, tail-validated descriptor reopen, and flushed-boundary
 rotation without whole-segment buffering.
 
 The SQLite side of checkpoint installation now has transactional
-`installing`/`installed` pointer primitives with old-pointer revalidation; the
-checkpoint state writer and cross-store orchestration remain pending.
+`installing`/`installed` pointer primitives with identity tokens, old-pointer
+revalidation, and startup pointer/phase validation. Its executable boundary
+also includes private path/artifact enforcement, cooperative Ariax-only
+single-writer locking, hot rollback page-one plus committed-WAL version
+preflight, journal-mode write probes, and validated file-synced no-clobber
+backups; the checkpoint state writer and cross-store orchestration remain
+pending.
 
 This document defines `SafePathBuilder`, `FileLayout`, `GlobalOffsetMapper`,
 `StorageEngine`, and `ControlJournal` contracts for HTTP sequential/range
@@ -850,16 +855,22 @@ a whole.
 Installation is a pointer/name switch with explicit crash points:
 
 1. Write an `installing` intent row to SQLite: gid, old journal id and path,
-   new checkpoint id, journal id, path, and `source_last_sequence`.
+   new checkpoint id, journal id, path, and `source_last_sequence`. The call
+   returns a `JournalInstallToken` containing gid, checkpoint id, and new journal
+   id; all later completion/clear commands must present that exact identity.
 2. Install the new set as primary: in `central` mode, update the SQLite journal
-   path/journal-id fields in the same transaction that clears the intent to
-   `installed`; in `beside-output` mode, atomically rename the checkpoint
-   segment over the companion base name, then mark `installed` in SQLite. The
-   `both` replica is refreshed from the new primary before `installed`.
+   path/journal-id fields in the same transaction that changes the intent phase
+   to `installed`; in `beside-output` mode, atomically rename the checkpoint
+   segment over the companion base name, then perform that tokenized SQLite
+   transaction. Completion re-decodes the stored intent and rechecks that the
+   task still points to the recorded old id/path. The `both` replica is refreshed
+   from the new primary before `installed`.
 3. Only after `installed` is durable in SQLite: retire (delete) the old
    segments and any older orphaned checkpoint temporaries. Retirement failures
    are diagnostics, not correctness failures — stale sets are unreachable
-   because their `journal_id` no longer matches the installed pointer.
+   because their `journal_id` no longer matches the installed pointer. Clearing
+   the installed intent also requires the same token and cannot clear a newer
+   install for the gid.
 4. The appender continues appending post-checkpoint facts to the new set;
    subsequent segments extend it with the normal rotation linkage.
 
@@ -871,6 +882,10 @@ temporaries and recovers from the retained old set, which remains authoritative
 until `installed`. A `CheckpointStart` without a matching valid `CheckpointEnd`
 invalidates the whole candidate set, never just a suffix. Divergent copies at
 the same checkpoint id are corruption and fail closed to the old set.
+Opening the session database additionally validates the phase/pointer relation:
+`installing` must retain the old id/path and `installed` must name the new
+id/path. Ordinary task updates cannot bypass this protocol to change the
+primary pointer.
 
 A compaction failure (build, sync, or install) leaves the old set
 authoritative, cleans up temporaries, backs off, and raises a diagnostic; it

@@ -8,12 +8,16 @@ publish.workspace = true
 [dependencies]
 ariax-core.workspace = true
 crc32c.workspace = true
+fs2.workspace = true
 rusqlite.workspace = true
 sha2.workspace = true
 unicode-normalization.workspace = true
 
 [dev-dependencies]
 ariax-config.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+ariax-windows-security.workspace = true
 
 [lints]
 workspace = true

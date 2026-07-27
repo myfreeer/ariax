@@ -376,8 +376,35 @@ Acceptance:
   continuity,
 - checkpoints encode the durable piece map in bounded, canonical
   `PieceStateChunk` records rather than replaying an unbounded live history,
-- the exact SQLite v1 schema, pragmas, migration policy, backup behavior, and
-  journal-install pointer transitions are crash-tested,
+- the exact SQLite v1 schema, pragmas, and fail-closed version policy are
+  validated; hot rollback recovery is process-crash tested, backup publication
+  has integrity and no-clobber coverage, and journal-install transitions have
+  transaction, reopen, pointer-invariant, and stale-command coverage; explicit
+  crash-point matrices remain phase gates,
+- an existing broad persistence parent, intermediate symlink/reparse component,
+  sidecar beside a missing or empty main database, hard-link alias, and
+  symlink/non-regular SQLite artifact fail closed; missing directories are
+  private at creation,
+- hot rollback page-one and committed-WAL preflight rejects a newer committed
+  schema before artifact mutation, supports rollback recovery with a damaged
+  main header, and rejects legacy page-size-zero rollback journals,
+- `${db}.ariax-owner-lock` enforces cooperative single-writer ownership among
+  Ariax processes; external raw SQLite writers bypass it and are unsupported,
+- task/install reads are count/byte bounded, task options are policy-checked on
+  read, and cross-queue moves preserve dense ordering in one transaction,
+- WAL and DELETE are transactionally page-one write/rollback probed; truncate
+  checkpoint behavior and validated, file-synced, no-clobber backup publication
+  are tested, including orphan destination-sidecar rejection and
+  ASCII-case-insensitive rejection of every `-wal`, `-shm`, or `-journal`
+  destination suffix, with Unix parent-directory sync and no equivalent Windows
+  directory-entry crash-durability claim,
+- the current backup primitive does not yet recover a residue created by a
+  crash or temporary-unlink failure from destination-link publication until
+  removal is durably synced; verified same-file cleanup or a native atomic
+  no-replace primitive, with crash-point and unlink-error injection across that
+  entire window, is required before production use or tagging,
+- journal installation completion/clearing requires the exact
+  gid/checkpoint/new-journal token and cannot bypass primary-pointer invariants,
 - every task persists and validates its output-root binding; relocation/rebind
   is explicit and identity- or digest-proven,
 - provisional range attempts recover as aborted/pending unless a commit record

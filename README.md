@@ -7,10 +7,14 @@ plus bounded cross-record semantic recovery are implemented. The file-backed
 single-owner appender also implements typed sequence assignment, flush
 acknowledgement, descriptor-tail validation, and linked rotation. SQLite v1
 schema creation/validation, exact connection limits, core session/task storage,
-queue reorder, journal-cache reconciliation, install-pointer transactions, and
-hot backup are executable. Module work remains governed by
-`implementation-readiness.md` and the phase exit criteria in
-`implementation-plan.md`.
+bounded semantic reads, atomic dense queue transitions, journal-cache
+reconciliation, tokenized install-pointer transactions, raw committed-version
+preflight across hot rollback page-one state and committed WAL, private paths
+and artifacts, cooperative Ariax-only single-writer ownership, WAL fallback/checkpoint,
+and validated, file-synced, no-clobber hot backup are executable. The session
+owner thread and cross-store startup orchestration remain pending. Module work
+remains governed by `implementation-readiness.md` and the phase exit criteria
+in `implementation-plan.md`.
 
 This design is for a new downloader that keeps the mature aria2 user model
 while fixing the major safety, scalability, and completeness problems found in
