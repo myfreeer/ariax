@@ -1,7 +1,8 @@
 use crate::{
-    Aria2Status, Generation, Gid, HostKeyChallenge, HostKeyChallengeId, HostKeyFingerprint,
-    MonotonicInstant, NoSpaceCondition, NoSpaceProbeId, OptionPatchId, PublicError, RetryTimerId,
-    SlowReadmissionId, StateTransition, TaskConditions, TaskId, TaskSnapshot, TaskState,
+    Aria2Status, CredentialRequirementKey, Generation, Gid, HostKeyChallengeId, HostKeyFingerprint,
+    HostKeyResolutionId, MonotonicInstant, NoSpaceCondition, NoSpaceProbeId, OptionPatchId,
+    PresentedHostKeyChallenge, PublicError, RetryTimerId, SlowReadmissionId, StateTransition,
+    StoppedResultDeletionId, TaskConditions, TaskDeletion, TaskId, TaskSnapshot, TaskState,
 };
 use std::error::Error;
 use std::fmt;
@@ -9,6 +10,10 @@ use std::num::NonZeroUsize;
 
 /// Maximum number of ordered side effects emitted by one scheduler operation.
 pub const MAX_SCHEDULER_EFFECTS: usize = 8;
+/// Maximum task count representable by the normative SQLite session store.
+pub const MAX_SCHEDULER_TASKS: usize = 100_000;
+/// Largest non-negative millisecond timestamp representable by SQLite INTEGER.
+pub const MAX_PERSISTED_MILLISECONDS: u64 = i64::MAX as u64;
 
 /// Fixed bounds and policies owned by one scheduler instance.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -25,6 +30,9 @@ impl SchedulerConfig {
         max_active_tasks: NonZeroUsize,
         retry_wait_holds_slot: bool,
     ) -> Result<Self, SchedulerConfigError> {
+        if max_tasks.get() > MAX_SCHEDULER_TASKS {
+            return Err(SchedulerConfigError::TaskLimitExceedsPersistenceLimit);
+        }
         if max_active_tasks.get() > max_tasks.get() {
             return Err(SchedulerConfigError::ActiveLimitExceedsTaskLimit);
         }
@@ -39,12 +47,18 @@ impl SchedulerConfig {
 /// Why scheduler bounds could not be constructed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SchedulerConfigError {
+    TaskLimitExceedsPersistenceLimit,
     ActiveLimitExceedsTaskLimit,
 }
 
 impl fmt::Display for SchedulerConfigError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("active task limit exceeds total task limit")
+        formatter.write_str(match self {
+            Self::TaskLimitExceedsPersistenceLimit => {
+                "task limit exceeds the persisted session-store bound"
+            }
+            Self::ActiveLimitExceedsTaskLimit => "active task limit exceeds total task limit",
+        })
     }
 }
 
@@ -79,6 +93,29 @@ impl QueueClass {
             Self::Stopped => "stopped",
         }
     }
+}
+
+/// One immutable queue order included in an atomic persisted queue transition.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QueueOrder {
+    pub class: QueueClass,
+    pub order: Vec<Gid>,
+}
+
+/// Bounded slow-slot metadata persisted atomically with demoted queue state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SlowReadmissionDecision {
+    pub readmit_at: MonotonicInstant,
+    pub scheduled_at_ms: u64,
+    pub delay_ms: u64,
+}
+
+/// Bounded slow-slot metadata persisted atomically with demoted queue state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SlowSlotPersistence {
+    pub original_position: usize,
+    pub demotion_count: u32,
+    pub decision: SlowReadmissionDecision,
 }
 
 /// One task's ownership of the global active-task budget.
@@ -179,6 +216,23 @@ pub enum PendingBarrier {
         generation: Generation,
         status: Aria2Status,
     },
+    OptionPatchPersistence {
+        generation: Generation,
+        patch_id: OptionPatchId,
+    },
+    OptionPatchApplication {
+        generation: Generation,
+        patch_id: OptionPatchId,
+    },
+    HostKeyResolution {
+        generation: Generation,
+        resolution_id: HostKeyResolutionId,
+        challenge: HostKeyChallengeId,
+    },
+    StoppedResultDeletion {
+        generation: Generation,
+        deletion_id: StoppedResultDeletionId,
+    },
 }
 
 impl PendingBarrier {
@@ -188,6 +242,36 @@ impl PendingBarrier {
             Self::GenerationPersistence { .. } => "generation_persistence",
             Self::CancellationDrain { .. } => "cancellation_drain",
             Self::TerminalPersistence { .. } => "terminal_persistence",
+            Self::OptionPatchPersistence { .. } => "option_patch_persistence",
+            Self::OptionPatchApplication { .. } => "option_patch_application",
+            Self::HostKeyResolution { .. } => "host_key_resolution",
+            Self::StoppedResultDeletion { .. } => "stopped_result_deletion",
+        }
+    }
+}
+
+/// Scheduler-relevant behavior of an option patch that has already passed
+/// registry and value validation in `ariax-config`.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ValidatedOptionPatchKind {
+    /// Apply without restarting a live worker generation.
+    InPlace,
+    /// Stage now, cancel the current generation, and apply after quiescence.
+    ActiveRestart,
+    /// Apply a host-key pin that names the currently displayed challenge.
+    MatchingHostKey {
+        challenge: HostKeyChallengeId,
+        fingerprint_sha256: HostKeyFingerprint,
+    },
+}
+
+impl ValidatedOptionPatchKind {
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::InPlace => "in_place",
+            Self::ActiveRestart => "active_restart",
+            Self::MatchingHostKey { .. } => "matching_host_key",
         }
     }
 }
@@ -213,12 +297,11 @@ pub enum SchedulerCommand {
         challenge: HostKeyChallengeId,
         fingerprint_sha256: HostKeyFingerprint,
     },
-    SatisfyCredentials {
-        gid: Gid,
-    },
     ApplyOptionPatch {
         gid: Gid,
         patch_id: OptionPatchId,
+        kind: ValidatedOptionPatchKind,
+        satisfies_credentials: Option<CredentialRequirementKey>,
     },
     Remove {
         gid: Gid,
@@ -241,7 +324,6 @@ pub enum SchedulerCommandKind {
     Pause,
     Resume,
     ApproveHostKey,
-    SatisfyCredentials,
     ApplyOptionPatch,
     Remove,
     RemoveStoppedResult,
@@ -254,11 +336,13 @@ pub enum SchedulerCommandKind {
 pub enum SchedulerCommandHandling {
     StateMatrix,
     QueueOperation,
+    BatchOperation,
 }
 
 pub const ALL_SCHEDULER_COMMAND_HANDLINGS: &[SchedulerCommandHandling] = &[
     SchedulerCommandHandling::StateMatrix,
     SchedulerCommandHandling::QueueOperation,
+    SchedulerCommandHandling::BatchOperation,
 ];
 
 impl SchedulerCommandHandling {
@@ -267,6 +351,7 @@ impl SchedulerCommandHandling {
         match self {
             Self::StateMatrix => "state_matrix",
             Self::QueueOperation => "queue_operation",
+            Self::BatchOperation => "batch_operation",
         }
     }
 }
@@ -276,7 +361,6 @@ pub const ALL_SCHEDULER_COMMAND_KINDS: &[SchedulerCommandKind] = &[
     SchedulerCommandKind::Pause,
     SchedulerCommandKind::Resume,
     SchedulerCommandKind::ApproveHostKey,
-    SchedulerCommandKind::SatisfyCredentials,
     SchedulerCommandKind::ApplyOptionPatch,
     SchedulerCommandKind::Remove,
     SchedulerCommandKind::RemoveStoppedResult,
@@ -292,7 +376,6 @@ impl SchedulerCommandKind {
             Self::Pause => "pause",
             Self::Resume => "resume",
             Self::ApproveHostKey => "approve_host_key",
-            Self::SatisfyCredentials => "satisfy_credentials",
             Self::ApplyOptionPatch => "apply_option_patch",
             Self::Remove => "remove",
             Self::RemoveStoppedResult => "remove_stopped_result",
@@ -306,15 +389,14 @@ impl SchedulerCommandKind {
     pub const fn handling(self) -> SchedulerCommandHandling {
         match self {
             Self::ChangePosition => SchedulerCommandHandling::QueueOperation,
+            Self::OrderlyShutdown => SchedulerCommandHandling::BatchOperation,
             Self::AddValidatedTask
             | Self::Pause
             | Self::Resume
             | Self::ApproveHostKey
-            | Self::SatisfyCredentials
             | Self::ApplyOptionPatch
             | Self::Remove
-            | Self::RemoveStoppedResult
-            | Self::OrderlyShutdown => SchedulerCommandHandling::StateMatrix,
+            | Self::RemoveStoppedResult => SchedulerCommandHandling::StateMatrix,
         }
     }
 }
@@ -327,7 +409,6 @@ impl SchedulerCommand {
             Self::Pause { .. } => SchedulerCommandKind::Pause,
             Self::Resume { .. } => SchedulerCommandKind::Resume,
             Self::ApproveHostKey { .. } => SchedulerCommandKind::ApproveHostKey,
-            Self::SatisfyCredentials { .. } => SchedulerCommandKind::SatisfyCredentials,
             Self::ApplyOptionPatch { .. } => SchedulerCommandKind::ApplyOptionPatch,
             Self::Remove { .. } => SchedulerCommandKind::Remove,
             Self::RemoveStoppedResult { .. } => SchedulerCommandKind::RemoveStoppedResult,
@@ -349,6 +430,27 @@ pub enum TaskEvent {
         gid: Gid,
         generation: Generation,
     },
+    OptionPatchPersisted {
+        gid: Gid,
+        generation: Generation,
+        patch_id: OptionPatchId,
+    },
+    OptionPatchPersistenceFailed {
+        gid: Gid,
+        generation: Generation,
+        patch_id: OptionPatchId,
+    },
+    OptionPatchApplied {
+        gid: Gid,
+        generation: Generation,
+        patch_id: OptionPatchId,
+    },
+    OptionPatchApplicationFailed {
+        gid: Gid,
+        generation: Generation,
+        patch_id: OptionPatchId,
+        error: PublicError,
+    },
     AllocationSucceeded {
         gid: Gid,
         generation: Generation,
@@ -361,7 +463,7 @@ pub enum TaskEvent {
     AllocationHostKeyChallenge {
         gid: Gid,
         generation: Generation,
-        challenge: HostKeyChallenge,
+        challenge: PresentedHostKeyChallenge,
     },
     AllocationFailed {
         gid: Gid,
@@ -396,7 +498,7 @@ pub enum TaskEvent {
     SlowDemoted {
         gid: Gid,
         generation: Generation,
-        readmit_at: MonotonicInstant,
+        decision: SlowReadmissionDecision,
     },
     SlowPaused {
         gid: Gid,
@@ -446,6 +548,51 @@ pub enum TaskEvent {
         generation: Generation,
         status: Aria2Status,
     },
+    HostKeyResolutionPersisted {
+        gid: Gid,
+        generation: Generation,
+        resolution_id: HostKeyResolutionId,
+    },
+    HostKeyResolutionFailed {
+        gid: Gid,
+        generation: Generation,
+        resolution_id: HostKeyResolutionId,
+    },
+    StoppedResultDeleted {
+        gid: Gid,
+        generation: Generation,
+        deletion_id: StoppedResultDeletionId,
+    },
+    StoppedResultDeletionFailed {
+        gid: Gid,
+        generation: Generation,
+        deletion_id: StoppedResultDeletionId,
+    },
+}
+
+/// One asynchronous task event correlated to the immutable in-process task
+/// instance that issued the underlying work.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaskEventEnvelope {
+    task_id: TaskId,
+    event: TaskEvent,
+}
+
+impl TaskEventEnvelope {
+    #[must_use]
+    pub const fn task_id(&self) -> TaskId {
+        self.task_id
+    }
+
+    #[must_use]
+    pub const fn event(&self) -> &TaskEvent {
+        &self.event
+    }
+
+    #[must_use]
+    pub fn into_event(self) -> TaskEvent {
+        self.event
+    }
 }
 
 /// Why a no-space readiness probe was issued.
@@ -477,12 +624,19 @@ pub enum TaskEventToken {
     RetryTimer(RetryTimerId),
     SlowReadmission(SlowReadmissionId),
     NoSpaceProbe(NoSpaceProbeId),
+    OptionPatch(OptionPatchId),
+    HostKeyResolution(HostKeyResolutionId),
+    StoppedResultDeletion(StoppedResultDeletionId),
 }
 
 /// Closed asynchronous-event vocabulary, independent of event payloads.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum TaskEventKind {
     GenerationPersisted,
+    OptionPatchPersisted,
+    OptionPatchPersistenceFailed,
+    OptionPatchApplied,
+    OptionPatchApplicationFailed,
     AllocationSucceeded,
     AllocationRetryable,
     AllocationHostKeyChallenge,
@@ -504,10 +658,18 @@ pub enum TaskEventKind {
     CancellationDrained,
     NoSpaceProbeCompleted,
     TerminalPersisted,
+    HostKeyResolutionPersisted,
+    HostKeyResolutionFailed,
+    StoppedResultDeleted,
+    StoppedResultDeletionFailed,
 }
 
 pub const ALL_TASK_EVENT_KINDS: &[TaskEventKind] = &[
     TaskEventKind::GenerationPersisted,
+    TaskEventKind::OptionPatchPersisted,
+    TaskEventKind::OptionPatchPersistenceFailed,
+    TaskEventKind::OptionPatchApplied,
+    TaskEventKind::OptionPatchApplicationFailed,
     TaskEventKind::AllocationSucceeded,
     TaskEventKind::AllocationRetryable,
     TaskEventKind::AllocationHostKeyChallenge,
@@ -529,6 +691,10 @@ pub const ALL_TASK_EVENT_KINDS: &[TaskEventKind] = &[
     TaskEventKind::CancellationDrained,
     TaskEventKind::NoSpaceProbeCompleted,
     TaskEventKind::TerminalPersisted,
+    TaskEventKind::HostKeyResolutionPersisted,
+    TaskEventKind::HostKeyResolutionFailed,
+    TaskEventKind::StoppedResultDeleted,
+    TaskEventKind::StoppedResultDeletionFailed,
 ];
 
 impl TaskEventKind {
@@ -536,6 +702,10 @@ impl TaskEventKind {
     pub const fn code(self) -> &'static str {
         match self {
             Self::GenerationPersisted => "generation_persisted",
+            Self::OptionPatchPersisted => "option_patch_persisted",
+            Self::OptionPatchPersistenceFailed => "option_patch_persistence_failed",
+            Self::OptionPatchApplied => "option_patch_applied",
+            Self::OptionPatchApplicationFailed => "option_patch_application_failed",
             Self::AllocationSucceeded => "allocation_succeeded",
             Self::AllocationRetryable => "allocation_retryable",
             Self::AllocationHostKeyChallenge => "allocation_host_key_challenge",
@@ -557,15 +727,32 @@ impl TaskEventKind {
             Self::CancellationDrained => "cancellation_drained",
             Self::NoSpaceProbeCompleted => "no_space_probe_completed",
             Self::TerminalPersisted => "terminal_persisted",
+            Self::HostKeyResolutionPersisted => "host_key_resolution_persisted",
+            Self::HostKeyResolutionFailed => "host_key_resolution_failed",
+            Self::StoppedResultDeleted => "stopped_result_deleted",
+            Self::StoppedResultDeletionFailed => "stopped_result_deletion_failed",
         }
     }
 }
 
 impl TaskEvent {
+    /// Binds this event to the immutable task instance that issued its work.
+    #[must_use]
+    pub fn for_task(self, task_id: TaskId) -> TaskEventEnvelope {
+        TaskEventEnvelope {
+            task_id,
+            event: self,
+        }
+    }
+
     #[must_use]
     pub const fn gid(&self) -> Gid {
         match self {
             Self::GenerationPersisted { gid, .. }
+            | Self::OptionPatchPersisted { gid, .. }
+            | Self::OptionPatchPersistenceFailed { gid, .. }
+            | Self::OptionPatchApplied { gid, .. }
+            | Self::OptionPatchApplicationFailed { gid, .. }
             | Self::AllocationSucceeded { gid, .. }
             | Self::AllocationRetryable { gid, .. }
             | Self::AllocationHostKeyChallenge { gid, .. }
@@ -585,7 +772,11 @@ impl TaskEvent {
             | Self::SeedingFailed { gid, .. }
             | Self::CancellationDrained { gid, .. }
             | Self::NoSpaceProbeCompleted { gid, .. }
-            | Self::TerminalPersisted { gid, .. } => *gid,
+            | Self::TerminalPersisted { gid, .. }
+            | Self::HostKeyResolutionPersisted { gid, .. }
+            | Self::HostKeyResolutionFailed { gid, .. }
+            | Self::StoppedResultDeleted { gid, .. }
+            | Self::StoppedResultDeletionFailed { gid, .. } => *gid,
         }
     }
 
@@ -593,6 +784,10 @@ impl TaskEvent {
     pub const fn generation(&self) -> Generation {
         match self {
             Self::GenerationPersisted { generation, .. }
+            | Self::OptionPatchPersisted { generation, .. }
+            | Self::OptionPatchPersistenceFailed { generation, .. }
+            | Self::OptionPatchApplied { generation, .. }
+            | Self::OptionPatchApplicationFailed { generation, .. }
             | Self::AllocationSucceeded { generation, .. }
             | Self::AllocationRetryable { generation, .. }
             | Self::AllocationHostKeyChallenge { generation, .. }
@@ -612,7 +807,11 @@ impl TaskEvent {
             | Self::SeedingFailed { generation, .. }
             | Self::CancellationDrained { generation, .. }
             | Self::NoSpaceProbeCompleted { generation, .. }
-            | Self::TerminalPersisted { generation, .. } => *generation,
+            | Self::TerminalPersisted { generation, .. }
+            | Self::HostKeyResolutionPersisted { generation, .. }
+            | Self::HostKeyResolutionFailed { generation, .. }
+            | Self::StoppedResultDeleted { generation, .. }
+            | Self::StoppedResultDeletionFailed { generation, .. } => *generation,
         }
     }
 
@@ -620,6 +819,14 @@ impl TaskEvent {
     pub const fn kind(&self) -> TaskEventKind {
         match self {
             Self::GenerationPersisted { .. } => TaskEventKind::GenerationPersisted,
+            Self::OptionPatchPersisted { .. } => TaskEventKind::OptionPatchPersisted,
+            Self::OptionPatchPersistenceFailed { .. } => {
+                TaskEventKind::OptionPatchPersistenceFailed
+            }
+            Self::OptionPatchApplied { .. } => TaskEventKind::OptionPatchApplied,
+            Self::OptionPatchApplicationFailed { .. } => {
+                TaskEventKind::OptionPatchApplicationFailed
+            }
             Self::AllocationSucceeded { .. } => TaskEventKind::AllocationSucceeded,
             Self::AllocationRetryable { .. } => TaskEventKind::AllocationRetryable,
             Self::AllocationHostKeyChallenge { .. } => TaskEventKind::AllocationHostKeyChallenge,
@@ -641,6 +848,10 @@ impl TaskEvent {
             Self::CancellationDrained { .. } => TaskEventKind::CancellationDrained,
             Self::NoSpaceProbeCompleted { .. } => TaskEventKind::NoSpaceProbeCompleted,
             Self::TerminalPersisted { .. } => TaskEventKind::TerminalPersisted,
+            Self::HostKeyResolutionPersisted { .. } => TaskEventKind::HostKeyResolutionPersisted,
+            Self::HostKeyResolutionFailed { .. } => TaskEventKind::HostKeyResolutionFailed,
+            Self::StoppedResultDeleted { .. } => TaskEventKind::StoppedResultDeleted,
+            Self::StoppedResultDeletionFailed { .. } => TaskEventKind::StoppedResultDeletionFailed,
         }
     }
 
@@ -663,6 +874,22 @@ impl TaskEvent {
             Self::NoSpaceProbeCompleted { probe_id, .. } => {
                 Some(TaskEventToken::NoSpaceProbe(*probe_id))
             }
+            Self::OptionPatchPersisted { patch_id, .. }
+            | Self::OptionPatchPersistenceFailed { patch_id, .. }
+            | Self::OptionPatchApplied { patch_id, .. }
+            | Self::OptionPatchApplicationFailed { patch_id, .. } => {
+                Some(TaskEventToken::OptionPatch(*patch_id))
+            }
+            Self::HostKeyResolutionPersisted { resolution_id, .. }
+            | Self::HostKeyResolutionFailed { resolution_id, .. } => {
+                Some(TaskEventToken::HostKeyResolution(*resolution_id))
+            }
+            Self::StoppedResultDeleted { deletion_id, .. } => {
+                Some(TaskEventToken::StoppedResultDeletion(*deletion_id))
+            }
+            Self::StoppedResultDeletionFailed { deletion_id, .. } => {
+                Some(TaskEventToken::StoppedResultDeletion(*deletion_id))
+            }
             _ => None,
         }
     }
@@ -672,91 +899,168 @@ impl TaskEvent {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TransitionEffect {
     PersistTask {
+        task_id: TaskId,
         gid: Gid,
+        queue: QueueClass,
+        position: usize,
+        desired_paused: bool,
+        slow_demotion_count: u32,
+        conditions: TaskConditions,
     },
-    PersistDesiredPaused {
+    PersistQueueTransition {
+        task_id: TaskId,
         gid: Gid,
-        paused: bool,
+        from: Option<QueueClass>,
+        to: Option<QueueClass>,
+        desired_paused: bool,
+        slow_demotion_count: u32,
+        slow_slot: Option<SlowSlotPersistence>,
+        orders: Vec<QueueOrder>,
     },
-    PersistQueueOrder {
-        class: QueueClass,
-        order: Vec<Gid>,
+    StageOptionPatch {
+        task_id: TaskId,
+        gid: Gid,
+        patch_id: OptionPatchId,
+        satisfies_credentials: Option<CredentialRequirementKey>,
+    },
+    ApplyOptionPatch {
+        task_id: TaskId,
+        gid: Gid,
+        patch_id: OptionPatchId,
+        satisfies_credentials: Option<CredentialRequirementKey>,
     },
     PersistGenerationStarted {
+        task_id: TaskId,
         gid: Gid,
         generation: Generation,
     },
     StartAllocation {
+        task_id: TaskId,
         gid: Gid,
         generation: Generation,
     },
     CancelGeneration {
+        task_id: TaskId,
         gid: Gid,
         generation: Generation,
         force: bool,
     },
     ReleaseSlot {
+        task_id: TaskId,
         gid: Gid,
         ownership: SlotOwnership,
     },
     ScheduleRetry {
+        task_id: TaskId,
         gid: Gid,
         generation: Generation,
         retry_timer_id: RetryTimerId,
         at: MonotonicInstant,
     },
     CancelRetry {
+        task_id: TaskId,
         gid: Gid,
         generation: Generation,
         retry_timer_id: RetryTimerId,
     },
     ScheduleSlowReadmission {
+        task_id: TaskId,
         gid: Gid,
         generation: Generation,
         readmission_id: SlowReadmissionId,
         at: MonotonicInstant,
     },
     CancelSlowReadmission {
+        task_id: TaskId,
         gid: Gid,
         generation: Generation,
         readmission_id: SlowReadmissionId,
     },
     ProbeNoSpace {
+        task_id: TaskId,
         gid: Gid,
         generation: Generation,
         probe_id: NoSpaceProbeId,
         origin: NoSpaceProbeOrigin,
     },
     PersistConditions {
+        task_id: TaskId,
         gid: Gid,
+        conditions: TaskConditions,
     },
     PersistHostKeyChallenge {
+        task_id: TaskId,
         gid: Gid,
-        challenge: HostKeyChallenge,
+        challenge: PresentedHostKeyChallenge,
     },
-    ClearHostKeyChallenge {
+    PersistHostKeyPinAndClearChallenge {
+        task_id: TaskId,
         gid: Gid,
+        resolution_id: HostKeyResolutionId,
+        challenge: HostKeyChallengeId,
+        fingerprint_sha256: HostKeyFingerprint,
+        presented_public_key: Vec<u8>,
+        option_patch: Option<OptionPatchId>,
+    },
+    PersistHostKeyChallengeRejected {
+        task_id: TaskId,
+        gid: Gid,
+        challenge: HostKeyChallengeId,
     },
     PersistTerminal {
+        task_id: TaskId,
         gid: Gid,
         generation: Generation,
         status: Aria2Status,
         error: Option<PublicError>,
+        from: QueueClass,
+        to: QueueClass,
+        desired_paused: bool,
+        slow_demotion_count: u32,
+        slow_slot: Option<SlowSlotPersistence>,
+        orders: Vec<QueueOrder>,
     },
-    PublishSnapshot(TaskSnapshot),
+    DeleteStoppedTaskMetadata {
+        task_id: TaskId,
+        gid: Gid,
+        deletion_id: StoppedResultDeletionId,
+        remaining_order: Vec<Gid>,
+    },
+    PublishSnapshot {
+        task_id: TaskId,
+        snapshot: TaskSnapshot,
+    },
 }
 
 /// Result of one accepted command or event.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SchedulerOutcome {
     pub transition: Option<StateTransition>,
+    pub deletion: Option<TaskDeletion>,
     pub effects: Vec<TransitionEffect>,
 }
 
 impl SchedulerOutcome {
+    /// Constructs an outcome only when its ordered effect list fits the hard
+    /// per-operation scheduler bound.
+    pub fn checked(
+        transition: Option<StateTransition>,
+        deletion: Option<TaskDeletion>,
+        effects: Vec<TransitionEffect>,
+    ) -> Result<Self, SchedulerError> {
+        if effects.len() > MAX_SCHEDULER_EFFECTS {
+            return Err(SchedulerError::EffectLimitExceeded);
+        }
+        Ok(Self {
+            transition,
+            deletion,
+            effects,
+        })
+    }
+
     #[must_use]
     pub const fn is_noop(&self) -> bool {
-        self.transition.is_none() && self.effects.is_empty()
+        self.transition.is_none() && self.deletion.is_none() && self.effects.is_empty()
     }
 }
 
@@ -766,6 +1070,7 @@ pub enum SchedulerError {
     TaskLimitReached,
     GidCollision,
     TaskIdCollision,
+    OptionPatchIdCollision,
     TaskNotFound,
     ActiveLimitReached,
     NoEligibleTask,
@@ -788,7 +1093,11 @@ pub enum SchedulerError {
     GenerationExhausted,
     HostKeyApprovalRequired,
     StaleChallenge,
+    StaleCredentialRequirement,
+    InvalidTaskConditions,
+    InvalidSlowReadmissionDecision,
     InvalidTerminalAcknowledgement,
+    ShutdownBatchRequired,
     EffectLimitExceeded,
     InternalInvariant,
 }
@@ -799,6 +1108,9 @@ impl fmt::Display for SchedulerError {
             Self::TaskLimitReached => formatter.write_str("scheduler task limit reached"),
             Self::GidCollision => formatter.write_str("GID already exists"),
             Self::TaskIdCollision => formatter.write_str("task id already exists"),
+            Self::OptionPatchIdCollision => {
+                formatter.write_str("option patch id was already used by this task")
+            }
             Self::TaskNotFound => formatter.write_str("task does not exist"),
             Self::ActiveLimitReached => formatter.write_str("active task limit reached"),
             Self::NoEligibleTask => {
@@ -836,8 +1148,20 @@ impl fmt::Display for SchedulerError {
             Self::StaleChallenge => {
                 formatter.write_str("host-key challenge is stale or mismatched")
             }
+            Self::StaleCredentialRequirement => {
+                formatter.write_str("credential requirement is stale or mismatched")
+            }
+            Self::InvalidTaskConditions => {
+                formatter.write_str("task conditions exceed scheduler persistence bounds")
+            }
+            Self::InvalidSlowReadmissionDecision => {
+                formatter.write_str("slow readmission decision is not persistence-safe")
+            }
             Self::InvalidTerminalAcknowledgement => {
                 formatter.write_str("terminal persistence acknowledgement does not match")
+            }
+            Self::ShutdownBatchRequired => {
+                formatter.write_str("orderly shutdown requires the bounded batch shutdown executor")
             }
             Self::EffectLimitExceeded => formatter.write_str("scheduler effect limit exceeded"),
             Self::InternalInvariant => formatter.write_str("scheduler invariant failed"),
@@ -852,11 +1176,13 @@ mod tests {
     use super::{
         ALL_DRAIN_TARGETS, ALL_NO_SPACE_PROBE_ORIGINS, ALL_QUEUE_CLASSES,
         ALL_SCHEDULER_COMMAND_HANDLINGS, ALL_SCHEDULER_COMMAND_KINDS, ALL_SLOT_OWNERSHIP,
-        ALL_TASK_EVENT_KINDS, DrainTarget, NoSpaceProbeOrigin, SchedulerCommandHandling,
-        SchedulerCommandKind, SchedulerConfig, SchedulerConfigError, SlotOwnership, TaskEvent,
-        TaskEventKind, TaskEventToken, TransitionEffect,
+        ALL_TASK_EVENT_KINDS, DrainTarget, NoSpaceProbeOrigin, QueueClass, QueueOrder,
+        SchedulerCommandHandling, SchedulerCommandKind, SchedulerConfig, SchedulerConfigError,
+        SlotOwnership, TaskEvent, TaskEventKind, TaskEventToken, TransitionEffect,
     };
-    use crate::{Aria2Status, Generation, Gid, NoSpaceProbeId, RetryTimerId, SlowReadmissionId};
+    use crate::{
+        Aria2Status, Generation, Gid, NoSpaceProbeId, RetryTimerId, SlowReadmissionId, TaskId,
+    };
     use std::collections::BTreeSet;
     use std::num::NonZeroUsize;
 
@@ -898,10 +1224,10 @@ mod tests {
             ALL_SCHEDULER_COMMAND_HANDLINGS.len()
         );
         assert_eq!(drain_targets.len(), ALL_DRAIN_TARGETS.len());
-        assert_eq!(ALL_SCHEDULER_COMMAND_KINDS.len(), 10);
-        assert_eq!(ALL_TASK_EVENT_KINDS.len(), 22);
+        assert_eq!(ALL_SCHEDULER_COMMAND_KINDS.len(), 9);
+        assert_eq!(ALL_TASK_EVENT_KINDS.len(), 30);
         assert_eq!(ALL_NO_SPACE_PROBE_ORIGINS.len(), 2);
-        assert_eq!(ALL_SCHEDULER_COMMAND_HANDLINGS.len(), 2);
+        assert_eq!(ALL_SCHEDULER_COMMAND_HANDLINGS.len(), 3);
         assert_eq!(ALL_DRAIN_TARGETS.len(), 7);
         assert!(commands.contains(SchedulerCommandKind::Pause.code()));
         assert!(events.contains(TaskEventKind::TerminalPersisted.code()));
@@ -1014,18 +1340,33 @@ mod tests {
         let gid = Gid::new(1).expect("gid");
         let generation = Generation::new(7);
         let effect = TransitionEffect::PersistTerminal {
+            task_id: TaskId::new(1).expect("task id"),
             gid,
             generation,
             status: Aria2Status::Complete,
             error: None,
+            from: QueueClass::Active,
+            to: QueueClass::Stopped,
+            desired_paused: false,
+            slow_demotion_count: 0,
+            slow_slot: None,
+            orders: vec![QueueOrder {
+                class: QueueClass::Stopped,
+                order: vec![gid],
+            }],
         };
         assert!(matches!(
             effect,
             TransitionEffect::PersistTerminal {
+                task_id: _,
                 gid: actual_gid,
                 generation: actual_generation,
                 status: Aria2Status::Complete,
                 error: None,
+                from: QueueClass::Active,
+                to: QueueClass::Stopped,
+                desired_paused: false,
+                ..
             } if actual_gid == gid && actual_generation == generation
         ));
     }

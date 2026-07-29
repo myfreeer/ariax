@@ -261,7 +261,7 @@ fn write_command_action_mappings(output: &mut String) -> Result<(), String> {
     output.push_str("  \"command_action_mappings\": [\n");
     for (index, command) in ALL_SCHEDULER_COMMAND_KINDS.iter().copied().enumerate() {
         match command.handling() {
-            SchedulerCommandHandling::StateMatrix => {
+            SchedulerCommandHandling::StateMatrix | SchedulerCommandHandling::BatchOperation => {
                 write!(
                     output,
                     "    {{\"command\": {}, \"handling\": {}, \"actions\": [",
@@ -274,7 +274,7 @@ fn write_command_action_mappings(output: &mut String) -> Result<(), String> {
                 });
                 if count == 0 {
                     return Err(format!(
-                        "state-matrix command {} has no semantic action",
+                        "matrix-backed command {} has no semantic action",
                         command.code()
                     ));
                 }
@@ -476,7 +476,7 @@ mod tests {
             "\"event\": \"cancellation_drained\", \"fresh_actions\": [\"cancellation_drain_succeeded\", \"restart_quiesced\"]"
         ));
         assert!(states.contains(
-            "\"command\": \"resume\", \"handling\": \"state_matrix\", \"actions\": [\"resume\", \"explicit_no_space_probe_requested\"]"
+            "\"command\": \"resume\", \"handling\": \"state_matrix\", \"actions\": [\"resume\", \"resume_deferred\", \"explicit_no_space_probe_requested\"]"
         ));
         assert!(states.contains(
             "\"internal\": \"stopped_result\", \"default_status\": null, \"retained_terminal_statuses\": [\"error\", \"complete\", \"removed\"], \"requires_terminal_persistence\": true"

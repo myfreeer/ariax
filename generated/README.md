@@ -19,14 +19,17 @@ identity, and bitmap caps, canonicalization rules, semantic recovery limits,
 hash domains/coverage, and both codec and cross-record rejection vocabularies.
 It also freezes the serialized appender's segment naming, acknowledgement,
 latched-fault, tail-reopen, and flushed-boundary rotation rules.
-`session_v1.json` freezes the strict SQLite v1 schema SQL, direct rusqlite
-feature/build contract, pragmas, hard connection limits, queue/install enums,
-caps, reconciliation rules, and failure vocabularies. It also records the
-private-artifact policy, bounded read budgets, tokenized install-pointer rules,
-dense queue transitions, cooperative owner-lock, hard-link rejection, and
-orphan-sidecar rules, hot rollback page-one plus committed-WAL preflight,
-WAL/DELETE probe and checkpoint behavior, and validated file-synced no-clobber
-backup contract.
+`session_v1.json` retains the historical migration-source contract.
+`session_v2.json` freezes the current strict SQLite schema SQL, direct rusqlite
+feature/build contract, pragmas, hard connection limits, queue/terminal/install
+enums, caps, reconciliation rules, and failure vocabularies. Version 2 adds the
+demoted queue and bounded slow-slot metadata, plus the exact transactional v1
+task and host-key-challenge table rebuild. The contract also records
+private-artifact policy, bounded task/stopped/host/install reads, one-to-one
+stopped metadata, atomic terminal retention/deletion and dense queue
+transitions, host-key semantic validation, preflight-before-backup behavior,
+cooperative owner locking, sidecar preflight/cleanup, WAL/DELETE behavior, and
+backup requirements.
 `error_codes.json` includes the stable journal numeric value for each closed
 error class.
 

@@ -1,33 +1,33 @@
 # Implementation Readiness
 
-Status: implementation ready. The P0 contract blockers recorded in
-`final-preimplementation-review.md` are resolved in their normative documents;
-module work proceeds under the phase exit criteria below and in
+Status: implementation underway. The P0 contract blockers recorded in
+`final-preimplementation-review.md` are resolved in their normative documents,
+and module work proceeds under the phase exit criteria below and in
 `implementation-plan.md`.
 
 This document is the handoff checklist from architecture design to detailed
 module design and implementation.
 
-Repository scaffolding, generated inventories, option-registry work, pure
-safe-path/layout types, and the first HTTP/storage vertical slice may begin.
-Each module remains gated by its Definition Of Ready checklist below.
+Repository scaffolding, generated inventories, core/config types, the scheduler
+kernel, journal work, and SQLite session storage now have executable
+checkpoints, including atomic stopped-result retention/deletion. Each remaining
+module and integration still follows its Definition Of Ready checklist below.
 
 ## Start Here
 
 Implementation should begin from these source-of-truth documents:
 
-- `final-preimplementation-review.md` for the closed review record: each P0
-  finding's adopted rule and its normative owner.
 - `configuration.md` for option metadata, config formats, URL rules, runtime
   update behavior, reload, and dump policy.
 - `implementation-plan.md` for phase order and exit criteria.
 - `requirements-traceability.md` for acceptance coverage.
 - `security-recovery.md` for invariants that cannot be relaxed.
 
-`review-findings-response.md`, `review-findings-round2.md`, and
-`review-findings-round3.md` are historical, non-normative audit records. They
-explain why rules were adopted, but an implementation follows the focused
-subsystem documents and the closed review record above when wording differs.
+`review-findings-response.md`, `review-findings-round2.md`,
+`review-findings-round3.md`, and `final-preimplementation-review.md` are
+historical, non-normative audit records. They explain why rules were adopted,
+but an implementation follows the focused subsystem documents when wording
+differs.
 
 Focused subsystem docs are then used as module-level design inputs.
 
@@ -168,7 +168,7 @@ The first useful vertical slice spans implementation Phases 1–3 and should be:
 4. `BufferPool` and bounded queue wrappers,
 5. `ControlJournal` with lease commit/abort, serialized sequence assignment,
    balanced/strict durability ordering, and checkpoint-only `PieceStateChunk`,
-6. `SessionStore` with the exact v1 schema, migrations, root binding, and
+6. `SessionStore` with the exact v2 schema, v1 migration, root binding, and
    explicit relocation/rebind entry point,
 7. known-length identity HTTP sequential download through `StorageEngine`,
 8. strict range resume with provisional writes and explicit commit/abort,
@@ -184,6 +184,18 @@ or HTTP/3.
 
 The detailed first-slice docs above are the intended module design input for
 this vertical slice.
+
+## Current Integration Gates
+
+- Dispatch ordered scheduler effects and correlated acknowledgements through
+  runtime and storage adapters.
+- Implement the concrete host-key challenge write/approval storage adapter;
+  persisted host-key rows are already bounded and semantically validated.
+- Complete retry/no-space wall-decision recovery and bounded orderly-shutdown
+  batch execution.
+- Add the dedicated session owner thread and cross-store startup recovery.
+- Run real io_uring and native Windows I/O coverage in supporting CI.
+- Pass the full Linux, Windows, and macOS release matrix before any tag.
 
 ## Deferred But Tracked
 

@@ -3,7 +3,7 @@ use crate::{
     MAX_PLATFORM_PATH_BYTES, OptionsSnapshotScope, PathPlatform, PersistedOptionPolicy,
     PlatformPath, SanitizedOptionMap,
 };
-use ariax_core::Gid;
+use ariax_core::{ErrorKind, Gid, HostKeyFingerprint};
 use fs2::FileExt as _;
 use rusqlite::limits::Limit;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
@@ -15,9 +15,9 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-pub const SESSION_SCHEMA_VERSION: u32 = 1;
+pub const SESSION_SCHEMA_VERSION: u32 = 2;
 pub const SESSION_RUSQLITE_VERSION: &str = "0.40.1";
 pub const SESSION_RUSQLITE_FEATURES: [&str; 4] = ["bundled", "backup", "cache", "limits"];
 pub const SESSION_BUNDLED_SQLITE_FLAGS: &str = "-DSQLITE_MAX_LIKE_PATTERN_LENGTH=65536";
@@ -31,8 +31,8 @@ pub const SESSION_MAX_CACHE_KIB: u32 = 256 * 1024;
 pub const SESSION_MAX_BT_RESUME_BYTES: usize = 64 * 1024 * 1024;
 pub const SESSION_MAX_SAFE_MESSAGE_BYTES: usize = 4096;
 pub const SESSION_MAX_SAFE_URI_BYTES: usize = 64 * 1024;
-pub const SESSION_MAX_HOST_KEY_BYTES: usize = 1024 * 1024;
-pub const SESSION_MAX_ALGORITHM_BYTES: usize = 128;
+pub const SESSION_MAX_HOST_KEY_BYTES: usize = 16 * 1024;
+pub const SESSION_MAX_ALGORITHM_BYTES: usize = 64;
 pub const SESSION_MAX_TASKS: usize = 100_000;
 pub const SESSION_MAX_OPTIONS_PER_TASK: usize = MAX_OPTION_MAP_ENTRIES;
 pub const SESSION_TASK_READ_BUDGET_BYTES: usize = 64 * 1024 * 1024;
@@ -43,6 +43,7 @@ const PLATFORM_PATH_ENCODING_OVERHEAD: usize = 5;
 const MAX_ENCODED_PLATFORM_PATH_BYTES: usize =
     MAX_PLATFORM_PATH_BYTES + PLATFORM_PATH_ENCODING_OVERHEAD;
 static BACKUP_TEMP_ID: AtomicU64 = AtomicU64::new(1);
+const MIGRATION_BACKUP_ATTEMPTS: u32 = 32;
 
 const SESSION_TABLE_SQL: &str = r#"CREATE TABLE session (
     session_id BLOB PRIMARY KEY NOT NULL CHECK(typeof(session_id) = 'blob' AND length(session_id) = 16),
@@ -51,7 +52,7 @@ const SESSION_TABLE_SQL: &str = r#"CREATE TABLE session (
     clean_shutdown INTEGER NOT NULL CHECK(clean_shutdown IN (0, 1))
 ) STRICT"#;
 
-const TASK_TABLE_SQL: &str = r#"CREATE TABLE task (
+const V1_TASK_TABLE_SQL: &str = r#"CREATE TABLE task (
     gid TEXT PRIMARY KEY NOT NULL CHECK(length(gid) = 16 AND gid NOT GLOB '*[^0-9a-f]*'),
     session_id BLOB NOT NULL CHECK(typeof(session_id) = 'blob' AND length(session_id) = 16),
     queue_state INTEGER NOT NULL CHECK(queue_state IN (1, 2, 3, 4)),
@@ -72,6 +73,39 @@ const TASK_TABLE_SQL: &str = r#"CREATE TABLE task (
     updated_ms INTEGER NOT NULL CHECK(updated_ms >= created_ms),
     CHECK((replica_journal_path IS NULL) = (replica_sequence IS NULL)),
     CHECK((no_space_target IS NULL) = (no_space_scheduled_at_ms IS NULL) AND (no_space_target IS NULL) = (no_space_delay_ms IS NULL)),
+    FOREIGN KEY(session_id) REFERENCES session(session_id) ON UPDATE RESTRICT ON DELETE CASCADE
+) STRICT"#;
+
+const TASK_TABLE_SQL: &str = r#"CREATE TABLE task (
+    gid TEXT PRIMARY KEY NOT NULL CHECK(length(gid) = 16 AND gid NOT GLOB '*[^0-9a-f]*'),
+    session_id BLOB NOT NULL CHECK(typeof(session_id) = 'blob' AND length(session_id) = 16),
+    queue_state INTEGER NOT NULL CHECK(queue_state IN (1, 2, 3, 4, 5)),
+    queue_position INTEGER NOT NULL CHECK(queue_position BETWEEN 0 AND 4294967295),
+    desired_paused INTEGER NOT NULL CHECK(desired_paused IN (0, 1)),
+    slow_demotion_count INTEGER NOT NULL CHECK(slow_demotion_count BETWEEN 0 AND 4294967295),
+    slow_original_position INTEGER CHECK(slow_original_position IS NULL OR slow_original_position BETWEEN 0 AND 99999),
+    slow_retry_scheduled_at_ms INTEGER CHECK(slow_retry_scheduled_at_ms IS NULL OR slow_retry_scheduled_at_ms >= 0),
+    slow_retry_delay_ms BLOB CHECK(slow_retry_delay_ms IS NULL OR (typeof(slow_retry_delay_ms) = 'blob' AND length(slow_retry_delay_ms) = 8 AND slow_retry_delay_ms != X'0000000000000000')),
+    primary_journal_id BLOB NOT NULL CHECK(typeof(primary_journal_id) = 'blob' AND length(primary_journal_id) = 16),
+    primary_journal_path BLOB NOT NULL CHECK(typeof(primary_journal_path) = 'blob' AND length(primary_journal_path) BETWEEN 6 AND 65541),
+    replica_journal_path BLOB CHECK(replica_journal_path IS NULL OR (typeof(replica_journal_path) = 'blob' AND length(replica_journal_path) BETWEEN 6 AND 65541)),
+    replica_sequence BLOB CHECK(replica_sequence IS NULL OR (typeof(replica_sequence) = 'blob' AND length(replica_sequence) = 8)),
+    root_display BLOB NOT NULL CHECK(typeof(root_display) = 'blob' AND length(root_display) BETWEEN 6 AND 65541),
+    cached_layout_hash BLOB CHECK(cached_layout_hash IS NULL OR (typeof(cached_layout_hash) = 'blob' AND length(cached_layout_hash) = 32)),
+    cached_root_binding_hash BLOB CHECK(cached_root_binding_hash IS NULL OR (typeof(cached_root_binding_hash) = 'blob' AND length(cached_root_binding_hash) = 32)),
+    cached_snapshot_hash BLOB NOT NULL CHECK(typeof(cached_snapshot_hash) = 'blob' AND length(cached_snapshot_hash) = 32),
+    no_space_target BLOB CHECK(no_space_target IS NULL OR (typeof(no_space_target) = 'blob' AND length(no_space_target) BETWEEN 6 AND 65541)),
+    no_space_scheduled_at_ms INTEGER CHECK(no_space_scheduled_at_ms IS NULL OR no_space_scheduled_at_ms >= 0),
+    no_space_delay_ms BLOB CHECK(no_space_delay_ms IS NULL OR (typeof(no_space_delay_ms) = 'blob' AND length(no_space_delay_ms) = 8)),
+    created_ms INTEGER NOT NULL CHECK(created_ms >= 0),
+    updated_ms INTEGER NOT NULL CHECK(updated_ms >= created_ms),
+    CHECK((replica_journal_path IS NULL) = (replica_sequence IS NULL)),
+    CHECK((no_space_target IS NULL) = (no_space_scheduled_at_ms IS NULL) AND (no_space_target IS NULL) = (no_space_delay_ms IS NULL)),
+    CHECK((slow_retry_scheduled_at_ms IS NULL) = (slow_retry_delay_ms IS NULL)),
+    CHECK((queue_state = 5) = (slow_original_position IS NOT NULL)),
+    CHECK(queue_state != 5 OR slow_demotion_count > 0),
+    CHECK(queue_state != 5 OR desired_paused = 0),
+    CHECK(slow_retry_scheduled_at_ms IS NULL OR slow_original_position IS NOT NULL),
     FOREIGN KEY(session_id) REFERENCES session(session_id) ON UPDATE RESTRICT ON DELETE CASCADE
 ) STRICT"#;
 
@@ -96,6 +130,18 @@ const TASK_SOURCE_TABLE_SQL: &str = r#"CREATE TABLE task_source (
 ) STRICT"#;
 
 const HOST_KEY_CHALLENGE_TABLE_SQL: &str = r#"CREATE TABLE host_key_challenge (
+    gid TEXT PRIMARY KEY NOT NULL,
+    challenge_id BLOB NOT NULL CHECK(typeof(challenge_id) = 'blob' AND length(challenge_id) = 16),
+    canonical_host TEXT NOT NULL CHECK(length(CAST(canonical_host AS BLOB)) BETWEEN 1 AND 253),
+    port INTEGER NOT NULL CHECK(port BETWEEN 1 AND 65535),
+    algorithm TEXT NOT NULL CHECK(length(CAST(algorithm AS BLOB)) BETWEEN 1 AND 64),
+    presented_public_key BLOB NOT NULL CHECK(typeof(presented_public_key) = 'blob' AND length(presented_public_key) BETWEEN 1 AND 16384),
+    fingerprint_sha256 BLOB NOT NULL CHECK(typeof(fingerprint_sha256) = 'blob' AND length(fingerprint_sha256) = 32),
+    created_ms INTEGER NOT NULL CHECK(created_ms >= 0),
+    FOREIGN KEY(gid) REFERENCES task(gid) ON UPDATE CASCADE ON DELETE CASCADE
+) STRICT"#;
+
+const V1_HOST_KEY_CHALLENGE_TABLE_SQL: &str = r#"CREATE TABLE host_key_challenge (
     gid TEXT PRIMARY KEY NOT NULL,
     challenge_id BLOB NOT NULL CHECK(typeof(challenge_id) = 'blob' AND length(challenge_id) = 16),
     canonical_host TEXT NOT NULL CHECK(length(CAST(canonical_host AS BLOB)) BETWEEN 1 AND 253),
@@ -225,6 +271,64 @@ pub const SESSION_SCHEMA_OBJECTS: &[SessionSchemaObject] = &[
     },
 ];
 
+const SESSION_V1_SCHEMA_OBJECTS: &[SessionSchemaObject] = &[
+    SessionSchemaObject {
+        kind: SessionSchemaObjectKind::Table,
+        name: "session",
+        sql: SESSION_TABLE_SQL,
+    },
+    SessionSchemaObject {
+        kind: SessionSchemaObjectKind::Table,
+        name: "task",
+        sql: V1_TASK_TABLE_SQL,
+    },
+    SessionSchemaObject {
+        kind: SessionSchemaObjectKind::Table,
+        name: "task_option",
+        sql: TASK_OPTION_TABLE_SQL,
+    },
+    SessionSchemaObject {
+        kind: SessionSchemaObjectKind::Table,
+        name: "task_source",
+        sql: TASK_SOURCE_TABLE_SQL,
+    },
+    SessionSchemaObject {
+        kind: SessionSchemaObjectKind::Table,
+        name: "host_key_challenge",
+        sql: V1_HOST_KEY_CHALLENGE_TABLE_SQL,
+    },
+    SessionSchemaObject {
+        kind: SessionSchemaObjectKind::Table,
+        name: "stopped_result",
+        sql: STOPPED_RESULT_TABLE_SQL,
+    },
+    SessionSchemaObject {
+        kind: SessionSchemaObjectKind::Table,
+        name: "journal_install",
+        sql: JOURNAL_INSTALL_TABLE_SQL,
+    },
+    SessionSchemaObject {
+        kind: SessionSchemaObjectKind::Table,
+        name: "bt_resume",
+        sql: BT_RESUME_TABLE_SQL,
+    },
+    SessionSchemaObject {
+        kind: SessionSchemaObjectKind::Index,
+        name: "task_queue_index",
+        sql: TASK_QUEUE_INDEX_SQL,
+    },
+    SessionSchemaObject {
+        kind: SessionSchemaObjectKind::Index,
+        name: "task_session_index",
+        sql: TASK_SESSION_INDEX_SQL,
+    },
+    SessionSchemaObject {
+        kind: SessionSchemaObjectKind::Index,
+        name: "task_source_priority_index",
+        sql: TASK_SOURCE_PRIORITY_INDEX_SQL,
+    },
+];
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum SessionSqliteLimit {
     Length,
@@ -313,10 +417,17 @@ pub enum SessionQueueState {
     Active = 2,
     Paused = 3,
     Stopped = 4,
+    Demoted = 5,
 }
 
 impl SessionQueueState {
-    pub const ALL: [Self; 4] = [Self::Waiting, Self::Active, Self::Paused, Self::Stopped];
+    pub const ALL: [Self; 5] = [
+        Self::Waiting,
+        Self::Active,
+        Self::Paused,
+        Self::Stopped,
+        Self::Demoted,
+    ];
 
     #[must_use]
     pub const fn code(self) -> &'static str {
@@ -325,6 +436,7 @@ impl SessionQueueState {
             Self::Active => "active",
             Self::Paused => "paused",
             Self::Stopped => "stopped",
+            Self::Demoted => "demoted",
         }
     }
 }
@@ -338,7 +450,44 @@ impl TryFrom<i64> for SessionQueueState {
             2 => Ok(Self::Active),
             3 => Ok(Self::Paused),
             4 => Ok(Self::Stopped),
+            5 => Ok(Self::Demoted),
             _ => Err(SessionStoreError::InvalidPersistedValue("queue_state")),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[repr(i64)]
+pub enum SessionTerminalStatus {
+    Error = 1,
+    Complete = 2,
+    Removed = 3,
+}
+
+impl SessionTerminalStatus {
+    pub const ALL: [Self; 3] = [Self::Error, Self::Complete, Self::Removed];
+
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Complete => "complete",
+            Self::Removed => "removed",
+        }
+    }
+}
+
+impl TryFrom<i64> for SessionTerminalStatus {
+    type Error = SessionStoreError;
+
+    fn try_from(value: i64) -> Result<Self, SessionStoreError> {
+        match value {
+            1 => Ok(Self::Error),
+            2 => Ok(Self::Complete),
+            3 => Ok(Self::Removed),
+            _ => Err(SessionStoreError::InvalidPersistedValue(
+                "stopped_result.terminal_status",
+            )),
         }
     }
 }
@@ -448,6 +597,29 @@ pub struct SessionNoSpaceCondition {
     pub delay_ms: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SessionSlowRetryDecision {
+    pub scheduled_at_ms: u64,
+    pub delay_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SessionSlowSlotState {
+    pub original_position: u32,
+    pub retry: Option<SessionSlowRetryDecision>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionStoppedResultRecord {
+    pub gid: Gid,
+    pub status: SessionTerminalStatus,
+    pub error_kind: Option<ErrorKind>,
+    pub safe_message: String,
+    pub total_length: Option<u64>,
+    pub layout_hash: Option<JournalHash>,
+    pub completed_ms: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionTaskRecord {
     pub gid: Gid,
@@ -455,6 +627,8 @@ pub struct SessionTaskRecord {
     pub queue_state: SessionQueueState,
     pub queue_position: u32,
     pub desired_paused: bool,
+    pub slow_demotion_count: u32,
+    pub slow_slot: Option<SessionSlowSlotState>,
     pub primary_journal_id: JournalId,
     pub primary_journal_path: PlatformPath,
     pub replica_journal_path: Option<PlatformPath>,
@@ -781,16 +955,28 @@ impl SessionStore {
         if version == 0 && count_schema_objects(&connection)? != 0 {
             return Err(SessionStoreError::UnversionedDatabase);
         }
-        if version == SESSION_SCHEMA_VERSION {
-            validate_schema(&connection)?;
-            validate_integrity(&connection)?;
-            validate_persisted_semantics(&connection)?;
-        } else {
-            connection.pragma_update(None, "page_size", SESSION_PAGE_SIZE_BYTES)?;
+        match version {
+            0 => connection.pragma_update(None, "page_size", SESSION_PAGE_SIZE_BYTES)?,
+            1 => {
+                validate_schema_version(&connection, 1, SESSION_V1_SCHEMA_OBJECTS)?;
+                validate_integrity(&connection)?;
+                validate_persisted_semantics_v1(&connection)?;
+            }
+            SESSION_SCHEMA_VERSION => {
+                validate_schema(&connection)?;
+                validate_integrity(&connection)?;
+                validate_persisted_semantics(&connection)?;
+            }
+            _ => return Err(SessionStoreError::SchemaMismatch("user_version")),
         }
         let journal_mode = configure_pragmas(&connection, config)?;
-        if version == 0 {
-            create_schema(&mut connection)?;
+        match version {
+            0 => create_schema(&mut connection)?,
+            1 => {
+                migrate_v1_to_v2_with_backup(&mut connection, &path)?;
+            }
+            SESSION_SCHEMA_VERSION => {}
+            _ => return Err(SessionStoreError::SchemaMismatch("user_version")),
         }
         validate_schema(&connection)?;
         validate_integrity(&connection)?;
@@ -896,6 +1082,9 @@ impl SessionStore {
     }
 
     pub fn put_task(&mut self, task: &SessionTaskRecord) -> Result<(), SessionStoreError> {
+        if task.queue_state == SessionQueueState::Stopped {
+            return Err(SessionStoreError::QueueTransitionRequired);
+        }
         validate_task(task)?;
         let primary_path = encode_platform_path(&task.primary_journal_path)?;
         let replica_path = task
@@ -919,26 +1108,60 @@ impl SessionStore {
             .no_space
             .as_ref()
             .map(|value| encode_u64(value.delay_ms));
+        let slow_original_position = task
+            .slow_slot
+            .as_ref()
+            .map(|value| i64::from(value.original_position));
+        let slow_demotion_count = i64::from(task.slow_demotion_count);
+        let slow_retry_scheduled = task
+            .slow_slot
+            .as_ref()
+            .and_then(|value| value.retry.as_ref())
+            .map(|value| time_to_i64(value.scheduled_at_ms, "task.slow_retry_scheduled_at_ms"))
+            .transpose()?;
+        let slow_retry_delay = task
+            .slow_slot
+            .as_ref()
+            .and_then(|value| value.retry.as_ref())
+            .map(|value| encode_u64(value.delay_ms));
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let existing = transaction
             .query_row(
-                "SELECT queue_state, queue_position, primary_journal_id, primary_journal_path FROM task WHERE gid = ?1",
+                "SELECT queue_state, queue_position, slow_original_position, slow_demotion_count, slow_retry_scheduled_at_ms, slow_retry_delay_ms, primary_journal_id, primary_journal_path FROM task WHERE gid = ?1",
                 [task.gid.to_string()],
                 |row| {
                     Ok((
                         row.get::<_, i64>(0)?,
                         row.get::<_, i64>(1)?,
-                        row.get::<_, Vec<u8>>(2)?,
-                        row.get::<_, Vec<u8>>(3)?,
+                        row.get::<_, Option<i64>>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, Option<i64>>(4)?,
+                        row.get::<_, Option<Vec<u8>>>(5)?,
+                        row.get::<_, Vec<u8>>(6)?,
+                        row.get::<_, Vec<u8>>(7)?,
                     ))
                 },
             )
             .optional()?;
-        if let Some((queue_state, queue_position, journal_id, journal_path)) = existing {
+        if let Some((
+            queue_state,
+            queue_position,
+            existing_slow_original,
+            existing_slow_count,
+            existing_slow_scheduled,
+            existing_slow_delay,
+            journal_id,
+            journal_path,
+        )) = existing
+        {
             if queue_state != task.queue_state as i64
                 || queue_position != i64::from(task.queue_position)
+                || existing_slow_original != slow_original_position
+                || existing_slow_count != slow_demotion_count
+                || existing_slow_scheduled != slow_retry_scheduled
+                || existing_slow_delay != slow_retry_delay
             {
                 return Err(SessionStoreError::QueueTransitionRequired);
             }
@@ -947,13 +1170,17 @@ impl SessionStore {
             }
         }
         transaction.execute(
-            "INSERT INTO task(gid, session_id, queue_state, queue_position, desired_paused, primary_journal_id, primary_journal_path, replica_journal_path, replica_sequence, root_display, cached_layout_hash, cached_root_binding_hash, cached_snapshot_hash, no_space_target, no_space_scheduled_at_ms, no_space_delay_ms, created_ms, updated_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18) ON CONFLICT(gid) DO UPDATE SET session_id = excluded.session_id, desired_paused = excluded.desired_paused, replica_journal_path = excluded.replica_journal_path, replica_sequence = excluded.replica_sequence, root_display = excluded.root_display, cached_layout_hash = excluded.cached_layout_hash, cached_root_binding_hash = excluded.cached_root_binding_hash, cached_snapshot_hash = excluded.cached_snapshot_hash, no_space_target = excluded.no_space_target, no_space_scheduled_at_ms = excluded.no_space_scheduled_at_ms, no_space_delay_ms = excluded.no_space_delay_ms, created_ms = excluded.created_ms, updated_ms = excluded.updated_ms",
+            "INSERT INTO task(gid, session_id, queue_state, queue_position, desired_paused, slow_original_position, slow_demotion_count, slow_retry_scheduled_at_ms, slow_retry_delay_ms, primary_journal_id, primary_journal_path, replica_journal_path, replica_sequence, root_display, cached_layout_hash, cached_root_binding_hash, cached_snapshot_hash, no_space_target, no_space_scheduled_at_ms, no_space_delay_ms, created_ms, updated_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22) ON CONFLICT(gid) DO UPDATE SET session_id = excluded.session_id, desired_paused = excluded.desired_paused, replica_journal_path = excluded.replica_journal_path, replica_sequence = excluded.replica_sequence, root_display = excluded.root_display, cached_layout_hash = excluded.cached_layout_hash, cached_root_binding_hash = excluded.cached_root_binding_hash, cached_snapshot_hash = excluded.cached_snapshot_hash, no_space_target = excluded.no_space_target, no_space_scheduled_at_ms = excluded.no_space_scheduled_at_ms, no_space_delay_ms = excluded.no_space_delay_ms, created_ms = excluded.created_ms, updated_ms = excluded.updated_ms",
             params![
                 task.gid.to_string(),
                 task.session_id.as_bytes().as_slice(),
                 task.queue_state as i64,
                 i64::from(task.queue_position),
                 bool_to_i64(task.desired_paused),
+                slow_original_position,
+                slow_demotion_count,
+                slow_retry_scheduled,
+                slow_retry_delay,
                 task.primary_journal_id.as_bytes().as_slice(),
                 primary_path,
                 replica_path,
@@ -970,13 +1197,21 @@ impl SessionStore {
             ],
         )?;
         validate_dense_queues(&transaction)?;
+        validate_stopped_result_pairing(&transaction)?;
         transaction.commit()?;
         Ok(())
     }
 
     pub fn tasks(&self) -> Result<Vec<SessionTaskRecord>, SessionStoreError> {
         validate_dense_queues(&self.connection)?;
+        validate_stopped_result_pairing(&self.connection)?;
         read_task_records(&self.connection)
+    }
+
+    pub fn stopped_results(&self) -> Result<Vec<SessionStoppedResultRecord>, SessionStoreError> {
+        validate_dense_queues(&self.connection)?;
+        validate_stopped_result_pairing(&self.connection)?;
+        read_stopped_results(&self.connection)
     }
 
     pub fn reorder_queue(
@@ -1024,10 +1259,15 @@ impl SessionStore {
             }
         }
         validate_dense_queues(&transaction)?;
+        validate_stopped_result_pairing(&transaction)?;
         transaction.commit()?;
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one atomic queue transition must bind membership, order, pause intent, slow metadata, and timestamp"
+    )]
     pub fn transition_task_queue(
         &mut self,
         gid: Gid,
@@ -1035,75 +1275,149 @@ impl SessionStore {
         target_state: SessionQueueState,
         target_position: u32,
         desired_paused: bool,
+        slow_demotion_count: u32,
+        slow_slot: Option<&SessionSlowSlotState>,
         updated_ms: u64,
     ) -> Result<(), SessionStoreError> {
+        if expected_state == SessionQueueState::Stopped
+            || target_state == SessionQueueState::Stopped
+        {
+            return Err(SessionStoreError::QueueTransitionRequired);
+        }
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let (current_state, current_position): (i64, i64) = transaction
-            .query_row(
-                "SELECT queue_state, queue_position FROM task WHERE gid = ?1",
-                [gid.to_string()],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?
-            .ok_or(SessionStoreError::NotFound)?;
-        if SessionQueueState::try_from(current_state)? != expected_state {
+        transition_task_queue_in_transaction(
+            &transaction,
+            gid,
+            expected_state,
+            target_state,
+            target_position,
+            desired_paused,
+            slow_demotion_count,
+            slow_slot,
+            updated_ms,
+        )?;
+        validate_dense_queues(&transaction)?;
+        validate_stopped_result_pairing(&transaction)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn persist_stopped_result(
+        &mut self,
+        result: &SessionStoppedResultRecord,
+        expected_state: SessionQueueState,
+        target_position: u32,
+        desired_paused: bool,
+        slow_demotion_count: u32,
+        updated_ms: u64,
+    ) -> Result<(), SessionStoreError> {
+        if expected_state == SessionQueueState::Stopped {
             return Err(SessionStoreError::QueueTransitionRequired);
         }
-        let target_len: i64 = transaction.query_row(
-            "SELECT COUNT(*) FROM task WHERE queue_state = ?1",
-            [target_state as i64],
-            |row| row.get(0),
+        validate_stopped_result(result)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transition_task_queue_in_transaction(
+            &transaction,
+            result.gid,
+            expected_state,
+            SessionQueueState::Stopped,
+            target_position,
+            desired_paused,
+            slow_demotion_count,
+            None,
+            updated_ms,
         )?;
-        let target_position = i64::from(target_position);
-        let maximum = if expected_state == target_state {
-            target_len.saturating_sub(1)
-        } else {
-            target_len
+        let error_code = result
+            .error_kind
+            .map_or(0_i64, |kind| i64::from(kind.number()));
+        let total_length = result.total_length.map(encode_u64);
+        let layout_hash = result.layout_hash.map(|value| value.as_bytes().to_vec());
+        transaction.execute(
+            "INSERT INTO stopped_result(gid, terminal_status, error_code, safe_message, total_length, layout_hash, completed_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                result.gid.to_string(),
+                result.status as i64,
+                error_code,
+                result.safe_message,
+                total_length,
+                layout_hash,
+                time_to_i64(result.completed_ms, "stopped_result.completed_ms")?,
+            ],
+        )?;
+        validate_dense_queues(&transaction)?;
+        validate_stopped_result_pairing(&transaction)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn delete_stopped_task_metadata(
+        &mut self,
+        gid: Gid,
+        remaining_order: &[Gid],
+        updated_ms: u64,
+    ) -> Result<(), SessionStoreError> {
+        if remaining_order.len() >= SESSION_MAX_TASKS
+            || remaining_order.contains(&gid)
+            || remaining_order
+                .iter()
+                .copied()
+                .collect::<HashSet<_>>()
+                .len()
+                != remaining_order.len()
+        {
+            return Err(SessionStoreError::QueueInvariant);
+        }
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current_order = read_queue_order(&transaction, SessionQueueState::Stopped)?;
+        let Some(position) = current_order.iter().position(|candidate| *candidate == gid) else {
+            return Err(SessionStoreError::NotFound);
         };
-        if target_position < 0 || target_position > maximum {
+        let mut expected_remaining = current_order;
+        expected_remaining.remove(position);
+        if expected_remaining != remaining_order {
+            return Err(SessionStoreError::QueueInvariant);
+        }
+        if transaction.execute(
+            "DELETE FROM stopped_result WHERE gid = ?1",
+            [gid.to_string()],
+        )? != 1
+        {
+            return Err(SessionStoreError::NotFound);
+        }
+        if transaction.execute(
+            "DELETE FROM task WHERE gid = ?1 AND queue_state = ?2",
+            params![gid.to_string(), SessionQueueState::Stopped as i64],
+        )? != 1
+        {
             return Err(SessionStoreError::QueueInvariant);
         }
         let updated_ms = time_to_i64(updated_ms, "task.updated_ms")?;
-        if expected_state == target_state {
-            if target_position < current_position {
-                transaction.execute(
-                    "UPDATE task SET queue_position = queue_position + 1, updated_ms = ?1 WHERE queue_state = ?2 AND queue_position >= ?3 AND queue_position < ?4",
-                    params![updated_ms, target_state as i64, target_position, current_position],
-                )?;
-            } else if target_position > current_position {
-                transaction.execute(
-                    "UPDATE task SET queue_position = queue_position - 1, updated_ms = ?1 WHERE queue_state = ?2 AND queue_position > ?3 AND queue_position <= ?4",
-                    params![updated_ms, target_state as i64, current_position, target_position],
-                )?;
+        {
+            let mut statement = transaction.prepare(
+                "UPDATE task SET queue_position = ?1, updated_ms = ?2 WHERE gid = ?3 AND queue_state = ?4",
+            )?;
+            for (position, remaining_gid) in remaining_order.iter().copied().enumerate() {
+                let position =
+                    i64::try_from(position).map_err(|_| SessionStoreError::QueueInvariant)?;
+                if statement.execute(params![
+                    position,
+                    updated_ms,
+                    remaining_gid.to_string(),
+                    SessionQueueState::Stopped as i64,
+                ])? != 1
+                {
+                    return Err(SessionStoreError::QueueInvariant);
+                }
             }
-        } else {
-            transaction.execute(
-                "UPDATE task SET queue_position = queue_position - 1, updated_ms = ?1 WHERE queue_state = ?2 AND queue_position > ?3",
-                params![updated_ms, expected_state as i64, current_position],
-            )?;
-            transaction.execute(
-                "UPDATE task SET queue_position = queue_position + 1, updated_ms = ?1 WHERE queue_state = ?2 AND queue_position >= ?3",
-                params![updated_ms, target_state as i64, target_position],
-            )?;
-        }
-        let changed = transaction.execute(
-            "UPDATE task SET queue_state = ?1, queue_position = ?2, desired_paused = ?3, updated_ms = ?4 WHERE gid = ?5 AND queue_state = ?6 AND queue_position = ?7",
-            params![
-                target_state as i64,
-                target_position,
-                bool_to_i64(desired_paused),
-                updated_ms,
-                gid.to_string(),
-                expected_state as i64,
-                current_position,
-            ],
-        )?;
-        if changed != 1 {
-            return Err(SessionStoreError::QueueInvariant);
         }
         validate_dense_queues(&transaction)?;
+        validate_stopped_result_pairing(&transaction)?;
         transaction.commit()?;
         Ok(())
     }
@@ -1432,86 +1746,312 @@ impl SessionStore {
     }
 
     pub fn backup_to(&self, destination: impl AsRef<Path>) -> Result<(), SessionStoreError> {
-        let destination = destination.as_ref().to_path_buf();
-        validate_persistence_file_name(&destination)?;
-        if backup_name_has_reserved_sqlite_suffix(&destination) {
-            return Err(SessionStoreError::InvalidPersistedValue(
-                "backup.reserved_sqlite_companion",
-            ));
-        }
-        prepare_private_directory(required_private_parent(&destination)?)?;
-        let destination = canonicalize_persistence_parent(destination)?;
-        if path_entry_exists(&destination)? {
-            return Err(SessionStoreError::BackupPathExists);
-        }
-        if validate_existing_sqlite_sidecars(&destination)? {
-            return Err(SessionStoreError::InvalidPersistedValue(
-                "backup.orphan_sqlite_sidecar",
-            ));
-        }
-        let temporary = backup_temporary_path(&destination);
-        if validate_existing_sqlite_sidecars(&temporary)? {
-            return Err(SessionStoreError::InvalidPersistedValue(
-                "backup.orphan_sqlite_sidecar",
-            ));
-        }
-        create_secure_file(&temporary, SessionIoOperation::CreateBackup)?;
-        tighten_database_permissions(&temporary)?;
-        let mut installed = false;
-        let result = (|| {
-            self.connection
-                .backup(rusqlite::MAIN_DB, &temporary, None)?;
-            tighten_database_permissions(&temporary)?;
-            {
-                let backup = Connection::open_with_flags(
-                    &temporary,
-                    OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-                )?;
-                apply_limits(&backup)?;
-                validate_integrity(&backup)?;
-                validate_schema(&backup)?;
-                validate_persisted_semantics(&backup)?;
-            }
-            OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(&temporary)
-                .and_then(|file| file.sync_all())
-                .map_err(|error| session_io_error(SessionIoOperation::CreateBackup, error))?;
-            fs::hard_link(&temporary, &destination).map_err(|error| {
-                if error.kind() == io::ErrorKind::AlreadyExists {
-                    SessionStoreError::BackupPathExists
-                } else {
-                    session_io_error(SessionIoOperation::CreateBackup, error)
-                }
-            })?;
-            installed = true;
-            sync_parent_directory(&destination, SessionIoOperation::CreateBackup)?;
-            Ok(())
-        })();
-        if let Err(remove_error) = fs::remove_file(&temporary) {
-            if installed {
-                // Never risk deleting a raced destination replacement. A failed
-                // temporary-link cleanup leaves two names for one inode, so the
-                // operation cannot report success under the unique-link contract.
-                return match result {
-                    Ok(()) => Err(session_io_error(
-                        SessionIoOperation::RemoveFailedBackup,
-                        remove_error,
-                    )),
-                    Err(error) => Err(error),
-                };
-            }
-            return Err(session_io_error(
-                SessionIoOperation::RemoveFailedBackup,
-                remove_error,
-            ));
-        }
-        if installed {
-            sync_parent_directory(&destination, SessionIoOperation::CreateBackup)?;
-        }
-        result
+        backup_connection_to(
+            &self.connection,
+            destination.as_ref(),
+            SessionBackupSchema::Current,
+        )
     }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the shared transaction primitive binds queue membership, pause intent, slow metadata, and timestamp"
+)]
+fn transition_task_queue_in_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    gid: Gid,
+    expected_state: SessionQueueState,
+    target_state: SessionQueueState,
+    target_position: u32,
+    desired_paused: bool,
+    slow_demotion_count: u32,
+    slow_slot: Option<&SessionSlowSlotState>,
+    updated_ms: u64,
+) -> Result<(), SessionStoreError> {
+    validate_slow_slot_state(target_state, desired_paused, slow_demotion_count, slow_slot)?;
+    let slow_original_position = slow_slot.map(|value| i64::from(value.original_position));
+    let slow_demotion_count = i64::from(slow_demotion_count);
+    let slow_retry_scheduled = slow_slot
+        .and_then(|value| value.retry.as_ref())
+        .map(|value| time_to_i64(value.scheduled_at_ms, "task.slow_retry_scheduled_at_ms"))
+        .transpose()?;
+    let slow_retry_delay = slow_slot
+        .and_then(|value| value.retry.as_ref())
+        .map(|value| encode_u64(value.delay_ms));
+    let (current_state, current_position): (i64, i64) = transaction
+        .query_row(
+            "SELECT queue_state, queue_position FROM task WHERE gid = ?1",
+            [gid.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+        .ok_or(SessionStoreError::NotFound)?;
+    if SessionQueueState::try_from(current_state)? != expected_state {
+        return Err(SessionStoreError::QueueTransitionRequired);
+    }
+    let target_len: i64 = transaction.query_row(
+        "SELECT COUNT(*) FROM task WHERE queue_state = ?1",
+        [target_state as i64],
+        |row| row.get(0),
+    )?;
+    let target_position = i64::from(target_position);
+    let maximum = if expected_state == target_state {
+        target_len.saturating_sub(1)
+    } else {
+        target_len
+    };
+    if target_position < 0 || target_position > maximum {
+        return Err(SessionStoreError::QueueInvariant);
+    }
+    let updated_ms = time_to_i64(updated_ms, "task.updated_ms")?;
+    if expected_state == target_state {
+        if target_position < current_position {
+            transaction.execute(
+                "UPDATE task SET queue_position = queue_position + 1, updated_ms = ?1 WHERE queue_state = ?2 AND queue_position >= ?3 AND queue_position < ?4",
+                params![updated_ms, target_state as i64, target_position, current_position],
+            )?;
+        } else if target_position > current_position {
+            transaction.execute(
+                "UPDATE task SET queue_position = queue_position - 1, updated_ms = ?1 WHERE queue_state = ?2 AND queue_position > ?3 AND queue_position <= ?4",
+                params![updated_ms, target_state as i64, current_position, target_position],
+            )?;
+        }
+    } else {
+        transaction.execute(
+            "UPDATE task SET queue_position = queue_position - 1, updated_ms = ?1 WHERE queue_state = ?2 AND queue_position > ?3",
+            params![updated_ms, expected_state as i64, current_position],
+        )?;
+        transaction.execute(
+            "UPDATE task SET queue_position = queue_position + 1, updated_ms = ?1 WHERE queue_state = ?2 AND queue_position >= ?3",
+            params![updated_ms, target_state as i64, target_position],
+        )?;
+    }
+    if transaction.execute(
+        "UPDATE task SET queue_state = ?1, queue_position = ?2, desired_paused = ?3, slow_original_position = ?4, slow_demotion_count = ?5, slow_retry_scheduled_at_ms = ?6, slow_retry_delay_ms = ?7, updated_ms = ?8 WHERE gid = ?9 AND queue_state = ?10 AND queue_position = ?11",
+        params![
+            target_state as i64,
+            target_position,
+            bool_to_i64(desired_paused),
+            slow_original_position,
+            slow_demotion_count,
+            slow_retry_scheduled,
+            slow_retry_delay,
+            updated_ms,
+            gid.to_string(),
+            expected_state as i64,
+            current_position,
+        ],
+    )? != 1
+    {
+        return Err(SessionStoreError::QueueInvariant);
+    }
+    Ok(())
+}
+
+fn read_queue_order(
+    connection: &Connection,
+    state: SessionQueueState,
+) -> Result<Vec<Gid>, SessionStoreError> {
+    let count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM task WHERE queue_state = ?1",
+        [state as i64],
+        |row| row.get(0),
+    )?;
+    let count = bounded_count(count, SESSION_MAX_TASKS, "task.queue_count")?;
+    let mut statement = connection
+        .prepare("SELECT gid FROM task WHERE queue_state = ?1 ORDER BY queue_position, gid")?;
+    let mut rows = statement.query([state as i64])?;
+    let mut order = Vec::new();
+    order
+        .try_reserve_exact(count)
+        .map_err(|_| SessionStoreError::InvalidPersistedValue("task.queue_allocation"))?;
+    while let Some(row) = rows.next()? {
+        order.push(decode_gid(&row.get::<_, String>(0)?)?);
+        if order.len() > count {
+            return Err(SessionStoreError::InvalidPersistedValue("task.queue_count"));
+        }
+    }
+    if order.len() != count {
+        return Err(SessionStoreError::InvalidPersistedValue("task.queue_count"));
+    }
+    Ok(order)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SessionBackupSchema {
+    V1,
+    Current,
+}
+
+fn backup_connection_to(
+    connection: &Connection,
+    destination: &Path,
+    schema: SessionBackupSchema,
+) -> Result<(), SessionStoreError> {
+    let destination = destination.to_path_buf();
+    validate_persistence_file_name(&destination)?;
+    if backup_name_has_reserved_sqlite_suffix(&destination) {
+        return Err(SessionStoreError::InvalidPersistedValue(
+            "backup.reserved_sqlite_companion",
+        ));
+    }
+    prepare_private_directory(required_private_parent(&destination)?)?;
+    let destination = canonicalize_persistence_parent(destination)?;
+    if path_entry_exists(&destination)? {
+        return Err(SessionStoreError::BackupPathExists);
+    }
+    if validate_existing_sqlite_sidecars(&destination)? {
+        return Err(SessionStoreError::InvalidPersistedValue(
+            "backup.orphan_sqlite_sidecar",
+        ));
+    }
+    let temporary = backup_temporary_path(&destination);
+    if validate_existing_sqlite_sidecars(&temporary)? {
+        return Err(SessionStoreError::InvalidPersistedValue(
+            "backup.orphan_sqlite_sidecar",
+        ));
+    }
+    create_secure_file(&temporary, SessionIoOperation::CreateBackup)?;
+    let mut installed = false;
+    let result = (|| {
+        tighten_database_permissions(&temporary)?;
+        connection.backup(rusqlite::MAIN_DB, &temporary, None)?;
+        tighten_database_permissions(&temporary)?;
+        {
+            let backup = Connection::open_with_flags(
+                &temporary,
+                OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )?;
+            apply_limits(&backup)?;
+            let journal_mode: String =
+                backup.query_row("PRAGMA journal_mode=DELETE", [], |row| row.get(0))?;
+            if !journal_mode.eq_ignore_ascii_case("delete") {
+                return Err(SessionStoreError::InvalidPersistedValue(
+                    "backup.journal_mode",
+                ));
+            }
+            validate_integrity(&backup)?;
+            match schema {
+                SessionBackupSchema::V1 => {
+                    validate_schema_version(&backup, 1, SESSION_V1_SCHEMA_OBJECTS)?;
+                    validate_persisted_semantics_v1(&backup)?;
+                }
+                SessionBackupSchema::Current => {
+                    validate_schema(&backup)?;
+                    validate_persisted_semantics(&backup)?;
+                }
+            }
+        }
+        remove_owned_sqlite_sidecars(&temporary)?;
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&temporary)
+            .and_then(|file| file.sync_all())
+            .map_err(|error| session_io_error(SessionIoOperation::CreateBackup, error))?;
+        fs::hard_link(&temporary, &destination).map_err(|error| {
+            if error.kind() == io::ErrorKind::AlreadyExists {
+                SessionStoreError::BackupPathExists
+            } else {
+                session_io_error(SessionIoOperation::CreateBackup, error)
+            }
+        })?;
+        installed = true;
+        sync_parent_directory(&destination, SessionIoOperation::CreateBackup)?;
+        Ok(())
+    })();
+    let sidecar_cleanup = remove_owned_sqlite_sidecars(&temporary);
+    let temporary_cleanup = fs::remove_file(&temporary)
+        .map_err(|error| session_io_error(SessionIoOperation::RemoveFailedBackup, error));
+    if let Some(cleanup_error) = sidecar_cleanup.err().or_else(|| temporary_cleanup.err()) {
+        if installed {
+            // Never risk deleting a raced destination replacement. A failed
+            // temporary-link cleanup leaves two names for one inode, so the
+            // operation cannot report success under the unique-link contract.
+            return match result {
+                Ok(()) => Err(cleanup_error),
+                Err(error) => Err(error),
+            };
+        }
+        return result.and(Err(cleanup_error));
+    }
+    if installed {
+        sync_parent_directory(&destination, SessionIoOperation::CreateBackup)?;
+    }
+    result
+}
+
+fn remove_owned_sqlite_sidecars(database: &Path) -> Result<(), SessionStoreError> {
+    let mut first_error = None;
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let sidecar = sqlite_sidecar_path(database, suffix);
+        if let Err(error) = fs::remove_file(sidecar)
+            && error.kind() != io::ErrorKind::NotFound
+            && first_error.is_none()
+        {
+            first_error = Some(error);
+        }
+    }
+    match first_error {
+        Some(error) => Err(session_io_error(
+            SessionIoOperation::RemoveFailedBackup,
+            error,
+        )),
+        None => Ok(()),
+    }
+}
+
+fn migrate_v1_to_v2_with_backup(
+    connection: &mut Connection,
+    database: &Path,
+) -> Result<PathBuf, SessionStoreError> {
+    let timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| SessionStoreError::InvalidPersistedValue("system_clock"))?
+        .as_millis();
+    migrate_v1_to_v2_with_backup_at(connection, database, timestamp_ms)
+}
+
+fn migrate_v1_to_v2_with_backup_at(
+    connection: &mut Connection,
+    database: &Path,
+    timestamp_ms: u128,
+) -> Result<PathBuf, SessionStoreError> {
+    let backup = create_v1_migration_backup_at(connection, database, timestamp_ms)?;
+    migrate_v1_to_v2(connection)?;
+    Ok(backup)
+}
+
+fn create_v1_migration_backup_at(
+    connection: &Connection,
+    database: &Path,
+    timestamp_ms: u128,
+) -> Result<PathBuf, SessionStoreError> {
+    for attempt in 0..MIGRATION_BACKUP_ATTEMPTS {
+        let destination = migration_backup_path(database, timestamp_ms, attempt)?;
+        match backup_connection_to(connection, &destination, SessionBackupSchema::V1) {
+            Ok(()) => return Ok(destination),
+            Err(SessionStoreError::BackupPathExists) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(SessionStoreError::BackupPathExists)
+}
+
+fn migration_backup_path(
+    database: &Path,
+    timestamp_ms: u128,
+    attempt: u32,
+) -> Result<PathBuf, SessionStoreError> {
+    let mut name = database
+        .file_name()
+        .ok_or(SessionStoreError::InvalidConfig("database_path"))?
+        .to_os_string();
+    name.push(format!(
+        ".ariax-v1-to-v2-{timestamp_ms:020}-{attempt:04}.backup"
+    ));
+    Ok(database.with_file_name(name))
 }
 
 #[cfg(unix)]
@@ -1549,6 +2089,10 @@ struct RawTaskRow {
     queue_state: i64,
     queue_position: i64,
     desired_paused: i64,
+    slow_original_position: Option<i64>,
+    slow_demotion_count: i64,
+    slow_retry_scheduled_at_ms: Option<i64>,
+    slow_retry_delay_ms: Option<Vec<u8>>,
     primary_journal_id: Vec<u8>,
     primary_journal_path: Vec<u8>,
     replica_journal_path: Option<Vec<u8>>,
@@ -1572,6 +2116,37 @@ impl RawTaskRow {
             queue_state: row.get(2)?,
             queue_position: row.get(3)?,
             desired_paused: row.get(4)?,
+            slow_original_position: row.get(5)?,
+            slow_demotion_count: row.get(6)?,
+            slow_retry_scheduled_at_ms: row.get(7)?,
+            slow_retry_delay_ms: row.get(8)?,
+            primary_journal_id: row.get(9)?,
+            primary_journal_path: row.get(10)?,
+            replica_journal_path: row.get(11)?,
+            replica_sequence: row.get(12)?,
+            root_display: row.get(13)?,
+            cached_layout_hash: row.get(14)?,
+            cached_root_binding_hash: row.get(15)?,
+            cached_snapshot_hash: row.get(16)?,
+            no_space_target: row.get(17)?,
+            no_space_scheduled_at_ms: row.get(18)?,
+            no_space_delay_ms: row.get(19)?,
+            created_ms: row.get(20)?,
+            updated_ms: row.get(21)?,
+        })
+    }
+
+    fn from_v1_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            gid: row.get(0)?,
+            session_id: row.get(1)?,
+            queue_state: row.get(2)?,
+            queue_position: row.get(3)?,
+            desired_paused: row.get(4)?,
+            slow_original_position: None,
+            slow_demotion_count: 0,
+            slow_retry_scheduled_at_ms: None,
+            slow_retry_delay_ms: None,
             primary_journal_id: row.get(5)?,
             primary_journal_path: row.get(6)?,
             replica_journal_path: row.get(7)?,
@@ -1623,12 +2198,51 @@ impl RawTaskRow {
         };
         let queue_position = u32::try_from(self.queue_position)
             .map_err(|_| SessionStoreError::InvalidPersistedValue("task.queue_position"))?;
+        let slow_demotion_count = u32::try_from(self.slow_demotion_count)
+            .map_err(|_| SessionStoreError::InvalidPersistedValue("task.slow_demotion_count"))?;
+        let slow_slot = match (
+            self.slow_original_position,
+            self.slow_retry_scheduled_at_ms,
+            self.slow_retry_delay_ms,
+        ) {
+            (None, None, None) => None,
+            (Some(original), scheduled, delay) => {
+                let retry = match (scheduled, delay) {
+                    (None, None) => None,
+                    (Some(scheduled_at_ms), Some(delay_ms)) => Some(SessionSlowRetryDecision {
+                        scheduled_at_ms: nonnegative_i64(
+                            scheduled_at_ms,
+                            "task.slow_retry_scheduled_at_ms",
+                        )?,
+                        delay_ms: decode_u64(&delay_ms, "task.slow_retry_delay_ms")?,
+                    }),
+                    _ => {
+                        return Err(SessionStoreError::InvalidPersistedValue(
+                            "task.slow_retry_tuple",
+                        ));
+                    }
+                };
+                Some(SessionSlowSlotState {
+                    original_position: u32::try_from(original).map_err(|_| {
+                        SessionStoreError::InvalidPersistedValue("task.slow_original_position")
+                    })?,
+                    retry,
+                })
+            }
+            _ => {
+                return Err(SessionStoreError::InvalidPersistedValue(
+                    "task.slow_slot_tuple",
+                ));
+            }
+        };
         Ok(SessionTaskRecord {
             gid: decode_gid(&self.gid)?,
             session_id: decode_session_id(&self.session_id)?,
             queue_state: SessionQueueState::try_from(self.queue_state)?,
             queue_position,
             desired_paused: decode_bool(self.desired_paused, "task.desired_paused")?,
+            slow_demotion_count,
+            slow_slot,
             primary_journal_id: decode_journal_id(
                 &self.primary_journal_id,
                 "task.primary_journal_id",
@@ -1672,6 +2286,7 @@ impl RawTaskRow {
             self.cached_layout_hash.as_ref().map_or(0, Vec::len),
             self.cached_root_binding_hash.as_ref().map_or(0, Vec::len),
             self.cached_snapshot_hash.len(),
+            self.slow_retry_delay_ms.as_ref().map_or(0, Vec::len),
             self.no_space_target.as_ref().map_or(0, Vec::len),
             self.no_space_delay_ms.as_ref().map_or(0, Vec::len),
         ];
@@ -1690,7 +2305,7 @@ fn read_task_records(connection: &Connection) -> Result<Vec<SessionTaskRecord>, 
     let count: i64 = connection.query_row("SELECT COUNT(*) FROM task", [], |row| row.get(0))?;
     let count = bounded_count(count, SESSION_MAX_TASKS, "task.count")?;
     let mut statement = connection.prepare(
-        "SELECT gid, session_id, queue_state, queue_position, desired_paused, primary_journal_id, primary_journal_path, replica_journal_path, replica_sequence, root_display, cached_layout_hash, cached_root_binding_hash, cached_snapshot_hash, no_space_target, no_space_scheduled_at_ms, no_space_delay_ms, created_ms, updated_ms FROM task ORDER BY queue_state, queue_position, gid",
+        "SELECT gid, session_id, queue_state, queue_position, desired_paused, slow_original_position, slow_demotion_count, slow_retry_scheduled_at_ms, slow_retry_delay_ms, primary_journal_id, primary_journal_path, replica_journal_path, replica_sequence, root_display, cached_layout_hash, cached_root_binding_hash, cached_snapshot_hash, no_space_target, no_space_scheduled_at_ms, no_space_delay_ms, created_ms, updated_ms FROM task ORDER BY queue_state, queue_position, gid",
     )?;
     let mut rows = statement.query([])?;
     let mut tasks = Vec::new();
@@ -1717,6 +2332,133 @@ fn read_task_records(connection: &Connection) -> Result<Vec<SessionTaskRecord>, 
         return Err(SessionStoreError::InvalidPersistedValue("task.count"));
     }
     Ok(tasks)
+}
+
+fn read_task_records_v1(
+    connection: &Connection,
+) -> Result<Vec<SessionTaskRecord>, SessionStoreError> {
+    let count: i64 = connection.query_row("SELECT COUNT(*) FROM task", [], |row| row.get(0))?;
+    let count = bounded_count(count, SESSION_MAX_TASKS, "task.count")?;
+    let mut statement = connection.prepare(
+        "SELECT gid, session_id, queue_state, queue_position, desired_paused, primary_journal_id, primary_journal_path, replica_journal_path, replica_sequence, root_display, cached_layout_hash, cached_root_binding_hash, cached_snapshot_hash, no_space_target, no_space_scheduled_at_ms, no_space_delay_ms, created_ms, updated_ms FROM task ORDER BY queue_state, queue_position, gid",
+    )?;
+    let mut rows = statement.query([])?;
+    let mut tasks = Vec::new();
+    tasks
+        .try_reserve_exact(count)
+        .map_err(|_| SessionStoreError::InvalidPersistedValue("task.allocation"))?;
+    let mut read_bytes = 0_usize;
+    while let Some(row) = rows.next()? {
+        let raw = RawTaskRow::from_v1_row(row)?;
+        read_bytes = read_bytes
+            .checked_add(raw.estimated_read_bytes()?)
+            .ok_or(SessionStoreError::InvalidPersistedValue("task.read_budget"))?;
+        if read_bytes > SESSION_TASK_READ_BUDGET_BYTES {
+            return Err(SessionStoreError::InvalidPersistedValue("task.read_budget"));
+        }
+        let task = raw.decode()?;
+        validate_task(&task)?;
+        tasks.push(task);
+        if tasks.len() > count {
+            return Err(SessionStoreError::InvalidPersistedValue("task.count"));
+        }
+    }
+    if tasks.len() != count {
+        return Err(SessionStoreError::InvalidPersistedValue("task.count"));
+    }
+    Ok(tasks)
+}
+
+fn read_stopped_results(
+    connection: &Connection,
+) -> Result<Vec<SessionStoppedResultRecord>, SessionStoreError> {
+    let count: i64 =
+        connection.query_row("SELECT COUNT(*) FROM stopped_result", [], |row| row.get(0))?;
+    let count = bounded_count(count, SESSION_MAX_TASKS, "stopped_result.count")?;
+    let mut statement = connection.prepare(
+        "SELECT result.gid, result.terminal_status, result.error_code, result.safe_message, result.total_length, result.layout_hash, result.completed_ms
+         FROM stopped_result AS result
+         JOIN task ON task.gid = result.gid
+         WHERE task.queue_state = ?1
+         ORDER BY task.queue_position, task.gid",
+    )?;
+    let mut rows = statement.query([SessionQueueState::Stopped as i64])?;
+    let mut results = Vec::new();
+    results
+        .try_reserve_exact(count)
+        .map_err(|_| SessionStoreError::InvalidPersistedValue("stopped_result.allocation"))?;
+    let mut read_bytes = 0_usize;
+    while let Some(row) = rows.next()? {
+        let gid = row.get::<_, String>(0)?;
+        let terminal_status = row.get::<_, i64>(1)?;
+        let error_code = row.get::<_, i64>(2)?;
+        let safe_message = row.get::<_, String>(3)?;
+        let total_length = row.get::<_, Option<Vec<u8>>>(4)?;
+        let layout_hash = row.get::<_, Option<Vec<u8>>>(5)?;
+        let completed_ms = row.get::<_, i64>(6)?;
+        let row_bytes = [
+            std::mem::size_of::<SessionStoppedResultRecord>(),
+            gid.len(),
+            safe_message.len(),
+            total_length.as_ref().map_or(0, Vec::len),
+            layout_hash.as_ref().map_or(0, Vec::len),
+        ]
+        .into_iter()
+        .try_fold(0_usize, |total, value| total.checked_add(value))
+        .ok_or(SessionStoreError::InvalidPersistedValue(
+            "stopped_result.read_budget",
+        ))?;
+        read_bytes =
+            read_bytes
+                .checked_add(row_bytes)
+                .ok_or(SessionStoreError::InvalidPersistedValue(
+                    "stopped_result.read_budget",
+                ))?;
+        if read_bytes > SESSION_TASK_READ_BUDGET_BYTES {
+            return Err(SessionStoreError::InvalidPersistedValue(
+                "stopped_result.read_budget",
+            ));
+        }
+        let error_kind = match error_code {
+            0 => None,
+            value => Some(
+                ErrorKind::try_from(u8::try_from(value).map_err(|_| {
+                    SessionStoreError::InvalidPersistedValue("stopped_result.error_code")
+                })?)
+                .map_err(|()| {
+                    SessionStoreError::InvalidPersistedValue("stopped_result.error_code")
+                })?,
+            ),
+        };
+        let result = SessionStoppedResultRecord {
+            gid: decode_gid(&gid)?,
+            status: SessionTerminalStatus::try_from(terminal_status)?,
+            error_kind,
+            safe_message,
+            total_length: total_length
+                .as_deref()
+                .map(|value| decode_u64(value, "stopped_result.total_length"))
+                .transpose()?,
+            layout_hash: layout_hash
+                .as_deref()
+                .map(|value| decode_hash(value, "stopped_result.layout_hash"))
+                .transpose()?,
+            completed_ms: nonnegative_i64(completed_ms, "stopped_result.completed_ms")?,
+        };
+        validate_stopped_result(&result)?;
+        results.push(result);
+        if results.len() > count {
+            return Err(SessionStoreError::InvalidPersistedValue(
+                "stopped_result.count",
+            ));
+        }
+    }
+    if results.len() != count {
+        return Err(SessionStoreError::InvalidPersistedValue(
+            "stopped_result.count",
+        ));
+    }
+    Ok(results)
 }
 
 fn read_journal_install_for_gid(
@@ -2872,8 +3614,117 @@ fn create_schema(connection: &mut Connection) -> Result<(), SessionStoreError> {
     Ok(())
 }
 
+fn migrate_v1_to_v2(connection: &mut Connection) -> Result<(), SessionStoreError> {
+    connection.pragma_update(None, "foreign_keys", false)?;
+    let migration = migrate_v1_to_v2_inner(connection);
+    let restore = connection.pragma_update(None, "foreign_keys", true);
+    match (migration, restore) {
+        (Err(error), _) => Err(error),
+        (Ok(()), Err(error)) => Err(SessionStoreError::Sqlite(error)),
+        (Ok(()), Ok(())) if pragma_i64(connection, "foreign_keys")? == 1 => Ok(()),
+        (Ok(()), Ok(())) => Err(SessionStoreError::InvalidPersistedValue("foreign_keys")),
+    }
+}
+
+fn migrate_v1_to_v2_inner(connection: &mut Connection) -> Result<(), SessionStoreError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    rebuild_v1_task_table(&transaction)?;
+    rebuild_v1_host_key_challenge_table(&transaction)?;
+    transaction.pragma_update(None, "user_version", SESSION_SCHEMA_VERSION)?;
+    validate_schema(&transaction)?;
+    validate_integrity(&transaction)?;
+    validate_persisted_semantics(&transaction)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn rebuild_v1_task_table(transaction: &rusqlite::Transaction<'_>) -> Result<(), SessionStoreError> {
+    transaction.execute_batch(
+        "CREATE TEMP TABLE ariax_task_v1_migration AS
+         SELECT gid, session_id, queue_state, queue_position, desired_paused,
+                primary_journal_id, primary_journal_path, replica_journal_path,
+                replica_sequence, root_display, cached_layout_hash,
+                cached_root_binding_hash, cached_snapshot_hash, no_space_target,
+                no_space_scheduled_at_ms, no_space_delay_ms, created_ms, updated_ms
+         FROM task;
+         DROP INDEX task_queue_index;
+         DROP INDEX task_session_index;
+         DROP TABLE task;",
+    )?;
+    transaction.execute(TASK_TABLE_SQL, [])?;
+    transaction.execute_batch(
+        "INSERT INTO task(
+             gid, session_id, queue_state, queue_position, desired_paused,
+             slow_original_position, slow_demotion_count,
+             slow_retry_scheduled_at_ms, slow_retry_delay_ms,
+             primary_journal_id, primary_journal_path, replica_journal_path,
+             replica_sequence, root_display, cached_layout_hash,
+             cached_root_binding_hash, cached_snapshot_hash, no_space_target,
+             no_space_scheduled_at_ms, no_space_delay_ms, created_ms, updated_ms
+         )
+         SELECT gid, session_id, queue_state, queue_position, desired_paused,
+                NULL, 0, NULL, NULL,
+                primary_journal_id, primary_journal_path, replica_journal_path,
+                replica_sequence, root_display, cached_layout_hash,
+                cached_root_binding_hash, cached_snapshot_hash, no_space_target,
+                no_space_scheduled_at_ms, no_space_delay_ms, created_ms, updated_ms
+         FROM ariax_task_v1_migration;
+         DROP TABLE ariax_task_v1_migration;",
+    )?;
+    transaction.execute(TASK_QUEUE_INDEX_SQL, [])?;
+    transaction.execute(TASK_SESSION_INDEX_SQL, [])?;
+    Ok(())
+}
+
+fn rebuild_v1_host_key_challenge_table(
+    transaction: &rusqlite::Transaction<'_>,
+) -> Result<(), SessionStoreError> {
+    let out_of_bounds: i64 = transaction.query_row(
+        "SELECT COUNT(*) FROM host_key_challenge
+         WHERE length(CAST(algorithm AS BLOB)) > ?1
+            OR length(presented_public_key) > ?2",
+        params![
+            SESSION_MAX_ALGORITHM_BYTES as i64,
+            SESSION_MAX_HOST_KEY_BYTES as i64
+        ],
+        |row| row.get(0),
+    )?;
+    if out_of_bounds != 0 {
+        return Err(SessionStoreError::InvalidPersistedValue(
+            "host_key_challenge_bounds",
+        ));
+    }
+    transaction.execute_batch(
+        "CREATE TEMP TABLE ariax_host_key_v1_migration AS
+         SELECT gid, challenge_id, canonical_host, port, algorithm,
+                presented_public_key, fingerprint_sha256, created_ms
+         FROM host_key_challenge;
+         DROP TABLE host_key_challenge;",
+    )?;
+    transaction.execute(HOST_KEY_CHALLENGE_TABLE_SQL, [])?;
+    transaction.execute_batch(
+        "INSERT INTO host_key_challenge(
+             gid, challenge_id, canonical_host, port, algorithm,
+             presented_public_key, fingerprint_sha256, created_ms
+         )
+         SELECT gid, challenge_id, canonical_host, port, algorithm,
+                presented_public_key, fingerprint_sha256, created_ms
+         FROM ariax_host_key_v1_migration;
+         DROP TABLE ariax_host_key_v1_migration;",
+    )?;
+    Ok(())
+}
+
 fn validate_schema(connection: &Connection) -> Result<(), SessionStoreError> {
-    if read_user_version(connection)? != SESSION_SCHEMA_VERSION {
+    validate_schema_version(connection, SESSION_SCHEMA_VERSION, SESSION_SCHEMA_OBJECTS)
+}
+
+fn validate_schema_version(
+    connection: &Connection,
+    version: u32,
+    objects: &[SessionSchemaObject],
+) -> Result<(), SessionStoreError> {
+    if read_user_version(connection)? != version {
         return Err(SessionStoreError::SchemaMismatch("user_version"));
     }
     let mut found = HashSet::new();
@@ -2889,7 +3740,7 @@ fn validate_schema(connection: &Connection) -> Result<(), SessionStoreError> {
     })?;
     for row in rows {
         let (kind, name, sql) = row?;
-        let expected = SESSION_SCHEMA_OBJECTS
+        let expected = objects
             .iter()
             .find(|object| object.kind.code() == kind && object.name == name)
             .ok_or(SessionStoreError::SchemaMismatch("unexpected_object"))?;
@@ -2899,7 +3750,7 @@ fn validate_schema(connection: &Connection) -> Result<(), SessionStoreError> {
         }
         found.insert((kind, name));
     }
-    if found.len() != SESSION_SCHEMA_OBJECTS.len() {
+    if found.len() != objects.len() {
         return Err(SessionStoreError::SchemaMismatch("missing_object"));
     }
     Ok(())
@@ -2919,7 +3770,22 @@ fn validate_integrity(connection: &Connection) -> Result<(), SessionStoreError> 
 }
 
 fn validate_persisted_semantics(connection: &Connection) -> Result<(), SessionStoreError> {
-    validate_dense_queues(connection)?;
+    validate_persisted_semantics_for_version(connection, false)
+}
+
+fn validate_persisted_semantics_v1(connection: &Connection) -> Result<(), SessionStoreError> {
+    validate_persisted_semantics_for_version(connection, true)
+}
+
+fn validate_persisted_semantics_for_version(
+    connection: &Connection,
+    version_one: bool,
+) -> Result<(), SessionStoreError> {
+    if version_one {
+        validate_dense_queues_v1(connection)?;
+    } else {
+        validate_dense_queues(connection)?;
+    }
     let session_rows: i64 =
         connection.query_row("SELECT COUNT(*) FROM session", [], |row| row.get(0))?;
     if !(0..=1).contains(&session_rows) {
@@ -2936,7 +3802,14 @@ fn validate_persisted_semantics(connection: &Connection) -> Result<(), SessionSt
             "foreign_key_check",
         ));
     }
-    read_task_records(connection)?;
+    if version_one {
+        read_task_records_v1(connection)?;
+    } else {
+        read_task_records(connection)?;
+    }
+    validate_stopped_result_pairing(connection)?;
+    read_stopped_results(connection)?;
+    validate_host_key_challenges(connection)?;
     for intent in read_journal_installs(connection)? {
         let current = connection
             .query_row(
@@ -2957,6 +3830,116 @@ fn validate_persisted_semantics(connection: &Connection) -> Result<(), SessionSt
         if current_id != expected.0 || current_path != *expected.1 {
             return Err(SessionStoreError::JournalPointerMismatch);
         }
+    }
+    Ok(())
+}
+
+fn validate_host_key_challenges(connection: &Connection) -> Result<(), SessionStoreError> {
+    validate_host_key_challenges_with_budget(connection, SESSION_TASK_READ_BUDGET_BYTES)
+}
+
+fn validate_host_key_challenges_with_budget(
+    connection: &Connection,
+    read_budget_bytes: usize,
+) -> Result<(), SessionStoreError> {
+    let count: i64 =
+        connection.query_row("SELECT COUNT(*) FROM host_key_challenge", [], |row| {
+            row.get(0)
+        })?;
+    let count = bounded_count(count, SESSION_MAX_TASKS, "host_key_challenge.count")?;
+    let mut statement = connection.prepare(
+        "SELECT CAST(challenge.canonical_host AS BLOB), challenge.port,
+                CAST(challenge.algorithm AS BLOB), challenge.presented_public_key,
+                challenge.fingerprint_sha256, task.queue_state
+         FROM host_key_challenge AS challenge
+         JOIN task ON task.gid = challenge.gid
+         ORDER BY challenge.gid",
+    )?;
+    let mut rows = statement.query([])?;
+    let mut rows_read = 0_usize;
+    let mut bytes_read = 0_usize;
+    while let Some(row) = rows.next()? {
+        let canonical_host = row.get::<_, Vec<u8>>(0)?;
+        let port = row.get::<_, i64>(1)?;
+        let algorithm = row.get::<_, Vec<u8>>(2)?;
+        let presented_public_key = row.get::<_, Vec<u8>>(3)?;
+        let fingerprint_sha256 = row.get::<_, Vec<u8>>(4)?;
+        let queue_state = SessionQueueState::try_from(row.get::<_, i64>(5)?)?;
+        rows_read = rows_read
+            .checked_add(1)
+            .ok_or(SessionStoreError::InvalidPersistedValue(
+                "host_key_challenge.count",
+            ))?;
+        let row_bytes = canonical_host
+            .len()
+            .checked_add(algorithm.len())
+            .and_then(|size| size.checked_add(presented_public_key.len()))
+            .and_then(|size| size.checked_add(fingerprint_sha256.len()))
+            .ok_or(SessionStoreError::InvalidPersistedValue(
+                "host_key_challenge.read_budget",
+            ))?;
+        bytes_read =
+            bytes_read
+                .checked_add(row_bytes)
+                .ok_or(SessionStoreError::InvalidPersistedValue(
+                    "host_key_challenge.read_budget",
+                ))?;
+        if bytes_read > read_budget_bytes {
+            return Err(SessionStoreError::InvalidPersistedValue(
+                "host_key_challenge.read_budget",
+            ));
+        }
+
+        if canonical_host.is_empty()
+            || canonical_host.len() > 253
+            || std::str::from_utf8(&canonical_host).is_err()
+        {
+            return Err(SessionStoreError::InvalidPersistedValue(
+                "host_key_challenge.canonical_host",
+            ));
+        }
+        if !(1..=i64::from(u16::MAX)).contains(&port) {
+            return Err(SessionStoreError::InvalidPersistedValue(
+                "host_key_challenge.port",
+            ));
+        }
+        if algorithm.len() > SESSION_MAX_ALGORITHM_BYTES
+            || presented_public_key.len() > SESSION_MAX_HOST_KEY_BYTES
+        {
+            return Err(SessionStoreError::InvalidPersistedValue(
+                "host_key_challenge_bounds",
+            ));
+        }
+        if algorithm.is_empty() || std::str::from_utf8(&algorithm).is_err() {
+            return Err(SessionStoreError::InvalidPersistedValue(
+                "host_key_challenge.algorithm",
+            ));
+        }
+        if presented_public_key.is_empty() {
+            return Err(SessionStoreError::InvalidPersistedValue(
+                "host_key_challenge.presented_public_key",
+            ));
+        }
+        let fingerprint_sha256: [u8; 32] = fingerprint_sha256.try_into().map_err(|_| {
+            SessionStoreError::InvalidPersistedValue("host_key_challenge.fingerprint_sha256")
+        })?;
+        if HostKeyFingerprint::new(fingerprint_sha256)
+            != HostKeyFingerprint::for_presented_key(&presented_public_key)
+        {
+            return Err(SessionStoreError::InvalidPersistedValue(
+                "host_key_challenge.fingerprint_sha256",
+            ));
+        }
+        if queue_state != SessionQueueState::Paused {
+            return Err(SessionStoreError::InvalidPersistedValue(
+                "host_key_challenge.queue_state",
+            ));
+        }
+    }
+    if rows_read != count {
+        return Err(SessionStoreError::InvalidPersistedValue(
+            "host_key_challenge.count",
+        ));
     }
     Ok(())
 }
@@ -2990,6 +3973,12 @@ fn pragma_i64(connection: &Connection, name: &str) -> Result<i64, SessionStoreEr
 
 fn validate_task(task: &SessionTaskRecord) -> Result<(), SessionStoreError> {
     validate_time_order(task.created_ms, task.updated_ms)?;
+    validate_slow_slot_state(
+        task.queue_state,
+        task.desired_paused,
+        task.slow_demotion_count,
+        task.slow_slot.as_ref(),
+    )?;
     if task.replica_journal_path.is_some() != task.replica_sequence.is_some() {
         return Err(SessionStoreError::InvalidRecord("replica_pair"));
     }
@@ -3004,6 +3993,86 @@ fn validate_task(task: &SessionTaskRecord) -> Result<(), SessionStoreError> {
         .is_some_and(|value| value.delay_ms == 0)
     {
         return Err(SessionStoreError::InvalidRecord("no_space.delay_ms"));
+    }
+    Ok(())
+}
+
+fn validate_stopped_result(result: &SessionStoppedResultRecord) -> Result<(), SessionStoreError> {
+    time_to_i64(result.completed_ms, "stopped_result.completed_ms")?;
+    if result.safe_message.len() > SESSION_MAX_SAFE_MESSAGE_BYTES {
+        return Err(SessionStoreError::InvalidRecord(
+            "stopped_result.safe_message",
+        ));
+    }
+    match (result.status, result.error_kind) {
+        (SessionTerminalStatus::Error, Some(_)) => {}
+        (SessionTerminalStatus::Error, None) => {
+            return Err(SessionStoreError::InvalidRecord(
+                "stopped_result.error_code",
+            ));
+        }
+        (SessionTerminalStatus::Complete | SessionTerminalStatus::Removed, None)
+            if result.safe_message.is_empty() => {}
+        (SessionTerminalStatus::Complete | SessionTerminalStatus::Removed, _) => {
+            return Err(SessionStoreError::InvalidRecord(
+                "stopped_result.non_error_payload",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_stopped_result_pairing(connection: &Connection) -> Result<(), SessionStoreError> {
+    let orphaned_results: i64 = connection.query_row(
+        "SELECT COUNT(*)
+         FROM stopped_result AS result
+         LEFT JOIN task ON task.gid = result.gid
+         WHERE task.gid IS NULL OR task.queue_state != ?1",
+        [SessionQueueState::Stopped as i64],
+        |row| row.get(0),
+    )?;
+    let missing_results: i64 = connection.query_row(
+        "SELECT COUNT(*)
+         FROM task
+         LEFT JOIN stopped_result AS result ON result.gid = task.gid
+         WHERE task.queue_state = ?1 AND result.gid IS NULL",
+        [SessionQueueState::Stopped as i64],
+        |row| row.get(0),
+    )?;
+    if orphaned_results == 0 && missing_results == 0 {
+        Ok(())
+    } else {
+        Err(SessionStoreError::InvalidPersistedValue(
+            "stopped_result.task_pair",
+        ))
+    }
+}
+
+fn validate_slow_slot_state(
+    queue_state: SessionQueueState,
+    desired_paused: bool,
+    slow_demotion_count: u32,
+    slow_slot: Option<&SessionSlowSlotState>,
+) -> Result<(), SessionStoreError> {
+    if (queue_state == SessionQueueState::Demoted) != slow_slot.is_some() {
+        return Err(SessionStoreError::InvalidRecord("slow_slot.queue_state"));
+    }
+    if queue_state == SessionQueueState::Demoted && desired_paused {
+        return Err(SessionStoreError::InvalidRecord("slow_slot.desired_paused"));
+    }
+    if slow_slot.is_some_and(|value| value.original_position as usize >= SESSION_MAX_TASKS) {
+        return Err(SessionStoreError::InvalidRecord(
+            "slow_slot.original_position",
+        ));
+    }
+    if queue_state == SessionQueueState::Demoted && slow_demotion_count == 0 {
+        return Err(SessionStoreError::InvalidRecord("slow_slot.demotion_count"));
+    }
+    if let Some(retry) = slow_slot.and_then(|value| value.retry.as_ref()) {
+        time_to_i64(retry.scheduled_at_ms, "task.slow_retry_scheduled_at_ms")?;
+        if retry.delay_ms == 0 {
+            return Err(SessionStoreError::InvalidRecord("slow_slot.retry.delay_ms"));
+        }
     }
     Ok(())
 }
@@ -3030,6 +4099,17 @@ fn validate_install_values(intent: &JournalInstallIntent) -> Result<(), SessionS
 }
 
 fn validate_dense_queues(connection: &Connection) -> Result<(), SessionStoreError> {
+    validate_dense_queues_for_version(connection, false)
+}
+
+fn validate_dense_queues_v1(connection: &Connection) -> Result<(), SessionStoreError> {
+    validate_dense_queues_for_version(connection, true)
+}
+
+fn validate_dense_queues_for_version(
+    connection: &Connection,
+    version_one: bool,
+) -> Result<(), SessionStoreError> {
     let count: i64 = connection.query_row("SELECT COUNT(*) FROM task", [], |row| row.get(0))?;
     let maximum = bounded_count(count, SESSION_MAX_TASKS, "task.count")?;
     let mut statement = connection.prepare(
@@ -3041,7 +4121,10 @@ fn validate_dense_queues(connection: &Connection) -> Result<(), SessionStoreErro
     while let Some(row) = rows.next()? {
         let state = row.get::<_, i64>(0)?;
         let position = row.get::<_, i64>(1)?;
-        SessionQueueState::try_from(state)?;
+        let queue_state = SessionQueueState::try_from(state)?;
+        if version_one && queue_state == SessionQueueState::Demoted {
+            return Err(SessionStoreError::InvalidPersistedValue("queue_state"));
+        }
         let expected = next.entry(state).or_insert(0);
         if position != *expected {
             return Err(SessionStoreError::QueueInvariant);
@@ -3200,20 +4283,21 @@ mod tests {
         ALL_SESSION_IO_OPERATIONS, ALL_SESSION_SQLITE_LIMITS, ALL_SESSION_STORE_ERROR_CODES,
         JournalInstallIntent, JournalInstallPhase, SESSION_SCHEMA_OBJECTS, SESSION_SCHEMA_VERSION,
         SessionCacheReconciliation, SessionId, SessionJournalCache, SessionJournalMode,
-        SessionNoSpaceCondition, SessionQueueState, SessionRecord, SessionStore,
-        SessionStoreConfig, SessionStoreError, SessionTaskRecord,
+        SessionNoSpaceCondition, SessionQueueState, SessionRecord, SessionSlowRetryDecision,
+        SessionSlowSlotState, SessionStoppedResultRecord, SessionStore, SessionStoreConfig,
+        SessionStoreError, SessionTaskRecord, SessionTerminalStatus,
     };
     use crate::{
         CheckpointId, JournalHash, JournalId, OptionsSnapshotScope, PathPlatform, PlatformPath,
         SanitizedOptionMap,
     };
     use ariax_config::{SecurityClass, builtin_registry};
-    use ariax_core::Gid;
+    use ariax_core::{ErrorKind, Gid, HostKeyFingerprint};
     use rusqlite::Connection;
     use std::collections::{BTreeMap, HashSet};
     use std::ffi::OsString;
     use std::fs;
-    use std::io::{Seek, SeekFrom, Write};
+    use std::io::{Read, Seek, SeekFrom, Write};
     use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -3474,6 +4558,8 @@ mod tests {
             queue_state: SessionQueueState::Waiting,
             queue_position: position,
             desired_paused: false,
+            slow_demotion_count: 0,
+            slow_slot: None,
             primary_journal_id: journal(2),
             primary_journal_path: path(format!("/journal/{gid}").as_bytes()),
             replica_journal_path: Some(path(format!("/replica/{gid}").as_bytes())),
@@ -3492,6 +4578,26 @@ mod tests {
         }
     }
 
+    fn stopped_result_record(
+        gid: Gid,
+        status: SessionTerminalStatus,
+    ) -> SessionStoppedResultRecord {
+        let (error_kind, safe_message) = if status == SessionTerminalStatus::Error {
+            (Some(ErrorKind::Network), "network failure".to_owned())
+        } else {
+            (None, String::new())
+        };
+        SessionStoppedResultRecord {
+            gid,
+            status,
+            error_kind,
+            safe_message,
+            total_length: Some(u64::MAX),
+            layout_hash: Some(hash(9)),
+            completed_ms: 300,
+        }
+    }
+
     fn open_store(directory: &TestDirectory) -> SessionStore {
         let mut store = SessionStore::open(directory.database(), SessionStoreConfig::default())
             .expect("open store");
@@ -3499,17 +4605,183 @@ mod tests {
         store
     }
 
+    fn seed_v1_store(directory: &TestDirectory, journal_mode: SessionJournalMode) {
+        let mut connection = Connection::open(directory.database()).expect("create v1 database");
+        connection
+            .pragma_update(None, "journal_mode", journal_mode.code().to_uppercase())
+            .expect("set v1 journal mode");
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .expect("begin v1 seed");
+        for object in super::SESSION_V1_SCHEMA_OBJECTS {
+            transaction.execute(object.sql, []).expect(object.name);
+        }
+        let session = session_record();
+        transaction
+            .execute(
+                "INSERT INTO session(session_id, created_ms, updated_ms, clean_shutdown) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![
+                    session.session_id.as_bytes().as_slice(),
+                    i64::try_from(session.created_ms).expect("created time"),
+                    i64::try_from(session.updated_ms).expect("updated time"),
+                    super::bool_to_i64(session.clean_shutdown),
+                ],
+            )
+            .expect("insert v1 session");
+        let task = task_record(gid(1), 0);
+        transaction
+            .execute(
+                "INSERT INTO task(gid, session_id, queue_state, queue_position, desired_paused, primary_journal_id, primary_journal_path, replica_journal_path, replica_sequence, root_display, cached_layout_hash, cached_root_binding_hash, cached_snapshot_hash, no_space_target, no_space_scheduled_at_ms, no_space_delay_ms, created_ms, updated_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                rusqlite::params![
+                    task.gid.to_string(),
+                    task.session_id.as_bytes().as_slice(),
+                    task.queue_state as i64,
+                    i64::from(task.queue_position),
+                    super::bool_to_i64(task.desired_paused),
+                    task.primary_journal_id.as_bytes().as_slice(),
+                    super::encode_platform_path(&task.primary_journal_path).expect("primary path"),
+                    task.replica_journal_path
+                        .as_ref()
+                        .map(super::encode_platform_path)
+                        .transpose()
+                        .expect("replica path"),
+                    task.replica_sequence.map(super::encode_u64),
+                    super::encode_platform_path(&task.root_display).expect("root display"),
+                    task.cached_layout_hash.map(|value| value.as_bytes().to_vec()),
+                    task.cached_root_binding_hash
+                        .map(|value| value.as_bytes().to_vec()),
+                    task.cached_snapshot_hash.as_bytes().as_slice(),
+                    task.no_space
+                        .as_ref()
+                        .map(|value| super::encode_platform_path(&value.target))
+                        .transpose()
+                        .expect("no-space target"),
+                    task.no_space
+                        .as_ref()
+                        .map(|value| i64::try_from(value.scheduled_at_ms).expect("scheduled time")),
+                    task.no_space.as_ref().map(|value| super::encode_u64(value.delay_ms)),
+                    i64::try_from(task.created_ms).expect("task created time"),
+                    i64::try_from(task.updated_ms).expect("task updated time"),
+                ],
+            )
+            .expect("insert v1 task");
+        transaction
+            .execute(
+                "INSERT INTO task_source(gid, uri_id, persistence_safe_uri, redacted_fingerprint, needs_credentials, priority) VALUES (?1, 0, NULL, ?2, 1, 0)",
+                rusqlite::params![task.gid.to_string(), [7_u8; 32].as_slice()],
+            )
+            .expect("insert v1 child row");
+        transaction
+            .pragma_update(None, "user_version", 1)
+            .expect("set v1 version");
+        transaction.commit().expect("commit v1 seed");
+    }
+
+    fn seed_v1_host_key_challenge(
+        directory: &TestDirectory,
+        algorithm_bytes: usize,
+        key_bytes: usize,
+    ) {
+        let connection = Connection::open(directory.database()).expect("open v1 database");
+        connection
+            .execute(
+                "UPDATE task SET queue_state = ?1 WHERE gid = ?2",
+                rusqlite::params![SessionQueueState::Paused as i64, gid(1).to_string()],
+            )
+            .expect("pause v1 host-key task");
+        let presented_public_key = vec![7_u8; key_bytes];
+        let fingerprint_sha256 = HostKeyFingerprint::for_presented_key(&presented_public_key);
+        connection
+            .execute(
+                "INSERT INTO host_key_challenge(
+                     gid, challenge_id, canonical_host, port, algorithm,
+                     presented_public_key, fingerprint_sha256, created_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![
+                    gid(1).to_string(),
+                    [1_u8; 16].as_slice(),
+                    "example.test",
+                    22_i64,
+                    "a".repeat(algorithm_bytes),
+                    presented_public_key,
+                    fingerprint_sha256.as_bytes().as_slice(),
+                    200_i64,
+                ],
+            )
+            .expect("insert v1 host-key challenge");
+    }
+
+    fn seed_raw_host_key_challenge(
+        directory: &TestDirectory,
+        canonical_host: &[u8],
+        algorithm: &[u8],
+        fingerprint_sha256: &[u8],
+    ) {
+        let connection = Connection::open(directory.database()).expect("open host-key database");
+        connection
+            .execute(
+                "UPDATE task SET queue_state = ?1 WHERE gid = ?2",
+                rusqlite::params![SessionQueueState::Paused as i64, gid(1).to_string()],
+            )
+            .expect("pause host-key task");
+        connection
+            .execute(
+                "INSERT INTO host_key_challenge(
+                     gid, challenge_id, canonical_host, port, algorithm,
+                     presented_public_key, fingerprint_sha256, created_ms
+                 ) VALUES (?1, ?2, CAST(?3 AS TEXT), ?4, CAST(?5 AS TEXT), ?6, ?7, ?8)",
+                rusqlite::params![
+                    gid(1).to_string(),
+                    [1_u8; 16].as_slice(),
+                    canonical_host,
+                    22_i64,
+                    algorithm,
+                    [7_u8; 32].as_slice(),
+                    fingerprint_sha256,
+                    200_i64,
+                ],
+            )
+            .expect("insert raw host-key challenge");
+    }
+
     fn seed_owner_lock(database: &Path) {
         drop(super::acquire_session_owner_lock(database).expect("seed owner lock"));
     }
 
+    fn copy_fixture_file(source: &Path, destination: &Path) {
+        let expected_bytes = fs::metadata(source).expect("source fixture metadata").len();
+        let mut source_file = fs::File::open(source).expect("open source fixture");
+        let mut destination_file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(destination)
+            .expect("create destination fixture");
+        let mut copied_bytes = 0_u64;
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let bytes_read = source_file.read(&mut buffer).expect("read fixture bytes");
+            if bytes_read == 0 {
+                break;
+            }
+            destination_file
+                .write_all(&buffer[..bytes_read])
+                .expect("write fixture bytes");
+            copied_bytes += u64::try_from(bytes_read).expect("fixture byte count");
+        }
+        assert_eq!(copied_bytes, expected_bytes);
+        destination_file
+            .sync_all()
+            .expect("sync destination fixture");
+        drop(destination_file);
+        super::tighten_database_permissions(destination).expect("secure destination fixture");
+    }
+
     fn copy_hot_rollback_fixture(source: &Path, destination: &Path) {
-        fs::copy(source, destination).expect("copy hot database");
-        fs::copy(
-            super::sqlite_sidecar_path(source, "-journal"),
-            super::sqlite_sidecar_path(destination, "-journal"),
-        )
-        .expect("copy hot rollback journal");
+        copy_fixture_file(source, destination);
+        copy_fixture_file(
+            &super::sqlite_sidecar_path(source, "-journal"),
+            &super::sqlite_sidecar_path(destination, "-journal"),
+        );
     }
 
     #[derive(Clone, Copy, Debug)]
@@ -3580,6 +4852,608 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+    }
+
+    #[test]
+    fn migrates_exact_v1_task_rows_to_v2_in_wal_and_delete_modes() {
+        for journal_mode in [SessionJournalMode::Wal, SessionJournalMode::Delete] {
+            let directory = TestDirectory::new();
+            seed_v1_store(&directory, journal_mode);
+            let store = SessionStore::open(
+                directory.database(),
+                SessionStoreConfig {
+                    prefer_wal: journal_mode == SessionJournalMode::Wal,
+                    ..SessionStoreConfig::default()
+                },
+            )
+            .expect("migrate v1 store");
+            if journal_mode == SessionJournalMode::Delete {
+                assert_eq!(store.journal_mode(), SessionJournalMode::Delete);
+            }
+            assert_eq!(
+                super::read_user_version(&store.connection).expect("migrated version"),
+                SESSION_SCHEMA_VERSION
+            );
+            assert_eq!(
+                store.tasks().expect("migrated tasks"),
+                vec![task_record(gid(1), 0)]
+            );
+            let child_rows: i64 = store
+                .connection
+                .query_row("SELECT COUNT(*) FROM task_source", [], |row| row.get(0))
+                .expect("preserved child rows");
+            assert_eq!(child_rows, 1);
+            super::validate_schema(&store.connection).expect("exact v2 schema");
+            let backups = fs::read_dir(directory.path())
+                .expect("migration backup directory")
+                .map(|entry| entry.expect("migration backup entry").path())
+                .filter(|path| {
+                    path.file_name()
+                        .is_some_and(|name| name.to_string_lossy().contains(".ariax-v1-to-v2-"))
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(backups.len(), 1);
+            let backup = Connection::open_with_flags(
+                &backups[0],
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .expect("open v1 migration backup");
+            super::validate_schema_version(&backup, 1, super::SESSION_V1_SCHEMA_OBJECTS)
+                .expect("exact v1 backup schema");
+            super::validate_persisted_semantics_v1(&backup).expect("valid v1 backup semantics");
+        }
+    }
+
+    #[test]
+    fn paired_stopped_result_survives_v1_to_v2_migration() {
+        let directory = TestDirectory::new();
+        seed_v1_store(&directory, SessionJournalMode::Delete);
+        let connection = Connection::open(directory.database()).expect("open v1 database");
+        connection
+            .execute(
+                "UPDATE task SET queue_state = ?1 WHERE gid = ?2",
+                rusqlite::params![SessionQueueState::Stopped as i64, gid(1).to_string()],
+            )
+            .expect("move v1 task to stopped queue");
+        connection
+            .execute(
+                "INSERT INTO stopped_result(gid, terminal_status, error_code, safe_message, total_length, layout_hash, completed_ms) VALUES (?1, ?2, 0, '', ?3, ?4, 300)",
+                rusqlite::params![
+                    gid(1).to_string(),
+                    SessionTerminalStatus::Complete as i64,
+                    super::encode_u64(u64::MAX),
+                    hash(9).as_bytes().as_slice(),
+                ],
+            )
+            .expect("insert paired v1 stopped result");
+        drop(connection);
+
+        let store = SessionStore::open(directory.database(), SessionStoreConfig::default())
+            .expect("migrate paired stopped result");
+        assert_eq!(
+            store.stopped_results().expect("migrated stopped result"),
+            vec![stopped_result_record(
+                gid(1),
+                SessionTerminalStatus::Complete
+            )]
+        );
+        let task = store.tasks().expect("migrated stopped task").remove(0);
+        assert_eq!(task.queue_state, SessionQueueState::Stopped);
+        assert_eq!(task.queue_position, 0);
+    }
+
+    #[test]
+    fn unpaired_stopped_tasks_are_rejected_in_v1_and_v2() {
+        let v1 = TestDirectory::new();
+        seed_v1_store(&v1, SessionJournalMode::Delete);
+        let connection = Connection::open(v1.database()).expect("open v1 database");
+        connection
+            .execute(
+                "UPDATE task SET queue_state = ?1 WHERE gid = ?2",
+                rusqlite::params![SessionQueueState::Stopped as i64, gid(1).to_string()],
+            )
+            .expect("seed unpaired v1 stopped task");
+        drop(connection);
+        assert!(matches!(
+            SessionStore::open(v1.database(), SessionStoreConfig::default()),
+            Err(SessionStoreError::InvalidPersistedValue(
+                "stopped_result.task_pair"
+            ))
+        ));
+        let connection = Connection::open(v1.database()).expect("inspect retained v1");
+        assert_eq!(
+            super::read_user_version(&connection).expect("retained v1 version"),
+            1
+        );
+
+        let v2 = TestDirectory::new();
+        let mut store = open_store(&v2);
+        store.put_task(&task_record(gid(1), 0)).expect("v2 task");
+        store
+            .connection
+            .execute(
+                "UPDATE task SET queue_state = ?1 WHERE gid = ?2",
+                rusqlite::params![SessionQueueState::Stopped as i64, gid(1).to_string()],
+            )
+            .expect("seed unpaired v2 stopped task");
+        assert!(matches!(
+            store.tasks(),
+            Err(SessionStoreError::InvalidPersistedValue(
+                "stopped_result.task_pair"
+            ))
+        ));
+    }
+
+    #[test]
+    fn v1_host_key_boundary_migrates_to_tightened_v2_schema() {
+        let directory = TestDirectory::new();
+        seed_v1_store(&directory, SessionJournalMode::Delete);
+        seed_v1_host_key_challenge(
+            &directory,
+            super::SESSION_MAX_ALGORITHM_BYTES,
+            super::SESSION_MAX_HOST_KEY_BYTES,
+        );
+        let store = SessionStore::open(directory.database(), SessionStoreConfig::default())
+            .expect("migrate boundary host-key row");
+        let lengths: (i64, i64) = store
+            .connection
+            .query_row(
+                "SELECT length(CAST(algorithm AS BLOB)), length(presented_public_key)
+                 FROM host_key_challenge WHERE gid = ?1",
+                [gid(1).to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read migrated host-key row");
+        assert_eq!(
+            lengths,
+            (
+                super::SESSION_MAX_ALGORITHM_BYTES as i64,
+                super::SESSION_MAX_HOST_KEY_BYTES as i64,
+            )
+        );
+        super::validate_schema(&store.connection).expect("exact tightened v2 schema");
+    }
+
+    #[test]
+    fn v1_host_key_rows_above_v2_bounds_fail_migration_atomically() {
+        for (algorithm_bytes, key_bytes) in [
+            (
+                super::SESSION_MAX_ALGORITHM_BYTES + 1,
+                super::SESSION_MAX_HOST_KEY_BYTES,
+            ),
+            (
+                super::SESSION_MAX_ALGORITHM_BYTES,
+                super::SESSION_MAX_HOST_KEY_BYTES + 1,
+            ),
+        ] {
+            let directory = TestDirectory::new();
+            seed_v1_store(&directory, SessionJournalMode::Delete);
+            seed_v1_host_key_challenge(&directory, algorithm_bytes, key_bytes);
+            for _ in 0..2 {
+                let error =
+                    match SessionStore::open(directory.database(), SessionStoreConfig::default()) {
+                        Ok(_) => panic!("accepted host-key row above tightened v2 bounds"),
+                        Err(error) => error,
+                    };
+                assert!(matches!(
+                    error,
+                    SessionStoreError::InvalidPersistedValue("host_key_challenge_bounds")
+                ));
+            }
+            let connection = Connection::open(directory.database()).expect("reopen retained v1");
+            assert_eq!(
+                super::read_user_version(&connection).expect("retained version"),
+                1
+            );
+            super::validate_schema_version(&connection, 1, super::SESSION_V1_SCHEMA_OBJECTS)
+                .expect("retained exact v1 schema");
+            let lengths: (i64, i64) = connection
+                .query_row(
+                    "SELECT length(CAST(algorithm AS BLOB)), length(presented_public_key)
+                     FROM host_key_challenge WHERE gid = ?1",
+                    [gid(1).to_string()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("retained v1 host-key row");
+            assert_eq!(lengths, (algorithm_bytes as i64, key_bytes as i64));
+            let migration_entries = fs::read_dir(directory.path())
+                .expect("migration directory")
+                .map(|entry| entry.expect("migration entry").path())
+                .filter(|path| {
+                    path.file_name()
+                        .is_some_and(|name| name.to_string_lossy().contains(".ariax-v1-to-v2-"))
+                })
+                .collect::<Vec<_>>();
+            assert!(migration_entries.is_empty());
+        }
+    }
+
+    #[test]
+    fn current_schema_rejects_inconsistent_host_key_challenges_before_reopen() {
+        let key = [7_u8; 32];
+        let valid_fingerprint = HostKeyFingerprint::for_presented_key(&key);
+        for (canonical_host, algorithm, fingerprint, expected_field) in [
+            (
+                b"example.test".as_slice(),
+                b"ssh-ed25519".as_slice(),
+                [9_u8; 32].as_slice(),
+                "host_key_challenge.fingerprint_sha256",
+            ),
+            (
+                [0xff_u8].as_slice(),
+                b"ssh-ed25519".as_slice(),
+                valid_fingerprint.as_bytes().as_slice(),
+                "host_key_challenge.canonical_host",
+            ),
+            (
+                b"example.test".as_slice(),
+                [0xff_u8].as_slice(),
+                valid_fingerprint.as_bytes().as_slice(),
+                "host_key_challenge.algorithm",
+            ),
+        ] {
+            let directory = TestDirectory::new();
+            let mut store = open_store(&directory);
+            store.put_task(&task_record(gid(1), 0)).expect("task");
+            drop(store);
+            seed_raw_host_key_challenge(&directory, canonical_host, algorithm, fingerprint);
+            super::tighten_sqlite_artifact_permissions(&directory.database())
+                .expect("normalize fixture permissions");
+            let before = snapshot_directory(directory.path());
+            let result = SessionStore::open(directory.database(), SessionStoreConfig::default());
+            assert!(matches!(
+                result,
+                Err(SessionStoreError::InvalidPersistedValue(field)) if field == expected_field
+            ));
+            assert_eq!(snapshot_directory(directory.path()), before);
+        }
+    }
+
+    #[test]
+    fn v1_migration_rejects_inconsistent_host_key_challenges_without_mutation() {
+        let key = [7_u8; 32];
+        let valid_fingerprint = HostKeyFingerprint::for_presented_key(&key);
+        for (canonical_host, algorithm, fingerprint, expected_field) in [
+            (
+                b"example.test".as_slice(),
+                b"ssh-ed25519".as_slice(),
+                [9_u8; 32].as_slice(),
+                "host_key_challenge.fingerprint_sha256",
+            ),
+            (
+                [0xff_u8].as_slice(),
+                b"ssh-ed25519".as_slice(),
+                valid_fingerprint.as_bytes().as_slice(),
+                "host_key_challenge.canonical_host",
+            ),
+            (
+                b"example.test".as_slice(),
+                [0xff_u8].as_slice(),
+                valid_fingerprint.as_bytes().as_slice(),
+                "host_key_challenge.algorithm",
+            ),
+        ] {
+            let directory = TestDirectory::new();
+            seed_v1_store(&directory, SessionJournalMode::Delete);
+            seed_raw_host_key_challenge(&directory, canonical_host, algorithm, fingerprint);
+            super::tighten_sqlite_artifact_permissions(&directory.database())
+                .expect("normalize fixture permissions");
+            seed_owner_lock(&directory.database());
+            let before = snapshot_directory(directory.path());
+            let result = SessionStore::open(directory.database(), SessionStoreConfig::default());
+            assert!(matches!(
+                result,
+                Err(SessionStoreError::InvalidPersistedValue(field)) if field == expected_field
+            ));
+            assert_eq!(snapshot_directory(directory.path()), before);
+            let connection = Connection::open(directory.database()).expect("inspect retained v1");
+            assert_eq!(
+                super::read_user_version(&connection).expect("retained version"),
+                1
+            );
+            super::validate_schema_version(&connection, 1, super::SESSION_V1_SCHEMA_OBJECTS)
+                .expect("retained exact v1 schema");
+        }
+    }
+
+    #[test]
+    fn host_key_challenges_require_paused_tasks_in_v1_and_v2() {
+        let key = [7_u8; 32];
+        let fingerprint = HostKeyFingerprint::for_presented_key(&key);
+        let v1 = TestDirectory::new();
+        seed_v1_store(&v1, SessionJournalMode::Delete);
+        seed_raw_host_key_challenge(&v1, b"example.test", b"ssh-ed25519", fingerprint.as_bytes());
+        let connection = Connection::open(v1.database()).expect("open v1 host-key database");
+        connection
+            .execute(
+                "UPDATE task SET queue_state = ?1 WHERE gid = ?2",
+                rusqlite::params![SessionQueueState::Waiting as i64, gid(1).to_string()],
+            )
+            .expect("make v1 host-key task non-paused");
+        drop(connection);
+
+        assert!(matches!(
+            SessionStore::open(v1.database(), SessionStoreConfig::default()),
+            Err(SessionStoreError::InvalidPersistedValue(
+                "host_key_challenge.queue_state"
+            ))
+        ));
+        let connection = Connection::open(v1.database()).expect("inspect retained v1 database");
+        assert_eq!(
+            super::read_user_version(&connection).expect("retained v1 version"),
+            1
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM host_key_challenge", [], |row| row
+                    .get::<_, i64>(0))
+                .expect("retained v1 challenge"),
+            1
+        );
+
+        let v2 = TestDirectory::new();
+        let mut store = open_store(&v2);
+        store.put_task(&task_record(gid(1), 0)).expect("v2 task");
+        drop(store);
+        seed_raw_host_key_challenge(&v2, b"example.test", b"ssh-ed25519", fingerprint.as_bytes());
+        let connection = Connection::open(v2.database()).expect("open v2 host-key database");
+        connection
+            .execute(
+                "UPDATE task SET queue_state = ?1 WHERE gid = ?2",
+                rusqlite::params![SessionQueueState::Waiting as i64, gid(1).to_string()],
+            )
+            .expect("make v2 host-key task non-paused");
+        drop(connection);
+
+        assert!(matches!(
+            SessionStore::open(v2.database(), SessionStoreConfig::default()),
+            Err(SessionStoreError::InvalidPersistedValue(
+                "host_key_challenge.queue_state"
+            ))
+        ));
+        let connection = Connection::open(v2.database()).expect("inspect retained v2 database");
+        assert_eq!(
+            super::read_user_version(&connection).expect("retained v2 version"),
+            SESSION_SCHEMA_VERSION
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM host_key_challenge", [], |row| row
+                    .get::<_, i64>(0))
+                .expect("retained v2 challenge"),
+            1
+        );
+    }
+
+    #[test]
+    fn host_key_semantic_read_budget_is_enforced_at_the_boundary() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        store.put_task(&task_record(gid(1), 0)).expect("task");
+        drop(store);
+        let key = [7_u8; 32];
+        let fingerprint = HostKeyFingerprint::for_presented_key(&key);
+        seed_raw_host_key_challenge(
+            &directory,
+            b"example.test",
+            b"ssh-ed25519",
+            fingerprint.as_bytes(),
+        );
+        let connection = Connection::open(directory.database()).expect("open host-key database");
+        let row_bytes =
+            b"example.test".len() + b"ssh-ed25519".len() + key.len() + fingerprint.as_bytes().len();
+
+        assert!(matches!(
+            super::validate_host_key_challenges_with_budget(&connection, row_bytes - 1),
+            Err(SessionStoreError::InvalidPersistedValue(
+                "host_key_challenge.read_budget"
+            ))
+        ));
+        super::validate_host_key_challenges_with_budget(&connection, row_bytes)
+            .expect("accept challenge at exact read budget");
+    }
+
+    #[test]
+    fn migration_backup_skips_collisions_without_clobbering_them() {
+        let directory = TestDirectory::new();
+        seed_v1_store(&directory, SessionJournalMode::Delete);
+        let timestamp_ms = 7_u128;
+        let collision =
+            super::migration_backup_path(&directory.database(), timestamp_ms, 0).expect("path");
+        fs::write(&collision, b"keep existing backup").expect("seed collision");
+        let mut connection = Connection::open(directory.database()).expect("open v1 database");
+
+        let backup = super::migrate_v1_to_v2_with_backup_at(
+            &mut connection,
+            &directory.database(),
+            timestamp_ms,
+        )
+        .expect("backup and migrate after collision");
+
+        assert_eq!(
+            fs::read(&collision).expect("collision bytes"),
+            b"keep existing backup"
+        );
+        assert_eq!(
+            backup,
+            super::migration_backup_path(&directory.database(), timestamp_ms, 1).expect("path")
+        );
+        assert_eq!(
+            super::read_user_version(&connection).expect("migrated version"),
+            SESSION_SCHEMA_VERSION
+        );
+        let backup =
+            Connection::open_with_flags(backup, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .expect("open collision-safe backup");
+        super::validate_schema_version(&backup, 1, super::SESSION_V1_SCHEMA_OBJECTS)
+            .expect("backup remains v1");
+    }
+
+    #[test]
+    fn migration_backup_failure_leaves_v1_schema_and_version_untouched() {
+        let directory = TestDirectory::new();
+        seed_v1_store(&directory, SessionJournalMode::Delete);
+        let timestamp_ms = 11_u128;
+        for attempt in 0..super::MIGRATION_BACKUP_ATTEMPTS {
+            let collision =
+                super::migration_backup_path(&directory.database(), timestamp_ms, attempt)
+                    .expect("collision path");
+            fs::write(collision, format!("collision-{attempt}")).expect("seed collision");
+        }
+        let before = fs::read(directory.database()).expect("v1 bytes before failure");
+        let mut connection = Connection::open(directory.database()).expect("open v1 database");
+
+        assert!(matches!(
+            super::migrate_v1_to_v2_with_backup_at(
+                &mut connection,
+                &directory.database(),
+                timestamp_ms,
+            ),
+            Err(SessionStoreError::BackupPathExists)
+        ));
+
+        assert_eq!(
+            super::read_user_version(&connection).expect("retained version"),
+            1
+        );
+        super::validate_schema_version(&connection, 1, super::SESSION_V1_SCHEMA_OBJECTS)
+            .expect("retained v1 schema");
+        drop(connection);
+        assert_eq!(
+            fs::read(directory.database()).expect("v1 bytes after failure"),
+            before
+        );
+    }
+
+    #[test]
+    fn crashed_v1_to_v2_task_and_host_key_rebuilds_roll_back_then_recover() {
+        let directory = TestDirectory::new();
+        seed_v1_store(&directory, SessionJournalMode::Delete);
+        let presented_public_key = vec![7_u8; 32];
+        let fingerprint = HostKeyFingerprint::for_presented_key(&presented_public_key);
+        seed_raw_host_key_challenge(
+            &directory,
+            b"example.test",
+            b"ssh-ed25519",
+            fingerprint.as_bytes(),
+        );
+        let connection = Connection::open(directory.database()).expect("open v1 for backup");
+        super::create_v1_migration_backup_at(&connection, &directory.database(), 13)
+            .expect("publish pre-migration backup");
+        drop(connection);
+
+        let status = Command::new(std::env::current_exe().expect("current test executable"))
+            .args([
+                "--ignored",
+                "--exact",
+                "session_store::tests::v1_to_v2_migration_crash_child",
+                "--nocapture",
+            ])
+            .env("ARIAX_V1_TO_V2_CRASH_CHILD", directory.database())
+            .status()
+            .expect("spawn migration crash child");
+        assert_eq!(status.code(), Some(93));
+        let journal = super::sqlite_sidecar_path(&directory.database(), "-journal");
+        assert!(fs::metadata(&journal).expect("hot migration journal").len() > 0);
+        assert_eq!(
+            super::inspect_persisted_user_version(&directory.database())
+                .expect("rollback-aware version"),
+            1
+        );
+
+        let recovered = SessionStore::open(
+            directory.database(),
+            SessionStoreConfig {
+                prefer_wal: false,
+                ..SessionStoreConfig::default()
+            },
+        )
+        .expect("recover v1 and migrate");
+        assert_eq!(recovered.journal_mode(), SessionJournalMode::Delete);
+        assert_eq!(
+            super::read_user_version(&recovered.connection).expect("recovered version"),
+            SESSION_SCHEMA_VERSION
+        );
+        assert_eq!(
+            recovered.tasks().expect("recovered tasks"),
+            vec![SessionTaskRecord {
+                queue_state: SessionQueueState::Paused,
+                ..task_record(gid(1), 0)
+            }]
+        );
+        let recovered_challenge: (Vec<u8>, String, i64, String, Vec<u8>, Vec<u8>, i64) = recovered
+            .connection
+            .query_row(
+                "SELECT challenge_id, canonical_host, port, algorithm,
+                            presented_public_key, fingerprint_sha256, created_ms
+                     FROM host_key_challenge WHERE gid = ?1",
+                [gid(1).to_string()],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )
+            .expect("recovered host-key challenge");
+        assert_eq!(
+            recovered_challenge,
+            (
+                vec![1_u8; 16],
+                "example.test".to_owned(),
+                22,
+                "ssh-ed25519".to_owned(),
+                presented_public_key.clone(),
+                fingerprint.as_bytes().to_vec(),
+                200,
+            )
+        );
+        let crash_table: i64 = recovered
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema WHERE name = 'crash_fill'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("recovered schema");
+        assert_eq!(crash_table, 0);
+        assert!(!journal.exists());
+    }
+
+    #[test]
+    fn rejects_invalid_v1_task_before_migration_and_keeps_version_one() {
+        let directory = TestDirectory::new();
+        seed_v1_store(&directory, SessionJournalMode::Delete);
+        let connection = Connection::open(directory.database()).expect("open v1 fixture");
+        connection
+            .execute(
+                "UPDATE task SET no_space_delay_ms = X'0000000000000000'",
+                [],
+            )
+            .expect("seed invalid v1 retry delay");
+        drop(connection);
+        super::tighten_sqlite_artifact_permissions(&directory.database())
+            .expect("normalize fixture permissions");
+        seed_owner_lock(&directory.database());
+        let before = snapshot_directory(directory.path());
+
+        assert!(matches!(
+            SessionStore::open(directory.database(), SessionStoreConfig::default()),
+            Err(SessionStoreError::InvalidRecord("no_space.delay_ms"))
+        ));
+        assert_eq!(snapshot_directory(directory.path()), before);
+        let connection = Connection::open(directory.database()).expect("inspect rejected v1");
+        assert_eq!(
+            super::read_user_version(&connection).expect("retained v1 version"),
+            1
+        );
+        super::validate_schema_version(&connection, 1, super::SESSION_V1_SCHEMA_OBJECTS)
+            .expect("retained exact v1 schema");
     }
 
     #[test]
@@ -3979,15 +5853,15 @@ mod tests {
         let directory = TestDirectory::new();
         let connection = Connection::open(directory.database()).expect("create newer");
         connection
-            .execute_batch("CREATE TABLE sentinel(value TEXT); INSERT INTO sentinel VALUES ('keep'); PRAGMA user_version=2;")
+            .execute_batch("CREATE TABLE sentinel(value TEXT); INSERT INTO sentinel VALUES ('keep'); PRAGMA user_version=3;")
             .expect("seed newer");
         drop(connection);
         let before = fs::read(directory.database()).expect("read before");
         assert!(matches!(
             SessionStore::open(directory.database(), SessionStoreConfig::default()),
             Err(SessionStoreError::NewerSchema {
-                found: 2,
-                supported: 1
+                found: 3,
+                supported: SESSION_SCHEMA_VERSION
             })
         ));
         assert_eq!(fs::read(directory.database()).expect("read after"), before);
@@ -3999,21 +5873,21 @@ mod tests {
         let connection = Connection::open(directory.database()).expect("create WAL database");
         connection
             .execute_batch(
-                "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE sentinel(value TEXT); PRAGMA user_version=2; INSERT INTO sentinel VALUES ('wal');",
+                "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE sentinel(value TEXT); PRAGMA user_version=3; INSERT INTO sentinel VALUES ('wal');",
             )
             .expect("seed newer WAL schema");
         let wal = super::sqlite_sidecar_path(&directory.database(), "-wal");
         assert!(wal.exists());
         assert_eq!(
             super::inspect_persisted_user_version(&directory.database()).expect("preflight"),
-            2
+            3
         );
         let before = snapshot_directory(directory.path());
         assert!(matches!(
             SessionStore::open(directory.database(), SessionStoreConfig::default()),
             Err(SessionStoreError::NewerSchema {
-                found: 2,
-                supported: 1,
+                found: 3,
+                supported: SESSION_SCHEMA_VERSION,
             })
         ));
         assert_eq!(snapshot_directory(directory.path()), before);
@@ -4179,7 +6053,7 @@ mod tests {
         let connection = Connection::open(source.database()).expect("open source database");
         connection
             .execute_batch(
-                "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; PRAGMA user_version=0; PRAGMA wal_checkpoint(TRUNCATE); PRAGMA user_version=1;",
+                "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; PRAGMA user_version=0; PRAGMA wal_checkpoint(TRUNCATE); PRAGMA user_version=2;",
             )
             .expect("create committed page-one WAL");
         let source_wal = super::sqlite_sidecar_path(&source.database(), "-wal");
@@ -4197,12 +6071,11 @@ mod tests {
         ] {
             let direct_directory = TestDirectory::new();
             let direct_database = direct_directory.database();
-            fs::copy(source.database(), &direct_database).expect("copy direct main database");
-            fs::copy(
+            copy_fixture_file(&source.database(), &direct_database);
+            copy_fixture_file(
                 &source_wal,
-                super::sqlite_sidecar_path(&direct_database, "-wal"),
-            )
-            .expect("copy direct WAL");
+                &super::sqlite_sidecar_path(&direct_database, "-wal"),
+            );
             corrupt_main_header(&direct_database, corruption);
             let direct = Connection::open(&direct_database).expect("SQLite WAL recovery");
             let direct_version: u32 = direct
@@ -4213,12 +6086,11 @@ mod tests {
 
             let store_directory = TestDirectory::new();
             let store_database = store_directory.database();
-            fs::copy(source.database(), &store_database).expect("copy store main database");
-            fs::copy(
+            copy_fixture_file(&source.database(), &store_database);
+            copy_fixture_file(
                 &source_wal,
-                super::sqlite_sidecar_path(&store_database, "-wal"),
-            )
-            .expect("copy store WAL");
+                &super::sqlite_sidecar_path(&store_database, "-wal"),
+            );
             corrupt_main_header(&store_database, corruption);
             let recovered = SessionStore::open(&store_database, SessionStoreConfig::default())
                 .expect("SessionStore WAL recovery");
@@ -4394,6 +6266,499 @@ mod tests {
     }
 
     #[test]
+    fn demoted_task_round_trip_preserves_bounded_slow_slot_state() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        let mut task = task_record(gid(1), 0);
+        task.queue_state = SessionQueueState::Demoted;
+        task.slow_demotion_count = u32::MAX;
+        task.slow_slot = Some(SessionSlowSlotState {
+            original_position: (super::SESSION_MAX_TASKS - 1) as u32,
+            retry: Some(SessionSlowRetryDecision {
+                scheduled_at_ms: i64::MAX as u64,
+                delay_ms: u64::MAX,
+            }),
+        });
+        store.put_task(&task).expect("put demoted task");
+        assert_eq!(store.tasks().expect("demoted tasks"), vec![task]);
+    }
+
+    #[test]
+    fn slow_slot_state_rejects_inconsistent_queue_and_retry_values() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        let slow_slot = SessionSlowSlotState {
+            original_position: 0,
+            retry: Some(SessionSlowRetryDecision {
+                scheduled_at_ms: 200,
+                delay_ms: 1,
+            }),
+        };
+
+        let mut missing = task_record(gid(1), 0);
+        missing.queue_state = SessionQueueState::Demoted;
+        missing.slow_demotion_count = 1;
+        assert!(matches!(
+            store.put_task(&missing),
+            Err(SessionStoreError::InvalidRecord("slow_slot.queue_state"))
+        ));
+
+        let mut unexpected = task_record(gid(2), 0);
+        unexpected.slow_demotion_count = 1;
+        unexpected.slow_slot = Some(slow_slot);
+        assert!(matches!(
+            store.put_task(&unexpected),
+            Err(SessionStoreError::InvalidRecord("slow_slot.queue_state"))
+        ));
+
+        let mut zero_delay = task_record(gid(3), 0);
+        zero_delay.queue_state = SessionQueueState::Demoted;
+        zero_delay.slow_demotion_count = 1;
+        zero_delay.slow_slot = Some(SessionSlowSlotState {
+            retry: Some(SessionSlowRetryDecision {
+                scheduled_at_ms: 200,
+                delay_ms: 0,
+            }),
+            ..slow_slot
+        });
+        assert!(matches!(
+            store.put_task(&zero_delay),
+            Err(SessionStoreError::InvalidRecord("slow_slot.retry.delay_ms"))
+        ));
+
+        let mut position_outside_store = task_record(gid(4), 0);
+        position_outside_store.queue_state = SessionQueueState::Demoted;
+        position_outside_store.slow_demotion_count = 1;
+        position_outside_store.slow_slot = Some(SessionSlowSlotState {
+            original_position: super::SESSION_MAX_TASKS as u32,
+            ..slow_slot
+        });
+        assert!(matches!(
+            store.put_task(&position_outside_store),
+            Err(SessionStoreError::InvalidRecord(
+                "slow_slot.original_position"
+            ))
+        ));
+
+        let mut zero_demotions = task_record(gid(5), 0);
+        zero_demotions.queue_state = SessionQueueState::Demoted;
+        zero_demotions.slow_slot = Some(slow_slot);
+        assert!(matches!(
+            store.put_task(&zero_demotions),
+            Err(SessionStoreError::InvalidRecord("slow_slot.demotion_count"))
+        ));
+
+        let mut paused_demotion = task_record(gid(6), 0);
+        paused_demotion.queue_state = SessionQueueState::Demoted;
+        paused_demotion.desired_paused = true;
+        paused_demotion.slow_demotion_count = 1;
+        paused_demotion.slow_slot = Some(slow_slot);
+        assert!(matches!(
+            store.put_task(&paused_demotion),
+            Err(SessionStoreError::InvalidRecord("slow_slot.desired_paused"))
+        ));
+
+        let mut unrepresentable_time = task_record(gid(7), 0);
+        unrepresentable_time.queue_state = SessionQueueState::Demoted;
+        unrepresentable_time.slow_demotion_count = 1;
+        unrepresentable_time.slow_slot = Some(SessionSlowSlotState {
+            retry: Some(SessionSlowRetryDecision {
+                scheduled_at_ms: u64::MAX,
+                delay_ms: 1,
+            }),
+            ..slow_slot
+        });
+        assert!(matches!(
+            store.put_task(&unrepresentable_time),
+            Err(SessionStoreError::InvalidRecord(
+                "task.slow_retry_scheduled_at_ms"
+            ))
+        ));
+        assert!(store.tasks().expect("no invalid tasks").is_empty());
+    }
+
+    #[test]
+    fn strict_v2_schema_rejects_invalid_slow_slot_tuples() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        store
+            .put_task(&task_record(gid(1), 0))
+            .expect("waiting task");
+        assert!(
+            store
+                .connection
+                .execute(
+                    "UPDATE task SET queue_state = 5 WHERE gid = ?1",
+                    [gid(1).to_string()],
+                )
+                .is_err()
+        );
+        let slow_slot = SessionSlowSlotState {
+            original_position: 0,
+            retry: None,
+        };
+        store
+            .transition_task_queue(
+                gid(1),
+                SessionQueueState::Waiting,
+                SessionQueueState::Demoted,
+                0,
+                false,
+                1,
+                Some(&slow_slot),
+                300,
+            )
+            .expect("valid demotion");
+        for sql in [
+            "UPDATE task SET slow_original_position = 100000 WHERE gid = ?1",
+            "UPDATE task SET slow_demotion_count = 0 WHERE gid = ?1",
+            "UPDATE task SET desired_paused = 1 WHERE gid = ?1",
+            "UPDATE task SET slow_retry_scheduled_at_ms = 301, slow_retry_delay_ms = X'0000000000000000' WHERE gid = ?1",
+        ] {
+            assert!(
+                store.connection.execute(sql, [gid(1).to_string()]).is_err(),
+                "{sql}"
+            );
+        }
+        let task = store
+            .tasks()
+            .expect("valid task after rejected SQL")
+            .remove(0);
+        assert_eq!(task.slow_slot, Some(slow_slot));
+        assert_eq!(task.slow_demotion_count, 1);
+        assert!(!task.desired_paused);
+    }
+
+    #[test]
+    fn demotion_transition_atomically_updates_queue_pause_and_slow_metadata() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        for (position, value) in [1_u64, 2, 3].into_iter().enumerate() {
+            store
+                .put_task(&task_record(gid(value), position as u32))
+                .expect("insert waiting task");
+        }
+        let slow_slot = SessionSlowSlotState {
+            original_position: 1,
+            retry: Some(SessionSlowRetryDecision {
+                scheduled_at_ms: 300,
+                delay_ms: 60_000,
+            }),
+        };
+
+        store
+            .transition_task_queue(
+                gid(2),
+                SessionQueueState::Waiting,
+                SessionQueueState::Demoted,
+                0,
+                false,
+                2,
+                Some(&slow_slot),
+                300,
+            )
+            .expect("demote task");
+        let demoted = store
+            .tasks()
+            .expect("demoted queues")
+            .into_iter()
+            .find(|task| task.gid == gid(2))
+            .expect("demoted task");
+        assert_eq!(demoted.queue_state, SessionQueueState::Demoted);
+        assert_eq!(demoted.queue_position, 0);
+        assert!(!demoted.desired_paused);
+        assert_eq!(demoted.slow_demotion_count, 2);
+        assert_eq!(demoted.slow_slot, Some(slow_slot));
+
+        let mut bypass = demoted.clone();
+        bypass.slow_demotion_count = 3;
+        assert!(matches!(
+            store.put_task(&bypass),
+            Err(SessionStoreError::QueueTransitionRequired)
+        ));
+
+        let before_invalid = store.tasks().expect("before invalid transition");
+        assert!(matches!(
+            store.transition_task_queue(
+                gid(2),
+                SessionQueueState::Demoted,
+                SessionQueueState::Waiting,
+                3,
+                true,
+                2,
+                None,
+                400,
+            ),
+            Err(SessionStoreError::QueueInvariant)
+        ));
+        assert_eq!(
+            store.tasks().expect("invalid transition rollback"),
+            before_invalid
+        );
+
+        store
+            .transition_task_queue(
+                gid(2),
+                SessionQueueState::Demoted,
+                SessionQueueState::Waiting,
+                1,
+                false,
+                2,
+                None,
+                500,
+            )
+            .expect("readmit demoted task");
+        let readmitted = store
+            .tasks()
+            .expect("readmitted queues")
+            .into_iter()
+            .find(|task| task.gid == gid(2))
+            .expect("readmitted task");
+        assert_eq!(readmitted.queue_state, SessionQueueState::Waiting);
+        assert!(!readmitted.desired_paused);
+        assert_eq!(readmitted.slow_demotion_count, 2);
+        assert_eq!(readmitted.slow_slot, None);
+
+        store
+            .transition_task_queue(
+                gid(2),
+                SessionQueueState::Waiting,
+                SessionQueueState::Demoted,
+                0,
+                false,
+                3,
+                Some(&slow_slot),
+                600,
+            )
+            .expect("demote task again");
+        store
+            .transition_task_queue(
+                gid(2),
+                SessionQueueState::Demoted,
+                SessionQueueState::Paused,
+                0,
+                true,
+                3,
+                None,
+                700,
+            )
+            .expect("pause demoted task");
+        let paused = store
+            .tasks()
+            .expect("paused queues")
+            .into_iter()
+            .find(|task| task.gid == gid(2))
+            .expect("paused task");
+        assert_eq!(paused.queue_state, SessionQueueState::Paused);
+        assert!(paused.desired_paused);
+        assert_eq!(paused.slow_demotion_count, 3);
+        assert_eq!(paused.slow_slot, None);
+    }
+
+    #[test]
+    fn stopped_results_retain_order_and_delete_metadata_atomically() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        for (position, value) in [1_u64, 2, 3].into_iter().enumerate() {
+            store
+                .put_task(&task_record(gid(value), position as u32))
+                .expect("insert waiting task");
+        }
+        let first = stopped_result_record(gid(1), SessionTerminalStatus::Complete);
+        store
+            .persist_stopped_result(&first, SessionQueueState::Waiting, 0, false, 0, 400)
+            .expect("retain first stopped result");
+        let second = stopped_result_record(gid(2), SessionTerminalStatus::Error);
+        store
+            .persist_stopped_result(&second, SessionQueueState::Waiting, 0, false, 2, 500)
+            .expect("retain second result at front");
+        assert_eq!(
+            store.stopped_results().expect("ordered results"),
+            vec![second, first]
+        );
+        let stopped = store
+            .tasks()
+            .expect("paired stopped tasks")
+            .into_iter()
+            .filter(|task| task.queue_state == SessionQueueState::Stopped)
+            .map(|task| (task.gid, task.queue_position, task.slow_demotion_count))
+            .collect::<Vec<_>>();
+        assert_eq!(stopped, vec![(gid(2), 0, 2), (gid(1), 1, 0)]);
+
+        store
+            .connection
+            .execute(
+                "INSERT INTO task_source(gid, uri_id, persistence_safe_uri, redacted_fingerprint, needs_credentials, priority) VALUES (?1, 0, NULL, ?2, 0, 0)",
+                rusqlite::params![gid(2).to_string(), [7_u8; 32].as_slice()],
+            )
+            .expect("insert retained task metadata");
+        let before_tasks = store.tasks().expect("before invalid deletion");
+        let before_results = store
+            .stopped_results()
+            .expect("before invalid deletion results");
+        assert!(matches!(
+            store.delete_stopped_task_metadata(gid(2), &[gid(1), gid(3)], 600),
+            Err(SessionStoreError::QueueInvariant)
+        ));
+        assert_eq!(store.tasks().expect("rolled back tasks"), before_tasks);
+        assert_eq!(
+            store.stopped_results().expect("rolled back results"),
+            before_results
+        );
+        assert_eq!(
+            store
+                .connection
+                .query_row(
+                    "SELECT COUNT(*) FROM task_source WHERE gid = ?1",
+                    [gid(2).to_string()],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("retained child count"),
+            1
+        );
+
+        store
+            .delete_stopped_task_metadata(gid(2), &[gid(1)], 700)
+            .expect("delete paired stopped metadata");
+        assert_eq!(
+            store
+                .stopped_results()
+                .expect("compacted stopped results")
+                .into_iter()
+                .map(|result| result.gid)
+                .collect::<Vec<_>>(),
+            vec![gid(1)]
+        );
+        assert_eq!(
+            store
+                .tasks()
+                .expect("tasks after deletion")
+                .into_iter()
+                .filter(|task| task.queue_state == SessionQueueState::Stopped)
+                .map(|task| (task.gid, task.queue_position))
+                .collect::<Vec<_>>(),
+            vec![(gid(1), 0)]
+        );
+        assert_eq!(
+            store
+                .connection
+                .query_row(
+                    "SELECT COUNT(*) FROM task_source WHERE gid = ?1",
+                    [gid(2).to_string()],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("deleted child count"),
+            0
+        );
+    }
+
+    #[test]
+    fn stopped_result_payloads_and_generic_stopped_transitions_are_rejected() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        store.put_task(&task_record(gid(1), 0)).expect("task");
+        let before = store.tasks().expect("initial tasks");
+
+        let mut complete_with_error =
+            stopped_result_record(gid(1), SessionTerminalStatus::Complete);
+        complete_with_error.error_kind = Some(ErrorKind::Disk);
+        assert!(matches!(
+            store.persist_stopped_result(
+                &complete_with_error,
+                SessionQueueState::Waiting,
+                0,
+                false,
+                0,
+                300,
+            ),
+            Err(SessionStoreError::InvalidRecord(
+                "stopped_result.non_error_payload"
+            ))
+        ));
+        let mut error_without_kind = stopped_result_record(gid(1), SessionTerminalStatus::Error);
+        error_without_kind.error_kind = None;
+        assert!(matches!(
+            store.persist_stopped_result(
+                &error_without_kind,
+                SessionQueueState::Waiting,
+                0,
+                false,
+                0,
+                300,
+            ),
+            Err(SessionStoreError::InvalidRecord(
+                "stopped_result.error_code"
+            ))
+        ));
+        assert!(matches!(
+            store.persist_stopped_result(
+                &stopped_result_record(gid(1), SessionTerminalStatus::Complete),
+                SessionQueueState::Paused,
+                0,
+                false,
+                0,
+                300,
+            ),
+            Err(SessionStoreError::QueueTransitionRequired)
+        ));
+        assert!(matches!(
+            store.persist_stopped_result(
+                &stopped_result_record(gid(1), SessionTerminalStatus::Complete),
+                SessionQueueState::Waiting,
+                1,
+                false,
+                0,
+                300,
+            ),
+            Err(SessionStoreError::QueueInvariant)
+        ));
+        let mut stopped_task = task_record(gid(2), 0);
+        stopped_task.queue_state = SessionQueueState::Stopped;
+        assert!(matches!(
+            store.put_task(&stopped_task),
+            Err(SessionStoreError::QueueTransitionRequired)
+        ));
+        assert!(matches!(
+            store.transition_task_queue(
+                gid(1),
+                SessionQueueState::Waiting,
+                SessionQueueState::Stopped,
+                0,
+                false,
+                0,
+                None,
+                300,
+            ),
+            Err(SessionStoreError::QueueTransitionRequired)
+        ));
+        assert_eq!(store.tasks().expect("all rejections roll back"), before);
+
+        store
+            .persist_stopped_result(
+                &stopped_result_record(gid(1), SessionTerminalStatus::Removed),
+                SessionQueueState::Waiting,
+                0,
+                false,
+                0,
+                400,
+            )
+            .expect("retain result through dedicated API");
+        assert!(matches!(
+            store.transition_task_queue(
+                gid(1),
+                SessionQueueState::Stopped,
+                SessionQueueState::Waiting,
+                0,
+                false,
+                0,
+                None,
+                500,
+            ),
+            Err(SessionStoreError::QueueTransitionRequired)
+        ));
+    }
+
+    #[test]
     fn queue_density_failure_rolls_back_the_task_write() {
         let directory = TestDirectory::new();
         let mut store = open_store(&directory);
@@ -4450,6 +6815,8 @@ mod tests {
                 SessionQueueState::Paused,
                 0,
                 true,
+                0,
+                None,
                 300,
             )
             .expect("move task to paused queue");
@@ -4475,6 +6842,8 @@ mod tests {
                 SessionQueueState::Active,
                 1,
                 false,
+                0,
+                None,
                 400,
             ),
             Err(SessionStoreError::QueueInvariant)
@@ -4506,6 +6875,8 @@ mod tests {
                 SessionQueueState::Waiting,
                 0,
                 true,
+                0,
+                None,
                 300,
             )
             .expect("move upward");
@@ -4526,6 +6897,8 @@ mod tests {
                 SessionQueueState::Waiting,
                 2,
                 false,
+                0,
+                None,
                 400,
             )
             .expect("move downward");
@@ -4546,6 +6919,8 @@ mod tests {
                 SessionQueueState::Waiting,
                 1,
                 true,
+                0,
+                None,
                 500,
             )
             .expect("same-position update");
@@ -4583,6 +6958,8 @@ mod tests {
                 SessionQueueState::Paused,
                 1,
                 true,
+                0,
+                None,
                 300,
             )
             .expect("insert in middle");
@@ -4594,6 +6971,8 @@ mod tests {
                 SessionQueueState::Active,
                 0,
                 false,
+                0,
+                None,
                 400,
             ),
             Err(SessionStoreError::QueueTransitionRequired)
@@ -4607,6 +6986,8 @@ mod tests {
                 SessionQueueState::Paused,
                 0,
                 true,
+                0,
+                None,
                 500,
             )
             .expect("insert at beginning");
@@ -4617,6 +6998,8 @@ mod tests {
                 SessionQueueState::Paused,
                 4,
                 true,
+                0,
+                None,
                 600,
             )
             .expect("insert at end");
@@ -5030,24 +7413,68 @@ mod tests {
 
     #[test]
     fn hot_backup_is_complete_refuses_overwrite_and_passes_integrity() {
+        for prefer_wal in [true, false] {
+            let directory = TestDirectory::new();
+            let mut store = SessionStore::open(
+                directory.database(),
+                SessionStoreConfig {
+                    prefer_wal,
+                    ..SessionStoreConfig::default()
+                },
+            )
+            .expect("open source store");
+            store.put_session(&session_record()).expect("put session");
+            store.put_task(&task_record(gid(1), 0)).expect("task");
+            assert_eq!(
+                store.journal_mode(),
+                if prefer_wal {
+                    SessionJournalMode::Wal
+                } else {
+                    SessionJournalMode::Delete
+                }
+            );
+            let backup = directory.path().join("session.backup.db");
+            store.backup_to(&backup).expect("backup");
+            assert!(matches!(
+                store.backup_to(&backup),
+                Err(SessionStoreError::BackupPathExists)
+            ));
+            assert!(
+                directory_entry_names(directory.path())
+                    .iter()
+                    .all(|name| !name.to_string_lossy().contains(".ariax-backup-"))
+            );
+            for suffix in ["-wal", "-shm", "-journal"] {
+                assert!(!super::sqlite_sidecar_path(&backup, suffix).exists());
+            }
+            let backup_store = SessionStore::open(
+                &backup,
+                SessionStoreConfig {
+                    prefer_wal: false,
+                    ..SessionStoreConfig::default()
+                },
+            )
+            .expect("open backup");
+            assert_eq!(backup_store.tasks().expect("backup tasks").len(), 1);
+        }
+    }
+
+    #[test]
+    fn backup_validation_failure_removes_temporary_database_and_sidecars() {
         let directory = TestDirectory::new();
-        let mut store = open_store(&directory);
-        store.put_task(&task_record(gid(1), 0)).expect("task");
-        let backup = directory.path().join("session.backup.db");
-        store.backup_to(&backup).expect("backup");
+        let store = open_store(&directory);
+        let destination = directory.path().join("invalid-schema.backup.db");
+        let before = directory_entry_names(directory.path());
         assert!(matches!(
-            store.backup_to(&backup),
-            Err(SessionStoreError::BackupPathExists)
+            super::backup_connection_to(
+                &store.connection,
+                &destination,
+                super::SessionBackupSchema::V1,
+            ),
+            Err(SessionStoreError::SchemaMismatch(_))
         ));
-        let backup_store = SessionStore::open(
-            &backup,
-            SessionStoreConfig {
-                prefer_wal: false,
-                ..SessionStoreConfig::default()
-            },
-        )
-        .expect("open backup");
-        assert_eq!(backup_store.tasks().expect("backup tasks").len(), 1);
+        assert!(!destination.exists());
+        assert_eq!(directory_entry_names(directory.path()), before);
     }
 
     #[test]
@@ -5329,7 +7756,7 @@ mod tests {
         assert_eq!(
             super::inspect_persisted_user_version(&directory.database())
                 .expect("false trailer preflight"),
-            SESSION_SCHEMA_VERSION
+            1
         );
     }
 
@@ -5507,6 +7934,35 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "spawned by crashed_v1_to_v2_task_and_host_key_rebuilds_roll_back_then_recover"]
+    fn v1_to_v2_migration_crash_child() {
+        let Some(database) = std::env::var_os("ARIAX_V1_TO_V2_CRASH_CHILD") else {
+            return;
+        };
+        let mut connection = Connection::open(PathBuf::from(database)).expect("open v1 database");
+        connection
+            .execute_batch(
+                "PRAGMA foreign_keys=OFF; PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA cache_size=1; PRAGMA cache_spill=ON;",
+            )
+            .expect("configure migration crash child");
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .expect("begin migration transaction");
+        super::rebuild_v1_task_table(&transaction).expect("rebuild v1 task table");
+        super::rebuild_v1_host_key_challenge_table(&transaction)
+            .expect("rebuild v1 host-key challenge table");
+        transaction
+            .pragma_update(None, "user_version", SESSION_SCHEMA_VERSION)
+            .expect("stage v2 version");
+        transaction
+            .execute_batch(
+                "CREATE TABLE crash_fill(value BLOB); INSERT INTO crash_fill VALUES(zeroblob(8388608));",
+            )
+            .expect("force migration rollback journal spill");
+        std::process::exit(93);
+    }
+
+    #[test]
     fn bounded_count_rejects_negative_and_excessive_rows() {
         assert!(matches!(
             super::bounded_count(-1, 10, "test.count"),
@@ -5554,6 +8010,10 @@ mod tests {
                 .collect::<HashSet<_>>()
                 .len(),
             SESSION_SCHEMA_OBJECTS.len()
+        );
+        assert_eq!(
+            SessionQueueState::ALL.map(|state| state as i64),
+            [1, 2, 3, 4, 5]
         );
         assert_eq!(
             ariax_core::ALL_ERROR_KINDS

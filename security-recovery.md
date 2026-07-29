@@ -8,11 +8,13 @@ executable, including digest-bound different-identity rebind records. Native
 capability acquisition, safe descendant open/revalidation, and complete startup
 filesystem/journal reconciliation remain pending. Durable journal append/flush,
 latched appender failure, tail-validated descriptor reopen, and linked rotation
-are executable. SQLite v1 rejects newer/unversioned schemas fail-closed,
-verifies its hard limits and bounded persisted records, rechecks task-option
-policy on read, enforces private database artifacts, and transactionally
-rechecks tokenized journal-install pointers. The bounded session-store owner
-thread remains pending.
+are executable. SQLite session schema v2 rejects newer/unversioned schemas
+fail-closed, preflights and privately backs up exact v1 databases before their
+transactional migration, verifies hard limits and bounded persisted records,
+rechecks task-option and host-key semantics on read, retains stopped results
+atomically with queue ownership, enforces private database artifacts, and
+transactionally rechecks tokenized journal-install pointers. The bounded
+session-store owner thread remains pending.
 
 This document turns the safety requirements into enforceable design rules.
 
@@ -342,16 +344,20 @@ Ariax then exclusively holds `${db}.ariax-owner-lock` for the `SessionStore`
 lifetime and repeats preflight under the lock. This is cooperative single-writer
 exclusion among Ariax processes, not a SQLite-enforced boundary: external raw
 SQLite writers bypass it and are unsupported. Supported v1 databases are then
-opened read/write for rollback recovery before exact schema, integrity,
-foreign-key, dense-queue, decoded task/install record, and install-pointer
-validation.
+opened read/write for rollback recovery, semantically preflighted, privately
+backed up, and transactionally migrated to v2. Current v2 stores then undergo
+exact schema, integrity, foreign-key, dense-queue, decoded task/stopped/host-key/
+install record, and install-pointer validation.
 
-Persisted task and install reads have explicit count/byte budgets, and option
-reads reapply the current persistence policy. Queue moves, including cross-queue
-moves, shift source and target positions and validate dense final queues inside
-one immediate transaction. Journal installation is the only primary-pointer
-mutation path: completion is bound to gid/checkpoint/new-journal identity and
-rechecks the old pointer in the same transaction.
+Persisted task, stopped-result, host-key-challenge, and install reads have
+explicit count/byte budgets, and option reads reapply the current persistence
+policy. Queue moves, including cross-queue moves and slow-slot metadata changes,
+shift source and target positions and validate dense final queues inside one
+immediate transaction. Terminal retention and stopped-result deletion pair or
+remove stopped task/result metadata atomically. Journal installation is the only
+primary-pointer mutation path: completion is bound to
+gid/checkpoint/new-journal identity and rechecks the old pointer in the same
+transaction.
 
 WAL and DELETE each receive a real `BEGIN IMMEDIATE` page-one write/rollback
 probe; WAL falls back to DELETE only when DELETE passes the same check. Truncate

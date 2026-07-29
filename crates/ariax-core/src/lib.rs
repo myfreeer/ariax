@@ -5,6 +5,7 @@
 mod command;
 mod error;
 mod ids;
+mod scheduler;
 mod snapshot;
 mod state;
 mod transition;
@@ -12,32 +13,42 @@ mod transition;
 pub use command::{
     ALL_DRAIN_TARGETS, ALL_NO_SPACE_PROBE_ORIGINS, ALL_QUEUE_CLASSES,
     ALL_SCHEDULER_COMMAND_HANDLINGS, ALL_SCHEDULER_COMMAND_KINDS, ALL_SLOT_OWNERSHIP,
-    ALL_TASK_EVENT_KINDS, DrainTarget, MAX_SCHEDULER_EFFECTS, NoSpaceProbeOrigin, PendingBarrier,
-    QueueClass, SchedulerCommand, SchedulerCommandHandling, SchedulerCommandKind, SchedulerConfig,
-    SchedulerConfigError, SchedulerError, SchedulerOutcome, SlotOwnership, TaskEvent,
-    TaskEventKind, TaskEventToken, TransitionEffect,
+    ALL_TASK_EVENT_KINDS, DrainTarget, MAX_PERSISTED_MILLISECONDS, MAX_SCHEDULER_EFFECTS,
+    MAX_SCHEDULER_TASKS, NoSpaceProbeOrigin, PendingBarrier, QueueClass, QueueOrder,
+    SchedulerCommand, SchedulerCommandHandling, SchedulerCommandKind, SchedulerConfig,
+    SchedulerConfigError, SchedulerError, SchedulerOutcome, SlotOwnership, SlowReadmissionDecision,
+    SlowSlotPersistence, TaskEvent, TaskEventEnvelope, TaskEventKind, TaskEventToken,
+    TransitionEffect, ValidatedOptionPatchKind,
 };
 
 pub use error::{
-    ALL_ERROR_KINDS, ALL_OPTION_PATCH_REJECT_REASONS, ErrorKind, OptionPatchRejectReason,
-    PublicError, RetryClass,
+    ALL_ERROR_KINDS, ALL_OPTION_PATCH_REJECT_REASONS, ErrorKind, MAX_PUBLIC_ERROR_MESSAGE_BYTES,
+    OptionPatchRejectReason, PublicError, RetryClass,
 };
 pub use ids::{
     BufferId, FileId, Generation, Gid, GidLookupError, GidPrefix, HostKeyChallengeId,
-    HostKeyFingerprint, LeaseId, NoSpaceProbeId, OptionPatchId, OverlapGroupId, ParseGidError,
-    ParseGidPrefixError, PieceId, RetryTimerId, SlowReadmissionId, TaskId, TransferAttemptId,
-    UriId, resolve_gid_prefix,
+    HostKeyFingerprint, HostKeyResolutionId, LeaseId, NoSpaceProbeId, OptionPatchId,
+    OverlapGroupId, ParseGidError, ParseGidPrefixError, PieceId, RetryTimerId, SlowReadmissionId,
+    StoppedResultDeletionId, TaskId, TransferAttemptId, UriId, resolve_gid_prefix,
 };
-pub use snapshot::{HostKeyChallenge, TaskSnapshot};
+pub use scheduler::{
+    PendingOptionPatchMode, PendingUserControl, RequestScheduler, SchedulerTaskView,
+};
+pub use snapshot::{
+    HostKeyChallenge, MAX_HOST_KEY_ALGORITHM_BYTES, MAX_HOST_KEY_CANONICAL_HOST_BYTES,
+    MAX_PRESENTED_HOST_KEY_BYTES, PresentedHostKeyChallenge, PresentedHostKeyChallengeError,
+    TaskSnapshot,
+};
 pub use state::{
     ALL_ARIA2_STATUSES, ALL_TASK_STATES, Aria2Status, CredentialKind, CredentialRequirement,
-    MonotonicInstant, NoSpaceCondition, PlannedSpanState, TaskConditions, TaskConditionsSnapshot,
-    TaskState, WireProjection, WireProjectionError,
+    CredentialRequirementKey, MAX_CONDITION_DESCRIPTION_BYTES, MAX_REDACTED_PATH_BYTES,
+    MonotonicInstant, NoSpaceCondition, PlannedSpanState, TaskConditions, TaskConditionsError,
+    TaskConditionsSnapshot, TaskState, WireProjection, WireProjectionError,
 };
 pub use transition::{
     ALL_EVENT_DISPOSITIONS, ALL_SCHEDULER_ACTIONS, ALL_STATE_REASONS,
     ALL_TRANSITION_CONTRACT_KINDS, ALL_TRANSITION_REJECTIONS, EventDisposition, SchedulerAction,
-    SchedulerActionSource, SchedulerActionSourceError, StateReason, StateTransition,
+    SchedulerActionSource, SchedulerActionSourceError, StateReason, StateTransition, TaskDeletion,
     TransitionContract, TransitionContractKind, TransitionRejection, transition_contract,
 };
 

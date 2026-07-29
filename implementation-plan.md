@@ -1,21 +1,15 @@
 # Implementation Plan
 
-Status: reviewed implementation contract. Phase 0 is in progress; the gated
-Phase 1 core identifier/error/state vocabulary, first config slice, and portable
-storage layout/path, bounded runtime ownership, and journal v1 framing/replay
-plus all 24 typed journal payload contracts, semantic recovery, and the
-file-backed serialized append/flush/rotation primitive are implemented. The
-exact SQLite v1 strict schema, connection policy, core records, reconciliation,
-journal-install pointer, and hot-backup primitives are also executable. The
-store now includes private-artifact enforcement, raw committed-version
-preflight across hot rollback page-one state and committed WAL, cooperative
-Ariax-only owner locking, bounded semantic reads, tokenized pointer installation,
-atomic dense cross-queue transitions, verified WAL/DELETE write probes, a
-truncate-checkpoint primitive, and validated file-synced no-clobber backup on
-successful return. Recovery of a temporary hard-link alias that survives a
-crash or cleanup failure from destination-link publication until cleanup is
-durably synced remains a production/tag gate, together with the dedicated
-bounded owner thread and cross-store startup orchestration.
+Status: implementation is underway. Phase 0 contract generation and the gated
+Phase 1 core/config/storage work have executable checkpoints. This includes the
+deterministic bounded scheduler kernel, journal v1 framing/replay and typed
+payloads, SQLite session schema v2, exact v1 preflight and transactional
+migration, dense queue/slow metadata transitions, owner locking, WAL/DELETE
+probes, journal-install tokens, retained stopped-result transactions, and
+validated no-clobber backup. The production effect dispatcher, concrete
+host-key write/approval adapter, complete startup/session-owner orchestration,
+remaining backend work, and native release CI matrix remain phase and tag
+gates.
 
 This is a staged plan for building the design without repeating the incomplete
 rewrite pattern.
@@ -39,8 +33,8 @@ rewrite pattern.
 - Create RPC method matrix with source of truth for each response field.
 - Create the complete task-state transition and aria2 wire-projection matrices.
 - Freeze the v1 journal record layouts, checkpoint `PieceStateChunk` encoding,
-  persisted output-root binding/rebind protocol, and exact SQLite v1 schema,
-  pragmas, migration, backup, and recovery-precedence matrices.
+  persisted output-root binding/rebind protocol, and exact SQLite v2 schema,
+  v1 migration, pragmas, backup, and recovery-precedence matrices.
 - Freeze the exact 16-hex GID codec, RPC token convention, error-code vocabulary,
   reserved-header policy, and secrets-at-rest policy.
 - Create a new-option inventory from the design docs and fail CI if a
@@ -108,7 +102,7 @@ Exit criteria:
 - `FileLayout`
 - `GlobalOffsetMapper`
 - `ControlJournal`, including checkpoint-only `PieceStateChunk`
-- Exact SQLite v1 `SessionStore` schema, pragmas, migration, backup, and
+- Exact SQLite v2 `SessionStore` schema, v1 migration, pragmas, backup, and
   identity-preserving relocation/digest-verified rebind entry points
 - `OptionRegistry`
 - Flat config parser, config check, and redacted effective-config dump
@@ -140,13 +134,15 @@ Exit criteria:
 - Root relocation/rebind tests prove that adjacency, names, mtimes, and copied
   control files cannot authorize progress; retained pieces require matching
   identities or per-piece digest evidence.
-- SQLite schema creation, every supported migration, raw hot-rollback page-one
+- SQLite schema creation, exact v1-to-v2 migration, raw hot-rollback page-one
   and committed-WAL unsupported-newer-version rejection without artifact
   mutation, supported hot rollback recovery, legacy page-size-zero fail-closed
   behavior, owner-lock contention, private-path/artifact rejection, sidecar
   rejection beside a missing or empty main database, case-insensitive reserved
   backup-suffix rejection, bounded semantic reads, dense cross-queue
-  transitions, WAL/DELETE write probes and
+  transitions, one-to-one stopped task/result retention and atomic deletion,
+  host-key UTF-8/fingerprint/paused-task validation, preflight-before-backup
+  rejection of invalid v1 semantics, WAL/DELETE write probes and
   checkpointing, file-synced no-clobber validated backup, and tokenized
   journal-install pointer transaction/reopen, stale-command, and crash-point
   tests pass. Backup crash-point coverage must prove that every crash from
@@ -155,8 +151,10 @@ Exit criteria:
   without deleting a raced destination replacement. The same matrix must inject
   temporary unlink failures after publication.
 - Finalize intent/redo recovery passes every crash-point and collision test.
-- Scheduler model tests cover every state × command/error transition and aria2
-  wire projection.
+- Scheduler matrix tests cover every state × semantic action and aria2 wire
+  projection. Executor tests cover the implemented command/event subset,
+  barriers, stale correlation tokens, atomic rejection, bounded effects, and
+  queue serialization; remaining matrix-only internal actions stay explicit.
 
 ## Phase 2: Runtime And Backends
 

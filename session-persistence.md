@@ -8,17 +8,15 @@ reconstruction, exact generation/layout/lease/finalization validation, and
 whole-checkpoint hash validation are also executable. File-backed typed append,
 flush acknowledgement, descriptor reopen validation, and durable linked
 rotation are executable. Native root identity revalidation and checkpoint
-compaction writing remain pending. The SQLite v1 synchronous primitive is now
-executable: it creates and validates
-the exact strict schema, rejects newer versions before SQLite can mutate
-an existing database, applies and verifies all connection limits/pragmas,
-stores bounded core records, preserves dense queues across atomic cross-queue
-moves, rechecks persisted option policy on read, enforces tokenized
-journal-install pointer changes, and produces validated, file-synced,
-no-clobber hot backups.
-The dedicated bounded session thread, full startup filesystem/journal
-orchestration, checkpoint state writer, stopped-result publication, and later
-migrations remain pending.
+compaction writing remain pending. The SQLite v2 synchronous primitive creates
+and validates the exact strict schema, preserves dense queues across atomic
+queue/pause/slow-metadata transitions, and enforces bounded semantic reads and
+tokenized journal installs. Exact v1 stores migrate through a private
+timestamped no-clobber backup and transactional rebuild with crash rollback
+coverage. Atomic stopped-result retention/deletion and bounded stopped-result
+reads are executable. The dedicated bounded session thread, full startup
+filesystem/journal orchestration, checkpoint state writer, and concrete
+host-key write/approval operations remain pending.
 
 Decision: use a hybrid persistence model:
 
@@ -194,7 +192,7 @@ SQLite stores:
 - session id,
 - task gid,
 - queue position,
-- task state: waiting, active, paused, stopped,
+- task state: waiting, demoted, active, paused, stopped,
 - scheduler admission conditions that must survive restart (`no_space` plus its
   redacted target/retry parameters; `needs_credentials` is recomputed from the
   restored redacted option/source set),
@@ -212,12 +210,13 @@ SQLite stores:
 SQLite does not store high-frequency per-piece durability transitions in the
 normal path.
 
-### SQLite Schema Version 1
+### SQLite Schema Version 2
 
-Implementation status: executable and generated as `generated/session_v1.json`.
-An empty version-0 file is initialized in `BEGIN IMMEDIATE`; a nonempty
+Implementation status: executable and generated as `generated/session_v2.json`.
+`generated/session_v1.json` remains the exact historical migration source. An
+empty version-0 file is initialized in `BEGIN IMMEDIATE`; a nonempty
 unversioned database and every newer `user_version` are rejected without schema
-rewrites. Version 1 currently has no older nonempty migration input.
+rewrites. Exact v1 databases are backed up and migrated before normal use.
 
 For an existing database, startup performs a streaming, fixed-buffer raw
 preflight before opening SQLite. A hot rollback journal contributes its last
@@ -235,20 +234,21 @@ lock is held for the `SessionStore` lifetime and provides cooperative
 single-writer ownership among Ariax processes only. A program that opens the
 SQLite database directly does not honor this lock; concurrent raw SQLite
 writers are unsupported. A supported database is opened read/write so SQLite
-can complete rollback recovery, then the exact v1 schema, integrity, foreign
-keys, queue density, decoded task/install records, and install-pointer relation
-are validated before connection journal policy is changed.
+can complete rollback recovery, then the exact versioned schema, integrity,
+foreign keys, queue density, decoded task/stopped/host-key/install records, and
+install-pointer relation are validated before connection journal policy is
+changed.
 
-`PRAGMA user_version=1` is the authoritative schema version. Version-1 tables
+`PRAGMA user_version=2` is the authoritative current schema version. Version-2 tables
 are `STRICT`, enable foreign keys, and use closed integer enums generated from
 the same state/error matrices as the API. A `u64` that may exceed SQLite's
 signed integer range is stored as an exactly 8-byte little-endian BLOB; hashes,
 ids, and platform paths have exact length/codec checks before binding.
 
-| Table | Version-1 columns and key |
+| Table | Version-2 columns and key |
 | --- | --- |
 | `session` | `session_id BLOB(16) PRIMARY KEY`, `created_ms INTEGER`, `updated_ms INTEGER`, `clean_shutdown INTEGER` |
-| `task` | `gid TEXT PRIMARY KEY`, `session_id BLOB(16)`, `queue_state INTEGER`, `queue_position INTEGER`, `desired_paused INTEGER`, `primary_journal_id BLOB(16)`, `primary_journal_path BLOB`, nullable `replica_journal_path BLOB`, nullable `replica_sequence BLOB(8)`, `root_display BLOB`, nullable `cached_layout_hash BLOB(32)`, nullable `cached_root_binding_hash BLOB(32)`, `cached_snapshot_hash BLOB(32)`, nullable `no_space_target BLOB`, nullable `no_space_scheduled_at_ms INTEGER`, nullable `no_space_delay_ms BLOB(8)`, `created_ms INTEGER`, `updated_ms INTEGER`; foreign key to `session` |
+| `task` | `gid TEXT PRIMARY KEY`, `session_id BLOB(16)`, `queue_state INTEGER`, `queue_position INTEGER`, `desired_paused INTEGER`, nullable `slow_original_position INTEGER`, `slow_demotion_count INTEGER`, nullable `slow_retry_scheduled_at_ms INTEGER`, nullable `slow_retry_delay_ms BLOB(8)`, journal/path/hash/no-space fields, `created_ms INTEGER`, `updated_ms INTEGER`; foreign key to `session` |
 | `task_option` | `gid TEXT`, `scope INTEGER`, `key TEXT`, `canonical_value BLOB`, primary key `(gid, scope, key)`; secret-class registry keys are rejected before SQL |
 | `task_source` | `gid TEXT`, `uri_id INTEGER`, nullable `persistence_safe_uri TEXT`, `redacted_fingerprint BLOB(32)`, `needs_credentials INTEGER`, `priority INTEGER`, primary key `(gid, uri_id)` |
 | `host_key_challenge` | `gid TEXT PRIMARY KEY`, `challenge_id BLOB(16)`, `canonical_host TEXT`, `port INTEGER`, `algorithm TEXT`, `presented_public_key BLOB`, `fingerprint_sha256 BLOB(32)`, `created_ms INTEGER`; public key/challenge caps come from `detailed-ftp-sftp.md` |
@@ -260,22 +260,28 @@ ids, and platform paths have exact length/codec checks before binding.
 application codec before SQL. `queue_position` is indexed with `queue_state`;
 temporary duplicate positions are allowed only inside the one reorder
 transaction, whose final state is dense and deterministic. All child tables
-except `stopped_result` cascade on live-task deletion. A stopped-result
-retention transaction inserts the independent canonical result and removes the
-live `task` row only after the journal terminal record is valid.
+except `stopped_result` cascade on task deletion. A stopped-result retention
+transaction keeps the `task` row as the authoritative `Stopped` queue owner and
+inserts the paired canonical result only after the journal terminal record is
+valid. Result deletion removes both rows and densifies the remaining stopped
+order atomically; downloaded output is not deleted.
 
 The synchronous primitive caps a store at 100,000 tasks, task materialization
 at 64 MiB, pending-install materialization at 16 MiB, and each option map at
-4,096 entries/4 MiB. Reads stream rows against those budgets and decode every
-persisted value. Task-option reads also reapply the current
+4,096 entries/4 MiB. Task, stopped-result, host-key-challenge, and install reads
+stream rows against count and byte budgets and decode every persisted value.
+Task-option reads also reapply the current
 `PersistedOptionPolicy`; direct database tampering cannot turn a formerly or
 newly forbidden key into an accepted option.
 
 Ordinary task upserts cannot change queue membership/position or the primary
 journal id/path. Queue changes use one `BEGIN IMMEDIATE` transaction that
-closes the source gap, opens the target slot, changes desired pause state, and
-validates every affected queue as dense before commit. Primary journal changes
-are allowed only through the install protocol below.
+closes the source gap, opens the target slot, changes desired pause state and
+slow metadata, and validates every affected queue as dense before commit.
+Demoted rows require bounded original-position metadata and a nonzero global
+demotion count; readmission clears the cooldown decision without resetting that
+count. Primary journal changes are allowed only through the install protocol
+below.
 
 `NoSpaceCondition.retry_at` is live monotonic state and is never serialized as
 an instant. SQLite stores the wall scheduling decision
@@ -287,18 +293,27 @@ The host-key challenge table allows a paused challenge to survive process
 restart without persisting a credential. Approval still requires the exact
 challenge id and fingerprint, persists the resulting task pin through the
 option snapshot, and reconnects/rechecks that pin before any authentication.
-Deleting/replacing the current challenge makes an old approval stale.
+Deleting/replacing the current challenge makes an old approval stale. Startup
+and v1 migration require valid UTF-8 canonical host and algorithm text, a
+nonzero valid port, exact size caps, a SHA-256 fingerprint matching the stored
+presented key, and a referenced task in the `Paused` queue.
 
 Schema migration rules are fail-closed:
 
+- exact v1 schema and persisted semantics are preflighted before creating a
+  migration backup, so repeated opens of deterministically invalid v1 data do
+  not accumulate timestamped backups,
 - migration runs on the dedicated session thread inside `BEGIN IMMEDIATE` and
   takes a private timestamped backup before any non-additive change,
+- v1 to v2 rebuilds the task and host-key tables transactionally, initializes
+  slow metadata, tightens host-key caps, validates the exact v2 schema, and
+  changes `user_version` only at commit,
 - a binary that sees a newer `user_version` leaves the database and journals
   untouched and exits persistent mode with a typed version error,
 - a future binary keeps version-1 journal readers; after successful replay it
   may write a newer checkpoint set and retires version-1 segments only through
   the normal install protocol,
-- before adding version 2, migration tests must retain raw hot-rollback
+- future migrations must retain raw hot-rollback
   page-one and committed-WAL preflight coverage; legacy rollback journals with
   an encoded page size of zero remain fail-closed until a reviewed compatibility
   rule exists,
@@ -632,8 +647,8 @@ exist. No baseline code silently aliases either value to `hybrid`.
 
 SQLite:
 
-- the exact version-1 tables and migration rules are defined under SQLite
-  Responsibilities above,
+- the exact version-2 tables and version-1 migration rules are defined under
+  SQLite Responsibilities above,
 - WAL mode by default when supported; WAL and DELETE are each verified with a
   `BEGIN IMMEDIATE` transaction that writes page-one `user_version` and rolls
   back. A failed WAL selection or probe falls back to DELETE and requires the
@@ -666,8 +681,11 @@ SQLite:
   destination, deletes a raced destination replacement, or accepts a
   destination filename ending in `-wal`, `-shm`, or `-journal` under
   ASCII-insensitive comparison;
-  pre-existing destination sidecars are rejected rather than adopted. Unix also
-  syncs the parent directory around temporary-link cleanup; Windows does not
+  pre-existing destination sidecars are rejected rather than adopted. The
+  temporary connection is normalized to DELETE journal mode, and owned
+  temporary `-wal`, `-shm`, and `-journal` sidecars plus the temporary main file
+  are removed on both success and validation failure. Unix also syncs the
+  parent directory around temporary-link cleanup; Windows does not
   currently claim crash-durable directory-entry publication. A crash or
   temporary-unlink failure at any point from destination-link publication until
   removal is durably synced can leave or resurrect two names for one inode;

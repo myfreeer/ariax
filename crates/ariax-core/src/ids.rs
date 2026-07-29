@@ -1,3 +1,4 @@
+use sha2::{Digest, Sha256};
 use std::error::Error;
 use std::fmt;
 use std::num::NonZeroU64;
@@ -40,6 +41,11 @@ nonzero_id!(OptionPatchId, "an atomic option-patch identifier");
 nonzero_id!(RetryTimerId, "a scheduler retry-timer identifier");
 nonzero_id!(SlowReadmissionId, "a slow-slot readmission identifier");
 nonzero_id!(NoSpaceProbeId, "a disk-space readiness-probe identifier");
+nonzero_id!(HostKeyResolutionId, "a host-key persistence identifier");
+nonzero_id!(
+    StoppedResultDeletionId,
+    "a stopped-result deletion identifier"
+);
 
 /// A stable aria2-compatible task identifier.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -306,6 +312,12 @@ impl HostKeyFingerprint {
     #[must_use]
     pub const fn new(bytes: [u8; 32]) -> Self {
         Self(bytes)
+    }
+
+    /// Derives the exact SHA-256 fingerprint of presented public-key bytes.
+    #[must_use]
+    pub fn for_presented_key(presented_public_key: &[u8]) -> Self {
+        Self(Sha256::digest(presented_public_key).into())
     }
 
     /// Returns the exact SHA-256 bytes.

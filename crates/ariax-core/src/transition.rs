@@ -15,6 +15,18 @@ pub struct StateTransition {
     pub at: MonotonicInstant,
 }
 
+/// Removal of a retained task after its persisted metadata deletion is
+/// acknowledged. A deletion has no destination `TaskState`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TaskDeletion {
+    pub task: TaskId,
+    pub gid: Gid,
+    pub generation: Generation,
+    pub from: TaskState,
+    pub reason: StateReason,
+    pub at: MonotonicInstant,
+}
+
 /// Why the scheduler accepted, rejected, or ignored one semantic action.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum StateReason {
@@ -27,7 +39,9 @@ pub enum StateReason {
     AdmissionBlocked,
     PlanningFailed,
     OptionPatch,
+    OptionPatchApplicationFailed,
     CredentialsSatisfied,
+    CredentialUpdateFailed,
     NoSpaceProbeRequested,
     NoSpaceProbeSucceeded,
     NoSpaceProbeFailed,
@@ -48,8 +62,12 @@ pub enum StateReason {
     RetryExhausted,
     SlowReadmission,
     HostKeyApproved,
+    HostKeyResolutionFailed,
+    OptionPatchPersistenceSucceeded,
+    OptionPatchPersistenceFailed,
     CancellationDrained,
     RestartQuiesced,
+    RestartApplicationSucceeded,
     RestartApplicationFailed,
     VerificationSucceeded,
     VerificationRecoverableFailure,
@@ -57,6 +75,8 @@ pub enum StateReason {
     SeedingStopped,
     BitTorrentFailure,
     TerminalPersistenceSucceeded,
+    StoppedResultRemovalRequested,
+    StoppedResultRemovalFailed,
     StoppedResultRemoved,
     OrderlyShutdown,
     DuplicateEventIgnored,
@@ -76,7 +96,9 @@ pub const ALL_STATE_REASONS: &[StateReason] = &[
     StateReason::AdmissionBlocked,
     StateReason::PlanningFailed,
     StateReason::OptionPatch,
+    StateReason::OptionPatchApplicationFailed,
     StateReason::CredentialsSatisfied,
+    StateReason::CredentialUpdateFailed,
     StateReason::NoSpaceProbeRequested,
     StateReason::NoSpaceProbeSucceeded,
     StateReason::NoSpaceProbeFailed,
@@ -97,8 +119,12 @@ pub const ALL_STATE_REASONS: &[StateReason] = &[
     StateReason::RetryExhausted,
     StateReason::SlowReadmission,
     StateReason::HostKeyApproved,
+    StateReason::HostKeyResolutionFailed,
+    StateReason::OptionPatchPersistenceSucceeded,
+    StateReason::OptionPatchPersistenceFailed,
     StateReason::CancellationDrained,
     StateReason::RestartQuiesced,
+    StateReason::RestartApplicationSucceeded,
     StateReason::RestartApplicationFailed,
     StateReason::VerificationSucceeded,
     StateReason::VerificationRecoverableFailure,
@@ -106,6 +132,8 @@ pub const ALL_STATE_REASONS: &[StateReason] = &[
     StateReason::SeedingStopped,
     StateReason::BitTorrentFailure,
     StateReason::TerminalPersistenceSucceeded,
+    StateReason::StoppedResultRemovalRequested,
+    StateReason::StoppedResultRemovalFailed,
     StateReason::StoppedResultRemoved,
     StateReason::OrderlyShutdown,
     StateReason::DuplicateEventIgnored,
@@ -128,7 +156,9 @@ impl StateReason {
             Self::AdmissionBlocked => "admission_blocked",
             Self::PlanningFailed => "planning_failed",
             Self::OptionPatch => "option_patch",
+            Self::OptionPatchApplicationFailed => "option_patch_application_failed",
             Self::CredentialsSatisfied => "credentials_satisfied",
+            Self::CredentialUpdateFailed => "credential_update_failed",
             Self::NoSpaceProbeRequested => "no_space_probe_requested",
             Self::NoSpaceProbeSucceeded => "no_space_probe_succeeded",
             Self::NoSpaceProbeFailed => "no_space_probe_failed",
@@ -149,8 +179,12 @@ impl StateReason {
             Self::RetryExhausted => "retry_exhausted",
             Self::SlowReadmission => "slow_readmission",
             Self::HostKeyApproved => "host_key_approved",
+            Self::HostKeyResolutionFailed => "host_key_resolution_failed",
+            Self::OptionPatchPersistenceSucceeded => "option_patch_persistence_succeeded",
+            Self::OptionPatchPersistenceFailed => "option_patch_persistence_failed",
             Self::CancellationDrained => "cancellation_drained",
             Self::RestartQuiesced => "restart_quiesced",
+            Self::RestartApplicationSucceeded => "restart_application_succeeded",
             Self::RestartApplicationFailed => "restart_application_failed",
             Self::VerificationSucceeded => "verification_succeeded",
             Self::VerificationRecoverableFailure => "verification_recoverable_failure",
@@ -158,6 +192,8 @@ impl StateReason {
             Self::SeedingStopped => "seeding_stopped",
             Self::BitTorrentFailure => "bit_torrent_failure",
             Self::TerminalPersistenceSucceeded => "terminal_persistence_succeeded",
+            Self::StoppedResultRemovalRequested => "stopped_result_removal_requested",
+            Self::StoppedResultRemovalFailed => "stopped_result_removal_failed",
             Self::StoppedResultRemoved => "stopped_result_removed",
             Self::OrderlyShutdown => "orderly_shutdown",
             Self::DuplicateEventIgnored => "duplicate_event_ignored",
@@ -178,13 +214,19 @@ pub enum SchedulerAction {
     ValidationSucceededPaused,
     ValidationFailed,
     Pause,
+    PauseDeferred,
     Resume,
+    ResumeDeferred,
     Remove,
+    RemoveDeferred,
     SchedulerAdmission,
     AdmissionBlocked,
     PlanningFailed,
-    NonLiveOptionPatchAccepted,
+    InPlaceOptionPatchAccepted,
+    InPlaceOptionPatchApplied,
+    InPlaceOptionPatchApplicationFailed,
     CredentialsSatisfied,
+    CredentialSatisfactionFailed,
     ExplicitNoSpaceProbeRequested,
     WaitingNoSpaceProbeSucceeded,
     WaitingNoSpaceProbeFailed,
@@ -198,6 +240,8 @@ pub enum SchedulerAction {
     HostKeyChallengeRequired,
     AllocationTerminalFailure,
     ActiveRestartOptionPatchAccepted,
+    ActiveRestartOptionPatchPersisted,
+    ActiveRestartOptionPatchPersistenceFailed,
     LeaseRetryableWithRunnableWork,
     LeaseRetryableWithoutRunnableWork,
     AllRequiredDataReceived,
@@ -213,9 +257,17 @@ pub enum SchedulerAction {
     SlowReadmissionBlocked,
     ApproveHostKey,
     ApplyMatchingHostKeyOption,
+    HostKeyResolutionSucceeded,
+    HostKeyResolutionSucceededPreservingPause,
+    HostKeyResolutionFailed,
     CancellationDrainSucceeded,
     RestartQuiesced,
+    RestartApplicationScheduled,
+    RestartApplicationSucceeded,
     RestartApplicationFailed,
+    DeferredPauseCompleted,
+    DeferredResumeCompleted,
+    DeferredRemoveCompleted,
     VerificationSucceeded,
     VerificationRecoverableFailure,
     VerificationTerminalFailure,
@@ -223,6 +275,8 @@ pub enum SchedulerAction {
     BitTorrentFailure,
     TerminalPersistenceSucceeded,
     RemoveStoppedResult,
+    StoppedResultDeletionSucceeded,
+    StoppedResultDeletionFailed,
     OrderlyShutdown,
     DuplicateEventIgnored,
     StaleEventIgnored,
@@ -234,13 +288,19 @@ pub const ALL_SCHEDULER_ACTIONS: &[SchedulerAction] = &[
     SchedulerAction::ValidationSucceededPaused,
     SchedulerAction::ValidationFailed,
     SchedulerAction::Pause,
+    SchedulerAction::PauseDeferred,
     SchedulerAction::Resume,
+    SchedulerAction::ResumeDeferred,
     SchedulerAction::Remove,
+    SchedulerAction::RemoveDeferred,
     SchedulerAction::SchedulerAdmission,
     SchedulerAction::AdmissionBlocked,
     SchedulerAction::PlanningFailed,
-    SchedulerAction::NonLiveOptionPatchAccepted,
+    SchedulerAction::InPlaceOptionPatchAccepted,
+    SchedulerAction::InPlaceOptionPatchApplied,
+    SchedulerAction::InPlaceOptionPatchApplicationFailed,
     SchedulerAction::CredentialsSatisfied,
+    SchedulerAction::CredentialSatisfactionFailed,
     SchedulerAction::ExplicitNoSpaceProbeRequested,
     SchedulerAction::WaitingNoSpaceProbeSucceeded,
     SchedulerAction::WaitingNoSpaceProbeFailed,
@@ -254,6 +314,8 @@ pub const ALL_SCHEDULER_ACTIONS: &[SchedulerAction] = &[
     SchedulerAction::HostKeyChallengeRequired,
     SchedulerAction::AllocationTerminalFailure,
     SchedulerAction::ActiveRestartOptionPatchAccepted,
+    SchedulerAction::ActiveRestartOptionPatchPersisted,
+    SchedulerAction::ActiveRestartOptionPatchPersistenceFailed,
     SchedulerAction::LeaseRetryableWithRunnableWork,
     SchedulerAction::LeaseRetryableWithoutRunnableWork,
     SchedulerAction::AllRequiredDataReceived,
@@ -269,9 +331,17 @@ pub const ALL_SCHEDULER_ACTIONS: &[SchedulerAction] = &[
     SchedulerAction::SlowReadmissionBlocked,
     SchedulerAction::ApproveHostKey,
     SchedulerAction::ApplyMatchingHostKeyOption,
+    SchedulerAction::HostKeyResolutionSucceeded,
+    SchedulerAction::HostKeyResolutionSucceededPreservingPause,
+    SchedulerAction::HostKeyResolutionFailed,
     SchedulerAction::CancellationDrainSucceeded,
     SchedulerAction::RestartQuiesced,
+    SchedulerAction::RestartApplicationScheduled,
+    SchedulerAction::RestartApplicationSucceeded,
     SchedulerAction::RestartApplicationFailed,
+    SchedulerAction::DeferredPauseCompleted,
+    SchedulerAction::DeferredResumeCompleted,
+    SchedulerAction::DeferredRemoveCompleted,
     SchedulerAction::VerificationSucceeded,
     SchedulerAction::VerificationRecoverableFailure,
     SchedulerAction::VerificationTerminalFailure,
@@ -279,6 +349,8 @@ pub const ALL_SCHEDULER_ACTIONS: &[SchedulerAction] = &[
     SchedulerAction::BitTorrentFailure,
     SchedulerAction::TerminalPersistenceSucceeded,
     SchedulerAction::RemoveStoppedResult,
+    SchedulerAction::StoppedResultDeletionSucceeded,
+    SchedulerAction::StoppedResultDeletionFailed,
     SchedulerAction::OrderlyShutdown,
     SchedulerAction::DuplicateEventIgnored,
     SchedulerAction::StaleEventIgnored,
@@ -293,13 +365,19 @@ impl SchedulerAction {
             Self::ValidationSucceededPaused => "validation_succeeded_paused",
             Self::ValidationFailed => "validation_failed",
             Self::Pause => "pause",
+            Self::PauseDeferred => "pause_deferred",
             Self::Resume => "resume",
+            Self::ResumeDeferred => "resume_deferred",
             Self::Remove => "remove",
+            Self::RemoveDeferred => "remove_deferred",
             Self::SchedulerAdmission => "scheduler_admission",
             Self::AdmissionBlocked => "admission_blocked",
             Self::PlanningFailed => "planning_failed",
-            Self::NonLiveOptionPatchAccepted => "non_live_option_patch_accepted",
+            Self::InPlaceOptionPatchAccepted => "in_place_option_patch_accepted",
+            Self::InPlaceOptionPatchApplied => "in_place_option_patch_applied",
+            Self::InPlaceOptionPatchApplicationFailed => "in_place_option_patch_application_failed",
             Self::CredentialsSatisfied => "credentials_satisfied",
+            Self::CredentialSatisfactionFailed => "credential_satisfaction_failed",
             Self::ExplicitNoSpaceProbeRequested => "explicit_no_space_probe_requested",
             Self::WaitingNoSpaceProbeSucceeded => "waiting_no_space_probe_succeeded",
             Self::WaitingNoSpaceProbeFailed => "waiting_no_space_probe_failed",
@@ -317,6 +395,10 @@ impl SchedulerAction {
             Self::HostKeyChallengeRequired => "host_key_challenge_required",
             Self::AllocationTerminalFailure => "allocation_terminal_failure",
             Self::ActiveRestartOptionPatchAccepted => "active_restart_option_patch_accepted",
+            Self::ActiveRestartOptionPatchPersisted => "active_restart_option_patch_persisted",
+            Self::ActiveRestartOptionPatchPersistenceFailed => {
+                "active_restart_option_patch_persistence_failed"
+            }
             Self::LeaseRetryableWithRunnableWork => "lease_retryable_with_runnable_work",
             Self::LeaseRetryableWithoutRunnableWork => "lease_retryable_without_runnable_work",
             Self::AllRequiredDataReceived => "all_required_data_received",
@@ -332,9 +414,19 @@ impl SchedulerAction {
             Self::SlowReadmissionBlocked => "slow_readmission_blocked",
             Self::ApproveHostKey => "approve_host_key",
             Self::ApplyMatchingHostKeyOption => "apply_matching_host_key_option",
+            Self::HostKeyResolutionSucceeded => "host_key_resolution_succeeded",
+            Self::HostKeyResolutionSucceededPreservingPause => {
+                "host_key_resolution_succeeded_preserving_pause"
+            }
+            Self::HostKeyResolutionFailed => "host_key_resolution_failed",
             Self::CancellationDrainSucceeded => "cancellation_drain_succeeded",
             Self::RestartQuiesced => "restart_quiesced",
+            Self::RestartApplicationScheduled => "restart_application_scheduled",
+            Self::RestartApplicationSucceeded => "restart_application_succeeded",
             Self::RestartApplicationFailed => "restart_application_failed",
+            Self::DeferredPauseCompleted => "deferred_pause_completed",
+            Self::DeferredResumeCompleted => "deferred_resume_completed",
+            Self::DeferredRemoveCompleted => "deferred_remove_completed",
             Self::VerificationSucceeded => "verification_succeeded",
             Self::VerificationRecoverableFailure => "verification_recoverable_failure",
             Self::VerificationTerminalFailure => "verification_terminal_failure",
@@ -342,6 +434,8 @@ impl SchedulerAction {
             Self::BitTorrentFailure => "bit_torrent_failure",
             Self::TerminalPersistenceSucceeded => "terminal_persistence_succeeded",
             Self::RemoveStoppedResult => "remove_stopped_result",
+            Self::StoppedResultDeletionSucceeded => "stopped_result_deletion_succeeded",
+            Self::StoppedResultDeletionFailed => "stopped_result_deletion_failed",
             Self::OrderlyShutdown => "orderly_shutdown",
             Self::DuplicateEventIgnored => "duplicate_event_ignored",
             Self::StaleEventIgnored => "stale_event_ignored",
@@ -397,18 +491,31 @@ impl SchedulerAction {
             Self::ValidationSucceeded | Self::ValidationSucceededPaused => {
                 SchedulerActionSource::Command(SchedulerCommandKind::AddValidatedTask)
             }
-            Self::Pause => SchedulerActionSource::Command(SchedulerCommandKind::Pause),
-            Self::Resume | Self::ExplicitNoSpaceProbeRequested => {
+            Self::Pause | Self::PauseDeferred => {
+                SchedulerActionSource::Command(SchedulerCommandKind::Pause)
+            }
+            Self::Resume | Self::ResumeDeferred | Self::ExplicitNoSpaceProbeRequested => {
                 SchedulerActionSource::Command(SchedulerCommandKind::Resume)
             }
-            Self::Remove => SchedulerActionSource::Command(SchedulerCommandKind::Remove),
-            Self::NonLiveOptionPatchAccepted
+            Self::Remove | Self::RemoveDeferred => {
+                SchedulerActionSource::Command(SchedulerCommandKind::Remove)
+            }
+            Self::InPlaceOptionPatchAccepted
             | Self::ActiveRestartOptionPatchAccepted
             | Self::ApplyMatchingHostKeyOption => {
                 SchedulerActionSource::Command(SchedulerCommandKind::ApplyOptionPatch)
             }
+            Self::InPlaceOptionPatchApplied => {
+                SchedulerActionSource::TaskEvent(TaskEventKind::OptionPatchApplied)
+            }
+            Self::InPlaceOptionPatchApplicationFailed => {
+                SchedulerActionSource::TaskEvent(TaskEventKind::OptionPatchApplicationFailed)
+            }
             Self::CredentialsSatisfied => {
-                SchedulerActionSource::Command(SchedulerCommandKind::SatisfyCredentials)
+                SchedulerActionSource::TaskEvent(TaskEventKind::OptionPatchApplied)
+            }
+            Self::CredentialSatisfactionFailed => {
+                SchedulerActionSource::TaskEvent(TaskEventKind::OptionPatchApplicationFailed)
             }
             Self::ApproveHostKey => {
                 SchedulerActionSource::Command(SchedulerCommandKind::ApproveHostKey)
@@ -429,6 +536,18 @@ impl SchedulerAction {
             }
             Self::GenerationPersistenceSucceeded => {
                 SchedulerActionSource::TaskEvent(TaskEventKind::GenerationPersisted)
+            }
+            Self::ActiveRestartOptionPatchPersisted => {
+                SchedulerActionSource::TaskEvent(TaskEventKind::OptionPatchPersisted)
+            }
+            Self::ActiveRestartOptionPatchPersistenceFailed => {
+                SchedulerActionSource::TaskEvent(TaskEventKind::OptionPatchPersistenceFailed)
+            }
+            Self::RestartApplicationSucceeded => {
+                SchedulerActionSource::TaskEvent(TaskEventKind::OptionPatchApplied)
+            }
+            Self::RestartApplicationFailed => {
+                SchedulerActionSource::TaskEvent(TaskEventKind::OptionPatchApplicationFailed)
             }
             Self::AllocationSucceeded => {
                 SchedulerActionSource::TaskEvent(TaskEventKind::AllocationSucceeded)
@@ -484,6 +603,18 @@ impl SchedulerAction {
             Self::TerminalPersistenceSucceeded => {
                 SchedulerActionSource::TaskEvent(TaskEventKind::TerminalPersisted)
             }
+            Self::HostKeyResolutionSucceeded | Self::HostKeyResolutionSucceededPreservingPause => {
+                SchedulerActionSource::TaskEvent(TaskEventKind::HostKeyResolutionPersisted)
+            }
+            Self::HostKeyResolutionFailed => {
+                SchedulerActionSource::TaskEvent(TaskEventKind::HostKeyResolutionFailed)
+            }
+            Self::StoppedResultDeletionSucceeded => {
+                SchedulerActionSource::TaskEvent(TaskEventKind::StoppedResultDeleted)
+            }
+            Self::StoppedResultDeletionFailed => {
+                SchedulerActionSource::TaskEvent(TaskEventKind::StoppedResultDeletionFailed)
+            }
             Self::DuplicateEventIgnored | Self::StaleEventIgnored => {
                 SchedulerActionSource::AnyTaskEvent
             }
@@ -493,7 +624,10 @@ impl SchedulerAction {
             | Self::PlanningFailed
             | Self::LeaseRetryableWithRunnableWork
             | Self::RetryExhausted
-            | Self::RestartApplicationFailed => SchedulerActionSource::Internal,
+            | Self::RestartApplicationScheduled
+            | Self::DeferredPauseCompleted
+            | Self::DeferredResumeCompleted
+            | Self::DeferredRemoveCompleted => SchedulerActionSource::Internal,
         }
     }
 
@@ -514,6 +648,16 @@ impl SchedulerAction {
             Self::ExplicitNoSpaceProbeRequested
         } else {
             Self::Resume
+        }
+    }
+
+    /// Selects the host-key resolution result after durable persistence.
+    #[must_use]
+    pub const fn for_host_key_resolution(desired_paused: bool) -> Self {
+        if desired_paused {
+            Self::HostKeyResolutionSucceededPreservingPause
+        } else {
+            Self::HostKeyResolutionSucceeded
         }
     }
 
@@ -873,6 +1017,24 @@ pub const fn transition_contract(state: TaskState, action: SchedulerAction) -> T
             | TaskState::Removed
             | TaskState::StoppedResult => conflict(),
         },
+        SchedulerAction::PauseDeferred => match state {
+            TaskState::Waiting
+            | TaskState::WaitingSlow
+            | TaskState::Allocating
+            | TaskState::Active
+            | TaskState::RetryWait
+            | TaskState::Paused
+            | TaskState::PausedSlow
+            | TaskState::PausedHostKey
+            | TaskState::PausedRestarting
+            | TaskState::Verifying
+            | TaskState::Seeding => stay(state, StateReason::UserPause),
+            TaskState::Accepted
+            | TaskState::Complete
+            | TaskState::Error
+            | TaskState::Removed
+            | TaskState::StoppedResult => conflict(),
+        },
         SchedulerAction::Resume => match state {
             TaskState::Accepted
             | TaskState::Waiting
@@ -894,6 +1056,24 @@ pub const fn transition_contract(state: TaskState, action: SchedulerAction) -> T
             | TaskState::Removed
             | TaskState::StoppedResult => conflict(),
         },
+        SchedulerAction::ResumeDeferred => match state {
+            TaskState::Waiting
+            | TaskState::WaitingSlow
+            | TaskState::Allocating
+            | TaskState::Active
+            | TaskState::RetryWait
+            | TaskState::Paused
+            | TaskState::PausedSlow
+            | TaskState::PausedHostKey
+            | TaskState::PausedRestarting
+            | TaskState::Verifying
+            | TaskState::Seeding => stay(state, StateReason::UserResume),
+            TaskState::Accepted
+            | TaskState::Complete
+            | TaskState::Error
+            | TaskState::Removed
+            | TaskState::StoppedResult => conflict(),
+        },
         SchedulerAction::Remove => match state {
             TaskState::Accepted
             | TaskState::Waiting
@@ -910,6 +1090,24 @@ pub const fn transition_contract(state: TaskState, action: SchedulerAction) -> T
             TaskState::Removed => no_op(state),
             TaskState::Complete | TaskState::Error | TaskState::StoppedResult => conflict(),
         },
+        SchedulerAction::RemoveDeferred => match state {
+            TaskState::Accepted
+            | TaskState::Waiting
+            | TaskState::WaitingSlow
+            | TaskState::Allocating
+            | TaskState::Active
+            | TaskState::RetryWait
+            | TaskState::Paused
+            | TaskState::PausedSlow
+            | TaskState::PausedHostKey
+            | TaskState::PausedRestarting
+            | TaskState::Verifying
+            | TaskState::Seeding => stay(state, StateReason::UserRemove),
+            TaskState::Complete
+            | TaskState::Error
+            | TaskState::Removed
+            | TaskState::StoppedResult => conflict(),
+        },
         SchedulerAction::SchedulerAdmission => match state {
             TaskState::Waiting => transition(StateReason::SchedulerAdmission, ALLOCATING_TARGET),
             _ => conflict(),
@@ -922,18 +1120,57 @@ pub const fn transition_contract(state: TaskState, action: SchedulerAction) -> T
             TaskState::Waiting => transition(StateReason::PlanningFailed, ERROR_TARGET),
             _ => conflict(),
         },
-        SchedulerAction::NonLiveOptionPatchAccepted => match state {
+        SchedulerAction::InPlaceOptionPatchAccepted => match state {
             TaskState::Waiting
             | TaskState::WaitingSlow
+            | TaskState::Allocating
+            | TaskState::Active
             | TaskState::RetryWait
             | TaskState::Paused
             | TaskState::PausedSlow
-            | TaskState::PausedHostKey => stay(state, StateReason::OptionPatch),
+            | TaskState::PausedHostKey
+            | TaskState::PausedRestarting
+            | TaskState::Verifying
+            | TaskState::Seeding => stay(state, StateReason::OptionPatch),
+            _ => conflict(),
+        },
+        SchedulerAction::InPlaceOptionPatchApplied => match state {
+            TaskState::Waiting
+            | TaskState::WaitingSlow
+            | TaskState::Allocating
+            | TaskState::Active
+            | TaskState::RetryWait
+            | TaskState::Paused
+            | TaskState::PausedSlow
+            | TaskState::PausedHostKey
+            | TaskState::PausedRestarting
+            | TaskState::Verifying
+            | TaskState::Seeding => stay(state, StateReason::OptionPatch),
+            _ => conflict(),
+        },
+        SchedulerAction::InPlaceOptionPatchApplicationFailed => match state {
+            TaskState::Waiting
+            | TaskState::WaitingSlow
+            | TaskState::Allocating
+            | TaskState::Active
+            | TaskState::RetryWait
+            | TaskState::Paused
+            | TaskState::PausedSlow
+            | TaskState::PausedHostKey
+            | TaskState::PausedRestarting
+            | TaskState::Verifying
+            | TaskState::Seeding => stay(state, StateReason::OptionPatchApplicationFailed),
             _ => conflict(),
         },
         SchedulerAction::CredentialsSatisfied => match state {
             TaskState::Waiting | TaskState::Paused => {
                 stay(state, StateReason::CredentialsSatisfied)
+            }
+            _ => conflict(),
+        },
+        SchedulerAction::CredentialSatisfactionFailed => match state {
+            TaskState::Waiting | TaskState::Paused => {
+                stay(state, StateReason::CredentialUpdateFailed)
             }
             _ => conflict(),
         },
@@ -995,7 +1232,20 @@ pub const fn transition_contract(state: TaskState, action: SchedulerAction) -> T
         },
         SchedulerAction::ActiveRestartOptionPatchAccepted => match state {
             TaskState::Allocating | TaskState::Active | TaskState::Verifying => {
-                transition(StateReason::OptionPatch, PAUSED_RESTARTING_TARGET)
+                stay(state, StateReason::OptionPatch)
+            }
+            _ => conflict(),
+        },
+        SchedulerAction::ActiveRestartOptionPatchPersisted => match state {
+            TaskState::Allocating | TaskState::Active | TaskState::Verifying => transition(
+                StateReason::OptionPatchPersistenceSucceeded,
+                PAUSED_RESTARTING_TARGET,
+            ),
+            _ => conflict(),
+        },
+        SchedulerAction::ActiveRestartOptionPatchPersistenceFailed => match state {
+            TaskState::Allocating | TaskState::Active | TaskState::Verifying => {
+                stay(state, StateReason::OptionPatchPersistenceFailed)
             }
             _ => conflict(),
         },
@@ -1054,11 +1304,23 @@ pub const fn transition_contract(state: TaskState, action: SchedulerAction) -> T
             _ => conflict(),
         },
         SchedulerAction::ApproveHostKey => match state {
-            TaskState::PausedHostKey => transition(StateReason::HostKeyApproved, WAITING_TARGET),
+            TaskState::PausedHostKey => stay(state, StateReason::HostKeyApproved),
             _ => conflict(),
         },
         SchedulerAction::ApplyMatchingHostKeyOption => match state {
-            TaskState::PausedHostKey => transition(StateReason::OptionPatch, WAITING_TARGET),
+            TaskState::PausedHostKey => stay(state, StateReason::OptionPatch),
+            _ => conflict(),
+        },
+        SchedulerAction::HostKeyResolutionSucceeded => match state {
+            TaskState::PausedHostKey => transition(StateReason::HostKeyApproved, WAITING_TARGET),
+            _ => conflict(),
+        },
+        SchedulerAction::HostKeyResolutionSucceededPreservingPause => match state {
+            TaskState::PausedHostKey => transition(StateReason::HostKeyApproved, PAUSED_TARGET),
+            _ => conflict(),
+        },
+        SchedulerAction::HostKeyResolutionFailed => match state {
+            TaskState::PausedHostKey => stay(state, StateReason::HostKeyResolutionFailed),
             _ => conflict(),
         },
         SchedulerAction::CancellationDrainSucceeded => match state {
@@ -1071,14 +1333,66 @@ pub const fn transition_contract(state: TaskState, action: SchedulerAction) -> T
             _ => conflict(),
         },
         SchedulerAction::RestartQuiesced => match state {
-            TaskState::PausedRestarting => transition(StateReason::RestartQuiesced, WAITING_TARGET),
+            TaskState::PausedRestarting => stay(state, StateReason::RestartQuiesced),
+            _ => conflict(),
+        },
+        SchedulerAction::RestartApplicationScheduled => match state {
+            TaskState::Waiting => stay(state, StateReason::OptionPatch),
+            _ => conflict(),
+        },
+        SchedulerAction::RestartApplicationSucceeded => match state {
+            TaskState::PausedRestarting => {
+                transition(StateReason::RestartApplicationSucceeded, WAITING_TARGET)
+            }
+            TaskState::Waiting => stay(state, StateReason::RestartApplicationSucceeded),
             _ => conflict(),
         },
         SchedulerAction::RestartApplicationFailed => match state {
-            TaskState::PausedRestarting => {
+            TaskState::PausedRestarting | TaskState::Waiting => {
                 transition(StateReason::RestartApplicationFailed, ERROR_TARGET)
             }
             _ => conflict(),
+        },
+        SchedulerAction::DeferredPauseCompleted => match state {
+            TaskState::Accepted
+            | TaskState::Waiting
+            | TaskState::WaitingSlow
+            | TaskState::Allocating
+            | TaskState::Active
+            | TaskState::RetryWait
+            | TaskState::PausedRestarting
+            | TaskState::Verifying
+            | TaskState::Seeding => transition(StateReason::UserPause, PAUSED_TARGET),
+            TaskState::Paused | TaskState::PausedSlow => stay(state, StateReason::UserPause),
+            TaskState::PausedHostKey
+            | TaskState::Complete
+            | TaskState::Error
+            | TaskState::Removed
+            | TaskState::StoppedResult => conflict(),
+        },
+        SchedulerAction::DeferredResumeCompleted => match state {
+            TaskState::Paused | TaskState::PausedSlow => {
+                transition(StateReason::UserResume, WAITING_TARGET)
+            }
+            _ => conflict(),
+        },
+        SchedulerAction::DeferredRemoveCompleted => match state {
+            TaskState::Accepted
+            | TaskState::Waiting
+            | TaskState::WaitingSlow
+            | TaskState::Allocating
+            | TaskState::Active
+            | TaskState::RetryWait
+            | TaskState::Paused
+            | TaskState::PausedSlow
+            | TaskState::PausedHostKey
+            | TaskState::PausedRestarting
+            | TaskState::Verifying
+            | TaskState::Seeding => transition(StateReason::UserRemove, REMOVED_TARGET),
+            TaskState::Complete
+            | TaskState::Error
+            | TaskState::Removed
+            | TaskState::StoppedResult => conflict(),
         },
         SchedulerAction::VerificationSucceeded => match state {
             TaskState::Verifying => transition(StateReason::VerificationSucceeded, COMPLETE_TARGET),
@@ -1113,7 +1427,15 @@ pub const fn transition_contract(state: TaskState, action: SchedulerAction) -> T
             _ => conflict(),
         },
         SchedulerAction::RemoveStoppedResult => match state {
+            TaskState::StoppedResult => stay(state, StateReason::StoppedResultRemovalRequested),
+            _ => conflict(),
+        },
+        SchedulerAction::StoppedResultDeletionSucceeded => match state {
             TaskState::StoppedResult => delete(StateReason::StoppedResultRemoved),
+            _ => conflict(),
+        },
+        SchedulerAction::StoppedResultDeletionFailed => match state {
+            TaskState::StoppedResult => stay(state, StateReason::StoppedResultRemovalFailed),
             _ => conflict(),
         },
         SchedulerAction::OrderlyShutdown => match state {
@@ -1267,7 +1589,7 @@ mod tests {
             }
         }
         assert_eq!(cells, ALL_TASK_STATES.len() * ALL_SCHEDULER_ACTIONS.len());
-        assert_eq!(cells, 16 * 52);
+        assert_eq!(cells, 16 * 70);
     }
 
     #[test]
@@ -1570,15 +1892,43 @@ mod tests {
             &[TaskState::Allocating],
         );
 
+        for state in [
+            TaskState::Allocating,
+            TaskState::Active,
+            TaskState::Verifying,
+        ] {
+            assert_contract(
+                state,
+                SchedulerAction::ActiveRestartOptionPatchAccepted,
+                TransitionContractKind::Stay,
+                StateReason::OptionPatch,
+                &[state],
+            );
+            assert_contract(
+                state,
+                SchedulerAction::ActiveRestartOptionPatchPersisted,
+                TransitionContractKind::Transition,
+                StateReason::OptionPatchPersistenceSucceeded,
+                &[TaskState::PausedRestarting],
+            );
+            assert_contract(
+                state,
+                SchedulerAction::ActiveRestartOptionPatchPersistenceFailed,
+                TransitionContractKind::Stay,
+                StateReason::OptionPatchPersistenceFailed,
+                &[state],
+            );
+        }
+
         for target in ALL_DRAIN_TARGETS {
             let state = target.state();
             if *target == DrainTarget::PausedRestarting {
                 assert_contract(
                     state,
                     SchedulerAction::RestartQuiesced,
-                    TransitionContractKind::Transition,
+                    TransitionContractKind::Stay,
                     StateReason::RestartQuiesced,
-                    &[TaskState::Waiting],
+                    &[TaskState::PausedRestarting],
                 );
             } else {
                 assert_contract(
@@ -1590,6 +1940,73 @@ mod tests {
                 );
             }
         }
+
+        assert_contract(
+            TaskState::PausedRestarting,
+            SchedulerAction::RestartApplicationSucceeded,
+            TransitionContractKind::Transition,
+            StateReason::RestartApplicationSucceeded,
+            &[TaskState::Waiting],
+        );
+        assert_contract(
+            TaskState::PausedRestarting,
+            SchedulerAction::RestartApplicationFailed,
+            TransitionContractKind::Transition,
+            StateReason::RestartApplicationFailed,
+            &[TaskState::Error],
+        );
+    }
+
+    #[test]
+    fn host_key_resolution_waits_for_persistence_and_honors_current_pause_intent() {
+        for action in [
+            SchedulerAction::ApproveHostKey,
+            SchedulerAction::ApplyMatchingHostKeyOption,
+        ] {
+            assert_contract(
+                TaskState::PausedHostKey,
+                action,
+                TransitionContractKind::Stay,
+                if action == SchedulerAction::ApproveHostKey {
+                    StateReason::HostKeyApproved
+                } else {
+                    StateReason::OptionPatch
+                },
+                &[TaskState::PausedHostKey],
+            );
+        }
+
+        assert_eq!(
+            SchedulerAction::for_host_key_resolution(false),
+            SchedulerAction::HostKeyResolutionSucceeded
+        );
+        assert_contract(
+            TaskState::PausedHostKey,
+            SchedulerAction::HostKeyResolutionSucceeded,
+            TransitionContractKind::Transition,
+            StateReason::HostKeyApproved,
+            &[TaskState::Waiting],
+        );
+
+        assert_eq!(
+            SchedulerAction::for_host_key_resolution(true),
+            SchedulerAction::HostKeyResolutionSucceededPreservingPause
+        );
+        assert_contract(
+            TaskState::PausedHostKey,
+            SchedulerAction::HostKeyResolutionSucceededPreservingPause,
+            TransitionContractKind::Transition,
+            StateReason::HostKeyApproved,
+            &[TaskState::Paused],
+        );
+
+        assert_contract(
+            TaskState::PausedHostKey,
+            SchedulerAction::HostKeyResolutionFailed,
+            TransitionContractKind::Stay,
+            StateReason::HostKeyResolutionFailed,
+            &[TaskState::PausedHostKey],
+        );
     }
 
     #[test]
@@ -1614,6 +2031,13 @@ mod tests {
         assert_contract(
             TaskState::StoppedResult,
             SchedulerAction::RemoveStoppedResult,
+            TransitionContractKind::Stay,
+            StateReason::StoppedResultRemovalRequested,
+            &[TaskState::StoppedResult],
+        );
+        assert_contract(
+            TaskState::StoppedResult,
+            SchedulerAction::StoppedResultDeletionSucceeded,
             TransitionContractKind::Delete,
             StateReason::StoppedResultRemoved,
             &[],
@@ -1726,22 +2150,36 @@ mod tests {
         assert_contract(
             TaskState::PausedHostKey,
             SchedulerAction::ApproveHostKey,
+            TransitionContractKind::Stay,
+            StateReason::HostKeyApproved,
+            &[TaskState::PausedHostKey],
+        );
+        assert_contract(
+            TaskState::PausedHostKey,
+            SchedulerAction::ApplyMatchingHostKeyOption,
+            TransitionContractKind::Stay,
+            StateReason::OptionPatch,
+            &[TaskState::PausedHostKey],
+        );
+        assert_contract(
+            TaskState::PausedHostKey,
+            SchedulerAction::HostKeyResolutionSucceeded,
             TransitionContractKind::Transition,
             StateReason::HostKeyApproved,
             &[TaskState::Waiting],
         );
         assert_contract(
-            TaskState::PausedHostKey,
-            SchedulerAction::ApplyMatchingHostKeyOption,
-            TransitionContractKind::Transition,
-            StateReason::OptionPatch,
-            &[TaskState::Waiting],
+            TaskState::PausedRestarting,
+            SchedulerAction::RestartQuiesced,
+            TransitionContractKind::Stay,
+            StateReason::RestartQuiesced,
+            &[TaskState::PausedRestarting],
         );
         assert_contract(
             TaskState::PausedRestarting,
-            SchedulerAction::RestartQuiesced,
+            SchedulerAction::RestartApplicationSucceeded,
             TransitionContractKind::Transition,
-            StateReason::RestartQuiesced,
+            StateReason::RestartApplicationSucceeded,
             &[TaskState::Waiting],
         );
         assert_contract(
@@ -1761,6 +2199,13 @@ mod tests {
         assert_contract(
             TaskState::StoppedResult,
             SchedulerAction::RemoveStoppedResult,
+            TransitionContractKind::Stay,
+            StateReason::StoppedResultRemovalRequested,
+            &[TaskState::StoppedResult],
+        );
+        assert_contract(
+            TaskState::StoppedResult,
+            SchedulerAction::StoppedResultDeletionSucceeded,
             TransitionContractKind::Delete,
             StateReason::StoppedResultRemoved,
             &[],
@@ -1887,6 +2332,9 @@ mod tests {
                 }
                 SchedulerCommandHandling::QueueOperation => {
                     assert_eq!(action_count, 0, "{command:?}");
+                }
+                SchedulerCommandHandling::BatchOperation => {
+                    assert!(action_count > 0, "{command:?}");
                 }
             }
         }

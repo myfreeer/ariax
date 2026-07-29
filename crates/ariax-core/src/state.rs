@@ -3,6 +3,11 @@ use std::error::Error;
 use std::fmt;
 use std::time::{Duration, Instant};
 
+/// Maximum UTF-8 bytes retained for one non-secret condition description.
+pub const MAX_CONDITION_DESCRIPTION_BYTES: usize = 4096;
+/// Maximum UTF-8 bytes retained for one redacted no-space display path.
+pub const MAX_REDACTED_PATH_BYTES: usize = 4096;
+
 /// A process-local monotonic deadline. It is never serialized directly.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct MonotonicInstant(Instant);
@@ -167,6 +172,14 @@ pub enum CredentialKind {
     PrivateKeyPassphrase,
 }
 
+/// Non-secret identity of one credential blocker, used to reject stale
+/// credential-bearing updates without copying its display text.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct CredentialRequirementKey {
+    pub kind: CredentialKind,
+    pub source: Option<UriId>,
+}
+
 /// One scheduler-owned credential admission blocker.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CredentialRequirement {
@@ -175,11 +188,37 @@ pub struct CredentialRequirement {
     pub safe_description: String,
 }
 
+impl CredentialRequirement {
+    #[must_use]
+    pub const fn key(&self) -> CredentialRequirementKey {
+        CredentialRequirementKey {
+            kind: self.kind,
+            source: self.source,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), TaskConditionsError> {
+        if self.safe_description.len() > MAX_CONDITION_DESCRIPTION_BYTES {
+            return Err(TaskConditionsError::CredentialDescriptionTooLong);
+        }
+        Ok(())
+    }
+}
+
 /// One scheduler-owned disk-space admission blocker.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NoSpaceCondition {
     pub redacted_path: String,
     pub retry_at: Option<MonotonicInstant>,
+}
+
+impl NoSpaceCondition {
+    pub fn validate(&self) -> Result<(), TaskConditionsError> {
+        if self.redacted_path.len() > MAX_REDACTED_PATH_BYTES {
+            return Err(TaskConditionsError::RedactedPathTooLong);
+        }
+        Ok(())
+    }
 }
 
 /// Recoverable admission blockers orthogonal to task state.
@@ -202,7 +241,36 @@ impl TaskConditions {
             no_space: self.no_space.is_some(),
         }
     }
+
+    pub fn validate(&self) -> Result<(), TaskConditionsError> {
+        if let Some(requirement) = self.needs_credentials.as_ref() {
+            requirement.validate()?;
+        }
+        if let Some(condition) = self.no_space.as_ref() {
+            condition.validate()?;
+        }
+        Ok(())
+    }
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TaskConditionsError {
+    CredentialDescriptionTooLong,
+    RedactedPathTooLong,
+}
+
+impl fmt::Display for TaskConditionsError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::CredentialDescriptionTooLong => {
+                "credential description exceeds the scheduler bound"
+            }
+            Self::RedactedPathTooLong => "redacted no-space path exceeds the scheduler bound",
+        })
+    }
+}
+
+impl Error for TaskConditionsError {}
 
 /// Bounded condition flags included in immutable status snapshots.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

@@ -136,6 +136,9 @@ pub enum RetryClass {
 }
 
 /// One safe, redacted error suitable for a snapshot or API response.
+pub const MAX_PUBLIC_ERROR_MESSAGE_BYTES: usize = 4096;
+
+/// One safe, redacted error suitable for a snapshot or API response.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublicError {
     kind: ErrorKind,
@@ -148,9 +151,17 @@ impl PublicError {
     /// Creates a public error. Callers must supply an already-redacted message.
     #[must_use]
     pub fn new(kind: ErrorKind, safe_message: impl Into<String>, retry: RetryClass) -> Self {
+        let mut safe_message = safe_message.into();
+        if safe_message.len() > MAX_PUBLIC_ERROR_MESSAGE_BYTES {
+            let mut end = MAX_PUBLIC_ERROR_MESSAGE_BYTES;
+            while !safe_message.is_char_boundary(end) {
+                end -= 1;
+            }
+            safe_message.truncate(end);
+        }
         Self {
             kind,
-            safe_message: safe_message.into(),
+            safe_message,
             diagnostic_id: None,
             retry,
         }
@@ -230,8 +241,8 @@ impl OptionPatchRejectReason {
 #[cfg(test)]
 mod tests {
     use super::{
-        ALL_ERROR_KINDS, ALL_OPTION_PATCH_REJECT_REASONS, ErrorKind, OptionPatchRejectReason,
-        PublicError, RetryClass,
+        ALL_ERROR_KINDS, ALL_OPTION_PATCH_REJECT_REASONS, ErrorKind,
+        MAX_PUBLIC_ERROR_MESSAGE_BYTES, OptionPatchRejectReason, PublicError, RetryClass,
     };
     use std::collections::BTreeSet;
 
@@ -264,6 +275,24 @@ mod tests {
         assert_eq!(error.diagnostic_id(), Some(42));
         assert_eq!(error.retry_class(), RetryClass::SameSource);
         assert_eq!(error.to_string(), "Timeout: request timed out");
+    }
+
+    #[test]
+    fn public_error_truncates_at_the_storage_utf8_boundary() {
+        let error = PublicError::new(
+            ErrorKind::InternalInvariant,
+            format!("{}é", "x".repeat(MAX_PUBLIC_ERROR_MESSAGE_BYTES - 1)),
+            RetryClass::Never,
+        );
+        assert_eq!(
+            error.safe_message().len(),
+            MAX_PUBLIC_ERROR_MESSAGE_BYTES - 1
+        );
+        assert!(
+            error
+                .safe_message()
+                .is_char_boundary(error.safe_message().len())
+        );
     }
 
     #[test]

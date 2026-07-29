@@ -1,7 +1,8 @@
 # Detailed Core Design
 
-Status: reviewed first-slice implementation contract. The exhaustive core
-transition-contract checkpoint is implemented; scheduler execution remains
+Status: first-slice scheduler kernel implemented. The exhaustive transition
+matrix, deterministic command/event executor, barriers, queues, correlation
+tokens, and bounded effects are executable; runtime/storage dispatch remains
 pending.
 
 This document defines the core types and state machines shared by config,
@@ -193,11 +194,19 @@ Task state is controlled only by `RequestScheduler`.
 
 The current checkpoint implements the closed command/event/action vocabularies,
 the exhaustive state × semantic-action contract, wire projection, and generated
-`state_wire.json` artifact. It does not yet implement `RequestScheduler`
-command/event execution, construct and order the required `TransitionEffect`
-values, validate pending barriers or generation/timer/readmission/probe tokens,
-or enforce `MAX_SCHEDULER_EFFECTS`. Those behaviors and their success/rejection
-tests remain required before the minimal scheduler is complete.
+`state_wire.json` artifact. `RequestScheduler` executes commands and
+`TaskEventEnvelope { task_id, event }` inputs, owns dense queues and slot state,
+orders `TransitionEffect` values, enforces `MAX_SCHEDULER_EFFECTS`, and rejects
+stale task ids, generations, patch ids, and timer/readmission/probe tokens
+without mutation. Option, cancellation, terminal, deletion, and host-key work
+uses correlated acknowledgement barriers. The production dispatcher that
+applies these effects to runtime and storage adapters is not yet implemented.
+Current full-GID membership is resolved before event identity disposition: an
+event for a GID with no current task returns `TaskNotFound`, while an event for
+a reused GID is stale when its immutable `TaskId` identifies the deleted task.
+Matrix-only/internal actions such as validation/admission/planning failure,
+retry exhaustion, and retryable lease work are contract rows until their owning
+adapters submit them; `OrderlyShutdown` remains a bounded-batch placeholder.
 
 `TaskState` is an internal state.  It is not an RPC enum.  The complete state
 set is `Accepted`, `Waiting`, `WaitingSlow`, `Allocating`, `Active`,
@@ -367,7 +376,7 @@ provisional storage lease has either committed or been acknowledged by
 | `Seeding` | pause or remove | `Paused` or `Removed` | use the BT shutdown barrier and persist resume data or dirty checkpoint |
 | `Seeding` | BT error | `Error` | preserve last safe resume data; persist error/result |
 | `Complete` / `Error` / `Removed` | terminal persistence succeeds | `StoppedResult` | retain the final aria2 stopped-result status |
-| `StoppedResult` | remove stopped result | absent | delete only the retained result; do not synthesize a live task |
+| `StoppedResult` | remove stopped result | absent | atomically delete the retained result and its stopped-queue task metadata; never delete downloaded output or synthesize a live task |
 | any nonterminal state | orderly shutdown | recovery state | cancel/abort as applicable, run the BT barrier where applicable, persist a checkpoint, then recover as `Waiting` unless desired pause or journal terminal state says otherwise |
 
 Orderly shutdown applies the equivalent of `abort` to every nonterminal active
@@ -403,7 +412,7 @@ All CLI/RPC/library operations enter the scheduler through commands:
 
 ```rust
 pub enum SchedulerCommand {
-    AddUri(AddUri),
+    AddValidatedTask { task_id: TaskId, gid: Gid, /* validated inputs */ },
     Pause { gid: Gid, force: bool },
     Resume { gid: Gid },
     ApproveHostKey {
@@ -411,14 +420,17 @@ pub enum SchedulerCommand {
         challenge: HostKeyChallengeId,
         fingerprint_sha256: HostKeyFingerprint,
     },
+    ApplyOptionPatch { gid: Gid, patch_id: OptionPatchId, /* validated patch */ },
     Remove { gid: Gid, force: bool },
-    ChangeOption { gid: Gid, patch: OptionPatch },
-    ChangeGlobalOption { patch: OptionPatch },
-    ChangePosition { gid: Gid, position: QueuePosition },
-    Query(QueryRequest),
-    Shutdown(ShutdownMode),
+    RemoveStoppedResult { gid: Gid },
+    ChangePosition { gid: Gid, position: usize },
+    OrderlyShutdown,
 }
 ```
+
+`OrderlyShutdown` is reserved for the bounded batch executor and currently
+returns `ShutdownBatchRequired`. URI parsing, RPC query commands, and global
+option changes remain adapter work outside this first kernel.
 
 Command rules:
 
@@ -476,6 +488,16 @@ Rules:
   acknowledgement; the acknowledgement and transition to `StoppedResult` form
   one publication boundary.
 
+The scheduler retains the last snapshot for which it emitted
+`PublishSnapshot`; `RequestScheduler::snapshot()` exposes that last-emitted
+value, not a durable/applied RPC view. `task()` and `queue_snapshot()` expose
+planned scheduler state for integration and tests. Production RPC must read a
+separate snapshot store updated by the ordered effect dispatcher. A pending or
+failed stopped-result deletion retains the stopped snapshot. The acknowledged
+`TaskDeletion` is the removal boundary: the scheduler then returns
+`TaskNotFound`, and the dispatcher must evict the corresponding external
+snapshot entry.
+
 ## Cancellation
 
 Each task generation has a cancellation token:
@@ -500,26 +522,20 @@ Rules:
 
 ## Persistence Hooks
 
-The scheduler emits persistence events:
+The scheduler emits ordered `TransitionEffect` values for task creation, queue
+transitions, option staging/application, generation start/cancel, timers,
+conditions, host-key resolution, terminal retention, deletion, and snapshot
+publication. These are adapter contracts, not journal records. The scheduler
+never assigns journal sequence numbers or writes SQLite directly.
 
-```rust
-TaskCreated
-OptionsSnapshot
-GenerationStarted
-StateChanged
-RetryStateChanged
-StoppedResult
-```
-
-These are scheduler-level control events, not the on-disk journal record enum
-(defined normatively in `detailed-storage.md`).  The scheduler never assigns
-journal sequence numbers and never appends journal records directly.  The
-storage-owned journal appender is the sole owner of `LeaseGranted`,
-`LeaseCommitted`, `LeaseAborted`, and `PieceDurable`; a scheduler can only react
-to its acknowledged durability outcome.  The persistence coordinator maps
-`StateChanged` to control records such as `TaskPaused`/`TaskComplete`/`TaskError`,
-`RetryStateChanged` to `RetryState`, and `StoppedResult` to the SQLite
-stopped-result row.  The two lists intentionally need not match name-for-name.
+The dispatcher must preserve effect order and convert acknowledgements back to
+the exact `TaskId`, generation, and operation token. Atomic terminal retention
+keeps the task row as the stopped-queue owner and pairs it one-to-one with the
+canonical stopped result; deletion removes both metadata rows and densifies the
+remaining stopped queue. The concrete host-key write/approval storage API is
+still pending. Retry and no-space effects currently carry live monotonic
+deadlines and require a persistence-safe wall-clock decision plus recovery
+mapping before crash recovery is complete.
 
 On recovery, the control journal is authoritative for durable layout and
 terminal/durable state, while SQLite is authoritative for queue membership,

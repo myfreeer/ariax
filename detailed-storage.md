@@ -21,8 +21,13 @@ revalidation, and startup pointer/phase validation. Its executable boundary
 also includes private path/artifact enforcement, cooperative Ariax-only
 single-writer locking, hot rollback page-one plus committed-WAL version
 preflight, journal-mode write probes, and validated file-synced no-clobber
-backups; the checkpoint state writer and cross-store orchestration remain
-pending.
+backups. Session schema v2 adds the demoted queue, independent slow-demotion
+count, and bounded slow retry decision; exact v1 stores migrate transactionally
+after semantic preflight and a private no-clobber backup. Retained stopped
+results now use a one-to-one stopped-task/result transaction, and deletion
+atomically removes both metadata rows while densifying the stopped queue. The
+checkpoint state writer, concrete host-key operations, and cross-store
+orchestration remain pending.
 
 This document defines `SafePathBuilder`, `FileLayout`, `GlobalOffsetMapper`,
 `StorageEngine`, and `ControlJournal` contracts for HTTP sequential/range

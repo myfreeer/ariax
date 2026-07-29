@@ -1,6 +1,6 @@
 # Requirements Traceability
 
-Status: reviewed pre-implementation contract. Implementation pending.
+Status: reviewed contract with implementation in progress.
 
 This maps the requested properties to design documents.
 
@@ -240,6 +240,9 @@ Acceptance:
 - native Linux, Windows, and macOS CI builds the declared release artifacts,
 - WSL Linux and native MinGW toolchains are never mixed into one target build.
 
+Current status: local WSL and native MinGW checks are development evidence, not
+the required native Linux, Windows, and macOS release/tag matrix.
+
 ## aria2-Style Configurability
 
 Requirement:
@@ -376,11 +379,11 @@ Acceptance:
   continuity,
 - checkpoints encode the durable piece map in bounded, canonical
   `PieceStateChunk` records rather than replaying an unbounded live history,
-- the exact SQLite v1 schema, pragmas, and fail-closed version policy are
-  validated; hot rollback recovery is process-crash tested, backup publication
-  has integrity and no-clobber coverage, and journal-install transitions have
-  transaction, reopen, pointer-invariant, and stale-command coverage; explicit
-  crash-point matrices remain phase gates,
+- the exact SQLite v2 schema, exact v1 migration, pragmas, and fail-closed
+  version policy are validated; hot rollback recovery is process-crash tested,
+  backup publication has integrity and no-clobber coverage, and journal-install
+  transitions have transaction, reopen, pointer-invariant, and stale-command
+  coverage; explicit crash-point matrices remain phase gates,
 - an existing broad persistence parent, intermediate symlink/reparse component,
   sidecar beside a missing or empty main database, hard-link alias, and
   symlink/non-regular SQLite artifact fail closed; missing directories are
@@ -390,14 +393,23 @@ Acceptance:
   main header, and rejects legacy page-size-zero rollback journals,
 - `${db}.ariax-owner-lock` enforces cooperative single-writer ownership among
   Ariax processes; external raw SQLite writers bypass it and are unsupported,
-- task/install reads are count/byte bounded, task options are policy-checked on
-  read, and cross-queue moves preserve dense ordering in one transaction,
+- task/install/host-challenge/stopped-result reads are count/byte bounded, task
+  options are policy-checked on read, and cross-queue moves preserve dense
+  ordering in one transaction,
+- each stopped result has exactly one retained `Stopped` task row as its queue
+  owner; terminal publication and deletion are atomic dense transactions, and
+  result deletion removes metadata without deleting downloaded output,
+- host-key challenge text is valid UTF-8, the stored SHA-256 fingerprint matches
+  the presented key, and the referenced task is paused; the same semantic
+  validation runs before v1 migration backup creation so invalid inputs do not
+  accumulate backups,
 - WAL and DELETE are transactionally page-one write/rollback probed; truncate
   checkpoint behavior and validated, file-synced, no-clobber backup publication
   are tested, including orphan destination-sidecar rejection and
   ASCII-case-insensitive rejection of every `-wal`, `-shm`, or `-journal`
   destination suffix, with Unix parent-directory sync and no equivalent Windows
-  directory-entry crash-durability claim,
+  directory-entry crash-durability claim; owned temporary backup main/sidecar
+  files are cleaned after success and validation failure,
 - the current backup primitive does not yet recover a residue created by a
   crash or temporary-unlink failure from destination-link publication until
   removal is durably synced; verified same-file cleanup or a native atomic

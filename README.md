@@ -1,20 +1,17 @@
 # Downloader Design
 
-Status: implementation ready; Phase 0 contract generation is in progress, and
-the gated Phase 1 core/config, portable storage layout, bounded runtime
-ownership, journal v1 framing/replay, and all 24 typed journal payload codecs
-plus bounded cross-record semantic recovery are implemented. The file-backed
-single-owner appender also implements typed sequence assignment, flush
-acknowledgement, descriptor-tail validation, and linked rotation. SQLite v1
-schema creation/validation, exact connection limits, core session/task storage,
-bounded semantic reads, atomic dense queue transitions, journal-cache
-reconciliation, tokenized install-pointer transactions, raw committed-version
-preflight across hot rollback page-one state and committed WAL, private paths
-and artifacts, cooperative Ariax-only single-writer ownership, WAL fallback/checkpoint,
-and validated, file-synced, no-clobber hot backup are executable. The session
-owner thread and cross-store startup orchestration remain pending. Module work
-remains governed by `implementation-readiness.md` and the phase exit criteria
-in `implementation-plan.md`.
+Status: implementation is underway. The deterministic `RequestScheduler`
+kernel, core/config contracts, portable storage layout, bounded runtime
+ownership, journal v1 framing/replay, all 24 typed journal payload codecs, and
+bounded cross-record recovery are executable. SQLite session schema v2 adds a
+demoted queue and bounded slow-slot metadata; exact v1 databases migrate through
+a private timestamped no-clobber backup and transactional rebuild. Dense queue
+updates, owner locking, committed-version preflight, WAL fallback/checkpoint,
+validated hot backup, and atomic stopped-result retention/deletion are
+implemented. The runtime effect dispatcher, concrete host-key store operations,
+retry/no-space recovery mapping, session owner thread, cross-store startup
+orchestration, and native CI matrix remain pending. Phase gates remain normative
+in `implementation-readiness.md` and `implementation-plan.md`.
 
 This design is for a new downloader that keeps the mature aria2 user model
 while fixing the major safety, scalability, and completeness problems found in
@@ -184,18 +181,21 @@ Binary-size rules:
 - generated tables replace duplicated option/help strings where practical,
 - `minimal` is the size baseline and CI tracks binary-size regressions.
 
-Artifact, profile, and panic matrix (normative; Phase 0 encodes it as Cargo
-profiles and CI release jobs):
+Artifact, profile, and panic matrix (normative target). The Cargo profiles and
+CLI release jobs are executable; the C-ABI crate and artifact job remain
+pending:
 
 | Artifact | Crate type | Cargo profile | Panic | Notes |
 | --- | --- | --- | --- | --- |
 | `ariax` CLI (`minimal`/`standard`/`full`/`compat`) | `bin` | `release-cli` | `abort` | fat LTO, `codegen-units=1`, stripped symbols |
 | `ariax` Rust library crates | `rlib` | consumer-selected | `unwind` | semver API; never forces `abort` on embedders |
-| `ariax-capi` | `staticlib` + `cdylib` | `release-capi` | `unwind` | `catch_unwind` at every export; aborts only after a caught panic is reported |
+| planned `ariax-capi` | `staticlib` + `cdylib` | `release-capi` | `unwind` | pending crate; every future export uses `catch_unwind`, aborting only after a caught panic is reported |
 | dev/test/fuzz | any | `dev`/`test` | `unwind` | debug assertions on |
 
-One build cannot mix the two panic strategies: the C-ABI artifact is produced
-by its own profile/job, never as a side effect of the `panic=abort` CLI build.
+One build cannot mix the two panic strategies. The current CI check builds an
+`ariax-core` rlib with `release-capi` to verify the unwind profile; once the
+C-ABI crate exists, its artifact must use its own job and never be a side effect
+of the `panic=abort` CLI build.
 
 Native target/ABI matrix (release CI; MSRV and feature set identical unless
 noted):

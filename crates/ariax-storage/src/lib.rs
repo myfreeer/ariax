@@ -80,6 +80,7 @@ pub use session_store::{
     SESSION_TASK_READ_BUDGET_BYTES, SESSION_WAL_AUTO_CHECKPOINT_PAGES, SessionCacheReconciliation,
     SessionId, SessionIoOperation, SessionJournalCache, SessionJournalMode,
     SessionNoSpaceCondition, SessionQueueState, SessionRecord, SessionSchemaObject,
-    SessionSchemaObjectKind, SessionSqliteLimit, SessionStore, SessionStoreConfig,
-    SessionStoreError, SessionStoreSettings, SessionTaskRecord,
+    SessionSchemaObjectKind, SessionSlowRetryDecision, SessionSlowSlotState, SessionSqliteLimit,
+    SessionStoppedResultRecord, SessionStore, SessionStoreConfig, SessionStoreError,
+    SessionStoreSettings, SessionTaskRecord, SessionTerminalStatus,
 };
