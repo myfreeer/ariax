@@ -619,10 +619,11 @@ matching scheduler effects through the bounded owner. Persisted-delay recovery
 maps retry, slow-readmission, and no-space wall decisions to fresh correlated
 monotonic effects. Credential requirements for the ordinary plaintext-free
 restart path are derived from the bounded canonical task-source sets returned
-by the session owner. The ordered SQLite startup repair executor is executable;
-live timer/no-space adapters, native capability/install/appender recovery, and
-final restored-driver publication remain pending. Explicit credential
-admissions remain available for a future encrypted credential provider.
+by the session owner. The ordered SQLite startup repair executor and the native
+startup handoff/coordinator are executable; live timer/no-space adapters,
+concrete descriptor-safe capability/install/appender recovery, and final
+platform publication wiring remain pending. Explicit credential admissions
+remain available for a future encrypted credential provider.
 
 On recovery, the control journal is authoritative for durable layout and
 terminal/durable state, while SQLite is authoritative for queue membership,

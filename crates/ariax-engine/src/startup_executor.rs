@@ -312,7 +312,13 @@ impl StartupSessionRepairExecutor {
         }
     }
 
-    pub fn finish(mut self) -> Result<crate::EngineStartup, StartupSessionRepairFinishError> {
+    /// Returns the reconciliation after every ordered SQLite repair has been
+    /// acknowledged. The repair vectors are cleared before handoff so a later
+    /// native-startup stage cannot accidentally replay an already-applied
+    /// transaction.
+    pub fn finish_reconciliation(
+        mut self,
+    ) -> Result<StartupReconciliation, StartupSessionRepairFinishError> {
         if let Some(error) = self.fault.take() {
             return Err(StartupSessionRepairFinishError::Faulted(error));
         }
@@ -326,7 +332,13 @@ impl StartupSessionRepairExecutor {
         reconciliation.queue_session_repairs.clear();
         reconciliation.terminal_session_repairs.clear();
         reconciliation.authority_repairs.clear();
-        restore_reconciliation(reconciliation, self.scheduler_config)
+        Ok(reconciliation)
+    }
+
+    pub fn finish(self) -> Result<crate::EngineStartup, StartupSessionRepairFinishError> {
+        let scheduler_config = self.scheduler_config;
+        let reconciliation = self.finish_reconciliation()?;
+        restore_reconciliation(reconciliation, scheduler_config)
             .map_err(StartupSessionRepairFinishError::Restore)
     }
 
@@ -638,5 +650,22 @@ mod tests {
             executor.finish(),
             Err(StartupSessionRepairFinishError::NotComplete)
         ));
+    }
+
+    #[test]
+    fn finish_reconciliation_clears_applied_repairs_for_native_handoff() {
+        let mut executor = executor(TestSessionEndpoint {
+            reject_once: false,
+            accepted: Rc::new(RefCell::new(Vec::new())),
+            attempted: Rc::new(RefCell::new(Vec::new())),
+            results: VecDeque::new(),
+        });
+        drive(&mut executor);
+        let reconciliation = executor
+            .finish_reconciliation()
+            .expect("post-repair handoff");
+        assert!(reconciliation.queue_session_repairs.is_empty());
+        assert!(reconciliation.terminal_session_repairs.is_empty());
+        assert!(reconciliation.authority_repairs.is_empty());
     }
 }

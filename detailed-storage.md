@@ -9,8 +9,9 @@ bounded option maps, chunked layouts, finalization paths, and checkpoint
 `PieceStateChunk` bitmaps/evidence runs. Policy-gated cross-record recovery now
 verifies snapshot/contributor/state hashes, generation promotion, reassembled
 layout/root hashes, lease/piece evidence, finalization pairs, and whole compact
-checkpoints. Native capability opening and identity revalidation, storage
-execution, and compaction writing remain pending. The file-backed serialized
+checkpoints. The portable native-startup handoff and ordering contract are now
+executable; descriptor-safe capability opening and identity revalidation,
+storage execution, and compaction writing remain pending. The file-backed serialized
 appender now provides gap-free typed append, explicit flush acknowledgement,
 latched failure, tail/content-validated final-segment reopen after exact
 named-file preflight, and flushed-boundary rotation without whole-segment
@@ -30,9 +31,11 @@ results now use a one-to-one stopped-task/result transaction, and deletion
 atomically removes both metadata rows while densifying the stopped queue. The
 dedicated session owner, challenge-bound host-key operations, and bounded pure
 cross-store reconciliation planning are executable. The ordered SQLite startup
-repair stage is also executable through the bounded owner. The checkpoint state
-writer and native startup executor that applies capability/install/appender
-work remain pending.
+repair stage is also executable through the bounded owner. The engine now exposes
+a native-startup backend contract and coordinator that consumes the post-repair
+handoff, resolves journal-install intents before appenders, and publishes the
+restored scheduler last. Concrete descriptor-safe adapters and the checkpoint
+state writer remain pending.
 
 This document defines `SafePathBuilder`, `FileLayout`, `GlobalOffsetMapper`,
 `StorageEngine`, and `ControlJournal` contracts for HTTP sequential/range

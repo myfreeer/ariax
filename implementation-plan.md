@@ -19,7 +19,8 @@ checkpoints do not yet satisfy the first vertical slice or the project
 definition of done.
 
 This is a staged plan for building the design without repeating the incomplete
-rewrite pattern.
+rewrite pattern. The native-startup orchestration boundary is now executable;
+its descriptor-safe platform backends remain phase gates.
 
 ## Phase 0: Contracts, Compatibility Inventory, And Build Baseline
 

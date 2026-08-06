@@ -403,8 +403,11 @@ plaintext-free startup path does not rely on caller guesswork.
 Journal opening, segment-tail repair, native root-capability reconstruction,
 install-candidate validation, and appender descriptor acquisition happen
 outside this pure boundary. The reconciler returns typed repair and deferred
-recovery requests for an external startup executor; it never treats a display
-path as an opened capability or claims those requests were applied.
+recovery requests; the executable native-startup coordinator consumes the
+post-repair handoff, invokes a platform backend in install-before-appender
+order, and publishes the scheduler only after those calls succeed. It never
+treats a display path as an opened capability or claims a backend request was
+applied merely because it was constructed.
 
 Before producing scheduler state it validates all of the following as one
 atomic batch:
@@ -476,15 +479,15 @@ metadata, exact ordered SQLite repairs, deferred appender-open requests,
 pending install recovery requests, and the move-only no-space target catalog.
 
 An `installing` intent suppresses a direct appender-open request because native
-candidate validation may either retain the old set or install the new set.
-Install recovery is bound to the fresh task identity and recovered authoritative
-sequence; it must validate the candidate's native path/header, linked prefix,
-checkpoint envelope/state hash, id, and frozen source sequence, then return the
-final appender request. An `installed` intent must already match the supplied
-recovered checkpoint, but native old-set retirement and path/capability checks
-remain deferred. Native root identity and descendant revalidation likewise
-remain mandatory before admission. No scheduler state is published if any
-input, repair, native recovery step, or final restore batch is rejected.
+candidate validation may either retain the old set or install the new set. The
+native-startup coordinator binds install recovery to the fresh task identity and
+recovered authoritative sequence, invokes the backend before any appender open,
+and accepts an appender only from the backend's selected authoritative set. An
+`installed` intent must already match the supplied recovered checkpoint, but the
+backend still performs old-set retirement and path/capability checks before the
+normal appender request. Native root identity and descendant revalidation remain
+mandatory before admission. No scheduler state is published if any input,
+repair, native recovery step, or final restore batch is rejected.
 
 ## Durable Completion
 

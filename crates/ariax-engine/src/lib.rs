@@ -4,6 +4,7 @@
 
 mod effect_sink;
 mod startup_executor;
+mod startup_native;
 
 pub use effect_sink::{
     MAX_PERSISTENCE_CATALOG_ENTRIES, MAX_PERSISTENCE_PLAN_STEPS, PersistenceCatalogError,
@@ -13,6 +14,10 @@ pub use effect_sink::{
 pub use startup_executor::{
     StartupSessionRepairError, StartupSessionRepairExecutor, StartupSessionRepairFinishError,
     StartupSessionRepairPoll,
+};
+pub use startup_native::{
+    NativeEngineStartup, NativeInstallOutcome, NativeStartupBackend, NativeStartupError,
+    NativeStartupResult, complete_native_startup,
 };
 
 use ariax_core::{

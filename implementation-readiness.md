@@ -11,12 +11,13 @@ module design and implementation.
 Repository scaffolding, generated inventories, core/config types, the scheduler
 kernel and ordered driver, journal work, SQLite session storage and owner,
 persistence-effect composition, bounded pure startup reconciliation planning,
-source-derived credential admission, ordered SQLite startup repair, and bounded
-stats sampling now have executable checkpoints. Native
-capability/install/appender recovery, final startup publication, and the first
-end-to-end downloader slice are not complete, so this is not a release/tag-ready
-checkpoint. Each remaining native adapter, transfer module, and integration
-still follows its Definition Of Ready checklist below.
+source-derived credential admission, ordered SQLite startup repair, the native
+startup handoff/coordinator, and bounded stats sampling now have executable
+checkpoints. Concrete descriptor-safe capability/install/appender adapters,
+final native publication wiring, and the first end-to-end downloader slice are
+not complete, so this is not a release/tag-ready checkpoint. Each remaining
+native adapter, transfer module, and integration still follows its Definition Of
+Ready checklist below.
 
 ## Start Here
 
