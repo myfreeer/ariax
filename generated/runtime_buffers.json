@@ -21,6 +21,24 @@
     {"code": "journal_pending", "mutable": false, "readable": true, "transitions_to": ["releasable"]},
     {"code": "releasable", "mutable": false, "readable": true, "transitions_to": []}
   ],
+  "stats_sampler": {
+    "profiles": [
+      {"code": "concurrency", "interval_ms": 1000},
+      {"code": "throughput", "interval_ms": 500},
+      {"code": "latency", "interval_ms": 250},
+      {"code": "compact", "interval_ms": 1000}
+    ],
+    "conditions": ["none", "idle", "stalled", "backpressured", "rate_limited"],
+    "reasons": ["connect_timeout", "handshake_timeout", "first_byte_timeout", "between_bytes_timeout", "lowest_speed", "disk_write_timeout", "disk_backpressure", "buffer_backpressure", "cpu_backpressure", "journal_backpressure", "ingress_rate_limit"],
+    "minimum_override_ms": 100,
+    "maximum_override_ms": 10000,
+    "maximum_active_entries": 100000,
+    "packet_independent": true,
+    "zero_delta_samples_zero": true,
+    "integer_ewma_previous_weight": 3,
+    "integer_ewma_instant_weight": 1,
+    "sample_age_is_query_derived": true
+  },
   "budget_contract": {"domain_and_resident_permits_required": true, "zero_byte_reservation_allowed": false},
   "pool_contract": {"free_list": "lifo_per_size_class", "stable_capacity": true, "drop_destination": "quarantine", "quarantine_exhaustion": "fault_backend", "timeout_reclamation": "retire_without_releasing_pool_budget"},
   "queue_contract": {"item_bounded": true, "byte_bounded": true, "credit_before_read": true, "close_returns_queued_ownership": true},

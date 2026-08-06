@@ -17,11 +17,21 @@ windows_cargo=$(toolchains/installed/windows-gnu/bin/cargo.exe --version)
 
 linux_host=$(toolchains/installed/linux/bin/rustc -vV | sed -n 's/^host: //p')
 windows_host=$(toolchains/installed/windows-gnu/bin/rustc.exe -vV | sed -n 's/^host: //p' | tr -d '\r')
+windows_commit=$(toolchains/installed/windows-gnu/bin/rustc.exe -vV | sed -n 's/^commit-hash: //p' | tr -d '\r')
 [[ "$linux_host" == x86_64-unknown-linux-gnu ]]
 [[ "$windows_host" == x86_64-pc-windows-gnu ]]
+[[ ${#windows_commit} -eq 40 ]]
 
 scripts/cargo-local.sh linux --version
 scripts/cargo-local.sh windows-gnu --version
+windows_clippy=$(scripts/cargo-local.sh windows-gnu clippy --version | tr -d '\r')
+windows_rustfmt=$(scripts/cargo-local.sh windows-gnu fmt --version | tr -d '\r')
+[[ "$windows_clippy" == *"${windows_commit:0:10}"* ]]
+[[ "$windows_rustfmt" == *"${windows_commit:0:10}"* ]]
+if scripts/with-windows-gnu-env.sh >/dev/null 2>&1; then
+    printf '%s\n' 'Windows-GNU wrapper accepted a missing command' >&2
+    exit 1
+fi
 
 windows_environment=$(scripts/with-windows-gnu-env.sh /usr/bin/bash -c '
     printf "rustc=%s\n" "$RUSTC"

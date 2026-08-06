@@ -9,9 +9,10 @@ probes, journal-install tokens, retained stopped-result transactions, and
 the validated no-clobber backup primitive. An ordered runtime driver, immutable
 applied snapshots, bounded blocking-disk fallback, dedicated session owner, concrete
 persistence-effect sink, host-key write/approval transactions, persisted-delay
-recovery, and pure cross-store startup planning are also executable. The
-startup repair/application executor, concrete non-persistence adapters, native
-capability/install recovery, credential derivation, the transfer/storage
+recovery, pure cross-store startup planning, bounded source-derived credential
+admission, ordered SQLite startup repair, and packet-independent stats sampling
+are also executable. Concrete non-persistence adapters, native
+capability/install/appender recovery and final publication, the transfer/storage
 pipeline, hot-backup crash-residue reconciliation, remaining backend work, and
 the native-platform/MSRV release CI gates remain phase and tag gates. These
 checkpoints do not yet satisfy the first vertical slice or the project

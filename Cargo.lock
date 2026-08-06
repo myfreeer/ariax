@@ -30,6 +30,7 @@ dependencies = [
  "ariax-core",
  "ariax-runtime",
  "ariax-storage",
+ "ariax-windows-security",
 ]
 
 [[package]]

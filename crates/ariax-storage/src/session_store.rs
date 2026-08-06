@@ -642,6 +642,13 @@ pub struct SessionTaskSourceRecord {
     pub priority: i64,
 }
 
+/// One exact bounded source set materialized for a startup task.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionTaskSourceSet {
+    pub gid: Gid,
+    pub sources: Vec<SessionTaskSourceRecord>,
+}
+
 /// One exact, bounded SFTP host-key challenge retained for restart recovery.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionHostKeyChallengeRecord {
@@ -1677,6 +1684,10 @@ impl SessionStore {
         read_task_sources(&self.connection, gid)
     }
 
+    pub fn task_source_sets(&self) -> Result<Vec<SessionTaskSourceSet>, SessionStoreError> {
+        read_task_source_sets_with_budget(&self.connection, SESSION_TASK_READ_BUDGET_BYTES)
+    }
+
     pub fn put_host_key_challenge(
         &mut self,
         challenge: &SessionHostKeyChallengeRecord,
@@ -1904,6 +1915,83 @@ impl SessionStore {
             return Err(SessionStoreError::NotFound);
         }
         Ok(SessionCacheReconciliation::Updated)
+    }
+
+    pub fn reconcile_journal_authority(
+        &mut self,
+        gid: Gid,
+        expected_journal_id: JournalId,
+        cache: Option<SessionJournalCache>,
+        root_display: Option<&PlatformPath>,
+        updated_ms: u64,
+    ) -> Result<(), SessionStoreError> {
+        if cache.is_none() && root_display.is_none() {
+            return Err(SessionStoreError::InvalidRecord("journal_authority.empty"));
+        }
+        if cache
+            .is_some_and(|cache| cache.layout_hash.is_some() != cache.root_binding_hash.is_some())
+        {
+            return Err(SessionStoreError::InvalidRecord(
+                "layout_and_root_hash_presence",
+            ));
+        }
+        let encoded_root = root_display.map(encode_platform_path).transpose()?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing = transaction
+            .query_row(
+                "SELECT primary_journal_id, root_display, cached_layout_hash, cached_root_binding_hash, cached_snapshot_hash FROM task WHERE gid = ?1",
+                [gid.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, Option<Vec<u8>>>(2)?,
+                        row.get::<_, Option<Vec<u8>>>(3)?,
+                        row.get::<_, Vec<u8>>(4)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or(SessionStoreError::NotFound)?;
+        if decode_journal_id(&existing.0, "task.primary_journal_id")? != expected_journal_id {
+            return Err(SessionStoreError::JournalPointerMismatch);
+        }
+        let _existing_root = decode_platform_path(&existing.1, "task.root_display")?;
+        let existing_cache = SessionJournalCache {
+            layout_hash: existing
+                .2
+                .as_deref()
+                .map(|value| decode_hash(value, "task.cached_layout_hash"))
+                .transpose()?,
+            root_binding_hash: existing
+                .3
+                .as_deref()
+                .map(|value| decode_hash(value, "task.cached_root_binding_hash"))
+                .transpose()?,
+            snapshot_hash: decode_hash(&existing.4, "task.cached_snapshot_hash")?,
+        };
+        let desired_cache = cache.unwrap_or(existing_cache);
+        let changed = transaction.execute(
+            "UPDATE task SET root_display = ?1, cached_layout_hash = ?2, cached_root_binding_hash = ?3, cached_snapshot_hash = ?4, updated_ms = ?5 WHERE gid = ?6 AND primary_journal_id = ?7",
+            params![
+                encoded_root.unwrap_or_else(|| existing.1.clone()),
+                desired_cache.layout_hash.map(|value| value.as_bytes().to_vec()),
+                desired_cache
+                    .root_binding_hash
+                    .map(|value| value.as_bytes().to_vec()),
+                desired_cache.snapshot_hash.as_bytes().as_slice(),
+                time_to_i64(updated_ms, "task.updated_ms")?,
+                gid.to_string(),
+                expected_journal_id.as_bytes().as_slice(),
+            ],
+        )?;
+        if changed != 1 {
+            return Err(SessionStoreError::JournalPointerMismatch);
+        }
+        transaction.commit()?;
+        Ok(())
     }
 
     pub fn begin_journal_install(
@@ -2458,6 +2546,9 @@ fn validate_task_sources_for_write(
     }
     let mut bytes = 0_usize;
     for source in sources {
+        if source.persistence_safe_uri.is_none() && !source.needs_credentials {
+            return Err(SessionStoreError::InvalidRecord("task_source.credentials"));
+        }
         if source
             .persistence_safe_uri
             .as_ref()
@@ -2536,9 +2627,153 @@ fn read_task_sources(
         SessionStoreError::InvalidRecord("task_source.bytes") => {
             SessionStoreError::InvalidPersistedValue("task_source.bytes")
         }
+        SessionStoreError::InvalidRecord("task_source.credentials") => {
+            SessionStoreError::InvalidPersistedValue("task_source.credentials")
+        }
         other => other,
     })?;
     Ok(sources)
+}
+
+fn read_task_source_sets_with_budget(
+    connection: &Connection,
+    budget: usize,
+) -> Result<Vec<SessionTaskSourceSet>, SessionStoreError> {
+    let task_count: i64 =
+        connection.query_row("SELECT COUNT(*) FROM task", [], |row| row.get(0))?;
+    let task_count = bounded_count(task_count, SESSION_MAX_TASKS, "task.count")?;
+    let mut sets = Vec::new();
+    sets.try_reserve_exact(task_count)
+        .map_err(|_| SessionStoreError::InvalidPersistedValue("task_source.allocation"))?;
+    let mut statement = connection.prepare(
+        "SELECT task.gid, source.uri_id, CAST(source.persistence_safe_uri AS BLOB), source.redacted_fingerprint, source.needs_credentials, source.priority
+         FROM task LEFT JOIN task_source AS source ON source.gid = task.gid
+         ORDER BY task.gid, source.priority, source.uri_id",
+    )?;
+    let mut rows = statement.query([])?;
+    let mut used_bytes = 0_usize;
+    let mut task_bytes = 0_usize;
+    let mut current_gid = None;
+    while let Some(row) = rows.next()? {
+        let gid = decode_gid(&row.get::<_, String>(0)?)?;
+        if current_gid != Some(gid) {
+            current_gid = Some(gid);
+            task_bytes = 0;
+            used_bytes = used_bytes
+                .checked_add(std::mem::size_of::<SessionTaskSourceSet>())
+                .ok_or(SessionStoreError::InvalidPersistedValue(
+                    "task_source.read_budget",
+                ))?;
+            if used_bytes > budget {
+                return Err(SessionStoreError::InvalidPersistedValue(
+                    "task_source.read_budget",
+                ));
+            }
+            sets.push(SessionTaskSourceSet {
+                gid,
+                sources: Vec::new(),
+            });
+            if sets.len() > task_count {
+                return Err(SessionStoreError::InvalidPersistedValue("task.count"));
+            }
+        }
+
+        let Some(raw_uri_id) = row.get::<_, Option<i64>>(1)? else {
+            if row.get::<_, Option<Vec<u8>>>(2)?.is_some()
+                || row.get::<_, Option<Vec<u8>>>(3)?.is_some()
+                || row.get::<_, Option<i64>>(4)?.is_some()
+                || row.get::<_, Option<i64>>(5)?.is_some()
+            {
+                return Err(SessionStoreError::InvalidPersistedValue(
+                    "task_source.null_row",
+                ));
+            }
+            continue;
+        };
+        let persistence_safe_uri = row
+            .get::<_, Option<Vec<u8>>>(2)?
+            .map(String::from_utf8)
+            .transpose()
+            .map_err(|_| SessionStoreError::InvalidPersistedValue("task_source.uri"))?;
+        let fingerprint =
+            row.get::<_, Option<Vec<u8>>>(3)?
+                .ok_or(SessionStoreError::InvalidPersistedValue(
+                    "task_source.fingerprint",
+                ))?;
+        let source = SessionTaskSourceRecord {
+            uri_id: u32::try_from(raw_uri_id)
+                .map_err(|_| SessionStoreError::InvalidPersistedValue("task_source.uri_id"))?,
+            persistence_safe_uri,
+            redacted_fingerprint: fingerprint
+                .try_into()
+                .map_err(|_| SessionStoreError::InvalidPersistedValue("task_source.fingerprint"))?,
+            needs_credentials: decode_bool(
+                row.get::<_, Option<i64>>(4)?
+                    .ok_or(SessionStoreError::InvalidPersistedValue(
+                        "task_source.needs_credentials",
+                    ))?,
+                "task_source.needs_credentials",
+            )?,
+            priority: row.get::<_, Option<i64>>(5)?.ok_or(
+                SessionStoreError::InvalidPersistedValue("task_source.priority"),
+            )?,
+        };
+        validate_task_sources_for_write(std::slice::from_ref(&source)).map_err(
+            |error| match error {
+                SessionStoreError::InvalidRecord("task_source.uri") => {
+                    SessionStoreError::InvalidPersistedValue("task_source.uri")
+                }
+                SessionStoreError::InvalidRecord("task_source.bytes") => {
+                    SessionStoreError::InvalidPersistedValue("task_source.bytes")
+                }
+                SessionStoreError::InvalidRecord("task_source.credentials") => {
+                    SessionStoreError::InvalidPersistedValue("task_source.credentials")
+                }
+                other => other,
+            },
+        )?;
+        let row_bytes =
+            task_source_owned_bytes(source.persistence_safe_uri.as_ref().map_or(0, String::len))
+                .ok_or(SessionStoreError::InvalidPersistedValue(
+                    "task_source.read_budget",
+                ))?;
+        task_bytes =
+            task_bytes
+                .checked_add(row_bytes)
+                .ok_or(SessionStoreError::InvalidPersistedValue(
+                    "task_source.bytes",
+                ))?;
+        if task_bytes > SESSION_SOURCE_READ_BUDGET_BYTES {
+            return Err(SessionStoreError::InvalidPersistedValue(
+                "task_source.bytes",
+            ));
+        }
+        used_bytes =
+            used_bytes
+                .checked_add(row_bytes)
+                .ok_or(SessionStoreError::InvalidPersistedValue(
+                    "task_source.read_budget",
+                ))?;
+        if used_bytes > budget {
+            return Err(SessionStoreError::InvalidPersistedValue(
+                "task_source.read_budget",
+            ));
+        }
+        let sources = &mut sets
+            .last_mut()
+            .expect("a joined source row always follows its task")
+            .sources;
+        if sources.len() == SESSION_MAX_SOURCES_PER_TASK {
+            return Err(SessionStoreError::InvalidPersistedValue(
+                "task_source.count",
+            ));
+        }
+        sources.push(source);
+    }
+    if sets.len() != task_count {
+        return Err(SessionStoreError::InvalidPersistedValue("task.count"));
+    }
+    Ok(sets)
 }
 
 fn validate_task_sources(connection: &Connection) -> Result<(), SessionStoreError> {
@@ -2584,7 +2819,13 @@ fn validate_task_sources(connection: &Connection) -> Result<(), SessionStoreErro
                 "task_source.fingerprint",
             ));
         }
-        decode_bool(row.get::<_, i64>(4)?, "task_source.needs_credentials")?;
+        let needs_credentials =
+            decode_bool(row.get::<_, i64>(4)?, "task_source.needs_credentials")?;
+        if uri.is_none() && !needs_credentials {
+            return Err(SessionStoreError::InvalidPersistedValue(
+                "task_source.credentials",
+            ));
+        }
         let _priority = row.get::<_, i64>(5)?;
         let row_bytes = task_source_owned_bytes(uri.as_ref().map_or(0, Vec::len)).ok_or(
             SessionStoreError::InvalidPersistedValue("task_source.bytes"),
@@ -7646,7 +7887,7 @@ mod tests {
         store
             .connection
             .execute(
-                "INSERT INTO task_source(gid, uri_id, persistence_safe_uri, redacted_fingerprint, needs_credentials, priority) VALUES (?1, 0, NULL, ?2, 0, 0)",
+                "INSERT INTO task_source(gid, uri_id, persistence_safe_uri, redacted_fingerprint, needs_credentials, priority) VALUES (?1, 0, NULL, ?2, 1, 0)",
                 rusqlite::params![gid(2).to_string(), [7_u8; 32].as_slice()],
             )
             .expect("insert retained task metadata");
@@ -8388,6 +8629,30 @@ mod tests {
             store.replace_task_sources(gid(1), &[oversized]),
             Err(SessionStoreError::InvalidRecord("task_source.uri"))
         ));
+        let invalid_placeholder = SessionTaskSourceRecord {
+            persistence_safe_uri: None,
+            needs_credentials: false,
+            ..sources[0].clone()
+        };
+        assert!(matches!(
+            store.replace_task_sources(gid(1), &[invalid_placeholder]),
+            Err(SessionStoreError::InvalidRecord("task_source.credentials"))
+        ));
+
+        store.put_task(&task_record(gid(2), 1)).expect("empty task");
+        assert_eq!(
+            store.task_source_sets().expect("startup source sets"),
+            vec![
+                super::SessionTaskSourceSet {
+                    gid: gid(1),
+                    sources: vec![sources[1].clone(), sources[0].clone()],
+                },
+                super::SessionTaskSourceSet {
+                    gid: gid(2),
+                    sources: Vec::new(),
+                },
+            ]
+        );
     }
 
     #[test]
@@ -8438,7 +8703,7 @@ mod tests {
             uri_id: extra_uri_id,
             persistence_safe_uri: None,
             redacted_fingerprint: [9; 32],
-            needs_credentials: false,
+            needs_credentials: true,
             priority: i64::from(extra_uri_id),
         });
         assert!(matches!(
@@ -8456,7 +8721,7 @@ mod tests {
         store
             .connection
             .execute(
-                "INSERT INTO task_source(gid, uri_id, persistence_safe_uri, redacted_fingerprint, needs_credentials, priority) VALUES (?1, ?2, NULL, ?3, 0, ?4)",
+                "INSERT INTO task_source(gid, uri_id, persistence_safe_uri, redacted_fingerprint, needs_credentials, priority) VALUES (?1, ?2, NULL, ?3, 1, ?4)",
                 rusqlite::params![
                     gid(1).to_string(),
                     i64::from(extra_uri_id),
@@ -8482,6 +8747,44 @@ mod tests {
             SessionStore::open(directory.database(), SessionStoreConfig::default()),
             Err(SessionStoreError::InvalidPersistedValue(
                 "task_source.bytes"
+            ))
+        ));
+    }
+
+    #[test]
+    fn startup_task_source_global_budget_charges_empty_sets_and_owned_rows_exactly() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        store
+            .put_task(&task_record(gid(1), 0))
+            .expect("source task");
+        store.put_task(&task_record(gid(2), 1)).expect("empty task");
+        let source = SessionTaskSourceRecord {
+            uri_id: 7,
+            persistence_safe_uri: Some("https://mirror.example/file".to_owned()),
+            redacted_fingerprint: [7; 32],
+            needs_credentials: false,
+            priority: 0,
+        };
+        store
+            .replace_task_sources(gid(1), std::slice::from_ref(&source))
+            .expect("persist source");
+
+        let exact_budget = 2 * std::mem::size_of::<super::SessionTaskSourceSet>()
+            + super::task_source_owned_bytes(
+                source.persistence_safe_uri.as_ref().map_or(0, String::len),
+            )
+            .expect("row bytes");
+        assert_eq!(
+            super::read_task_source_sets_with_budget(&store.connection, exact_budget)
+                .expect("exact global budget")
+                .len(),
+            2
+        );
+        assert!(matches!(
+            super::read_task_source_sets_with_budget(&store.connection, exact_budget - 1),
+            Err(SessionStoreError::InvalidPersistedValue(
+                "task_source.read_budget"
             ))
         ));
     }
@@ -8835,6 +9138,57 @@ mod tests {
                 .expect("second reconcile"),
             SessionCacheReconciliation::Unchanged
         );
+
+        let authoritative_cache = SessionJournalCache {
+            layout_hash: Some(hash(10)),
+            root_binding_hash: Some(hash(11)),
+            snapshot_hash: hash(12),
+        };
+        let authoritative_root = path(b"/authoritative/root");
+        store
+            .reconcile_journal_authority(
+                gid(1),
+                task.primary_journal_id,
+                Some(authoritative_cache),
+                Some(&authoritative_root),
+                500,
+            )
+            .expect("atomic authority repair");
+        let repaired = store.tasks().expect("repaired tasks").pop().expect("task");
+        assert_eq!(repaired.queue_state, task.queue_state);
+        assert_eq!(repaired.queue_position, task.queue_position);
+        assert_eq!(repaired.primary_journal_id, task.primary_journal_id);
+        assert_eq!(repaired.primary_journal_path, task.primary_journal_path);
+        assert_eq!(repaired.root_display, authoritative_root);
+        assert_eq!(repaired.cached_layout_hash, authoritative_cache.layout_hash);
+        assert_eq!(
+            repaired.cached_root_binding_hash,
+            authoritative_cache.root_binding_hash
+        );
+        assert_eq!(
+            repaired.cached_snapshot_hash,
+            authoritative_cache.snapshot_hash
+        );
+
+        let before_rejection = repaired;
+        assert!(matches!(
+            store.reconcile_journal_authority(
+                gid(1),
+                journal(99),
+                Some(cache),
+                Some(&path(b"/wrong/root")),
+                600,
+            ),
+            Err(SessionStoreError::JournalPointerMismatch)
+        ));
+        assert_eq!(
+            store.tasks().expect("rejected repair").pop().expect("task"),
+            before_rejection
+        );
+        assert!(matches!(
+            store.reconcile_journal_authority(gid(1), task.primary_journal_id, None, None, 700,),
+            Err(SessionStoreError::InvalidRecord("journal_authority.empty"))
+        ));
     }
 
     #[test]

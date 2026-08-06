@@ -15,13 +15,16 @@ blocking positional writes with correlated cancellation and timed shutdown, a
 dedicated bounded session owner, concrete persistence-effect composition,
 atomic host-key challenge resolution, persisted retry/slow/no-space recovery,
 and a bounded pure cross-store startup plan that emits exact pre-publication
-repair work. The startup repair/application executor, concrete
-network/timer/native-filesystem adapters, secure capability and journal-install
-execution, credential-requirement derivation, the first end-to-end transfer
-pipeline, hot-backup crash-residue reconciliation, and the native-platform/MSRV
-CI gates remain pending. This checkpoint is not yet a complete downloader or
-release/tag-ready. Phase gates remain normative in `implementation-readiness.md`
-and `implementation-plan.md`.
+repair work. The session owner now materializes exact bounded source sets,
+composition derives non-secret credential admissions, an ordered SQLite repair
+executor applies queue/terminal/journal-authority work before scheduler
+construction, and the packet-independent bounded stats sampler is executable.
+Concrete network/timer/native-filesystem adapters, secure capability and
+journal-install/appender execution, final startup publication, the first
+end-to-end transfer pipeline, hot-backup crash-residue reconciliation, and the
+native-platform/MSRV CI gates remain pending. This checkpoint is not yet a
+complete downloader or release/tag-ready. Phase gates remain normative in
+`implementation-readiness.md` and `implementation-plan.md`.
 
 This design is for a new downloader that keeps the mature aria2 user model
 while fixing the major safety, scalability, and completeness problems found in

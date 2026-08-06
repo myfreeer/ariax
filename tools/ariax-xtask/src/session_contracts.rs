@@ -186,7 +186,7 @@ fn render_session_contracts() -> String {
     output.push_str("],\n  \"errors\": [");
     write_codes(&mut output, ALL_SESSION_STORE_ERROR_CODES.iter().copied());
     output.push_str(
-        "],\n  \"semantic_guards\": {\"host_key_departure_requires_challenge_clear\": true, \"host_key_read_budget_charges_owned_record_overhead\": true, \"task_source_startup_rechecks_per_task_budget\": true, \"stopped_result_status_payload_is_canonical\": true},\n  \"owner_errors\": [",
+        "],\n  \"semantic_guards\": {\"host_key_departure_requires_challenge_clear\": true, \"host_key_read_budget_charges_owned_record_overhead\": true, \"task_source_startup_rechecks_per_task_budget\": true, \"startup_task_source_global_budget_charges_owned_sets_and_rows\": true, \"startup_materializes_one_source_set_per_task\": true, \"redacted_task_source_requires_credentials\": true, \"startup_session_repairs_are_owner_ordered\": true, \"journal_authority_repair_rechecks_primary_pointer\": true, \"stopped_result_status_payload_is_canonical\": true},\n  \"owner_errors\": [",
     );
     write_codes(&mut output, ALL_SESSION_OWNER_ERROR_CODES.iter().copied());
     writeln!(
@@ -250,6 +250,15 @@ mod tests {
         assert!(contract.contains("\"host_key_departure_requires_challenge_clear\": true"));
         assert!(contract.contains("\"host_key_read_budget_charges_owned_record_overhead\": true"));
         assert!(contract.contains("\"task_source_startup_rechecks_per_task_budget\": true"));
+        assert!(
+            contract.contains(
+                "\"startup_task_source_global_budget_charges_owned_sets_and_rows\": true"
+            )
+        );
+        assert!(contract.contains("\"startup_materializes_one_source_set_per_task\": true"));
+        assert!(contract.contains("\"redacted_task_source_requires_credentials\": true"));
+        assert!(contract.contains("\"startup_session_repairs_are_owner_ordered\": true"));
+        assert!(contract.contains("\"journal_authority_repair_rechecks_primary_pointer\": true"));
         assert!(contract.contains("\"stopped_result_status_payload_is_canonical\": true"));
         assert!(contract.contains(
             "\"journal_install_token_fields\": [\"gid\", \"checkpoint_id\", \"new_journal_id\"]"

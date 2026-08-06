@@ -10,11 +10,13 @@ module design and implementation.
 
 Repository scaffolding, generated inventories, core/config types, the scheduler
 kernel and ordered driver, journal work, SQLite session storage and owner,
-persistence-effect composition, and bounded pure startup reconciliation
-planning now have executable checkpoints. The startup repair/application
-executor and first end-to-end downloader slice are not complete, so this is not
-a release/tag-ready checkpoint. Each remaining native adapter, transfer module,
-and integration still follows its Definition Of Ready checklist below.
+persistence-effect composition, bounded pure startup reconciliation planning,
+source-derived credential admission, ordered SQLite startup repair, and bounded
+stats sampling now have executable checkpoints. Native
+capability/install/appender recovery, final startup publication, and the first
+end-to-end downloader slice are not complete, so this is not a release/tag-ready
+checkpoint. Each remaining native adapter, transfer module, and integration
+still follows its Definition Of Ready checklist below.
 
 ## Start Here
 
@@ -175,7 +177,8 @@ The first useful vertical slice spans implementation Phases 1–3 and should be:
    explicit relocation/rebind entry point,
 7. known-length identity HTTP sequential download through `StorageEngine`,
 8. strict range resume with provisional writes and explicit commit/abort,
-9. packet-independent `StatsSampler`,
+9. packet-independent `StatsSampler` (bounded pure/runtime primitive complete;
+   protocol producers and RPC rendering remain integration work),
 10. JSON-RPC `addUri`, `tellStatus`, `pause`, `remove`, and `getGlobalStat`
     against the real scheduler.
 
@@ -193,10 +196,10 @@ this vertical slice.
 - Connect the ordered driver to concrete timer, allocation, option-application,
   cancellation, and no-space-probe adapters; the persistence branch and its
   correlated acknowledgements are executable.
-- Execute the startup reconciler's exact SQLite repair sequence, resolve
-  journal-install intents, open appenders and output-root capabilities through
-  native secure adapters, and derive the required non-secret credential
-  admission records before publication.
+- Resolve journal-install intents and open appenders/output-root capabilities
+  through native secure adapters, then publish only after the derived
+  non-secret credential admissions, executable ordered SQLite repair stage, and
+  all native recovery work succeed.
 - Integrate live protocol retry classification and backoff with the executable
   persisted retry/slow/no-space recovery paths.
 - Drive the bounded orderly-shutdown coordinator across every real lane,

@@ -10,5 +10,8 @@ ariax-core.workspace = true
 ariax-runtime.workspace = true
 ariax-storage.workspace = true
 
+[target.'cfg(windows)'.dev-dependencies]
+ariax-windows-security.workspace = true
+
 [lints]
 workspace = true

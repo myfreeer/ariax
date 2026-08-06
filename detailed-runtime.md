@@ -5,7 +5,8 @@ driver, immutable applied status roots, dual byte permits, stable `BufferLease`
 state machine, bounded lazy pool/quarantine, item+byte queue credits, reserved
 completion delivery, the bounded blocking write lane, and the session-owner
 persistence composition sink are implemented. The bounded move-only shutdown
-coordinator is also executable. Async Tokio lanes, native kernel cancellation,
+coordinator and packet-independent bounded stats sampler are also executable.
+Async Tokio lanes, protocol counter producers, native kernel cancellation,
 runtime topology, and percentile timing remain pending.
 
 This document defines the concrete runtime lanes, bounded queues, buffer leases,

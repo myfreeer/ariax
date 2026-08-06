@@ -3,28 +3,34 @@
 //! Cross-crate composition for bounded startup reconciliation.
 
 mod effect_sink;
+mod startup_executor;
 
 pub use effect_sink::{
     MAX_PERSISTENCE_CATALOG_ENTRIES, MAX_PERSISTENCE_PLAN_STEPS, PersistenceCatalogError,
     PersistenceEffectCatalog, PersistenceEffectPlan, PersistencePlanError, PersistencePlanStep,
     PersistenceSchedulerEffectSink,
 };
+pub use startup_executor::{
+    StartupSessionRepairError, StartupSessionRepairExecutor, StartupSessionRepairFinishError,
+    StartupSessionRepairPoll,
+};
 
 use ariax_core::{
-    ALL_QUEUE_CLASSES, Aria2Status, CredentialRequirement, Generation, Gid, HostKeyChallenge,
-    MonotonicInstant, NoSpaceCondition, NoSpaceProbeId, NoSpaceProbeOrigin, PersistedDelayDecision,
-    PersistedDelayError, PresentedHostKeyChallenge, PresentedHostKeyChallengeError, PublicError,
-    QueueClass, QueueOrder, RecoveredDelayDecision, RecoveredSchedulerTask, RequestScheduler,
-    RetryClass, SchedulerConfig, SchedulerRestoreBatch, SchedulerRestoreError,
-    SchedulerRestorePlan, SlowReadmissionDecision, SlowSlotPersistence, TaskConditions, TaskId,
-    TaskState, TransitionEffect,
+    ALL_QUEUE_CLASSES, Aria2Status, CredentialKind, CredentialRequirement, Generation, Gid,
+    HostKeyChallenge, MonotonicInstant, NoSpaceCondition, NoSpaceProbeId, NoSpaceProbeOrigin,
+    PersistedDelayDecision, PersistedDelayError, PresentedHostKeyChallenge,
+    PresentedHostKeyChallengeError, PublicError, QueueClass, QueueOrder, RecoveredDelayDecision,
+    RecoveredSchedulerTask, RequestScheduler, RetryClass, SchedulerConfig, SchedulerRestoreBatch,
+    SchedulerRestoreError, SchedulerRestorePlan, SlowReadmissionDecision, SlowSlotPersistence,
+    TaskConditions, TaskId, TaskState, TransitionEffect, UriId,
 };
 use ariax_storage::{
     JournalId, JournalInstallIntent, JournalInstallPhase, PlatformPath, RecoveredCheckpoint,
     RecoveredJournalState, RecoveredRetryState, RecoveredTerminal, RetryScope,
-    SessionHostKeyChallengeRecord, SessionJournalCache, SessionNoSpaceCondition, SessionQueueOrder,
-    SessionQueueState, SessionQueueTransition, SessionStartupSnapshot, SessionStoppedResultRecord,
-    SessionTaskRecord, SessionTerminalStatus, TaskPauseReason,
+    SESSION_MAX_SAFE_URI_BYTES, SESSION_MAX_SOURCES_PER_TASK, SessionHostKeyChallengeRecord,
+    SessionJournalCache, SessionNoSpaceCondition, SessionQueueOrder, SessionQueueState,
+    SessionQueueTransition, SessionStartupSnapshot, SessionStoppedResultRecord, SessionTaskRecord,
+    SessionTaskSourceRecord, SessionTaskSourceSet, SessionTerminalStatus, TaskPauseReason,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -62,6 +68,209 @@ pub struct RecoveredTaskJournal {
 pub struct DerivedCredentialAdmission {
     pub gid: Gid,
     pub requirement: Option<CredentialRequirement>,
+}
+
+/// Why persisted source metadata cannot produce one exact admission decision
+/// per startup task.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CredentialDerivationError {
+    AllocationFailed,
+    TooManyTasks,
+    TooManySourceSets,
+    DuplicateTask(Gid),
+    DuplicateSourceSet(Gid),
+    MissingSourceSet(Gid),
+    ExtraSourceSet(Gid),
+    TooManySources(Gid),
+    DuplicateSourceId(Gid),
+    NonCanonicalSourceOrder(Gid),
+    UnsafeSourceUri(Gid),
+    UnmarkedRedactedSource(Gid),
+}
+
+impl fmt::Display for CredentialDerivationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AllocationFailed => {
+                formatter.write_str("credential derivation allocation failed")
+            }
+            Self::TooManyTasks => formatter.write_str("too many startup tasks"),
+            Self::TooManySourceSets => formatter.write_str("too many startup source sets"),
+            Self::DuplicateTask(gid) => write!(formatter, "duplicate startup task {gid}"),
+            Self::DuplicateSourceSet(gid) => {
+                write!(formatter, "duplicate startup source set for {gid}")
+            }
+            Self::MissingSourceSet(gid) => {
+                write!(formatter, "startup task {gid} has no source set")
+            }
+            Self::ExtraSourceSet(gid) => {
+                write!(formatter, "startup source set {gid} has no task")
+            }
+            Self::TooManySources(gid) => {
+                write!(formatter, "startup task {gid} has too many sources")
+            }
+            Self::DuplicateSourceId(gid) => {
+                write!(formatter, "startup task {gid} has duplicate source ids")
+            }
+            Self::NonCanonicalSourceOrder(gid) => {
+                write!(
+                    formatter,
+                    "startup task {gid} sources are not canonically ordered"
+                )
+            }
+            Self::UnsafeSourceUri(gid) => {
+                write!(
+                    formatter,
+                    "startup task {gid} has an oversized persisted source URI"
+                )
+            }
+            Self::UnmarkedRedactedSource(gid) => write!(
+                formatter,
+                "startup task {gid} has a redacted source without a credential blocker"
+            ),
+        }
+    }
+}
+
+impl Error for CredentialDerivationError {}
+
+/// Derives the ordinary plaintext-free startup credential admissions from the
+/// session owner's exact bounded source sets.
+pub fn derive_credential_admissions(
+    snapshot: &SessionStartupSnapshot,
+) -> Result<Vec<DerivedCredentialAdmission>, CredentialDerivationError> {
+    if snapshot.tasks.len() > ariax_storage::SESSION_MAX_TASKS {
+        return Err(CredentialDerivationError::TooManyTasks);
+    }
+    if snapshot.task_sources.len() > ariax_storage::SESSION_MAX_TASKS {
+        return Err(CredentialDerivationError::TooManySourceSets);
+    }
+    let mut tasks = BTreeMap::new();
+    for task in &snapshot.tasks {
+        if tasks.insert(task.gid, task.queue_state).is_some() {
+            return Err(CredentialDerivationError::DuplicateTask(task.gid));
+        }
+    }
+    let mut source_sets = BTreeMap::new();
+    for source_set in &snapshot.task_sources {
+        if source_sets.insert(source_set.gid, source_set).is_some() {
+            return Err(CredentialDerivationError::DuplicateSourceSet(
+                source_set.gid,
+            ));
+        }
+    }
+    if let Some(gid) = source_sets
+        .keys()
+        .copied()
+        .find(|gid| !tasks.contains_key(gid))
+    {
+        return Err(CredentialDerivationError::ExtraSourceSet(gid));
+    }
+
+    let mut output = Vec::new();
+    output
+        .try_reserve_exact(tasks.len())
+        .map_err(|_| CredentialDerivationError::AllocationFailed)?;
+    for (gid, queue_state) in tasks {
+        let source_set = source_sets
+            .remove(&gid)
+            .ok_or(CredentialDerivationError::MissingSourceSet(gid))?;
+        validate_source_set(source_set)?;
+        let requirement = if queue_state == SessionQueueState::Stopped
+            || source_set.sources.iter().any(is_runnable_source)
+        {
+            None
+        } else {
+            source_set
+                .sources
+                .iter()
+                .find(|source| source.needs_credentials)
+                .map(credential_requirement)
+        };
+        output.push(DerivedCredentialAdmission { gid, requirement });
+    }
+    debug_assert!(source_sets.is_empty());
+    Ok(output)
+}
+
+fn validate_source_set(source_set: &SessionTaskSourceSet) -> Result<(), CredentialDerivationError> {
+    if source_set.sources.len() > SESSION_MAX_SOURCES_PER_TASK {
+        return Err(CredentialDerivationError::TooManySources(source_set.gid));
+    }
+    let mut source_ids = BTreeSet::new();
+    let mut previous = None;
+    for source in &source_set.sources {
+        if !source_ids.insert(source.uri_id) {
+            return Err(CredentialDerivationError::DuplicateSourceId(source_set.gid));
+        }
+        let order = (source.priority, source.uri_id);
+        if previous.is_some_and(|previous| previous >= order) {
+            return Err(CredentialDerivationError::NonCanonicalSourceOrder(
+                source_set.gid,
+            ));
+        }
+        previous = Some(order);
+        if source
+            .persistence_safe_uri
+            .as_ref()
+            .is_some_and(|uri| uri.len() > SESSION_MAX_SAFE_URI_BYTES)
+        {
+            return Err(CredentialDerivationError::UnsafeSourceUri(source_set.gid));
+        }
+        if source.persistence_safe_uri.is_none() && !source.needs_credentials {
+            return Err(CredentialDerivationError::UnmarkedRedactedSource(
+                source_set.gid,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn is_runnable_source(source: &SessionTaskSourceRecord) -> bool {
+    source.persistence_safe_uri.is_some() && !source.needs_credentials
+}
+
+fn credential_requirement(source: &SessionTaskSourceRecord) -> CredentialRequirement {
+    let kind = source
+        .persistence_safe_uri
+        .as_deref()
+        .map_or(CredentialKind::SourceUri, credential_kind_for_uri);
+    let safe_description = match kind {
+        CredentialKind::HttpAuthentication => "HTTP credentials required after restart",
+        CredentialKind::FtpAuthentication => "FTP credentials required after restart",
+        CredentialKind::SftpAuthentication => "SFTP credentials required after restart",
+        CredentialKind::SourceUri => "source URI or credentials required after restart",
+        CredentialKind::ProxyAuthentication => "proxy credentials required after restart",
+        CredentialKind::PrivateKeyPassphrase => "private-key passphrase required after restart",
+    }
+    .to_owned();
+    CredentialRequirement {
+        kind,
+        source: Some(UriId::new(source.uri_id)),
+        safe_description,
+    }
+}
+
+fn credential_kind_for_uri(uri: &str) -> CredentialKind {
+    let scheme = uri.split_once("://").map(|(scheme, _)| scheme);
+    match scheme {
+        Some(scheme)
+            if scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https") =>
+        {
+            CredentialKind::HttpAuthentication
+        }
+        Some(scheme)
+            if scheme.eq_ignore_ascii_case("ftp") || scheme.eq_ignore_ascii_case("ftps") =>
+        {
+            CredentialKind::FtpAuthentication
+        }
+        Some(scheme)
+            if scheme.eq_ignore_ascii_case("sftp") || scheme.eq_ignore_ascii_case("ssh") =>
+        {
+            CredentialKind::SftpAuthentication
+        }
+        _ => CredentialKind::SourceUri,
+    }
 }
 
 /// Exact descriptor-opening work that still requires a native filesystem layer.
@@ -290,8 +499,10 @@ impl NoSpaceProbeTargetCatalog {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionAuthorityRepair {
     pub gid: Gid,
+    pub expected_journal_id: JournalId,
     pub cache: Option<SessionJournalCache>,
     pub root_display: Option<PlatformPath>,
+    pub updated_ms: u64,
 }
 
 /// Task-local durable state retained beside the fresh scheduler identity.
@@ -307,8 +518,9 @@ pub struct RecoveredEngineTask {
 /// Pure output produced before the scheduler is constructed.
 ///
 /// `queue_session_repairs` must be durably applied in order before
-/// `terminal_session_repairs`; neither scheduler effects nor snapshots may be
-/// published before both sequences and all native recovery work succeed.
+/// `terminal_session_repairs`, followed by `authority_repairs`; neither
+/// scheduler effects nor snapshots may be published before every repair and
+/// all native recovery work succeed.
 #[derive(Debug, Eq, PartialEq)]
 pub struct StartupReconciliation {
     pub scheduler_batch: SchedulerRestoreBatch,
@@ -324,9 +536,10 @@ pub struct StartupReconciliation {
 /// Scheduler reconstruction plus mandatory pre-publication recovery metadata.
 ///
 /// Construction is atomic in memory, but this value is not permission to
-/// publish or admit work. Callers must first apply queue repairs, then terminal
-/// repairs, resolve journal installs before affected appenders, bind native
-/// roots, and install the final appenders.
+/// publish or admit work. Any nonempty repair vectors must first be applied in
+/// queue/terminal/authority order. Callers must also resolve journal installs
+/// before affected appenders, bind native roots, and install the final
+/// appenders.
 pub struct EngineStartup {
     pub scheduler: RequestScheduler,
     pub restore_plan: SchedulerRestorePlan,
@@ -583,6 +796,65 @@ impl From<SchedulerRestoreError> for StartupRecoveryError {
     }
 }
 
+/// Failures from the ordinary source-derived startup path.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DerivedStartupError {
+    Credentials(CredentialDerivationError),
+    Recovery(StartupRecoveryError),
+}
+
+impl fmt::Display for DerivedStartupError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Credentials(error) => write!(formatter, "credential derivation failed: {error}"),
+            Self::Recovery(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl Error for DerivedStartupError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Credentials(error) => Some(error),
+            Self::Recovery(error) => Some(error),
+        }
+    }
+}
+
+impl From<CredentialDerivationError> for DerivedStartupError {
+    fn from(error: CredentialDerivationError) -> Self {
+        Self::Credentials(error)
+    }
+}
+
+impl From<StartupRecoveryError> for DerivedStartupError {
+    fn from(error: StartupRecoveryError) -> Self {
+        Self::Recovery(error)
+    }
+}
+
+/// Reconciles the ordinary plaintext-free startup path after deriving one
+/// admission decision from every materialized source set.
+pub fn reconcile_startup_derived(
+    snapshot: SessionStartupSnapshot,
+    journals: Vec<RecoveredTaskJournal>,
+    config: StartupRecoveryConfig,
+) -> Result<StartupReconciliation, DerivedStartupError> {
+    let credential_admissions = derive_credential_admissions(&snapshot)?;
+    reconcile_startup(snapshot, journals, credential_admissions, config).map_err(Into::into)
+}
+
+/// Constructs the in-memory scheduler through the ordinary source-derived
+/// startup path. This does not apply repair vectors or authorize publication.
+pub fn reconcile_and_restore_derived(
+    snapshot: SessionStartupSnapshot,
+    journals: Vec<RecoveredTaskJournal>,
+    config: StartupRecoveryConfig,
+) -> Result<EngineStartup, DerivedStartupError> {
+    let credential_admissions = derive_credential_admissions(&snapshot)?;
+    reconcile_and_restore(snapshot, journals, credential_admissions, config).map_err(Into::into)
+}
+
 /// Reconciles durable authorities without opening files or publishing state.
 pub fn reconcile_startup(
     snapshot: SessionStartupSnapshot,
@@ -766,8 +1038,10 @@ pub fn reconcile_startup(
         if persisted_cache != authoritative_cache || root_repair.is_some() {
             authority_repairs.push(SessionAuthorityRepair {
                 gid,
+                expected_journal_id: journal.journal_id,
                 cache: (persisted_cache != authoritative_cache).then_some(authoritative_cache),
                 root_display: root_repair,
+                updated_ms: repair_updated_ms,
             });
         }
 
@@ -941,8 +1215,15 @@ pub fn reconcile_and_restore(
     config: StartupRecoveryConfig,
 ) -> Result<EngineStartup, StartupRecoveryError> {
     let reconciliation = reconcile_startup(snapshot, journals, credential_admissions, config)?;
+    restore_reconciliation(reconciliation, config.scheduler)
+}
+
+fn restore_reconciliation(
+    reconciliation: StartupReconciliation,
+    scheduler_config: SchedulerConfig,
+) -> Result<EngineStartup, StartupRecoveryError> {
     let (scheduler, restore_plan) =
-        RequestScheduler::restore(config.scheduler, reconciliation.scheduler_batch)?;
+        RequestScheduler::restore(scheduler_config, reconciliation.scheduler_batch)?;
     Ok(EngineStartup {
         scheduler,
         restore_plan,
@@ -1767,10 +2048,11 @@ const fn queue_source_rank(class: QueueClass, source: SessionQueueState) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::{
-        DerivedCredentialAdmission, NoSpaceProbeTargetError, RecoveredTaskJournal,
-        StartupDeadlineKind, StartupRecoveryConfig, StartupRecoveryError,
+        CredentialDerivationError, DerivedCredentialAdmission, NoSpaceProbeTargetError,
+        RecoveredTaskJournal, StartupDeadlineKind, StartupRecoveryConfig, StartupRecoveryError,
+        derive_credential_admissions,
         reconcile_and_restore as reconcile_and_restore_with_credentials,
-        reconcile_startup as reconcile_startup_with_credentials,
+        reconcile_and_restore_derived, reconcile_startup as reconcile_startup_with_credentials,
     };
     use ariax_core::{
         CredentialKind, CredentialRequirement, CredentialRequirementKey, ErrorKind, FileId,
@@ -1786,8 +2068,9 @@ mod tests {
         SafePathBuilder, SanitizedOptionMap, SessionHostKeyChallengeRecord, SessionId,
         SessionJournalMode, SessionNoSpaceCondition, SessionQueueState, SessionRecord,
         SessionSlowRetryDecision, SessionSlowSlotState, SessionStartupSnapshot,
-        SessionStoppedResultRecord, SessionStoreSettings, SessionTaskRecord, SessionTerminalStatus,
-        TaskPauseReason, TaskRemoveReason, calculate_checkpoint_state_hash, recover_journal_state,
+        SessionStoppedResultRecord, SessionStoreSettings, SessionTaskRecord,
+        SessionTaskSourceRecord, SessionTaskSourceSet, SessionTerminalStatus, TaskPauseReason,
+        TaskRemoveReason, calculate_checkpoint_state_hash, recover_journal_state,
     };
     use std::collections::BTreeMap;
     use std::num::{NonZeroU64, NonZeroUsize};
@@ -2082,6 +2365,13 @@ mod tests {
     }
 
     fn snapshot(tasks: Vec<SessionTaskRecord>) -> SessionStartupSnapshot {
+        let task_sources = tasks
+            .iter()
+            .map(|task| SessionTaskSourceSet {
+                gid: task.gid,
+                sources: Vec::new(),
+            })
+            .collect();
         SessionStartupSnapshot {
             settings: settings(),
             session: Some(SessionRecord {
@@ -2091,6 +2381,7 @@ mod tests {
                 clean_shutdown: false,
             }),
             tasks,
+            task_sources,
             stopped_results: Vec::new(),
             host_key_challenges: Vec::new(),
             journal_installs: Vec::new(),
@@ -2475,6 +2766,235 @@ mod tests {
                 } if *key == requirement.key()
             )
         }));
+    }
+
+    #[test]
+    fn derives_exact_credential_admissions_from_canonical_source_sets() {
+        let now = MonotonicInstant::now();
+        let blocked_gid = gid(61);
+        let runnable_gid = gid(62);
+        let terminal_gid = gid(63);
+        let blocked = recovered_journal(blocked_gid, task_id(61), journal_id(61), Vec::new());
+        let runnable = recovered_journal(runnable_gid, task_id(62), journal_id(62), Vec::new());
+        let terminal = recovered_journal(
+            terminal_gid,
+            task_id(63),
+            journal_id(63),
+            vec![JournalPayload::TaskRemoved {
+                reason: TaskRemoveReason::User,
+            }],
+        );
+        let blocked_task = task_record(
+            blocked_gid,
+            SessionQueueState::Waiting,
+            0,
+            blocked.journal_id,
+            journal_snapshot_hash(&blocked),
+        );
+        let runnable_task = task_record(
+            runnable_gid,
+            SessionQueueState::Waiting,
+            1,
+            runnable.journal_id,
+            journal_snapshot_hash(&runnable),
+        );
+        let terminal_task = task_record(
+            terminal_gid,
+            SessionQueueState::Stopped,
+            0,
+            terminal.journal_id,
+            journal_snapshot_hash(&terminal),
+        );
+        let mut startup_snapshot = snapshot(vec![blocked_task, runnable_task, terminal_task]);
+        startup_snapshot.task_sources = vec![
+            SessionTaskSourceSet {
+                gid: blocked_gid,
+                sources: vec![SessionTaskSourceRecord {
+                    uri_id: 7,
+                    persistence_safe_uri: Some("sftp://files.example/payload".to_owned()),
+                    redacted_fingerprint: [7; 32],
+                    needs_credentials: true,
+                    priority: 0,
+                }],
+            },
+            SessionTaskSourceSet {
+                gid: runnable_gid,
+                sources: vec![
+                    SessionTaskSourceRecord {
+                        uri_id: 1,
+                        persistence_safe_uri: None,
+                        redacted_fingerprint: [1; 32],
+                        needs_credentials: true,
+                        priority: 0,
+                    },
+                    SessionTaskSourceRecord {
+                        uri_id: 2,
+                        persistence_safe_uri: Some("https://mirror.example/payload".to_owned()),
+                        redacted_fingerprint: [2; 32],
+                        needs_credentials: false,
+                        priority: 1,
+                    },
+                ],
+            },
+            SessionTaskSourceSet {
+                gid: terminal_gid,
+                sources: vec![SessionTaskSourceRecord {
+                    uri_id: 3,
+                    persistence_safe_uri: None,
+                    redacted_fingerprint: [3; 32],
+                    needs_credentials: true,
+                    priority: 0,
+                }],
+            },
+        ];
+        startup_snapshot
+            .stopped_results
+            .push(SessionStoppedResultRecord {
+                gid: terminal_gid,
+                status: SessionTerminalStatus::Removed,
+                error_kind: None,
+                safe_message: String::new(),
+                total_length: None,
+                layout_hash: None,
+                completed_ms: 2_000,
+            });
+        let admissions = derive_credential_admissions(&startup_snapshot).expect("derive sources");
+        assert_eq!(
+            admissions,
+            vec![
+                DerivedCredentialAdmission {
+                    gid: blocked_gid,
+                    requirement: Some(CredentialRequirement {
+                        kind: CredentialKind::SftpAuthentication,
+                        source: Some(ariax_core::UriId::new(7)),
+                        safe_description: "SFTP credentials required after restart".to_owned(),
+                    }),
+                },
+                DerivedCredentialAdmission {
+                    gid: runnable_gid,
+                    requirement: None,
+                },
+                DerivedCredentialAdmission {
+                    gid: terminal_gid,
+                    requirement: None,
+                },
+            ]
+        );
+
+        let startup = reconcile_and_restore_derived(
+            startup_snapshot,
+            vec![blocked, runnable, terminal],
+            config(now),
+        )
+        .expect("source-derived startup");
+        assert!(
+            startup
+                .scheduler
+                .task(blocked_gid)
+                .expect("blocked task")
+                .conditions
+                .needs_credentials
+        );
+        assert!(
+            !startup
+                .scheduler
+                .task(runnable_gid)
+                .expect("runnable task")
+                .conditions
+                .needs_credentials
+        );
+    }
+
+    #[test]
+    fn credential_derivation_rejects_missing_extra_and_noncanonical_sources() {
+        let task = task_record(
+            gid(70),
+            SessionQueueState::Waiting,
+            0,
+            journal_id(70),
+            JournalHash::new([70; 32]).expect("snapshot hash"),
+        );
+        let mut startup_snapshot = snapshot(vec![task]);
+        startup_snapshot.task_sources.clear();
+        assert_eq!(
+            derive_credential_admissions(&startup_snapshot),
+            Err(CredentialDerivationError::MissingSourceSet(gid(70)))
+        );
+
+        startup_snapshot.task_sources.push(SessionTaskSourceSet {
+            gid: gid(99),
+            sources: Vec::new(),
+        });
+        assert_eq!(
+            derive_credential_admissions(&startup_snapshot),
+            Err(CredentialDerivationError::ExtraSourceSet(gid(99)))
+        );
+
+        startup_snapshot.task_sources[0] = SessionTaskSourceSet {
+            gid: gid(70),
+            sources: vec![SessionTaskSourceRecord {
+                uri_id: 1,
+                persistence_safe_uri: None,
+                redacted_fingerprint: [1; 32],
+                needs_credentials: false,
+                priority: 0,
+            }],
+        };
+        assert_eq!(
+            derive_credential_admissions(&startup_snapshot),
+            Err(CredentialDerivationError::UnmarkedRedactedSource(gid(70)))
+        );
+
+        startup_snapshot.task_sources[0].sources = vec![
+            SessionTaskSourceRecord {
+                uri_id: 2,
+                persistence_safe_uri: None,
+                redacted_fingerprint: [2; 32],
+                needs_credentials: true,
+                priority: 1,
+            },
+            SessionTaskSourceRecord {
+                uri_id: 1,
+                persistence_safe_uri: None,
+                redacted_fingerprint: [1; 32],
+                needs_credentials: true,
+                priority: 0,
+            },
+        ];
+        assert_eq!(
+            derive_credential_admissions(&startup_snapshot),
+            Err(CredentialDerivationError::NonCanonicalSourceOrder(gid(70)))
+        );
+    }
+
+    #[test]
+    fn credential_derivation_rejects_oversized_snapshot_sets_before_indexing() {
+        let mut startup_snapshot = snapshot(Vec::new());
+        let task = task_record(
+            gid(71),
+            SessionQueueState::Waiting,
+            0,
+            journal_id(71),
+            JournalHash::new([71; 32]).expect("snapshot hash"),
+        );
+        startup_snapshot.tasks = vec![task; ariax_storage::SESSION_MAX_TASKS + 1];
+        assert_eq!(
+            derive_credential_admissions(&startup_snapshot),
+            Err(CredentialDerivationError::TooManyTasks)
+        );
+
+        startup_snapshot.tasks.clear();
+        startup_snapshot.task_sources = vec![
+            SessionTaskSourceSet {
+                gid: gid(71),
+                sources: Vec::new(),
+            };
+            ariax_storage::SESSION_MAX_TASKS + 1
+        ];
+        assert_eq!(
+            derive_credential_admissions(&startup_snapshot),
+            Err(CredentialDerivationError::TooManySourceSets)
+        );
     }
 
     #[test]

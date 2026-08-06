@@ -2,9 +2,11 @@
 
 Status: reviewed contract with implementation in progress. Core scheduling,
 applied-status publication, bounded persistence ownership, pure cross-store
-startup planning, and the blocking-disk fallback have executable checkpoints;
-the startup application executor, first end-to-end transfer, native adapter
-matrix, and MSRV gate are not yet complete.
+startup planning, source-derived credential admission, ordered SQLite startup
+repair, packet-independent stats sampling, and the blocking-disk fallback have
+executable checkpoints; native startup recovery/publication, the first
+end-to-end transfer, the native adapter matrix, and the MSRV gate are not yet
+complete.
 
 This maps the requested properties to design documents.
 

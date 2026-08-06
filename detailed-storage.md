@@ -29,9 +29,10 @@ after semantic preflight and a private no-clobber backup. Retained stopped
 results now use a one-to-one stopped-task/result transaction, and deletion
 atomically removes both metadata rows while densifying the stopped queue. The
 dedicated session owner, challenge-bound host-key operations, and bounded pure
-cross-store reconciliation planning are executable. The checkpoint state
-writer and startup executor that applies capability/install/appender and SQLite
-repair work remain pending.
+cross-store reconciliation planning are executable. The ordered SQLite startup
+repair stage is also executable through the bounded owner. The checkpoint state
+writer and native startup executor that applies capability/install/appender
+work remain pending.
 
 This document defines `SafePathBuilder`, `FileLayout`, `GlobalOffsetMapper`,
 `StorageEngine`, and `ControlJournal` contracts for HTTP sequential/range

@@ -8,6 +8,7 @@ mod buffer;
 mod queue;
 mod scheduler_driver;
 mod shutdown;
+mod stats;
 mod status_snapshot;
 
 pub use blocking_disk::{
@@ -40,6 +41,11 @@ pub use shutdown::{
     ShutdownCoordinator, ShutdownCoordinatorError, ShutdownFailure, ShutdownFailureKind,
     ShutdownProfile, ShutdownProgress, ShutdownReport, ShutdownStep, ShutdownStepResult,
     ShutdownTicket,
+};
+pub use stats::{
+    ConnectionCondition, ConnectionConditionReason, MAX_STATS_ACTIVE_ENTRIES,
+    MAX_STATS_SAMPLE_INTERVAL, MIN_STATS_SAMPLE_INTERVAL, StatsCounters, StatsDiagnostic,
+    StatsProfile, StatsSample, StatsSampler, StatsSamplerConfig, StatsSamplerError,
 };
 pub use status_snapshot::{
     AppliedTaskSnapshot, StatusSnapshotError, StatusSnapshotReader, StatusSnapshotRoot,

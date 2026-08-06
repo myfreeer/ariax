@@ -1,5 +1,9 @@
 use crate::inventory::{GenerationMode, apply_outputs, comma, json_string};
-use ariax_runtime::{ALL_BUFFER_STATES, ALL_OWNER_TAGS, SizeClass};
+use ariax_runtime::{
+    ALL_BUFFER_STATES, ALL_OWNER_TAGS, ConnectionCondition, ConnectionConditionReason,
+    MAX_STATS_ACTIVE_ENTRIES, MAX_STATS_SAMPLE_INTERVAL, MIN_STATS_SAMPLE_INTERVAL, SizeClass,
+    StatsProfile,
+};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -74,8 +78,41 @@ fn render_runtime_contracts() -> String {
         }
         writeln!(output, "]}}{}", comma(index, ALL_BUFFER_STATES.len())).expect("write to string");
     }
+    output.push_str("  ],\n  \"stats_sampler\": {\n    \"profiles\": [\n");
+    for (index, profile) in StatsProfile::ALL.iter().copied().enumerate() {
+        writeln!(
+            output,
+            "      {{\"code\": {}, \"interval_ms\": {}}}{}",
+            json_string(profile.code()),
+            profile.interval().as_millis(),
+            comma(index, StatsProfile::ALL.len())
+        )
+        .expect("write to string");
+    }
+    output.push_str("    ],\n    \"conditions\": [");
+    for (index, condition) in ConnectionCondition::ALL.iter().copied().enumerate() {
+        if index > 0 {
+            output.push_str(", ");
+        }
+        output.push_str(&json_string(condition.code()));
+    }
+    output.push_str("],\n    \"reasons\": [");
+    for (index, reason) in ConnectionConditionReason::ALL.iter().copied().enumerate() {
+        if index > 0 {
+            output.push_str(", ");
+        }
+        output.push_str(&json_string(reason.code()));
+    }
+    writeln!(
+        output,
+        "],\n    \"minimum_override_ms\": {},\n    \"maximum_override_ms\": {},\n    \"maximum_active_entries\": {},\n    \"packet_independent\": true,\n    \"zero_delta_samples_zero\": true,\n    \"integer_ewma_previous_weight\": 3,\n    \"integer_ewma_instant_weight\": 1,\n    \"sample_age_is_query_derived\": true\n  }},",
+        MIN_STATS_SAMPLE_INTERVAL.as_millis(),
+        MAX_STATS_SAMPLE_INTERVAL.as_millis(),
+        MAX_STATS_ACTIVE_ENTRIES,
+    )
+    .expect("write to string");
     output.push_str(
-        "  ],\n  \"budget_contract\": {\"domain_and_resident_permits_required\": true, \"zero_byte_reservation_allowed\": false},\n  \"pool_contract\": {\"free_list\": \"lifo_per_size_class\", \"stable_capacity\": true, \"drop_destination\": \"quarantine\", \"quarantine_exhaustion\": \"fault_backend\", \"timeout_reclamation\": \"retire_without_releasing_pool_budget\"},\n  \"queue_contract\": {\"item_bounded\": true, \"byte_bounded\": true, \"credit_before_read\": true, \"close_returns_queued_ownership\": true},\n  \"completion_contract\": {\"reserve_before_backend_acceptance\": true, \"send_after_admission_close\": true, \"capacity_failure_after_acceptance\": false}\n}\n",
+        "  \"budget_contract\": {\"domain_and_resident_permits_required\": true, \"zero_byte_reservation_allowed\": false},\n  \"pool_contract\": {\"free_list\": \"lifo_per_size_class\", \"stable_capacity\": true, \"drop_destination\": \"quarantine\", \"quarantine_exhaustion\": \"fault_backend\", \"timeout_reclamation\": \"retire_without_releasing_pool_budget\"},\n  \"queue_contract\": {\"item_bounded\": true, \"byte_bounded\": true, \"credit_before_read\": true, \"close_returns_queued_ownership\": true},\n  \"completion_contract\": {\"reserve_before_backend_acceptance\": true, \"send_after_admission_close\": true, \"capacity_failure_after_acceptance\": false}\n}\n",
     );
     output
 }
@@ -91,6 +128,13 @@ mod tests {
         assert!(contract.contains("\"transitions_to\": [\"disk_done\"]"));
         assert!(contract.contains("\"drop_destination\": \"quarantine\""));
         assert!(contract.contains("\"capacity_failure_after_acceptance\": false"));
+        assert!(contract.contains("\"code\": \"latency\", \"interval_ms\": 250"));
+        assert!(contract.contains("\"minimum_override_ms\": 100"));
+        assert!(contract.contains("\"maximum_override_ms\": 10000"));
+        assert!(contract.contains("\"maximum_active_entries\": 100000"));
+        assert!(contract.contains("\"packet_independent\": true"));
+        assert!(contract.contains("\"sample_age_is_query_derived\": true"));
+        assert!(contract.contains("\"journal_backpressure\""));
         assert!(!contract.contains("\"free\", \"mutable\": true"));
     }
 }

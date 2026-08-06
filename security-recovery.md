@@ -18,8 +18,11 @@ rechecks task-option and host-key semantics on read, retains stopped results
 atomically with queue ownership, enforces private database artifacts, and
 transactionally rechecks tokenized journal-install pointers. A bounded
 session-store owner thread and exact persistence-effect composition boundary
-are executable; the executor for the returned SQLite repairs, journal-install
-work, appender recovery, and native capabilities remains pending.
+are executable. The bounded SQLite-only application stage applies queue repairs
+before terminal repairs, then exact journal-authority repairs, and cannot expose
+the restored scheduler while a command is queued, in flight, failed, or
+unexpectedly acknowledged. Journal-install work, appender recovery, native
+capabilities, and final publication remain pending.
 
 This document turns the safety requirements into enforceable design rules.
 
@@ -388,12 +391,14 @@ thread remain pending.
 The `ariax-engine` composition layer owns the first executable reconciliation
 boundary. It accepts one bounded `SessionStartupSnapshot`, exactly one
 already-replayed semantic journal state for every SQLite task GID, and exactly
-one caller-derived credential-admission record for every task. The credential
-record carries either the precise non-secret scheduler requirement or an
-explicit `None`; omission is rejected rather than silently interpreted as "no
-credentials required." Deriving those records from the restored redacted
-source/option set remains composition work and is not performed by the pure
-reconciler.
+one credential-admission record for every task. The credential record carries
+either the precise non-secret scheduler requirement or an explicit `None`;
+omission is rejected rather than silently interpreted as "no credentials
+required." The dedicated owner materializes one exact bounded source set per
+task, and composition can deterministically derive these records from its
+redacted or persistence-safe source rows. An explicit admission API remains for
+a future reviewed encrypted credential provider, but the ordinary
+plaintext-free startup path does not rely on caller guesswork.
 
 Journal opening, segment-tail repair, native root-capability reconstruction,
 install-candidate validation, and appender descriptor acquisition happen

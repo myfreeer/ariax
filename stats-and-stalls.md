@@ -1,6 +1,10 @@
 # Stats And Stall Detection
 
-Status: reviewed pre-implementation contract. Implementation pending.
+Status: first-slice sampler implemented. The bounded lane-local sampler,
+profile/override interval policy, cumulative-counter validation, zero-speed
+sampling, integer EWMA decay, diagnostic-condition separation, and
+query-derived sample age are executable. Protocol counter producers, timeout
+adapters, RPC rendering, and libtorrent import remain pending.
 
 Problem: many downloaders update speed only when bytes arrive. If a socket gets
 stuck, the displayed speed can freeze at the previous value until another packet
@@ -77,6 +81,14 @@ The stats sampler interval is profile-owned: concurrency 1 s, throughput 500 ms,
 latency 250 ms, and compact 1 s. An explicit override is clamped to
 100 ms..=10 s.
 
+The first-slice runtime API makes the interval and active-entry bound explicit.
+It rejects a zero active-entry limit and any configured limit above 100,000
+before allocation. The sampler is lane-local and generic over the caller's
+stable task/connection identity; it never creates a second lifecycle identity.
+Counter updates validate every cumulative field before replacing the previous
+value. A rejected regression or impossible durable/committed relationship does
+not change the stored sample baseline.
+
 Sampler cost is O(active), not O(total): idle connections and idle tasks
 carry no per-tick work. Connections/leases register with the sampler only
 while they have activity to report (counter deltas since last tick or a
@@ -96,6 +108,11 @@ instant_rate = delta_bytes / delta_time
 
 If `delta_bytes == 0`, instant rate is `0` for that interval. The display may
 also show EWMA speed, but the current speed must not remain frozen.
+
+The executable integer EWMA uses `smoothed = (3 * previous + instant) / 4`.
+The calculation widens before multiplication and saturates only at the public
+`u64` boundary. This makes repeated zero-byte samples decay deterministically
+without floating-point or packet-arrival dependence.
 
 Recommended fields:
 

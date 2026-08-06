@@ -26,9 +26,13 @@ exact scheduler-effect plans and advances their SQLite/journal commands one at
 a time through that owner. Owner startup and shutdown waits have explicit,
 validated hard-capped timeouts; a timeout detaches rather than fake-dropping
 thread-owned persistence state and is reported as recovery uncertainty.
-The startup executor that performs native filesystem discovery, applies the
-returned SQLite repairs, resolves install intents, and publishes the restored
-driver remains pending, as does the checkpoint state writer.
+The startup session-repair executor now advances the reconciler's exact queue
+normalizations, terminal retentions, and journal-authority cache/root repairs
+one command at a time through the same bounded owner. Queue-full admission
+retains the exact owned command for retry, and an unexpected completion or any
+accepted persistence failure makes startup fail closed before publication. The
+native filesystem/install/appender executor and restored-driver publication
+remain pending, as does the checkpoint state writer.
 
 Decision: use a hybrid persistence model:
 
@@ -348,6 +352,13 @@ returning owned records. Startup semantic validation repeats that per-task byte
 limit while streaming all source rows under the additional global 64 MiB
 task-materialization budget.
 
+A redacted placeholder (`persistence_safe_uri IS NULL`) must set
+`needs_credentials`; otherwise startup would have neither a runnable source nor
+an explicit admission blocker. The dedicated owner materializes exactly one
+bounded source set for every startup task, including an empty set, under the
+same per-task and global budgets. This lets composition distinguish “no stored
+sources” from a missing or partial source read.
+
 The synchronous SQLite connection and installed `ControlJournalAppender`
 instances never leave their dedicated session-owner thread once spawned.
 Callers submit owned commands to a queue whose configured capacity is nonzero
@@ -500,7 +511,7 @@ The stores have deliberately different authorities:
 | begun/committed/aborted leases, written/verified/durable pieces, validators, retry checkpoint | control journal | SQLite must not promote or merge progress |
 | task-local terminal markers (`TaskComplete`, `TaskError`, `TaskRemoved`) and final digest/layout | control journal | terminal marker is a safety veto; required before SQLite publishes the corresponding result |
 | queue membership/order, session id, global desired state, cross-task scheduling | SQLite | journal recovery does not invent queue position |
-| recoverable scheduler admission conditions | SQLite plus caller-derived recovery input | `no_space` is restored and re-probed before admission; startup composition supplies an explicit `needs_credentials` requirement or `None` without persisting a secret |
+| recoverable scheduler admission conditions | SQLite plus bounded source-derived recovery input | `no_space` is restored and re-probed before admission; ordinary startup composition derives an explicit `needs_credentials` requirement or `None` from the owner's exact source sets without persisting a secret |
 | stopped-result index and retention metadata | SQLite, gated by journal completion | recreate from `TaskComplete` when missing; never use it to manufacture completion |
 | mutable non-layout task options and persistence-safe URI/mirror inputs | SQLite | restored after journal generation state is fixed |
 | generation-scoped options affecting layout, validators, verification, or durability | control-journal `OptionsSnapshot` | SQLite stores only a searchable mirror and snapshot hash |
@@ -659,10 +670,13 @@ Consequences:
   not replaced with reversible encodings.
 - Validator records store a one-way canonical fingerprint needed for comparison,
   never raw cookies, credentials, or signed headers.
-- A recovered task that cannot reconstruct an authenticated source enters an
-  scheduler-owned `needs_credentials` condition and remains paused/waiting until the
-  caller supplies credentials or a replacement URI. Existing durable pieces are
-  retained.
+- A recovered nonterminal task whose bounded source set has no runnable
+  persistence-safe source but does contain a credential-marked source enters a
+  scheduler-owned `needs_credentials` condition and remains paused/waiting until
+  the caller supplies credentials or a replacement URI. Existing durable pieces
+  are retained. The first credential-marked source in canonical priority/URI-id
+  order supplies the non-secret requirement identity; a runnable safe mirror
+  prevents a task-wide blocker.
 - Plain JSON and aria2-format exports follow the same omission rules and mark
   entries that require credentials. There is no `include-secrets` plaintext
   switch.

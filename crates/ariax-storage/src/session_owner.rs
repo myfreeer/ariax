@@ -1,10 +1,10 @@
 use crate::{
-    Appended, ControlJournalAppender, Flushed, JournalAppenderError, JournalInstallIntent,
-    JournalPayload, OptionsSnapshotScope, PersistedOptionPolicy, SanitizedOptionMap,
-    SessionHostKeyChallengeRecord, SessionHostKeyResolution, SessionNoSpaceCondition,
-    SessionQueueState, SessionQueueTransition, SessionRecord, SessionStoppedResultRecord,
-    SessionStore, SessionStoreConfig, SessionStoreError, SessionStoreSettings, SessionTaskRecord,
-    SessionTaskSourceRecord,
+    Appended, ControlJournalAppender, Flushed, JournalAppenderError, JournalId,
+    JournalInstallIntent, JournalPayload, OptionsSnapshotScope, PersistedOptionPolicy,
+    PlatformPath, SanitizedOptionMap, SessionHostKeyChallengeRecord, SessionHostKeyResolution,
+    SessionJournalCache, SessionNoSpaceCondition, SessionQueueState, SessionQueueTransition,
+    SessionRecord, SessionStoppedResultRecord, SessionStore, SessionStoreConfig, SessionStoreError,
+    SessionStoreSettings, SessionTaskRecord, SessionTaskSourceRecord, SessionTaskSourceSet,
 };
 use ariax_core::{Generation, Gid, HostKeyChallengeId};
 use std::collections::BTreeMap;
@@ -60,6 +60,7 @@ pub struct SessionStartupSnapshot {
     pub settings: SessionStoreSettings,
     pub session: Option<SessionRecord>,
     pub tasks: Vec<SessionTaskRecord>,
+    pub task_sources: Vec<SessionTaskSourceSet>,
     pub stopped_results: Vec<SessionStoppedResultRecord>,
     pub host_key_challenges: Vec<SessionHostKeyChallengeRecord>,
     pub journal_installs: Vec<JournalInstallIntent>,
@@ -76,6 +77,13 @@ pub enum SessionCommand {
     SetNoSpaceCondition {
         gid: Gid,
         condition: Option<SessionNoSpaceCondition>,
+        updated_ms: u64,
+    },
+    ReconcileJournalAuthority {
+        gid: Gid,
+        expected_journal_id: JournalId,
+        cache: Option<SessionJournalCache>,
+        root_display: Option<PlatformPath>,
         updated_ms: u64,
     },
     ReplaceTaskSources {
@@ -769,6 +777,7 @@ fn startup_snapshot(store: &SessionStore) -> Result<SessionStartupSnapshot, Sess
         settings: store.settings()?,
         session: store.session()?,
         tasks: store.tasks()?,
+        task_sources: store.task_source_sets()?,
         stopped_results: store.stopped_results()?,
         host_key_challenges: store.host_key_challenges()?,
         journal_installs: store.journal_installs()?,
@@ -808,6 +817,22 @@ fn execute_command(
             updated_ms,
         } => {
             store.set_task_no_space_condition(gid, condition.as_ref(), updated_ms)?;
+            Ok(SessionCommandResult::Unit)
+        }
+        SessionCommand::ReconcileJournalAuthority {
+            gid,
+            expected_journal_id,
+            cache,
+            root_display,
+            updated_ms,
+        } => {
+            store.reconcile_journal_authority(
+                gid,
+                expected_journal_id,
+                cache,
+                root_display.as_ref(),
+                updated_ms,
+            )?;
             Ok(SessionCommandResult::Unit)
         }
         SessionCommand::ReplaceTaskSources { gid, sources } => {

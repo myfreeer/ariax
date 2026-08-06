@@ -93,6 +93,6 @@ pub use session_store::{
     SessionQueueState, SessionQueueTransition, SessionRecord, SessionSchemaObject,
     SessionSchemaObjectKind, SessionSlowRetryDecision, SessionSlowSlotState, SessionSqliteLimit,
     SessionStoppedResultRecord, SessionStore, SessionStoreConfig, SessionStoreError,
-    SessionStoreSettings, SessionTaskRecord, SessionTaskSourceRecord, SessionTerminalStatus,
-    session_host_key_pin_value,
+    SessionStoreSettings, SessionTaskRecord, SessionTaskSourceRecord, SessionTaskSourceSet,
+    SessionTerminalStatus, session_host_key_pin_value,
 };
