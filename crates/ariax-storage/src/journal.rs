@@ -322,6 +322,38 @@ impl SegmentHeader {
             created_at_unix_ms,
         })
     }
+
+    pub(crate) fn recovery_successor(
+        self,
+        previous_segment_last_sequence: u64,
+        previous_segment_hash: SegmentHash,
+        starting_generation: Generation,
+        created_at_unix_ms: u64,
+    ) -> Result<Self, JournalEncodeError> {
+        if previous_segment_last_sequence < self.first_sequence
+            && (self.segment_index == 0
+                || previous_segment_last_sequence.checked_add(1) != Some(self.first_sequence))
+        {
+            return Err(JournalEncodeError::CannotRotateEmptySegment);
+        }
+        let segment_index = self
+            .segment_index
+            .checked_add(1)
+            .ok_or(JournalEncodeError::SegmentIndexExhausted)?;
+        let first_sequence = previous_segment_last_sequence
+            .checked_add(1)
+            .ok_or(JournalEncodeError::SequenceExhausted)?;
+        Ok(Self {
+            task_gid: self.task_gid,
+            journal_id: self.journal_id,
+            segment_index,
+            first_sequence,
+            starting_generation,
+            previous_segment_last_sequence,
+            previous_segment_hash,
+            created_at_unix_ms,
+        })
+    }
 }
 
 /// Why a segment header was not a canonical version-1 header.

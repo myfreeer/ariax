@@ -1,13 +1,17 @@
 use crate::inventory::{GenerationMode, apply_outputs, comma, json_string};
 use ariax_storage::{
-    ALL_SESSION_IO_OPERATIONS, ALL_SESSION_SQLITE_LIMITS, ALL_SESSION_STORE_ERROR_CODES,
-    JournalInstallPhase, MAX_OPTION_MAP_BYTES, SESSION_BUNDLED_SQLITE_FLAGS,
-    SESSION_BUSY_TIMEOUT_MS, SESSION_DEFAULT_CACHE_KIB, SESSION_INSTALL_READ_BUDGET_BYTES,
-    SESSION_MAX_ALGORITHM_BYTES, SESSION_MAX_BT_RESUME_BYTES, SESSION_MAX_CACHE_KIB,
-    SESSION_MAX_HOST_KEY_BYTES, SESSION_MAX_OPTIONS_PER_TASK, SESSION_MAX_SAFE_MESSAGE_BYTES,
-    SESSION_MAX_SAFE_URI_BYTES, SESSION_MAX_TASKS, SESSION_MIN_CACHE_KIB, SESSION_MMAP_SIZE_BYTES,
-    SESSION_OWNER_LOCK_SUFFIX, SESSION_PAGE_SIZE_BYTES, SESSION_RUSQLITE_FEATURES,
-    SESSION_RUSQLITE_VERSION, SESSION_SCHEMA_OBJECTS, SESSION_SCHEMA_VERSION,
+    ALL_SESSION_IO_OPERATIONS, ALL_SESSION_OWNER_ERROR_CODES, ALL_SESSION_SQLITE_LIMITS,
+    ALL_SESSION_STORE_ERROR_CODES, JournalInstallPhase, MAX_OPTION_MAP_BYTES,
+    SESSION_BUNDLED_SQLITE_FLAGS, SESSION_BUSY_TIMEOUT_MS, SESSION_DEFAULT_CACHE_KIB,
+    SESSION_HOST_KEY_PIN_OPTION, SESSION_INSTALL_READ_BUDGET_BYTES, SESSION_MAX_ALGORITHM_BYTES,
+    SESSION_MAX_BT_RESUME_BYTES, SESSION_MAX_CACHE_KIB, SESSION_MAX_HOST_KEY_BYTES,
+    SESSION_MAX_OPTIONS_PER_TASK, SESSION_MAX_SAFE_MESSAGE_BYTES, SESSION_MAX_SAFE_URI_BYTES,
+    SESSION_MAX_SOURCES_PER_TASK, SESSION_MAX_TASKS, SESSION_MIN_CACHE_KIB,
+    SESSION_MMAP_SIZE_BYTES, SESSION_OWNER_DEFAULT_CAPACITY,
+    SESSION_OWNER_DEFAULT_SHUTDOWN_TIMEOUT, SESSION_OWNER_DEFAULT_STARTUP_TIMEOUT,
+    SESSION_OWNER_LOCK_SUFFIX, SESSION_OWNER_MAX_CAPACITY, SESSION_OWNER_MAX_WAIT,
+    SESSION_PAGE_SIZE_BYTES, SESSION_RUSQLITE_FEATURES, SESSION_RUSQLITE_VERSION,
+    SESSION_SCHEMA_OBJECTS, SESSION_SCHEMA_VERSION, SESSION_SOURCE_READ_BUDGET_BYTES,
     SESSION_TASK_READ_BUDGET_BYTES, SESSION_WAL_AUTO_CHECKPOINT_PAGES, SessionQueueState,
     SessionSchemaObjectKind, SessionTerminalStatus,
 };
@@ -86,6 +90,9 @@ fn validate_build_contract_text(manifest: &str, cargo_config: &str) -> Result<()
 }
 
 fn render_session_contracts() -> String {
+    let owner_default_startup_timeout_ms = SESSION_OWNER_DEFAULT_STARTUP_TIMEOUT.as_millis();
+    let owner_default_shutdown_timeout_ms = SESSION_OWNER_DEFAULT_SHUTDOWN_TIMEOUT.as_millis();
+    let owner_max_wait_ms = SESSION_OWNER_MAX_WAIT.as_millis();
     let mut output = String::new();
     writeln!(output, "{{\n  \"schema\": {SESSION_SCHEMA_VERSION},").expect("write to string");
     writeln!(
@@ -165,7 +172,7 @@ fn render_session_contracts() -> String {
     }
     writeln!(
         output,
-        "  ],\n  \"caps\": {{\"safe_uri_bytes\": {SESSION_MAX_SAFE_URI_BYTES}, \"safe_message_bytes\": {SESSION_MAX_SAFE_MESSAGE_BYTES}, \"host_key_bytes\": {SESSION_MAX_HOST_KEY_BYTES}, \"algorithm_bytes\": {SESSION_MAX_ALGORITHM_BYTES}, \"bt_resume_bytes\": {SESSION_MAX_BT_RESUME_BYTES}, \"tasks\": {SESSION_MAX_TASKS}, \"options_per_task\": {SESSION_MAX_OPTIONS_PER_TASK}, \"option_map_bytes\": {MAX_OPTION_MAP_BYTES}, \"task_read_budget_bytes\": {SESSION_TASK_READ_BUDGET_BYTES}, \"journal_install_read_budget_bytes\": {SESSION_INSTALL_READ_BUDGET_BYTES}}},"
+        "  ],\n  \"caps\": {{\"safe_uri_bytes\": {SESSION_MAX_SAFE_URI_BYTES}, \"safe_message_bytes\": {SESSION_MAX_SAFE_MESSAGE_BYTES}, \"host_key_bytes\": {SESSION_MAX_HOST_KEY_BYTES}, \"algorithm_bytes\": {SESSION_MAX_ALGORITHM_BYTES}, \"bt_resume_bytes\": {SESSION_MAX_BT_RESUME_BYTES}, \"tasks\": {SESSION_MAX_TASKS}, \"options_per_task\": {SESSION_MAX_OPTIONS_PER_TASK}, \"option_map_bytes\": {MAX_OPTION_MAP_BYTES}, \"sources_per_task\": {SESSION_MAX_SOURCES_PER_TASK}, \"source_read_budget_bytes\": {SESSION_SOURCE_READ_BUDGET_BYTES}, \"task_read_budget_bytes\": {SESSION_TASK_READ_BUDGET_BYTES}, \"journal_install_read_budget_bytes\": {SESSION_INSTALL_READ_BUDGET_BYTES}, \"owner_request_default_capacity\": {SESSION_OWNER_DEFAULT_CAPACITY}, \"owner_request_max_capacity\": {SESSION_OWNER_MAX_CAPACITY}, \"owner_default_startup_timeout_ms\": {owner_default_startup_timeout_ms}, \"owner_default_shutdown_timeout_ms\": {owner_default_shutdown_timeout_ms}, \"owner_max_wait_ms\": {owner_max_wait_ms}}},"
     )
     .expect("write to string");
     output.push_str("  \"io_operations\": [");
@@ -178,9 +185,14 @@ fn render_session_contracts() -> String {
     );
     output.push_str("],\n  \"errors\": [");
     write_codes(&mut output, ALL_SESSION_STORE_ERROR_CODES.iter().copied());
+    output.push_str(
+        "],\n  \"semantic_guards\": {\"host_key_departure_requires_challenge_clear\": true, \"host_key_read_budget_charges_owned_record_overhead\": true, \"task_source_startup_rechecks_per_task_budget\": true, \"stopped_result_status_payload_is_canonical\": true},\n  \"owner_errors\": [",
+    );
+    write_codes(&mut output, ALL_SESSION_OWNER_ERROR_CODES.iter().copied());
     writeln!(
         output,
-        "],\n  \"journal_install_token_fields\": [\"gid\", \"checkpoint_id\", \"new_journal_id\"],\n  \"rules\": {{\"strict_tables\": true, \"u64_may_use_exact_le_blob8\": true, \"tagged_platform_path_matches_journal_codec\": true, \"newer_schema_rejected_before_database_mutation\": true, \"v1_schema_validated_before_journal_mode_change\": true, \"v1_preflight_precedes_backup_creation\": true, \"invalid_v1_semantics_create_no_backup\": true, \"v1_to_v2_requires_private_timestamped_no_clobber_backup\": true, \"v1_to_v2_rebuild_and_user_version_share_transaction\": true, \"v1_to_v2_rebuilds_task_and_host_key_challenge_tables\": true, \"hot_rollback_recovery_supported\": true, \"rollback_journal_page_one_preflight\": true, \"wal_user_version_preflight_validates_committed_frames\": true, \"unversioned_nonempty_database_rejected\": true, \"required_limits_verified_exactly\": true, \"journal_modes_require_transactional_page_one_write_probe\": true, \"wal_write_probe_failure_falls_back_to_delete\": true, \"wal_truncate_checkpoint_reports_busy\": true, \"persistence_paths_require_explicit_parent\": true, \"existing_parent_must_be_private\": true, \"created_directories_private_at_creation\": true, \"created_directory_mode\": \"0700\", \"unix_database_mode\": \"0600\", \"windows_acl_uses_native_adapter_without_subprocesses\": true, \"owner_lock_suffix\": {}, \"owner_lock_is_cooperative_single_writer\": true, \"orphan_sidecars_rejected_when_database_missing_or_empty\": true, \"orphan_sidecars_rejected_before_backup_publish\": true, \"backup_reserved_sqlite_suffixes_rejected_ascii_insensitively\": true, \"hard_linked_persistence_artifacts_rejected\": true, \"artifact_symlinks_and_nonregular_files_rejected\": true, \"intermediate_links_and_windows_reparse_points_rejected\": true, \"queue_reorder_is_one_immediate_dense_transaction\": true, \"queue_transition_is_one_immediate_dense_transaction\": true, \"queue_transition_updates_slow_slot_metadata_atomically\": true, \"demoted_queue_requires_slow_slot_metadata\": true, \"demoted_queue_requires_nonzero_slow_demotion_count\": true, \"slow_demotion_count_persists_outside_demoted_queue\": true, \"slow_retry_decision_contains_only_wall_schedule\": true, \"slow_retry_delay_is_nonzero\": true, \"stopped_task_is_authoritative_queue_owner\": true, \"stopped_task_and_result_are_one_to_one\": true, \"terminal_retention_is_one_immediate_dense_transaction\": true, \"stopped_result_deletion_is_one_immediate_dense_transaction\": true, \"host_key_text_requires_utf8\": true, \"host_key_fingerprint_matches_presented_key_sha256\": true, \"host_key_challenge_requires_paused_task\": true, \"secret_options_rejected_before_sql\": true, \"task_option_policy_rechecked_on_read\": true, \"bounded_task_stopped_host_and_install_reads\": true, \"journal_cache_reconciliation_never_changes_queue_authority\": true, \"task_queue_and_pointer_immutable_via_put\": true, \"journal_install_begin_checks_old_pointer\": true, \"journal_install_commands_require_identity_token\": true, \"journal_install_complete_rechecks_old_pointer\": true, \"journal_install_pointer_relation_validated_on_open\": true, \"installed_pointer_and_phase_change_share_transaction\": true, \"hot_backup_refuses_overwrite_and_runs_integrity_check\": true, \"hot_backup_flushes_file_before_publish\": true, \"hot_backup_publishes_with_no_clobber\": true, \"hot_backup_temp_uses_delete_journal_mode\": true, \"hot_backup_removes_owned_temporary_sidecars\": true}}\n}}",
+        "],\n  \"host_key_pin_option\": {},\n  \"journal_install_token_fields\": [\"gid\", \"checkpoint_id\", \"new_journal_id\"],\n  \"rules\": {{\"strict_tables\": true, \"u64_may_use_exact_le_blob8\": true, \"tagged_platform_path_matches_journal_codec\": true, \"newer_schema_rejected_before_database_mutation\": true, \"v1_schema_validated_before_journal_mode_change\": true, \"v1_preflight_precedes_backup_creation\": true, \"invalid_v1_semantics_create_no_backup\": true, \"v1_to_v2_requires_private_timestamped_no_clobber_backup\": true, \"v1_to_v2_rebuild_and_user_version_share_transaction\": true, \"v1_to_v2_rebuilds_task_and_host_key_challenge_tables\": true, \"hot_rollback_recovery_supported\": true, \"rollback_journal_page_one_preflight\": true, \"wal_user_version_preflight_validates_committed_frames\": true, \"unversioned_nonempty_database_rejected\": true, \"required_limits_verified_exactly\": true, \"journal_modes_require_transactional_page_one_write_probe\": true, \"wal_write_probe_failure_falls_back_to_delete\": true, \"wal_truncate_checkpoint_reports_busy\": true, \"persistence_paths_require_explicit_parent\": true, \"existing_parent_must_be_private\": true, \"created_directories_private_at_creation\": true, \"created_directory_mode\": \"0700\", \"unix_database_mode\": \"0600\", \"windows_acl_uses_native_adapter_without_subprocesses\": true, \"owner_lock_suffix\": {}, \"owner_lock_is_cooperative_single_writer\": true, \"orphan_sidecars_rejected_when_database_missing_or_empty\": true, \"orphan_sidecars_rejected_before_backup_publish\": true, \"backup_reserved_sqlite_suffixes_rejected_ascii_insensitively\": true, \"hard_linked_persistence_artifacts_rejected\": true, \"artifact_symlinks_and_nonregular_files_rejected\": true, \"intermediate_links_and_windows_reparse_points_rejected\": true, \"queue_reorder_is_one_immediate_dense_transaction\": true, \"queue_transition_is_one_immediate_dense_transaction\": true, \"queue_transition_requires_exact_supplied_final_orders\": true, \"queue_transition_updates_slow_slot_metadata_atomically\": true, \"no_space_condition_update_is_atomic_and_queue_gated\": true, \"demoted_queue_requires_slow_slot_metadata\": true, \"demoted_queue_requires_nonzero_slow_demotion_count\": true, \"slow_demotion_count_persists_outside_demoted_queue\": true, \"slow_retry_decision_contains_only_wall_schedule\": true, \"slow_retry_delay_is_nonzero\": true, \"stopped_task_is_authoritative_queue_owner\": true, \"stopped_task_and_result_are_one_to_one\": true, \"terminal_retention_is_one_immediate_dense_transaction\": true, \"stopped_result_deletion_is_one_immediate_dense_transaction\": true, \"task_source_replacement_is_atomic_and_bounded\": true, \"task_source_semantic_validation_is_streaming\": true, \"host_key_text_requires_utf8\": true, \"host_key_fingerprint_matches_presented_key_sha256\": true, \"host_key_challenge_requires_paused_task\": true, \"host_key_resolution_is_challenge_and_key_bound\": true, \"host_key_pin_and_challenge_clear_share_transaction\": true, \"secret_options_rejected_before_sql\": true, \"task_option_policy_rechecked_on_read\": true, \"bounded_task_stopped_host_and_install_reads\": true, \"spawned_session_store_and_appenders_remain_on_owner_thread\": true, \"session_owner_admission_is_hard_capped\": true, \"accepted_commands_reserve_completion_capacity\": true, \"session_owner_shutdown_is_out_of_band_and_drains_accepted\": true, \"journal_cache_reconciliation_never_changes_queue_authority\": true, \"task_queue_and_pointer_immutable_via_put\": true, \"journal_install_begin_checks_old_pointer\": true, \"journal_install_commands_require_identity_token\": true, \"journal_install_complete_rechecks_old_pointer\": true, \"journal_install_pointer_relation_validated_on_open\": true, \"installed_pointer_and_phase_change_share_transaction\": true, \"hot_backup_refuses_overwrite_and_runs_integrity_check\": true, \"hot_backup_flushes_file_before_publish\": true, \"hot_backup_publishes_with_no_clobber\": true, \"hot_backup_temp_uses_delete_journal_mode\": true, \"hot_backup_removes_owned_temporary_sidecars\": true}}\n}}",
+        json_string(SESSION_HOST_KEY_PIN_OPTION),
         json_string(SESSION_OWNER_LOCK_SUFFIX),
     )
     .expect("write to string");
@@ -224,13 +236,38 @@ mod tests {
         assert!(contract.contains("SQLITE_MAX_LIKE_PATTERN_LENGTH=65536"));
         assert!(contract.contains("\"tasks\": 100000"));
         assert!(contract.contains("\"option_map_bytes\": 4194304"));
+        assert!(contract.contains("\"sources_per_task\": 4096"));
+        assert!(contract.contains("\"source_read_budget_bytes\": 4194304"));
+        assert!(contract.contains("\"owner_request_default_capacity\": 64"));
+        assert!(contract.contains("\"owner_request_max_capacity\": 64"));
+        assert!(contract.contains("\"owner_default_startup_timeout_ms\": 30000"));
+        assert!(contract.contains("\"owner_default_shutdown_timeout_ms\": 30000"));
+        assert!(contract.contains("\"owner_max_wait_ms\": 300000"));
         assert!(contract.contains("\"task_read_budget_bytes\": 67108864"));
+        assert!(contract.contains("\"host_key_pin_option\": \"sftp-host-key-sha256\""));
+        assert!(contract.contains("\"host_key_challenge_mismatch\""));
+        assert!(contract.contains("\"owner_panicked\""));
+        assert!(contract.contains("\"host_key_departure_requires_challenge_clear\": true"));
+        assert!(contract.contains("\"host_key_read_budget_charges_owned_record_overhead\": true"));
+        assert!(contract.contains("\"task_source_startup_rechecks_per_task_budget\": true"));
+        assert!(contract.contains("\"stopped_result_status_payload_is_canonical\": true"));
         assert!(contract.contains(
             "\"journal_install_token_fields\": [\"gid\", \"checkpoint_id\", \"new_journal_id\"]"
         ));
         assert!(contract.contains("\"journal_install_complete_rechecks_old_pointer\": true"));
         assert!(contract.contains("\"journal_install_pointer_relation_validated_on_open\": true"));
         assert!(contract.contains("\"queue_transition_is_one_immediate_dense_transaction\": true"));
+        assert!(
+            contract.contains("\"queue_transition_requires_exact_supplied_final_orders\": true")
+        );
+        assert!(contract.contains("\"task_source_replacement_is_atomic_and_bounded\": true"));
+        assert!(contract.contains("\"host_key_resolution_is_challenge_and_key_bound\": true"));
+        assert!(contract.contains("\"session_owner_admission_is_hard_capped\": true"));
+        assert!(contract.contains("\"accepted_commands_reserve_completion_capacity\": true"));
+        assert!(
+            contract
+                .contains("\"session_owner_shutdown_is_out_of_band_and_drains_accepted\": true")
+        );
         assert!(
             contract.contains("\"v1_to_v2_requires_private_timestamped_no_clobber_backup\": true")
         );

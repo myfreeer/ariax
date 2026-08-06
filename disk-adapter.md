@@ -1,6 +1,10 @@
 # Disk Adapter Design
 
-Status: reviewed pre-implementation contract. Implementation pending.
+Status: first-slice implementation in progress. The bounded portable write
+lane and its ownership/admission contract are implemented. It consumes opaque
+epoch-bound handles but does not mint them; secure open/reopen, native
+positional-I/O executors, priority/fair scheduling, and adaptive policy remain
+pending.
 
 Decision: build the downloader's disk adapter in-house, but do not hand-roll
 raw platform syscalls when a small, maintained wrapper is enough.
@@ -167,6 +171,37 @@ It has:
 
 If the disk queue is full, protocol workers stop reading more network bytes
 until buffers return. This is how memory remains bounded.
+
+The first blocking-lane slice accepts only an opaque handle minted by a secure
+open layer; it never accepts a `Path` or reopens a serialized path. Every handle
+is bound to one backend epoch and one authorized byte span. Submission rejects
+an epoch mismatch, a zero or inexact length, a non-writable lease state, integer
+overflow, or a range beyond that span before queue ownership changes.
+
+The item queue, accepted-byte budget, and completion drain are independently
+bounded. A completion slot and byte charge are reserved before queue
+acceptance, and that charge remains attached to the outcome until it is
+consumed. Thus a worker cannot block or discard a result because a completion
+queue filled after the OS operation began. Cancellation is confirmed only
+while an operation is still queued; once a worker has claimed it, the blocking
+call runs to its real result. A cloneable cancellation handle is paired with one
+non-cloneable registration. The registration moves with one submission and,
+after acceptance, with one worker-owned operation. Rejection retains the same
+retryable submission, exact lease, and cancellation state; safe code cannot
+copy that registration into a second operation.
+
+Shutdown stops admission and worker dequeue, returns queued work as
+`WorkerAborted`, and waits only until its explicit bounded deadline for running
+calls. Workers report exit through a fixed nonblocking channel. Only
+reported-and-finished workers are joined; timed-out handles are detached and
+their in-flight leases stay worker-owned. The shutdown report exposes detached
+and in-flight counts and cannot claim a closed completion drain in that case.
+The process must mark the checkpoint dirty and exit without reusing affected
+epoch-bound files; restart recovery treats uncommitted writes as pending. Drop
+uses the zero-wait form of this policy, so a hung blocking syscall cannot hang a
+destructor. Priority classes, per-task fairness, coalescing, and concrete
+safe-open/OS executors layer over this ownership kernel rather than weakening
+it.
 
 ## File-Handle Budget And Reopen
 

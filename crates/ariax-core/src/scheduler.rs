@@ -1,15 +1,17 @@
 use crate::{
-    Aria2Status, CredentialRequirementKey, DrainTarget, EventDisposition, Generation, Gid,
-    HostKeyResolutionId, MAX_PERSISTED_MILLISECONDS, MonotonicInstant, NoSpaceProbeId,
-    NoSpaceProbeOrigin, OptionPatchId, PendingBarrier, PresentedHostKeyChallenge, PublicError,
-    QueueClass, QueueOrder, RetryTimerId, SchedulerAction, SchedulerCommand, SchedulerConfig,
-    SchedulerError, SchedulerOutcome, SlotOwnership, SlowReadmissionDecision, SlowReadmissionId,
-    SlowSlotPersistence, StateTransition, StoppedResultDeletionId, TaskConditions,
-    TaskConditionsSnapshot, TaskDeletion, TaskEvent, TaskEventEnvelope, TaskEventKind, TaskId,
-    TaskSnapshot, TaskState, TransitionContractKind, TransitionEffect, TransitionRejection,
-    ValidatedOptionPatchKind, transition_contract,
+    ALL_QUEUE_CLASSES, Aria2Status, CredentialRequirementKey, DrainTarget, EventDisposition,
+    Generation, Gid, HostKeyResolutionId, MAX_PERSISTED_MILLISECONDS, MonotonicInstant,
+    NoSpaceProbeId, NoSpaceProbeOrigin, OptionPatchId, PendingBarrier, PresentedHostKeyChallenge,
+    PublicError, QueueClass, QueueOrder, RetryTimerId, SchedulerAction, SchedulerCommand,
+    SchedulerConfig, SchedulerError, SchedulerOutcome, SlotOwnership, SlowReadmissionDecision,
+    SlowReadmissionId, SlowSlotPersistence, StateTransition, StoppedResultDeletionId,
+    TaskConditions, TaskConditionsSnapshot, TaskDeletion, TaskEvent, TaskEventEnvelope,
+    TaskEventKind, TaskId, TaskSnapshot, TaskState, TransitionContractKind, TransitionEffect,
+    TransitionRejection, ValidatedOptionPatchKind, transition_contract,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::error::Error;
+use std::fmt;
 
 /// Provenance retained until a correlated option-patch acknowledgement arrives.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -314,9 +316,208 @@ fn next_id<T>(
     Ok(value)
 }
 
+/// One recovery-normalized task accepted by [`RequestScheduler::restore`].
+///
+/// Filesystem, option, URI, and durable-piece payloads remain owned by their
+/// storage/config adapters. This value contains only scheduler-owned state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoveredSchedulerTask {
+    pub task_id: TaskId,
+    pub gid: Gid,
+    pub state: TaskState,
+    pub generation: Generation,
+    pub generation_started: bool,
+    pub desired_paused: bool,
+    pub conditions: TaskConditions,
+    pub slow_demotion_count: u32,
+    pub slow_slot: Option<SlowSlotPersistence>,
+    pub retry_at: Option<MonotonicInstant>,
+    pub host_key_challenge: Option<PresentedHostKeyChallenge>,
+    pub error: Option<PublicError>,
+    pub stopped_status: Option<Aria2Status>,
+}
+
+/// Complete, exact scheduler membership reconstructed by startup recovery.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchedulerRestoreBatch {
+    pub tasks: Vec<RecoveredSchedulerTask>,
+    pub queues: Vec<QueueOrder>,
+}
+
+impl SchedulerRestoreBatch {
+    #[must_use]
+    pub fn new(tasks: Vec<RecoveredSchedulerTask>, queues: Vec<QueueOrder>) -> Self {
+        Self { tasks, queues }
+    }
+}
+
+/// Bounded, move-only initial effects required to make recovered timers and
+/// snapshots visible through the normal ordered dispatcher.
+///
+/// A plan is the sole authority to publish one restored scheduler lineage and
+/// therefore cannot be cloned for replay through another driver.
+///
+/// ```compile_fail
+/// use ariax_core::SchedulerRestorePlan;
+///
+/// fn duplicate(plan: SchedulerRestorePlan) {
+///     let _second_authority = plan.clone();
+/// }
+/// ```
+#[derive(Debug, Eq, PartialEq)]
+pub struct SchedulerRestorePlan {
+    effects: VecDeque<TransitionEffect>,
+    initial_effect_count: usize,
+    bound_scheduler: RequestScheduler,
+}
+
+impl SchedulerRestorePlan {
+    /// Returns whether this plan was produced for the scheduler's exact current
+    /// state, correlation identities, snapshots, and queue orders.
+    #[must_use]
+    pub fn is_bound_to(&self, scheduler: &RequestScheduler) -> bool {
+        self.effects.len() == self.initial_effect_count && &self.bound_scheduler == scheduler
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.effects.is_empty()
+    }
+
+    #[must_use]
+    pub fn remaining(&self) -> usize {
+        self.effects.len()
+    }
+
+    /// Removes the next dispatcher-sized effect batch.
+    pub fn next_batch(&mut self) -> Vec<TransitionEffect> {
+        let count = self.effects.len().min(crate::MAX_SCHEDULER_EFFECTS);
+        self.effects.drain(..count).collect()
+    }
+}
+
+/// Why an atomic scheduler recovery batch was rejected.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SchedulerRestoreError {
+    TaskLimitReached,
+    DuplicateTaskId(TaskId),
+    DuplicateGid(Gid),
+    MissingQueue(QueueClass),
+    DuplicateQueue(QueueClass),
+    DuplicateQueueMember(Gid),
+    UnknownQueueTask(Gid),
+    MissingQueueTask(Gid),
+    QueueClassMismatch {
+        gid: Gid,
+        expected: QueueClass,
+        actual: QueueClass,
+    },
+    InvalidState {
+        gid: Gid,
+        state: TaskState,
+    },
+    InvalidConditions(Gid),
+    InvalidRetryWait(Gid),
+    InvalidSlowState(Gid),
+    InvalidHostKeyState(Gid),
+    InvalidStoppedResult(Gid),
+    UnexpectedTaskMetadata(Gid),
+    InvalidSnapshot(Gid),
+    CorrelationIdExhausted,
+}
+
+impl fmt::Display for SchedulerRestoreError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TaskLimitReached => formatter.write_str("recovered task limit exceeded"),
+            Self::DuplicateTaskId(task_id) => {
+                write!(formatter, "duplicate recovered task id {}", task_id.get())
+            }
+            Self::DuplicateGid(gid) => write!(formatter, "duplicate recovered GID {gid}"),
+            Self::MissingQueue(class) => {
+                write!(formatter, "missing recovered {} queue", class.code())
+            }
+            Self::DuplicateQueue(class) => {
+                write!(formatter, "duplicate recovered {} queue", class.code())
+            }
+            Self::DuplicateQueueMember(gid) => {
+                write!(
+                    formatter,
+                    "recovered GID {gid} occurs in multiple queue positions"
+                )
+            }
+            Self::UnknownQueueTask(gid) => {
+                write!(formatter, "recovered queue references unknown GID {gid}")
+            }
+            Self::MissingQueueTask(gid) => {
+                write!(formatter, "recovered GID {gid} has no queue membership")
+            }
+            Self::QueueClassMismatch {
+                gid,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "recovered GID {gid} belongs to {} queue, not {}",
+                expected.code(),
+                actual.code()
+            ),
+            Self::InvalidState { gid, state } => write!(
+                formatter,
+                "recovered GID {gid} uses unsafe state {}",
+                state.code()
+            ),
+            Self::InvalidConditions(gid) => {
+                write!(formatter, "recovered GID {gid} has invalid conditions")
+            }
+            Self::InvalidRetryWait(gid) => {
+                write!(
+                    formatter,
+                    "recovered GID {gid} has invalid retry-wait metadata"
+                )
+            }
+            Self::InvalidSlowState(gid) => {
+                write!(
+                    formatter,
+                    "recovered GID {gid} has invalid slow-slot metadata"
+                )
+            }
+            Self::InvalidHostKeyState(gid) => {
+                write!(
+                    formatter,
+                    "recovered GID {gid} has invalid host-key metadata"
+                )
+            }
+            Self::InvalidStoppedResult(gid) => {
+                write!(
+                    formatter,
+                    "recovered GID {gid} has invalid stopped-result metadata"
+                )
+            }
+            Self::UnexpectedTaskMetadata(gid) => {
+                write!(
+                    formatter,
+                    "recovered GID {gid} has metadata outside its state"
+                )
+            }
+            Self::InvalidSnapshot(gid) => {
+                write!(
+                    formatter,
+                    "recovered GID {gid} cannot publish a valid snapshot"
+                )
+            }
+            Self::CorrelationIdExhausted => {
+                formatter.write_str("recovered scheduler correlation id exhausted")
+            }
+        }
+    }
+}
+
+impl Error for SchedulerRestoreError {}
+
 /// Deterministic, bounded in-memory owner of task state, queue membership, and
 /// scheduler-issued correlation identities.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RequestScheduler {
     config: SchedulerConfig,
     tasks: BTreeMap<Gid, ScheduledTask>,
@@ -339,6 +540,271 @@ impl RequestScheduler {
             published_snapshots: BTreeMap::new(),
             ids: IdCounters::default(),
         }
+    }
+
+    /// Atomically reconstructs scheduler-owned state after cross-store startup
+    /// recovery has normalized durable and session authorities.
+    pub fn restore(
+        config: SchedulerConfig,
+        batch: SchedulerRestoreBatch,
+    ) -> Result<(Self, SchedulerRestorePlan), SchedulerRestoreError> {
+        if batch.tasks.len() > config.max_tasks.get() {
+            return Err(SchedulerRestoreError::TaskLimitReached);
+        }
+
+        let mut queues = SchedulerQueues::default();
+        let mut seen_classes = BTreeSet::new();
+        let mut memberships = BTreeMap::new();
+        for order in batch.queues {
+            if !seen_classes.insert(order.class) {
+                return Err(SchedulerRestoreError::DuplicateQueue(order.class));
+            }
+            if order.order.len() > config.max_tasks.get() {
+                return Err(SchedulerRestoreError::TaskLimitReached);
+            }
+            for gid in order.order.iter().copied() {
+                if memberships.insert(gid, order.class).is_some() {
+                    return Err(SchedulerRestoreError::DuplicateQueueMember(gid));
+                }
+            }
+            *queues.get_mut(order.class) = order.order;
+        }
+        for class in ALL_QUEUE_CLASSES.iter().copied() {
+            if !seen_classes.contains(&class) {
+                return Err(SchedulerRestoreError::MissingQueue(class));
+            }
+        }
+
+        let mut scheduler = Self::new(config);
+        let mut timer_effects: BTreeMap<Gid, Vec<TransitionEffect>> = BTreeMap::new();
+        for recovered in batch.tasks {
+            if scheduler.tasks.contains_key(&recovered.gid) {
+                return Err(SchedulerRestoreError::DuplicateGid(recovered.gid));
+            }
+            if scheduler.task_ids.contains_key(&recovered.task_id) {
+                return Err(SchedulerRestoreError::DuplicateTaskId(recovered.task_id));
+            }
+            recovered
+                .conditions
+                .validate()
+                .map_err(|_| SchedulerRestoreError::InvalidConditions(recovered.gid))?;
+            Self::validate_recovered_task(&recovered, config.max_tasks.get())?;
+
+            let mut task = ScheduledTask::new(
+                recovered.task_id,
+                recovered.gid,
+                recovered.desired_paused,
+                recovered.conditions,
+            );
+            task.state = recovered.state;
+            task.generation = recovered.generation;
+            task.generation_started = recovered.generation_started;
+            task.slow_demotion_count = recovered.slow_demotion_count;
+            task.slow_slot = recovered.slow_slot;
+            task.host_key_challenge = recovered.host_key_challenge;
+            task.error = recovered.error;
+            task.stopped_status = recovered.stopped_status;
+            task.terminal_persisted = recovered.state == TaskState::StoppedResult;
+
+            match recovered.state {
+                TaskState::RetryWait => {
+                    let at = recovered
+                        .retry_at
+                        .ok_or(SchedulerRestoreError::InvalidRetryWait(recovered.gid))?;
+                    let retry_timer_id = scheduler
+                        .ids
+                        .retry_timer()
+                        .map_err(|_| SchedulerRestoreError::CorrelationIdExhausted)?;
+                    task.retry_timer = Some((retry_timer_id, at));
+                    timer_effects.entry(recovered.gid).or_default().push(
+                        TransitionEffect::ScheduleRetry {
+                            task_id: recovered.task_id,
+                            gid: recovered.gid,
+                            generation: recovered.generation,
+                            retry_timer_id,
+                            at,
+                        },
+                    );
+                }
+                TaskState::WaitingSlow => {
+                    let slow_slot = recovered
+                        .slow_slot
+                        .ok_or(SchedulerRestoreError::InvalidSlowState(recovered.gid))?;
+                    let readmission_id = scheduler
+                        .ids
+                        .slow_readmission()
+                        .map_err(|_| SchedulerRestoreError::CorrelationIdExhausted)?;
+                    task.slow_readmission = Some((readmission_id, slow_slot.decision.readmit_at));
+                    timer_effects.entry(recovered.gid).or_default().push(
+                        TransitionEffect::ScheduleSlowReadmission {
+                            task_id: recovered.task_id,
+                            gid: recovered.gid,
+                            generation: recovered.generation,
+                            readmission_id,
+                            at: slow_slot.decision.readmit_at,
+                        },
+                    );
+                }
+                _ => {}
+            }
+            if let Some(at) = task
+                .conditions
+                .no_space
+                .as_ref()
+                .and_then(|condition| condition.retry_at)
+            {
+                let probe_id = scheduler
+                    .ids
+                    .no_space_probe()
+                    .map_err(|_| SchedulerRestoreError::CorrelationIdExhausted)?;
+                task.no_space_probe = Some((probe_id, NoSpaceProbeOrigin::AutomaticRetry));
+                timer_effects.entry(recovered.gid).or_default().push(
+                    TransitionEffect::ProbeNoSpace {
+                        task_id: recovered.task_id,
+                        gid: recovered.gid,
+                        generation: recovered.generation,
+                        probe_id,
+                        origin: NoSpaceProbeOrigin::AutomaticRetry,
+                        at,
+                    },
+                );
+            }
+
+            scheduler.highest_task_id = Some(
+                scheduler
+                    .highest_task_id
+                    .map_or(recovered.task_id, |current| current.max(recovered.task_id)),
+            );
+            scheduler.task_ids.insert(recovered.task_id, recovered.gid);
+            scheduler.tasks.insert(recovered.gid, task);
+        }
+
+        if memberships.len() != scheduler.tasks.len() {
+            if let Some(gid) = scheduler
+                .tasks
+                .keys()
+                .copied()
+                .find(|gid| !memberships.contains_key(gid))
+            {
+                return Err(SchedulerRestoreError::MissingQueueTask(gid));
+            }
+            if let Some(gid) = memberships
+                .keys()
+                .copied()
+                .find(|gid| !scheduler.tasks.contains_key(gid))
+            {
+                return Err(SchedulerRestoreError::UnknownQueueTask(gid));
+            }
+            return Err(SchedulerRestoreError::TaskLimitReached);
+        }
+        for (gid, actual) in memberships.iter().map(|(gid, class)| (*gid, *class)) {
+            let task = scheduler
+                .tasks
+                .get(&gid)
+                .ok_or(SchedulerRestoreError::UnknownQueueTask(gid))?;
+            let expected = task
+                .queue_class()
+                .ok_or(SchedulerRestoreError::InvalidState {
+                    gid,
+                    state: task.state,
+                })?;
+            if expected != actual {
+                return Err(SchedulerRestoreError::QueueClassMismatch {
+                    gid,
+                    expected,
+                    actual,
+                });
+            }
+        }
+        scheduler.queues = queues;
+
+        let mut effects = VecDeque::new();
+        for class in ALL_QUEUE_CLASSES.iter().copied() {
+            for gid in scheduler.queues.get(class).iter().copied() {
+                if let Some(task_effects) = timer_effects.remove(&gid) {
+                    effects.extend(task_effects);
+                }
+                let task = scheduler
+                    .tasks
+                    .get(&gid)
+                    .ok_or(SchedulerRestoreError::UnknownQueueTask(gid))?;
+                let snapshot = task
+                    .snapshot(config.retry_wait_holds_slot)
+                    .map_err(|_| SchedulerRestoreError::InvalidSnapshot(gid))?;
+                scheduler.published_snapshots.insert(gid, snapshot.clone());
+                effects.push_back(TransitionEffect::PublishSnapshot {
+                    task_id: task.task_id,
+                    snapshot,
+                });
+            }
+        }
+        debug_assert!(timer_effects.is_empty());
+
+        let bound_scheduler = scheduler.clone();
+        let initial_effect_count = effects.len();
+        Ok((
+            scheduler,
+            SchedulerRestorePlan {
+                effects,
+                initial_effect_count,
+                bound_scheduler,
+            },
+        ))
+    }
+
+    fn validate_recovered_task(
+        task: &RecoveredSchedulerTask,
+        max_tasks: usize,
+    ) -> Result<(), SchedulerRestoreError> {
+        if !matches!(
+            task.state,
+            TaskState::Waiting
+                | TaskState::WaitingSlow
+                | TaskState::RetryWait
+                | TaskState::Paused
+                | TaskState::PausedSlow
+                | TaskState::PausedHostKey
+                | TaskState::StoppedResult
+        ) {
+            return Err(SchedulerRestoreError::InvalidState {
+                gid: task.gid,
+                state: task.state,
+            });
+        }
+
+        if (task.state == TaskState::RetryWait) != task.retry_at.is_some() {
+            return Err(SchedulerRestoreError::InvalidRetryWait(task.gid));
+        }
+        if task.state == TaskState::WaitingSlow {
+            let slow_slot = task
+                .slow_slot
+                .ok_or(SchedulerRestoreError::InvalidSlowState(task.gid))?;
+            if task.slow_demotion_count == 0
+                || slow_slot.demotion_count != task.slow_demotion_count
+                || slow_slot.original_position >= max_tasks
+                || slow_slot.decision.delay_ms == 0
+                || slow_slot.decision.scheduled_at_ms > MAX_PERSISTED_MILLISECONDS
+            {
+                return Err(SchedulerRestoreError::InvalidSlowState(task.gid));
+            }
+        } else if task.slow_slot.is_some() {
+            return Err(SchedulerRestoreError::InvalidSlowState(task.gid));
+        }
+
+        if (task.state == TaskState::PausedHostKey) != task.host_key_challenge.is_some() {
+            return Err(SchedulerRestoreError::InvalidHostKeyState(task.gid));
+        }
+        if task.state == TaskState::StoppedResult {
+            let status = task
+                .stopped_status
+                .ok_or(SchedulerRestoreError::InvalidStoppedResult(task.gid))?;
+            if !status.is_terminal() || (status == Aria2Status::Error) != task.error.is_some() {
+                return Err(SchedulerRestoreError::InvalidStoppedResult(task.gid));
+            }
+        } else if task.stopped_status.is_some() || task.error.is_some() {
+            return Err(SchedulerRestoreError::UnexpectedTaskMetadata(task.gid));
+        }
+        Ok(())
     }
 
     #[must_use]
@@ -826,6 +1292,32 @@ impl RequestScheduler {
         task.slow_slot = None;
     }
 
+    fn schedule_no_space_probe(
+        task: &mut ScheduledTask,
+        origin: NoSpaceProbeOrigin,
+        at: MonotonicInstant,
+        effects: &mut Vec<TransitionEffect>,
+        ids: &mut IdCounters,
+    ) -> Result<(), SchedulerError> {
+        if task.no_space_probe.is_some() {
+            return Ok(());
+        }
+        if task.conditions.no_space.is_none() {
+            return Err(SchedulerError::InternalInvariant);
+        }
+        let probe_id = ids.no_space_probe()?;
+        task.no_space_probe = Some((probe_id, origin));
+        effects.push(TransitionEffect::ProbeNoSpace {
+            task_id: task.task_id,
+            gid: task.gid,
+            generation: task.generation,
+            probe_id,
+            origin,
+            at,
+        });
+        Ok(())
+    }
+
     fn begin_cancellation(
         task: &mut ScheduledTask,
         target: DrainTarget,
@@ -1300,16 +1792,41 @@ impl RequestScheduler {
         let mut effects = Vec::new();
         if action == SchedulerAction::ExplicitNoSpaceProbeRequested {
             let mut ids = self.ids;
-            let probe_id = ids.no_space_probe()?;
+            if original.no_space_probe.is_some()
+                && !original.desired_paused
+                && !matches!(
+                    original.state,
+                    TaskState::WaitingSlow | TaskState::PausedSlow
+                )
+            {
+                return Ok(SchedulerOutcome::default());
+            }
             updated.desired_paused = false;
-            updated.no_space_probe = Some((probe_id, NoSpaceProbeOrigin::ExplicitResume));
-            effects.push(TransitionEffect::ProbeNoSpace {
-                task_id: updated.task_id,
-                gid,
-                generation: updated.generation,
-                probe_id,
-                origin: NoSpaceProbeOrigin::ExplicitResume,
-            });
+            updated.state = target;
+            if matches!(
+                original.state,
+                TaskState::WaitingSlow | TaskState::PausedSlow
+            ) {
+                updated.slow_demotion_count = 0;
+                if let Some((readmission_id, _)) = updated.slow_readmission.take() {
+                    effects.push(TransitionEffect::CancelSlowReadmission {
+                        task_id: updated.task_id,
+                        gid,
+                        generation: updated.generation,
+                        readmission_id,
+                    });
+                }
+                updated.slow_readmission_ready = false;
+                updated.pending_slow_readmission = None;
+                updated.slow_slot = None;
+            }
+            Self::schedule_no_space_probe(
+                &mut updated,
+                NoSpaceProbeOrigin::ExplicitResume,
+                at,
+                &mut effects,
+                &mut ids,
+            )?;
             return self.finish_action(
                 original,
                 Some(updated),
@@ -3066,6 +3583,27 @@ impl RequestScheduler {
             }
             DrainTarget::Paused | DrainTarget::PausedSlow | DrainTarget::Waiting => true,
         };
+        if matches!(
+            updated.state,
+            TaskState::Waiting
+                | TaskState::WaitingSlow
+                | TaskState::RetryWait
+                | TaskState::Paused
+                | TaskState::PausedSlow
+        ) && let Some(probe_at) = updated
+            .conditions
+            .no_space
+            .as_ref()
+            .and_then(|condition| condition.retry_at)
+        {
+            Self::schedule_no_space_probe(
+                &mut updated,
+                NoSpaceProbeOrigin::AutomaticRetry,
+                probe_at,
+                &mut effects,
+                &mut ids,
+            )?;
+        }
         let _ = barrier_force;
         Self::mark_non_token_event(&mut updated, TaskEventKind::CancellationDrained);
         self.finish_action(
@@ -3120,6 +3658,7 @@ impl RequestScheduler {
         if let Some(outcome) = Self::stale_if_rejected_event(&original, action, at)? {
             return Ok(outcome);
         }
+        let mut ids = self.ids;
         let mut updated = original.clone();
         updated.no_space_probe = None;
         updated.last_no_space_probe = Some(probe_id);
@@ -3132,11 +3671,20 @@ impl RequestScheduler {
         }
         updated.state =
             Self::target_for_action(&original, action)?.ok_or(SchedulerError::InternalInvariant)?;
-        let effects = vec![TransitionEffect::PersistConditions {
+        let mut effects = vec![TransitionEffect::PersistConditions {
             task_id: updated.task_id,
             gid: updated.gid,
             conditions: updated.conditions.clone(),
         }];
+        if !ready && let Some(probe_at) = next_retry_at {
+            Self::schedule_no_space_probe(
+                &mut updated,
+                NoSpaceProbeOrigin::AutomaticRetry,
+                probe_at,
+                &mut effects,
+                &mut ids,
+            )?;
+        }
         self.finish_action(
             original,
             Some(updated),
@@ -3145,7 +3693,7 @@ impl RequestScheduler {
             at,
             effects,
             true,
-            self.ids,
+            ids,
         )
     }
 

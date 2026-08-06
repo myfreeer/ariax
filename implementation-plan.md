@@ -6,10 +6,16 @@ deterministic bounded scheduler kernel, journal v1 framing/replay and typed
 payloads, SQLite session schema v2, exact v1 preflight and transactional
 migration, dense queue/slow metadata transitions, owner locking, WAL/DELETE
 probes, journal-install tokens, retained stopped-result transactions, and
-validated no-clobber backup. The production effect dispatcher, concrete
-host-key write/approval adapter, complete startup/session-owner orchestration,
-remaining backend work, and native release CI matrix remain phase and tag
-gates.
+the validated no-clobber backup primitive. An ordered runtime driver, immutable
+applied snapshots, bounded blocking-disk fallback, dedicated session owner, concrete
+persistence-effect sink, host-key write/approval transactions, persisted-delay
+recovery, and pure cross-store startup planning are also executable. The
+startup repair/application executor, concrete non-persistence adapters, native
+capability/install recovery, credential derivation, the transfer/storage
+pipeline, hot-backup crash-residue reconciliation, remaining backend work, and
+the native-platform/MSRV release CI gates remain phase and tag gates. These
+checkpoints do not yet satisfy the first vertical slice or the project
+definition of done.
 
 This is a staged plan for building the design without repeating the incomplete
 rewrite pattern.

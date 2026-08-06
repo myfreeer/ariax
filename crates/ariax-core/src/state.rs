@@ -293,7 +293,14 @@ impl WireProjection {
     /// Projects one internal state without exposing internal state names.
     pub fn project(self, state: TaskState) -> Result<Aria2Status, WireProjectionError> {
         if (self.conditions.no_space || self.conditions.needs_credentials)
-            && !matches!(state, TaskState::Waiting | TaskState::Paused)
+            && !matches!(
+                state,
+                TaskState::Waiting
+                    | TaskState::WaitingSlow
+                    | TaskState::RetryWait
+                    | TaskState::Paused
+                    | TaskState::PausedSlow
+            )
         {
             return Err(WireProjectionError::InvalidConditionState);
         }
@@ -469,6 +476,25 @@ mod tests {
             .project(TaskState::Waiting),
             Ok(Aria2Status::Paused)
         );
+        for state in [
+            TaskState::WaitingSlow,
+            TaskState::RetryWait,
+            TaskState::PausedSlow,
+        ] {
+            assert_eq!(
+                WireProjection {
+                    conditions: TaskConditionsSnapshot {
+                        no_space: true,
+                        needs_credentials: false,
+                    },
+                    retry_wait_holds_slot: true,
+                    ..WireProjection::default()
+                }
+                .project(state),
+                Ok(Aria2Status::Paused),
+                "{state:?}"
+            );
+        }
         assert_eq!(
             WireProjection {
                 conditions: TaskConditionsSnapshot {
@@ -481,6 +507,21 @@ mod tests {
             .project(TaskState::Waiting),
             Ok(Aria2Status::Paused)
         );
+        for state in [TaskState::WaitingSlow, TaskState::RetryWait] {
+            assert_eq!(
+                WireProjection {
+                    conditions: TaskConditionsSnapshot {
+                        no_space: false,
+                        needs_credentials: true,
+                    },
+                    desired_paused: false,
+                    ..WireProjection::default()
+                }
+                .project(state),
+                Ok(Aria2Status::Waiting),
+                "{state:?}"
+            );
+        }
     }
 
     #[test]
@@ -515,17 +556,34 @@ mod tests {
 
     #[test]
     fn invalid_condition_states_and_unpersisted_terminals_do_not_project() {
-        assert_eq!(
-            WireProjection {
-                conditions: TaskConditionsSnapshot {
-                    needs_credentials: false,
-                    no_space: true,
-                },
-                ..WireProjection::default()
-            }
-            .project(TaskState::PausedRestarting),
-            Err(WireProjectionError::InvalidConditionState)
-        );
+        for state in [
+            TaskState::Accepted,
+            TaskState::Allocating,
+            TaskState::Active,
+            TaskState::PausedHostKey,
+            TaskState::PausedRestarting,
+            TaskState::Verifying,
+            TaskState::Seeding,
+            TaskState::Complete,
+            TaskState::Error,
+            TaskState::Removed,
+            TaskState::StoppedResult,
+        ] {
+            assert_eq!(
+                WireProjection {
+                    conditions: TaskConditionsSnapshot {
+                        needs_credentials: false,
+                        no_space: true,
+                    },
+                    terminal_persisted: state.is_terminal(),
+                    stopped_status: Some(Aria2Status::Complete),
+                    ..WireProjection::default()
+                }
+                .project(state),
+                Err(WireProjectionError::InvalidConditionState),
+                "{state:?}"
+            );
+        }
         assert_eq!(
             WireProjection::default().project(TaskState::Complete),
             Err(WireProjectionError::TerminalNotPersisted)

@@ -1,6 +1,10 @@
 # Requirements Traceability
 
-Status: reviewed contract with implementation in progress.
+Status: reviewed contract with implementation in progress. Core scheduling,
+applied-status publication, bounded persistence ownership, pure cross-store
+startup planning, and the blocking-disk fallback have executable checkpoints;
+the startup application executor, first end-to-end transfer, native adapter
+matrix, and MSRV gate are not yet complete.
 
 This maps the requested properties to design documents.
 
@@ -202,7 +206,8 @@ Design coverage:
 - `detailed-storage.md`: journal schema, lease transaction, recovery, and
   finalization contracts.
 - `detailed-runtime.md`: queue/ownership/cancellation/shutdown contracts.
-- `detailed-http-first-slice.md`: executable first-slice HTTP state machine.
+- `detailed-http-first-slice.md`: reviewed first-slice HTTP state-machine
+  contract; the protocol adapter and end-to-end slice remain pending.
 
 Acceptance:
 
@@ -240,8 +245,10 @@ Acceptance:
 - native Linux, Windows, and macOS CI builds the declared release artifacts,
 - WSL Linux and native MinGW toolchains are never mixed into one target build.
 
-Current status: local WSL and native MinGW checks are development evidence, not
-the required native Linux, Windows, and macOS release/tag matrix.
+Current status: local WSL and MinGW checks are development evidence, not the
+required native Linux, Windows, and macOS release/tag matrix. Workflow entries
+for macOS and MSRV 1.88 are gates, not proof that those gates passed for this
+checkpoint.
 
 ## aria2-Style Configurability
 

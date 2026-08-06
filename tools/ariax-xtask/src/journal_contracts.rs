@@ -266,7 +266,7 @@ fn render_journal_contracts() -> String {
             .copied()
             .map(|value| value.code()),
     );
-    output.push_str("],\n    \"rules\": {\"single_sequence_owner\": true, \"typed_payloads_only\": true, \"codec_rejection_does_not_consume_sequence\": true, \"write_or_reopen_failure_latches_fault\": true, \"fault_blocks_later_sequences\": true, \"flush_may_cover_later_already_appended_records\": true, \"close_requires_fully_flushed_tail\": true, \"reopen_validates_length_header_tail_sequence_and_fingerprint\": true, \"rotation_requires_nonempty_fully_flushed_segment\": true, \"rotation_hashes_without_whole_segment_buffering\": true, \"new_header_synced_before_atomic_install\": true, \"parent_directory_synced_where_supported\": true, \"old_segments_immutable_after_rotation\": true}\n  },\n  \"header_rejections\": [");
+    output.push_str("],\n    \"rules\": {\"single_sequence_owner\": true, \"typed_payloads_only\": true, \"codec_rejection_does_not_consume_sequence\": true, \"write_or_reopen_failure_latches_fault\": true, \"fault_blocks_later_sequences\": true, \"flush_may_cover_later_already_appended_records\": true, \"close_requires_fully_flushed_tail\": true, \"reopen_validates_length_header_tail_sequence_and_fingerprint\": true, \"rotation_requires_nonempty_fully_flushed_segment\": true, \"rotation_hashes_without_whole_segment_buffering\": true, \"new_header_synced_before_atomic_no_clobber_install\": true, \"publication_uncertainty_requires_exact_residue_reconciliation\": true, \"candidate_cleanup_is_directory_synced_where_supported\": true, \"old_segments_immutable_after_rotation\": true, \"recovered_open_requires_exact_named_regular_path_preflight\": true, \"portable_recovery_preflight_is_not_descriptor_safe\": true, \"portable_recovered_open_does_not_establish_namespace_authority\": true, \"native_descriptor_safe_acquisition_and_mutation_exclusion_precede_recovered_open\": true, \"recovered_open_validates_expected_identity\": true, \"recovered_open_is_replay_bounded\": true, \"clean_recovery_syncs_and_reopens_verified_eof\": true, \"only_final_record_corruption_is_repairable\": true, \"sequence_gaps_are_not_repaired\": true, \"torn_suffix_removed_before_successor_install\": true, \"recovery_successor_is_no_clobber\": true, \"recovery_never_appends_after_invalid_bytes\": true}\n  },\n  \"header_rejections\": [");
     for (index, error) in ALL_HEADER_DECODE_ERRORS.iter().copied().enumerate() {
         if index > 0 {
             output.push_str(", ");
@@ -381,6 +381,15 @@ mod tests {
         assert!(contract.contains("\"serialized_appender\""));
         assert!(contract.contains("\"single_sequence_owner\": true"));
         assert!(contract.contains("\"rotation_hashes_without_whole_segment_buffering\": true"));
+        assert!(
+            contract.contains(
+                "\"portable_recovered_open_does_not_establish_namespace_authority\": true"
+            )
+        );
+        assert!(contract.contains(
+            "\"native_descriptor_safe_acquisition_and_mutation_exclusion_precede_recovered_open\": true"
+        ));
+        assert!(contract.contains("\"recovery_never_appends_after_invalid_bytes\": true"));
         assert!(contract.contains("\"decimal_index_width\": 10"));
         assert!(contract.contains("\"code\": \"sha-512\", \"value_bytes\": 64"));
         assert!(contract.contains("\"valid_prefix_authoritative\": true"));

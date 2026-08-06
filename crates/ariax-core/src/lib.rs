@@ -5,6 +5,7 @@
 mod command;
 mod error;
 mod ids;
+mod persisted_delay;
 mod scheduler;
 mod snapshot;
 mod state;
@@ -13,12 +14,12 @@ mod transition;
 pub use command::{
     ALL_DRAIN_TARGETS, ALL_NO_SPACE_PROBE_ORIGINS, ALL_QUEUE_CLASSES,
     ALL_SCHEDULER_COMMAND_HANDLINGS, ALL_SCHEDULER_COMMAND_KINDS, ALL_SLOT_OWNERSHIP,
-    ALL_TASK_EVENT_KINDS, DrainTarget, MAX_PERSISTED_MILLISECONDS, MAX_SCHEDULER_EFFECTS,
-    MAX_SCHEDULER_TASKS, NoSpaceProbeOrigin, PendingBarrier, QueueClass, QueueOrder,
-    SchedulerCommand, SchedulerCommandHandling, SchedulerCommandKind, SchedulerConfig,
+    ALL_TASK_EVENT_KINDS, ALL_TRANSITION_EFFECT_KINDS, DrainTarget, MAX_PERSISTED_MILLISECONDS,
+    MAX_SCHEDULER_EFFECTS, MAX_SCHEDULER_TASKS, NoSpaceProbeOrigin, PendingBarrier, QueueClass,
+    QueueOrder, SchedulerCommand, SchedulerCommandHandling, SchedulerCommandKind, SchedulerConfig,
     SchedulerConfigError, SchedulerError, SchedulerOutcome, SlotOwnership, SlowReadmissionDecision,
     SlowSlotPersistence, TaskEvent, TaskEventEnvelope, TaskEventKind, TaskEventToken,
-    TransitionEffect, ValidatedOptionPatchKind,
+    TransitionEffect, TransitionEffectIdentity, TransitionEffectKind, ValidatedOptionPatchKind,
 };
 
 pub use error::{
@@ -31,8 +32,12 @@ pub use ids::{
     OverlapGroupId, ParseGidError, ParseGidPrefixError, PieceId, RetryTimerId, SlowReadmissionId,
     StoppedResultDeletionId, TaskId, TransferAttemptId, UriId, resolve_gid_prefix,
 };
+pub use persisted_delay::{
+    PersistedDelayDecision, PersistedDelayError, RecoveredDelayDecision, RecoveredWallClock,
+};
 pub use scheduler::{
-    PendingOptionPatchMode, PendingUserControl, RequestScheduler, SchedulerTaskView,
+    PendingOptionPatchMode, PendingUserControl, RecoveredSchedulerTask, RequestScheduler,
+    SchedulerRestoreBatch, SchedulerRestoreError, SchedulerRestorePlan, SchedulerTaskView,
 };
 pub use snapshot::{
     HostKeyChallenge, MAX_HOST_KEY_ALGORITHM_BYTES, MAX_HOST_KEY_CANONICAL_HOST_BYTES,

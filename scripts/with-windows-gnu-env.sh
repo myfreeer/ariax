@@ -31,7 +31,9 @@ exec "$msys_env" \
         test -x "$toolchain_root/bin/cargo.exe"
         test -x "$toolchain_root/bin/rustc.exe"
         mkdir -p -- "$cargo_home" "$target_dir"
-        export PATH="$toolchain_root/bin:/mingw64/bin:/usr/local/bin:/usr/bin"
+        # Keep GCC's matching runtime DLLs ahead of the standalone Rust bundle.
+        # Cargo/rustc/rustdoc/rustfmt/clippy remain explicitly pinned below.
+        export PATH="/mingw64/bin:$toolchain_root/bin:/usr/local/bin:/usr/bin"
         export RUSTC="$toolchain_root/bin/rustc.exe"
         export RUSTDOC="$toolchain_root/bin/rustdoc.exe"
         export RUSTFMT="$toolchain_root/bin/rustfmt.exe"

@@ -644,7 +644,16 @@ impl SchedulerAction {
     /// Selects generic resume or the required explicit no-space probe request.
     #[must_use]
     pub const fn for_resume(state: TaskState, conditions: TaskConditionsSnapshot) -> Self {
-        if conditions.no_space && matches!(state, TaskState::Waiting | TaskState::Paused) {
+        if conditions.no_space
+            && matches!(
+                state,
+                TaskState::Waiting
+                    | TaskState::WaitingSlow
+                    | TaskState::RetryWait
+                    | TaskState::Paused
+                    | TaskState::PausedSlow
+            )
+        {
             Self::ExplicitNoSpaceProbeRequested
         } else {
             Self::Resume
@@ -670,14 +679,18 @@ impl SchedulerAction {
         ready: bool,
     ) -> Option<Self> {
         match (state, origin, desired_paused, ready) {
-            (TaskState::Waiting, _, _, true) => Some(Self::WaitingNoSpaceProbeSucceeded),
-            (TaskState::Waiting, _, _, false) => Some(Self::WaitingNoSpaceProbeFailed),
+            (TaskState::Waiting | TaskState::WaitingSlow | TaskState::RetryWait, _, _, true) => {
+                Some(Self::WaitingNoSpaceProbeSucceeded)
+            }
+            (TaskState::Waiting | TaskState::WaitingSlow | TaskState::RetryWait, _, _, false) => {
+                Some(Self::WaitingNoSpaceProbeFailed)
+            }
             (TaskState::Paused, _, false, true) => Some(Self::PausedNoSpaceResumeProbeSucceeded),
             (TaskState::Paused, _, false, false) => Some(Self::PausedNoSpaceResumeProbeFailed),
-            (TaskState::Paused, _, true, true) => {
+            (TaskState::Paused | TaskState::PausedSlow, _, true, true) => {
                 Some(Self::PausedNoSpacePausePreservingProbeSucceeded)
             }
-            (TaskState::Paused, _, true, false) => {
+            (TaskState::Paused | TaskState::PausedSlow, _, true, false) => {
                 Some(Self::PausedNoSpacePausePreservingProbeFailed)
             }
             _ => None,
@@ -1163,29 +1176,40 @@ pub const fn transition_contract(state: TaskState, action: SchedulerAction) -> T
             _ => conflict(),
         },
         SchedulerAction::CredentialsSatisfied => match state {
-            TaskState::Waiting | TaskState::Paused => {
-                stay(state, StateReason::CredentialsSatisfied)
-            }
+            TaskState::Waiting
+            | TaskState::WaitingSlow
+            | TaskState::RetryWait
+            | TaskState::Paused
+            | TaskState::PausedSlow => stay(state, StateReason::CredentialsSatisfied),
             _ => conflict(),
         },
         SchedulerAction::CredentialSatisfactionFailed => match state {
-            TaskState::Waiting | TaskState::Paused => {
-                stay(state, StateReason::CredentialUpdateFailed)
-            }
+            TaskState::Waiting
+            | TaskState::WaitingSlow
+            | TaskState::RetryWait
+            | TaskState::Paused
+            | TaskState::PausedSlow => stay(state, StateReason::CredentialUpdateFailed),
             _ => conflict(),
         },
         SchedulerAction::ExplicitNoSpaceProbeRequested => match state {
-            TaskState::Waiting | TaskState::Paused => {
+            TaskState::Waiting | TaskState::RetryWait | TaskState::Paused => {
                 stay(state, StateReason::NoSpaceProbeRequested)
+            }
+            TaskState::WaitingSlow | TaskState::PausedSlow => {
+                transition(StateReason::NoSpaceProbeRequested, WAITING_TARGET)
             }
             _ => conflict(),
         },
         SchedulerAction::WaitingNoSpaceProbeSucceeded => match state {
-            TaskState::Waiting => stay(state, StateReason::NoSpaceProbeSucceeded),
+            TaskState::Waiting | TaskState::WaitingSlow | TaskState::RetryWait => {
+                stay(state, StateReason::NoSpaceProbeSucceeded)
+            }
             _ => conflict(),
         },
         SchedulerAction::WaitingNoSpaceProbeFailed => match state {
-            TaskState::Waiting => stay(state, StateReason::NoSpaceProbeFailed),
+            TaskState::Waiting | TaskState::WaitingSlow | TaskState::RetryWait => {
+                stay(state, StateReason::NoSpaceProbeFailed)
+            }
             _ => conflict(),
         },
         SchedulerAction::PausedNoSpaceResumeProbeSucceeded => match state {
@@ -1197,11 +1221,15 @@ pub const fn transition_contract(state: TaskState, action: SchedulerAction) -> T
             _ => conflict(),
         },
         SchedulerAction::PausedNoSpacePausePreservingProbeSucceeded => match state {
-            TaskState::Paused => stay(state, StateReason::NoSpaceProbeSucceeded),
+            TaskState::Paused | TaskState::PausedSlow => {
+                stay(state, StateReason::NoSpaceProbeSucceeded)
+            }
             _ => conflict(),
         },
         SchedulerAction::PausedNoSpacePausePreservingProbeFailed => match state {
-            TaskState::Paused => stay(state, StateReason::NoSpaceProbeFailed),
+            TaskState::Paused | TaskState::PausedSlow => {
+                stay(state, StateReason::NoSpaceProbeFailed)
+            }
             _ => conflict(),
         },
         SchedulerAction::GenerationPersistenceSucceeded => match state {
@@ -1667,7 +1695,33 @@ mod tests {
             needs_credentials: false,
             no_space: true,
         };
-        for state in [TaskState::Waiting, TaskState::Paused] {
+        for (state, kind, targets) in [
+            (
+                TaskState::Waiting,
+                TransitionContractKind::Stay,
+                &[TaskState::Waiting][..],
+            ),
+            (
+                TaskState::RetryWait,
+                TransitionContractKind::Stay,
+                &[TaskState::RetryWait][..],
+            ),
+            (
+                TaskState::Paused,
+                TransitionContractKind::Stay,
+                &[TaskState::Paused][..],
+            ),
+            (
+                TaskState::WaitingSlow,
+                TransitionContractKind::Transition,
+                &[TaskState::Waiting][..],
+            ),
+            (
+                TaskState::PausedSlow,
+                TransitionContractKind::Transition,
+                &[TaskState::Waiting][..],
+            ),
+        ] {
             assert_eq!(
                 SchedulerAction::for_resume(state, no_space),
                 SchedulerAction::ExplicitNoSpaceProbeRequested
@@ -1675,9 +1729,9 @@ mod tests {
             assert_contract(
                 state,
                 SchedulerAction::ExplicitNoSpaceProbeRequested,
-                TransitionContractKind::Stay,
+                kind,
                 StateReason::NoSpaceProbeRequested,
-                &[state],
+                targets,
             );
         }
         assert_eq!(
@@ -1715,6 +1769,20 @@ mod tests {
                 SchedulerAction::WaitingNoSpaceProbeFailed,
             ),
             (
+                TaskState::RetryWait,
+                NoSpaceProbeOrigin::AutomaticRetry,
+                false,
+                true,
+                SchedulerAction::WaitingNoSpaceProbeSucceeded,
+            ),
+            (
+                TaskState::WaitingSlow,
+                NoSpaceProbeOrigin::AutomaticRetry,
+                false,
+                false,
+                SchedulerAction::WaitingNoSpaceProbeFailed,
+            ),
+            (
                 TaskState::Paused,
                 NoSpaceProbeOrigin::ExplicitResume,
                 false,
@@ -1741,6 +1809,13 @@ mod tests {
                 true,
                 false,
                 SchedulerAction::PausedNoSpacePausePreservingProbeFailed,
+            ),
+            (
+                TaskState::PausedSlow,
+                NoSpaceProbeOrigin::AutomaticRetry,
+                true,
+                true,
+                SchedulerAction::PausedNoSpacePausePreservingProbeSucceeded,
             ),
         ] {
             assert_eq!(
@@ -2235,6 +2310,37 @@ mod tests {
             StateReason::NoSpaceProbeSucceeded,
             &[TaskState::Paused],
         );
+        for state in [TaskState::WaitingSlow, TaskState::RetryWait] {
+            assert_contract(
+                state,
+                SchedulerAction::WaitingNoSpaceProbeSucceeded,
+                TransitionContractKind::Stay,
+                StateReason::NoSpaceProbeSucceeded,
+                &[state],
+            );
+        }
+        assert_contract(
+            TaskState::PausedSlow,
+            SchedulerAction::PausedNoSpacePausePreservingProbeFailed,
+            TransitionContractKind::Stay,
+            StateReason::NoSpaceProbeFailed,
+            &[TaskState::PausedSlow],
+        );
+        for state in [
+            TaskState::Waiting,
+            TaskState::WaitingSlow,
+            TaskState::RetryWait,
+            TaskState::Paused,
+            TaskState::PausedSlow,
+        ] {
+            assert_contract(
+                state,
+                SchedulerAction::CredentialsSatisfied,
+                TransitionContractKind::Stay,
+                StateReason::CredentialsSatisfied,
+                &[state],
+            );
+        }
     }
 
     #[test]

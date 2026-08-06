@@ -7,11 +7,21 @@ bounded cross-record recovery are executable. SQLite session schema v2 adds a
 demoted queue and bounded slow-slot metadata; exact v1 databases migrate through
 a private timestamped no-clobber backup and transactional rebuild. Dense queue
 updates, owner locking, committed-version preflight, WAL fallback/checkpoint,
-validated hot backup, and atomic stopped-result retention/deletion are
-implemented. The runtime effect dispatcher, concrete host-key store operations,
-retry/no-space recovery mapping, session owner thread, cross-store startup
-orchestration, and native CI matrix remain pending. Phase gates remain normative
-in `implementation-readiness.md` and `implementation-plan.md`.
+the validated no-clobber hot-backup primitive, and atomic stopped-result
+retention/deletion are implemented. The current integration checkpoint also
+has an ordered
+one-effect-in-flight scheduler driver, immutable applied-status roots, bounded
+blocking positional writes with correlated cancellation and timed shutdown, a
+dedicated bounded session owner, concrete persistence-effect composition,
+atomic host-key challenge resolution, persisted retry/slow/no-space recovery,
+and a bounded pure cross-store startup plan that emits exact pre-publication
+repair work. The startup repair/application executor, concrete
+network/timer/native-filesystem adapters, secure capability and journal-install
+execution, credential-requirement derivation, the first end-to-end transfer
+pipeline, hot-backup crash-residue reconciliation, and the native-platform/MSRV
+CI gates remain pending. This checkpoint is not yet a complete downloader or
+release/tag-ready. Phase gates remain normative in `implementation-readiness.md`
+and `implementation-plan.md`.
 
 This design is for a new downloader that keeps the mature aria2 user model
 while fixing the major safety, scalability, and completeness problems found in

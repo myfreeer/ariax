@@ -3,7 +3,7 @@ use crate::{
     MAX_PLATFORM_PATH_BYTES, OptionsSnapshotScope, PathPlatform, PersistedOptionPolicy,
     PlatformPath, SanitizedOptionMap,
 };
-use ariax_core::{ErrorKind, Gid, HostKeyFingerprint};
+use ariax_core::{ErrorKind, Gid, HostKeyChallengeId, HostKeyFingerprint};
 use fs2::FileExt as _;
 use rusqlite::limits::Limit;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
@@ -35,6 +35,9 @@ pub const SESSION_MAX_HOST_KEY_BYTES: usize = 16 * 1024;
 pub const SESSION_MAX_ALGORITHM_BYTES: usize = 64;
 pub const SESSION_MAX_TASKS: usize = 100_000;
 pub const SESSION_MAX_OPTIONS_PER_TASK: usize = MAX_OPTION_MAP_ENTRIES;
+pub const SESSION_MAX_SOURCES_PER_TASK: usize = 4_096;
+pub const SESSION_SOURCE_READ_BUDGET_BYTES: usize = 4 * 1024 * 1024;
+pub const SESSION_HOST_KEY_PIN_OPTION: &str = "sftp-host-key-sha256";
 pub const SESSION_TASK_READ_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 pub const SESSION_INSTALL_READ_BUDGET_BYTES: usize = 16 * 1024 * 1024;
 pub const SESSION_OWNER_LOCK_SUFFIX: &str = ".ariax-owner-lock";
@@ -609,6 +612,72 @@ pub struct SessionSlowSlotState {
     pub retry: Option<SessionSlowRetryDecision>,
 }
 
+/// One complete scheduler-supplied final queue order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionQueueOrder {
+    pub state: SessionQueueState,
+    pub gids: Vec<Gid>,
+}
+
+/// One exact queue mutation whose supplied orders are verified before commit.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionQueueTransition {
+    pub gid: Gid,
+    pub expected_state: SessionQueueState,
+    pub target_state: SessionQueueState,
+    pub desired_paused: bool,
+    pub slow_demotion_count: u32,
+    pub slow_slot: Option<SessionSlowSlotState>,
+    pub final_orders: Vec<SessionQueueOrder>,
+    pub updated_ms: u64,
+}
+
+/// One persistence-safe or redacted source row owned by a task.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionTaskSourceRecord {
+    pub uri_id: u32,
+    pub persistence_safe_uri: Option<String>,
+    pub redacted_fingerprint: [u8; 32],
+    pub needs_credentials: bool,
+    pub priority: i64,
+}
+
+/// One exact, bounded SFTP host-key challenge retained for restart recovery.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionHostKeyChallengeRecord {
+    pub gid: Gid,
+    pub challenge_id: HostKeyChallengeId,
+    pub canonical_host: String,
+    pub port: u16,
+    pub algorithm: String,
+    pub presented_public_key: Vec<u8>,
+    pub fingerprint_sha256: HostKeyFingerprint,
+    pub created_ms: u64,
+}
+
+/// One challenge-bound, atomic option-snapshot replacement and challenge clear.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionHostKeyResolution {
+    pub gid: Gid,
+    pub challenge_id: HostKeyChallengeId,
+    pub fingerprint_sha256: HostKeyFingerprint,
+    pub presented_public_key: Vec<u8>,
+    pub scope: OptionsSnapshotScope,
+    pub pinned_options: SanitizedOptionMap,
+}
+
+/// Canonical lowercase hexadecimal value stored for an approved SHA-256 pin.
+#[must_use]
+pub fn session_host_key_pin_value(fingerprint: HostKeyFingerprint) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(64);
+    for byte in fingerprint.as_bytes() {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    output
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionStoppedResultRecord {
     pub gid: Gid,
@@ -762,6 +831,7 @@ pub enum SessionStoreError {
     QueueTransitionRequired,
     OwnerLockBusy,
     NotFound,
+    HostKeyChallengeMismatch,
     ForbiddenPersistedOption,
     JournalPointerMismatch,
     JournalInstallConflict,
@@ -788,6 +858,7 @@ impl SessionStoreError {
             Self::QueueTransitionRequired => "queue_transition_required",
             Self::OwnerLockBusy => "owner_lock_busy",
             Self::NotFound => "not_found",
+            Self::HostKeyChallengeMismatch => "host_key_challenge_mismatch",
             Self::ForbiddenPersistedOption => "forbidden_persisted_option",
             Self::JournalPointerMismatch => "journal_pointer_mismatch",
             Self::JournalInstallConflict => "journal_install_conflict",
@@ -797,7 +868,7 @@ impl SessionStoreError {
     }
 }
 
-pub const ALL_SESSION_STORE_ERROR_CODES: [&str; 20] = [
+pub const ALL_SESSION_STORE_ERROR_CODES: [&str; 21] = [
     "sqlite",
     "io",
     "invalid_config",
@@ -813,6 +884,7 @@ pub const ALL_SESSION_STORE_ERROR_CODES: [&str; 20] = [
     "queue_transition_required",
     "owner_lock_busy",
     "not_found",
+    "host_key_challenge_mismatch",
     "forbidden_persisted_option",
     "journal_pointer_mismatch",
     "journal_install_conflict",
@@ -857,6 +929,9 @@ impl fmt::Display for SessionStoreError {
             }
             Self::OwnerLockBusy => formatter.write_str("another process owns the session database"),
             Self::NotFound => formatter.write_str("session record was not found"),
+            Self::HostKeyChallengeMismatch => {
+                formatter.write_str("host-key challenge identity or key material does not match")
+            }
             Self::ForbiddenPersistedOption => {
                 formatter.write_str("option policy forbids persistence")
             }
@@ -1214,6 +1289,64 @@ impl SessionStore {
         read_stopped_results(&self.connection)
     }
 
+    pub fn queue_order(&self, state: SessionQueueState) -> Result<Vec<Gid>, SessionStoreError> {
+        read_queue_order(&self.connection, state)
+    }
+
+    pub fn set_task_no_space_condition(
+        &mut self,
+        gid: Gid,
+        condition: Option<&SessionNoSpaceCondition>,
+        updated_ms: u64,
+    ) -> Result<(), SessionStoreError> {
+        let (target, scheduled_at_ms, delay_ms) = match condition {
+            Some(condition) => {
+                if condition.delay_ms == 0 {
+                    return Err(SessionStoreError::InvalidRecord("no_space.delay_ms"));
+                }
+                (
+                    Some(encode_platform_path(&condition.target)?),
+                    Some(time_to_i64(
+                        condition.scheduled_at_ms,
+                        "task.no_space_scheduled_at_ms",
+                    )?),
+                    Some(encode_u64(condition.delay_ms)),
+                )
+            }
+            None => (None, None, None),
+        };
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let queue_state = transaction
+            .query_row(
+                "SELECT queue_state FROM task WHERE gid = ?1",
+                [gid.to_string()],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .ok_or(SessionStoreError::NotFound)?;
+        let queue_state = SessionQueueState::try_from(queue_state)?;
+        if condition.is_some() && queue_state == SessionQueueState::Stopped {
+            return Err(SessionStoreError::InvalidRecord("no_space.queue_state"));
+        }
+        if transaction.execute(
+            "UPDATE task SET no_space_target = ?1, no_space_scheduled_at_ms = ?2, no_space_delay_ms = ?3, updated_ms = ?4 WHERE gid = ?5",
+            params![
+                target,
+                scheduled_at_ms,
+                delay_ms,
+                time_to_i64(updated_ms, "task.updated_ms")?,
+                gid.to_string(),
+            ],
+        )? != 1
+        {
+            return Err(SessionStoreError::NotFound);
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn reorder_queue(
         &mut self,
         state: SessionQueueState,
@@ -1304,6 +1437,25 @@ impl SessionStore {
         Ok(())
     }
 
+    pub fn transition_task_queue_exact(
+        &mut self,
+        transition: &SessionQueueTransition,
+    ) -> Result<(), SessionStoreError> {
+        if transition.expected_state == SessionQueueState::Stopped
+            || transition.target_state == SessionQueueState::Stopped
+        {
+            return Err(SessionStoreError::QueueTransitionRequired);
+        }
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        apply_exact_queue_transition_in_transaction(&transaction, transition)?;
+        validate_dense_queues(&transaction)?;
+        validate_stopped_result_pairing(&transaction)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn persist_stopped_result(
         &mut self,
         result: &SessionStoppedResultRecord,
@@ -1320,6 +1472,10 @@ impl SessionStore {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "DELETE FROM host_key_challenge WHERE gid = ?1",
+            [result.gid.to_string()],
+        )?;
         transition_task_queue_in_transaction(
             &transaction,
             result.gid,
@@ -1345,6 +1501,48 @@ impl SessionStore {
                 result.safe_message,
                 total_length,
                 layout_hash,
+                time_to_i64(result.completed_ms, "stopped_result.completed_ms")?,
+            ],
+        )?;
+        validate_dense_queues(&transaction)?;
+        validate_stopped_result_pairing(&transaction)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn persist_stopped_result_exact(
+        &mut self,
+        result: &SessionStoppedResultRecord,
+        transition: &SessionQueueTransition,
+    ) -> Result<(), SessionStoreError> {
+        if result.gid != transition.gid
+            || transition.expected_state == SessionQueueState::Stopped
+            || transition.target_state != SessionQueueState::Stopped
+            || transition.slow_slot.is_some()
+        {
+            return Err(SessionStoreError::QueueTransitionRequired);
+        }
+        validate_stopped_result(result)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "DELETE FROM host_key_challenge WHERE gid = ?1",
+            [result.gid.to_string()],
+        )?;
+        apply_exact_queue_transition_in_transaction(&transaction, transition)?;
+        let error_code = result
+            .error_kind
+            .map_or(0_i64, |kind| i64::from(kind.number()));
+        transaction.execute(
+            "INSERT INTO stopped_result(gid, terminal_status, error_code, safe_message, total_length, layout_hash, completed_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                result.gid.to_string(),
+                result.status as i64,
+                error_code,
+                result.safe_message,
+                result.total_length.map(encode_u64),
+                result.layout_hash.map(|value| value.as_bytes().to_vec()),
                 time_to_i64(result.completed_ms, "stopped_result.completed_ms")?,
             ],
         )?;
@@ -1429,31 +1627,163 @@ impl SessionStore {
         options: &SanitizedOptionMap,
         policy: &impl PersistedOptionPolicy,
     ) -> Result<(), SessionStoreError> {
-        if options.entries().len() > SESSION_MAX_OPTIONS_PER_TASK {
-            return Err(SessionStoreError::InvalidRecord("task_option.count"));
-        }
-        if options.entries().any(|(key, _)| !policy.permits(key)) {
-            return Err(SessionStoreError::ForbiddenPersistedOption);
-        }
+        validate_options_for_persistence(options, policy)?;
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        transaction.execute(
-            "DELETE FROM task_option WHERE gid = ?1 AND scope = ?2",
-            params![gid.to_string(), scope.number()],
+        replace_task_options_in_transaction(&transaction, gid, scope, options)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn replace_task_sources(
+        &mut self,
+        gid: Gid,
+        sources: &[SessionTaskSourceRecord],
+    ) -> Result<(), SessionStoreError> {
+        validate_task_sources_for_write(sources)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if !task_exists(&transaction, gid)? {
+            return Err(SessionStoreError::NotFound);
+        }
+        transaction.execute("DELETE FROM task_source WHERE gid = ?1", [gid.to_string()])?;
+        let mut statement = transaction.prepare(
+            "INSERT INTO task_source(gid, uri_id, persistence_safe_uri, redacted_fingerprint, needs_credentials, priority) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )?;
+        for source in sources {
+            statement.execute(params![
+                gid.to_string(),
+                i64::from(source.uri_id),
+                source.persistence_safe_uri,
+                source.redacted_fingerprint.as_slice(),
+                bool_to_i64(source.needs_credentials),
+                source.priority,
+            ])?;
+        }
+        drop(statement);
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn task_sources(
+        &self,
+        gid: Gid,
+    ) -> Result<Vec<SessionTaskSourceRecord>, SessionStoreError> {
+        if !task_exists(&self.connection, gid)? {
+            return Err(SessionStoreError::NotFound);
+        }
+        read_task_sources(&self.connection, gid)
+    }
+
+    pub fn put_host_key_challenge(
+        &mut self,
+        challenge: &SessionHostKeyChallengeRecord,
+    ) -> Result<(), SessionStoreError> {
+        validate_host_key_challenge_record(challenge)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        require_paused_task(&transaction, challenge.gid)?;
+        transaction.execute(
+            "INSERT INTO host_key_challenge(gid, challenge_id, canonical_host, port, algorithm, presented_public_key, fingerprint_sha256, created_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT(gid) DO UPDATE SET challenge_id = excluded.challenge_id, canonical_host = excluded.canonical_host, port = excluded.port, algorithm = excluded.algorithm, presented_public_key = excluded.presented_public_key, fingerprint_sha256 = excluded.fingerprint_sha256, created_ms = excluded.created_ms",
+            params![
+                challenge.gid.to_string(),
+                challenge.challenge_id.as_bytes().as_slice(),
+                challenge.canonical_host,
+                i64::from(challenge.port),
+                challenge.algorithm,
+                challenge.presented_public_key,
+                challenge.fingerprint_sha256.as_bytes().as_slice(),
+                time_to_i64(challenge.created_ms, "host_key_challenge.created_ms")?,
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn host_key_challenge(
+        &self,
+        gid: Gid,
+    ) -> Result<Option<SessionHostKeyChallengeRecord>, SessionStoreError> {
+        read_host_key_challenge(&self.connection, gid)
+    }
+
+    pub fn host_key_challenges(
+        &self,
+    ) -> Result<Vec<SessionHostKeyChallengeRecord>, SessionStoreError> {
+        read_host_key_challenge_records(&self.connection, SESSION_TASK_READ_BUDGET_BYTES)
+    }
+
+    pub fn reject_host_key_challenge(
+        &mut self,
+        gid: Gid,
+        challenge_id: HostKeyChallengeId,
+    ) -> Result<(), SessionStoreError> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current =
+            read_host_key_challenge(&transaction, gid)?.ok_or(SessionStoreError::NotFound)?;
+        if current.challenge_id != challenge_id {
+            return Err(SessionStoreError::HostKeyChallengeMismatch);
+        }
+        if transaction.execute(
+            "DELETE FROM host_key_challenge WHERE gid = ?1 AND challenge_id = ?2",
+            params![gid.to_string(), challenge_id.as_bytes().as_slice()],
+        )? != 1
         {
-            let mut statement = transaction.prepare(
-                "INSERT INTO task_option(gid, scope, key, canonical_value) VALUES (?1, ?2, ?3, ?4)",
-            )?;
-            for (key, value) in options.entries() {
-                statement.execute(params![
-                    gid.to_string(),
-                    scope.number(),
-                    key,
-                    value.as_bytes(),
-                ])?;
-            }
+            return Err(SessionStoreError::HostKeyChallengeMismatch);
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn resolve_host_key_challenge(
+        &mut self,
+        resolution: &SessionHostKeyResolution,
+        policy: &impl PersistedOptionPolicy,
+    ) -> Result<(), SessionStoreError> {
+        validate_options_for_persistence(&resolution.pinned_options, policy)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        require_paused_task(&transaction, resolution.gid)?;
+        let current = read_host_key_challenge(&transaction, resolution.gid)?
+            .ok_or(SessionStoreError::NotFound)?;
+        if current.challenge_id != resolution.challenge_id
+            || current.fingerprint_sha256 != resolution.fingerprint_sha256
+            || current.presented_public_key != resolution.presented_public_key
+            || HostKeyFingerprint::for_presented_key(&resolution.presented_public_key)
+                != resolution.fingerprint_sha256
+        {
+            return Err(SessionStoreError::HostKeyChallengeMismatch);
+        }
+        let expected_pin = session_host_key_pin_value(resolution.fingerprint_sha256);
+        if !resolution
+            .pinned_options
+            .entries()
+            .any(|(key, value)| key == SESSION_HOST_KEY_PIN_OPTION && value == expected_pin)
+        {
+            return Err(SessionStoreError::InvalidRecord("host_key_pin.option"));
+        }
+        replace_task_options_in_transaction(
+            &transaction,
+            resolution.gid,
+            resolution.scope,
+            &resolution.pinned_options,
+        )?;
+        if transaction.execute(
+            "DELETE FROM host_key_challenge WHERE gid = ?1 AND challenge_id = ?2 AND fingerprint_sha256 = ?3",
+            params![
+                resolution.gid.to_string(),
+                resolution.challenge_id.as_bytes().as_slice(),
+                resolution.fingerprint_sha256.as_bytes().as_slice(),
+            ],
+        )? != 1
+        {
+            return Err(SessionStoreError::HostKeyChallengeMismatch);
         }
         transaction.commit()?;
         Ok(())
@@ -1790,6 +2120,7 @@ fn transition_task_queue_in_transaction(
     if SessionQueueState::try_from(current_state)? != expected_state {
         return Err(SessionStoreError::QueueTransitionRequired);
     }
+    reject_retained_host_key_departure(transaction, gid, expected_state, target_state)?;
     let target_len: i64 = transaction.query_row(
         "SELECT COUNT(*) FROM task WHERE queue_state = ?1",
         [target_state as i64],
@@ -1849,6 +2180,187 @@ fn transition_task_queue_in_transaction(
     Ok(())
 }
 
+fn apply_exact_queue_transition_in_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    transition: &SessionQueueTransition,
+) -> Result<(), SessionStoreError> {
+    validate_slow_slot_state(
+        transition.target_state,
+        transition.desired_paused,
+        transition.slow_demotion_count,
+        transition.slow_slot.as_ref(),
+    )?;
+    let expected_states = [transition.expected_state, transition.target_state]
+        .into_iter()
+        .collect::<HashSet<_>>();
+    let supplied_states = transition
+        .final_orders
+        .iter()
+        .map(|order| order.state)
+        .collect::<HashSet<_>>();
+    if transition.final_orders.is_empty()
+        || supplied_states.len() != transition.final_orders.len()
+        || supplied_states != expected_states
+    {
+        return Err(SessionStoreError::QueueInvariant);
+    }
+
+    let current_state = transaction
+        .query_row(
+            "SELECT queue_state FROM task WHERE gid = ?1",
+            [transition.gid.to_string()],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .ok_or(SessionStoreError::NotFound)?;
+    if SessionQueueState::try_from(current_state)? != transition.expected_state {
+        return Err(SessionStoreError::QueueTransitionRequired);
+    }
+    reject_retained_host_key_departure(
+        transaction,
+        transition.gid,
+        transition.expected_state,
+        transition.target_state,
+    )?;
+
+    let mut supplied_membership = HashSet::new();
+    for order in &transition.final_orders {
+        if order.gids.len() > SESSION_MAX_TASKS
+            || order.gids.iter().copied().collect::<HashSet<_>>().len() != order.gids.len()
+            || !order
+                .gids
+                .iter()
+                .copied()
+                .all(|gid| supplied_membership.insert(gid))
+        {
+            return Err(SessionStoreError::QueueInvariant);
+        }
+        let mut expected_membership = read_queue_order(transaction, order.state)?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        if transition.expected_state != transition.target_state {
+            if order.state == transition.expected_state
+                && !expected_membership.remove(&transition.gid)
+            {
+                return Err(SessionStoreError::QueueInvariant);
+            }
+            if order.state == transition.target_state && !expected_membership.insert(transition.gid)
+            {
+                return Err(SessionStoreError::QueueInvariant);
+            }
+        }
+        if expected_membership != order.gids.iter().copied().collect::<HashSet<_>>() {
+            return Err(SessionStoreError::QueueInvariant);
+        }
+    }
+    let target_order = transition
+        .final_orders
+        .iter()
+        .find(|order| order.state == transition.target_state)
+        .ok_or(SessionStoreError::QueueInvariant)?;
+    if !target_order.gids.contains(&transition.gid) {
+        return Err(SessionStoreError::QueueInvariant);
+    }
+    if transition.expected_state != transition.target_state
+        && transition
+            .final_orders
+            .iter()
+            .find(|order| order.state == transition.expected_state)
+            .is_some_and(|order| order.gids.contains(&transition.gid))
+    {
+        return Err(SessionStoreError::QueueInvariant);
+    }
+
+    let slow_original_position = transition
+        .slow_slot
+        .as_ref()
+        .map(|value| i64::from(value.original_position));
+    let slow_retry_scheduled = transition
+        .slow_slot
+        .as_ref()
+        .and_then(|value| value.retry.as_ref())
+        .map(|value| time_to_i64(value.scheduled_at_ms, "task.slow_retry_scheduled_at_ms"))
+        .transpose()?;
+    let slow_retry_delay = transition
+        .slow_slot
+        .as_ref()
+        .and_then(|value| value.retry.as_ref())
+        .map(|value| encode_u64(value.delay_ms));
+    let updated_ms = time_to_i64(transition.updated_ms, "task.updated_ms")?;
+    let temporary_base =
+        i64::try_from(SESSION_MAX_TASKS + 1).map_err(|_| SessionStoreError::QueueInvariant)?;
+    if transaction.execute(
+        "UPDATE task SET queue_state = ?1, queue_position = ?2, desired_paused = ?3, slow_original_position = ?4, slow_demotion_count = ?5, slow_retry_scheduled_at_ms = ?6, slow_retry_delay_ms = ?7, updated_ms = ?8 WHERE gid = ?9 AND queue_state = ?10",
+        params![
+            transition.target_state as i64,
+            temporary_base,
+            bool_to_i64(transition.desired_paused),
+            slow_original_position,
+            i64::from(transition.slow_demotion_count),
+            slow_retry_scheduled,
+            slow_retry_delay,
+            updated_ms,
+            transition.gid.to_string(),
+            transition.expected_state as i64,
+        ],
+    )? != 1
+    {
+        return Err(SessionStoreError::QueueTransitionRequired);
+    }
+
+    for (order_index, order) in transition.final_orders.iter().enumerate() {
+        let order_index =
+            i64::try_from(order_index).map_err(|_| SessionStoreError::QueueInvariant)?;
+        let order_base = temporary_base
+            .checked_add(
+                order_index
+                    .checked_mul(
+                        i64::try_from(SESSION_MAX_TASKS + 1)
+                            .map_err(|_| SessionStoreError::QueueInvariant)?,
+                    )
+                    .ok_or(SessionStoreError::QueueInvariant)?,
+            )
+            .ok_or(SessionStoreError::QueueInvariant)?;
+        let mut temporary = transaction.prepare(
+            "UPDATE task SET queue_position = ?1, updated_ms = ?2 WHERE gid = ?3 AND queue_state = ?4",
+        )?;
+        for (position, gid) in order.gids.iter().copied().enumerate() {
+            let temporary_position = order_base
+                .checked_add(
+                    i64::try_from(position).map_err(|_| SessionStoreError::QueueInvariant)?,
+                )
+                .ok_or(SessionStoreError::QueueInvariant)?;
+            if temporary.execute(params![
+                temporary_position,
+                updated_ms,
+                gid.to_string(),
+                order.state as i64,
+            ])? != 1
+            {
+                return Err(SessionStoreError::QueueInvariant);
+            }
+        }
+    }
+    for order in &transition.final_orders {
+        let mut final_position = transaction
+            .prepare("UPDATE task SET queue_position = ?1 WHERE gid = ?2 AND queue_state = ?3")?;
+        for (position, gid) in order.gids.iter().copied().enumerate() {
+            if final_position.execute(params![
+                i64::try_from(position).map_err(|_| SessionStoreError::QueueInvariant)?,
+                gid.to_string(),
+                order.state as i64,
+            ])? != 1
+            {
+                return Err(SessionStoreError::QueueInvariant);
+            }
+        }
+        if read_queue_order(transaction, order.state)? != order.gids {
+            return Err(SessionStoreError::QueueInvariant);
+        }
+    }
+    Ok(())
+}
+
 fn read_queue_order(
     connection: &Connection,
     state: SessionQueueState,
@@ -1876,6 +2388,452 @@ fn read_queue_order(
         return Err(SessionStoreError::InvalidPersistedValue("task.queue_count"));
     }
     Ok(order)
+}
+
+fn task_exists(connection: &Connection, gid: Gid) -> Result<bool, SessionStoreError> {
+    let count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM task WHERE gid = ?1",
+        [gid.to_string()],
+        |row| row.get(0),
+    )?;
+    match count {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(SessionStoreError::InvalidPersistedValue("task.gid")),
+    }
+}
+
+fn validate_options_for_persistence(
+    options: &SanitizedOptionMap,
+    policy: &impl PersistedOptionPolicy,
+) -> Result<(), SessionStoreError> {
+    if options.entries().len() > SESSION_MAX_OPTIONS_PER_TASK {
+        return Err(SessionStoreError::InvalidRecord("task_option.count"));
+    }
+    if options.entries().any(|(key, _)| !policy.permits(key)) {
+        return Err(SessionStoreError::ForbiddenPersistedOption);
+    }
+    Ok(())
+}
+
+fn replace_task_options_in_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    gid: Gid,
+    scope: OptionsSnapshotScope,
+    options: &SanitizedOptionMap,
+) -> Result<(), SessionStoreError> {
+    if !task_exists(transaction, gid)? {
+        return Err(SessionStoreError::NotFound);
+    }
+    transaction.execute(
+        "DELETE FROM task_option WHERE gid = ?1 AND scope = ?2",
+        params![gid.to_string(), scope.number()],
+    )?;
+    let mut statement = transaction.prepare(
+        "INSERT INTO task_option(gid, scope, key, canonical_value) VALUES (?1, ?2, ?3, ?4)",
+    )?;
+    for (key, value) in options.entries() {
+        statement.execute(params![
+            gid.to_string(),
+            scope.number(),
+            key,
+            value.as_bytes()
+        ])?;
+    }
+    Ok(())
+}
+
+fn validate_task_sources_for_write(
+    sources: &[SessionTaskSourceRecord],
+) -> Result<(), SessionStoreError> {
+    if sources.len() > SESSION_MAX_SOURCES_PER_TASK
+        || sources
+            .iter()
+            .map(|source| source.uri_id)
+            .collect::<HashSet<_>>()
+            .len()
+            != sources.len()
+    {
+        return Err(SessionStoreError::InvalidRecord("task_source.count"));
+    }
+    let mut bytes = 0_usize;
+    for source in sources {
+        if source
+            .persistence_safe_uri
+            .as_ref()
+            .is_some_and(|uri| uri.len() > SESSION_MAX_SAFE_URI_BYTES)
+        {
+            return Err(SessionStoreError::InvalidRecord("task_source.uri"));
+        }
+        let row_bytes =
+            task_source_owned_bytes(source.persistence_safe_uri.as_ref().map_or(0, String::len))
+                .ok_or(SessionStoreError::InvalidRecord("task_source.bytes"))?;
+        bytes = bytes
+            .checked_add(row_bytes)
+            .ok_or(SessionStoreError::InvalidRecord("task_source.bytes"))?;
+        if bytes > SESSION_SOURCE_READ_BUDGET_BYTES {
+            return Err(SessionStoreError::InvalidRecord("task_source.bytes"));
+        }
+    }
+    Ok(())
+}
+
+fn read_task_sources(
+    connection: &Connection,
+    gid: Gid,
+) -> Result<Vec<SessionTaskSourceRecord>, SessionStoreError> {
+    let count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM task_source WHERE gid = ?1",
+        [gid.to_string()],
+        |row| row.get(0),
+    )?;
+    let count = bounded_count(count, SESSION_MAX_SOURCES_PER_TASK, "task_source.count")?;
+    let mut statement = connection.prepare(
+        "SELECT uri_id, CAST(persistence_safe_uri AS BLOB), redacted_fingerprint, needs_credentials, priority FROM task_source WHERE gid = ?1 ORDER BY priority, uri_id",
+    )?;
+    let mut rows = statement.query([gid.to_string()])?;
+    let mut sources = Vec::new();
+    sources
+        .try_reserve_exact(count)
+        .map_err(|_| SessionStoreError::InvalidPersistedValue("task_source.allocation"))?;
+    while let Some(row) = rows.next()? {
+        let uri_id = u32::try_from(row.get::<_, i64>(0)?)
+            .map_err(|_| SessionStoreError::InvalidPersistedValue("task_source.uri_id"))?;
+        let persistence_safe_uri = row
+            .get::<_, Option<Vec<u8>>>(1)?
+            .map(String::from_utf8)
+            .transpose()
+            .map_err(|_| SessionStoreError::InvalidPersistedValue("task_source.uri"))?;
+        let fingerprint = row.get::<_, Vec<u8>>(2)?;
+        let redacted_fingerprint: [u8; 32] = fingerprint
+            .try_into()
+            .map_err(|_| SessionStoreError::InvalidPersistedValue("task_source.fingerprint"))?;
+        sources.push(SessionTaskSourceRecord {
+            uri_id,
+            persistence_safe_uri,
+            redacted_fingerprint,
+            needs_credentials: decode_bool(row.get::<_, i64>(3)?, "task_source.needs_credentials")?,
+            priority: row.get(4)?,
+        });
+        if sources.len() > count {
+            return Err(SessionStoreError::InvalidPersistedValue(
+                "task_source.count",
+            ));
+        }
+    }
+    if sources.len() != count {
+        return Err(SessionStoreError::InvalidPersistedValue(
+            "task_source.count",
+        ));
+    }
+    validate_task_sources_for_write(&sources).map_err(|error| match error {
+        SessionStoreError::InvalidRecord("task_source.count") => {
+            SessionStoreError::InvalidPersistedValue("task_source.count")
+        }
+        SessionStoreError::InvalidRecord("task_source.uri") => {
+            SessionStoreError::InvalidPersistedValue("task_source.uri")
+        }
+        SessionStoreError::InvalidRecord("task_source.bytes") => {
+            SessionStoreError::InvalidPersistedValue("task_source.bytes")
+        }
+        other => other,
+    })?;
+    Ok(sources)
+}
+
+fn validate_task_sources(connection: &Connection) -> Result<(), SessionStoreError> {
+    let mut statement = connection.prepare(
+        "SELECT gid, uri_id, CAST(persistence_safe_uri AS BLOB), redacted_fingerprint, needs_credentials, priority FROM task_source ORDER BY gid, uri_id",
+    )?;
+    let mut rows = statement.query([])?;
+    let mut current_gid = None;
+    let mut current_count = 0_usize;
+    let mut current_bytes = 0_usize;
+    let mut total_bytes = 0_usize;
+    while let Some(row) = rows.next()? {
+        let gid = row.get::<_, String>(0)?;
+        decode_gid(&gid)?;
+        if current_gid.as_deref() == Some(gid.as_str()) {
+            current_count =
+                current_count
+                    .checked_add(1)
+                    .ok_or(SessionStoreError::InvalidPersistedValue(
+                        "task_source.count",
+                    ))?;
+        } else {
+            current_gid = Some(gid.clone());
+            current_count = 1;
+            current_bytes = 0;
+        }
+        if current_count > SESSION_MAX_SOURCES_PER_TASK {
+            return Err(SessionStoreError::InvalidPersistedValue(
+                "task_source.count",
+            ));
+        }
+        u32::try_from(row.get::<_, i64>(1)?)
+            .map_err(|_| SessionStoreError::InvalidPersistedValue("task_source.uri_id"))?;
+        let uri = row.get::<_, Option<Vec<u8>>>(2)?;
+        if uri.as_ref().is_some_and(|uri| {
+            uri.len() > SESSION_MAX_SAFE_URI_BYTES || std::str::from_utf8(uri).is_err()
+        }) {
+            return Err(SessionStoreError::InvalidPersistedValue("task_source.uri"));
+        }
+        let fingerprint = row.get::<_, Vec<u8>>(3)?;
+        if fingerprint.len() != 32 {
+            return Err(SessionStoreError::InvalidPersistedValue(
+                "task_source.fingerprint",
+            ));
+        }
+        decode_bool(row.get::<_, i64>(4)?, "task_source.needs_credentials")?;
+        let _priority = row.get::<_, i64>(5)?;
+        let row_bytes = task_source_owned_bytes(uri.as_ref().map_or(0, Vec::len)).ok_or(
+            SessionStoreError::InvalidPersistedValue("task_source.bytes"),
+        )?;
+        current_bytes = current_bytes.checked_add(row_bytes).ok_or(
+            SessionStoreError::InvalidPersistedValue("task_source.bytes"),
+        )?;
+        if current_bytes > SESSION_SOURCE_READ_BUDGET_BYTES {
+            return Err(SessionStoreError::InvalidPersistedValue(
+                "task_source.bytes",
+            ));
+        }
+        total_bytes = total_bytes
+            .checked_add(row_bytes)
+            .and_then(|value| value.checked_add(gid.len()))
+            .ok_or(SessionStoreError::InvalidPersistedValue(
+                "task_source.read_budget",
+            ))?;
+        if total_bytes > SESSION_TASK_READ_BUDGET_BYTES {
+            return Err(SessionStoreError::InvalidPersistedValue(
+                "task_source.read_budget",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn task_source_owned_bytes(uri_bytes: usize) -> Option<usize> {
+    std::mem::size_of::<SessionTaskSourceRecord>()
+        .checked_add(uri_bytes)
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<[u8; 32]>()))
+}
+
+fn validate_host_key_challenge_record(
+    challenge: &SessionHostKeyChallengeRecord,
+) -> Result<(), SessionStoreError> {
+    if challenge.canonical_host.is_empty()
+        || challenge.canonical_host.len() > 253
+        || challenge.port == 0
+        || challenge.algorithm.is_empty()
+        || challenge.algorithm.len() > SESSION_MAX_ALGORITHM_BYTES
+        || challenge.presented_public_key.is_empty()
+        || challenge.presented_public_key.len() > SESSION_MAX_HOST_KEY_BYTES
+    {
+        return Err(SessionStoreError::InvalidRecord(
+            "host_key_challenge.bounds",
+        ));
+    }
+    if HostKeyFingerprint::for_presented_key(&challenge.presented_public_key)
+        != challenge.fingerprint_sha256
+    {
+        return Err(SessionStoreError::InvalidRecord(
+            "host_key_challenge.fingerprint_sha256",
+        ));
+    }
+    time_to_i64(challenge.created_ms, "host_key_challenge.created_ms")?;
+    Ok(())
+}
+
+fn require_paused_task(connection: &Connection, gid: Gid) -> Result<(), SessionStoreError> {
+    let state = connection
+        .query_row(
+            "SELECT queue_state FROM task WHERE gid = ?1",
+            [gid.to_string()],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .ok_or(SessionStoreError::NotFound)?;
+    if SessionQueueState::try_from(state)? == SessionQueueState::Paused {
+        Ok(())
+    } else {
+        Err(SessionStoreError::InvalidRecord(
+            "host_key_challenge.queue_state",
+        ))
+    }
+}
+
+fn reject_retained_host_key_departure(
+    connection: &Connection,
+    gid: Gid,
+    expected_state: SessionQueueState,
+    target_state: SessionQueueState,
+) -> Result<(), SessionStoreError> {
+    if expected_state != SessionQueueState::Paused || target_state == SessionQueueState::Paused {
+        return Ok(());
+    }
+    let count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM host_key_challenge WHERE gid = ?1",
+        [gid.to_string()],
+        |row| row.get(0),
+    )?;
+    match count {
+        0 => Ok(()),
+        1 => Err(SessionStoreError::InvalidRecord(
+            "host_key_challenge.queue_state",
+        )),
+        _ => Err(SessionStoreError::InvalidPersistedValue(
+            "host_key_challenge.count",
+        )),
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the strict row decoder validates the complete persisted host-key challenge tuple"
+)]
+fn decode_host_key_challenge_row(
+    gid: &str,
+    challenge_id: Vec<u8>,
+    canonical_host: Vec<u8>,
+    port: i64,
+    algorithm: Vec<u8>,
+    presented_public_key: Vec<u8>,
+    fingerprint_sha256: Vec<u8>,
+    created_ms: i64,
+    queue_state: i64,
+) -> Result<SessionHostKeyChallengeRecord, SessionStoreError> {
+    if SessionQueueState::try_from(queue_state)? != SessionQueueState::Paused {
+        return Err(SessionStoreError::InvalidPersistedValue(
+            "host_key_challenge.queue_state",
+        ));
+    }
+    let record = SessionHostKeyChallengeRecord {
+        gid: decode_gid(gid)?,
+        challenge_id: HostKeyChallengeId::new(challenge_id.try_into().map_err(|_| {
+            SessionStoreError::InvalidPersistedValue("host_key_challenge.challenge_id")
+        })?),
+        canonical_host: String::from_utf8(canonical_host).map_err(|_| {
+            SessionStoreError::InvalidPersistedValue("host_key_challenge.canonical_host")
+        })?,
+        port: u16::try_from(port)
+            .map_err(|_| SessionStoreError::InvalidPersistedValue("host_key_challenge.port"))?,
+        algorithm: String::from_utf8(algorithm).map_err(|_| {
+            SessionStoreError::InvalidPersistedValue("host_key_challenge.algorithm")
+        })?,
+        presented_public_key,
+        fingerprint_sha256: HostKeyFingerprint::new(fingerprint_sha256.try_into().map_err(
+            |_| SessionStoreError::InvalidPersistedValue("host_key_challenge.fingerprint_sha256"),
+        )?),
+        created_ms: nonnegative_i64(created_ms, "host_key_challenge.created_ms")?,
+    };
+    validate_host_key_challenge_record(&record).map_err(|error| match error {
+        SessionStoreError::InvalidRecord("host_key_challenge.bounds") => {
+            SessionStoreError::InvalidPersistedValue("host_key_challenge.bounds")
+        }
+        SessionStoreError::InvalidRecord("host_key_challenge.fingerprint_sha256") => {
+            SessionStoreError::InvalidPersistedValue("host_key_challenge.fingerprint_sha256")
+        }
+        other => other,
+    })?;
+    Ok(record)
+}
+
+fn read_host_key_challenge(
+    connection: &Connection,
+    gid: Gid,
+) -> Result<Option<SessionHostKeyChallengeRecord>, SessionStoreError> {
+    let row = connection
+        .query_row(
+            "SELECT challenge.gid, challenge.challenge_id, CAST(challenge.canonical_host AS BLOB), challenge.port, CAST(challenge.algorithm AS BLOB), challenge.presented_public_key, challenge.fingerprint_sha256, challenge.created_ms, task.queue_state FROM host_key_challenge AS challenge JOIN task ON task.gid = challenge.gid WHERE challenge.gid = ?1",
+            [gid.to_string()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                    row.get::<_, Vec<u8>>(5)?,
+                    row.get::<_, Vec<u8>>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, i64>(8)?,
+                ))
+            },
+        )
+        .optional()?;
+    row.map(|row| {
+        decode_host_key_challenge_row(
+            &row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8,
+        )
+    })
+    .transpose()
+}
+
+fn read_host_key_challenge_records(
+    connection: &Connection,
+    read_budget_bytes: usize,
+) -> Result<Vec<SessionHostKeyChallengeRecord>, SessionStoreError> {
+    let count: i64 =
+        connection.query_row("SELECT COUNT(*) FROM host_key_challenge", [], |row| {
+            row.get(0)
+        })?;
+    let count = bounded_count(count, SESSION_MAX_TASKS, "host_key_challenge.count")?;
+    let mut statement = connection.prepare(
+        "SELECT challenge.gid, challenge.challenge_id, CAST(challenge.canonical_host AS BLOB), challenge.port, CAST(challenge.algorithm AS BLOB), challenge.presented_public_key, challenge.fingerprint_sha256, challenge.created_ms, task.queue_state FROM host_key_challenge AS challenge JOIN task ON task.gid = challenge.gid ORDER BY challenge.gid",
+    )?;
+    let mut rows = statement.query([])?;
+    let mut records = Vec::new();
+    records
+        .try_reserve_exact(count)
+        .map_err(|_| SessionStoreError::InvalidPersistedValue("host_key_challenge.allocation"))?;
+    let mut bytes = 0_usize;
+    while let Some(row) = rows.next()? {
+        let gid = row.get::<_, String>(0)?;
+        let challenge_id = row.get::<_, Vec<u8>>(1)?;
+        let canonical_host = row.get::<_, Vec<u8>>(2)?;
+        let port = row.get::<_, i64>(3)?;
+        let algorithm = row.get::<_, Vec<u8>>(4)?;
+        let presented_public_key = row.get::<_, Vec<u8>>(5)?;
+        let fingerprint_sha256 = row.get::<_, Vec<u8>>(6)?;
+        let created_ms = row.get::<_, i64>(7)?;
+        let queue_state = row.get::<_, i64>(8)?;
+        bytes = [
+            std::mem::size_of::<SessionHostKeyChallengeRecord>(),
+            gid.len(),
+            challenge_id.len(),
+            canonical_host.len(),
+            algorithm.len(),
+            presented_public_key.len(),
+            fingerprint_sha256.len(),
+        ]
+        .into_iter()
+        .try_fold(bytes, |total, value| total.checked_add(value))
+        .ok_or(SessionStoreError::InvalidPersistedValue(
+            "host_key_challenge.read_budget",
+        ))?;
+        if bytes > read_budget_bytes {
+            return Err(SessionStoreError::InvalidPersistedValue(
+                "host_key_challenge.read_budget",
+            ));
+        }
+        records.push(decode_host_key_challenge_row(
+            &gid,
+            challenge_id,
+            canonical_host,
+            port,
+            algorithm,
+            presented_public_key,
+            fingerprint_sha256,
+            created_ms,
+            queue_state,
+        )?);
+    }
+    if records.len() != count {
+        return Err(SessionStoreError::InvalidPersistedValue(
+            "host_key_challenge.count",
+        ));
+    }
+    Ok(records)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3807,6 +4765,7 @@ fn validate_persisted_semantics_for_version(
     } else {
         read_task_records(connection)?;
     }
+    validate_task_sources(connection)?;
     validate_stopped_result_pairing(connection)?;
     read_stopped_results(connection)?;
     validate_host_key_challenges(connection)?;
@@ -3870,9 +4829,9 @@ fn validate_host_key_challenges_with_budget(
             .ok_or(SessionStoreError::InvalidPersistedValue(
                 "host_key_challenge.count",
             ))?;
-        let row_bytes = canonical_host
-            .len()
-            .checked_add(algorithm.len())
+        let row_bytes = std::mem::size_of::<SessionHostKeyChallengeRecord>()
+            .checked_add(canonical_host.len())
+            .and_then(|size| size.checked_add(algorithm.len()))
             .and_then(|size| size.checked_add(presented_public_key.len()))
             .and_then(|size| size.checked_add(fingerprint_sha256.len()))
             .ok_or(SessionStoreError::InvalidPersistedValue(
@@ -4004,22 +4963,41 @@ fn validate_stopped_result(result: &SessionStoppedResultRecord) -> Result<(), Se
             "stopped_result.safe_message",
         ));
     }
-    match (result.status, result.error_kind) {
-        (SessionTerminalStatus::Error, Some(_)) => {}
-        (SessionTerminalStatus::Error, None) => {
-            return Err(SessionStoreError::InvalidRecord(
-                "stopped_result.error_code",
-            ));
+    match result.status {
+        SessionTerminalStatus::Complete
+            if result.error_kind.is_none()
+                && result.safe_message.is_empty()
+                && result.total_length.is_some()
+                && result.layout_hash.is_some() =>
+        {
+            Ok(())
         }
-        (SessionTerminalStatus::Complete | SessionTerminalStatus::Removed, None)
-            if result.safe_message.is_empty() => {}
-        (SessionTerminalStatus::Complete | SessionTerminalStatus::Removed, _) => {
-            return Err(SessionStoreError::InvalidRecord(
-                "stopped_result.non_error_payload",
-            ));
+        SessionTerminalStatus::Complete => Err(SessionStoreError::InvalidRecord(
+            "stopped_result.complete_payload",
+        )),
+        SessionTerminalStatus::Error if result.error_kind.is_none() => Err(
+            SessionStoreError::InvalidRecord("stopped_result.error_code"),
+        ),
+        SessionTerminalStatus::Error
+            if result.total_length.is_some() || result.layout_hash.is_some() =>
+        {
+            Err(SessionStoreError::InvalidRecord(
+                "stopped_result.error_payload",
+            ))
         }
+        SessionTerminalStatus::Error => Ok(()),
+        SessionTerminalStatus::Removed
+            if result.error_kind.is_none()
+                && result.safe_message.is_empty()
+                && result.total_length.is_none()
+                && result.layout_hash.is_none() =>
+        {
+            Ok(())
+        }
+        SessionTerminalStatus::Removed => Err(SessionStoreError::InvalidRecord(
+            "stopped_result.non_error_payload",
+        )),
     }
-    Ok(())
 }
 
 fn validate_stopped_result_pairing(connection: &Connection) -> Result<(), SessionStoreError> {
@@ -4282,17 +5260,19 @@ mod tests {
     use super::{
         ALL_SESSION_IO_OPERATIONS, ALL_SESSION_SQLITE_LIMITS, ALL_SESSION_STORE_ERROR_CODES,
         JournalInstallIntent, JournalInstallPhase, SESSION_SCHEMA_OBJECTS, SESSION_SCHEMA_VERSION,
-        SessionCacheReconciliation, SessionId, SessionJournalCache, SessionJournalMode,
-        SessionNoSpaceCondition, SessionQueueState, SessionRecord, SessionSlowRetryDecision,
-        SessionSlowSlotState, SessionStoppedResultRecord, SessionStore, SessionStoreConfig,
-        SessionStoreError, SessionTaskRecord, SessionTerminalStatus,
+        SessionCacheReconciliation, SessionHostKeyChallengeRecord, SessionHostKeyResolution,
+        SessionId, SessionJournalCache, SessionJournalMode, SessionNoSpaceCondition,
+        SessionQueueOrder, SessionQueueState, SessionQueueTransition, SessionRecord,
+        SessionSlowRetryDecision, SessionSlowSlotState, SessionStoppedResultRecord, SessionStore,
+        SessionStoreConfig, SessionStoreError, SessionTaskRecord, SessionTaskSourceRecord,
+        SessionTerminalStatus,
     };
     use crate::{
         CheckpointId, JournalHash, JournalId, OptionsSnapshotScope, PathPlatform, PlatformPath,
         SanitizedOptionMap,
     };
     use ariax_config::{SecurityClass, builtin_registry};
-    use ariax_core::{ErrorKind, Gid, HostKeyFingerprint};
+    use ariax_core::{ErrorKind, Gid, HostKeyChallengeId, HostKeyFingerprint};
     use rusqlite::Connection;
     use std::collections::{BTreeMap, HashSet};
     use std::ffi::OsString;
@@ -4582,18 +5562,23 @@ mod tests {
         gid: Gid,
         status: SessionTerminalStatus,
     ) -> SessionStoppedResultRecord {
-        let (error_kind, safe_message) = if status == SessionTerminalStatus::Error {
-            (Some(ErrorKind::Network), "network failure".to_owned())
-        } else {
-            (None, String::new())
+        let (error_kind, safe_message, total_length, layout_hash) = match status {
+            SessionTerminalStatus::Complete => (None, String::new(), Some(u64::MAX), Some(hash(9))),
+            SessionTerminalStatus::Error => (
+                Some(ErrorKind::Network),
+                "network failure".to_owned(),
+                None,
+                None,
+            ),
+            SessionTerminalStatus::Removed => (None, String::new(), None, None),
         };
         SessionStoppedResultRecord {
             gid,
             status,
             error_kind,
             safe_message,
-            total_length: Some(u64::MAX),
-            layout_hash: Some(hash(9)),
+            total_length,
+            layout_hash,
             completed_ms: 300,
         }
     }
@@ -4943,6 +5928,60 @@ mod tests {
     }
 
     #[test]
+    fn v1_migration_rejects_noncanonical_stopped_payload_without_backup() {
+        let directory = TestDirectory::new();
+        seed_v1_store(&directory, SessionJournalMode::Delete);
+        let connection = Connection::open(directory.database()).expect("open v1 database");
+        connection
+            .execute(
+                "UPDATE task SET queue_state = ?1 WHERE gid = ?2",
+                rusqlite::params![SessionQueueState::Stopped as i64, gid(1).to_string()],
+            )
+            .expect("move v1 task to stopped queue");
+        connection
+            .execute(
+                "INSERT INTO stopped_result(gid, terminal_status, error_code, safe_message, total_length, layout_hash, completed_ms) VALUES (?1, ?2, 0, '', ?3, NULL, 300)",
+                rusqlite::params![
+                    gid(1).to_string(),
+                    SessionTerminalStatus::Removed as i64,
+                    super::encode_u64(1),
+                ],
+            )
+            .expect("insert noncanonical v1 stopped result");
+        drop(connection);
+
+        for _ in 0..2 {
+            assert!(matches!(
+                SessionStore::open(directory.database(), SessionStoreConfig::default()),
+                Err(SessionStoreError::InvalidRecord(
+                    "stopped_result.non_error_payload"
+                ))
+            ));
+        }
+        let connection = Connection::open(directory.database()).expect("inspect retained v1");
+        assert_eq!(
+            super::read_user_version(&connection).expect("retained v1 version"),
+            1
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM stopped_result", [], |row| row
+                    .get::<_, i64>(0))
+                .expect("retained invalid result"),
+            1
+        );
+        let migration_entries = fs::read_dir(directory.path())
+            .expect("migration directory")
+            .map(|entry| entry.expect("migration entry").path())
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().contains(".ariax-v1-to-v2-"))
+            })
+            .collect::<Vec<_>>();
+        assert!(migration_entries.is_empty());
+    }
+
+    #[test]
     fn unpaired_stopped_tasks_are_rejected_in_v1_and_v2() {
         let v1 = TestDirectory::new();
         seed_v1_store(&v1, SessionJournalMode::Delete);
@@ -5226,7 +6265,7 @@ mod tests {
     }
 
     #[test]
-    fn host_key_semantic_read_budget_is_enforced_at_the_boundary() {
+    fn host_key_read_budgets_charge_owned_records_at_the_boundary() {
         let directory = TestDirectory::new();
         let mut store = open_store(&directory);
         store.put_task(&task_record(gid(1), 0)).expect("task");
@@ -5240,17 +6279,36 @@ mod tests {
             fingerprint.as_bytes(),
         );
         let connection = Connection::open(directory.database()).expect("open host-key database");
-        let row_bytes =
-            b"example.test".len() + b"ssh-ed25519".len() + key.len() + fingerprint.as_bytes().len();
+        let semantic_row_bytes = std::mem::size_of::<SessionHostKeyChallengeRecord>()
+            + b"example.test".len()
+            + b"ssh-ed25519".len()
+            + key.len()
+            + fingerprint.as_bytes().len();
 
         assert!(matches!(
-            super::validate_host_key_challenges_with_budget(&connection, row_bytes - 1),
+            super::validate_host_key_challenges_with_budget(&connection, semantic_row_bytes - 1),
             Err(SessionStoreError::InvalidPersistedValue(
                 "host_key_challenge.read_budget"
             ))
         ));
-        super::validate_host_key_challenges_with_budget(&connection, row_bytes)
+        super::validate_host_key_challenges_with_budget(&connection, semantic_row_bytes)
             .expect("accept challenge at exact read budget");
+
+        let materialized_row_bytes = semantic_row_bytes
+            + gid(1).to_string().len()
+            + HostKeyChallengeId::new([1; 16]).as_bytes().len();
+        assert!(matches!(
+            super::read_host_key_challenge_records(&connection, materialized_row_bytes - 1),
+            Err(SessionStoreError::InvalidPersistedValue(
+                "host_key_challenge.read_budget"
+            ))
+        ));
+        assert_eq!(
+            super::read_host_key_challenge_records(&connection, materialized_row_bytes)
+                .expect("materialize challenge at exact read budget")
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -6672,7 +7730,23 @@ mod tests {
                 300,
             ),
             Err(SessionStoreError::InvalidRecord(
-                "stopped_result.non_error_payload"
+                "stopped_result.complete_payload"
+            ))
+        ));
+        let mut complete_without_layout =
+            stopped_result_record(gid(1), SessionTerminalStatus::Complete);
+        complete_without_layout.layout_hash = None;
+        assert!(matches!(
+            store.persist_stopped_result(
+                &complete_without_layout,
+                SessionQueueState::Waiting,
+                0,
+                false,
+                0,
+                300,
+            ),
+            Err(SessionStoreError::InvalidRecord(
+                "stopped_result.complete_payload"
             ))
         ));
         let mut error_without_kind = stopped_result_record(gid(1), SessionTerminalStatus::Error);
@@ -6688,6 +7762,37 @@ mod tests {
             ),
             Err(SessionStoreError::InvalidRecord(
                 "stopped_result.error_code"
+            ))
+        ));
+        let mut error_with_completion = stopped_result_record(gid(1), SessionTerminalStatus::Error);
+        error_with_completion.total_length = Some(1);
+        assert!(matches!(
+            store.persist_stopped_result(
+                &error_with_completion,
+                SessionQueueState::Waiting,
+                0,
+                false,
+                0,
+                300,
+            ),
+            Err(SessionStoreError::InvalidRecord(
+                "stopped_result.error_payload"
+            ))
+        ));
+        let mut removed_with_completion =
+            stopped_result_record(gid(1), SessionTerminalStatus::Removed);
+        removed_with_completion.layout_hash = Some(hash(7));
+        assert!(matches!(
+            store.persist_stopped_result(
+                &removed_with_completion,
+                SessionQueueState::Waiting,
+                0,
+                false,
+                0,
+                300,
+            ),
+            Err(SessionStoreError::InvalidRecord(
+                "stopped_result.non_error_payload"
             ))
         ));
         assert!(matches!(
@@ -6755,6 +7860,26 @@ mod tests {
                 500,
             ),
             Err(SessionStoreError::QueueTransitionRequired)
+        ));
+        store
+            .connection
+            .execute(
+                "UPDATE stopped_result SET total_length = ?1 WHERE gid = ?2",
+                rusqlite::params![super::encode_u64(1), gid(1).to_string()],
+            )
+            .expect("simulate noncanonical removed result");
+        assert!(matches!(
+            store.stopped_results(),
+            Err(SessionStoreError::InvalidRecord(
+                "stopped_result.non_error_payload"
+            ))
+        ));
+        drop(store);
+        assert!(matches!(
+            SessionStore::open(directory.database(), SessionStoreConfig::default()),
+            Err(SessionStoreError::InvalidRecord(
+                "stopped_result.non_error_payload"
+            ))
         ));
     }
 
@@ -7026,6 +8151,582 @@ mod tests {
                 (gid(3), 4),
             ]
         );
+    }
+
+    #[test]
+    fn exact_queue_transition_applies_only_complete_scheduler_orders() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        for (position, value) in [1_u64, 2, 3].into_iter().enumerate() {
+            store
+                .put_task(&task_record(gid(value), position as u32))
+                .expect("waiting task");
+        }
+        for (position, value) in [4_u64, 5].into_iter().enumerate() {
+            let mut task = task_record(gid(value), position as u32);
+            task.queue_state = SessionQueueState::Paused;
+            task.desired_paused = true;
+            store.put_task(&task).expect("paused task");
+        }
+        let transition = SessionQueueTransition {
+            gid: gid(2),
+            expected_state: SessionQueueState::Waiting,
+            target_state: SessionQueueState::Paused,
+            desired_paused: true,
+            slow_demotion_count: 0,
+            slow_slot: None,
+            final_orders: vec![
+                SessionQueueOrder {
+                    state: SessionQueueState::Waiting,
+                    gids: vec![gid(3), gid(1)],
+                },
+                SessionQueueOrder {
+                    state: SessionQueueState::Paused,
+                    gids: vec![gid(4), gid(2), gid(5)],
+                },
+            ],
+            updated_ms: 300,
+        };
+        store
+            .transition_task_queue_exact(&transition)
+            .expect("exact transition");
+        assert_eq!(
+            store
+                .queue_order(SessionQueueState::Waiting)
+                .expect("waiting order"),
+            vec![gid(3), gid(1)]
+        );
+        assert_eq!(
+            store
+                .queue_order(SessionQueueState::Paused)
+                .expect("paused order"),
+            vec![gid(4), gid(2), gid(5)]
+        );
+
+        let before = store.tasks().expect("before rejected exact transition");
+        let mut incomplete = transition.clone();
+        incomplete.gid = gid(3);
+        incomplete.final_orders = vec![SessionQueueOrder {
+            state: SessionQueueState::Waiting,
+            gids: vec![gid(1)],
+        }];
+        assert!(matches!(
+            store.transition_task_queue_exact(&incomplete),
+            Err(SessionStoreError::QueueInvariant)
+        ));
+        assert_eq!(store.tasks().expect("rejected transition rollback"), before);
+
+        let mut duplicate = SessionQueueTransition {
+            gid: gid(3),
+            expected_state: SessionQueueState::Waiting,
+            target_state: SessionQueueState::Paused,
+            desired_paused: true,
+            slow_demotion_count: 0,
+            slow_slot: None,
+            final_orders: vec![
+                SessionQueueOrder {
+                    state: SessionQueueState::Waiting,
+                    gids: vec![gid(1)],
+                },
+                SessionQueueOrder {
+                    state: SessionQueueState::Paused,
+                    gids: vec![gid(3), gid(2), gid(3), gid(4), gid(5)],
+                },
+            ],
+            updated_ms: 400,
+        };
+        assert!(matches!(
+            store.transition_task_queue_exact(&duplicate),
+            Err(SessionStoreError::QueueInvariant)
+        ));
+        duplicate.final_orders[1].gids = vec![gid(3), gid(2), gid(4), gid(5)];
+        store
+            .transition_task_queue_exact(&duplicate)
+            .expect("complete second transition");
+    }
+
+    #[test]
+    fn no_space_updates_are_atomic_and_queue_gated() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        let mut waiting = task_record(gid(1), 0);
+        waiting.no_space = None;
+        store.put_task(&waiting).expect("waiting task");
+        let condition = SessionNoSpaceCondition {
+            target: path(b"/redacted/volume"),
+            scheduled_at_ms: 350,
+            delay_ms: 5_000,
+        };
+        store
+            .set_task_no_space_condition(gid(1), Some(&condition), 350)
+            .expect("set condition");
+        assert_eq!(
+            store.tasks().expect("condition task")[0].no_space,
+            Some(condition.clone())
+        );
+        let invalid = SessionNoSpaceCondition {
+            delay_ms: 0,
+            ..condition.clone()
+        };
+        assert!(matches!(
+            store.set_task_no_space_condition(gid(1), Some(&invalid), 360),
+            Err(SessionStoreError::InvalidRecord("no_space.delay_ms"))
+        ));
+        assert_eq!(
+            store.tasks().expect("invalid update rollback")[0].no_space,
+            Some(condition.clone())
+        );
+        store
+            .set_task_no_space_condition(gid(1), None, 370)
+            .expect("clear condition");
+        assert_eq!(store.tasks().expect("cleared task")[0].no_space, None);
+
+        let mut active = task_record(gid(2), 0);
+        active.queue_state = SessionQueueState::Active;
+        active.no_space = None;
+        store.put_task(&active).expect("active task");
+        assert!(matches!(
+            store.set_task_no_space_condition(gid(2), Some(&invalid), 380),
+            Err(SessionStoreError::InvalidRecord("no_space.delay_ms"))
+        ));
+        let valid = SessionNoSpaceCondition {
+            delay_ms: 1,
+            ..invalid
+        };
+        store
+            .set_task_no_space_condition(gid(2), Some(&valid), 380)
+            .expect("persist condition before active cancellation drains");
+
+        let mut demoted = task_record(gid(3), 0);
+        demoted.queue_state = SessionQueueState::Demoted;
+        demoted.slow_demotion_count = 1;
+        demoted.slow_slot = Some(SessionSlowSlotState {
+            original_position: 0,
+            retry: Some(SessionSlowRetryDecision {
+                scheduled_at_ms: 300,
+                delay_ms: 1_000,
+            }),
+        });
+        store.put_task(&demoted).expect("demoted task");
+        store
+            .set_task_no_space_condition(gid(3), Some(&valid), 390)
+            .expect("refresh condition while slow-demoted");
+
+        let mut stopped = task_record(gid(4), 1);
+        stopped.no_space = Some(valid.clone());
+        store.put_task(&stopped).expect("future stopped task");
+        let terminal = stopped_result_record(gid(4), SessionTerminalStatus::Complete);
+        store
+            .persist_stopped_result(&terminal, SessionQueueState::Waiting, 0, false, 0, 400)
+            .expect("terminal transition");
+        assert!(matches!(
+            store.set_task_no_space_condition(gid(4), Some(&valid), 410),
+            Err(SessionStoreError::InvalidRecord("no_space.queue_state"))
+        ));
+        assert_eq!(
+            store
+                .tasks()
+                .expect("rejected stopped update")
+                .into_iter()
+                .find(|task| task.gid == gid(4))
+                .expect("stopped task")
+                .no_space,
+            Some(valid)
+        );
+        store
+            .set_task_no_space_condition(gid(4), None, 420)
+            .expect("clear stale stopped condition");
+    }
+
+    #[test]
+    fn task_sources_replace_atomically_and_read_in_priority_order() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        store.put_task(&task_record(gid(1), 0)).expect("task");
+        let sources = vec![
+            SessionTaskSourceRecord {
+                uri_id: 8,
+                persistence_safe_uri: Some("https://mirror.example/file".to_owned()),
+                redacted_fingerprint: [8; 32],
+                needs_credentials: false,
+                priority: 20,
+            },
+            SessionTaskSourceRecord {
+                uri_id: 3,
+                persistence_safe_uri: None,
+                redacted_fingerprint: [3; 32],
+                needs_credentials: true,
+                priority: 10,
+            },
+        ];
+        store
+            .replace_task_sources(gid(1), &sources)
+            .expect("replace sources");
+        assert_eq!(
+            store.task_sources(gid(1)).expect("read sources"),
+            vec![sources[1].clone(), sources[0].clone()]
+        );
+
+        let before = store.task_sources(gid(1)).expect("before duplicate");
+        assert!(matches!(
+            store.replace_task_sources(gid(1), &[sources[0].clone(), sources[0].clone()]),
+            Err(SessionStoreError::InvalidRecord("task_source.count"))
+        ));
+        assert_eq!(
+            store.task_sources(gid(1)).expect("duplicate rollback"),
+            before
+        );
+        assert!(matches!(
+            store.replace_task_sources(gid(9), &sources),
+            Err(SessionStoreError::NotFound)
+        ));
+        let oversized = SessionTaskSourceRecord {
+            persistence_safe_uri: Some("x".repeat(super::SESSION_MAX_SAFE_URI_BYTES + 1)),
+            ..sources[0].clone()
+        };
+        assert!(matches!(
+            store.replace_task_sources(gid(1), &[oversized]),
+            Err(SessionStoreError::InvalidRecord("task_source.uri"))
+        ));
+    }
+
+    #[test]
+    fn task_source_per_task_byte_budget_is_exact_and_revalidated_on_open() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        store.put_task(&task_record(gid(1), 0)).expect("task");
+
+        let empty_row_bytes = super::task_source_owned_bytes(0).expect("empty row size");
+        let full_row_bytes = super::task_source_owned_bytes(super::SESSION_MAX_SAFE_URI_BYTES)
+            .expect("full row size");
+        let full_rows =
+            (super::SESSION_SOURCE_READ_BUDGET_BYTES - empty_row_bytes) / full_row_bytes;
+        let final_uri_bytes =
+            super::SESSION_SOURCE_READ_BUDGET_BYTES - full_rows * full_row_bytes - empty_row_bytes;
+        assert!(final_uri_bytes <= super::SESSION_MAX_SAFE_URI_BYTES);
+
+        let mut sources = Vec::with_capacity(full_rows + 2);
+        for index in 0..full_rows {
+            sources.push(SessionTaskSourceRecord {
+                uri_id: u32::try_from(index).expect("bounded source id"),
+                persistence_safe_uri: Some("x".repeat(super::SESSION_MAX_SAFE_URI_BYTES)),
+                redacted_fingerprint: [7; 32],
+                needs_credentials: false,
+                priority: i64::try_from(index).expect("bounded priority"),
+            });
+        }
+        sources.push(SessionTaskSourceRecord {
+            uri_id: u32::try_from(full_rows).expect("final source id"),
+            persistence_safe_uri: Some("y".repeat(final_uri_bytes)),
+            redacted_fingerprint: [8; 32],
+            needs_credentials: true,
+            priority: i64::try_from(full_rows).expect("final priority"),
+        });
+        store
+            .replace_task_sources(gid(1), &sources)
+            .expect("persist sources at exact byte budget");
+        assert_eq!(
+            store
+                .task_sources(gid(1))
+                .expect("read sources at exact byte budget")
+                .len(),
+            sources.len()
+        );
+
+        let extra_uri_id = u32::try_from(sources.len()).expect("extra source id");
+        sources.push(SessionTaskSourceRecord {
+            uri_id: extra_uri_id,
+            persistence_safe_uri: None,
+            redacted_fingerprint: [9; 32],
+            needs_credentials: false,
+            priority: i64::from(extra_uri_id),
+        });
+        assert!(matches!(
+            store.replace_task_sources(gid(1), &sources),
+            Err(SessionStoreError::InvalidRecord("task_source.bytes"))
+        ));
+        assert_eq!(
+            store
+                .task_sources(gid(1))
+                .expect("rejected replacement retained exact-budget sources")
+                .len(),
+            sources.len() - 1
+        );
+
+        store
+            .connection
+            .execute(
+                "INSERT INTO task_source(gid, uri_id, persistence_safe_uri, redacted_fingerprint, needs_credentials, priority) VALUES (?1, ?2, NULL, ?3, 0, ?4)",
+                rusqlite::params![
+                    gid(1).to_string(),
+                    i64::from(extra_uri_id),
+                    [9_u8; 32].as_slice(),
+                    i64::from(extra_uri_id),
+                ],
+            )
+            .expect("simulate persisted per-task byte overflow");
+        assert!(matches!(
+            super::validate_task_sources(&store.connection),
+            Err(SessionStoreError::InvalidPersistedValue(
+                "task_source.bytes"
+            ))
+        ));
+        assert!(matches!(
+            store.task_sources(gid(1)),
+            Err(SessionStoreError::InvalidPersistedValue(
+                "task_source.bytes"
+            ))
+        ));
+        drop(store);
+        assert!(matches!(
+            SessionStore::open(directory.database(), SessionStoreConfig::default()),
+            Err(SessionStoreError::InvalidPersistedValue(
+                "task_source.bytes"
+            ))
+        ));
+    }
+
+    #[test]
+    fn host_key_resolution_is_exact_challenge_bound_and_atomic() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        let mut task = task_record(gid(1), 0);
+        task.queue_state = SessionQueueState::Paused;
+        task.desired_paused = true;
+        task.no_space = None;
+        store.put_task(&task).expect("paused task");
+        let key = vec![7_u8; 64];
+        let challenge = SessionHostKeyChallengeRecord {
+            gid: gid(1),
+            challenge_id: HostKeyChallengeId::new([1; 16]),
+            canonical_host: "sftp.example".to_owned(),
+            port: 22,
+            algorithm: "ssh-ed25519".to_owned(),
+            fingerprint_sha256: HostKeyFingerprint::for_presented_key(&key),
+            presented_public_key: key.clone(),
+            created_ms: 300,
+        };
+        store
+            .put_host_key_challenge(&challenge)
+            .expect("persist challenge");
+        assert_eq!(
+            store.host_key_challenge(gid(1)).expect("challenge"),
+            Some(challenge.clone())
+        );
+        assert!(matches!(
+            store.reject_host_key_challenge(gid(1), HostKeyChallengeId::new([2; 16])),
+            Err(SessionStoreError::HostKeyChallengeMismatch)
+        ));
+
+        let pin_value = super::session_host_key_pin_value(challenge.fingerprint_sha256);
+        let options = SanitizedOptionMap::new([
+            (super::SESSION_HOST_KEY_PIN_OPTION.to_owned(), pin_value),
+            ("piece-length".to_owned(), "1M".to_owned()),
+        ])
+        .expect("pinned options");
+        let mut stale = SessionHostKeyResolution {
+            gid: gid(1),
+            challenge_id: challenge.challenge_id,
+            fingerprint_sha256: HostKeyFingerprint::new([9; 32]),
+            presented_public_key: key.clone(),
+            scope: OptionsSnapshotScope::NextAdmission,
+            pinned_options: options.clone(),
+        };
+        assert!(matches!(
+            store.resolve_host_key_challenge(&stale, &|_: &str| true),
+            Err(SessionStoreError::HostKeyChallengeMismatch)
+        ));
+        assert_eq!(
+            store
+                .host_key_challenge(gid(1))
+                .expect("retained challenge"),
+            Some(challenge.clone())
+        );
+        stale.fingerprint_sha256 = challenge.fingerprint_sha256;
+        store
+            .resolve_host_key_challenge(&stale, &|_: &str| true)
+            .expect("resolve exact challenge");
+        assert_eq!(store.host_key_challenge(gid(1)).expect("cleared"), None);
+        assert_eq!(
+            store
+                .task_options(gid(1), OptionsSnapshotScope::NextAdmission, &|_: &str| true,)
+                .expect("pinned snapshot"),
+            options
+        );
+        assert!(matches!(
+            store.resolve_host_key_challenge(&stale, &|_: &str| true),
+            Err(SessionStoreError::NotFound)
+        ));
+    }
+
+    #[test]
+    fn retained_host_keys_block_nonterminal_departure_and_clear_with_terminal_state() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        for (position, value) in [1_u64, 2].into_iter().enumerate() {
+            let mut task = task_record(gid(value), position as u32);
+            task.queue_state = SessionQueueState::Paused;
+            task.desired_paused = false;
+            task.no_space = None;
+            store.put_task(&task).expect("paused host-key task");
+            let key = vec![value as u8; 32];
+            store
+                .put_host_key_challenge(&SessionHostKeyChallengeRecord {
+                    gid: task.gid,
+                    challenge_id: HostKeyChallengeId::new([value as u8; 16]),
+                    canonical_host: format!("sftp-{value}.example"),
+                    port: 22,
+                    algorithm: "ssh-ed25519".to_owned(),
+                    fingerprint_sha256: HostKeyFingerprint::for_presented_key(&key),
+                    presented_public_key: key,
+                    created_ms: 300,
+                })
+                .expect("host-key challenge");
+        }
+        store
+            .put_task(&task_record(gid(3), 0))
+            .expect("waiting task");
+
+        assert!(matches!(
+            store.transition_task_queue(
+                gid(1),
+                SessionQueueState::Paused,
+                SessionQueueState::Waiting,
+                1,
+                false,
+                0,
+                None,
+                400,
+            ),
+            Err(SessionStoreError::InvalidRecord(
+                "host_key_challenge.queue_state"
+            ))
+        ));
+        let departure = SessionQueueTransition {
+            gid: gid(1),
+            expected_state: SessionQueueState::Paused,
+            target_state: SessionQueueState::Waiting,
+            desired_paused: false,
+            slow_demotion_count: 0,
+            slow_slot: None,
+            final_orders: vec![
+                SessionQueueOrder {
+                    state: SessionQueueState::Paused,
+                    gids: vec![gid(2)],
+                },
+                SessionQueueOrder {
+                    state: SessionQueueState::Waiting,
+                    gids: vec![gid(3), gid(1)],
+                },
+            ],
+            updated_ms: 400,
+        };
+        assert!(matches!(
+            store.transition_task_queue_exact(&departure),
+            Err(SessionStoreError::InvalidRecord(
+                "host_key_challenge.queue_state"
+            ))
+        ));
+        assert_eq!(
+            store
+                .queue_order(SessionQueueState::Paused)
+                .expect("unchanged paused queue"),
+            vec![gid(1), gid(2)]
+        );
+        assert!(
+            store
+                .host_key_challenge(gid(1))
+                .expect("retained first challenge")
+                .is_some()
+        );
+
+        let first_result = stopped_result_record(gid(1), SessionTerminalStatus::Removed);
+        store
+            .persist_stopped_result(&first_result, SessionQueueState::Paused, 0, false, 0, 500)
+            .expect("terminalize first challenge");
+        assert_eq!(
+            store
+                .host_key_challenge(gid(1))
+                .expect("cleared first challenge"),
+            None
+        );
+
+        let second_result = stopped_result_record(gid(2), SessionTerminalStatus::Removed);
+        let mut exact_terminal = SessionQueueTransition {
+            gid: gid(2),
+            expected_state: SessionQueueState::Paused,
+            target_state: SessionQueueState::Stopped,
+            desired_paused: false,
+            slow_demotion_count: 0,
+            slow_slot: None,
+            final_orders: vec![
+                SessionQueueOrder {
+                    state: SessionQueueState::Paused,
+                    gids: Vec::new(),
+                },
+                SessionQueueOrder {
+                    state: SessionQueueState::Stopped,
+                    gids: vec![gid(1)],
+                },
+            ],
+            updated_ms: 600,
+        };
+        assert!(matches!(
+            store.persist_stopped_result_exact(&second_result, &exact_terminal),
+            Err(SessionStoreError::QueueInvariant)
+        ));
+        assert!(
+            store
+                .host_key_challenge(gid(2))
+                .expect("rolled-back second challenge")
+                .is_some()
+        );
+        exact_terminal.final_orders[1].gids.push(gid(2));
+        store
+            .persist_stopped_result_exact(&second_result, &exact_terminal)
+            .expect("terminalize second challenge exactly");
+        assert_eq!(
+            store
+                .host_key_challenge(gid(2))
+                .expect("cleared second challenge"),
+            None
+        );
+        assert_eq!(
+            store.stopped_results().expect("paired terminal results"),
+            vec![first_result, second_result]
+        );
+    }
+
+    #[test]
+    fn exact_stopped_result_transition_verifies_both_final_orders() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        store.put_task(&task_record(gid(1), 0)).expect("first");
+        store.put_task(&task_record(gid(2), 1)).expect("second");
+        let transition = SessionQueueTransition {
+            gid: gid(1),
+            expected_state: SessionQueueState::Waiting,
+            target_state: SessionQueueState::Stopped,
+            desired_paused: false,
+            slow_demotion_count: 0,
+            slow_slot: None,
+            final_orders: vec![
+                SessionQueueOrder {
+                    state: SessionQueueState::Waiting,
+                    gids: vec![gid(2)],
+                },
+                SessionQueueOrder {
+                    state: SessionQueueState::Stopped,
+                    gids: vec![gid(1)],
+                },
+            ],
+            updated_ms: 400,
+        };
+        let result = stopped_result_record(gid(1), SessionTerminalStatus::Complete);
+        store
+            .persist_stopped_result_exact(&result, &transition)
+            .expect("exact stopped transition");
+        assert_eq!(store.stopped_results().expect("result"), vec![result]);
     }
 
     #[test]

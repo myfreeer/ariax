@@ -6,17 +6,29 @@ record payload codecs are executable, as are the six bounded collection/path
 payloads that complete all 24 v1 record types. Policy-gated typed state
 reconstruction, exact generation/layout/lease/finalization validation, and
 whole-checkpoint hash validation are also executable. File-backed typed append,
-flush acknowledgement, descriptor reopen validation, and durable linked
-rotation are executable. Native root identity revalidation and checkpoint
-compaction writing remain pending. The SQLite v2 synchronous primitive creates
-and validates the exact strict schema, preserves dense queues across atomic
-queue/pause/slow-metadata transitions, and enforces bounded semantic reads and
+flush acknowledgement, tail/content reopen validation after portable named-file
+preflight, and durable linked rotation are executable. That portable boundary
+does not establish native namespace authority. Native root identity
+revalidation and checkpoint compaction writing remain pending. The SQLite v2
+synchronous primitive creates and validates the exact strict schema, preserves
+dense queues across atomic queue/pause/slow-metadata transitions, and enforces
+bounded semantic reads and
 tokenized journal installs. Exact v1 stores migrate through a private
 timestamped no-clobber backup and transactional rebuild with crash rollback
-coverage. Atomic stopped-result retention/deletion and bounded stopped-result
-reads are executable. The dedicated bounded session thread, full startup
-filesystem/journal orchestration, checkpoint state writer, and concrete
-host-key write/approval operations remain pending.
+coverage. Atomic stopped-result retention/deletion, bounded stopped-result and
+task-source reads, exact supplied-order queue transitions, no-space updates,
+and challenge-bound host-key persistence are executable. A dedicated bounded
+session-owner thread exclusively owns the synchronous store and every installed
+control-journal appender, and provides bounded admission, reserved per-command
+completion delivery, typed store/journal failures, retry-safe owned-command
+rejection, and out-of-band shutdown. A bounded engine composition sink validates
+exact scheduler-effect plans and advances their SQLite/journal commands one at
+a time through that owner. Owner startup and shutdown waits have explicit,
+validated hard-capped timeouts; a timeout detaches rather than fake-dropping
+thread-owned persistence state and is reported as recovery uncertainty.
+The startup executor that performs native filesystem discovery, applies the
+returned SQLite repairs, resolves install intents, and publishes the restored
+driver remains pending, as does the checkpoint state writer.
 
 Decision: use a hybrid persistence model:
 
@@ -194,8 +206,9 @@ SQLite stores:
 - queue position,
 - task state: waiting, demoted, active, paused, stopped,
 - scheduler admission conditions that must survive restart (`no_space` plus its
-  redacted target/retry parameters; `needs_credentials` is recomputed from the
-  restored redacted option/source set),
+  redacted target/retry parameters; no credential requirement or secret is
+  stored, and startup composition must derive one explicit non-secret
+  credential-admission record per restored task),
 - root output directory,
 - safe relative paths or layout hash,
 - persistence-safe URI/mirror metadata or a redacted source placeholder,
@@ -256,6 +269,12 @@ ids, and platform paths have exact length/codec checks before binding.
 | `journal_install` | `gid TEXT PRIMARY KEY`, `checkpoint_id BLOB(16)`, `old_journal_id BLOB(16)`, `old_path BLOB`, `new_journal_id BLOB(16)`, `new_path BLOB`, `source_last_sequence BLOB(8)`, `phase INTEGER`, `created_ms INTEGER` |
 | `bt_resume` | `gid TEXT PRIMARY KEY`, `resume_blob BLOB`, `dirty INTEGER`, `saved_ms INTEGER`; baseline default maximum 16 MiB, hard maximum 64 MiB |
 
+A canonical `Complete` stopped result has no error payload and carries both
+`total_length` and `layout_hash`. A canonical `Error` carries its required
+public error kind/message and no completion fields. A canonical `Removed`
+carries neither error nor completion fields. Writes, normal reads, v1
+preflight, and v2 reopen all reject any other status/payload tuple.
+
 `gid` is validated as exactly 16 lowercase hexadecimal characters by the
 application codec before SQL. `queue_position` is indexed with `queue_state`;
 temporary duplicate positions are allowed only inside the one reorder
@@ -269,15 +288,22 @@ order atomically; downloaded output is not deleted.
 The synchronous primitive caps a store at 100,000 tasks, task materialization
 at 64 MiB, pending-install materialization at 16 MiB, and each option map at
 4,096 entries/4 MiB. Task, stopped-result, host-key-challenge, and install reads
-stream rows against count and byte budgets and decode every persisted value.
+stream rows against count and byte budgets, charge owned-record overhead as
+well as variable payload bytes, and decode every persisted value.
 Task-option reads also reapply the current
 `PersistedOptionPolicy`; direct database tampering cannot turn a formerly or
 newly forbidden key into an accepted option.
 
 Ordinary task upserts cannot change queue membership/position or the primary
-journal id/path. Queue changes use one `BEGIN IMMEDIATE` transaction that
-closes the source gap, opens the target slot, changes desired pause state and
-slow metadata, and validates every affected queue as dense before commit.
+journal id/path. Queue changes use one `BEGIN IMMEDIATE` transaction. The
+scheduler-facing operation supplies the complete final order for every queue
+whose membership or position changes; the transaction rejects missing,
+duplicate, unexpected, or non-dense membership, applies those orders through a
+temporary collision-free position range, changes desired pause state and slow
+metadata, and verifies that all supplied orders exactly match the committed
+rows. A convenience single-task transition may derive the same orders only for
+storage-local callers and tests.
+
 Demoted rows require bounded original-position metadata and a nonzero global
 demotion count; readmission clears the cooldown decision without resetting that
 count. Primary journal changes are allowed only through the install protocol
@@ -288,6 +314,11 @@ an instant. SQLite stores the wall scheduling decision
 (`no_space_scheduled_at_ms`, `no_space_delay_ms`) and recovery applies the same
 bounded-conservative clock rule as `RetryState`; absent/expired scheduling data
 causes one immediate readiness probe, not automatic admission.
+The condition may be set or refreshed while SQLite still records `Active`
+during cancellation, while it records `Demoted` for a slow task, or after the
+task reaches `Waiting`/`Paused`. Only `Stopped` rejects a new condition; clearing
+stale condition columns remains permitted so repair and terminal cleanup can
+converge.
 
 The host-key challenge table allows a paused challenge to survive process
 restart without persisting a credential. Approval still requires the exact
@@ -297,6 +328,115 @@ Deleting/replacing the current challenge makes an old approval stale. Startup
 and v1 migration require valid UTF-8 canonical host and algorithm text, a
 nonzero valid port, exact size caps, a SHA-256 fingerprint matching the stored
 presented key, and a referenced task in the `Paused` queue.
+An ordinary queue transition cannot move that task out of `Paused` while the
+challenge remains. A terminal-retention transaction instead removes the
+challenge in the same transaction that moves the task to `Stopped` and inserts
+its result, so a crash cannot publish a non-paused challenge or a partial
+terminal cleanup.
+
+The storage-owned canonical pin entry is
+`sftp-host-key-sha256=<64-lowercase-hex-digits>`. Challenge resolution verifies
+that the replacement option snapshot contains that exact entry derived from
+the approved fingerprint, verifies the retained public-key bytes again, and
+replaces the snapshot plus deletes the challenge in one transaction.
+
+Task-source replacement is atomic per task. It accepts a bounded,
+duplicate-free URI-id set and stores either a registry-approved
+persistence-safe URI or a redacted fingerprint placeholder. Reads are ordered
+by priority then URI id and enforce a 4,096-entry/4 MiB per-task limit before
+returning owned records. Startup semantic validation repeats that per-task byte
+limit while streaming all source rows under the additional global 64 MiB
+task-materialization budget.
+
+The synchronous SQLite connection and installed `ControlJournalAppender`
+instances never leave their dedicated session-owner thread once spawned.
+Callers submit owned commands to a queue whose configured capacity is nonzero
+and cannot exceed the fixed 64-request implementation cap. Every accepted
+command carries its own reserved one-result completion slot, so a full shared
+response queue cannot deadlock the owner; dropping a waiter only drops that
+result. Command execution returns a typed persistence error that retains the
+concrete `SessionStoreError` or GID-associated `JournalAppenderError`, and separately
+identifies a missing journal, a duplicate install, or an install whose embedded
+task GID differs from the requested map key. Admission, shutdown, unavailable,
+thread-spawn, and panic failures remain owner-level errors rather than being
+collapsed into persistence failures.
+
+`SessionHandle::try_submit_owned` returns a rejected command together with its
+typed admission error. This is the nonblocking adapter path: a `QueueFull`
+result preserves the exact command for retry instead of requiring the caller to
+reconstruct persistence payloads. The compatibility `try_submit` API retains
+its original error-only surface for callers that do not need ownership back.
+
+Scheduler persistence is described by a bounded engine plan catalog rather
+than inferred from an effect kind. Each entry owns the complete exact
+`TransitionEffect` plus its missing store/journal payloads, accepts only the
+semantically allowed command pattern for that effect, and validates all shared
+identity and state fields before admission. Journal steps append once and then
+flush through the returned sequence; multi-command plans never have more than
+one owner request accepted at a time. Typed command results are checked before
+the catalog entry can complete, and only correlated scheduler acknowledgements
+are emitted.
+
+Failure acknowledgement is phase-sensitive. `StageOptionPatch` may return the
+correlated `OptionPatchPersistenceFailed` event only when its first journal
+append returns a definite typed persistence error before any append evidence.
+That represented set is limited to a missing installed appender or a
+payload/record-construction rejection; journal I/O, a previously faulted appender, and
+store/owner failures are treated as uncertain even on the first command.
+An owner disconnect, timeout, or unexpected command result is not that proof,
+even when it occurs while waiting for the first append result.
+Once `JournalAppended` exists, the journal authority may already contain the
+staged snapshot; a later flush failure, owner disconnect/timeout, unexpected
+result, or SQLite-mirror failure is unrepresentable and faults the scheduler
+driver for recovery instead of clearing the patch in memory. The same
+fail-closed rule applies to all terminal-plan failures. It also applies to any
+accepted host-key-resolution or stopped-result-deletion command failure: an
+owner disconnect can lose a successful acknowledgement, and a typed SQLite
+error can be returned from an ambiguous commit. Their correlated failure events
+remain available only to an adapter that can prove rejection before mutation;
+the session-owner composition does not manufacture that proof.
+
+An appender is installed by moving it through a command with the exact expected
+GID. The owner validates the appender header before checking and inserting the
+single per-GID map entry; appenders carried by accepted install commands that
+fail identity or duplicate validation are therefore also dropped on the owner
+thread. Journal commands append one owned `JournalPayload` at an exact
+generation and return the assigned sequence, flush through an exact requested
+sequence and return the actual durable high-water mark, or close and remove one
+appender only after `close_flushed` succeeds. A close rejected for unflushed
+records leaves the appender installed so the caller can flush and retry. The
+all-journals close command preflights every appender for health and an equal
+appended/flushed high-water mark before closing any of them, then closes and
+drops the complete map on the owner thread.
+
+Shutdown is an out-of-band signal observed independently of normal admission.
+It closes admission first, rejects commands that were not accepted, drains
+commands already accepted, then drops all remaining appenders, the store, and
+its owner lock on the same thread. `shutdown_with_timeout` waits only for its
+validated nonzero duration, capped by the fixed five-minute owner maximum. A
+joined result proves that thread-owned values were dropped on the owner. A
+timeout drops only the join handle and reports `DetachedUncertain`; it does not
+mark the owner closed, release its lock, manufacture accepted-command results,
+or claim pending journal/SQLite work durable. The shutdown coordinator records
+that result as a dirty recovery checkpoint and proceeds toward process exit.
+
+Orderly shutdown first submits the all-journals close command; the out-of-band
+join still drops appenders after an unclean or failed close, but does not claim
+their unflushed records durable. Dropping the last handle is zero-wait: it closes
+the sender by normal ownership destruction, unparks the owner, and detaches any
+remaining join handle. Reserved completions do not keep admission alive, but
+commands accepted before the last handle was dropped are still drained and
+deliver their results. The same owner-thread destruction rule still applies if
+the blocked operation later returns.
+
+Startup waits for database open, migration, and bounded semantic reads only for
+the configured startup timeout under the same hard cap. On timeout it closes
+admission, detaches the unpublished owner, and returns `StartupTimedOut`; the
+database/appenders remain owned by that thread until it actually exits. Startup
+failure is returned before a usable handle is published, and an owner-thread
+panic/exit closes all handles with a typed owner-unavailable error. Both
+configured waits are validated before thread creation or database mutation, and
+an invalid explicit shutdown wait is rejected before admission is changed.
 
 Schema migration rules are fail-closed:
 
@@ -360,7 +500,7 @@ The stores have deliberately different authorities:
 | begun/committed/aborted leases, written/verified/durable pieces, validators, retry checkpoint | control journal | SQLite must not promote or merge progress |
 | task-local terminal markers (`TaskComplete`, `TaskError`, `TaskRemoved`) and final digest/layout | control journal | terminal marker is a safety veto; required before SQLite publishes the corresponding result |
 | queue membership/order, session id, global desired state, cross-task scheduling | SQLite | journal recovery does not invent queue position |
-| recoverable scheduler admission conditions | SQLite or deterministic recovery derivation | `no_space` is restored and re-probed before admission; `needs_credentials` is derived without persisting a secret |
+| recoverable scheduler admission conditions | SQLite plus caller-derived recovery input | `no_space` is restored and re-probed before admission; startup composition supplies an explicit `needs_credentials` requirement or `None` without persisting a secret |
 | stopped-result index and retention metadata | SQLite, gated by journal completion | recreate from `TaskComplete` when missing; never use it to manufacture completion |
 | mutable non-layout task options and persistence-safe URI/mirror inputs | SQLite | restored after journal generation state is fixed |
 | generation-scoped options affecting layout, validators, verification, or durability | control-journal `OptionsSnapshot` | SQLite stores only a searchable mirror and snapshot hash |
@@ -673,8 +813,7 @@ SQLite:
   correctly fails closed,
 - WAL auto-checkpoint is 1000 pages. The executable truncate-checkpoint primitive
   reports a busy checkpoint and is a no-op in DELETE mode; clean-shutdown and
-  size-trigger scheduling remain part of the pending session-thread
-  orchestration,
+  size-trigger invocation of that primitive remain pending integration work,
 - the hot-backup primitive writes a private temporary database, validates its
   integrity, exact schema, and persisted semantics, then `sync_all`s that file
   and publishes it with a no-clobber hard link. It never overwrites an existing
@@ -692,8 +831,8 @@ SQLite:
   normal unique-link validation rejects that residue. Verified recovery of only
   the generated same-file alias, or a native atomic no-replace publication
   primitive, plus crash-point and unlink-error tests across that entire window
-  is required before production use or tagging. Periodic scheduling and bounded
-  generation retention remain pending with the dedicated session thread.
+  is required before production use or tagging. Periodic backup scheduling and
+  bounded generation retention remain pending integration work.
 
 Control journal:
 

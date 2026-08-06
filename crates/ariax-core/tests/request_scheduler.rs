@@ -4,10 +4,11 @@ use ariax_core::{
     MAX_CONDITION_DESCRIPTION_BYTES, MAX_PERSISTED_MILLISECONDS, MAX_REDACTED_PATH_BYTES,
     MAX_SCHEDULER_EFFECTS, MonotonicInstant, NoSpaceCondition, NoSpaceProbeId, NoSpaceProbeOrigin,
     OptionPatchId, PendingBarrier, PresentedHostKeyChallenge, PublicError, QueueClass, QueueOrder,
-    RequestScheduler, RetryClass, RetryTimerId, SchedulerCommand, SchedulerConfig, SchedulerError,
-    SchedulerOutcome, SlotOwnership, SlowReadmissionDecision, SlowSlotPersistence, StateReason,
-    StoppedResultDeletionId, TaskConditions, TaskEvent, TaskId, TaskState, TransitionEffect,
-    ValidatedOptionPatchKind,
+    RecoveredSchedulerTask, RequestScheduler, RetryClass, RetryTimerId, SchedulerCommand,
+    SchedulerConfig, SchedulerError, SchedulerOutcome, SchedulerRestoreBatch,
+    SchedulerRestoreError, SlotOwnership, SlowReadmissionDecision, SlowSlotPersistence,
+    StateReason, StoppedResultDeletionId, TaskConditions, TaskEvent, TaskId, TaskState,
+    TransitionEffect, ValidatedOptionPatchKind,
 };
 use std::num::NonZeroUsize;
 use std::ops::{Deref, DerefMut};
@@ -1353,7 +1354,7 @@ fn no_space_probe_completion_preserves_a_later_user_pause() {
     let generation = make_active(&mut scheduler, task_id(1), task_gid, at);
     let condition = NoSpaceCondition {
         redacted_path: "download.bin".to_owned(),
-        retry_at: Some(later(at, 30)),
+        retry_at: None,
     };
 
     scheduler
@@ -1409,6 +1410,7 @@ fn no_space_probe_completion_preserves_a_later_user_pause() {
                 generation,
                 probe_id,
                 origin: NoSpaceProbeOrigin::ExplicitResume,
+                at: later(at, 7),
             },
             TransitionEffect::PublishSnapshot {
                 task_id: task_id(1),
@@ -1481,6 +1483,126 @@ fn no_space_probe_completion_preserves_a_later_user_pause() {
     assert!(!view.conditions.no_space);
     assert_eq!(view.no_space_probe, None);
     assert_eq!(scheduler.queue_snapshot(QueueClass::Paused), vec![task_gid]);
+}
+
+#[test]
+fn automatic_no_space_probe_reschedules_with_a_fresh_token_and_honors_pause() {
+    let at = MonotonicInstant::now();
+    let task_gid = gid(1);
+    let mut scheduler = new_scheduler(1, 1, false);
+    let generation = make_active(&mut scheduler, task_id(1), task_gid, at);
+    let first_deadline = later(at, 30);
+
+    scheduler
+        .handle_event_at(
+            TaskEvent::NoSpace {
+                gid: task_gid,
+                generation,
+                condition: NoSpaceCondition {
+                    redacted_path: "download.bin".to_owned(),
+                    retry_at: Some(first_deadline),
+                },
+            },
+            later(at, 4),
+        )
+        .expect("enter no-space wait");
+    let drained = scheduler
+        .handle_event_at(
+            TaskEvent::CancellationDrained {
+                gid: task_gid,
+                generation,
+            },
+            later(at, 5),
+        )
+        .expect("drain no-space generation");
+    let first_probe = no_space_probe(&drained);
+    assert!(drained.effects.iter().any(|effect| matches!(
+        effect,
+        TransitionEffect::ProbeNoSpace {
+            probe_id,
+            origin: NoSpaceProbeOrigin::AutomaticRetry,
+            at,
+            ..
+        } if *probe_id == first_probe && *at == first_deadline
+    )));
+
+    let second_deadline = later(at, 60);
+    let failed = scheduler
+        .handle_event_at(
+            TaskEvent::NoSpaceProbeCompleted {
+                gid: task_gid,
+                generation,
+                probe_id: first_probe,
+                origin: NoSpaceProbeOrigin::AutomaticRetry,
+                ready: false,
+                next_retry_at: Some(second_deadline),
+            },
+            later(at, 31),
+        )
+        .expect("reschedule failed probe");
+    let second_probe = no_space_probe(&failed);
+    assert_ne!(first_probe, second_probe);
+    assert!(failed.effects.iter().any(|effect| matches!(
+        effect,
+        TransitionEffect::ProbeNoSpace {
+            probe_id,
+            origin: NoSpaceProbeOrigin::AutomaticRetry,
+            at,
+            ..
+        } if *probe_id == second_probe && *at == second_deadline
+    )));
+
+    let before_stale = state_fingerprint(&scheduler);
+    let stale = scheduler
+        .handle_event_at(
+            TaskEvent::NoSpaceProbeCompleted {
+                gid: task_gid,
+                generation,
+                probe_id: first_probe,
+                origin: NoSpaceProbeOrigin::AutomaticRetry,
+                ready: true,
+                next_retry_at: None,
+            },
+            later(at, 32),
+        )
+        .expect("superseded probe is ignored");
+    assert_ignored(&stale, StateReason::DuplicateEventIgnored);
+    assert_eq!(state_fingerprint(&scheduler), before_stale);
+
+    scheduler
+        .execute_command_at(
+            SchedulerCommand::Pause {
+                gid: task_gid,
+                force: false,
+            },
+            later(at, 33),
+        )
+        .expect("pause while retry probe is pending");
+    let completed = scheduler
+        .handle_event_at(
+            TaskEvent::NoSpaceProbeCompleted {
+                gid: task_gid,
+                generation,
+                probe_id: second_probe,
+                origin: NoSpaceProbeOrigin::AutomaticRetry,
+                ready: true,
+                next_retry_at: None,
+            },
+            later(at, 61),
+        )
+        .expect("complete current automatic probe");
+    assert_transition(
+        &completed,
+        TaskState::Paused,
+        TaskState::Paused,
+        StateReason::NoSpaceProbeSucceeded,
+    );
+    let paused = scheduler
+        .task(task_gid)
+        .expect("pause remains authoritative");
+    assert!(paused.desired_paused);
+    assert!(!paused.conditions.no_space);
+    assert_eq!(paused.no_space_probe, None);
 }
 
 #[test]
@@ -3400,4 +3522,432 @@ fn oversized_condition_payloads_are_rejected_without_mutation() {
         Err(SchedulerError::InvalidTaskConditions)
     );
     assert_eq!(state_fingerprint(&scheduler), before);
+}
+
+fn recovered_task(task: u64, gid_value: u64, state: TaskState) -> RecoveredSchedulerTask {
+    RecoveredSchedulerTask {
+        task_id: task_id(task),
+        gid: gid(gid_value),
+        state,
+        generation: Generation::new(2),
+        generation_started: true,
+        desired_paused: matches!(state, TaskState::Paused),
+        conditions: TaskConditions::default(),
+        slow_demotion_count: 0,
+        slow_slot: None,
+        retry_at: None,
+        host_key_challenge: None,
+        error: None,
+        stopped_status: None,
+    }
+}
+
+fn recovered_queues(
+    waiting: Vec<Gid>,
+    demoted: Vec<Gid>,
+    paused: Vec<Gid>,
+    stopped: Vec<Gid>,
+) -> Vec<QueueOrder> {
+    vec![
+        QueueOrder {
+            class: QueueClass::Waiting,
+            order: waiting,
+        },
+        QueueOrder {
+            class: QueueClass::Demoted,
+            order: demoted,
+        },
+        QueueOrder {
+            class: QueueClass::Paused,
+            order: paused,
+        },
+        QueueOrder {
+            class: QueueClass::Active,
+            order: vec![],
+        },
+        QueueOrder {
+            class: QueueClass::Stopped,
+            order: stopped,
+        },
+    ]
+}
+
+#[test]
+fn restore_rebuilds_exact_membership_timers_snapshots_and_task_identity() {
+    let at = MonotonicInstant::now();
+    let mut waiting = recovered_task(1, 1, TaskState::Waiting);
+    waiting.generation_started = false;
+
+    let mut retry = recovered_task(2, 2, TaskState::RetryWait);
+    retry.retry_at = Some(later(at, 5));
+    retry.conditions.no_space = Some(NoSpaceCondition {
+        redacted_path: "retry-output.bin".to_owned(),
+        retry_at: Some(later(at, 6)),
+    });
+
+    let mut slow = recovered_task(3, 3, TaskState::WaitingSlow);
+    slow.slow_demotion_count = 2;
+    slow.slow_slot = Some(SlowSlotPersistence {
+        original_position: 1,
+        demotion_count: 2,
+        decision: SlowReadmissionDecision {
+            readmit_at: later(at, 7),
+            scheduled_at_ms: 1_000,
+            delay_ms: 7_000,
+        },
+    });
+    slow.conditions.no_space = Some(NoSpaceCondition {
+        redacted_path: "slow-output.bin".to_owned(),
+        retry_at: Some(later(at, 8)),
+    });
+
+    let key = vec![9, 8, 7, 6];
+    let fingerprint = HostKeyFingerprint::for_presented_key(&key);
+    let mut host_key = recovered_task(4, 4, TaskState::PausedHostKey);
+    host_key.host_key_challenge = Some(
+        PresentedHostKeyChallenge::new(
+            HostKeyChallenge {
+                id: HostKeyChallengeId::new([4; 16]),
+                canonical_host: "sftp.example.test".to_owned(),
+                port: 22,
+                algorithm: "ssh-ed25519".to_owned(),
+                fingerprint_sha256: fingerprint,
+            },
+            key,
+        )
+        .expect("bounded recovered challenge"),
+    );
+
+    let mut stopped = recovered_task(5, 5, TaskState::StoppedResult);
+    stopped.stopped_status = Some(Aria2Status::Complete);
+
+    let config = SchedulerConfig::new(
+        NonZeroUsize::new(8).expect("task cap"),
+        NonZeroUsize::new(2).expect("active cap"),
+        true,
+    )
+    .expect("valid config");
+    let (mut scheduler, mut plan) = RequestScheduler::restore(
+        config,
+        SchedulerRestoreBatch::new(
+            vec![waiting, retry, slow, host_key, stopped],
+            recovered_queues(
+                vec![gid(1), gid(2)],
+                vec![gid(3)],
+                vec![gid(4)],
+                vec![gid(5)],
+            ),
+        ),
+    )
+    .expect("valid recovery batch");
+
+    assert_eq!(
+        scheduler.queue_snapshot(QueueClass::Waiting),
+        vec![gid(1), gid(2)]
+    );
+    assert_eq!(scheduler.queue_snapshot(QueueClass::Demoted), vec![gid(3)]);
+    assert_eq!(scheduler.queue_snapshot(QueueClass::Paused), vec![gid(4)]);
+    assert_eq!(
+        scheduler.queue_snapshot(QueueClass::Active),
+        Vec::<Gid>::new()
+    );
+    assert_eq!(scheduler.queue_snapshot(QueueClass::Stopped), vec![gid(5)]);
+    assert_eq!(scheduler.active_slot_count(), 0);
+    assert!(
+        scheduler
+            .task(gid(2))
+            .expect("retry task")
+            .retry_timer
+            .is_some()
+    );
+    assert!(
+        scheduler
+            .task(gid(3))
+            .expect("slow task")
+            .slow_readmission
+            .is_some()
+    );
+    assert!(
+        scheduler
+            .task(gid(2))
+            .expect("retry task")
+            .no_space_probe
+            .is_some()
+    );
+    assert!(
+        scheduler
+            .task(gid(3))
+            .expect("slow task")
+            .no_space_probe
+            .is_some()
+    );
+    assert_eq!(
+        scheduler
+            .snapshot(gid(5))
+            .expect("stopped snapshot")
+            .wire_status(),
+        Ok(Aria2Status::Complete)
+    );
+    assert!(
+        scheduler
+            .snapshot(gid(4))
+            .expect("host-key snapshot")
+            .host_key_challenge
+            .is_some()
+    );
+    assert!(plan.is_bound_to(&scheduler));
+
+    let effects = plan.next_batch();
+    assert_eq!(effects.len(), MAX_SCHEDULER_EFFECTS);
+    assert!(matches!(
+        effects[1],
+        TransitionEffect::ScheduleRetry { gid: effect_gid, .. } if effect_gid == gid(2)
+    ));
+    assert!(matches!(
+        effects[2],
+        TransitionEffect::ProbeNoSpace {
+            gid: effect_gid,
+            origin: NoSpaceProbeOrigin::AutomaticRetry,
+            at: probe_at,
+            ..
+        } if effect_gid == gid(2) && probe_at == later(at, 6)
+    ));
+    assert!(matches!(
+        effects[4],
+        TransitionEffect::ScheduleSlowReadmission { gid: effect_gid, .. } if effect_gid == gid(3)
+    ));
+    assert!(matches!(
+        effects[5],
+        TransitionEffect::ProbeNoSpace {
+            gid: effect_gid,
+            origin: NoSpaceProbeOrigin::AutomaticRetry,
+            at: probe_at,
+            ..
+        } if effect_gid == gid(3) && probe_at == later(at, 8)
+    ));
+    assert_eq!(plan.next_batch().len(), 1);
+    assert!(plan.is_empty());
+
+    scheduler
+        .execute_command_at(
+            SchedulerCommand::Pause {
+                gid: gid(1),
+                force: false,
+            },
+            later(at, 4),
+        )
+        .expect("keep the ordinary waiting task out of the admission race");
+    let retry_view = scheduler.task(gid(2)).expect("retry task");
+    let retry_timer_id = retry_view.retry_timer.expect("retry timer");
+    let probe_id = retry_view.no_space_probe.expect("no-space probe");
+    let blocked = scheduler
+        .handle_event_at(
+            &TaskEvent::RetryReady {
+                gid: gid(2),
+                generation: retry_view.generation,
+                retry_timer_id,
+            }
+            .for_task(retry_view.task_id),
+            later(at, 5),
+        )
+        .expect("retry timer is ready but no-space still blocks admission");
+    assert_transition(
+        &blocked,
+        TaskState::RetryWait,
+        TaskState::RetryWait,
+        StateReason::AdmissionBlocked,
+    );
+    let cleared = scheduler
+        .handle_event_at(
+            &TaskEvent::NoSpaceProbeCompleted {
+                gid: gid(2),
+                generation: retry_view.generation,
+                probe_id,
+                origin: NoSpaceProbeOrigin::AutomaticRetry,
+                ready: true,
+                next_retry_at: None,
+            }
+            .for_task(retry_view.task_id),
+            later(at, 6),
+        )
+        .expect("clear the independent no-space gate");
+    assert_transition(
+        &cleared,
+        TaskState::RetryWait,
+        TaskState::RetryWait,
+        StateReason::NoSpaceProbeSucceeded,
+    );
+    let admitted = scheduler
+        .admit_next_at(later(at, 7))
+        .expect("ready retry becomes eligible after no-space clears");
+    assert_transition(
+        &admitted,
+        TaskState::RetryWait,
+        TaskState::Allocating,
+        StateReason::RetryReadmission,
+    );
+}
+
+#[test]
+fn restore_plan_never_exceeds_the_dispatcher_effect_bound() {
+    let tasks = (1..=9)
+        .map(|value| recovered_task(value, value, TaskState::Waiting))
+        .collect::<Vec<_>>();
+    let config = SchedulerConfig::new(
+        NonZeroUsize::new(9).expect("task cap"),
+        NonZeroUsize::new(1).expect("active cap"),
+        false,
+    )
+    .expect("valid config");
+    let (_, mut plan) = RequestScheduler::restore(
+        config,
+        SchedulerRestoreBatch::new(
+            tasks,
+            recovered_queues((1..=9).map(gid).collect(), vec![], vec![], vec![]),
+        ),
+    )
+    .expect("valid recovery batch");
+
+    assert_eq!(plan.next_batch().len(), MAX_SCHEDULER_EFFECTS);
+    assert_eq!(plan.next_batch().len(), 1);
+    assert!(plan.is_empty());
+}
+
+#[test]
+fn restore_rejects_unsafe_states_and_inconsistent_state_metadata() {
+    let config = SchedulerConfig::new(
+        NonZeroUsize::new(2).expect("task cap"),
+        NonZeroUsize::new(1).expect("active cap"),
+        false,
+    )
+    .expect("valid config");
+
+    let active = recovered_task(1, 1, TaskState::Active);
+    assert_eq!(
+        RequestScheduler::restore(
+            config,
+            SchedulerRestoreBatch::new(
+                vec![active],
+                recovered_queues(vec![], vec![], vec![], vec![]),
+            ),
+        )
+        .expect_err("active recovery state must be rejected"),
+        SchedulerRestoreError::InvalidState {
+            gid: gid(1),
+            state: TaskState::Active,
+        }
+    );
+
+    let retry = recovered_task(1, 1, TaskState::RetryWait);
+    assert_eq!(
+        RequestScheduler::restore(
+            config,
+            SchedulerRestoreBatch::new(
+                vec![retry],
+                recovered_queues(vec![gid(1)], vec![], vec![], vec![]),
+            ),
+        )
+        .expect_err("retry-wait without a deadline must be rejected"),
+        SchedulerRestoreError::InvalidRetryWait(gid(1))
+    );
+
+    let host_key = recovered_task(1, 1, TaskState::PausedHostKey);
+    assert_eq!(
+        RequestScheduler::restore(
+            config,
+            SchedulerRestoreBatch::new(
+                vec![host_key],
+                recovered_queues(vec![], vec![], vec![gid(1)], vec![]),
+            ),
+        )
+        .expect_err("host-key pause without a challenge must be rejected"),
+        SchedulerRestoreError::InvalidHostKeyState(gid(1))
+    );
+
+    let mut stopped = recovered_task(1, 1, TaskState::StoppedResult);
+    stopped.stopped_status = Some(Aria2Status::Error);
+    assert_eq!(
+        RequestScheduler::restore(
+            config,
+            SchedulerRestoreBatch::new(
+                vec![stopped],
+                recovered_queues(vec![], vec![], vec![], vec![gid(1)]),
+            ),
+        )
+        .expect_err("error result without public error metadata must be rejected"),
+        SchedulerRestoreError::InvalidStoppedResult(gid(1))
+    );
+
+    let mut slow = recovered_task(1, 1, TaskState::WaitingSlow);
+    slow.slow_demotion_count = 1;
+    slow.slow_slot = Some(SlowSlotPersistence {
+        original_position: config.max_tasks.get(),
+        demotion_count: 1,
+        decision: SlowReadmissionDecision {
+            readmit_at: MonotonicInstant::now(),
+            scheduled_at_ms: 1,
+            delay_ms: 1,
+        },
+    });
+    assert_eq!(
+        RequestScheduler::restore(
+            config,
+            SchedulerRestoreBatch::new(
+                vec![slow],
+                recovered_queues(vec![], vec![gid(1)], vec![], vec![]),
+            ),
+        )
+        .expect_err("slow original position at the task cap must be rejected"),
+        SchedulerRestoreError::InvalidSlowState(gid(1))
+    );
+}
+
+#[test]
+fn restore_rejects_incomplete_duplicate_and_mismatched_membership() {
+    let config = SchedulerConfig::new(
+        NonZeroUsize::new(2).expect("task cap"),
+        NonZeroUsize::new(1).expect("active cap"),
+        false,
+    )
+    .expect("valid config");
+    let task = recovered_task(1, 1, TaskState::Waiting);
+
+    let mut missing_class = recovered_queues(vec![gid(1)], vec![], vec![], vec![]);
+    missing_class.pop();
+    assert_eq!(
+        RequestScheduler::restore(
+            config,
+            SchedulerRestoreBatch::new(vec![task.clone()], missing_class),
+        )
+        .expect_err("incomplete queue set must be rejected"),
+        SchedulerRestoreError::MissingQueue(QueueClass::Stopped)
+    );
+
+    assert_eq!(
+        RequestScheduler::restore(
+            config,
+            SchedulerRestoreBatch::new(
+                vec![task.clone()],
+                recovered_queues(vec![], vec![], vec![gid(1)], vec![]),
+            ),
+        )
+        .expect_err("wrong queue class must be rejected"),
+        SchedulerRestoreError::QueueClassMismatch {
+            gid: gid(1),
+            expected: QueueClass::Waiting,
+            actual: QueueClass::Paused,
+        }
+    );
+
+    assert_eq!(
+        RequestScheduler::restore(
+            config,
+            SchedulerRestoreBatch::new(
+                vec![task],
+                recovered_queues(vec![gid(1), gid(1)], vec![], vec![], vec![]),
+            ),
+        )
+        .expect_err("duplicate queue membership must be rejected"),
+        SchedulerRestoreError::DuplicateQueueMember(gid(1))
+    );
 }

@@ -1,6 +1,10 @@
 # Retry Policy
 
-Status: reviewed pre-implementation contract. Implementation pending.
+Status: implementation in progress. The shared bounded persisted-delay recovery
+and retry-budget accounting helper, cross-store retry/slow/no-space mapping,
+and scheduler-owned correlated automatic no-space probes are executable. Live
+protocol retry classification, backoff policy, and transfer integration remain
+pending.
 
 Retry behavior must be configurable, bounded, observable, and safe. A retry
 policy may decide whether to retry a failed transfer span, but it must not
@@ -295,6 +299,14 @@ time exactly:
 
 The recovered decision context also keeps diagnostics truthful: status shows
 the original reason and delay, not a synthetic deadline.
+
+The shared implementation is `PersistedDelayDecision::recover`. It validates
+the persisted millisecond fields, classifies the observed wall clock as within
+the chosen delay, before the recorded scheduling time, or expired, clamps the
+remaining wait to the caller's configured nonzero maximum, and constructs a
+fresh `MonotonicInstant`. The result also exposes the bounded recovered elapsed
+time used by retry-budget accounting. Slow-readmission and no-space recovery
+must use this same helper; adapters may not invent a different wall-clock rule.
 
 ## Status Codes
 

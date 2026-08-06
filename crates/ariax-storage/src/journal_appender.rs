@@ -1,8 +1,9 @@
-use crate::journal::{encode_record, validate_record};
+use crate::journal::{encode_record, hash_segment, replay_ordered_segments, validate_record};
 use crate::journal_payload::{JournalPayload, PayloadCodecError};
 use crate::{
-    JournalEncodeError, JournalId, RecordType, SEGMENT_HASH_DOMAIN, SEGMENT_HEADER_LEN,
-    SegmentHash, SegmentHeader,
+    JournalEncodeError, JournalId, JournalReplay, RECORD_OVERHEAD, RecordStopReason, RecordType,
+    ReplayLimits, ReplayResource, ReplayStop, SEGMENT_HASH_DOMAIN, SEGMENT_HEADER_LEN, SegmentHash,
+    SegmentHeader,
 };
 use ariax_core::{Generation, Gid};
 use sha2::{Digest, Sha256};
@@ -89,6 +90,10 @@ pub enum JournalIoOperation {
     OpenActiveSegment,
     InspectActiveSegment,
     ReadActiveSegment,
+    InspectRecoverySegment,
+    OpenRecoverySegment,
+    ReadRecoverySegment,
+    RepairRecoverySegment,
     WriteRecord,
 }
 
@@ -106,12 +111,16 @@ impl JournalIoOperation {
             Self::OpenActiveSegment => "open_active_segment",
             Self::InspectActiveSegment => "inspect_active_segment",
             Self::ReadActiveSegment => "read_active_segment",
+            Self::InspectRecoverySegment => "inspect_recovery_segment",
+            Self::OpenRecoverySegment => "open_recovery_segment",
+            Self::ReadRecoverySegment => "read_recovery_segment",
+            Self::RepairRecoverySegment => "repair_recovery_segment",
             Self::WriteRecord => "write_record",
         }
     }
 }
 
-pub const ALL_JOURNAL_IO_OPERATIONS: [JournalIoOperation; 11] = [
+pub const ALL_JOURNAL_IO_OPERATIONS: [JournalIoOperation; 15] = [
     JournalIoOperation::CreateDirectory,
     JournalIoOperation::InspectSegmentPath,
     JournalIoOperation::CreateTemporarySegment,
@@ -122,6 +131,10 @@ pub const ALL_JOURNAL_IO_OPERATIONS: [JournalIoOperation; 11] = [
     JournalIoOperation::OpenActiveSegment,
     JournalIoOperation::InspectActiveSegment,
     JournalIoOperation::ReadActiveSegment,
+    JournalIoOperation::InspectRecoverySegment,
+    JournalIoOperation::OpenRecoverySegment,
+    JournalIoOperation::ReadRecoverySegment,
+    JournalIoOperation::RepairRecoverySegment,
     JournalIoOperation::WriteRecord,
 ];
 
@@ -203,6 +216,21 @@ pub enum JournalAppenderError {
         temporary: bool,
     },
     TailMismatch(JournalTailMismatch),
+    RecoverySegmentPath {
+        input_index: usize,
+    },
+    RecoveryInputBytesExceeded {
+        limit: usize,
+    },
+    RecoveryTaskMismatch {
+        expected: Gid,
+        actual: Gid,
+    },
+    RecoveryJournalMismatch {
+        expected: JournalId,
+        actual: JournalId,
+    },
+    RecoveryStopped(ReplayStop),
 }
 
 impl JournalAppenderError {
@@ -217,11 +245,16 @@ impl JournalAppenderError {
             Self::UnflushedRecords { .. } => "unflushed_records",
             Self::SegmentPathExists { .. } => "segment_path_exists",
             Self::TailMismatch(_) => "tail_mismatch",
+            Self::RecoverySegmentPath { .. } => "recovery_segment_path",
+            Self::RecoveryInputBytesExceeded { .. } => "recovery_input_bytes_exceeded",
+            Self::RecoveryTaskMismatch { .. } => "recovery_task_mismatch",
+            Self::RecoveryJournalMismatch { .. } => "recovery_journal_mismatch",
+            Self::RecoveryStopped(_) => "recovery_stopped",
         }
     }
 }
 
-pub const ALL_JOURNAL_APPENDER_ERROR_CODES: [&str; 8] = [
+pub const ALL_JOURNAL_APPENDER_ERROR_CODES: [&str; 13] = [
     "payload",
     "journal",
     "io",
@@ -230,6 +263,11 @@ pub const ALL_JOURNAL_APPENDER_ERROR_CODES: [&str; 8] = [
     "unflushed_records",
     "segment_path_exists",
     "tail_mismatch",
+    "recovery_segment_path",
+    "recovery_input_bytes_exceeded",
+    "recovery_task_mismatch",
+    "recovery_journal_mismatch",
+    "recovery_stopped",
 ];
 
 impl fmt::Display for JournalAppenderError {
@@ -261,6 +299,23 @@ impl fmt::Display for JournalAppenderError {
             }
             Self::TailMismatch(mismatch) => {
                 write!(formatter, "journal tail mismatch: {}", mismatch.code())
+            }
+            Self::RecoverySegmentPath { input_index } => write!(
+                formatter,
+                "journal recovery segment {input_index} is not its exact named regular path"
+            ),
+            Self::RecoveryInputBytesExceeded { limit } => write!(
+                formatter,
+                "journal recovery input exceeds the encoded-byte budget of {limit}"
+            ),
+            Self::RecoveryTaskMismatch { .. } => {
+                formatter.write_str("journal recovery task identity does not match")
+            }
+            Self::RecoveryJournalMismatch { .. } => {
+                formatter.write_str("journal recovery journal identity does not match")
+            }
+            Self::RecoveryStopped(stop) => {
+                write!(formatter, "journal recovery rejected replay stop: {stop:?}")
             }
         }
     }
@@ -333,6 +388,115 @@ impl ControlJournalAppender {
             tail_record: None,
             fault: None,
         })
+    }
+
+    /// Opens an installed segment set at its exact replay-valid boundary.
+    ///
+    /// The caller must hold exclusive persistence ownership for the task while
+    /// this method validates and, for a recoverable final torn record, repairs
+    /// the active segment. Its path checks are a portable lexical/metadata
+    /// preflight, not descriptor-safe authority: native startup must exclude
+    /// namespace mutation for the whole call.
+    pub fn open_recovered(
+        directory: impl AsRef<Path>,
+        installed_segment_paths: &[PathBuf],
+        expected_task_gid: Gid,
+        expected_journal_id: JournalId,
+        limits: ReplayLimits,
+        recovery_starting_generation: Generation,
+        recovery_created_at_unix_ms: u64,
+    ) -> Result<(Self, JournalReplay), JournalAppenderError> {
+        let directory = directory.as_ref().to_path_buf();
+        if installed_segment_paths.is_empty() {
+            return Err(JournalAppenderError::RecoveryStopped(
+                ReplayStop::NoSegments,
+            ));
+        }
+        if installed_segment_paths.len() > limits.max_segments {
+            return Err(JournalAppenderError::RecoveryStopped(
+                ReplayStop::ResourceLimit(ReplayResource::Segments),
+            ));
+        }
+
+        let encoded_byte_budget = recovery_encoded_byte_budget(limits)?;
+        let mut remaining_byte_budget = encoded_byte_budget;
+        let mut segment_bytes = Vec::new();
+        segment_bytes
+            .try_reserve_exact(installed_segment_paths.len())
+            .map_err(|_| JournalAppenderError::Journal(JournalEncodeError::AllocationFailed))?;
+        for (input_index, path) in installed_segment_paths.iter().enumerate() {
+            let segment_index = u32::try_from(input_index).map_err(|_| {
+                JournalAppenderError::RecoveryStopped(ReplayStop::ResourceLimit(
+                    ReplayResource::Segments,
+                ))
+            })?;
+            if *path != journal_segment_path(&directory, segment_index)
+                || !recovery_path_is_regular(path)?
+            {
+                return Err(JournalAppenderError::RecoverySegmentPath { input_index });
+            }
+            segment_bytes.push(read_recovery_segment(
+                path,
+                encoded_byte_budget,
+                &mut remaining_byte_budget,
+            )?);
+        }
+        validate_recovery_directory(&directory, installed_segment_paths)?;
+
+        let first_header = SegmentHeader::decode(&segment_bytes[0]).map_err(|error| {
+            JournalAppenderError::RecoveryStopped(ReplayStop::Header {
+                input_index: 0,
+                error,
+            })
+        })?;
+        if first_header.task_gid() != expected_task_gid {
+            return Err(JournalAppenderError::RecoveryTaskMismatch {
+                expected: expected_task_gid,
+                actual: first_header.task_gid(),
+            });
+        }
+        if first_header.journal_id() != expected_journal_id {
+            return Err(JournalAppenderError::RecoveryJournalMismatch {
+                expected: expected_journal_id,
+                actual: first_header.journal_id(),
+            });
+        }
+
+        let mut replay_inputs = Vec::new();
+        replay_inputs
+            .try_reserve_exact(segment_bytes.len())
+            .map_err(|_| JournalAppenderError::Journal(JournalEncodeError::AllocationFailed))?;
+        replay_inputs.extend(segment_bytes.iter().map(Vec::as_slice));
+        let replay = replay_ordered_segments(&replay_inputs, limits);
+        let appender = match replay.stop {
+            ReplayStop::CleanEnd => open_clean_recovered_appender(
+                directory,
+                installed_segment_paths,
+                &segment_bytes,
+                &replay,
+            )?,
+            ReplayStop::Record {
+                segment_index,
+                offset,
+                reason,
+            } if usize::try_from(segment_index).ok()
+                == installed_segment_paths.len().checked_sub(1)
+                && replay.valid_segment_prefixes.len() == installed_segment_paths.len()
+                && repairable_recovery_tail(reason) =>
+            {
+                open_repaired_recovered_appender(
+                    directory,
+                    installed_segment_paths,
+                    &mut segment_bytes,
+                    &replay,
+                    offset,
+                    recovery_starting_generation,
+                    recovery_created_at_unix_ms,
+                )?
+            }
+            stop => return Err(JournalAppenderError::RecoveryStopped(stop)),
+        };
+        Ok((appender, replay))
     }
 
     #[must_use]
@@ -616,6 +780,384 @@ impl ControlJournalAppender {
     }
 }
 
+fn recovery_encoded_byte_budget(limits: ReplayLimits) -> Result<usize, JournalAppenderError> {
+    limits
+        .max_segments
+        .checked_mul(SEGMENT_HEADER_LEN)
+        .and_then(|headers| {
+            limits
+                .max_records
+                .checked_mul(RECORD_OVERHEAD)
+                .and_then(|records| headers.checked_add(records))
+        })
+        .and_then(|framing| framing.checked_add(limits.max_payload_bytes))
+        .ok_or(JournalAppenderError::Journal(
+            JournalEncodeError::AllocationFailed,
+        ))
+}
+
+fn recovery_path_is_regular(path: &Path) -> Result<bool, JournalAppenderError> {
+    path.symlink_metadata()
+        .map(|metadata| metadata.file_type().is_file())
+        .map_err(|error| io_error(JournalIoOperation::InspectRecoverySegment, error))
+}
+
+fn validate_recovery_directory(
+    directory: &Path,
+    installed_segment_paths: &[PathBuf],
+) -> Result<(), JournalAppenderError> {
+    let immediate_successor = u32::try_from(installed_segment_paths.len())
+        .ok()
+        .map(|index| journal_segment_path(directory, index));
+    let entries = fs::read_dir(directory)
+        .map_err(|error| io_error(JournalIoOperation::InspectRecoverySegment, error))?;
+    for entry in entries {
+        let entry =
+            entry.map_err(|error| io_error(JournalIoOperation::InspectRecoverySegment, error))?;
+        let path = entry.path();
+        if installed_segment_paths.contains(&path) {
+            continue;
+        }
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+        if file_name.starts_with(JOURNAL_SEGMENT_FILE_PREFIX)
+            && file_name.ends_with(JOURNAL_TEMP_FILE_SUFFIX)
+        {
+            return Err(JournalAppenderError::SegmentPathExists { temporary: true });
+        }
+        if file_name.starts_with(JOURNAL_SEGMENT_FILE_PREFIX)
+            && file_name.ends_with(JOURNAL_SEGMENT_FILE_SUFFIX)
+        {
+            if immediate_successor.as_ref() == Some(&path) {
+                return Err(JournalAppenderError::SegmentPathExists { temporary: false });
+            }
+            return Err(JournalAppenderError::RecoverySegmentPath {
+                input_index: installed_segment_paths.len(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn read_recovery_segment(
+    path: &Path,
+    encoded_byte_budget: usize,
+    remaining_byte_budget: &mut usize,
+) -> Result<Vec<u8>, JournalAppenderError> {
+    let mut file = OpenOptions::new()
+        .read(true)
+        .open(path)
+        .map_err(|error| io_error(JournalIoOperation::OpenRecoverySegment, error))?;
+    let length = file
+        .metadata()
+        .map_err(|error| io_error(JournalIoOperation::InspectRecoverySegment, error))?
+        .len();
+    let length =
+        usize::try_from(length).map_err(|_| JournalAppenderError::RecoveryInputBytesExceeded {
+            limit: encoded_byte_budget,
+        })?;
+    if length > *remaining_byte_budget {
+        return Err(JournalAppenderError::RecoveryInputBytesExceeded {
+            limit: encoded_byte_budget,
+        });
+    }
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(length)
+        .map_err(|_| JournalAppenderError::Journal(JournalEncodeError::AllocationFailed))?;
+    bytes.resize(length, 0);
+    file.read_exact(&mut bytes)
+        .map_err(|error| io_error(JournalIoOperation::ReadRecoverySegment, error))?;
+    let mut extra = [0_u8; 1];
+    if file
+        .read(&mut extra)
+        .map_err(|error| io_error(JournalIoOperation::ReadRecoverySegment, error))?
+        != 0
+    {
+        return Err(JournalAppenderError::TailMismatch(
+            JournalTailMismatch::Length,
+        ));
+    }
+    *remaining_byte_budget -= length;
+    Ok(bytes)
+}
+
+fn repairable_recovery_tail(reason: RecordStopReason) -> bool {
+    matches!(
+        reason,
+        RecordStopReason::TruncatedFraming
+            | RecordStopReason::InvalidMagic
+            | RecordStopReason::PayloadTooLarge
+            | RecordStopReason::UnknownRecordType
+            | RecordStopReason::UnknownFlags
+            | RecordStopReason::LengthOverflow
+            | RecordStopReason::TruncatedRecord
+            | RecordStopReason::BadCrc
+            | RecordStopReason::MissingCommit
+    )
+}
+
+fn open_clean_recovered_appender(
+    directory: PathBuf,
+    installed_segment_paths: &[PathBuf],
+    segment_bytes: &[Vec<u8>],
+    replay: &JournalReplay,
+) -> Result<ControlJournalAppender, JournalAppenderError> {
+    let active_path = installed_segment_paths
+        .last()
+        .expect("recovered open rejects empty segment sets")
+        .clone();
+    let active_bytes = segment_bytes
+        .last()
+        .expect("recovered open reads every installed segment");
+    let header = SegmentHeader::decode(active_bytes).map_err(|error| {
+        JournalAppenderError::RecoveryStopped(ReplayStop::Header {
+            input_index: installed_segment_paths.len() - 1,
+            error,
+        })
+    })?;
+    let valid_length = u64::try_from(active_bytes.len())
+        .map_err(|_| JournalAppenderError::Journal(JournalEncodeError::AllocationFailed))?;
+    let tail_record = recovered_tail_record(active_bytes, header, replay)?;
+    let next_sequence =
+        replay
+            .last_sequence
+            .checked_add(1)
+            .ok_or(JournalAppenderError::Journal(
+                JournalEncodeError::SequenceExhausted,
+            ))?;
+    let mut active_file = open_active_segment(&active_path)?;
+    validate_recovery_file_bytes(&mut active_file, active_bytes)?;
+    validate_active_file(
+        &mut active_file,
+        header,
+        valid_length,
+        replay.last_sequence,
+        tail_record,
+    )?;
+    active_file
+        .sync_all()
+        .map_err(|error| io_error(JournalIoOperation::SyncSegment, error))?;
+    Ok(ControlJournalAppender {
+        directory,
+        segment_paths: clone_segment_paths(installed_segment_paths)?,
+        active_path,
+        active_file: Some(active_file),
+        header,
+        valid_length,
+        next_sequence,
+        appended_sequence: replay.last_sequence,
+        flushed_sequence: replay.last_sequence,
+        tail_record,
+        fault: None,
+    })
+}
+
+fn open_repaired_recovered_appender(
+    directory: PathBuf,
+    installed_segment_paths: &[PathBuf],
+    segment_bytes: &mut [Vec<u8>],
+    replay: &JournalReplay,
+    valid_prefix: usize,
+    recovery_starting_generation: Generation,
+    recovery_created_at_unix_ms: u64,
+) -> Result<ControlJournalAppender, JournalAppenderError> {
+    let active_path = installed_segment_paths
+        .last()
+        .expect("recovered open rejects empty segment sets");
+    let active_bytes = segment_bytes
+        .last_mut()
+        .expect("recovered open reads every installed segment");
+    if replay.valid_segment_prefixes.last().copied() != Some(valid_prefix)
+        || valid_prefix < SEGMENT_HEADER_LEN
+        || valid_prefix >= active_bytes.len()
+    {
+        return Err(JournalAppenderError::RecoveryStopped(replay.stop));
+    }
+    let header = SegmentHeader::decode(active_bytes).map_err(|error| {
+        JournalAppenderError::RecoveryStopped(ReplayStop::Header {
+            input_index: installed_segment_paths.len() - 1,
+            error,
+        })
+    })?;
+    let reopen_first_empty = header.segment_index() == 0 && replay.last_sequence == 0;
+    let next_header = if reopen_first_empty {
+        None
+    } else {
+        let previous_segment_hash = hash_segment(&active_bytes[..valid_prefix]);
+        let next_header = header
+            .recovery_successor(
+                replay.last_sequence,
+                previous_segment_hash,
+                recovery_starting_generation,
+                recovery_created_at_unix_ms,
+            )
+            .map_err(JournalAppenderError::Journal)?;
+        let final_path = journal_segment_path(&directory, next_header.segment_index());
+        let temporary_path =
+            journal_temporary_segment_path(&directory, next_header.segment_index());
+        if path_exists(&final_path)? {
+            return Err(JournalAppenderError::SegmentPathExists { temporary: false });
+        }
+        if path_exists(&temporary_path)? {
+            return Err(JournalAppenderError::SegmentPathExists { temporary: true });
+        }
+        Some(next_header)
+    };
+
+    repair_recovery_segment(active_path, active_bytes, valid_prefix)?;
+    active_bytes.truncate(valid_prefix);
+
+    let Some(next_header) = next_header else {
+        return open_clean_recovered_appender(
+            directory,
+            installed_segment_paths,
+            segment_bytes,
+            replay,
+        );
+    };
+    let new_path = install_segment(&directory, next_header)?;
+    let mut new_file = open_active_segment(&new_path)?;
+    let header_length =
+        u64::try_from(SEGMENT_HEADER_LEN).expect("the fixed segment header length fits u64");
+    validate_active_file(
+        &mut new_file,
+        next_header,
+        header_length,
+        replay.last_sequence,
+        None,
+    )?;
+    let mut recovered_paths = clone_segment_paths(installed_segment_paths)?;
+    recovered_paths.push(new_path.clone());
+    Ok(ControlJournalAppender {
+        directory,
+        segment_paths: recovered_paths,
+        active_path: new_path,
+        active_file: Some(new_file),
+        header: next_header,
+        valid_length: header_length,
+        next_sequence: next_header.first_sequence(),
+        appended_sequence: replay.last_sequence,
+        flushed_sequence: replay.last_sequence,
+        tail_record: None,
+        fault: None,
+    })
+}
+
+fn recovered_tail_record(
+    active_bytes: &[u8],
+    header: SegmentHeader,
+    replay: &JournalReplay,
+) -> Result<Option<TailRecord>, JournalAppenderError> {
+    if replay.last_sequence < header.first_sequence() {
+        return Ok(None);
+    }
+    let record = replay
+        .records
+        .last()
+        .ok_or(JournalAppenderError::TailMismatch(
+            JournalTailMismatch::InvalidTailRecord,
+        ))?;
+    if record.sequence != replay.last_sequence {
+        return Err(JournalAppenderError::TailMismatch(
+            JournalTailMismatch::InvalidTailRecord,
+        ));
+    }
+    let length =
+        RECORD_OVERHEAD
+            .checked_add(record.payload.len())
+            .ok_or(JournalAppenderError::Journal(
+                JournalEncodeError::AllocationFailed,
+            ))?;
+    let offset =
+        active_bytes
+            .len()
+            .checked_sub(length)
+            .ok_or(JournalAppenderError::TailMismatch(
+                JournalTailMismatch::Length,
+            ))?;
+    if offset < SEGMENT_HEADER_LEN
+        || validate_record(
+            &active_bytes[offset..],
+            replay.last_sequence,
+            header.starting_generation(),
+        ) != Ok(length)
+    {
+        return Err(JournalAppenderError::TailMismatch(
+            JournalTailMismatch::InvalidTailRecord,
+        ));
+    }
+    Ok(Some(TailRecord {
+        offset: u64::try_from(offset)
+            .map_err(|_| JournalAppenderError::Journal(JournalEncodeError::AllocationFailed))?,
+        length,
+        fingerprint: tail_record_fingerprint(&active_bytes[offset..]),
+    }))
+}
+
+fn clone_segment_paths(paths: &[PathBuf]) -> Result<Vec<PathBuf>, JournalAppenderError> {
+    let mut cloned = Vec::new();
+    cloned
+        .try_reserve_exact(paths.len())
+        .map_err(|_| JournalAppenderError::Journal(JournalEncodeError::AllocationFailed))?;
+    cloned.extend(paths.iter().cloned());
+    Ok(cloned)
+}
+
+fn validate_recovery_file_bytes(
+    file: &mut File,
+    expected: &[u8],
+) -> Result<(), JournalAppenderError> {
+    let expected_length = u64::try_from(expected.len())
+        .map_err(|_| JournalAppenderError::Journal(JournalEncodeError::AllocationFailed))?;
+    let actual_length = file
+        .metadata()
+        .map_err(|error| io_error(JournalIoOperation::InspectRecoverySegment, error))?
+        .len();
+    if actual_length != expected_length {
+        return Err(JournalAppenderError::TailMismatch(
+            JournalTailMismatch::Length,
+        ));
+    }
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| io_error(JournalIoOperation::ReadRecoverySegment, error))?;
+    let mut offset = 0_usize;
+    let mut buffer = [0_u8; STREAM_BUFFER_BYTES];
+    while offset < expected.len() {
+        let chunk_length = (expected.len() - offset).min(STREAM_BUFFER_BYTES);
+        file.read_exact(&mut buffer[..chunk_length])
+            .map_err(|error| io_error(JournalIoOperation::ReadRecoverySegment, error))?;
+        if buffer[..chunk_length] != expected[offset..offset + chunk_length] {
+            return Err(JournalAppenderError::TailMismatch(
+                JournalTailMismatch::TailFingerprint,
+            ));
+        }
+        offset += chunk_length;
+    }
+    Ok(())
+}
+
+fn repair_recovery_segment(
+    path: &Path,
+    expected: &[u8],
+    valid_prefix: usize,
+) -> Result<(), JournalAppenderError> {
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|error| io_error(JournalIoOperation::OpenRecoverySegment, error))?;
+    validate_recovery_file_bytes(&mut file, expected)?;
+    let valid_prefix = u64::try_from(valid_prefix)
+        .map_err(|_| JournalAppenderError::Journal(JournalEncodeError::AllocationFailed))?;
+    file.set_len(valid_prefix)
+        .map_err(|error| io_error(JournalIoOperation::RepairRecoverySegment, error))?;
+    file.sync_all()
+        .map_err(|error| io_error(JournalIoOperation::SyncSegment, error))
+}
+
 #[must_use]
 pub fn journal_segment_file_name(segment_index: u32) -> String {
     format!("{JOURNAL_SEGMENT_FILE_PREFIX}{segment_index:010}{JOURNAL_SEGMENT_FILE_SUFFIX}")
@@ -650,7 +1192,13 @@ fn install_segment(
         .write(true)
         .create_new(true)
         .open(&temporary_path)
-        .map_err(|error| io_error(JournalIoOperation::CreateTemporarySegment, error))?;
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::AlreadyExists {
+                JournalAppenderError::SegmentPathExists { temporary: true }
+            } else {
+                io_error(JournalIoOperation::CreateTemporarySegment, error)
+            }
+        })?;
     if let Err(error) = temporary.write_all(&header.encode()) {
         drop(temporary);
         let _ = fs::remove_file(&temporary_path);
@@ -661,12 +1209,41 @@ fn install_segment(
         let _ = fs::remove_file(&temporary_path);
         return Err(io_error(JournalIoOperation::SyncSegment, error));
     }
+    if let Err(error) = link_segment_no_clobber(&temporary_path, &final_path) {
+        drop(temporary);
+        let _ = fs::remove_file(&temporary_path);
+        return Err(error);
+    }
+    // The installed hard link and candidate name reference the same inode, so
+    // this second barrier covers the installed file before its directory entry
+    // is declared durable.
+    if let Err(error) = temporary.sync_all() {
+        drop(temporary);
+        return Err(io_error(JournalIoOperation::SyncSegment, error));
+    }
+    if let Err(error) = sync_directory(directory) {
+        drop(temporary);
+        return Err(io_error(JournalIoOperation::SyncDirectory, error));
+    }
     drop(temporary);
-    fs::rename(&temporary_path, &final_path)
+    fs::remove_file(&temporary_path)
         .map_err(|error| io_error(JournalIoOperation::InstallSegment, error))?;
     sync_directory(directory)
         .map_err(|error| io_error(JournalIoOperation::SyncDirectory, error))?;
     Ok(final_path)
+}
+
+fn link_segment_no_clobber(
+    temporary_path: &Path,
+    final_path: &Path,
+) -> Result<(), JournalAppenderError> {
+    fs::hard_link(temporary_path, final_path).map_err(|error| {
+        if error.kind() == io::ErrorKind::AlreadyExists {
+            JournalAppenderError::SegmentPathExists { temporary: false }
+        } else {
+            io_error(JournalIoOperation::InstallSegment, error)
+        }
+    })
 }
 
 fn path_exists(path: &Path) -> Result<bool, JournalAppenderError> {
@@ -821,16 +1398,20 @@ mod tests {
         ALL_JOURNAL_APPENDER_ERROR_CODES, ALL_JOURNAL_APPENDER_FAULTS, ALL_JOURNAL_IO_OPERATIONS,
         ALL_JOURNAL_TAIL_MISMATCHES, ControlJournalAppender, JournalAppenderError,
         JournalAppenderFault, JournalTailMismatch, journal_segment_file_name, journal_segment_path,
+        journal_temporary_segment_path, link_segment_no_clobber,
     };
     use crate::{
-        DurabilityMode, JournalId, JournalPayload, ReplayLimits, ReplayStop, TaskPauseReason,
-        replay_ordered_segments,
+        DurabilityMode, JournalId, JournalPayload, JournalReplay, RecordStopReason, ReplayLimits,
+        ReplayStop, TaskPauseReason, replay_ordered_segments,
     };
     use ariax_core::{Generation, Gid};
     use std::collections::HashSet;
     use std::fs::{self, OpenOptions};
+    use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Barrier};
+    use std::thread;
 
     static TEST_DIRECTORY_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -868,11 +1449,83 @@ mod tests {
         JournalId::new([9; 16]).expect("journal id")
     }
 
+    fn other_gid() -> Gid {
+        Gid::new(0x5678).expect("other gid")
+    }
+
+    fn other_journal_id() -> JournalId {
+        JournalId::new([7; 16]).expect("other journal id")
+    }
+
     fn task_created() -> JournalPayload {
         JournalPayload::TaskCreated {
             durability: DurabilityMode::Balanced,
             creator_version: 1,
         }
+    }
+
+    fn task_paused() -> JournalPayload {
+        JournalPayload::TaskPaused {
+            reason: TaskPauseReason::User,
+        }
+    }
+
+    fn recover(
+        directory: &Path,
+        paths: &[PathBuf],
+        expected_gid: Gid,
+        expected_journal_id: JournalId,
+    ) -> Result<(ControlJournalAppender, JournalReplay), JournalAppenderError> {
+        ControlJournalAppender::open_recovered(
+            directory,
+            paths,
+            expected_gid,
+            expected_journal_id,
+            ReplayLimits::default(),
+            Generation::INITIAL,
+            500,
+        )
+    }
+
+    fn create_rotated_journal(directory: &Path, task_gid: Gid, id: JournalId) -> Vec<PathBuf> {
+        let mut appender =
+            ControlJournalAppender::create(directory, task_gid, id, Generation::INITIAL, 100)
+                .expect("create rotated journal");
+        appender
+            .append_payload(Generation::INITIAL, &task_created())
+            .expect("append first record");
+        appender.flush(1).expect("flush first record");
+        appender
+            .rotate(Generation::INITIAL, 200)
+            .expect("rotate journal");
+        appender.segment_paths().to_vec()
+    }
+
+    fn replace_header_gid(path: &Path, replacement: Gid) {
+        let mut bytes = fs::read(path).expect("read segment for gid replacement");
+        bytes[8..16].copy_from_slice(&replacement.get().to_le_bytes());
+        replace_header_crc(&mut bytes);
+        fs::write(path, bytes).expect("write segment with replaced gid");
+    }
+
+    fn replace_header_journal_id(path: &Path, replacement: JournalId) {
+        let mut bytes = fs::read(path).expect("read segment for journal replacement");
+        bytes[16..32].copy_from_slice(replacement.as_bytes());
+        replace_header_crc(&mut bytes);
+        fs::write(path, bytes).expect("write segment with replaced journal id");
+    }
+
+    fn replace_header_previous_hash(path: &Path, replacement: [u8; 32]) {
+        let mut bytes = fs::read(path).expect("read segment for link replacement");
+        bytes[60..92].copy_from_slice(&replacement);
+        replace_header_crc(&mut bytes);
+        fs::write(path, bytes).expect("write segment with replaced link");
+    }
+
+    fn replace_header_crc(bytes: &mut [u8]) {
+        let crc_offset = crate::SEGMENT_HEADER_LEN - 4;
+        let crc = crc32c::crc32c(&bytes[..crc_offset]);
+        bytes[crc_offset..crate::SEGMENT_HEADER_LEN].copy_from_slice(&crc.to_le_bytes());
     }
 
     #[test]
@@ -1076,6 +1729,668 @@ mod tests {
             fs::read(path).expect("read preserved path"),
             b"owned-by-another-journal"
         );
+    }
+
+    #[test]
+    fn segment_publication_rejects_a_raced_destination_without_overwriting_it() {
+        let directory = TestDirectory::new();
+        let temporary = directory.path().join("owned-candidate.tmp");
+        let destination = journal_segment_path(directory.path(), 0);
+        fs::write(&temporary, b"candidate-header").expect("seed owned candidate");
+        fs::write(&destination, b"raced-destination").expect("seed raced destination");
+
+        assert_eq!(
+            link_segment_no_clobber(&temporary, &destination),
+            Err(JournalAppenderError::SegmentPathExists { temporary: false })
+        );
+        assert_eq!(
+            fs::read(&destination).expect("read preserved destination"),
+            b"raced-destination"
+        );
+        assert_eq!(
+            fs::read(&temporary).expect("read still-owned candidate"),
+            b"candidate-header"
+        );
+    }
+
+    #[test]
+    fn successful_segment_publication_removes_only_its_owned_candidate_name() {
+        let directory = TestDirectory::new();
+        let unrelated = directory.path().join("unrelated.tmp");
+        fs::write(&unrelated, b"unrelated").expect("seed unrelated file");
+
+        let appender = ControlJournalAppender::create(
+            directory.path(),
+            gid(),
+            journal_id(),
+            Generation::INITIAL,
+            0,
+        )
+        .expect("create appender through no-clobber publication");
+
+        assert!(appender.active_path().is_file());
+        assert!(!journal_temporary_segment_path(directory.path(), 0).exists());
+        assert_eq!(
+            fs::read(unrelated).expect("read preserved unrelated file"),
+            b"unrelated"
+        );
+    }
+
+    #[test]
+    fn concurrent_segment_creators_publish_exactly_one_no_clobber_winner() {
+        const CONTENDERS: usize = 8;
+
+        let directory = TestDirectory::new();
+        let barrier = Arc::new(Barrier::new(CONTENDERS));
+        let mut threads = Vec::new();
+        for contender in 0..CONTENDERS {
+            let directory = directory.path().to_path_buf();
+            let barrier = Arc::clone(&barrier);
+            threads.push(thread::spawn(move || {
+                barrier.wait();
+                ControlJournalAppender::create(
+                    directory,
+                    gid(),
+                    journal_id(),
+                    Generation::INITIAL,
+                    contender as u64,
+                )
+            }));
+        }
+
+        let mut winner = None;
+        for thread in threads {
+            match thread.join().expect("creator thread") {
+                Ok(appender) => {
+                    assert!(winner.replace(appender).is_none(), "multiple creators won");
+                }
+                Err(JournalAppenderError::SegmentPathExists { .. }) => {}
+                Err(error) => panic!("unexpected concurrent creation error: {error}"),
+            }
+        }
+
+        let winner = winner.expect("one creator must publish the segment");
+        assert_eq!(winner.active_header().task_gid(), gid());
+        assert_eq!(winner.active_header().journal_id(), journal_id());
+        assert_eq!(winner.segment_paths().len(), 1);
+        assert_eq!(winner.segment_paths()[0], winner.active_path());
+        assert!(!journal_temporary_segment_path(directory.path(), 0).exists());
+    }
+
+    #[test]
+    fn recovered_open_resumes_a_clean_tail_at_the_next_sequence() {
+        let directory = TestDirectory::new();
+        let mut original = ControlJournalAppender::create(
+            directory.path(),
+            gid(),
+            journal_id(),
+            Generation::INITIAL,
+            100,
+        )
+        .expect("create appender");
+        original
+            .append_payload(Generation::INITIAL, &task_created())
+            .expect("append task");
+        original.flush(1).expect("flush task");
+        let paths = original.segment_paths().to_vec();
+        drop(original);
+
+        let (mut recovered, replay) =
+            recover(directory.path(), &paths, gid(), journal_id()).expect("recover clean tail");
+        assert_eq!(replay.stop, ReplayStop::CleanEnd);
+        assert_eq!(recovered.appended_sequence(), 1);
+        assert_eq!(recovered.flushed_sequence(), 1);
+        assert_eq!(recovered.next_sequence(), 2);
+        assert_eq!(recovered.segment_paths(), paths);
+        assert_eq!(
+            recovered
+                .append_payload(Generation::INITIAL, &task_paused())
+                .expect("append after recovery")
+                .sequence(),
+            2
+        );
+        recovered.flush(2).expect("flush recovered append");
+
+        let bytes = fs::read(recovered.active_path()).expect("read recovered segment");
+        let replay = replay_ordered_segments(&[&bytes], ReplayLimits::default());
+        assert_eq!(replay.stop, ReplayStop::CleanEnd);
+        assert_eq!(replay.last_sequence, 2);
+    }
+
+    #[test]
+    fn recovered_open_resumes_a_clean_empty_rotated_tail() {
+        let directory = TestDirectory::new();
+        let paths = create_rotated_journal(directory.path(), gid(), journal_id());
+
+        let (mut recovered, replay) =
+            recover(directory.path(), &paths, gid(), journal_id()).expect("recover rotated tail");
+        assert_eq!(replay.stop, ReplayStop::CleanEnd);
+        assert_eq!(recovered.active_header().segment_index(), 1);
+        assert_eq!(recovered.next_sequence(), 2);
+        recovered
+            .append_payload(Generation::INITIAL, &task_paused())
+            .expect("append first record to rotated tail");
+        recovered.flush(2).expect("flush rotated tail");
+
+        let first = fs::read(&paths[0]).expect("read first segment");
+        let second = fs::read(&paths[1]).expect("read second segment");
+        let replay = replay_ordered_segments(&[&first, &second], ReplayLimits::default());
+        assert_eq!(replay.stop, ReplayStop::CleanEnd);
+        assert_eq!(replay.last_sequence, 2);
+    }
+
+    #[test]
+    fn recovered_open_trims_a_torn_final_record_and_installs_a_linked_successor() {
+        let directory = TestDirectory::new();
+        let mut original = ControlJournalAppender::create(
+            directory.path(),
+            gid(),
+            journal_id(),
+            Generation::INITIAL,
+            100,
+        )
+        .expect("create appender");
+        original
+            .append_payload(Generation::INITIAL, &task_created())
+            .expect("append first");
+        original
+            .append_payload(Generation::INITIAL, &task_paused())
+            .expect("append second");
+        original.flush(2).expect("flush both");
+        let first_path = original.active_path().to_path_buf();
+        drop(original);
+        let file = OpenOptions::new()
+            .write(true)
+            .open(&first_path)
+            .expect("open for torn-tail simulation");
+        let torn_length = file.metadata().expect("torn metadata").len() - 3;
+        file.set_len(torn_length).expect("tear final commit");
+        drop(file);
+        let torn_bytes = fs::read(&first_path).expect("read torn segment");
+        let torn_replay = replay_ordered_segments(&[&torn_bytes], ReplayLimits::default());
+        let valid_prefix = torn_replay.valid_segment_prefixes[0];
+        assert!(matches!(
+            torn_replay.stop,
+            ReplayStop::Record {
+                reason: RecordStopReason::MissingCommit,
+                ..
+            }
+        ));
+
+        let (mut recovered, replay) = recover(
+            directory.path(),
+            std::slice::from_ref(&first_path),
+            gid(),
+            journal_id(),
+        )
+        .expect("repair torn tail");
+        assert_eq!(replay.last_sequence, 1);
+        assert_eq!(
+            fs::metadata(&first_path).expect("trimmed metadata").len(),
+            valid_prefix as u64
+        );
+        assert_eq!(recovered.active_header().segment_index(), 1);
+        assert_eq!(recovered.segment_paths().len(), 2);
+        assert_eq!(recovered.next_sequence(), 2);
+        recovered
+            .append_payload(Generation::INITIAL, &task_paused())
+            .expect("replace torn fact");
+        recovered.flush(2).expect("flush replacement");
+
+        let first = fs::read(&recovered.segment_paths()[0]).expect("read repaired first");
+        let second = fs::read(&recovered.segment_paths()[1]).expect("read successor");
+        let replay = replay_ordered_segments(&[&first, &second], ReplayLimits::default());
+        assert_eq!(replay.stop, ReplayStop::CleanEnd);
+        assert_eq!(replay.last_sequence, 2);
+    }
+
+    #[test]
+    fn recovered_open_trims_a_torn_first_record_without_inventing_sequence_zero_linkage() {
+        let directory = TestDirectory::new();
+        let original = ControlJournalAppender::create(
+            directory.path(),
+            gid(),
+            journal_id(),
+            Generation::INITIAL,
+            100,
+        )
+        .expect("create empty appender");
+        let path = original.active_path().to_path_buf();
+        drop(original);
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open for torn first record")
+            .write_all(b"ARX")
+            .expect("write torn framing");
+
+        let (mut recovered, replay) = recover(
+            directory.path(),
+            std::slice::from_ref(&path),
+            gid(),
+            journal_id(),
+        )
+        .expect("repair torn first record");
+        assert!(matches!(
+            replay.stop,
+            ReplayStop::Record {
+                reason: RecordStopReason::TruncatedFraming,
+                ..
+            }
+        ));
+        assert_eq!(recovered.segment_paths(), std::slice::from_ref(&path));
+        assert_eq!(recovered.active_length(), crate::SEGMENT_HEADER_LEN as u64);
+        assert_eq!(recovered.next_sequence(), 1);
+        recovered
+            .append_payload(Generation::INITIAL, &task_created())
+            .expect("append first committed fact");
+        recovered.flush(1).expect("flush first fact");
+        let bytes = fs::read(path).expect("read repaired journal");
+        assert_eq!(
+            replay_ordered_segments(&[&bytes], ReplayLimits::default()).stop,
+            ReplayStop::CleanEnd
+        );
+    }
+
+    #[test]
+    fn recovered_open_rotates_a_torn_header_only_nonfirst_segment() {
+        let directory = TestDirectory::new();
+        let paths = create_rotated_journal(directory.path(), gid(), journal_id());
+        OpenOptions::new()
+            .append(true)
+            .open(&paths[1])
+            .expect("open empty rotated tail")
+            .write_all(b"ARX")
+            .expect("write torn first record in rotated tail");
+
+        let (mut recovered, replay) =
+            recover(directory.path(), &paths, gid(), journal_id()).expect("repair rotated tail");
+        assert!(matches!(
+            replay.stop,
+            ReplayStop::Record {
+                segment_index: 1,
+                reason: RecordStopReason::TruncatedFraming,
+                ..
+            }
+        ));
+        assert_eq!(recovered.active_header().segment_index(), 2);
+        assert_eq!(recovered.segment_paths().len(), 3);
+        assert_eq!(recovered.next_sequence(), 2);
+        recovered
+            .append_payload(Generation::INITIAL, &task_paused())
+            .expect("append after repaired empty rotation");
+        recovered.flush(2).expect("flush repaired rotation");
+
+        let bytes = recovered
+            .segment_paths()
+            .iter()
+            .map(|path| fs::read(path).expect("read recovered segment"))
+            .collect::<Vec<_>>();
+        let slices = bytes.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let replay = replay_ordered_segments(&slices, ReplayLimits::default());
+        assert_eq!(replay.stop, ReplayStop::CleanEnd);
+        assert_eq!(replay.last_sequence, 2);
+    }
+
+    #[test]
+    fn recovered_open_rejects_reordered_paths_and_reordered_contents() {
+        let directory = TestDirectory::new();
+        let paths = create_rotated_journal(directory.path(), gid(), journal_id());
+        let first_before = fs::read(&paths[0]).expect("read first before reorder");
+        let second_before = fs::read(&paths[1]).expect("read second before reorder");
+        let reordered_paths = [paths[1].clone(), paths[0].clone()];
+        assert!(matches!(
+            recover(directory.path(), &reordered_paths, gid(), journal_id()),
+            Err(JournalAppenderError::RecoverySegmentPath { input_index: 0 })
+        ));
+        assert_eq!(fs::read(&paths[0]).expect("preserved first"), first_before);
+        assert_eq!(
+            fs::read(&paths[1]).expect("preserved second"),
+            second_before
+        );
+
+        fs::write(&paths[0], &second_before).expect("install index-one bytes first");
+        fs::write(&paths[1], &first_before).expect("install index-zero bytes second");
+        assert!(matches!(
+            recover(directory.path(), &paths, gid(), journal_id()),
+            Err(JournalAppenderError::RecoveryStopped(
+                ReplayStop::SegmentIndex {
+                    expected: 0,
+                    actual: 1
+                }
+            ))
+        ));
+    }
+
+    #[test]
+    fn recovered_open_rejects_expected_and_cross_segment_identity_mismatches() {
+        let directory = TestDirectory::new();
+        let paths = create_rotated_journal(directory.path(), gid(), journal_id());
+        let expected_other_gid = other_gid();
+        assert!(matches!(
+            recover(directory.path(), &paths, expected_other_gid, journal_id()),
+            Err(JournalAppenderError::RecoveryTaskMismatch {
+                expected,
+                actual,
+            }) if expected == expected_other_gid && actual == gid()
+        ));
+        let expected_other_journal = other_journal_id();
+        assert!(matches!(
+            recover(directory.path(), &paths, gid(), expected_other_journal),
+            Err(JournalAppenderError::RecoveryJournalMismatch {
+                expected,
+                actual,
+            }) if expected == expected_other_journal && actual == journal_id()
+        ));
+
+        replace_header_gid(&paths[1], other_gid());
+        let changed = fs::read(&paths[1]).expect("read task-mismatched segment");
+        assert!(matches!(
+            recover(directory.path(), &paths, gid(), journal_id()),
+            Err(JournalAppenderError::RecoveryStopped(
+                ReplayStop::TaskMismatch
+            ))
+        ));
+        assert_eq!(fs::read(&paths[1]).expect("preserved mismatch"), changed);
+
+        let second_directory = TestDirectory::new();
+        let second_paths = create_rotated_journal(second_directory.path(), gid(), journal_id());
+        replace_header_journal_id(&second_paths[1], other_journal_id());
+        assert!(matches!(
+            recover(second_directory.path(), &second_paths, gid(), journal_id()),
+            Err(JournalAppenderError::RecoveryStopped(
+                ReplayStop::JournalMismatch
+            ))
+        ));
+    }
+
+    #[test]
+    fn recovered_open_rejects_a_mismatched_previous_segment_link() {
+        let directory = TestDirectory::new();
+        let paths = create_rotated_journal(directory.path(), gid(), journal_id());
+        replace_header_previous_hash(&paths[1], [5; 32]);
+        let changed = fs::read(&paths[1]).expect("read link-mismatched segment");
+        assert!(matches!(
+            recover(directory.path(), &paths, gid(), journal_id()),
+            Err(JournalAppenderError::RecoveryStopped(
+                ReplayStop::PreviousHashMismatch
+            ))
+        ));
+        assert_eq!(
+            fs::read(&paths[1]).expect("preserved link mismatch"),
+            changed
+        );
+        assert!(!journal_segment_path(directory.path(), 2).exists());
+    }
+
+    #[test]
+    fn recovered_open_rejects_a_nonfinal_corrupt_suffix_without_repairing_it() {
+        let directory = TestDirectory::new();
+        let paths = create_rotated_journal(directory.path(), gid(), journal_id());
+        OpenOptions::new()
+            .append(true)
+            .open(&paths[0])
+            .expect("open nonfinal segment")
+            .write_all(b"ARX")
+            .expect("append corrupt nonfinal suffix");
+        let first_before = fs::read(&paths[0]).expect("read corrupt nonfinal segment");
+        assert!(matches!(
+            recover(directory.path(), &paths, gid(), journal_id()),
+            Err(JournalAppenderError::RecoveryStopped(ReplayStop::Record {
+                segment_index: 0,
+                reason: RecordStopReason::TruncatedFraming,
+                ..
+            }))
+        ));
+        assert_eq!(
+            fs::read(&paths[0]).expect("read preserved nonfinal segment"),
+            first_before
+        );
+    }
+
+    #[test]
+    fn recovered_open_rejects_a_sequence_gap_instead_of_discarding_it() {
+        let directory = TestDirectory::new();
+        let mut original = ControlJournalAppender::create(
+            directory.path(),
+            gid(),
+            journal_id(),
+            Generation::INITIAL,
+            100,
+        )
+        .expect("create appender");
+        original
+            .append_payload(Generation::INITIAL, &task_created())
+            .expect("append task");
+        original.flush(1).expect("flush task");
+        let path = original.active_path().to_path_buf();
+        drop(original);
+        let mut bytes = fs::read(&path).expect("read segment for sequence mutation");
+        let record_offset = crate::SEGMENT_HEADER_LEN;
+        bytes[record_offset + 20..record_offset + 28].copy_from_slice(&2_u64.to_le_bytes());
+        let payload_length = u32::from_le_bytes(
+            bytes[record_offset + 4..record_offset + 8]
+                .try_into()
+                .expect("payload length bytes"),
+        ) as usize;
+        let crc_offset = record_offset + crate::RECORD_PREFIX_LEN + payload_length;
+        let crc = crc32c::crc32c(&bytes[record_offset..crc_offset]);
+        bytes[crc_offset..crc_offset + 4].copy_from_slice(&crc.to_le_bytes());
+        fs::write(&path, &bytes).expect("write sequence gap");
+
+        assert!(matches!(
+            recover(
+                directory.path(),
+                std::slice::from_ref(&path),
+                gid(),
+                journal_id()
+            ),
+            Err(JournalAppenderError::RecoveryStopped(ReplayStop::Record {
+                reason: RecordStopReason::SequenceGap {
+                    expected: 1,
+                    actual: 2
+                },
+                ..
+            }))
+        ));
+        assert_eq!(fs::read(path).expect("preserved sequence gap"), bytes);
+        assert!(!journal_segment_path(directory.path(), 1).exists());
+    }
+
+    #[test]
+    fn recovered_open_preserves_a_preexisting_successor_and_torn_tail() {
+        let directory = TestDirectory::new();
+        let mut original = ControlJournalAppender::create(
+            directory.path(),
+            gid(),
+            journal_id(),
+            Generation::INITIAL,
+            100,
+        )
+        .expect("create appender");
+        original
+            .append_payload(Generation::INITIAL, &task_created())
+            .expect("append first");
+        original
+            .append_payload(Generation::INITIAL, &task_paused())
+            .expect("append second");
+        original.flush(2).expect("flush records");
+        let path = original.active_path().to_path_buf();
+        drop(original);
+        let file = OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open for tear");
+        file.set_len(file.metadata().expect("metadata").len() - 3)
+            .expect("tear tail");
+        drop(file);
+        let torn_before = fs::read(&path).expect("read torn input");
+        let successor = journal_segment_path(directory.path(), 1);
+        fs::write(&successor, b"preexisting-successor").expect("seed successor");
+
+        assert!(matches!(
+            recover(
+                directory.path(),
+                std::slice::from_ref(&path),
+                gid(),
+                journal_id()
+            ),
+            Err(JournalAppenderError::SegmentPathExists { temporary: false })
+        ));
+        assert_eq!(fs::read(&path).expect("preserved torn tail"), torn_before);
+        assert_eq!(
+            fs::read(successor).expect("preserved successor"),
+            b"preexisting-successor"
+        );
+    }
+
+    #[test]
+    fn recovered_open_preserves_a_preexisting_candidate_and_torn_tail() {
+        let directory = TestDirectory::new();
+        let mut original = ControlJournalAppender::create(
+            directory.path(),
+            gid(),
+            journal_id(),
+            Generation::INITIAL,
+            100,
+        )
+        .expect("create appender");
+        original
+            .append_payload(Generation::INITIAL, &task_created())
+            .expect("append first");
+        original
+            .append_payload(Generation::INITIAL, &task_paused())
+            .expect("append second");
+        original.flush(2).expect("flush records");
+        let path = original.active_path().to_path_buf();
+        drop(original);
+        let file = OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open for tear");
+        file.set_len(file.metadata().expect("metadata").len() - 3)
+            .expect("tear tail");
+        drop(file);
+        let torn_before = fs::read(&path).expect("read torn input");
+        let candidate = journal_temporary_segment_path(directory.path(), 1);
+        fs::write(&candidate, b"preexisting-candidate").expect("seed candidate");
+
+        assert!(matches!(
+            recover(
+                directory.path(),
+                std::slice::from_ref(&path),
+                gid(),
+                journal_id()
+            ),
+            Err(JournalAppenderError::SegmentPathExists { temporary: true })
+        ));
+        assert_eq!(fs::read(&path).expect("preserved torn tail"), torn_before);
+        assert_eq!(
+            fs::read(candidate).expect("preserved candidate"),
+            b"preexisting-candidate"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovered_open_rejects_an_exact_named_symlink_during_portable_preflight() {
+        use std::os::unix::fs::symlink;
+
+        let directory = TestDirectory::new();
+        let mut original = ControlJournalAppender::create(
+            directory.path(),
+            gid(),
+            journal_id(),
+            Generation::INITIAL,
+            100,
+        )
+        .expect("create appender");
+        original
+            .append_payload(Generation::INITIAL, &task_created())
+            .expect("append task");
+        original.flush(1).expect("flush task");
+        let named_path = original.active_path().to_path_buf();
+        drop(original);
+        let backing_path = directory.path().join("segment-backing.arxj");
+        fs::rename(&named_path, &backing_path).expect("move segment behind a symlink");
+        symlink(&backing_path, &named_path).expect("install exact-name symlink");
+        let backing_before = fs::read(&backing_path).expect("read backing segment");
+
+        assert!(matches!(
+            recover(
+                directory.path(),
+                std::slice::from_ref(&named_path),
+                gid(),
+                journal_id()
+            ),
+            Err(JournalAppenderError::RecoverySegmentPath { input_index: 0 })
+        ));
+        assert!(
+            named_path
+                .symlink_metadata()
+                .expect("symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            fs::read(backing_path).expect("preserved backing segment"),
+            backing_before
+        );
+    }
+
+    #[test]
+    fn recovered_open_rejects_empty_noncanonical_and_over_budget_sets() {
+        let directory = TestDirectory::new();
+        assert!(matches!(
+            recover(directory.path(), &[], gid(), journal_id()),
+            Err(JournalAppenderError::RecoveryStopped(
+                ReplayStop::NoSegments
+            ))
+        ));
+
+        let mut original = ControlJournalAppender::create(
+            directory.path(),
+            gid(),
+            journal_id(),
+            Generation::INITIAL,
+            100,
+        )
+        .expect("create appender");
+        original
+            .append_payload(Generation::INITIAL, &task_created())
+            .expect("append task");
+        original.flush(1).expect("flush task");
+        let canonical = original.active_path().to_path_buf();
+        drop(original);
+        let noncanonical = directory.path().join("renamed.arxj");
+        fs::copy(&canonical, &noncanonical).expect("copy noncanonical segment");
+        assert!(matches!(
+            recover(
+                directory.path(),
+                std::slice::from_ref(&noncanonical),
+                gid(),
+                journal_id()
+            ),
+            Err(JournalAppenderError::RecoverySegmentPath { input_index: 0 })
+        ));
+
+        let limits = ReplayLimits {
+            max_segments: 1,
+            max_records: 0,
+            max_payload_bytes: 0,
+        };
+        assert!(matches!(
+            ControlJournalAppender::open_recovered(
+                directory.path(),
+                std::slice::from_ref(&canonical),
+                gid(),
+                journal_id(),
+                limits,
+                Generation::INITIAL,
+                500,
+            ),
+            Err(JournalAppenderError::RecoveryInputBytesExceeded { .. })
+        ));
     }
 
     #[test]

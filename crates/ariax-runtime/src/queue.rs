@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{TryReserveError, VecDeque};
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -283,10 +283,19 @@ impl<T> CompletionDrain<T> {
     #[must_use]
     pub fn new(capacity: usize) -> Self {
         assert!(capacity > 0, "completion capacity must be nonzero");
-        Self {
+        Self::try_new(capacity).expect("completion queue allocation failed")
+    }
+
+    /// Construct a completion drain without panicking on capacity overflow or
+    /// allocation failure.
+    pub fn try_new(capacity: usize) -> Result<Self, TryReserveError> {
+        assert!(capacity > 0, "completion capacity must be nonzero");
+        let mut queue = VecDeque::new();
+        queue.try_reserve_exact(capacity)?;
+        Ok(Self {
             inner: Arc::new(CompletionInner {
                 state: Mutex::new(CompletionState {
-                    queue: VecDeque::with_capacity(capacity),
+                    queue,
                     capacity,
                     reserved: 0,
                     sent: 0,
@@ -297,7 +306,7 @@ impl<T> CompletionDrain<T> {
                     receiver_closed: false,
                 }),
             }),
-        }
+        })
     }
 
     pub fn try_reserve(&self) -> Option<CompletionPermit<T>> {

@@ -3,6 +3,7 @@ members = [
     "bin/ariax",
     "crates/ariax-config",
     "crates/ariax-core",
+    "crates/ariax-engine",
     "crates/ariax-runtime",
     "crates/ariax-storage",
     "crates/ariax-windows-security",
@@ -19,6 +20,7 @@ publish = false
 [workspace.dependencies]
 ariax-config = { path = "crates/ariax-config" }
 ariax-core = { path = "crates/ariax-core" }
+ariax-engine = { path = "crates/ariax-engine" }
 ariax-runtime = { path = "crates/ariax-runtime" }
 ariax-storage = { path = "crates/ariax-storage" }
 ariax-windows-security = { path = "crates/ariax-windows-security" }

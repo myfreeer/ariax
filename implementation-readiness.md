@@ -9,9 +9,12 @@ This document is the handoff checklist from architecture design to detailed
 module design and implementation.
 
 Repository scaffolding, generated inventories, core/config types, the scheduler
-kernel, journal work, and SQLite session storage now have executable
-checkpoints, including atomic stopped-result retention/deletion. Each remaining
-module and integration still follows its Definition Of Ready checklist below.
+kernel and ordered driver, journal work, SQLite session storage and owner,
+persistence-effect composition, and bounded pure startup reconciliation
+planning now have executable checkpoints. The startup repair/application
+executor and first end-to-end downloader slice are not complete, so this is not
+a release/tag-ready checkpoint. Each remaining native adapter, transfer module,
+and integration still follows its Definition Of Ready checklist below.
 
 ## Start Here
 
@@ -187,15 +190,23 @@ this vertical slice.
 
 ## Current Integration Gates
 
-- Dispatch ordered scheduler effects and correlated acknowledgements through
-  runtime and storage adapters.
-- Implement the concrete host-key challenge write/approval storage adapter;
-  persisted host-key rows are already bounded and semantically validated.
-- Complete retry/no-space wall-decision recovery and bounded orderly-shutdown
-  batch execution.
-- Add the dedicated session owner thread and cross-store startup recovery.
+- Connect the ordered driver to concrete timer, allocation, option-application,
+  cancellation, and no-space-probe adapters; the persistence branch and its
+  correlated acknowledgements are executable.
+- Execute the startup reconciler's exact SQLite repair sequence, resolve
+  journal-install intents, open appenders and output-root capabilities through
+  native secure adapters, and derive the required non-secret credential
+  admission records before publication.
+- Integrate live protocol retry classification and backoff with the executable
+  persisted retry/slow/no-space recovery paths.
+- Drive the bounded orderly-shutdown coordinator across every real lane,
+  including dirty-checkpoint persistence when an adapter times out or detaches.
+- Close the hot-backup publication residue window with verified same-file
+  cleanup or a native atomic no-replace primitive and the required crash/unlink
+  fault matrix.
 - Run real io_uring and native Windows I/O coverage in supporting CI.
-- Pass the full Linux, Windows, and macOS release matrix before any tag.
+- Pass MSRV 1.88 and the full native Linux, Windows, and macOS release matrix
+  before any tag; configured workflow jobs alone are not completion evidence.
 
 ## Deferred But Tracked
 

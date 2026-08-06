@@ -895,6 +895,93 @@ impl TaskEvent {
     }
 }
 
+/// Closed effect vocabulary, independent of effect payloads.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum TransitionEffectKind {
+    PersistTask,
+    PersistQueueTransition,
+    StageOptionPatch,
+    ApplyOptionPatch,
+    PersistGenerationStarted,
+    StartAllocation,
+    CancelGeneration,
+    ReleaseSlot,
+    ScheduleRetry,
+    CancelRetry,
+    ScheduleSlowReadmission,
+    CancelSlowReadmission,
+    ProbeNoSpace,
+    PersistConditions,
+    PersistHostKeyChallenge,
+    PersistHostKeyPinAndClearChallenge,
+    PersistHostKeyChallengeRejected,
+    PersistTerminal,
+    DeleteStoppedTaskMetadata,
+    PublishSnapshot,
+}
+
+pub const ALL_TRANSITION_EFFECT_KINDS: &[TransitionEffectKind] = &[
+    TransitionEffectKind::PersistTask,
+    TransitionEffectKind::PersistQueueTransition,
+    TransitionEffectKind::StageOptionPatch,
+    TransitionEffectKind::ApplyOptionPatch,
+    TransitionEffectKind::PersistGenerationStarted,
+    TransitionEffectKind::StartAllocation,
+    TransitionEffectKind::CancelGeneration,
+    TransitionEffectKind::ReleaseSlot,
+    TransitionEffectKind::ScheduleRetry,
+    TransitionEffectKind::CancelRetry,
+    TransitionEffectKind::ScheduleSlowReadmission,
+    TransitionEffectKind::CancelSlowReadmission,
+    TransitionEffectKind::ProbeNoSpace,
+    TransitionEffectKind::PersistConditions,
+    TransitionEffectKind::PersistHostKeyChallenge,
+    TransitionEffectKind::PersistHostKeyPinAndClearChallenge,
+    TransitionEffectKind::PersistHostKeyChallengeRejected,
+    TransitionEffectKind::PersistTerminal,
+    TransitionEffectKind::DeleteStoppedTaskMetadata,
+    TransitionEffectKind::PublishSnapshot,
+];
+
+impl TransitionEffectKind {
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::PersistTask => "persist_task",
+            Self::PersistQueueTransition => "persist_queue_transition",
+            Self::StageOptionPatch => "stage_option_patch",
+            Self::ApplyOptionPatch => "apply_option_patch",
+            Self::PersistGenerationStarted => "persist_generation_started",
+            Self::StartAllocation => "start_allocation",
+            Self::CancelGeneration => "cancel_generation",
+            Self::ReleaseSlot => "release_slot",
+            Self::ScheduleRetry => "schedule_retry",
+            Self::CancelRetry => "cancel_retry",
+            Self::ScheduleSlowReadmission => "schedule_slow_readmission",
+            Self::CancelSlowReadmission => "cancel_slow_readmission",
+            Self::ProbeNoSpace => "probe_no_space",
+            Self::PersistConditions => "persist_conditions",
+            Self::PersistHostKeyChallenge => "persist_host_key_challenge",
+            Self::PersistHostKeyPinAndClearChallenge => "persist_host_key_pin_and_clear_challenge",
+            Self::PersistHostKeyChallengeRejected => "persist_host_key_challenge_rejected",
+            Self::PersistTerminal => "persist_terminal",
+            Self::DeleteStoppedTaskMetadata => "delete_stopped_task_metadata",
+            Self::PublishSnapshot => "publish_snapshot",
+        }
+    }
+}
+
+/// Stable scheduler-owned identity of one effect before dispatch assigns its
+/// process-local sequence number.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct TransitionEffectIdentity {
+    pub task_id: TaskId,
+    pub gid: Gid,
+    pub kind: TransitionEffectKind,
+    pub generation: Option<Generation>,
+    pub token: Option<TaskEventToken>,
+}
+
 /// Ordered work handed to persistence, worker, timer, and snapshot adapters.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TransitionEffect {
@@ -982,6 +1069,7 @@ pub enum TransitionEffect {
         generation: Generation,
         probe_id: NoSpaceProbeId,
         origin: NoSpaceProbeOrigin,
+        at: MonotonicInstant,
     },
     PersistConditions {
         task_id: TaskId,
@@ -1030,6 +1118,164 @@ pub enum TransitionEffect {
         task_id: TaskId,
         snapshot: TaskSnapshot,
     },
+}
+
+impl TransitionEffect {
+    #[must_use]
+    pub const fn kind(&self) -> TransitionEffectKind {
+        match self {
+            Self::PersistTask { .. } => TransitionEffectKind::PersistTask,
+            Self::PersistQueueTransition { .. } => TransitionEffectKind::PersistQueueTransition,
+            Self::StageOptionPatch { .. } => TransitionEffectKind::StageOptionPatch,
+            Self::ApplyOptionPatch { .. } => TransitionEffectKind::ApplyOptionPatch,
+            Self::PersistGenerationStarted { .. } => TransitionEffectKind::PersistGenerationStarted,
+            Self::StartAllocation { .. } => TransitionEffectKind::StartAllocation,
+            Self::CancelGeneration { .. } => TransitionEffectKind::CancelGeneration,
+            Self::ReleaseSlot { .. } => TransitionEffectKind::ReleaseSlot,
+            Self::ScheduleRetry { .. } => TransitionEffectKind::ScheduleRetry,
+            Self::CancelRetry { .. } => TransitionEffectKind::CancelRetry,
+            Self::ScheduleSlowReadmission { .. } => TransitionEffectKind::ScheduleSlowReadmission,
+            Self::CancelSlowReadmission { .. } => TransitionEffectKind::CancelSlowReadmission,
+            Self::ProbeNoSpace { .. } => TransitionEffectKind::ProbeNoSpace,
+            Self::PersistConditions { .. } => TransitionEffectKind::PersistConditions,
+            Self::PersistHostKeyChallenge { .. } => TransitionEffectKind::PersistHostKeyChallenge,
+            Self::PersistHostKeyPinAndClearChallenge { .. } => {
+                TransitionEffectKind::PersistHostKeyPinAndClearChallenge
+            }
+            Self::PersistHostKeyChallengeRejected { .. } => {
+                TransitionEffectKind::PersistHostKeyChallengeRejected
+            }
+            Self::PersistTerminal { .. } => TransitionEffectKind::PersistTerminal,
+            Self::DeleteStoppedTaskMetadata { .. } => {
+                TransitionEffectKind::DeleteStoppedTaskMetadata
+            }
+            Self::PublishSnapshot { .. } => TransitionEffectKind::PublishSnapshot,
+        }
+    }
+
+    #[must_use]
+    pub const fn task_id(&self) -> TaskId {
+        match self {
+            Self::PersistTask { task_id, .. }
+            | Self::PersistQueueTransition { task_id, .. }
+            | Self::StageOptionPatch { task_id, .. }
+            | Self::ApplyOptionPatch { task_id, .. }
+            | Self::PersistGenerationStarted { task_id, .. }
+            | Self::StartAllocation { task_id, .. }
+            | Self::CancelGeneration { task_id, .. }
+            | Self::ReleaseSlot { task_id, .. }
+            | Self::ScheduleRetry { task_id, .. }
+            | Self::CancelRetry { task_id, .. }
+            | Self::ScheduleSlowReadmission { task_id, .. }
+            | Self::CancelSlowReadmission { task_id, .. }
+            | Self::ProbeNoSpace { task_id, .. }
+            | Self::PersistConditions { task_id, .. }
+            | Self::PersistHostKeyChallenge { task_id, .. }
+            | Self::PersistHostKeyPinAndClearChallenge { task_id, .. }
+            | Self::PersistHostKeyChallengeRejected { task_id, .. }
+            | Self::PersistTerminal { task_id, .. }
+            | Self::DeleteStoppedTaskMetadata { task_id, .. }
+            | Self::PublishSnapshot { task_id, .. } => *task_id,
+        }
+    }
+
+    #[must_use]
+    pub const fn gid(&self) -> Gid {
+        match self {
+            Self::PersistTask { gid, .. }
+            | Self::PersistQueueTransition { gid, .. }
+            | Self::StageOptionPatch { gid, .. }
+            | Self::ApplyOptionPatch { gid, .. }
+            | Self::PersistGenerationStarted { gid, .. }
+            | Self::StartAllocation { gid, .. }
+            | Self::CancelGeneration { gid, .. }
+            | Self::ReleaseSlot { gid, .. }
+            | Self::ScheduleRetry { gid, .. }
+            | Self::CancelRetry { gid, .. }
+            | Self::ScheduleSlowReadmission { gid, .. }
+            | Self::CancelSlowReadmission { gid, .. }
+            | Self::ProbeNoSpace { gid, .. }
+            | Self::PersistConditions { gid, .. }
+            | Self::PersistHostKeyChallenge { gid, .. }
+            | Self::PersistHostKeyPinAndClearChallenge { gid, .. }
+            | Self::PersistHostKeyChallengeRejected { gid, .. }
+            | Self::PersistTerminal { gid, .. }
+            | Self::DeleteStoppedTaskMetadata { gid, .. } => *gid,
+            Self::PublishSnapshot { snapshot, .. } => snapshot.gid,
+        }
+    }
+
+    #[must_use]
+    pub const fn generation(&self) -> Option<Generation> {
+        match self {
+            Self::PersistGenerationStarted { generation, .. }
+            | Self::StartAllocation { generation, .. }
+            | Self::CancelGeneration { generation, .. }
+            | Self::ScheduleRetry { generation, .. }
+            | Self::CancelRetry { generation, .. }
+            | Self::ScheduleSlowReadmission { generation, .. }
+            | Self::CancelSlowReadmission { generation, .. }
+            | Self::ProbeNoSpace { generation, .. }
+            | Self::PersistTerminal { generation, .. } => Some(*generation),
+            Self::PublishSnapshot { snapshot, .. } => Some(snapshot.generation),
+            Self::PersistTask { .. }
+            | Self::PersistQueueTransition { .. }
+            | Self::StageOptionPatch { .. }
+            | Self::ApplyOptionPatch { .. }
+            | Self::ReleaseSlot { .. }
+            | Self::PersistConditions { .. }
+            | Self::PersistHostKeyChallenge { .. }
+            | Self::PersistHostKeyPinAndClearChallenge { .. }
+            | Self::PersistHostKeyChallengeRejected { .. }
+            | Self::DeleteStoppedTaskMetadata { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn token(&self) -> Option<TaskEventToken> {
+        match self {
+            Self::StageOptionPatch { patch_id, .. } | Self::ApplyOptionPatch { patch_id, .. } => {
+                Some(TaskEventToken::OptionPatch(*patch_id))
+            }
+            Self::ScheduleRetry { retry_timer_id, .. }
+            | Self::CancelRetry { retry_timer_id, .. } => {
+                Some(TaskEventToken::RetryTimer(*retry_timer_id))
+            }
+            Self::ScheduleSlowReadmission { readmission_id, .. }
+            | Self::CancelSlowReadmission { readmission_id, .. } => {
+                Some(TaskEventToken::SlowReadmission(*readmission_id))
+            }
+            Self::ProbeNoSpace { probe_id, .. } => Some(TaskEventToken::NoSpaceProbe(*probe_id)),
+            Self::PersistHostKeyPinAndClearChallenge { resolution_id, .. } => {
+                Some(TaskEventToken::HostKeyResolution(*resolution_id))
+            }
+            Self::DeleteStoppedTaskMetadata { deletion_id, .. } => {
+                Some(TaskEventToken::StoppedResultDeletion(*deletion_id))
+            }
+            Self::PersistTask { .. }
+            | Self::PersistQueueTransition { .. }
+            | Self::PersistGenerationStarted { .. }
+            | Self::StartAllocation { .. }
+            | Self::CancelGeneration { .. }
+            | Self::ReleaseSlot { .. }
+            | Self::PersistConditions { .. }
+            | Self::PersistHostKeyChallenge { .. }
+            | Self::PersistHostKeyChallengeRejected { .. }
+            | Self::PersistTerminal { .. }
+            | Self::PublishSnapshot { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn identity(&self) -> TransitionEffectIdentity {
+        TransitionEffectIdentity {
+            task_id: self.task_id(),
+            gid: self.gid(),
+            kind: self.kind(),
+            generation: self.generation(),
+            token: self.token(),
+        }
+    }
 }
 
 /// Result of one accepted command or event.
@@ -1176,9 +1422,10 @@ mod tests {
     use super::{
         ALL_DRAIN_TARGETS, ALL_NO_SPACE_PROBE_ORIGINS, ALL_QUEUE_CLASSES,
         ALL_SCHEDULER_COMMAND_HANDLINGS, ALL_SCHEDULER_COMMAND_KINDS, ALL_SLOT_OWNERSHIP,
-        ALL_TASK_EVENT_KINDS, DrainTarget, NoSpaceProbeOrigin, QueueClass, QueueOrder,
-        SchedulerCommandHandling, SchedulerCommandKind, SchedulerConfig, SchedulerConfigError,
-        SlotOwnership, TaskEvent, TaskEventKind, TaskEventToken, TransitionEffect,
+        ALL_TASK_EVENT_KINDS, ALL_TRANSITION_EFFECT_KINDS, DrainTarget, NoSpaceProbeOrigin,
+        QueueClass, QueueOrder, SchedulerCommandHandling, SchedulerCommandKind, SchedulerConfig,
+        SchedulerConfigError, SlotOwnership, TaskEvent, TaskEventKind, TaskEventToken,
+        TransitionEffect, TransitionEffectKind,
     };
     use crate::{
         Aria2Status, Generation, Gid, NoSpaceProbeId, RetryTimerId, SlowReadmissionId, TaskId,
@@ -1213,6 +1460,10 @@ mod tests {
             .iter()
             .map(|target| target.code())
             .collect();
+        let effects: BTreeSet<_> = ALL_TRANSITION_EFFECT_KINDS
+            .iter()
+            .map(|kind| kind.code())
+            .collect();
 
         assert_eq!(commands.len(), ALL_SCHEDULER_COMMAND_KINDS.len());
         assert_eq!(events.len(), ALL_TASK_EVENT_KINDS.len());
@@ -1224,11 +1475,13 @@ mod tests {
             ALL_SCHEDULER_COMMAND_HANDLINGS.len()
         );
         assert_eq!(drain_targets.len(), ALL_DRAIN_TARGETS.len());
+        assert_eq!(effects.len(), ALL_TRANSITION_EFFECT_KINDS.len());
         assert_eq!(ALL_SCHEDULER_COMMAND_KINDS.len(), 9);
         assert_eq!(ALL_TASK_EVENT_KINDS.len(), 30);
         assert_eq!(ALL_NO_SPACE_PROBE_ORIGINS.len(), 2);
         assert_eq!(ALL_SCHEDULER_COMMAND_HANDLINGS.len(), 3);
         assert_eq!(ALL_DRAIN_TARGETS.len(), 7);
+        assert_eq!(ALL_TRANSITION_EFFECT_KINDS.len(), 20);
         assert!(commands.contains(SchedulerCommandKind::Pause.code()));
         assert!(events.contains(TaskEventKind::TerminalPersisted.code()));
         assert_eq!(
@@ -1369,5 +1622,14 @@ mod tests {
                 ..
             } if actual_gid == gid && actual_generation == generation
         ));
+        assert_eq!(effect.kind(), TransitionEffectKind::PersistTerminal);
+        assert_eq!(effect.task_id(), TaskId::new(1).expect("task id"));
+        assert_eq!(effect.gid(), gid);
+        assert_eq!(effect.generation(), Some(generation));
+        assert_eq!(effect.token(), None);
+        assert_eq!(
+            effect.identity().kind,
+            TransitionEffectKind::PersistTerminal
+        );
     }
 }

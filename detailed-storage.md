@@ -12,8 +12,10 @@ layout/root hashes, lease/piece evidence, finalization pairs, and whole compact
 checkpoints. Native capability opening and identity revalidation, storage
 execution, and compaction writing remain pending. The file-backed serialized
 appender now provides gap-free typed append, explicit flush acknowledgement,
-latched failure, tail-validated descriptor reopen, and flushed-boundary
-rotation without whole-segment buffering.
+latched failure, tail/content-validated final-segment reopen after exact
+named-file preflight, and flushed-boundary rotation without whole-segment
+buffering. That portable reopen does not establish namespace authority; native
+descriptor-safe acquisition remains pending.
 
 The SQLite side of checkpoint installation now has transactional
 `installing`/`installed` pointer primitives with identity tokens, old-pointer
@@ -26,8 +28,10 @@ count, and bounded slow retry decision; exact v1 stores migrate transactionally
 after semantic preflight and a private no-clobber backup. Retained stopped
 results now use a one-to-one stopped-task/result transaction, and deletion
 atomically removes both metadata rows while densifying the stopped queue. The
-checkpoint state writer, concrete host-key operations, and cross-store
-orchestration remain pending.
+dedicated session owner, challenge-bound host-key operations, and bounded pure
+cross-store reconciliation planning are executable. The checkpoint state
+writer and startup executor that applies capability/install/appender and SQLite
+repair work remain pending.
 
 This document defines `SafePathBuilder`, `FileLayout`, `GlobalOffsetMapper`,
 `StorageEngine`, and `ControlJournal` contracts for HTTP sequential/range
@@ -730,11 +734,15 @@ accepted, but only `PieceDurable` makes a complete piece durable across restart.
 
 ### Appender Ownership And Rotation
 
-Implementation status: the synchronous storage primitive is executable. It
-creates `segment-{index:010}.arxj` through an exclusive `.tmp` candidate,
-syncs the header before install, syncs the parent directory where supported,
-and never overwrites an existing segment path. Async inbox ownership and
-storage-engine fact wiring remain later integration work.
+Implementation status: the synchronous storage primitive and recovered-open
+path are executable. Creation uses an exclusive `.tmp` candidate for
+`segment-{index:010}.arxj`, syncs the header before install, syncs the parent
+directory where supported, and never overwrites an existing segment path.
+Recovered open accepts the exact ordered installed paths plus the expected task
+and journal identities; it applies replay budgets before proportional
+allocation. Its portable path checks are lexical and metadata-only, not a
+filesystem security boundary. Async inbox ownership and storage-engine fact
+wiring remain later integration work.
 
 Each task has exactly one serialized `ControlJournalAppender`. It alone assigns
 the next gap-free `sequence`, encodes records, rotates segments, and performs
@@ -785,9 +793,49 @@ Rotation happens only after a flushed record boundary. The appender syncs and
 closes the old segment, hashes its valid bytes, creates the next segment under a
 temporary name with `segment_index + 1`, `first_sequence = last_sequence + 1`,
 the current generation, and the previous segment's last-sequence/hash link,
-then syncs and atomically installs the new segment, syncs its parent directory
-where supported, and only then appends to it. Old segments remain immutable and
-are removed only by checkpoint retirement below.
+then publishes the new segment with an atomic no-clobber hard link, syncs its
+parent directory where supported, removes the private candidate name, syncs the
+directory again, and only then appends to it. A publication collision preserves
+the existing destination. A crash or barrier/unlink failure after publication
+can leave the final name alone or both names for the candidate inode even though
+the install did not return success. Startup must validate the exact expected
+header/linkage at the final name and, when both names remain, remove the
+candidate only after proving both names identify the same file. A foreign final
+name or candidate fails closed. A filesystem that cannot provide the no-clobber
+hard link fails with the typed install operation; it never falls back to an
+overwriting rename. Old segments remain immutable and are removed only by
+checkpoint retirement below.
+
+`ControlJournalAppender::open_recovered` is legal only while the session owner
+holds the task's exclusive persistence ownership. Every supplied path must be
+the exact deterministically named file for its position in the supplied
+directory and must pass the portable regular-file preflight; the first header
+must match the task gid and installed `journal_id`. This lexical/path-metadata
+check is not a descriptor-safe descendant open and does not bind later pathname
+opens to the objects inspected by preflight. Native startup must acquire and
+revalidate the private journal directory and segment descriptors through the
+platform capability adapter, and must exclude namespace mutation for the full
+recovered-open call, so a symlink, hard-link alias, or replacement race cannot
+turn the portable preflight into authority. Empty
+sets, reordered or missing indexes, header/identity/linkage mismatches,
+sequence gaps between otherwise complete records, and replay-budget exhaustion
+reject the open without publishing an appender.
+
+At a clean end, recovered open reconstructs the exact next sequence and tail
+fingerprint, reopens the final segment, validates its complete bytes, length,
+header, and final record, and completes `sync_all` before those installed valid
+bytes are represented as flushed or it may append at EOF. A record-invalid or
+torn suffix is repairable only in the final
+installed segment. Recovery truncates that file to the authoritative committed
+record boundary, calls `sync_all`, and never writes after the rejected bytes.
+When the repaired segment contains a committed record, it is sealed and hashed
+at that valid length and a fresh no-clobber successor is installed through the
+ordinary linkage protocol before any new fact is appended. If the authoritative
+prefix of the first segment is header-only, version 1 cannot encode a successor
+whose previous sequence is zero; recovery therefore reopens that trimmed empty
+segment after validating it. A corrupt non-final segment, corrupt header,
+reordered set, mismatched link, or pre-existing successor/candidate is not
+silently replaced or overwritten.
 
 ### Checkpoint Compaction
 

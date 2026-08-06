@@ -1,9 +1,12 @@
 # Detailed Runtime, Queues, And Buffer Design
 
-Status: first-slice implementation in progress. Dual byte permits, the stable
-`BufferLease` state machine, bounded lazy pool/quarantine, item+byte queue
-credits, and reserved completion delivery are implemented. Async Tokio lanes,
-native cancellation, runtime topology, and percentile timing remain pending.
+Status: first-slice implementation in progress. The poll-driven scheduler
+driver, immutable applied status roots, dual byte permits, stable `BufferLease`
+state machine, bounded lazy pool/quarantine, item+byte queue credits, reserved
+completion delivery, the bounded blocking write lane, and the session-owner
+persistence composition sink are implemented. The bounded move-only shutdown
+coordinator is also executable. Async Tokio lanes, native kernel cancellation,
+runtime topology, and percentile timing remain pending.
 
 This document defines the concrete runtime lanes, bounded queues, buffer leases,
 and cancellation behavior used by HTTP and storage in the first slice.
@@ -37,6 +40,92 @@ future lane kind so diagnostics and max-thread accounting do not change shape.
 The session lane is present because the default hybrid store is part of the
 first slice; memory-only tests omit it under the reduced thread minimum defined
 by `threading-model.md`.
+
+## Scheduler Driver And Applied Status
+
+`SchedulerDriver<S: SchedulerEffectSink>` is the sole mutable owner of
+`RequestScheduler`. It accepts one external command or event only while idle,
+then advances through the resulting effects through an explicit `poll` method.
+`DispatchedEffect` pairs an immutable `TransitionEffect` with a nonzero
+`EffectDispatchId` assigned from a process-unique allocator. The allocator
+never wraps or reuses an exhausted id, so a completion routed from a separately
+constructed driver cannot alias the current effect even when both drivers
+otherwise have matching task state.
+
+Rules:
+
+- only one scheduler outcome and one sink effect are active at a time,
+- `PublishSnapshot` is applied locally and is never sent to an adapter,
+- a sink `Full` result leaves the same dispatch id and effect pending for an
+  exact retry; `Closed` or `Failed` permanently faults the driver,
+- every accepted sink effect returns exactly one `EffectCompletion`; completions
+  must arrive in dispatch order and may contain only an acknowledgement event
+  valid for that effect identity,
+- a completion carrying another driver's dispatch id is rejected before it can
+  advance the current effect or staged publication root,
+- acknowledgements produced by an effect are deferred until the complete
+  producing effect vector has been applied, preventing scheduler re-entry in
+  the middle of an ordered batch,
+- acknowledgement-derived outcomes run before a new external input and share
+  the same staged publication root,
+- a batch chain publishes at most one new immutable status root, and publishes
+  nothing if dispatch faults,
+- callers never receive mutable access to the sink. A sink may expose one typed
+  preparation value through `SchedulerEffectSinkPrepare`; the driver accepts
+  that value only at the same unfaulted idle boundary as an external scheduler
+  input, so preparation cannot invoke or race the ordered dispatch/completion
+  path,
+- driver faults are sticky and reject further mutation.
+
+`SchedulerDriver` exclusively owns its non-cloneable `StatusSnapshotStore`.
+Callers receive cloneable `StatusSnapshotReader` handles, never a writer lineage
+that can be attached to another driver. Each load returns one immutable
+`Arc<StatusSnapshotRoot>` containing the revision, snapshots paired with their
+exact `TaskId`, and dense orders for `Waiting`, `Demoted`, `Paused`, `Active`,
+and `Stopped`. Readers release the store lock immediately after cloning the root
+and never hold scheduler or adapter locks while formatting. Revision zero is the
+empty root; each material committed replacement increments the revision exactly
+once. Publication rejects reused process-local `TaskId` values and requires each
+task's only queue membership to match its snapshot state. Retry-wait membership
+is selected by `retry_wait_holds_slot`; `PausedRestarting` may remain `Active`
+while cancellation drains or be `Waiting` after slot release. Terminal-pending
+states remain unpublishable and `StoppedResult` belongs only to `Stopped`.
+
+Startup passes `SchedulerRestorePlan` to `SchedulerDriver::begin_restore` before
+publishing the driver or its snapshot handle to other lanes. The driver stages
+all five recovered queue orders, drains every dispatcher-sized restore batch,
+and publishes exactly one complete root only after all recovered timer and
+no-space-probe effects have been accepted. Restore acknowledgements are
+forbidden. A full or temporarily backpressured sink retries the exact
+dispatch; a closed, failed, or forged sink
+completion faults startup and leaves the store at empty revision zero. Restore
+is rejected against a nonempty snapshot store, and a plan whose private binding
+does not exactly match the supplied scheduler or whose batch cursor is no longer
+pristine is rejected before any effect is offered.
+
+The host-level persistence composition sink splits this contract without
+weakening it. `PublishSnapshot` remains driver-local. Persistence effects are
+matched against a bounded catalog entry containing the complete, exact
+`TransitionEffect`; all other effects are delegated to one downstream
+`SchedulerEffectSink`. A catalog entry is consumed only after its first owner
+command is accepted. A full session-owner queue retains the owned command and
+the exact dispatch for retry.
+
+Each persistence plan is validated before catalog admission. It contains only
+the command sequence permitted for that effect kind, binds every GID,
+generation, patch/challenge/resolution/deletion token, queue state/order, and
+terminal status visible in both layers, and is capped in logical steps and
+catalog entries. Journal durability steps expand to exactly one append followed
+by one flush through the returned sequence. The sink advances at most one
+session-owner command at a time and validates every typed result before issuing
+the acknowledgement required by the scheduler. The current composition
+represents only one failure: `StageOptionPatch` produces
+`OptionPatchPersistenceFailed` for a definite first-append rejection before any
+append evidence. Once mutation may have occurred, including an accepted
+host-key-resolution or stopped-result-deletion command, or for an owner
+disconnect/timeout, unexpected result, later flush failure, or SQLite mirror
+failure, the sink returns `UnrepresentableFailure` and faults the driver for
+recovery. A missing/mismatched plan is likewise driver-fatal.
 
 ## ResourceManager
 
@@ -406,6 +495,27 @@ Rules:
   state. The session record is explicitly dirty, and recovery applies the
   libtorrent fallback/recheck policy.
 
+`ShutdownCoordinator` implements this ordering as a bounded poll-driven batch.
+`begin` is an out-of-band operation and therefore does not reserve capacity in
+an ordinary work queue. Minimal builds execute stop-admission, disk/CPU drain,
+journal flush, and session persistence; full builds insert BT quiesce,
+checkpoint, and final stop at their fixed positions above. Each coordinator
+mints one process-unique nonzero authority id, and every sequence-tagged
+`ShutdownTicket` is privately bound to that exact authority. A ticket from a
+separately constructed coordinator is stale even when its step, sequence,
+deadline, and dirty bit otherwise match. Stale or out-of-order completion is
+rejected, and authority/sequence exhaustion is a typed error. Each step has a
+validated nonzero timeout. The coordinator is move-only: it cannot be cloned or
+copied into a second authority that could accept the same ticket and duplicate
+a shutdown barrier.
+
+Failure or timeout marks the checkpoint dirty but advances through the
+remaining cleanup steps, including journal flush and session persistence. The
+session-persistence ticket exposes that dirty state so the store cannot record
+a clean checkpoint after an earlier failure. The final report is clean only if
+every selected step completed successfully; it retains bounded bitsets and the
+first failure rather than allocating an unbounded error list.
+
 ## Disk Backend Contract
 
 This is the normative runtime dispatch definition. `event-backends.md` and
@@ -476,6 +586,74 @@ There is no lease-less write error. The storage engine either advances it to
 when OS ownership is cancellation-uncertain. Short writes are errors with the
 lease present; retry never aliases or reconstructs ownership through a side
 channel.
+
+### Bounded Blocking Write Lane
+
+`BlockingDiskLane` is the first portable `BlockingPoolBackend` primitive. It
+owns a fixed set of named OS workers and a bounded FIFO. Constructing the lane
+is the only operation that creates workers; one disk submission never creates
+an OS thread. The lane accepts only opaque, already-safe `BlockingFileHandle`
+capabilities. It has no path-taking operation and therefore cannot turn a
+display or persisted path back into authority.
+
+Admission is fail-fast and atomic:
+
+1. require the submission's non-cloneable cancellation registration,
+2. reject reactor-context calls in module tests,
+3. validate the operation id, backend epoch, handle binding, exact lease
+   length, and checked `offset + length` against the handle's authorized span,
+4. acquire the hard accepted-byte charge and one reserved completion slot,
+5. under the queue lock, recheck shutdown and item capacity, transition the
+   move-only lease to `DiskQueued`, and enqueue it.
+
+`BlockingDiskCancelHandle` is the cloneable user cancellation handle.
+`BlockingDiskCancellationRegistration` is minted with it as one pair, is not
+cloneable, and moves into exactly one `BlockingDiskSubmission`. Every rejection
+returns that same submission with the exact lease and unchanged cancellation
+state, so transient backpressure can retry it. Once accepted, the registration
+moves into the worker-owned item and cannot be reused by another operation.
+This prevents two operation ids from sharing one cancellation state and
+manufacturing a false cancellation.
+
+Failure before step 5 returns the unchanged lease to the submitter. Once step 5
+succeeds, exactly one worker owns the lease. A worker either confirms queued
+cancellation and returns it as `Releasable`, or transitions it through
+`DiskInFlight` to `DiskDone` and emits one typed success, short-write, backend,
+or worker-panic result. The accepted-byte charge travels with the completion,
+so it is not released until the consumer takes or drops that exact outcome.
+Each accepted operation reserves its `CompletionPermit` before enqueue; worker
+completion is consequently non-rejecting even when submission admission and
+the receiver are closing.
+
+Normal shutdown takes an explicit timeout, clamped to a 300-second hard
+maximum. It first closes submission and completion admission, prevents workers
+from claiming another queued item, and returns each still-queued lease in a
+`WorkerAborted` outcome. Running calls may finish until the bounded deadline.
+Workers report exit through a fixed-capacity nonblocking channel; shutdown joins
+only workers that both reported exit and are observed finished. At the deadline
+it detaches every remaining join handle without manufacturing an outcome for a
+lease still owned by that worker.
+
+`BlockingDiskShutdown` reports joined panics, detached workers, the in-flight
+count sampled at timeout, whether the completion drain closed, and every
+outcome already available. Any detached or in-flight worker makes
+`completion_closed` false. The caller must treat the affected backend epoch and
+files as write-uncertain: do not reopen, fail over, finalize, or continue using
+them in this process. Graceful shutdown records a dirty checkpoint and proceeds
+to process exit; recovery treats any uncommitted provisional write as pending.
+If a detached call later returns before exit, its now-unclaimed outcome follows
+the lease quarantine-on-drop fail-safe. The lane never fake-returns that lease.
+
+`Drop` is nonblocking: it performs the same stop-admission and queued-abort
+steps, joins only workers already reported and finished, and immediately
+detaches the rest. This zero-wait policy prevents a destructor from defeating
+the coordinator's explicit shutdown deadline. A post-close submission is
+rejected with its unchanged lease.
+
+Construction rejects zero or implementation-defined oversized worker, item,
+and completion capacities before allocation. All queue, identity-set, and
+worker-handle reservations are fallible and map allocation failure to a typed
+start error rather than panicking on capacity overflow.
 
 ## Metrics
 

@@ -1,8 +1,11 @@
 # Detailed Core Design
 
-Status: first-slice scheduler kernel implemented. The exhaustive transition
-matrix, deterministic command/event executor, barriers, queues, correlation
-tokens, and bounded effects are executable; runtime/storage dispatch remains
+Status: first-slice scheduler kernel and ordered runtime driver implemented. The
+exhaustive transition matrix, deterministic command/event executor, barriers,
+queues, correlation tokens, bounded effects, effect identities, staged applied
+snapshots, and one-effect-at-a-time dispatch are executable. The bounded
+session-persistence sink is executable; concrete timer, allocation,
+cancellation, option-application, no-space, and native I/O adapters remain
 pending.
 
 This document defines the core types and state machines shared by config,
@@ -192,15 +195,19 @@ Rules:
 
 Task state is controlled only by `RequestScheduler`.
 
-The current checkpoint implements the closed command/event/action vocabularies,
-the exhaustive state × semantic-action contract, wire projection, and generated
-`state_wire.json` artifact. `RequestScheduler` executes commands and
-`TaskEventEnvelope { task_id, event }` inputs, owns dense queues and slot state,
-orders `TransitionEffect` values, enforces `MAX_SCHEDULER_EFFECTS`, and rejects
-stale task ids, generations, patch ids, and timer/readmission/probe tokens
-without mutation. Option, cancellation, terminal, deletion, and host-key work
-uses correlated acknowledgement barriers. The production dispatcher that
-applies these effects to runtime and storage adapters is not yet implemented.
+The current checkpoint implements the closed command/event/action/effect
+vocabularies, the exhaustive state × semantic-action contract, wire projection,
+and generated `state_wire.json` artifact. `RequestScheduler` executes commands
+and `TaskEventEnvelope { task_id, event }` inputs, owns dense queues and slot
+state, orders `TransitionEffect` values, enforces `MAX_SCHEDULER_EFFECTS`, and
+rejects stale task ids, generations, patch ids, and timer/readmission/probe
+tokens without mutation. Every effect exposes its closed
+`TransitionEffectKind`, immutable `(TaskId, Gid)` owner, and optional generation.
+Option, cancellation, terminal, deletion, and host-key work uses correlated
+acknowledgement barriers. `SchedulerDriver` now applies these batches in order,
+and the `ariax-engine` persistence sink routes the SQLite and journal branches
+through the dedicated session owner. Timer, allocation, option-application,
+cancellation, and native no-space-probe adapters remain integration work.
 Current full-GID membership is resolved before event identity disposition: an
 event for a GID with no current task returns `TaskNotFound`, while an event for
 a reused GID is stale when its immutable `TaskId` identifies the deleted task.
@@ -212,6 +219,49 @@ adapters submit them; `OrderlyShutdown` remains a bounded-batch placeholder.
 set is `Accepted`, `Waiting`, `WaitingSlow`, `Allocating`, `Active`,
 `RetryWait`, `Paused`, `PausedSlow`, `PausedHostKey`, `PausedRestarting`,
 `Verifying`, `Seeding`, `Complete`, `Error`, `Removed`, and `StoppedResult`.
+
+### Scheduler Recovery Construction
+
+Startup restores scheduler-owned state through one atomic constructor rather
+than replaying ordinary add/pause/event commands:
+
+```rust
+RequestScheduler::restore(config, SchedulerRestoreBatch)
+    -> Result<(RequestScheduler, SchedulerRestorePlan), SchedulerRestoreError>
+```
+
+The batch contains exact queue orders and recovery-normalized tasks. The only
+accepted states are `Waiting`, `WaitingSlow`, `RetryWait`, `Paused`,
+`PausedSlow`, `PausedHostKey`, and `StoppedResult`; startup maps persisted
+active work to `Waiting` before calling the constructor. Restored work owns no
+active slot and has no persistence, cancellation, option, host-key-resolution,
+or deletion barrier.
+
+Construction validates the complete batch before publishing any task. GIDs and
+process-local `TaskId`s are unique, all five queues are present exactly once and
+dense, every task occurs in exactly its state-derived queue, generations and
+conditions are valid, `WaitingSlow` carries its persisted slow-slot decision,
+`RetryWait` carries a live recovered deadline, `PausedHostKey` carries the exact
+bounded challenge, and `StoppedResult` carries one terminal status plus the
+required public error for an error result. Rejection leaves no partially built
+scheduler.
+
+Retry, slow-readmission, and persisted no-space waits receive fresh
+scheduler-owned correlation ids. The move-only `SchedulerRestorePlan` is the
+sole publication authority for that recovered lineage and yields its timer or
+probe effects in bounded batches rather than allocating one unbounded effect
+vector. A no-space probe carries the recovered monotonic deadline and may
+coexist with the task's retry or slow-readmission timer. Initial task snapshots
+are created only after validation of the whole batch; the runtime driver
+installs those snapshots and all queue membership in one applied-view root
+after startup reconciliation succeeds. The plan carries a private exact binding to the
+constructed scheduler, including its complete task state, correlation ids,
+last-emitted snapshots, and all five queue orders. The runtime rejects a plan
+paired with any other or subsequently mutated scheduler, or a plan whose public
+batch cursor was already consumed, before dispatching one effect or drafting a
+public root. The startup coordinator allocates fresh
+`TaskId`s in ascending GID order because task ids are deliberately not
+persisted.
 
 Recoverable admission blockers are orthogonal conditions, not additional task
 states and not overloaded user-pause state:
@@ -229,11 +279,16 @@ pub struct NoSpaceCondition {
 ```
 
 `TaskConditions` is scheduler-owned, bounded, and included in extension
-snapshots. A condition prevents `Waiting -> Allocating` until its explicit
-clear rule succeeds. It does not overwrite SQLite's desired-pause authority:
-user pause can coexist with either condition, clearing a condition never
-implicitly clears user pause, and recovery reconstructs the task as `Paused`
-or `Waiting` from that desired state before applying the admission gate.
+snapshots. A condition prevents admission until its explicit clear rule
+succeeds. Conditions may be retained only by the non-live schedulable states
+`Waiting`, `WaitingSlow`, `RetryWait`, `Paused`, and `PausedSlow`; they are
+invalid on active, terminal, restart-barrier, and host-key-challenge states.
+They do not overwrite SQLite's desired-pause authority: user pause can coexist
+with either condition, clearing a condition never implicitly clears user
+pause, and recovery preserves a recovered retry or slow-readmission wait while
+applying the orthogonal admission gate. `no_space` projects `paused` while it
+is set; `needs_credentials` projects according to SQLite's desired-pause
+authority.
 
 State transition record:
 
@@ -274,7 +329,12 @@ Rules:
   allocation/write readiness probe without admitting work. A later `Pause`
   records paused intent and wins over that outstanding probe. Probe completion
   consults the current desired-pause authority, clears the condition only on
-  success, and otherwise retains `NoSpace` without losing durable progress.
+  success, and otherwise retains `NoSpace` without losing durable progress. A
+  persisted retry deadline issues a fresh `AutomaticRetry` probe with its own
+  `NoSpaceProbeId`; a failed probe that returns another deadline persists that
+  deadline and schedules a fresh id. Retry and slow-readmission timers may
+  become ready while no-space remains set, but neither gate can admit until the
+  condition clears.
 - `Removed` cancels workers and follows configured partial-file policy.
 
 ### Span Run States And Lease-Level Retry
@@ -329,6 +389,9 @@ provisional storage lease has either committed or been acknowledged by
 | `Waiting` / `Paused` with `needs_credentials` | accepted satisfying credential/source update | unchanged | clear only `needs_credentials`; preserve desired pause and any other condition |
 | `Waiting` with `no_space` | explicit resume or auto-retry probe succeeds | `Waiting` | clear only `no_space`; await normal admission under a fresh generation |
 | `Waiting` with `no_space` | explicit resume or auto-retry probe fails | `Waiting` | retain the condition/durable state and report/update the next retry deadline; wire status remains `paused` |
+| `RetryWait` / `WaitingSlow` with `no_space` | auto-retry probe completes | unchanged | clear or retain only `no_space`; preserve the independent retry/readmission timer and its ready state |
+| `WaitingSlow` with `no_space` | explicit resume requests a probe | `Waiting` | cancel the slow-readmission timer, clear slow metadata, and let user intent override the cooldown without bypassing no-space |
+| `RetryWait` with `no_space` | explicit resume requests a probe | `RetryWait` | preserve the retry timer/ready state and issue or retain one identified no-space probe |
 | `Paused` with `no_space` | explicit resume requests a probe | `Paused` | persist `desired_paused=false`, issue a fresh identified probe, and admit no work while the result is pending |
 | `Paused` with `no_space` and current `desired_paused=false` | probe succeeds | `Waiting` | clear only `no_space`; await normal admission |
 | `Paused` with `no_space` and current `desired_paused=false` | probe fails | `Waiting` | retain `no_space`; wire status remains `paused` even though user-pause intent is clear |
@@ -491,12 +554,22 @@ Rules:
 The scheduler retains the last snapshot for which it emitted
 `PublishSnapshot`; `RequestScheduler::snapshot()` exposes that last-emitted
 value, not a durable/applied RPC view. `task()` and `queue_snapshot()` expose
-planned scheduler state for integration and tests. Production RPC must read a
-separate snapshot store updated by the ordered effect dispatcher. A pending or
-failed stopped-result deletion retains the stopped snapshot. The acknowledged
-`TaskDeletion` is the removal boundary: the scheduler then returns
-`TaskNotFound`, and the dispatcher must evict the corresponding external
-snapshot entry.
+planned scheduler state for integration and tests. Production RPC reads
+`StatusSnapshotStore`, whose immutable `Arc` root pairs every snapshot with its
+exact `TaskId`, includes all five queue orders, and carries a monotonically
+increasing revision. The driver stages snapshot and membership edits until all
+earlier effects and any acknowledgement outcomes derived from the batch have
+succeeded, then swaps one root. A pending or failed stopped-result deletion
+retains the stopped snapshot. The acknowledged `TaskDeletion` is the removal
+boundary: eviction succeeds only when the root still contains the exact
+`(TaskId, Gid)` pair, so a delayed deletion cannot remove a reused GID.
+Before the swap, the runtime validates that GIDs and process-local `TaskId`s are
+both unique, every task has exactly one membership, and that membership agrees
+with the state-derived queue. `RetryWait` uses `retry_wait_holds_slot` to select
+`Active` or `Waiting`; `PausedRestarting` permits those same two drain phases.
+No caller receives the driver's mutable effect sink. Host composition can
+register an exact persistence plan only through the sink's typed preparation
+contract while the driver is unfaulted and idle.
 
 ## Cancellation
 
@@ -528,14 +601,24 @@ conditions, host-key resolution, terminal retention, deletion, and snapshot
 publication. These are adapter contracts, not journal records. The scheduler
 never assigns journal sequence numbers or writes SQLite directly.
 
-The dispatcher must preserve effect order and convert acknowledgements back to
-the exact `TaskId`, generation, and operation token. Atomic terminal retention
-keeps the task row as the stopped-queue owner and pairs it one-to-one with the
-canonical stopped result; deletion removes both metadata rows and densifies the
-remaining stopped queue. The concrete host-key write/approval storage API is
-still pending. Retry and no-space effects currently carry live monotonic
-deadlines and require a persistence-safe wall-clock decision plus recovery
-mapping before crash recovery is complete.
+`SchedulerDriver` preserves effect order with at most one dispatched effect in
+flight. A full sink is retried with the same `EffectDispatchId` and payload;
+closed admission, an unrepresentable adapter failure, a forged or out-of-order
+completion, and an acknowledgement that does not match the effect's exact
+`TaskId`, `Gid`, generation, or operation token are driver-fatal. Completion
+acknowledgements are queued until the producing scheduler outcome has finished,
+then executed before the staged public root is committed. This makes terminal
+visibility begin only with the matching `TerminalPersisted` outcome and makes
+successful stopped-result deletion evict snapshot and membership together.
+
+Atomic terminal retention keeps the task row as the stopped-queue owner and
+pairs it one-to-one with the canonical stopped result; deletion removes both
+metadata rows and densifies the remaining stopped queue. The session store now
+provides challenge-bound host-key resolution, and the persistence sink maps the
+matching scheduler effects through the bounded owner. Persisted-delay recovery
+maps retry, slow-readmission, and no-space wall decisions to fresh correlated
+monotonic effects. Live timer/no-space native adapters, the startup application
+executor, and upstream credential-requirement derivation remain pending.
 
 On recovery, the control journal is authoritative for durable layout and
 terminal/durable state, while SQLite is authoritative for queue membership,
@@ -572,7 +655,10 @@ Required first-slice tests:
 - generic resume cannot approve `PausedHostKey`; explicit approval requires the
   current challenge id and fingerprint and rejects a raced/new challenge,
 - mid-transfer ENOSPC sets `no_space`, preserves durable pieces, projects
-  `paused`, and clears only after a successful explicit/timed readiness probe,
+  `paused`, schedules a correlated persisted-deadline probe after cancellation
+  drains, and clears only after a successful explicit/timed readiness probe,
+- recovered or rescheduled no-space probes use fresh ids, preserve simultaneous
+  retry/slow-readmission waits, and reject stale/duplicate completions,
 - a pause or re-pause racing an explicit no-space probe remains authoritative;
   the later probe completion may update `no_space` but cannot requeue the task,
 - `WaitingSlow` demotion/readmission projects `waiting`, honors

@@ -2,19 +2,24 @@
 
 Status: reviewed contract with implementation in progress. Portable path
 normalization/rejection, persisted root bindings, and bounded control-journal
-framing/replay plus all 24 bounded typed payload codecs are executable. Native
-policy-gated option-secret rejection and typed semantic state recovery are also
+framing/replay plus all 24 bounded typed payload codecs are executable.
+Policy-gated option-secret rejection and typed semantic state recovery are also
 executable, including digest-bound different-identity rebind records. Native
 capability acquisition, safe descendant open/revalidation, and complete startup
-filesystem/journal reconciliation remain pending. Durable journal append/flush,
-latched appender failure, tail-validated descriptor reopen, and linked rotation
-are executable. SQLite session schema v2 rejects newer/unversioned schemas
-fail-closed, preflights and privately backs up exact v1 databases before their
-transactional migration, verifies hard limits and bounded persisted records,
+filesystem reconciliation remain pending. The bounded pure cross-store startup
+planner and atomic scheduler reconstruction are executable. Durable journal
+append/flush, latched appender failure, tail/content-validated final-segment
+reopen after portable exact-name preflight, and linked rotation are executable;
+that reopen does not establish native namespace authority. SQLite session schema
+v2 rejects newer/unversioned schemas fail-closed, preflights and privately backs
+up exact v1 databases before their transactional migration, verifies hard limits
+and bounded persisted records,
 rechecks task-option and host-key semantics on read, retains stopped results
 atomically with queue ownership, enforces private database artifacts, and
-transactionally rechecks tokenized journal-install pointers. The bounded
-session-store owner thread remains pending.
+transactionally rechecks tokenized journal-install pointers. A bounded
+session-store owner thread and exact persistence-effect composition boundary
+are executable; the executor for the returned SQLite repairs, journal-install
+work, appender recovery, and native capabilities remains pending.
 
 This document turns the safety requirements into enforceable design rules.
 
@@ -374,8 +379,107 @@ leave or resurrect both names for one inode. Normal unique-link validation then
 rejects the backup until a future recovery step verifies and removes only the
 generated same-file alias. A native atomic no-replace publication primitive is
 also acceptable. This recovery, full crash-point window, and unlink-error
-injection are required before production use or tagging.
-Scheduling these primitives on the dedicated store thread remains pending.
+injection are required before production use or tagging. Backup residue
+recovery and periodic backup/checkpoint scheduling on the dedicated store
+thread remain pending.
+
+## Bounded Cross-Store Startup Reconciliation
+
+The `ariax-engine` composition layer owns the first executable reconciliation
+boundary. It accepts one bounded `SessionStartupSnapshot`, exactly one
+already-replayed semantic journal state for every SQLite task GID, and exactly
+one caller-derived credential-admission record for every task. The credential
+record carries either the precise non-secret scheduler requirement or an
+explicit `None`; omission is rejected rather than silently interpreted as "no
+credentials required." Deriving those records from the restored redacted
+source/option set remains composition work and is not performed by the pure
+reconciler.
+
+Journal opening, segment-tail repair, native root-capability reconstruction,
+install-candidate validation, and appender descriptor acquisition happen
+outside this pure boundary. The reconciler returns typed repair and deferred
+recovery requests for an external startup executor; it never treats a display
+path as an opened capability or claims those requests were applied.
+
+Before producing scheduler state it validates all of the following as one
+atomic batch:
+
+- the SQLite task GID set and supplied journal GID set are identical, with no
+  duplicate GID, journal id, or persisted journal `TaskId`,
+- each supplied journal id is the task's phase-authoritative primary journal
+  id, pending install intents refer to an existing task, an `installed` row
+  matches the recovered checkpoint id and frozen source sequence, an
+  `installing` row cannot claim a source sequence beyond the recovered old
+  prefix, and replica sequence evidence never exceeds that primary prefix,
+- every task belongs to exactly one dense zero-based SQLite queue and every
+  task references the one recovered session row,
+- SQLite stopped rows/results require a matching journal terminal marker and
+  cannot manufacture completion; a journal `TaskComplete` that won the crash
+  race over SQLite instead normalizes to `StoppedResult` and emits bounded
+  deferred `PersistStoppedResult` repairs in ascending GID order; every repair
+  carries the exact intermediate source/stopped queue orders required to run
+  the sequence directly; an already-stopped completion cache must exactly
+  retain the journal's final length and layout hash rather than treating a
+  missing optional cache field as a match,
+- a retained host-key challenge appears exactly once, belongs to a nonterminal
+  paused task, matches a journal `HostKeyApproval` pause marker, and passes the
+  scheduler challenge constructor unchanged,
+- persisted task retry, slow-readmission, and no-space wall decisions are
+  valid under `PersistedDelayDecision`; the orthogonal no-space probe may
+  coexist with a retry or slow-readmission timer, while an unrepresentable
+  task-retry plus slow-readmission conflict fails closed.
+
+Authority is applied in one direction. Journal generation, option-snapshot
+identity, layout/root hashes, retry evidence, and terminal markers win over
+SQLite caches. SQLite owns queue order and desired pause. A crash-time `Active`
+row never recreates a live slot: it is normalized to `Waiting`, or `Paused`
+when desired pause is set. Existing waiting rows precede normalized active rows
+in the rebuilt waiting queue; existing paused rows precede crash-time rows
+normalized into the paused queue. Demoted, stopped, and direct paused order is
+otherwise preserved exactly. Journal `TaskPaused` is only a task-local marker;
+it specializes a SQLite paused row as slow or host-key paused but does not
+invent queue membership.
+
+Normalization is a pre-publication draft, not an already-committed cross-store
+state. Any crash-time `Active` row, or desired-pause row whose normalized queue
+differs from SQLite, produces an exact bounded queue repair. Those repairs carry
+the complete intermediate source/target orders and must be applied and
+acknowledged in the returned order before terminal repairs. Journal-authorized
+terminal repairs follow and likewise carry their exact intermediate orders.
+No restore snapshot, timer, probe, or task admission may be published until the
+whole repair sequence succeeds. A failed or out-of-order repair leaves startup
+unpublished and must be retried or failed closed.
+
+Exactly one task-scope retry record is representable as scheduler
+`RetryWait`; URI/span/piece retries remain task-owned journal metadata. A
+demoted row requires its persisted slow decision. Expired decisions produce a
+fresh monotonic deadline equal to startup time so the normal correlated timer
+path runs immediately. No-space recovery retains the exact native target only
+in a bounded move-only target catalog and publishes a fixed redacted scheduler
+description. The catalog entry is bound to the fresh task id, GID, generation,
+and recovered deadline. It can be consumed once only by the matching scheduler
+`ProbeNoSpace` effect; the scheduler remains the sole allocator of the fresh
+probe correlation id, which is adopted from that effect rather than predicted
+by recovery. Backwards clocks wait the bounded full persisted delay; forward
+jumps cannot lengthen it.
+
+Fresh process-local `TaskId` values are allocated in ascending GID order.
+`RequestScheduler::restore` then validates the complete five-queue batch and
+creates fresh timer correlation ids. The result contains the scheduler and its
+bounded restore-effect plan, per-task journal state, journal-cache/root repair
+metadata, exact ordered SQLite repairs, deferred appender-open requests,
+pending install recovery requests, and the move-only no-space target catalog.
+
+An `installing` intent suppresses a direct appender-open request because native
+candidate validation may either retain the old set or install the new set.
+Install recovery is bound to the fresh task identity and recovered authoritative
+sequence; it must validate the candidate's native path/header, linked prefix,
+checkpoint envelope/state hash, id, and frozen source sequence, then return the
+final appender request. An `installed` intent must already match the supplied
+recovered checkpoint, but native old-set retirement and path/capability checks
+remain deferred. Native root identity and descendant revalidation likewise
+remain mandatory before admission. No scheduler state is published if any
+input, repair, native recovery step, or final restore batch is rejected.
 
 ## Durable Completion
 

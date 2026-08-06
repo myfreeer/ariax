@@ -10,6 +10,7 @@ mod journal_tags;
 mod layout;
 mod path;
 mod root_binding;
+mod session_owner;
 mod session_store;
 
 pub use journal::{
@@ -68,19 +69,30 @@ pub use root_binding::{
     PlatformPath, ROOT_BINDING_HASH_DOMAIN, RootBinding, RootBindingError, RootBindingHash,
     RootIdentity,
 };
+pub use session_owner::{
+    ALL_SESSION_OWNER_ERROR_CODES, ALL_SESSION_PERSISTENCE_ERROR_CODES,
+    SESSION_OWNER_DEFAULT_CAPACITY, SESSION_OWNER_DEFAULT_SHUTDOWN_TIMEOUT,
+    SESSION_OWNER_DEFAULT_STARTUP_TIMEOUT, SESSION_OWNER_MAX_CAPACITY, SESSION_OWNER_MAX_WAIT,
+    SessionCommand, SessionCommandResult, SessionCompletion, SessionHandle, SessionOwner,
+    SessionOwnerConfig, SessionOwnerError, SessionOwnerShutdown, SessionOwnerWait,
+    SessionPersistenceError, SessionStartupSnapshot, SessionSubmitError,
+};
 pub use session_store::{
     ALL_SESSION_IO_OPERATIONS, ALL_SESSION_SQLITE_LIMITS, ALL_SESSION_STORE_ERROR_CODES,
     JournalInstallIntent, JournalInstallPhase, JournalInstallToken, SESSION_BUNDLED_SQLITE_FLAGS,
-    SESSION_BUSY_TIMEOUT_MS, SESSION_DEFAULT_CACHE_KIB, SESSION_INSTALL_READ_BUDGET_BYTES,
-    SESSION_MAX_ALGORITHM_BYTES, SESSION_MAX_BT_RESUME_BYTES, SESSION_MAX_CACHE_KIB,
-    SESSION_MAX_HOST_KEY_BYTES, SESSION_MAX_OPTIONS_PER_TASK, SESSION_MAX_SAFE_MESSAGE_BYTES,
-    SESSION_MAX_SAFE_URI_BYTES, SESSION_MAX_TASKS, SESSION_MIN_CACHE_KIB, SESSION_MMAP_SIZE_BYTES,
-    SESSION_OWNER_LOCK_SUFFIX, SESSION_PAGE_SIZE_BYTES, SESSION_RUSQLITE_FEATURES,
-    SESSION_RUSQLITE_VERSION, SESSION_SCHEMA_OBJECTS, SESSION_SCHEMA_VERSION,
+    SESSION_BUSY_TIMEOUT_MS, SESSION_DEFAULT_CACHE_KIB, SESSION_HOST_KEY_PIN_OPTION,
+    SESSION_INSTALL_READ_BUDGET_BYTES, SESSION_MAX_ALGORITHM_BYTES, SESSION_MAX_BT_RESUME_BYTES,
+    SESSION_MAX_CACHE_KIB, SESSION_MAX_HOST_KEY_BYTES, SESSION_MAX_OPTIONS_PER_TASK,
+    SESSION_MAX_SAFE_MESSAGE_BYTES, SESSION_MAX_SAFE_URI_BYTES, SESSION_MAX_SOURCES_PER_TASK,
+    SESSION_MAX_TASKS, SESSION_MIN_CACHE_KIB, SESSION_MMAP_SIZE_BYTES, SESSION_OWNER_LOCK_SUFFIX,
+    SESSION_PAGE_SIZE_BYTES, SESSION_RUSQLITE_FEATURES, SESSION_RUSQLITE_VERSION,
+    SESSION_SCHEMA_OBJECTS, SESSION_SCHEMA_VERSION, SESSION_SOURCE_READ_BUDGET_BYTES,
     SESSION_TASK_READ_BUDGET_BYTES, SESSION_WAL_AUTO_CHECKPOINT_PAGES, SessionCacheReconciliation,
-    SessionId, SessionIoOperation, SessionJournalCache, SessionJournalMode,
-    SessionNoSpaceCondition, SessionQueueState, SessionRecord, SessionSchemaObject,
+    SessionHostKeyChallengeRecord, SessionHostKeyResolution, SessionId, SessionIoOperation,
+    SessionJournalCache, SessionJournalMode, SessionNoSpaceCondition, SessionQueueOrder,
+    SessionQueueState, SessionQueueTransition, SessionRecord, SessionSchemaObject,
     SessionSchemaObjectKind, SessionSlowRetryDecision, SessionSlowSlotState, SessionSqliteLimit,
     SessionStoppedResultRecord, SessionStore, SessionStoreConfig, SessionStoreError,
-    SessionStoreSettings, SessionTaskRecord, SessionTerminalStatus,
+    SessionStoreSettings, SessionTaskRecord, SessionTaskSourceRecord, SessionTerminalStatus,
+    session_host_key_pin_value,
 };
