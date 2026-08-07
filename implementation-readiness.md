@@ -14,11 +14,12 @@ persistence-effect composition, bounded pure startup reconciliation planning,
 source-derived credential admission, ordered SQLite startup repair, the native
 startup handoff/coordinator, and bounded stats sampling now have executable
 checkpoints. Concrete descriptor-safe capability/install/appender adapters and
-publication-last native startup execution are also executable. Process-bootstrap
-integration, concrete non-persistence adapters, and the first end-to-end
-downloader slice are not complete, so this is not a release/tag-ready
-checkpoint. Each remaining native adapter, transfer module, and integration
-still follows its Definition Of Ready checklist below.
+publication-last native startup execution are also executable. The bounded
+non-persistence runtime adapters and the process-bootstrap path are now wired
+through the experimental CLI. The first end-to-end downloader slice is not
+complete, so this is not a release/tag-ready checkpoint. Each remaining native
+adapter, transfer module, and integration still follows its Definition Of Ready
+checklist below.
 
 ## Start Here
 
@@ -195,13 +196,9 @@ this vertical slice.
 
 ## Current Integration Gates
 
-- Connect the ordered driver to concrete timer, allocation, option-application,
-  cancellation, and no-space-probe adapters; the persistence branch and its
-  correlated acknowledgements are executable.
-- Wire the executable native startup stage into process bootstrap so
-  journal-install resolution, output-root acquisition, owner-thread appender
-  installation, and publication-last scheduler restore become the only startup
-  path after credential derivation and ordered SQLite repair.
+- Implement the known-length identity HTTP worker and connect its allocation,
+  cancellation, retry, and completion results to the bounded runtime adapter
+  and `StorageEngine`.
 - Integrate live protocol retry classification and backoff with the executable
   persisted retry/slow/no-space recovery paths.
 - Drive the bounded orderly-shutdown coordinator across every real lane,

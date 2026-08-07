@@ -6,7 +6,10 @@ version = 4
 name = "ariax-cli"
 version = "0.1.0"
 dependencies = [
+ "ariax-config",
  "ariax-core",
+ "ariax-engine",
+ "ariax-storage",
 ]
 
 [[package]]

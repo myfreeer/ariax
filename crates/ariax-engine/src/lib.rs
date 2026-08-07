@@ -3,6 +3,8 @@
 //! Cross-crate composition for bounded startup reconciliation.
 
 mod effect_sink;
+mod process_bootstrap;
+mod runtime_effects;
 mod startup_executor;
 mod startup_filesystem;
 mod startup_native;
@@ -10,7 +12,20 @@ mod startup_native;
 pub use effect_sink::{
     MAX_PERSISTENCE_CATALOG_ENTRIES, MAX_PERSISTENCE_PLAN_STEPS, PersistenceCatalogError,
     PersistenceEffectCatalog, PersistenceEffectPlan, PersistencePlanError, PersistencePlanStep,
-    PersistenceSchedulerEffectSink,
+    PersistenceSchedulerEffectSink, PersistenceSchedulerPreparation,
+    PersistenceSchedulerPrepareError,
+};
+pub use process_bootstrap::{
+    BootstrappedEngine, ProcessBootstrapConfig, ProcessBootstrapError, ProcessBootstrapFailure,
+    ProcessSchedulerDriver, ProcessSchedulerPreparation, ProcessSchedulerPrepareError,
+    ProcessSchedulerSink, ProcessShutdownError, ProcessShutdownReport, bootstrap_process,
+};
+pub use runtime_effects::{
+    AllocationRequest, CancellationRequest, MAX_RUNTIME_EFFECT_CAPACITY, NoSpaceProbeRequest,
+    OptionApplicationOutcome, OptionApplicationPlan, OptionApplicationPlanError,
+    RuntimeEffectConfig, RuntimeEffectConfigError, RuntimeEffectHandle, RuntimeEffectPreparation,
+    RuntimeEffectPrepareError, RuntimeEventRejection, RuntimeEventSubmission,
+    RuntimeEventSubmitError, RuntimeSchedulerEffectSink,
 };
 pub use startup_executor::{
     StartupSessionRepairError, StartupSessionRepairExecutor, StartupSessionRepairFinishError,

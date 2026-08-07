@@ -13,17 +13,18 @@ recovery, pure cross-store startup planning, bounded source-derived credential
 admission, ordered SQLite startup repair, and packet-independent stats sampling
 are also executable. Descriptor-safe Unix/Windows root and central-journal
 capabilities, install/appender recovery, owner-thread appender construction, and
-publication-last native startup are executable. Concrete non-persistence
-adapters, process-bootstrap integration, the transfer/storage pipeline,
-hot-backup crash-residue reconciliation, remaining backend work, and the
-native-platform/MSRV release CI gates remain phase and tag gates. These
-checkpoints do not yet satisfy the first vertical slice or the project
-definition of done.
+publication-last native startup are executable. Bounded non-persistence effect
+adapters and the product process-bootstrap path are also executable. The
+transfer/storage pipeline, hot-backup crash-residue reconciliation, remaining
+backend work, and the native-platform/MSRV release CI gates remain phase and tag
+gates. These checkpoints do not yet satisfy the first vertical slice or the
+project definition of done.
 
 This is a staged plan for building the design without repeating the incomplete
-rewrite pattern. The native-startup orchestration boundary and central-journal
-filesystem backends are now executable; native CI evidence and product
-bootstrap integration remain phase gates.
+rewrite pattern. The native-startup orchestration boundary, central-journal
+filesystem backends, runtime-effect boundary, and product bootstrap are now
+executable; the first HTTP/storage slice and native CI evidence remain phase
+gates.
 
 ## Phase 0: Contracts, Compatibility Inventory, And Build Baseline
 

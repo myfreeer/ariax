@@ -4,9 +4,9 @@ Status: first-slice scheduler kernel and ordered runtime driver implemented. The
 exhaustive transition matrix, deterministic command/event executor, barriers,
 queues, correlation tokens, bounded effects, effect identities, staged applied
 snapshots, and one-effect-at-a-time dispatch are executable. The bounded
-session-persistence sink is executable; concrete timer, allocation,
-cancellation, option-application, no-space, and native I/O adapters remain
-pending.
+session-persistence sink and concrete bounded timer, allocation, cancellation,
+option-application, and no-space effect adapters are executable. Protocol
+workers and asynchronous native storage I/O remain pending.
 
 This document defines the core types and state machines shared by config,
 scheduler, storage, HTTP, RPC, and session persistence.
@@ -620,10 +620,12 @@ maps retry, slow-readmission, and no-space wall decisions to fresh correlated
 monotonic effects. Credential requirements for the ordinary plaintext-free
 restart path are derived from the bounded canonical task-source sets returned
 by the session owner. The ordered SQLite startup repair executor and the native
-startup handoff/coordinator are executable; live timer/no-space adapters,
-concrete descriptor-safe capability/install/appender recovery, and final
-platform publication wiring remain pending. Explicit credential admissions
-remain available for a future encrypted credential provider.
+startup handoff/coordinator are executable. Descriptor-safe
+capability/install/appender recovery, bounded live timer/no-space and worker
+request adapters, and publication-last process bootstrap are now wired. The
+actual protocol workers and their option application logic remain pending.
+Explicit credential admissions remain available for a future encrypted
+credential provider.
 
 On recovery, the control journal is authoritative for durable layout and
 terminal/durable state, while SQLite is authoritative for queue membership,

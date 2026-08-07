@@ -121,6 +121,20 @@ pub enum PersistenceCatalogError {
     Full,
 }
 
+/// Typed preparation routed either to persistence or to the concrete runtime
+/// delegate while the composed driver is idle.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PersistenceSchedulerPreparation<P> {
+    Persistence(Box<PersistenceEffectPlan>),
+    Delegate(P),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PersistenceSchedulerPrepareError<E> {
+    Persistence(PersistenceCatalogError),
+    Delegate(E),
+}
+
 /// Bounded exact-effect catalog consumed by the composition sink.
 #[derive(Debug)]
 pub struct PersistenceEffectCatalog {
@@ -494,12 +508,23 @@ impl<D: SchedulerEffectSink> SchedulerEffectSink for PersistenceSchedulerEffectS
     }
 }
 
-impl<D: SchedulerEffectSink> SchedulerEffectSinkPrepare for PersistenceSchedulerEffectSink<D> {
-    type Preparation = PersistenceEffectPlan;
-    type Error = PersistenceCatalogError;
+impl<D: SchedulerEffectSinkPrepare> SchedulerEffectSinkPrepare
+    for PersistenceSchedulerEffectSink<D>
+{
+    type Preparation = PersistenceSchedulerPreparation<D::Preparation>;
+    type Error = PersistenceSchedulerPrepareError<D::Error>;
 
     fn prepare(&mut self, preparation: Self::Preparation) -> Result<(), Self::Error> {
-        self.catalog.register(preparation)
+        match preparation {
+            PersistenceSchedulerPreparation::Persistence(plan) => self
+                .catalog
+                .register(*plan)
+                .map_err(PersistenceSchedulerPrepareError::Persistence),
+            PersistenceSchedulerPreparation::Delegate(preparation) => self
+                .delegate
+                .prepare(preparation)
+                .map_err(PersistenceSchedulerPrepareError::Delegate),
+        }
     }
 }
 
@@ -1456,6 +1481,15 @@ mod tests {
         }
     }
 
+    impl SchedulerEffectSinkPrepare for RecordingDelegate {
+        type Preparation = ();
+        type Error = std::convert::Infallible;
+
+        fn prepare(&mut self, (): Self::Preparation) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
     fn gid(value: u64) -> Gid {
         Gid::new(value).expect("nonzero GID")
     }
@@ -1660,7 +1694,9 @@ mod tests {
         add_task(&mut driver, task_gid);
         activate_task(&mut driver, task_gid);
         driver
-            .prepare_sink(stage_plan(task_gid, patch_id))
+            .prepare_sink(PersistenceSchedulerPreparation::Persistence(Box::new(
+                stage_plan(task_gid, patch_id),
+            )))
             .expect("register stage plan");
         driver
             .execute_command(SchedulerCommand::ApplyOptionPatch {
@@ -1734,12 +1770,16 @@ mod tests {
         ]
     }
 
-    fn activate_task<D: SchedulerEffectSink>(
+    fn activate_task<D: SchedulerEffectSinkPrepare>(
         driver: &mut SchedulerDriver<PersistenceSchedulerEffectSink<D>>,
         task_gid: Gid,
-    ) {
+    ) where
+        D::Error: std::fmt::Debug,
+    {
         for plan in activation_plans(task_gid) {
-            driver.prepare_sink(plan).expect("register activation plan");
+            driver
+                .prepare_sink(PersistenceSchedulerPreparation::Persistence(Box::new(plan)))
+                .expect("register activation plan");
         }
         driver.admit_next().expect("admit task");
         finish_chain(driver);
@@ -1844,7 +1884,9 @@ mod tests {
         add_task(&mut driver, task_gid);
         activate_task(&mut driver, task_gid);
         driver
-            .prepare_sink(stage_plan(task_gid, patch_id))
+            .prepare_sink(PersistenceSchedulerPreparation::Persistence(Box::new(
+                stage_plan(task_gid, patch_id),
+            )))
             .expect("register stage plan");
         driver
             .execute_command(SchedulerCommand::ApplyOptionPatch {
@@ -1898,7 +1940,9 @@ mod tests {
             SessionPersistenceError::MissingJournal { gid: task_gid },
         )));
         driver
-            .prepare_sink(stage_plan(task_gid, patch_id))
+            .prepare_sink(PersistenceSchedulerPreparation::Persistence(Box::new(
+                stage_plan(task_gid, patch_id),
+            )))
             .expect("register stage plan");
         driver
             .execute_command(SchedulerCommand::ApplyOptionPatch {
@@ -2028,7 +2072,9 @@ mod tests {
             SessionPersistenceError::MissingJournal { gid: task_gid },
         )));
         driver
-            .prepare_sink(stage_plan(task_gid, patch_id))
+            .prepare_sink(PersistenceSchedulerPreparation::Persistence(Box::new(
+                stage_plan(task_gid, patch_id),
+            )))
             .expect("register stage plan");
         driver
             .execute_command(SchedulerCommand::ApplyOptionPatch {
@@ -2071,7 +2117,9 @@ mod tests {
             SessionPersistenceError::Store(SessionStoreError::NotFound),
         )));
         driver
-            .prepare_sink(stage_plan(task_gid, patch_id))
+            .prepare_sink(PersistenceSchedulerPreparation::Persistence(Box::new(
+                stage_plan(task_gid, patch_id),
+            )))
             .expect("register stage plan");
         driver
             .execute_command(SchedulerCommand::ApplyOptionPatch {

@@ -5,9 +5,10 @@ driver, immutable applied status roots, dual byte permits, stable `BufferLease`
 state machine, bounded lazy pool/quarantine, item+byte queue credits, reserved
 completion delivery, the bounded blocking write lane, and the session-owner
 persistence composition sink are implemented. The bounded move-only shutdown
-coordinator and packet-independent bounded stats sampler are also executable.
-Async Tokio lanes, protocol counter producers, native kernel cancellation,
-runtime topology, and percentile timing remain pending.
+coordinator, packet-independent bounded stats sampler, bounded scheduler runtime
+effect adapter, and publication-last process bootstrap are also executable.
+Async Tokio protocol lanes, protocol counter producers, native kernel
+cancellation, full runtime topology, and percentile timing remain pending.
 
 This document defines the concrete runtime lanes, bounded queues, buffer leases,
 and cancellation behavior used by HTTP and storage in the first slice.
@@ -111,6 +112,33 @@ matched against a bounded catalog entry containing the complete, exact
 `SchedulerEffectSink`. A catalog entry is consumed only after its first owner
 command is accepted. A full session-owner queue retains the owned command and
 the exact dispatch for retry.
+
+The downstream runtime adapter has separate bounded request, event, timer, and
+option-plan capacities. Allocation and cancellation effects become move-only
+worker requests whose only completion builders preserve the exact task id, GID,
+and generation. Retry and slow-readmission timers remain process-local
+monotonic entries and emit their correlated scheduler event only at or after the
+deadline. No-space probes retain their deadline; startup automatic probes also
+consume the one move-only native target authorized by reconciliation. Worker
+events use a bounded return queue, and a full adapter leaves the scheduler's
+exact offered effect backpressured rather than growing memory.
+
+Option application requires a bounded plan matching the complete
+`ApplyOptionPatch` effect. The composition sink exposes persistence and runtime
+preparations through one typed idle-boundary enum, so neither catalog can be
+mutated during an active driver chain. Missing, duplicate, or mismatched
+authority becomes an unrepresentable driver fault rather than an invented
+acknowledgement.
+
+`bootstrap_process` is the only publication-producing recovered startup path.
+It starts the session owner, replays SQLite-authoritative primary journals in
+canonical GID/task-id order, derives credential blockers, applies ordered
+SQLite repairs, performs descriptor-safe native root/install/appender recovery,
+constructs the composed sink, and drains `SchedulerRestorePlan`. It returns a
+`BootstrappedEngine` and snapshot reader only after the driver is idle and every
+startup probe target is consumed. Any failure closes the owner best-effort;
+normal shutdown closes runtime admission, closes all flushed journals on the
+owner thread, and then performs the bounded owner join.
 
 Each persistence plan is validated before catalog admission. It contains only
 the command sequence permitted for that effect kind, binds every GID,

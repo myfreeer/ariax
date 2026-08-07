@@ -21,11 +21,14 @@ executor applies queue/terminal/journal-authority work before scheduler
 construction, and the packet-independent bounded stats sampler is executable.
 Descriptor-safe native filesystem capabilities, central journal-install and
 appender recovery, owner-thread appender construction, and publication-last
-startup execution are now implemented for Unix and Windows adapters. Concrete
-network/timer adapters, process-bootstrap integration, the first end-to-end
-transfer pipeline, hot-backup crash-residue reconciliation, and the native-
-platform/MSRV CI gates remain pending. This checkpoint is not yet a complete
-downloader or release/tag-ready. Phase gates remain normative in
+startup execution are now implemented for Unix and Windows adapters. The
+bounded timer, allocation, option-application, cancellation, and no-space
+adapter boundary is executable, and the experimental CLI drives the complete
+process-bootstrap path through ordered restore and journal-closing shutdown.
+Concrete HTTP workers, the first end-to-end transfer pipeline, hot-backup
+crash-residue reconciliation, and the native-platform/MSRV CI gates remain
+pending. This checkpoint is not yet a complete downloader or release/tag-ready.
+Phase gates remain normative in
 `implementation-readiness.md` and `implementation-plan.md`.
 
 This design is for a new downloader that keeps the mature aria2 user model
