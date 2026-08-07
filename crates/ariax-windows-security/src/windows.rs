@@ -1,14 +1,23 @@
 use std::ffi::c_void;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
 use std::mem::{offset_of, size_of};
-use std::os::windows::ffi::OsStrExt as _;
+use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
-use std::path::Path;
+use std::path::{Component, Path, PathBuf, Prefix};
 use std::ptr::{self, NonNull};
 
+use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
+use windows_sys::Wdk::Storage::FileSystem::{
+    FILE_CREATE, FILE_DIRECTORY_FILE, FILE_DISPOSITION_INFORMATION, FILE_LINK_INFORMATION,
+    FILE_NAMES_INFORMATION, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
+    FILE_SYNCHRONOUS_IO_NONALERT, FileDispositionInformation, FileLinkInformation,
+    FileNamesInformation, NtCreateFile, NtQueryDirectoryFile, NtSetInformationFile,
+};
 use windows_sys::Win32::Foundation::{
-    GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE, LocalFree,
+    GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE, LocalFree, OBJ_CASE_INSENSITIVE,
+    OBJ_DONT_REPARSE, RtlNtStatusToDosError, STATUS_NO_MORE_FILES, UNICODE_STRING,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
@@ -23,16 +32,309 @@ use windows_sys::Win32::Security::{
     SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_ALL_ACCESS,
+    BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateDirectoryW, CreateFileW, DELETE, FILE_ALL_ACCESS,
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
-    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle,
-    OPEN_EXISTING, READ_CONTROL, WRITE_DAC,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FILE_LIST_DIRECTORY,
+    FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileIdInfo,
+    GetFileInformationByHandle, GetFileInformationByHandleEx, OPEN_EXISTING, READ_CONTROL,
+    SYNCHRONIZE, WRITE_DAC,
 };
+use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 use windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
 const MAX_SID_STRING_UNITS: usize = 1_024;
+const DIRECTORY_QUERY_BUFFER_BYTES: usize = 64 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeFileInformation {
+    pub volume_serial: u64,
+    pub file_id: [u8; 16],
+    pub is_directory: bool,
+    pub number_of_links: u32,
+}
+
+/// Opens an absolute directory with object-manager reparse traversal disabled.
+pub fn open_absolute_directory_no_reparse(path: &Path) -> io::Result<File> {
+    let (anchor, components) = absolute_directory_components(path)?;
+    let mut directory = open_directory_anchor(&anchor)?;
+    for component in components {
+        directory = open_relative_directory_no_reparse(&directory, Path::new(&component))?;
+    }
+    Ok(directory)
+}
+
+fn open_directory_anchor(path: &Path) -> io::Result<File> {
+    let path = wide_path(path)?;
+    // SAFETY: `path` is NUL-terminated. A drive or UNC share root cannot be
+    // opened relative to another filesystem handle, so this opens only that
+    // anchor. Every filesystem component beneath it is opened separately by
+    // `NtCreateFile` with `OBJ_DONT_REPARSE`.
+    let handle = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+            ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: successful CreateFileW returns a unique owned HANDLE.
+    let directory = unsafe { File::from_raw_handle(handle) };
+    let information = query_native_file_information(&directory)?;
+    if !information.is_directory {
+        return Err(permission_denied("absolute path anchor is not a directory"));
+    }
+    Ok(directory)
+}
+
+pub fn open_relative_directory_no_reparse(root: &File, path: &Path) -> io::Result<File> {
+    let name = relative_name(path)?;
+    let directory = nt_open(
+        root.as_raw_handle(),
+        &name,
+        FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_OPEN,
+        FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+    )?;
+    let information = query_native_file_information(&directory)?;
+    if !information.is_directory {
+        return Err(permission_denied("opened object is not a directory"));
+    }
+    Ok(directory)
+}
+
+pub fn open_relative_regular_file_no_reparse(
+    root: &File,
+    path: &Path,
+    write: bool,
+) -> io::Result<File> {
+    let name = relative_name(path)?;
+    let access = if write {
+        GENERIC_READ | GENERIC_WRITE | FILE_READ_ATTRIBUTES | SYNCHRONIZE
+    } else {
+        GENERIC_READ | FILE_READ_ATTRIBUTES | SYNCHRONIZE
+    };
+    nt_open(
+        root.as_raw_handle(),
+        &name,
+        access,
+        FILE_OPEN,
+        FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+    )
+}
+
+pub fn create_relative_file_no_reparse(root: &File, name: &OsStr) -> io::Result<File> {
+    let name = single_relative_name(name)?;
+    nt_open(
+        root.as_raw_handle(),
+        &name,
+        GENERIC_READ | GENERIC_WRITE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_CREATE,
+        FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+    )
+}
+
+pub fn query_native_file_information(file: &File) -> io::Result<NativeFileInformation> {
+    let mut basic = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: `file` owns a live handle and `basic` is a valid output buffer.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut basic) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if basic.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(permission_denied(
+            "opened object is a Windows reparse point",
+        ));
+    }
+    let mut id = FILE_ID_INFO::default();
+    // SAFETY: the information class and exact output structure agree.
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileIdInfo,
+            (&mut id as *mut FILE_ID_INFO).cast(),
+            size_of::<FILE_ID_INFO>() as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(NativeFileInformation {
+        volume_serial: id.VolumeSerialNumber,
+        file_id: id.FileId.Identifier,
+        is_directory: basic.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0,
+        number_of_links: basic.nNumberOfLinks,
+    })
+}
+
+pub fn directory_names(directory: &File) -> io::Result<Vec<OsString>> {
+    let word_count = DIRECTORY_QUERY_BUFFER_BYTES.div_ceil(size_of::<usize>());
+    let mut storage = vec![0_usize; word_count];
+    let mut names = Vec::new();
+    let mut restart = true;
+    loop {
+        let mut status_block = IO_STATUS_BLOCK::default();
+        // SAFETY: the directory handle was synchronously opened, the aligned
+        // buffer is writable for the advertised byte count, and the status
+        // block remains live for the call.
+        let status = unsafe {
+            NtQueryDirectoryFile(
+                directory.as_raw_handle(),
+                ptr::null_mut(),
+                None,
+                ptr::null(),
+                &mut status_block,
+                storage.as_mut_ptr().cast(),
+                DIRECTORY_QUERY_BUFFER_BYTES as u32,
+                FileNamesInformation,
+                false,
+                ptr::null(),
+                restart,
+            )
+        };
+        restart = false;
+        if status == STATUS_NO_MORE_FILES {
+            break;
+        }
+        nt_success(status)?;
+        let returned = status_block.Information.min(DIRECTORY_QUERY_BUFFER_BYTES);
+        let buffer = storage.as_ptr().cast::<u8>();
+        let mut offset = 0_usize;
+        loop {
+            if offset
+                .checked_add(offset_of!(FILE_NAMES_INFORMATION, FileName))
+                .is_none_or(|end| end > returned)
+            {
+                return Err(invalid_data("directory response header is truncated"));
+            }
+            // SAFETY: the bounds check above covers the fixed header, and
+            // unaligned reads avoid imposing alignment on variable entries.
+            let entry =
+                unsafe { ptr::read_unaligned(buffer.add(offset).cast::<FILE_NAMES_INFORMATION>()) };
+            let name_bytes = usize::try_from(entry.FileNameLength)
+                .map_err(|_| invalid_data("directory name length overflows"))?;
+            if !name_bytes.is_multiple_of(2) {
+                return Err(invalid_data("directory name length is not UTF-16 aligned"));
+            }
+            let name_offset = offset + offset_of!(FILE_NAMES_INFORMATION, FileName);
+            let name_end = name_offset
+                .checked_add(name_bytes)
+                .ok_or_else(|| invalid_data("directory name length overflows"))?;
+            if name_end > returned {
+                return Err(invalid_data("directory name extends past response"));
+            }
+            // SAFETY: the validated range contains `name_bytes / 2` UTF-16 units.
+            let units = unsafe {
+                std::slice::from_raw_parts(buffer.add(name_offset).cast::<u16>(), name_bytes / 2)
+            };
+            if units != [b'.' as u16] && units != [b'.' as u16, b'.' as u16] {
+                use std::os::windows::ffi::OsStringExt as _;
+                names.push(OsString::from_wide(units));
+            }
+            if entry.NextEntryOffset == 0 {
+                break;
+            }
+            let next = usize::try_from(entry.NextEntryOffset)
+                .map_err(|_| invalid_data("directory entry offset overflows"))?;
+            offset = offset
+                .checked_add(next)
+                .ok_or_else(|| invalid_data("directory entry offset overflows"))?;
+            if offset >= returned {
+                return Err(invalid_data("directory entry offset escapes response"));
+            }
+        }
+    }
+    Ok(names)
+}
+
+pub fn link_relative_no_replace(
+    directory: &File,
+    source_name: &OsStr,
+    destination_name: &OsStr,
+) -> io::Result<()> {
+    let source = single_relative_name(source_name)?;
+    let destination = single_relative_name(destination_name)?;
+    let source = nt_open(
+        directory.as_raw_handle(),
+        &source,
+        DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_OPEN,
+        FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+    )?;
+    let source_information = query_native_file_information(&source)?;
+    if source_information.is_directory || source_information.number_of_links != 1 {
+        return Err(permission_denied(
+            "hard-link source is not a single-link regular file",
+        ));
+    }
+    let byte_length = destination
+        .len()
+        .checked_mul(2)
+        .ok_or_else(|| invalid_data("hard-link name length overflows"))?;
+    let allocation_bytes = offset_of!(FILE_LINK_INFORMATION, FileName)
+        .checked_add(byte_length)
+        .ok_or_else(|| invalid_data("hard-link information length overflows"))?;
+    let word_count = allocation_bytes.div_ceil(size_of::<usize>());
+    let mut storage = vec![0_usize; word_count];
+    let information = storage.as_mut_ptr().cast::<FILE_LINK_INFORMATION>();
+    // SAFETY: `storage` is aligned and large enough for the fixed structure and
+    // flexible UTF-16 name written below.
+    unsafe {
+        (*information).Anonymous.ReplaceIfExists = false;
+        (*information).RootDirectory = directory.as_raw_handle();
+        (*information).FileNameLength =
+            u32::try_from(byte_length).map_err(|_| invalid_data("hard-link name is too long"))?;
+        ptr::copy_nonoverlapping(
+            destination.as_ptr(),
+            (*information).FileName.as_mut_ptr(),
+            destination.len(),
+        );
+    }
+    let mut status_block = IO_STATUS_BLOCK::default();
+    // SAFETY: the source handle and fully initialized variable-sized structure
+    // remain live for the synchronous call.
+    let status = unsafe {
+        NtSetInformationFile(
+            source.as_raw_handle(),
+            &mut status_block,
+            information.cast(),
+            u32::try_from(allocation_bytes)
+                .map_err(|_| invalid_data("hard-link information is too large"))?,
+            FileLinkInformation,
+        )
+    };
+    nt_success(status)
+}
+
+pub fn remove_relative_file_no_reparse(directory: &File, name: &OsStr) -> io::Result<()> {
+    let name = single_relative_name(name)?;
+    let file = nt_open(
+        directory.as_raw_handle(),
+        &name,
+        DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_OPEN,
+        FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+    )?;
+    let information = FILE_DISPOSITION_INFORMATION { DeleteFile: true };
+    let mut status_block = IO_STATUS_BLOCK::default();
+    // SAFETY: the live handle has DELETE access and the exact information
+    // structure is valid for this synchronous call.
+    let status = unsafe {
+        NtSetInformationFile(
+            file.as_raw_handle(),
+            &mut status_block,
+            (&information as *const FILE_DISPOSITION_INFORMATION).cast(),
+            size_of::<FILE_DISPOSITION_INFORMATION>() as u32,
+            FileDispositionInformation,
+        )
+    };
+    nt_success(status)
+}
 
 /// Creates one directory with a protected ACL installed by the kernel at creation.
 ///
@@ -366,6 +668,185 @@ fn wide_pointer_to_string(pointer: *const u16) -> io::Result<String> {
         io::ErrorKind::InvalidData,
         "SID string exceeds the defensive length limit",
     ))
+}
+
+fn nt_open(
+    root: *mut c_void,
+    name: &[u16],
+    desired_access: u32,
+    disposition: u32,
+    options: u32,
+) -> io::Result<File> {
+    let byte_length = name
+        .len()
+        .checked_mul(2)
+        .ok_or_else(|| invalid_data("NT path length overflows"))?;
+    let length = u16::try_from(byte_length).map_err(|_| invalid_data("NT path is too long"))?;
+    let unicode = UNICODE_STRING {
+        Length: length,
+        MaximumLength: length,
+        Buffer: name.as_ptr().cast_mut(),
+    };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
+        RootDirectory: root,
+        ObjectName: &unicode,
+        Attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
+        SecurityDescriptor: ptr::null(),
+        SecurityQualityOfService: ptr::null(),
+    };
+    let mut handle = ptr::null_mut();
+    let mut status_block = IO_STATUS_BLOCK::default();
+    // SAFETY: all input structures and the UTF-16 buffer remain live for this
+    // synchronous call; the output handle slot is valid and uniquely consumed.
+    let status = unsafe {
+        NtCreateFile(
+            &mut handle,
+            desired_access,
+            &attributes,
+            &mut status_block,
+            ptr::null(),
+            FILE_ATTRIBUTE_NORMAL,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            disposition,
+            options,
+            ptr::null(),
+            0,
+        )
+    };
+    nt_success(status)?;
+    if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::other("NtCreateFile returned an invalid handle"));
+    }
+    // SAFETY: successful NtCreateFile returned one unique owned handle.
+    Ok(unsafe { File::from_raw_handle(handle) })
+}
+
+fn nt_success(status: i32) -> io::Result<()> {
+    if status >= 0 {
+        return Ok(());
+    }
+    // SAFETY: every NTSTATUS value is accepted by the conversion routine.
+    let error = unsafe { RtlNtStatusToDosError(status) };
+    Err(io::Error::from_raw_os_error(error as i32))
+}
+
+fn absolute_directory_components(path: &Path) -> io::Result<(PathBuf, Vec<OsString>)> {
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Windows capability root must be absolute",
+        ));
+    }
+    let mut components = path.components();
+    let prefix = match components.next() {
+        Some(Component::Prefix(prefix)) => prefix.kind(),
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Windows capability root has no supported path prefix",
+            ));
+        }
+    };
+    if !matches!(components.next(), Some(Component::RootDir)) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Windows capability root has no root directory",
+        ));
+    }
+
+    let mut anchor = vec![b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16];
+    match prefix {
+        Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {
+            anchor.extend_from_slice(&[letter.to_ascii_uppercase() as u16, b':' as u16]);
+        }
+        Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => {
+            anchor.extend("UNC".encode_utf16());
+            anchor.push(b'\\' as u16);
+            anchor.extend(server.encode_wide());
+            anchor.push(b'\\' as u16);
+            anchor.extend(share.encode_wide());
+        }
+        Prefix::DeviceNS(_) | Prefix::Verbatim(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Windows device namespace paths are not capability roots",
+            ));
+        }
+    }
+    anchor.push(b'\\' as u16);
+
+    let mut relative = Vec::new();
+    for component in components {
+        let Component::Normal(component) = component else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Windows capability root contains traversal",
+            ));
+        };
+        if component.encode_wide().any(|unit| unit == 0) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Windows capability root contains an interior NUL",
+            ));
+        }
+        relative.push(component.to_os_string());
+    }
+    Ok((PathBuf::from(OsString::from_wide(&anchor)), relative))
+}
+
+fn relative_name(path: &Path) -> io::Result<Vec<u16>> {
+    use std::path::Component;
+
+    if path.as_os_str().is_empty() || path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "handle-relative path is not relative",
+        ));
+    }
+    let mut encoded = Vec::new();
+    for component in path.components() {
+        let Component::Normal(component) = component else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "handle-relative path contains traversal",
+            ));
+        };
+        if !encoded.is_empty() {
+            encoded.push(b'\\' as u16);
+        }
+        for unit in component.encode_wide() {
+            if unit == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "handle-relative path contains an interior NUL",
+                ));
+            }
+            encoded.push(unit);
+        }
+    }
+    if encoded.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "handle-relative path is empty",
+        ));
+    }
+    Ok(encoded)
+}
+
+fn single_relative_name(name: &OsStr) -> io::Result<Vec<u16>> {
+    let path = Path::new(name);
+    if path.components().count() != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "handle-relative name has multiple components",
+        ));
+    }
+    relative_name(path)
+}
+
+fn invalid_data(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
 fn wide_path(path: &Path) -> io::Result<Vec<u16>> {
@@ -782,6 +1263,100 @@ mod tests {
                     .kind(),
                 io::ErrorKind::PermissionDenied
             );
+        }
+    }
+
+    #[test]
+    fn descriptor_relative_directory_file_link_and_remove_operations_round_trip() {
+        use std::io::{Read as _, Write as _};
+
+        let root = TestDirectory::new();
+        let directory = root.path().join("descriptor-root");
+        create_private_directory(&directory).expect("create descriptor root");
+        let capability =
+            open_absolute_directory_no_reparse(&directory).expect("open descriptor root");
+        let mut temporary = create_relative_file_no_reparse(&capability, OsStr::new("segment.tmp"))
+            .expect("create relative temporary");
+        temporary.write_all(b"journal").expect("write temporary");
+        temporary.sync_all().expect("sync temporary");
+        let temporary_information =
+            query_native_file_information(&temporary).expect("temporary information");
+        assert!(!temporary_information.is_directory);
+        assert_eq!(temporary_information.number_of_links, 1);
+        drop(temporary);
+
+        link_relative_no_replace(
+            &capability,
+            OsStr::new("segment.tmp"),
+            OsStr::new("segment.arxj"),
+        )
+        .expect("publish relative link");
+        assert!(
+            link_relative_no_replace(
+                &capability,
+                OsStr::new("segment.tmp"),
+                OsStr::new("segment.arxj"),
+            )
+            .is_err()
+        );
+        let names = directory_names(&capability).expect("enumerate descriptor root");
+        assert!(names.contains(&OsString::from("segment.tmp")));
+        assert!(names.contains(&OsString::from("segment.arxj")));
+
+        remove_relative_file_no_reparse(&capability, OsStr::new("segment.tmp"))
+            .expect("remove temporary link");
+        let mut published =
+            open_relative_regular_file_no_reparse(&capability, Path::new("segment.arxj"), false)
+                .expect("open published file");
+        let published_information =
+            query_native_file_information(&published).expect("published information");
+        assert_eq!(published_information.number_of_links, 1);
+        let mut bytes = Vec::new();
+        published.read_to_end(&mut bytes).expect("read published");
+        assert_eq!(bytes, b"journal");
+
+        assert!(
+            open_relative_directory_no_reparse(&capability, Path::new(".."))
+                .expect_err("traversal must be rejected")
+                .kind()
+                == io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn descriptor_relative_open_rejects_intermediate_reparse_points() {
+        let require_reparse_coverage = matches!(
+            std::env::var("ARIAX_REQUIRE_WINDOWS_REPARSE_TEST").as_deref(),
+            Ok("1")
+        );
+        let root = TestDirectory::new();
+        let directory = root.path().join("descriptor-root");
+        let outside = root.path().join("outside");
+        create_private_directory(&directory).expect("create descriptor root");
+        create_private_directory(&outside).expect("create outside directory");
+        let link = directory.join("linked");
+        match std::os::windows::fs::symlink_dir(&outside, &link) {
+            Ok(()) => {
+                let capability =
+                    open_absolute_directory_no_reparse(&directory).expect("open descriptor root");
+                assert!(
+                    open_relative_directory_no_reparse(&capability, Path::new("linked")).is_err()
+                );
+                assert!(
+                    open_absolute_directory_no_reparse(&link)
+                        .expect_err("absolute traversal through a reparse point must fail")
+                        .kind()
+                        == io::ErrorKind::PermissionDenied
+                );
+            }
+            Err(error)
+                if error.kind() == io::ErrorKind::PermissionDenied && !require_reparse_coverage =>
+            {
+                eprintln!(
+                    "skipping Windows descriptor reparse coverage because symlink creation is not permitted; set ARIAX_REQUIRE_WINDOWS_REPARSE_TEST=1 to require it"
+                );
+            }
+            Err(error) => panic!("create directory symlink: {error}"),
         }
     }
 

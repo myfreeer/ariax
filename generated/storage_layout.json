@@ -9,9 +9,10 @@
     {"code": "unix", "tag": 1},
     {"code": "windows", "tag": 2}
   ],
+  "native_identity_v1": {"version": 1, "platform_tag_offset": 1, "unix": {"bytes": 18, "payload": ["st_dev_u64le", "st_ino_u64le"]}, "windows": {"bytes": 26, "payload": ["volume_serial_u64le", "file_id_128"]}, "cross_platform_rejected": true},
   "path_rejections": ["empty_path", "absolute_path", "windows_prefix", "non_utf8_input", "empty_component", "dot_component", "separator_in_component", "colon_in_component", "control_character", "bidirectional_control", "reserved_windows_name", "trailing_windows_dot_or_space", "too_long"],
   "root_binding_rejections": ["unsupported_platform", "empty_platform_path", "platform_path_too_long", "invalid_platform_path", "empty_root_identity", "empty_file_identity", "identity_too_long", "duplicate_file_identity"],
   "layout_rejections": ["empty_layout", "too_many_files", "zero_piece_length", "noncanonical_file_id", "noncontiguous_file", "file_end_overflow", "file_end_mismatch", "total_length_mismatch", "unknown_length_shape", "selected_file_missing_identity", "unselected_file_has_identity", "root_binding_mismatch", "path_collision", "canonical_layout_too_large"],
   "offset_mapper_rejections": ["unknown_total_length", "empty_span", "overflow", "outside_layout", "cross_file_span", "unselected_file"],
-  "native_capability_contract": {"check_then_open_allowed": false, "status": "native_backend_required"}
+  "native_capability_contract": {"check_then_open_allowed": false, "separate_central_journal_capability": true, "appender_retains_directory_capability": true, "status": "implemented"}
 }

@@ -4,6 +4,7 @@
 
 mod effect_sink;
 mod startup_executor;
+mod startup_filesystem;
 mod startup_native;
 
 pub use effect_sink::{
@@ -15,9 +16,12 @@ pub use startup_executor::{
     StartupSessionRepairError, StartupSessionRepairExecutor, StartupSessionRepairFinishError,
     StartupSessionRepairPoll,
 };
+pub use startup_filesystem::{
+    NativeFilesystemBackend, NativeFilesystemError, NativeFilesystemPolicy,
+};
 pub use startup_native::{
     NativeEngineStartup, NativeInstallOutcome, NativeStartupBackend, NativeStartupError,
-    NativeStartupResult, complete_native_startup,
+    NativeStartupExecutor, NativeStartupPoll, NativeStartupResult, complete_native_startup,
 };
 
 use ariax_core::{

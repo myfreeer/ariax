@@ -13,6 +13,9 @@ rusqlite.workspace = true
 sha2.workspace = true
 unicode-normalization.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
 [dev-dependencies]
 ariax-config.workspace = true
 

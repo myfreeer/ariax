@@ -8,6 +8,8 @@ mod journal_payload;
 mod journal_state;
 mod journal_tags;
 mod layout;
+mod native_capability;
+mod native_identity;
 mod path;
 mod root_binding;
 mod session_owner;
@@ -26,7 +28,7 @@ pub use journal_appender::{
     ALL_JOURNAL_TAIL_MISMATCHES, Appended, ControlJournalAppender, Flushed,
     JOURNAL_SEGMENT_FILE_PREFIX, JOURNAL_SEGMENT_FILE_SUFFIX, JOURNAL_TEMP_FILE_SUFFIX,
     JournalAppenderError, JournalAppenderFault, JournalIoOperation, JournalRotation,
-    JournalTailMismatch, journal_segment_file_name, journal_segment_path,
+    JournalTailMismatch, PreparedJournalSet, journal_segment_file_name, journal_segment_path,
 };
 pub use journal_payload::{
     ALL_JOURNAL_DIGEST_ALGORITHMS, ALL_PAYLOAD_CODEC_ERROR_CLASSES, AppendPayloadError,
@@ -59,6 +61,14 @@ pub use layout::{
     ALL_LAYOUT_ERRORS, ALL_MAP_SPAN_ERRORS, FileEntry, FileLayout, FileSpan, GlobalOffsetMapper,
     GlobalSpan, LAYOUT_HASH_DOMAIN, LayoutError, LayoutHash, MAX_LAYOUT_BYTES, MAX_LAYOUT_ENTRIES,
     MapSpanError,
+};
+pub use native_capability::{
+    JournalDirectoryCapability, MAX_NATIVE_ALLOWED_ROOTS, NativeCapabilityError, NativeObjectKind,
+    RootDirectoryCapability, platform_path_to_current,
+};
+pub use native_identity::{
+    ALL_NATIVE_IDENTITY_ERROR_CODES, NATIVE_IDENTITY_UNIX_BYTES, NATIVE_IDENTITY_VERSION,
+    NATIVE_IDENTITY_WINDOWS_BYTES, NativeIdentityError, NativeIdentityV1,
 };
 pub use path::{
     ALL_PATH_VALIDATION_ERRORS, MAX_SAFE_RELATIVE_BYTES, PathPlatform, PathValidationError,

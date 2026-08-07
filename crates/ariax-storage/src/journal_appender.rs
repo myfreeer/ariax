@@ -1,15 +1,17 @@
 use crate::journal::{encode_record, hash_segment, replay_ordered_segments, validate_record};
 use crate::journal_payload::{JournalPayload, PayloadCodecError};
 use crate::{
-    JournalEncodeError, JournalId, JournalReplay, RECORD_OVERHEAD, RecordStopReason, RecordType,
-    ReplayLimits, ReplayResource, ReplayStop, SEGMENT_HASH_DOMAIN, SEGMENT_HEADER_LEN, SegmentHash,
+    JournalDirectoryCapability, JournalEncodeError, JournalId, JournalReplay,
+    NativeCapabilityError, RECORD_OVERHEAD, RecordStopReason, RecordType, ReplayLimits,
+    ReplayResource, ReplayStop, SEGMENT_HASH_DOMAIN, SEGMENT_HEADER_LEN, SegmentHash,
     SegmentHeader,
 };
 use ariax_core::{Generation, Gid};
 use sha2::{Digest, Sha256};
 use std::error::Error;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
@@ -338,12 +340,60 @@ struct TailRecord {
     fingerprint: [u8; 32],
 }
 
+/// Descriptor-backed journal set validated without performing a tail repair.
+///
+/// This value is move-only so bounded owner-queue rejection can return the
+/// exact open authority for retry. The session owner consumes it to construct
+/// the live appender and perform any permitted final-tail repair.
+#[derive(Debug)]
+pub struct PreparedJournalSet {
+    directory: PathBuf,
+    directory_capability: JournalDirectoryCapability,
+    task_gid: Gid,
+    journal_id: JournalId,
+    segment_paths: Vec<PathBuf>,
+    segment_names: Vec<OsString>,
+    segment_files: Vec<File>,
+    segment_bytes: Vec<Vec<u8>>,
+    replay: JournalReplay,
+}
+
+impl PreparedJournalSet {
+    #[must_use]
+    pub const fn task_gid(&self) -> Gid {
+        self.task_gid
+    }
+
+    #[must_use]
+    pub const fn journal_id(&self) -> JournalId {
+        self.journal_id
+    }
+
+    #[must_use]
+    pub const fn replay(&self) -> &JournalReplay {
+        &self.replay
+    }
+
+    #[must_use]
+    pub fn directory(&self) -> &Path {
+        &self.directory
+    }
+
+    #[must_use]
+    pub fn directory_identity(&self) -> crate::NativeIdentityV1 {
+        self.directory_capability.identity()
+    }
+}
+
 /// File-backed, serialized owner of one task's active journal segment.
 #[derive(Debug)]
 pub struct ControlJournalAppender {
     directory: PathBuf,
+    directory_capability: JournalDirectoryCapability,
     segment_paths: Vec<PathBuf>,
+    segment_names: Vec<OsString>,
     active_path: PathBuf,
+    active_name: OsString,
     active_file: Option<File>,
     header: SegmentHeader,
     valid_length: u64,
@@ -355,6 +405,83 @@ pub struct ControlJournalAppender {
 }
 
 impl ControlJournalAppender {
+    pub fn retire_owned_segment_artifacts(
+        directory: &JournalDirectoryCapability,
+        max_entries: usize,
+    ) -> Result<usize, JournalAppenderError> {
+        let entries = directory
+            .entries()
+            .map_err(|error| capability_error(JournalIoOperation::InspectRecoverySegment, error))?;
+        if entries.len() > max_entries {
+            return Err(JournalAppenderError::RecoveryStopped(
+                ReplayStop::ResourceLimit(ReplayResource::Segments),
+            ));
+        }
+        for (input_index, name) in entries.iter().enumerate() {
+            let Some(text) = name.to_str() else {
+                return Err(JournalAppenderError::RecoverySegmentPath { input_index });
+            };
+            let final_name = text.strip_suffix(JOURNAL_TEMP_FILE_SUFFIX).unwrap_or(text);
+            if parse_segment_file_name(final_name).is_none() {
+                return Err(JournalAppenderError::RecoverySegmentPath { input_index });
+            }
+        }
+        for name in &entries {
+            directory
+                .remove_file(name)
+                .map_err(|error| capability_error(JournalIoOperation::InstallSegment, error))?;
+        }
+        directory
+            .sync()
+            .map_err(|error| capability_error(JournalIoOperation::SyncDirectory, error))?;
+        Ok(entries.len())
+    }
+
+    pub fn discover_segment_paths(
+        directory: &JournalDirectoryCapability,
+        max_segments: usize,
+    ) -> Result<Vec<PathBuf>, JournalAppenderError> {
+        let entries = directory
+            .entries()
+            .map_err(|error| capability_error(JournalIoOperation::InspectRecoverySegment, error))?;
+        let mut indexed = Vec::new();
+        indexed
+            .try_reserve_exact(entries.len().min(max_segments))
+            .map_err(|_| JournalAppenderError::Journal(JournalEncodeError::AllocationFailed))?;
+        for name in entries {
+            let Some(name_text) = name.to_str() else {
+                return Err(JournalAppenderError::RecoverySegmentPath {
+                    input_index: indexed.len(),
+                });
+            };
+            if name_text.starts_with(JOURNAL_SEGMENT_FILE_PREFIX)
+                && name_text.ends_with(JOURNAL_TEMP_FILE_SUFFIX)
+            {
+                return Err(JournalAppenderError::SegmentPathExists { temporary: true });
+            }
+            let Some(index) = parse_segment_file_name(name_text) else {
+                return Err(JournalAppenderError::RecoverySegmentPath {
+                    input_index: indexed.len(),
+                });
+            };
+            if indexed.len() == max_segments {
+                return Err(JournalAppenderError::RecoveryStopped(
+                    ReplayStop::ResourceLimit(ReplayResource::Segments),
+                ));
+            }
+            indexed.push((index, directory.display().join(name)));
+        }
+        indexed.sort_unstable_by_key(|(index, _)| *index);
+        for (expected, (actual, _)) in indexed.iter().enumerate() {
+            if usize::try_from(*actual).ok() != Some(expected) {
+                return Err(JournalAppenderError::RecoverySegmentPath {
+                    input_index: expected,
+                });
+            }
+        }
+        Ok(indexed.into_iter().map(|(_, path)| path).collect())
+    }
+
     pub fn create(
         directory: impl AsRef<Path>,
         task_gid: Gid,
@@ -365,20 +492,25 @@ impl ControlJournalAppender {
         let directory = directory.as_ref().to_path_buf();
         fs::create_dir_all(&directory)
             .map_err(|error| io_error(JournalIoOperation::CreateDirectory, error))?;
+        let directory_capability = JournalDirectoryCapability::open_trusted(&directory)
+            .map_err(|error| capability_error(JournalIoOperation::CreateDirectory, error))?;
         let header = SegmentHeader::first(
             task_gid,
             journal_id,
             starting_generation,
             created_at_unix_ms,
         );
-        let active_path = install_segment(&directory, header)?;
-        let active_file = open_active_segment(&active_path)?;
+        let (active_name, active_path) = install_segment(&directory_capability, header)?;
+        let active_file = open_active_segment(&directory_capability, &active_name)?;
         let valid_length =
             u64::try_from(SEGMENT_HEADER_LEN).expect("the fixed segment header length fits u64");
         Ok(Self {
             directory,
+            directory_capability,
             segment_paths: vec![active_path.clone()],
+            segment_names: vec![active_name.clone()],
             active_path,
+            active_name,
             active_file: Some(active_file),
             header,
             valid_length,
@@ -390,23 +522,36 @@ impl ControlJournalAppender {
         })
     }
 
-    /// Opens an installed segment set at its exact replay-valid boundary.
-    ///
-    /// The caller must hold exclusive persistence ownership for the task while
-    /// this method validates and, for a recoverable final torn record, repairs
-    /// the active segment. Its path checks are a portable lexical/metadata
-    /// preflight, not descriptor-safe authority: native startup must exclude
-    /// namespace mutation for the whole call.
-    pub fn open_recovered(
+    /// Opens and validates an installed segment set without mutating it.
+    pub fn prepare_recovered(
         directory: impl AsRef<Path>,
         installed_segment_paths: &[PathBuf],
         expected_task_gid: Gid,
         expected_journal_id: JournalId,
         limits: ReplayLimits,
-        recovery_starting_generation: Generation,
-        recovery_created_at_unix_ms: u64,
-    ) -> Result<(Self, JournalReplay), JournalAppenderError> {
+    ) -> Result<PreparedJournalSet, JournalAppenderError> {
         let directory = directory.as_ref().to_path_buf();
+        let directory_capability = JournalDirectoryCapability::open_trusted(&directory)
+            .map_err(|error| capability_error(JournalIoOperation::OpenRecoverySegment, error))?;
+        Self::prepare_recovered_in(
+            directory_capability,
+            installed_segment_paths,
+            expected_task_gid,
+            expected_journal_id,
+            limits,
+        )
+    }
+
+    /// Validates an installed segment set through an already-opened directory
+    /// capability, without reopening its display path or mutating the set.
+    pub fn prepare_recovered_in(
+        directory_capability: JournalDirectoryCapability,
+        installed_segment_paths: &[PathBuf],
+        expected_task_gid: Gid,
+        expected_journal_id: JournalId,
+        limits: ReplayLimits,
+    ) -> Result<PreparedJournalSet, JournalAppenderError> {
+        let directory = directory_capability.display().to_path_buf();
         if installed_segment_paths.is_empty() {
             return Err(JournalAppenderError::RecoveryStopped(
                 ReplayStop::NoSegments,
@@ -420,6 +565,14 @@ impl ControlJournalAppender {
 
         let encoded_byte_budget = recovery_encoded_byte_budget(limits)?;
         let mut remaining_byte_budget = encoded_byte_budget;
+        let mut segment_names = Vec::new();
+        segment_names
+            .try_reserve_exact(installed_segment_paths.len())
+            .map_err(|_| JournalAppenderError::Journal(JournalEncodeError::AllocationFailed))?;
+        let mut segment_files = Vec::new();
+        segment_files
+            .try_reserve_exact(installed_segment_paths.len())
+            .map_err(|_| JournalAppenderError::Journal(JournalEncodeError::AllocationFailed))?;
         let mut segment_bytes = Vec::new();
         segment_bytes
             .try_reserve_exact(installed_segment_paths.len())
@@ -430,18 +583,22 @@ impl ControlJournalAppender {
                     ReplayResource::Segments,
                 ))
             })?;
-            if *path != journal_segment_path(&directory, segment_index)
-                || !recovery_path_is_regular(path)?
-            {
+            let name = OsString::from(journal_segment_file_name(segment_index));
+            if *path != directory.join(&name) {
                 return Err(JournalAppenderError::RecoverySegmentPath { input_index });
             }
+            let mut file = directory_capability
+                .open_regular_file(&name, true)
+                .map_err(|_| JournalAppenderError::RecoverySegmentPath { input_index })?;
             segment_bytes.push(read_recovery_segment(
-                path,
+                &mut file,
                 encoded_byte_budget,
                 &mut remaining_byte_budget,
             )?);
+            segment_names.push(name);
+            segment_files.push(file);
         }
-        validate_recovery_directory(&directory, installed_segment_paths)?;
+        validate_recovery_directory(&directory_capability, &segment_names)?;
 
         let first_header = SegmentHeader::decode(&segment_bytes[0]).map_err(|error| {
             JournalAppenderError::RecoveryStopped(ReplayStop::Header {
@@ -468,35 +625,72 @@ impl ControlJournalAppender {
             .map_err(|_| JournalAppenderError::Journal(JournalEncodeError::AllocationFailed))?;
         replay_inputs.extend(segment_bytes.iter().map(Vec::as_slice));
         let replay = replay_ordered_segments(&replay_inputs, limits);
-        let appender = match replay.stop {
-            ReplayStop::CleanEnd => open_clean_recovered_appender(
-                directory,
-                installed_segment_paths,
-                &segment_bytes,
-                &replay,
-            )?,
+        match replay.stop {
+            ReplayStop::CleanEnd => {}
             ReplayStop::Record {
                 segment_index,
-                offset,
                 reason,
+                ..
             } if usize::try_from(segment_index).ok()
                 == installed_segment_paths.len().checked_sub(1)
                 && replay.valid_segment_prefixes.len() == installed_segment_paths.len()
-                && repairable_recovery_tail(reason) =>
-            {
-                open_repaired_recovered_appender(
-                    directory,
-                    installed_segment_paths,
-                    &mut segment_bytes,
-                    &replay,
-                    offset,
-                    recovery_starting_generation,
-                    recovery_created_at_unix_ms,
-                )?
-            }
+                && repairable_recovery_tail(reason) => {}
             stop => return Err(JournalAppenderError::RecoveryStopped(stop)),
-        };
-        Ok((appender, replay))
+        }
+        Ok(PreparedJournalSet {
+            directory,
+            directory_capability,
+            task_gid: first_header.task_gid(),
+            journal_id: first_header.journal_id(),
+            segment_paths: clone_segment_paths(installed_segment_paths)?,
+            segment_names,
+            segment_files,
+            segment_bytes,
+            replay,
+        })
+    }
+
+    /// Consumes exact opened recovery authority and constructs the live
+    /// appender, repairing only a permitted final torn record.
+    pub fn open_prepared(
+        prepared: PreparedJournalSet,
+        recovery_starting_generation: Generation,
+        recovery_created_at_unix_ms: u64,
+    ) -> Result<(Self, JournalReplay), JournalAppenderError> {
+        match prepared.replay.stop {
+            ReplayStop::CleanEnd => open_clean_recovered_appender(prepared),
+            ReplayStop::Record { offset, .. } => open_repaired_recovered_appender(
+                prepared,
+                offset,
+                recovery_starting_generation,
+                recovery_created_at_unix_ms,
+            ),
+            stop => Err(JournalAppenderError::RecoveryStopped(stop)),
+        }
+    }
+
+    /// Opens an installed segment set at its exact replay-valid boundary.
+    pub fn open_recovered(
+        directory: impl AsRef<Path>,
+        installed_segment_paths: &[PathBuf],
+        expected_task_gid: Gid,
+        expected_journal_id: JournalId,
+        limits: ReplayLimits,
+        recovery_starting_generation: Generation,
+        recovery_created_at_unix_ms: u64,
+    ) -> Result<(Self, JournalReplay), JournalAppenderError> {
+        let prepared = Self::prepare_recovered(
+            directory,
+            installed_segment_paths,
+            expected_task_gid,
+            expected_journal_id,
+            limits,
+        )?;
+        Self::open_prepared(
+            prepared,
+            recovery_starting_generation,
+            recovery_created_at_unix_ms,
+        )
     }
 
     #[must_use]
@@ -589,11 +783,15 @@ impl ControlJournalAppender {
                 ))?;
         let fingerprint = tail_record_fingerprint(&record);
         self.ensure_open()?;
-        let write_result = self
+        let active_file = self
             .active_file
             .as_mut()
-            .expect("ensure_open installs a file")
-            .write_all(&record);
+            .expect("ensure_open installs a file");
+        if let Err(error) = active_file.seek(SeekFrom::Start(self.valid_length)) {
+            self.fault = Some(JournalAppenderFault::WriteRecord);
+            return Err(io_error(JournalIoOperation::WriteRecord, error));
+        }
+        let write_result = active_file.write_all(&record);
         if let Err(error) = write_result {
             self.fault = Some(JournalAppenderFault::WriteRecord);
             return Err(io_error(JournalIoOperation::WriteRecord, error));
@@ -703,14 +901,14 @@ impl ControlJournalAppender {
             )
             .map_err(JournalAppenderError::Journal)?;
         self.active_file.take();
-        let new_path = match install_segment(&self.directory, next_header) {
-            Ok(path) => path,
+        let (new_name, new_path) = match install_segment(&self.directory_capability, next_header) {
+            Ok(installed) => installed,
             Err(error) => {
                 self.fault = Some(JournalAppenderFault::Rotation);
                 return Err(error);
             }
         };
-        let new_file = match open_active_segment(&new_path) {
+        let new_file = match open_active_segment(&self.directory_capability, &new_name) {
             Ok(file) => file,
             Err(error) => {
                 self.fault = Some(JournalAppenderFault::Rotation);
@@ -719,7 +917,9 @@ impl ControlJournalAppender {
         };
         let previous_segment_index = self.header.segment_index();
         self.segment_paths.push(new_path.clone());
+        self.segment_names.push(new_name.clone());
         self.active_path = new_path;
+        self.active_name = new_name;
         self.active_file = Some(new_file);
         self.header = next_header;
         self.valid_length =
@@ -746,7 +946,7 @@ impl ControlJournalAppender {
         if self.active_file.is_some() {
             return Ok(());
         }
-        let mut file = match open_active_segment(&self.active_path) {
+        let mut file = match open_active_segment(&self.directory_capability, &self.active_name) {
             Ok(file) => file,
             Err(error) => {
                 self.fault = Some(JournalAppenderFault::Reopen);
@@ -796,31 +996,24 @@ fn recovery_encoded_byte_budget(limits: ReplayLimits) -> Result<usize, JournalAp
         ))
 }
 
-fn recovery_path_is_regular(path: &Path) -> Result<bool, JournalAppenderError> {
-    path.symlink_metadata()
-        .map(|metadata| metadata.file_type().is_file())
-        .map_err(|error| io_error(JournalIoOperation::InspectRecoverySegment, error))
-}
-
 fn validate_recovery_directory(
-    directory: &Path,
-    installed_segment_paths: &[PathBuf],
+    directory: &JournalDirectoryCapability,
+    installed_segment_names: &[OsString],
 ) -> Result<(), JournalAppenderError> {
-    let immediate_successor = u32::try_from(installed_segment_paths.len())
+    let immediate_successor = u32::try_from(installed_segment_names.len())
         .ok()
-        .map(|index| journal_segment_path(directory, index));
-    let entries = fs::read_dir(directory)
-        .map_err(|error| io_error(JournalIoOperation::InspectRecoverySegment, error))?;
-    for entry in entries {
-        let entry =
-            entry.map_err(|error| io_error(JournalIoOperation::InspectRecoverySegment, error))?;
-        let path = entry.path();
-        if installed_segment_paths.contains(&path) {
+        .map(journal_segment_file_name);
+    let entries = directory
+        .entries()
+        .map_err(|error| capability_error(JournalIoOperation::InspectRecoverySegment, error))?;
+    for file_name in entries {
+        if installed_segment_names.contains(&file_name) {
             continue;
         }
-        let file_name = entry.file_name();
         let Some(file_name) = file_name.to_str() else {
-            continue;
+            return Err(JournalAppenderError::RecoverySegmentPath {
+                input_index: installed_segment_names.len(),
+            });
         };
         if file_name.starts_with(JOURNAL_SEGMENT_FILE_PREFIX)
             && file_name.ends_with(JOURNAL_TEMP_FILE_SUFFIX)
@@ -830,26 +1023,25 @@ fn validate_recovery_directory(
         if file_name.starts_with(JOURNAL_SEGMENT_FILE_PREFIX)
             && file_name.ends_with(JOURNAL_SEGMENT_FILE_SUFFIX)
         {
-            if immediate_successor.as_ref() == Some(&path) {
+            if immediate_successor.as_deref() == Some(file_name) {
                 return Err(JournalAppenderError::SegmentPathExists { temporary: false });
             }
             return Err(JournalAppenderError::RecoverySegmentPath {
-                input_index: installed_segment_paths.len(),
+                input_index: installed_segment_names.len(),
             });
         }
+        return Err(JournalAppenderError::RecoverySegmentPath {
+            input_index: installed_segment_names.len(),
+        });
     }
     Ok(())
 }
 
 fn read_recovery_segment(
-    path: &Path,
+    file: &mut File,
     encoded_byte_budget: usize,
     remaining_byte_budget: &mut usize,
 ) -> Result<Vec<u8>, JournalAppenderError> {
-    let mut file = OpenOptions::new()
-        .read(true)
-        .open(path)
-        .map_err(|error| io_error(JournalIoOperation::OpenRecoverySegment, error))?;
     let length = file
         .metadata()
         .map_err(|error| io_error(JournalIoOperation::InspectRecoverySegment, error))?
@@ -868,6 +1060,8 @@ fn read_recovery_segment(
         .try_reserve_exact(length)
         .map_err(|_| JournalAppenderError::Journal(JournalEncodeError::AllocationFailed))?;
     bytes.resize(length, 0);
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| io_error(JournalIoOperation::ReadRecoverySegment, error))?;
     file.read_exact(&mut bytes)
         .map_err(|error| io_error(JournalIoOperation::ReadRecoverySegment, error))?;
     let mut extra = [0_u8; 1];
@@ -900,150 +1094,166 @@ fn repairable_recovery_tail(reason: RecordStopReason) -> bool {
 }
 
 fn open_clean_recovered_appender(
-    directory: PathBuf,
-    installed_segment_paths: &[PathBuf],
-    segment_bytes: &[Vec<u8>],
-    replay: &JournalReplay,
-) -> Result<ControlJournalAppender, JournalAppenderError> {
-    let active_path = installed_segment_paths
+    mut prepared: PreparedJournalSet,
+) -> Result<(ControlJournalAppender, JournalReplay), JournalAppenderError> {
+    let active_path = prepared
+        .segment_paths
         .last()
         .expect("recovered open rejects empty segment sets")
         .clone();
-    let active_bytes = segment_bytes
+    let active_name = prepared
+        .segment_names
+        .last()
+        .expect("recovered open rejects empty segment sets")
+        .clone();
+    let active_bytes = prepared
+        .segment_bytes
         .last()
         .expect("recovered open reads every installed segment");
     let header = SegmentHeader::decode(active_bytes).map_err(|error| {
         JournalAppenderError::RecoveryStopped(ReplayStop::Header {
-            input_index: installed_segment_paths.len() - 1,
+            input_index: prepared.segment_paths.len() - 1,
             error,
         })
     })?;
     let valid_length = u64::try_from(active_bytes.len())
         .map_err(|_| JournalAppenderError::Journal(JournalEncodeError::AllocationFailed))?;
-    let tail_record = recovered_tail_record(active_bytes, header, replay)?;
-    let next_sequence =
-        replay
-            .last_sequence
-            .checked_add(1)
-            .ok_or(JournalAppenderError::Journal(
-                JournalEncodeError::SequenceExhausted,
-            ))?;
-    let mut active_file = open_active_segment(&active_path)?;
+    let tail_record = recovered_tail_record(active_bytes, header, &prepared.replay)?;
+    let last_sequence = prepared.replay.last_sequence;
+    let next_sequence = last_sequence
+        .checked_add(1)
+        .ok_or(JournalAppenderError::Journal(
+            JournalEncodeError::SequenceExhausted,
+        ))?;
+    let mut active_file = prepared
+        .segment_files
+        .pop()
+        .expect("recovered open retains every opened segment file");
     validate_recovery_file_bytes(&mut active_file, active_bytes)?;
     validate_active_file(
         &mut active_file,
         header,
         valid_length,
-        replay.last_sequence,
+        last_sequence,
         tail_record,
     )?;
     active_file
         .sync_all()
         .map_err(|error| io_error(JournalIoOperation::SyncSegment, error))?;
-    Ok(ControlJournalAppender {
-        directory,
-        segment_paths: clone_segment_paths(installed_segment_paths)?,
-        active_path,
-        active_file: Some(active_file),
-        header,
-        valid_length,
-        next_sequence,
-        appended_sequence: replay.last_sequence,
-        flushed_sequence: replay.last_sequence,
-        tail_record,
-        fault: None,
-    })
+    Ok((
+        ControlJournalAppender {
+            directory: prepared.directory,
+            directory_capability: prepared.directory_capability,
+            segment_paths: prepared.segment_paths,
+            segment_names: prepared.segment_names,
+            active_path,
+            active_name,
+            active_file: Some(active_file),
+            header,
+            valid_length,
+            next_sequence,
+            appended_sequence: last_sequence,
+            flushed_sequence: last_sequence,
+            tail_record,
+            fault: None,
+        },
+        prepared.replay,
+    ))
 }
 
 fn open_repaired_recovered_appender(
-    directory: PathBuf,
-    installed_segment_paths: &[PathBuf],
-    segment_bytes: &mut [Vec<u8>],
-    replay: &JournalReplay,
+    mut prepared: PreparedJournalSet,
     valid_prefix: usize,
     recovery_starting_generation: Generation,
     recovery_created_at_unix_ms: u64,
-) -> Result<ControlJournalAppender, JournalAppenderError> {
-    let active_path = installed_segment_paths
+) -> Result<(ControlJournalAppender, JournalReplay), JournalAppenderError> {
+    let _active_path = prepared
+        .segment_paths
         .last()
         .expect("recovered open rejects empty segment sets");
-    let active_bytes = segment_bytes
+    let active_bytes = prepared
+        .segment_bytes
         .last_mut()
         .expect("recovered open reads every installed segment");
-    if replay.valid_segment_prefixes.last().copied() != Some(valid_prefix)
+    if prepared.replay.valid_segment_prefixes.last().copied() != Some(valid_prefix)
         || valid_prefix < SEGMENT_HEADER_LEN
         || valid_prefix >= active_bytes.len()
     {
-        return Err(JournalAppenderError::RecoveryStopped(replay.stop));
+        return Err(JournalAppenderError::RecoveryStopped(prepared.replay.stop));
     }
     let header = SegmentHeader::decode(active_bytes).map_err(|error| {
         JournalAppenderError::RecoveryStopped(ReplayStop::Header {
-            input_index: installed_segment_paths.len() - 1,
+            input_index: prepared.segment_paths.len() - 1,
             error,
         })
     })?;
-    let reopen_first_empty = header.segment_index() == 0 && replay.last_sequence == 0;
+    let last_sequence = prepared.replay.last_sequence;
+    let reopen_first_empty = header.segment_index() == 0 && last_sequence == 0;
     let next_header = if reopen_first_empty {
         None
     } else {
         let previous_segment_hash = hash_segment(&active_bytes[..valid_prefix]);
         let next_header = header
             .recovery_successor(
-                replay.last_sequence,
+                last_sequence,
                 previous_segment_hash,
                 recovery_starting_generation,
                 recovery_created_at_unix_ms,
             )
             .map_err(JournalAppenderError::Journal)?;
-        let final_path = journal_segment_path(&directory, next_header.segment_index());
-        let temporary_path =
-            journal_temporary_segment_path(&directory, next_header.segment_index());
-        if path_exists(&final_path)? {
+        let final_name = OsString::from(journal_segment_file_name(next_header.segment_index()));
+        let temporary_name = journal_temporary_segment_file_name(next_header.segment_index());
+        if capability_name_exists(&prepared.directory_capability, &final_name)? {
             return Err(JournalAppenderError::SegmentPathExists { temporary: false });
         }
-        if path_exists(&temporary_path)? {
+        if capability_name_exists(&prepared.directory_capability, &temporary_name)? {
             return Err(JournalAppenderError::SegmentPathExists { temporary: true });
         }
         Some(next_header)
     };
 
-    repair_recovery_segment(active_path, active_bytes, valid_prefix)?;
+    let active_file = prepared
+        .segment_files
+        .last_mut()
+        .expect("recovered open retains every opened segment file");
+    repair_recovery_segment(active_file, active_bytes, valid_prefix)?;
     active_bytes.truncate(valid_prefix);
 
     let Some(next_header) = next_header else {
-        return open_clean_recovered_appender(
-            directory,
-            installed_segment_paths,
-            segment_bytes,
-            replay,
-        );
+        return open_clean_recovered_appender(prepared);
     };
-    let new_path = install_segment(&directory, next_header)?;
-    let mut new_file = open_active_segment(&new_path)?;
+    let (new_name, new_path) = install_segment(&prepared.directory_capability, next_header)?;
+    let mut new_file = open_active_segment(&prepared.directory_capability, &new_name)?;
     let header_length =
         u64::try_from(SEGMENT_HEADER_LEN).expect("the fixed segment header length fits u64");
     validate_active_file(
         &mut new_file,
         next_header,
         header_length,
-        replay.last_sequence,
+        last_sequence,
         None,
     )?;
-    let mut recovered_paths = clone_segment_paths(installed_segment_paths)?;
-    recovered_paths.push(new_path.clone());
-    Ok(ControlJournalAppender {
-        directory,
-        segment_paths: recovered_paths,
-        active_path: new_path,
-        active_file: Some(new_file),
-        header: next_header,
-        valid_length: header_length,
-        next_sequence: next_header.first_sequence(),
-        appended_sequence: replay.last_sequence,
-        flushed_sequence: replay.last_sequence,
-        tail_record: None,
-        fault: None,
-    })
+    prepared.segment_paths.push(new_path.clone());
+    prepared.segment_names.push(new_name.clone());
+    Ok((
+        ControlJournalAppender {
+            directory: prepared.directory,
+            directory_capability: prepared.directory_capability,
+            segment_paths: prepared.segment_paths,
+            segment_names: prepared.segment_names,
+            active_path: new_path,
+            active_name: new_name,
+            active_file: Some(new_file),
+            header: next_header,
+            valid_length: header_length,
+            next_sequence: next_header.first_sequence(),
+            appended_sequence: last_sequence,
+            flushed_sequence: last_sequence,
+            tail_record: None,
+            fault: None,
+        },
+        prepared.replay,
+    ))
 }
 
 fn recovered_tail_record(
@@ -1140,16 +1350,11 @@ fn validate_recovery_file_bytes(
 }
 
 fn repair_recovery_segment(
-    path: &Path,
+    file: &mut File,
     expected: &[u8],
     valid_prefix: usize,
 ) -> Result<(), JournalAppenderError> {
-    let mut file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(path)
-        .map_err(|error| io_error(JournalIoOperation::OpenRecoverySegment, error))?;
-    validate_recovery_file_bytes(&mut file, expected)?;
+    validate_recovery_file_bytes(file, expected)?;
     let valid_prefix = u64::try_from(valid_prefix)
         .map_err(|_| JournalAppenderError::Journal(JournalEncodeError::AllocationFailed))?;
     file.set_len(valid_prefix)
@@ -1163,6 +1368,17 @@ pub fn journal_segment_file_name(segment_index: u32) -> String {
     format!("{JOURNAL_SEGMENT_FILE_PREFIX}{segment_index:010}{JOURNAL_SEGMENT_FILE_SUFFIX}")
 }
 
+fn parse_segment_file_name(file_name: &str) -> Option<u32> {
+    let digits = file_name
+        .strip_prefix(JOURNAL_SEGMENT_FILE_PREFIX)?
+        .strip_suffix(JOURNAL_SEGMENT_FILE_SUFFIX)?;
+    if digits.len() != 10 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let index = digits.parse().ok()?;
+    (journal_segment_file_name(index) == file_name).then_some(index)
+}
+
 #[must_use]
 pub fn journal_segment_path(directory: impl AsRef<Path>, segment_index: u32) -> PathBuf {
     directory
@@ -1170,49 +1386,53 @@ pub fn journal_segment_path(directory: impl AsRef<Path>, segment_index: u32) -> 
         .join(journal_segment_file_name(segment_index))
 }
 
+#[cfg(test)]
 fn journal_temporary_segment_path(directory: &Path, segment_index: u32) -> PathBuf {
-    let mut file_name = journal_segment_file_name(segment_index);
-    file_name.push_str(JOURNAL_TEMP_FILE_SUFFIX);
-    directory.join(file_name)
+    directory.join(journal_temporary_segment_file_name(segment_index))
 }
 
 fn install_segment(
-    directory: &Path,
+    directory: &JournalDirectoryCapability,
     header: SegmentHeader,
-) -> Result<PathBuf, JournalAppenderError> {
-    let final_path = journal_segment_path(directory, header.segment_index());
-    let temporary_path = journal_temporary_segment_path(directory, header.segment_index());
-    if path_exists(&final_path)? {
+) -> Result<(OsString, PathBuf), JournalAppenderError> {
+    let final_name = OsString::from(journal_segment_file_name(header.segment_index()));
+    let temporary_name = journal_temporary_segment_file_name(header.segment_index());
+    let final_path = directory.display().join(&final_name);
+    if capability_name_exists(directory, &final_name)? {
         return Err(JournalAppenderError::SegmentPathExists { temporary: false });
     }
-    if path_exists(&temporary_path)? {
+    if capability_name_exists(directory, &temporary_name)? {
         return Err(JournalAppenderError::SegmentPathExists { temporary: true });
     }
-    let mut temporary = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary_path)
+    let mut temporary = directory
+        .create_new_file(&temporary_name)
         .map_err(|error| {
-            if error.kind() == io::ErrorKind::AlreadyExists {
+            if capability_error_kind(&error) == io::ErrorKind::AlreadyExists {
                 JournalAppenderError::SegmentPathExists { temporary: true }
             } else {
-                io_error(JournalIoOperation::CreateTemporarySegment, error)
+                capability_error(JournalIoOperation::CreateTemporarySegment, error)
             }
         })?;
     if let Err(error) = temporary.write_all(&header.encode()) {
         drop(temporary);
-        let _ = fs::remove_file(&temporary_path);
+        let _ = directory.remove_file(&temporary_name);
         return Err(io_error(JournalIoOperation::WriteSegmentHeader, error));
     }
     if let Err(error) = temporary.sync_all() {
         drop(temporary);
-        let _ = fs::remove_file(&temporary_path);
+        let _ = directory.remove_file(&temporary_name);
         return Err(io_error(JournalIoOperation::SyncSegment, error));
     }
-    if let Err(error) = link_segment_no_clobber(&temporary_path, &final_path) {
+    if let Err(error) = directory.link_no_replace(&temporary_name, &final_name) {
         drop(temporary);
-        let _ = fs::remove_file(&temporary_path);
-        return Err(error);
+        let _ = directory.remove_file(&temporary_name);
+        return Err(
+            if capability_error_kind(&error) == io::ErrorKind::AlreadyExists {
+                JournalAppenderError::SegmentPathExists { temporary: false }
+            } else {
+                capability_error(JournalIoOperation::InstallSegment, error)
+            },
+        );
     }
     // The installed hard link and candidate name reference the same inode, so
     // this second barrier covers the installed file before its directory entry
@@ -1221,18 +1441,37 @@ fn install_segment(
         drop(temporary);
         return Err(io_error(JournalIoOperation::SyncSegment, error));
     }
-    if let Err(error) = sync_directory(directory) {
+    if let Err(error) = directory.sync() {
         drop(temporary);
-        return Err(io_error(JournalIoOperation::SyncDirectory, error));
+        return Err(capability_error(JournalIoOperation::SyncDirectory, error));
     }
     drop(temporary);
-    fs::remove_file(&temporary_path)
-        .map_err(|error| io_error(JournalIoOperation::InstallSegment, error))?;
-    sync_directory(directory)
-        .map_err(|error| io_error(JournalIoOperation::SyncDirectory, error))?;
-    Ok(final_path)
+    directory
+        .remove_file(&temporary_name)
+        .map_err(|error| capability_error(JournalIoOperation::InstallSegment, error))?;
+    directory
+        .sync()
+        .map_err(|error| capability_error(JournalIoOperation::SyncDirectory, error))?;
+    Ok((final_name, final_path))
 }
 
+fn journal_temporary_segment_file_name(segment_index: u32) -> OsString {
+    let mut file_name = journal_segment_file_name(segment_index);
+    file_name.push_str(JOURNAL_TEMP_FILE_SUFFIX);
+    OsString::from(file_name)
+}
+
+fn capability_name_exists(
+    directory: &JournalDirectoryCapability,
+    name: &OsStr,
+) -> Result<bool, JournalAppenderError> {
+    directory
+        .entries()
+        .map(|entries| entries.iter().any(|entry| entry == name))
+        .map_err(|error| capability_error(JournalIoOperation::InspectSegmentPath, error))
+}
+
+#[cfg(test)]
 fn link_segment_no_clobber(
     temporary_path: &Path,
     final_path: &Path,
@@ -1246,17 +1485,13 @@ fn link_segment_no_clobber(
     })
 }
 
-fn path_exists(path: &Path) -> Result<bool, JournalAppenderError> {
-    path.try_exists()
-        .map_err(|error| io_error(JournalIoOperation::InspectSegmentPath, error))
-}
-
-fn open_active_segment(path: &Path) -> Result<File, JournalAppenderError> {
-    OpenOptions::new()
-        .read(true)
-        .append(true)
-        .open(path)
-        .map_err(|error| io_error(JournalIoOperation::OpenActiveSegment, error))
+fn open_active_segment(
+    directory: &JournalDirectoryCapability,
+    name: &OsStr,
+) -> Result<File, JournalAppenderError> {
+    directory
+        .open_regular_file(name, true)
+        .map_err(|error| capability_error(JournalIoOperation::OpenActiveSegment, error))
 }
 
 fn validate_active_file(
@@ -1371,25 +1606,32 @@ fn io_error(operation: JournalIoOperation, error: io::Error) -> JournalAppenderE
     }
 }
 
-#[cfg(unix)]
-fn sync_directory(directory: &Path) -> io::Result<()> {
-    let file = File::open(directory)?;
-    match file.sync_all() {
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::InvalidInput | io::ErrorKind::Unsupported
-            ) =>
-        {
-            Ok(())
-        }
-        result => result,
+fn capability_error(
+    operation: JournalIoOperation,
+    error: NativeCapabilityError,
+) -> JournalAppenderError {
+    JournalAppenderError::Io {
+        operation,
+        kind: capability_error_kind(&error),
     }
 }
 
-#[cfg(not(unix))]
-fn sync_directory(_directory: &Path) -> io::Result<()> {
-    Ok(())
+fn capability_error_kind(error: &NativeCapabilityError) -> io::ErrorKind {
+    match error {
+        NativeCapabilityError::Io(error) => error.kind(),
+        NativeCapabilityError::UnsupportedPlatform | NativeCapabilityError::SafeOpenUnavailable => {
+            io::ErrorKind::Unsupported
+        }
+        NativeCapabilityError::InvalidAbsolutePath
+        | NativeCapabilityError::UnsafePathComponent
+        | NativeCapabilityError::PlatformPathMismatch => io::ErrorKind::InvalidInput,
+        NativeCapabilityError::OutsideAllowedRoot
+        | NativeCapabilityError::ObjectKindMismatch { .. }
+        | NativeCapabilityError::HardLinkAlias
+        | NativeCapabilityError::Identity(_)
+        | NativeCapabilityError::IdentityMismatch => io::ErrorKind::PermissionDenied,
+        NativeCapabilityError::TooManyAllowedRoots => io::ErrorKind::InvalidInput,
+    }
 }
 
 #[cfg(test)]
@@ -1877,6 +2119,67 @@ mod tests {
         let replay = replay_ordered_segments(&[&first, &second], ReplayLimits::default());
         assert_eq!(replay.stop, ReplayStop::CleanEnd);
         assert_eq!(replay.last_sequence, 2);
+    }
+
+    #[test]
+    fn prepared_recovery_defers_torn_tail_mutation_until_open() {
+        let directory = TestDirectory::new();
+        let mut original = ControlJournalAppender::create(
+            directory.path(),
+            gid(),
+            journal_id(),
+            Generation::INITIAL,
+            100,
+        )
+        .expect("create appender");
+        original
+            .append_payload(Generation::INITIAL, &task_created())
+            .expect("append first");
+        original
+            .append_payload(Generation::INITIAL, &task_paused())
+            .expect("append second");
+        original.flush(2).expect("flush both");
+        let path = original.active_path().to_path_buf();
+        drop(original);
+
+        let file = OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open for torn-tail simulation");
+        let torn_length = file.metadata().expect("torn metadata").len() - 3;
+        file.set_len(torn_length).expect("tear final commit");
+        drop(file);
+        let torn_bytes = fs::read(&path).expect("read torn input");
+        let valid_prefix = replay_ordered_segments(&[&torn_bytes], ReplayLimits::default())
+            .valid_segment_prefixes[0];
+
+        let prepared = ControlJournalAppender::prepare_recovered(
+            directory.path(),
+            std::slice::from_ref(&path),
+            gid(),
+            journal_id(),
+            ReplayLimits::default(),
+        )
+        .expect("prepare torn recovery");
+        assert!(matches!(
+            prepared.replay().stop,
+            ReplayStop::Record {
+                reason: RecordStopReason::MissingCommit,
+                ..
+            }
+        ));
+        assert_eq!(fs::read(&path).expect("prepared input"), torn_bytes);
+        assert!(!journal_segment_path(directory.path(), 1).exists());
+
+        let (recovered, _) =
+            ControlJournalAppender::open_prepared(prepared, Generation::INITIAL, 200)
+                .expect("open prepared recovery");
+        assert_eq!(
+            fs::metadata(&path).expect("repaired metadata").len(),
+            valid_prefix as u64
+        );
+        assert_eq!(recovered.active_header().segment_index(), 1);
+        assert!(journal_segment_path(directory.path(), 1).exists());
     }
 
     #[test]

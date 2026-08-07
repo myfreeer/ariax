@@ -2098,6 +2098,49 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Aborts one exact installing intent while preserving the retained old
+    /// journal pointer as authority.
+    pub fn abort_journal_install(
+        &mut self,
+        token: JournalInstallToken,
+    ) -> Result<(), SessionStoreError> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let install = read_journal_install_for_gid(&transaction, token.gid)?;
+        if install.phase != JournalInstallPhase::Installing || install.token() != token {
+            return Err(SessionStoreError::JournalInstallConflict);
+        }
+        validate_install_intent(&install)?;
+        let current = transaction
+            .query_row(
+                "SELECT primary_journal_id, primary_journal_path FROM task WHERE gid = ?1",
+                [token.gid.to_string()],
+                |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?)),
+            )
+            .optional()?
+            .ok_or(SessionStoreError::NotFound)?;
+        if decode_journal_id(&current.0, "task.primary_journal_id")? != install.old_journal_id
+            || decode_platform_path(&current.1, "task.primary_journal_path")? != install.old_path
+        {
+            return Err(SessionStoreError::JournalPointerMismatch);
+        }
+        let changed = transaction.execute(
+            "DELETE FROM journal_install WHERE gid = ?1 AND checkpoint_id = ?2 AND new_journal_id = ?3 AND phase = ?4",
+            params![
+                token.gid.to_string(),
+                token.checkpoint_id.as_bytes().as_slice(),
+                token.new_journal_id.as_bytes().as_slice(),
+                JournalInstallPhase::Installing as i64,
+            ],
+        )?;
+        if changed != 1 {
+            return Err(SessionStoreError::JournalInstallConflict);
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn clear_installed_journal(
         &mut self,
         token: JournalInstallToken,
@@ -5500,13 +5543,13 @@ fn session_io_error(operation: SessionIoOperation, error: io::Error) -> SessionS
 mod tests {
     use super::{
         ALL_SESSION_IO_OPERATIONS, ALL_SESSION_SQLITE_LIMITS, ALL_SESSION_STORE_ERROR_CODES,
-        JournalInstallIntent, JournalInstallPhase, SESSION_SCHEMA_OBJECTS, SESSION_SCHEMA_VERSION,
-        SessionCacheReconciliation, SessionHostKeyChallengeRecord, SessionHostKeyResolution,
-        SessionId, SessionJournalCache, SessionJournalMode, SessionNoSpaceCondition,
-        SessionQueueOrder, SessionQueueState, SessionQueueTransition, SessionRecord,
-        SessionSlowRetryDecision, SessionSlowSlotState, SessionStoppedResultRecord, SessionStore,
-        SessionStoreConfig, SessionStoreError, SessionTaskRecord, SessionTaskSourceRecord,
-        SessionTerminalStatus,
+        JournalInstallIntent, JournalInstallPhase, JournalInstallToken, SESSION_SCHEMA_OBJECTS,
+        SESSION_SCHEMA_VERSION, SessionCacheReconciliation, SessionHostKeyChallengeRecord,
+        SessionHostKeyResolution, SessionId, SessionJournalCache, SessionJournalMode,
+        SessionNoSpaceCondition, SessionQueueOrder, SessionQueueState, SessionQueueTransition,
+        SessionRecord, SessionSlowRetryDecision, SessionSlowSlotState, SessionStoppedResultRecord,
+        SessionStore, SessionStoreConfig, SessionStoreError, SessionTaskRecord,
+        SessionTaskSourceRecord, SessionTerminalStatus,
     };
     use crate::{
         CheckpointId, JournalHash, JournalId, OptionsSnapshotScope, PathPlatform, PlatformPath,
@@ -9229,6 +9272,73 @@ mod tests {
             .clear_installed_journal(token)
             .expect("retirement complete");
         assert!(store.journal_installs().expect("cleared").is_empty());
+    }
+
+    #[test]
+    fn journal_install_abort_rechecks_token_and_retained_pointer() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        let task = task_record(gid(1), 0);
+        store.put_task(&task).expect("task");
+        let intent = JournalInstallIntent {
+            gid: task.gid,
+            checkpoint_id: CheckpointId::new([13; 16]).expect("checkpoint"),
+            old_journal_id: task.primary_journal_id,
+            old_path: task.primary_journal_path.clone(),
+            new_journal_id: journal(14),
+            new_path: path(b"/journal/rejected"),
+            source_last_sequence: 9,
+            phase: JournalInstallPhase::Installing,
+            created_ms: 300,
+        };
+        let token = store.begin_journal_install(&intent).expect("begin install");
+        let stale = JournalInstallToken {
+            new_journal_id: journal(15),
+            ..token
+        };
+        assert!(matches!(
+            store.abort_journal_install(stale),
+            Err(SessionStoreError::JournalInstallConflict)
+        ));
+        store
+            .abort_journal_install(token)
+            .expect("abort exact install");
+        assert!(store.journal_installs().expect("cleared").is_empty());
+        let current = store.tasks().expect("tasks").remove(0);
+        assert_eq!(current.primary_journal_id, task.primary_journal_id);
+        assert_eq!(current.primary_journal_path, task.primary_journal_path);
+    }
+
+    #[test]
+    fn journal_install_abort_rejects_pointer_change() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        let task = task_record(gid(1), 0);
+        store.put_task(&task).expect("task");
+        let intent = JournalInstallIntent {
+            gid: task.gid,
+            checkpoint_id: CheckpointId::new([16; 16]).expect("checkpoint"),
+            old_journal_id: task.primary_journal_id,
+            old_path: task.primary_journal_path.clone(),
+            new_journal_id: journal(17),
+            new_path: path(b"/journal/rejected"),
+            source_last_sequence: 9,
+            phase: JournalInstallPhase::Installing,
+            created_ms: 300,
+        };
+        let token = store.begin_journal_install(&intent).expect("begin install");
+        store
+            .connection
+            .execute(
+                "UPDATE task SET primary_journal_id = ?1 WHERE gid = ?2",
+                rusqlite::params![journal(18).as_bytes().as_slice(), task.gid.to_string()],
+            )
+            .expect("simulate pointer corruption");
+        assert!(matches!(
+            store.abort_journal_install(token),
+            Err(SessionStoreError::JournalPointerMismatch)
+        ));
+        assert_eq!(store.journal_installs().expect("intent").len(), 1);
     }
 
     #[test]

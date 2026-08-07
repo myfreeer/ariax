@@ -9,14 +9,14 @@ bounded option maps, chunked layouts, finalization paths, and checkpoint
 `PieceStateChunk` bitmaps/evidence runs. Policy-gated cross-record recovery now
 verifies snapshot/contributor/state hashes, generation promotion, reassembled
 layout/root hashes, lease/piece evidence, finalization pairs, and whole compact
-checkpoints. The portable native-startup handoff and ordering contract are now
-executable; descriptor-safe capability opening and identity revalidation,
-storage execution, and compaction writing remain pending. The file-backed serialized
-appender now provides gap-free typed append, explicit flush acknowledgement,
-latched failure, tail/content-validated final-segment reopen after exact
-named-file preflight, and flushed-boundary rotation without whole-segment
-buffering. That portable reopen does not establish namespace authority; native
-descriptor-safe acquisition remains pending.
+checkpoints. The native-startup handoff and ordering contract, exact Unix and
+Windows native-identity codecs, descriptor-safe root/journal capabilities, and
+identity-revalidated journal recovery are now executable. General data-file
+storage execution and compaction writing remain pending. The file-backed
+serialized appender now provides gap-free typed append, explicit flush
+acknowledgement, latched failure, descriptor-relative tail/content-validated
+final-segment reopen after exact named-file preflight, and flushed-boundary
+rotation without whole-segment buffering.
 
 The SQLite side of checkpoint installation now has transactional
 `installing`/`installed` pointer primitives with identity tokens, old-pointer
@@ -34,8 +34,11 @@ cross-store reconciliation planning are executable. The ordered SQLite startup
 repair stage is also executable through the bounded owner. The engine now exposes
 a native-startup backend contract and coordinator that consumes the post-repair
 handoff, resolves journal-install intents before appenders, and publishes the
-restored scheduler last. Concrete descriptor-safe adapters and the checkpoint
-state writer remain pending.
+restored scheduler last. Its concrete central-journal Unix and Windows adapters
+now acquire roots, revalidate selected file identities, resolve install
+candidates, prepare appenders without mutation, and move final tail repair and
+appender construction onto the session owner. The checkpoint state writer and
+native release-matrix evidence remain pending.
 
 This document defines `SafePathBuilder`, `FileLayout`, `GlobalOffsetMapper`,
 `StorageEngine`, and `ControlJournal` contracts for HTTP sequential/range
@@ -131,6 +134,36 @@ policy, and reconstructs the capability before any descendant is accessed. A
 supported production backend that cannot provide race-resistant no-follow
 opening fails with `SafeOpenUnavailable`; it does not silently downgrade to a
 check-then-open path for an untrusted metadata-derived target.
+
+Native identities use the exact `NativeIdentityV1` byte codec. Byte zero is
+version `1`; byte one is the platform tag (`1` for Unix, `2` for Windows).
+The Unix payload is `st_dev:u64le || st_ino:u64le`. The Windows payload is
+`volume_serial:u64le || FILE_ID_128`. Unix identities are therefore exactly
+18 bytes and Windows identities exactly 26 bytes. Unknown versions, wrong
+lengths, and identities from another platform fail closed. `RootIdentity` and
+`FileIdentity` use the same codec; object kind, link count, and containment are
+verified separately from the opened descriptor or handle.
+
+On Windows, an absolute capability open first acquires only the drive-volume or
+UNC-share anchor with `CreateFileW`, because applying `OBJ_DONT_REPARSE` to a
+DOS absolute name would reject the object-manager drive mapping itself. Every
+filesystem component below that anchor is then opened relative to the retained
+parent with `NtCreateFile`, `OBJ_DONT_REPARSE`, and
+`FILE_OPEN_REPARSE_POINT`; the returned handle is rejected if its attributes
+identify a reparse point. The final retained handle, not the mutable display
+path or ancestor namespace, is authority after traversal.
+
+Central control journals have a distinct retained `JournalDirectoryCapability`
+for the configured control-file directory; an output-root capability is never
+treated as authority for a central journal path. Startup acquires the central
+capability and every task root before it changes an install row or removes a
+candidate. Journal recovery produces a move-only `PreparedJournalSet` holding
+the securely opened directory/segment objects, exact relative segment names,
+opened identities, bounded replay result, and any permitted final-tail repair.
+The session-owner thread consumes that value and constructs the live appender.
+The appender retains the directory capability so descriptor-budget reopen,
+rotation, synchronization, and retirement never reopen an ambient absolute
+path.
 
 ## FileLayout
 
@@ -939,6 +972,13 @@ temporaries and recovers from the retained old set, which remains authoritative
 until `installed`. A `CheckpointStart` without a matching valid `CheckpointEnd`
 invalidates the whole candidate set, never just a suffix. Divergent copies at
 the same checkpoint id are corruption and fail closed to the old set.
+Rejecting a candidate also submits `abort_journal_install` with the exact
+`JournalInstallToken`; the transaction re-decodes the `installing` row,
+rechecks that the task still points to the recorded old id/path, and deletes
+only that intent. Candidate cleanup deletes only objects whose opened
+directory/file identities prove ownership. Foreign residue is left untouched
+and diagnosed. Failure to token-abort the exact row prevents startup
+publication so a newer install can never be cleared accidentally.
 Opening the session database additionally validates the phase/pointer relation:
 `installing` must retain the old id/path and `installed` must name the new
 id/path. Ordinary task updates cannot bypass this protocol to change the

@@ -498,8 +498,17 @@ requires that token, re-decodes the persisted intent, and rechecks that the task
 still points to the old set before changing the pointer and phase atomically.
 Startup validates that `installing` points to the old set and `installed` to the
 new set; clearing an installed row requires the same identity token and installed
-phase. Stale commands and ordinary task upserts cannot replace the primary
-pointer.
+phase. Rejecting an invalid `installing` candidate uses a separate tokenized
+abort transaction that rechecks the old pointer before deleting the exact
+intent. Stale complete, abort, and clear commands and ordinary task upserts
+cannot replace the primary pointer or act on a newer install.
+
+Native startup sends prepared descriptor-backed journal sets through the
+bounded owner queue. The owner performs final torn-tail repair and constructs
+the `ControlJournalAppender`; no live appender is returned to or retained by
+the engine startup coordinator. Queue-full rejection returns the exact owned
+command, including its open handles, for retry. Scheduler restoration occurs
+only after every selected journal set is installed on the owner thread.
 
 ## Authority And Reconciliation
 

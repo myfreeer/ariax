@@ -2,8 +2,9 @@ use crate::inventory::{GenerationMode, apply_outputs, comma, json_string};
 use ariax_storage::{
     ALL_LAYOUT_ERRORS, ALL_MAP_SPAN_ERRORS, ALL_PATH_VALIDATION_ERRORS,
     ALL_ROOT_BINDING_ERROR_CLASSES, LAYOUT_HASH_DOMAIN, MAX_IDENTITY_BYTES, MAX_LAYOUT_BYTES,
-    MAX_LAYOUT_ENTRIES, MAX_PLATFORM_PATH_BYTES, MAX_SAFE_RELATIVE_BYTES, PathPlatform,
-    ROOT_BINDING_HASH_DOMAIN,
+    MAX_LAYOUT_ENTRIES, MAX_PLATFORM_PATH_BYTES, MAX_SAFE_RELATIVE_BYTES,
+    NATIVE_IDENTITY_UNIX_BYTES, NATIVE_IDENTITY_VERSION, NATIVE_IDENTITY_WINDOWS_BYTES,
+    PathPlatform, ROOT_BINDING_HASH_DOMAIN,
 };
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -62,7 +63,12 @@ fn render_storage_contracts() -> String {
         )
         .expect("write to string");
     }
-    output.push_str("  ],\n  \"path_rejections\": ");
+    writeln!(
+        output,
+        "  ],\n  \"native_identity_v1\": {{\"version\": {NATIVE_IDENTITY_VERSION}, \"platform_tag_offset\": 1, \"unix\": {{\"bytes\": {NATIVE_IDENTITY_UNIX_BYTES}, \"payload\": [\"st_dev_u64le\", \"st_ino_u64le\"]}}, \"windows\": {{\"bytes\": {NATIVE_IDENTITY_WINDOWS_BYTES}, \"payload\": [\"volume_serial_u64le\", \"file_id_128\"]}}, \"cross_platform_rejected\": true}},"
+    )
+    .expect("write to string");
+    output.push_str("  \"path_rejections\": ");
     write_code_array(
         &mut output,
         &ALL_PATH_VALIDATION_ERRORS.map(|error| error.code()),
@@ -76,7 +82,7 @@ fn render_storage_contracts() -> String {
     write_code_array(&mut output, &ALL_LAYOUT_ERRORS.map(|error| error.code()));
     output.push_str(",\n  \"offset_mapper_rejections\": ");
     write_code_array(&mut output, &ALL_MAP_SPAN_ERRORS.map(|error| error.code()));
-    output.push_str(",\n  \"native_capability_contract\": {\"check_then_open_allowed\": false, \"status\": \"native_backend_required\"}\n}\n");
+    output.push_str(",\n  \"native_capability_contract\": {\"check_then_open_allowed\": false, \"separate_central_journal_capability\": true, \"appender_retains_directory_capability\": true, \"status\": \"implemented\"}\n}\n");
     output
 }
 
@@ -111,5 +117,9 @@ mod tests {
         assert!(contract.contains("\"root_binding_mismatch\""));
         assert!(contract.contains("\"cross_file_span\""));
         assert!(contract.contains("\"algorithm\": \"sha-256\""));
+        assert!(contract.contains("\"native_identity_v1\""));
+        assert!(contract.contains("\"cross_platform_rejected\": true"));
+        assert!(contract.contains("\"appender_retains_directory_capability\": true"));
+        assert!(contract.contains("\"status\": \"implemented\""));
     }
 }

@@ -1,9 +1,10 @@
 use crate::{
     Appended, ControlJournalAppender, Flushed, JournalAppenderError, JournalId,
-    JournalInstallIntent, JournalPayload, OptionsSnapshotScope, PersistedOptionPolicy,
-    PlatformPath, SanitizedOptionMap, SessionHostKeyChallengeRecord, SessionHostKeyResolution,
-    SessionJournalCache, SessionNoSpaceCondition, SessionQueueState, SessionQueueTransition,
-    SessionRecord, SessionStoppedResultRecord, SessionStore, SessionStoreConfig, SessionStoreError,
+    JournalInstallIntent, JournalInstallToken, JournalPayload, OptionsSnapshotScope,
+    PersistedOptionPolicy, PlatformPath, PreparedJournalSet, SanitizedOptionMap,
+    SessionHostKeyChallengeRecord, SessionHostKeyResolution, SessionJournalCache,
+    SessionNoSpaceCondition, SessionQueueState, SessionQueueTransition, SessionRecord,
+    SessionStoppedResultRecord, SessionStore, SessionStoreConfig, SessionStoreError,
     SessionStoreSettings, SessionTaskRecord, SessionTaskSourceRecord, SessionTaskSourceSet,
 };
 use ariax_core::{Generation, Gid, HostKeyChallengeId};
@@ -124,9 +125,25 @@ pub enum SessionCommand {
     ReadQueueOrder {
         state: SessionQueueState,
     },
+    AbortJournalInstall {
+        token: JournalInstallToken,
+    },
+    CompleteJournalInstall {
+        token: JournalInstallToken,
+        updated_ms: u64,
+    },
+    ClearInstalledJournal {
+        token: JournalInstallToken,
+    },
     InstallJournalAppender {
         gid: Gid,
         appender: ControlJournalAppender,
+    },
+    InstallPreparedJournal {
+        gid: Gid,
+        prepared: PreparedJournalSet,
+        recovery_starting_generation: Generation,
+        recovery_created_at_unix_ms: u64,
     },
     AppendJournal {
         gid: Gid,
@@ -891,7 +908,44 @@ fn execute_command(
             .queue_order(state)
             .map(SessionCommandResult::QueueOrder)
             .map_err(SessionPersistenceError::Store),
+        SessionCommand::AbortJournalInstall { token } => {
+            store.abort_journal_install(token)?;
+            Ok(SessionCommandResult::Unit)
+        }
+        SessionCommand::CompleteJournalInstall { token, updated_ms } => {
+            store.complete_journal_install(token, updated_ms)?;
+            Ok(SessionCommandResult::Unit)
+        }
+        SessionCommand::ClearInstalledJournal { token } => {
+            store.clear_installed_journal(token)?;
+            Ok(SessionCommandResult::Unit)
+        }
         SessionCommand::InstallJournalAppender { gid, appender } => {
+            install_journal_appender(journals, gid, OwnedJournalAppender::new(appender))?;
+            Ok(SessionCommandResult::Unit)
+        }
+        SessionCommand::InstallPreparedJournal {
+            gid,
+            prepared,
+            recovery_starting_generation,
+            recovery_created_at_unix_ms,
+        } => {
+            let actual = prepared.task_gid();
+            if actual != gid {
+                return Err(SessionPersistenceError::JournalGidMismatch {
+                    expected: gid,
+                    actual,
+                });
+            }
+            if journals.contains_key(&gid) {
+                return Err(SessionPersistenceError::DuplicateJournal { gid });
+            }
+            let (appender, _) = ControlJournalAppender::open_prepared(
+                prepared,
+                recovery_starting_generation,
+                recovery_created_at_unix_ms,
+            )
+            .map_err(|error| journal_error(gid, error))?;
             install_journal_appender(journals, gid, OwnedJournalAppender::new(appender))?;
             Ok(SessionCommandResult::Unit)
         }
@@ -1077,13 +1131,14 @@ mod tests {
     };
     use crate::{
         ControlJournalAppender, JournalAppenderError, JournalHash, JournalId, JournalPayload,
-        PathPlatform, PlatformPath, SessionId, SessionIoOperation, SessionNoSpaceCondition,
-        SessionQueueState, SessionRecord, SessionStore, SessionStoreConfig, SessionStoreError,
-        SessionTaskRecord, TaskPauseReason,
+        PathPlatform, PlatformPath, PreparedJournalSet, ReplayLimits, SessionId,
+        SessionIoOperation, SessionNoSpaceCondition, SessionQueueState, SessionRecord,
+        SessionStore, SessionStoreConfig, SessionStoreError, SessionTaskRecord, TaskPauseReason,
+        journal_segment_path,
     };
     use ariax_core::{Generation, Gid};
     use std::collections::HashSet;
-    use std::fs;
+    use std::fs::{self, OpenOptions};
     use std::num::NonZeroUsize;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1219,6 +1274,65 @@ mod tests {
             100,
         )
         .expect("create journal appender")
+    }
+
+    fn prepared_appender(
+        directory: &TestDirectory,
+        task_gid: Gid,
+        journal_marker: u8,
+    ) -> PreparedJournalSet {
+        let appender = appender(directory, task_gid, journal_marker);
+        let journal_directory = appender.directory().to_path_buf();
+        drop(appender);
+        ControlJournalAppender::prepare_recovered(
+            &journal_directory,
+            &[journal_segment_path(&journal_directory, 0)],
+            task_gid,
+            JournalId::new([journal_marker; 16]).expect("nonzero journal id"),
+            ReplayLimits::default(),
+        )
+        .expect("prepare journal appender")
+    }
+
+    fn prepared_torn_appender(
+        directory: &TestDirectory,
+        task_gid: Gid,
+        journal_marker: u8,
+    ) -> (PreparedJournalSet, PathBuf, Vec<u8>) {
+        let mut appender = appender(directory, task_gid, journal_marker);
+        appender
+            .append_payload(
+                Generation::INITIAL,
+                &JournalPayload::TaskCreated {
+                    durability: crate::DurabilityMode::Balanced,
+                    creator_version: 1,
+                },
+            )
+            .expect("append created");
+        appender
+            .append_payload(Generation::INITIAL, &paused_payload())
+            .expect("append paused");
+        appender.flush(2).expect("flush journal");
+        let journal_directory = appender.directory().to_path_buf();
+        let segment = appender.active_path().to_path_buf();
+        drop(appender);
+        let file = OpenOptions::new()
+            .write(true)
+            .open(&segment)
+            .expect("open torn journal");
+        let torn_length = file.metadata().expect("journal metadata").len() - 3;
+        file.set_len(torn_length).expect("tear final record");
+        drop(file);
+        let torn_bytes = fs::read(&segment).expect("read torn journal");
+        let prepared = ControlJournalAppender::prepare_recovered(
+            &journal_directory,
+            std::slice::from_ref(&segment),
+            task_gid,
+            JournalId::new([journal_marker; 16]).expect("nonzero journal id"),
+            ReplayLimits::default(),
+        )
+        .expect("prepare torn journal");
+        (prepared, segment, torn_bytes)
     }
 
     fn paused_payload() -> JournalPayload {
@@ -1520,6 +1634,135 @@ mod tests {
             .expect("retried appender dropped on shutdown");
         assert_eq!(drop_thread, owner_thread);
         assert_ne!(drop_thread, caller_thread);
+    }
+
+    #[test]
+    fn owned_prepared_install_rejection_retries_the_exact_open_authority() {
+        let directory = TestDirectory::new();
+        let task_gid = gid(1);
+        let (handle, _) =
+            SessionOwner::spawn(owner_config(&directory, 1), |_: &str| true).expect("spawn owner");
+        let (entered_sender, entered_receiver) = std::sync::mpsc::sync_channel(1);
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let held = handle
+            .try_submit(SessionCommand::HoldForTest {
+                entered: entered_sender,
+                release: Arc::clone(&release),
+            })
+            .expect("accept held command");
+        entered_receiver.recv().expect("owner entered hold");
+        let queued = handle
+            .try_submit(SessionCommand::IntegrityCheck)
+            .expect("fill request queue");
+
+        let rejection = match handle.try_submit_owned(SessionCommand::InstallPreparedJournal {
+            gid: task_gid,
+            prepared: prepared_appender(&directory, task_gid, 1),
+            recovery_starting_generation: Generation::INITIAL,
+            recovery_created_at_unix_ms: 200,
+        }) {
+            Err(rejection) => rejection,
+            Ok(_) => panic!("full queue unexpectedly accepted prepared authority"),
+        };
+        let (command, error) = rejection.into_parts();
+        assert!(matches!(error, SessionOwnerError::QueueFull));
+        assert!(matches!(
+            command,
+            SessionCommand::InstallPreparedJournal { gid, .. } if gid == task_gid
+        ));
+
+        let (released, wake) = &*release;
+        *released.lock().expect("release lock") = true;
+        wake.notify_one();
+        assert_eq!(
+            held.wait().expect("held completion"),
+            SessionCommandResult::Unit
+        );
+        assert_eq!(
+            queued.wait().expect("queued completion"),
+            SessionCommandResult::Unit
+        );
+        assert_eq!(
+            handle
+                .try_submit_owned(command)
+                .expect("retry exact prepared install")
+                .wait()
+                .expect("prepared install completion"),
+            SessionCommandResult::Unit
+        );
+        assert!(matches!(
+            handle
+                .execute(SessionCommand::AppendJournal {
+                    gid: task_gid,
+                    generation: Generation::INITIAL,
+                    payload: JournalPayload::TaskCreated {
+                        durability: crate::DurabilityMode::Balanced,
+                        creator_version: 1,
+                    },
+                })
+                .expect("append through prepared appender"),
+            SessionCommandResult::JournalAppended(appended) if appended.sequence() == 1
+        ));
+        handle.shutdown().expect("shutdown owner");
+    }
+
+    #[test]
+    fn prepared_install_identity_rejections_do_not_repair_the_torn_set() {
+        let directory = TestDirectory::new();
+        let (handle, _) =
+            SessionOwner::spawn(owner_config(&directory, 4), |_: &str| true).expect("spawn owner");
+        let task_gid = gid(1);
+        handle
+            .execute(SessionCommand::InstallJournalAppender {
+                gid: task_gid,
+                appender: appender(&directory, task_gid, 1),
+            })
+            .expect("install existing appender");
+
+        let (duplicate, duplicate_segment, duplicate_bytes) =
+            prepared_torn_appender(&directory, task_gid, 2);
+        assert!(matches!(
+            handle.execute(SessionCommand::InstallPreparedJournal {
+                gid: task_gid,
+                prepared: duplicate,
+                recovery_starting_generation: Generation::INITIAL,
+                recovery_created_at_unix_ms: 200,
+            }),
+            Err(SessionOwnerError::Persistence(
+                SessionPersistenceError::DuplicateJournal { gid }
+            )) if gid == task_gid
+        ));
+        assert_eq!(
+            fs::read(&duplicate_segment).expect("read rejected duplicate"),
+            duplicate_bytes
+        );
+        assert!(
+            !journal_segment_path(duplicate_segment.parent().expect("journal directory"), 1,)
+                .exists()
+        );
+
+        let (mismatched, mismatched_segment, mismatched_bytes) =
+            prepared_torn_appender(&directory, gid(2), 3);
+        assert!(matches!(
+            handle.execute(SessionCommand::InstallPreparedJournal {
+                gid: gid(3),
+                prepared: mismatched,
+                recovery_starting_generation: Generation::INITIAL,
+                recovery_created_at_unix_ms: 200,
+            }),
+            Err(SessionOwnerError::Persistence(
+                SessionPersistenceError::JournalGidMismatch { expected, actual }
+            )) if expected == gid(3) && actual == gid(2)
+        ));
+        assert_eq!(
+            fs::read(&mismatched_segment).expect("read rejected mismatch"),
+            mismatched_bytes
+        );
+        assert!(
+            !journal_segment_path(mismatched_segment.parent().expect("journal directory"), 1,)
+                .exists()
+        );
+        handle.shutdown().expect("shutdown owner");
     }
 
     #[test]

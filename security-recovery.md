@@ -95,9 +95,12 @@ creates every descendant relative to retained directory capabilities. The
 display `PathBuf` is never reopened as authority. Linux uses `openat2` with
 `RESOLVE_BENEATH`/no-symlink constraints when supported and a stepwise
 `openat`/`O_NOFOLLOW` directory-fd walk otherwise. Other Unix targets use the
-same held-directory-fd pattern. Windows opens each directory without
-share-delete, rejects reparse points, retains the handle chain until the final
-handle is acquired, and verifies volume/file identity. All platform-specific
+same held-directory-fd pattern. Windows opens the drive-volume or UNC-share
+anchor, then walks each filesystem component relative to the currently held
+directory handle with object-manager reparse traversal disabled. It rejects
+opened reparse objects and verifies volume/file identity. Share-delete does not
+restore pathname authority: the final retained handle continues to identify
+the opened object if an ancestor is renamed or unlinked. All platform-specific
 unsafe/syscall code stays behind the project safe-open adapter.
 
 This race-resistant open contract is required on supported production targets,
@@ -543,7 +546,17 @@ Power loss during journal checkpoint compaction:
   segments are unreachable garbage,
 - stale completion/intent-clear commands cannot act on a newer install because
   they require the gid/checkpoint/new-journal token,
+- an invalid `installing` candidate is rolled back with a tokenized abort that
+  rechecks the retained old pointer; cleanup removes only identity-proven
+  candidate objects and never follows or deletes foreign namespace entries,
 - compaction never promotes provisional/in-flight state to durable.
+
+Native startup opens central journal directories separately from task output
+roots. Unix uses retained descriptor-relative no-follow traversal; Windows uses
+retained handle-relative opens with reparse traversal disabled. The stable
+identity codec is versioned and platform-tagged, and a platform mismatch is a
+hard recovery error. A path canonicalization or metadata preflight is never
+accepted as namespace authority.
 
 Power loss during control save:
 

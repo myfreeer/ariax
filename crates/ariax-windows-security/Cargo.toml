@@ -11,8 +11,11 @@ windows-sys = { workspace = true, features = [
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
+    "Win32_System_IO",
     "Win32_System_SystemServices",
     "Win32_System_Threading",
+    "Wdk_Foundation",
+    "Wdk_Storage_FileSystem",
 ] }
 
 # This crate is the reviewed unsafe boundary for native Windows security APIs.
