@@ -8,15 +8,16 @@ use ariax_storage::{
     ALL_PAYLOAD_CODEC_ERROR_CLASSES, ALL_RECORD_STOP_REASONS, ALL_RECORD_TYPES,
     ALL_REPLAY_RESOURCES, ALL_RETRY_REASONS, ALL_RETRY_SCOPES, ALL_TASK_PAUSE_REASONS,
     ALL_TASK_REMOVE_REASONS, CHECKPOINT_STATE_HASH_DOMAIN, COMMIT_MAGIC, CONTRIBUTORS_HASH_DOMAIN,
-    HEADER_MAGIC, JOURNAL_ENDIANNESS_ASSERTION, JOURNAL_FORMAT_VERSION,
-    JOURNAL_SEGMENT_FILE_PREFIX, JOURNAL_SEGMENT_FILE_SUFFIX, JOURNAL_TEMP_FILE_SUFFIX,
-    JournalStateLimits, MAX_DIGEST_ALGORITHM_BYTES, MAX_DIGEST_VALUE_BYTES, MAX_IDENTITY_BYTES,
-    MAX_LAYOUT_BYTES, MAX_LAYOUT_ENTRIES, MAX_OPTION_KEY_BYTES, MAX_OPTION_MAP_BYTES,
-    MAX_OPTION_MAP_ENTRIES, MAX_OPTION_VALUE_BYTES, MAX_PIECE_STATE_BITMAP_BYTES,
-    MAX_PIECE_STATE_COVERED_PIECES, MAX_PLATFORM_PATH_BYTES, MAX_RECORD_PAYLOAD,
-    MAX_SAFE_RELATIVE_BYTES, OPTIONS_SNAPSHOT_HASH_DOMAIN, PAYLOAD_CODEC_RECORD_TYPES,
-    REBIND_VALIDATOR_SET_HASH_DOMAIN, RECORD_MAGIC, RECORD_OVERHEAD, RECORD_PREFIX_LEN, RecordType,
-    ReplayLimits, SEGMENT_HASH_DOMAIN, SEGMENT_HEADER_LEN, VALIDATOR_SET_HASH_DOMAIN,
+    HEADER_MAGIC, HTTP_STRONG_VALIDATOR_HASH_DOMAIN, JOURNAL_ENDIANNESS_ASSERTION,
+    JOURNAL_FORMAT_VERSION, JOURNAL_SEGMENT_FILE_PREFIX, JOURNAL_SEGMENT_FILE_SUFFIX,
+    JOURNAL_TEMP_FILE_SUFFIX, JournalStateLimits, MAX_DIGEST_ALGORITHM_BYTES,
+    MAX_DIGEST_VALUE_BYTES, MAX_HTTP_STRONG_ETAG_BYTES, MAX_IDENTITY_BYTES, MAX_LAYOUT_BYTES,
+    MAX_LAYOUT_ENTRIES, MAX_OPTION_KEY_BYTES, MAX_OPTION_MAP_BYTES, MAX_OPTION_MAP_ENTRIES,
+    MAX_OPTION_VALUE_BYTES, MAX_PIECE_STATE_BITMAP_BYTES, MAX_PIECE_STATE_COVERED_PIECES,
+    MAX_PLATFORM_PATH_BYTES, MAX_RECORD_PAYLOAD, MAX_SAFE_RELATIVE_BYTES,
+    OPTIONS_SNAPSHOT_HASH_DOMAIN, PAYLOAD_CODEC_RECORD_TYPES, REBIND_VALIDATOR_SET_HASH_DOMAIN,
+    RECORD_MAGIC, RECORD_OVERHEAD, RECORD_PREFIX_LEN, RecordType, ReplayLimits,
+    SEGMENT_HASH_DOMAIN, SEGMENT_HEADER_LEN, VALIDATOR_SET_HASH_DOMAIN,
 };
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -178,7 +179,7 @@ fn render_journal_contracts() -> String {
     );
     writeln!(
         output,
-        "],\n    \"caps\": {{\"digest_algorithm_bytes\": {MAX_DIGEST_ALGORITHM_BYTES}, \"digest_value_bytes\": {MAX_DIGEST_VALUE_BYTES}, \"option_map_entries\": {MAX_OPTION_MAP_ENTRIES}, \"option_key_bytes\": {MAX_OPTION_KEY_BYTES}, \"option_value_bytes\": {MAX_OPTION_VALUE_BYTES}, \"option_map_bytes\": {MAX_OPTION_MAP_BYTES}, \"layout_entries\": {MAX_LAYOUT_ENTRIES}, \"layout_canonical_bytes\": {MAX_LAYOUT_BYTES}, \"safe_relative_path_bytes\": {MAX_SAFE_RELATIVE_BYTES}, \"platform_path_bytes\": {MAX_PLATFORM_PATH_BYTES}, \"identity_bytes\": {MAX_IDENTITY_BYTES}, \"piece_state_covered_pieces\": {MAX_PIECE_STATE_COVERED_PIECES}, \"piece_state_bitmap_bytes\": {MAX_PIECE_STATE_BITMAP_BYTES}}},"
+        "],\n    \"caps\": {{\"digest_algorithm_bytes\": {MAX_DIGEST_ALGORITHM_BYTES}, \"digest_value_bytes\": {MAX_DIGEST_VALUE_BYTES}, \"http_strong_etag_bytes\": {MAX_HTTP_STRONG_ETAG_BYTES}, \"option_map_entries\": {MAX_OPTION_MAP_ENTRIES}, \"option_key_bytes\": {MAX_OPTION_KEY_BYTES}, \"option_value_bytes\": {MAX_OPTION_VALUE_BYTES}, \"option_map_bytes\": {MAX_OPTION_MAP_BYTES}, \"layout_entries\": {MAX_LAYOUT_ENTRIES}, \"layout_canonical_bytes\": {MAX_LAYOUT_BYTES}, \"safe_relative_path_bytes\": {MAX_SAFE_RELATIVE_BYTES}, \"platform_path_bytes\": {MAX_PLATFORM_PATH_BYTES}, \"identity_bytes\": {MAX_IDENTITY_BYTES}, \"piece_state_covered_pieces\": {MAX_PIECE_STATE_COVERED_PIECES}, \"piece_state_bitmap_bytes\": {MAX_PIECE_STATE_BITMAP_BYTES}}},"
     )
     .expect("write to string");
     output.push_str("    \"digest_algorithms\": [\n");
@@ -199,18 +200,19 @@ fn render_journal_contracts() -> String {
         }
         output.push_str(&json_string(error.code()));
     }
-    output.push_str("],\n    \"rules\": {\"exact_little_endian_scalars\": true, \"nonzero_typed_ids\": true, \"nonempty_nonoverflowing_spans\": true, \"unknown_tags_rejected\": true, \"trailing_bytes_rejected\": true, \"typed_append_prevents_record_type_mismatch\": true, \"counts_bounded_before_allocation\": true, \"option_map_utf8_sorted_unique\": true, \"layout_entries_sorted_contiguous\": true, \"piece_state_bitmap_exact_length\": true, \"piece_state_evidence_exact_coverage\": true}\n  },\n  \"semantic_recovery\": {\n");
+    output.push_str("],\n    \"rules\": {\"exact_little_endian_scalars\": true, \"nonzero_typed_ids\": true, \"nonempty_nonoverflowing_spans\": true, \"unknown_tags_rejected\": true, \"trailing_bytes_rejected\": true, \"typed_append_prevents_record_type_mismatch\": true, \"counts_bounded_before_allocation\": true, \"option_map_utf8_sorted_unique\": true, \"layout_entries_sorted_contiguous\": true, \"piece_state_bitmap_exact_length\": true, \"piece_state_evidence_exact_coverage\": true, \"http_validator_requires_bounded_strong_etag\": true}\n  },\n  \"semantic_recovery\": {\n");
     writeln!(
         output,
-        "    \"hash_domains\": {{\"options_snapshot\": {}, \"contributors\": {}, \"validator_set\": {}, \"rebind_validator_set\": {}, \"checkpoint_state\": {}}},",
+        "    \"hash_domains\": {{\"options_snapshot\": {}, \"contributors\": {}, \"validator_set\": {}, \"rebind_validator_set\": {}, \"http_strong_validator\": {}, \"checkpoint_state\": {}}},",
         json_string(&hex_bytes(OPTIONS_SNAPSHOT_HASH_DOMAIN.as_bytes())),
         json_string(&hex_bytes(CONTRIBUTORS_HASH_DOMAIN.as_bytes())),
         json_string(&hex_bytes(VALIDATOR_SET_HASH_DOMAIN.as_bytes())),
         json_string(&hex_bytes(REBIND_VALIDATOR_SET_HASH_DOMAIN.as_bytes())),
+        json_string(&hex_bytes(HTTP_STRONG_VALIDATOR_HASH_DOMAIN.as_bytes())),
         json_string(&hex_bytes(CHECKPOINT_STATE_HASH_DOMAIN.as_bytes())),
     )
     .expect("write to string");
-    output.push_str("    \"hash_coverage\": {\"options_snapshot\": [\"domain\", \"entry_count_le_u32\", \"sorted_key_length_key_value_length_value\"], \"contributors\": [\"domain\", \"contributor_count_le_u32\", \"sorted_lease_id_span_validator_fingerprint\"], \"validator_set\": [\"domain\", \"distinct_validator_count_le_u32\", \"sorted_distinct_validator_fingerprints\"], \"rebind_validator_set\": [\"domain\", \"previous_root_binding_hash\", \"new_root_binding_hash\", \"digest_algorithm_and_value\"], \"checkpoint_state\": [\"domain\", \"state_record_count_le_u32\", \"repeated_record_type_generation_payload_length_payload\"]},\n");
+    output.push_str("    \"hash_coverage\": {\"options_snapshot\": [\"domain\", \"entry_count_le_u32\", \"sorted_key_length_key_value_length_value\"], \"contributors\": [\"domain\", \"contributor_count_le_u32\", \"sorted_lease_id_span_validator_fingerprint\"], \"validator_set\": [\"domain\", \"distinct_validator_count_le_u32\", \"sorted_distinct_validator_fingerprints\"], \"rebind_validator_set\": [\"domain\", \"previous_root_binding_hash\", \"new_root_binding_hash\", \"digest_algorithm_and_value\"], \"http_strong_validator\": [\"domain\", \"total_length_le_u64\", \"etag_length_le_u32\", \"exact_etag_bytes\"], \"checkpoint_state\": [\"domain\", \"state_record_count_le_u32\", \"repeated_record_type_generation_payload_length_payload\"]},\n");
     writeln!(
         output,
         "    \"limits\": {{\"records\": {}, \"leases\": {}, \"durable_pieces\": {}, \"retry_states\": {}, \"finalizations\": {}}},",
@@ -365,6 +367,7 @@ mod tests {
         assert!(contract.contains("\"magic\": \"ARXJ\""));
         assert!(contract.contains("\"commit\": \"CMIT\""));
         assert!(contract.contains("\"number\": 24, \"code\": \"piece_state_chunk\""));
+        assert!(contract.contains("\"number\": 25, \"code\": \"http_strong_validator\""));
         assert!(contract.contains("\"algorithm\": \"crc-32c-castagnoli\""));
         assert!(contract.contains("\"generation_start_reason\""));
         assert!(contract.contains("\"number\": 29, \"code\": \"InternalInvariant\""));
@@ -372,7 +375,10 @@ mod tests {
         assert!(contract.contains("\"pending_record_types\": []"));
         assert!(contract.contains("\"option_map_entries\": 4096"));
         assert!(contract.contains("\"piece_state_bitmap_bytes\": 16384"));
+        assert!(contract.contains("\"http_strong_etag_bytes\": 8192"));
         assert!(contract.contains("\"piece_state_evidence_exact_coverage\": true"));
+        assert!(contract.contains("\"http_validator_requires_bounded_strong_etag\": true"));
+        assert!(contract.contains("\"http_strong_validator\": [\"domain\""));
         assert!(contract.contains("\"semantic_recovery\""));
         assert!(contract.contains("\"durable_pieces\": 262144"));
         assert!(contract.contains("\"checkpoint_hash_excludes_sequence_crc_commit\": true"));

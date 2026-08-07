@@ -2,7 +2,7 @@
 
 Status: reviewed contract with implementation in progress. Portable path
 normalization/rejection, persisted root bindings, and bounded control-journal
-framing/replay plus all 24 bounded typed payload codecs are executable.
+framing/replay plus all 25 bounded typed payload codecs are executable.
 Policy-gated option-secret rejection and typed semantic state recovery are also
 executable, including digest-bound different-identity rebind records. Native
 capability acquisition, safe descendant open/revalidation, and complete startup

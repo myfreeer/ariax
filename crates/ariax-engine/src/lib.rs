@@ -20,7 +20,10 @@ pub use effect_sink::{
 pub use http_first_slice::{
     HttpCancellation, KnownLengthHttpError, KnownLengthHttpRecovery,
     KnownLengthHttpRecoveryRequest, KnownLengthHttpRequest, KnownLengthHttpResult,
+    KnownLengthHttpResumeRequest, KnownLengthHttpRuntimeError, KnownLengthHttpTransfer,
     download_known_length_http, download_known_length_http_blocking, recover_known_length_http,
+    resume_known_length_http, resume_known_length_http_blocking, run_known_length_http_runtime,
+    run_known_length_http_runtime_blocking,
 };
 pub use process_bootstrap::{
     BootstrappedEngine, ProcessBootstrapConfig, ProcessBootstrapError, ProcessBootstrapFailure,
@@ -28,11 +31,12 @@ pub use process_bootstrap::{
     ProcessSchedulerSink, ProcessShutdownError, ProcessShutdownReport, bootstrap_process,
 };
 pub use runtime_effects::{
-    AllocationRequest, CancellationRequest, MAX_RUNTIME_EFFECT_CAPACITY, NoSpaceProbeRequest,
-    OptionApplicationOutcome, OptionApplicationPlan, OptionApplicationPlanError,
-    RuntimeEffectConfig, RuntimeEffectConfigError, RuntimeEffectHandle, RuntimeEffectPreparation,
-    RuntimeEffectPrepareError, RuntimeEventRejection, RuntimeEventSubmission,
-    RuntimeEventSubmitError, RuntimeSchedulerEffectSink,
+    ActiveTransferRequest, AllocationRequest, CancellationRequest, MAX_RUNTIME_EFFECT_CAPACITY,
+    NoSpaceProbeRequest, OptionApplicationOutcome, OptionApplicationPlan,
+    OptionApplicationPlanError, RuntimeEffectConfig, RuntimeEffectConfigError, RuntimeEffectHandle,
+    RuntimeEffectPreparation, RuntimeEffectPrepareError, RuntimeEventRejection,
+    RuntimeEventSubmission, RuntimeEventSubmitError, RuntimeSchedulerEffectSink,
+    VerifyingTransferRequest,
 };
 pub use startup_executor::{
     StartupSessionRepairError, StartupSessionRepairExecutor, StartupSessionRepairFinishError,

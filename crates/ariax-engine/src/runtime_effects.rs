@@ -212,8 +212,72 @@ impl RuntimeEffectHandle {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn enqueue_allocation_for_test(
+        &self,
+        task_id: TaskId,
+        gid: Gid,
+        generation: Generation,
+    ) {
+        let mut mailbox = lock_unpoisoned(&self.mailbox);
+        assert!(mailbox.request_count() < mailbox.request_capacity);
+        mailbox.allocations.push_back(AllocationEntry {
+            identity: RuntimeIdentity {
+                task_id,
+                gid,
+                generation,
+            },
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn enqueue_cancellation_for_test(
+        &self,
+        task_id: TaskId,
+        gid: Gid,
+        generation: Generation,
+        force: bool,
+    ) {
+        let mut mailbox = lock_unpoisoned(&self.mailbox);
+        assert!(mailbox.request_count() < mailbox.request_capacity);
+        mailbox.cancellations.push_back(CancellationEntry {
+            identity: RuntimeIdentity {
+                task_id,
+                gid,
+                generation,
+            },
+            force,
+        });
+    }
+
     pub fn take_cancellation(&self) -> Option<CancellationRequest> {
         let entry = lock_unpoisoned(&self.mailbox).cancellations.pop_front()?;
+        Some(CancellationRequest {
+            identity: entry.identity,
+            force: entry.force,
+        })
+    }
+
+    pub fn take_cancellation_for(
+        &self,
+        task_id: TaskId,
+        gid: Gid,
+        generation: Generation,
+    ) -> Option<CancellationRequest> {
+        let identity = RuntimeIdentity {
+            task_id,
+            gid,
+            generation,
+        };
+        let mut mailbox = lock_unpoisoned(&self.mailbox);
+        let index = mailbox
+            .cancellations
+            .iter()
+            .position(|entry| entry.identity == identity)?;
+        let entry = mailbox
+            .cancellations
+            .remove(index)
+            .expect("the selected cancellation remains present");
         Some(CancellationRequest {
             identity: entry.identity,
             force: entry.force,
@@ -403,6 +467,21 @@ impl AllocationRequest {
     }
 
     #[must_use]
+    pub fn activate(self) -> (RuntimeEventSubmission, ActiveTransferRequest) {
+        let identity = self.identity;
+        (
+            RuntimeEventSubmission {
+                event: TaskEvent::AllocationSucceeded {
+                    gid: identity.gid,
+                    generation: identity.generation,
+                }
+                .for_task(identity.task_id),
+            },
+            ActiveTransferRequest { identity },
+        )
+    }
+
+    #[must_use]
     pub fn retryable(self, retry_at: MonotonicInstant) -> RuntimeEventSubmission {
         let identity = self.identity;
         self.submission(TaskEvent::AllocationRetryable {
@@ -438,6 +517,110 @@ impl AllocationRequest {
     fn submission(self, event: TaskEvent) -> RuntimeEventSubmission {
         RuntimeEventSubmission {
             event: event.for_task(self.identity.task_id),
+        }
+    }
+}
+
+/// Move-only authority for one scheduler-visible active transfer generation.
+pub struct ActiveTransferRequest {
+    identity: RuntimeIdentity,
+}
+
+impl ActiveTransferRequest {
+    #[must_use]
+    pub const fn task_id(&self) -> TaskId {
+        self.identity.task_id
+    }
+
+    #[must_use]
+    pub const fn gid(&self) -> Gid {
+        self.identity.gid
+    }
+
+    #[must_use]
+    pub const fn generation(&self) -> Generation {
+        self.identity.generation
+    }
+
+    #[must_use]
+    pub fn retryable(self, retry_at: MonotonicInstant) -> RuntimeEventSubmission {
+        RuntimeEventSubmission {
+            event: TaskEvent::ActiveRetryIdle {
+                gid: self.identity.gid,
+                generation: self.identity.generation,
+                retry_at,
+            }
+            .for_task(self.identity.task_id),
+        }
+    }
+
+    #[must_use]
+    pub fn failed(self, error: PublicError) -> RuntimeEventSubmission {
+        RuntimeEventSubmission {
+            event: TaskEvent::TerminalFailure {
+                gid: self.identity.gid,
+                generation: self.identity.generation,
+                error,
+            }
+            .for_task(self.identity.task_id),
+        }
+    }
+
+    #[must_use]
+    pub fn data_complete(self, seed: bool) -> (RuntimeEventSubmission, VerifyingTransferRequest) {
+        let identity = self.identity;
+        (
+            RuntimeEventSubmission {
+                event: TaskEvent::DataComplete {
+                    gid: identity.gid,
+                    generation: identity.generation,
+                    seed,
+                }
+                .for_task(identity.task_id),
+            },
+            VerifyingTransferRequest { identity },
+        )
+    }
+}
+
+/// Move-only authority created only after the scheduler-visible data-complete
+/// transition has been queued.
+pub struct VerifyingTransferRequest {
+    identity: RuntimeIdentity,
+}
+
+impl VerifyingTransferRequest {
+    #[must_use]
+    pub fn succeeded(self) -> RuntimeEventSubmission {
+        RuntimeEventSubmission {
+            event: TaskEvent::VerificationSucceeded {
+                gid: self.identity.gid,
+                generation: self.identity.generation,
+            }
+            .for_task(self.identity.task_id),
+        }
+    }
+
+    #[must_use]
+    pub fn recoverable(self) -> RuntimeEventSubmission {
+        RuntimeEventSubmission {
+            event: TaskEvent::VerificationRecoverable {
+                gid: self.identity.gid,
+                generation: self.identity.generation,
+            }
+            .for_task(self.identity.task_id),
+        }
+    }
+
+    #[must_use]
+    pub fn failed(self, error: PublicError) -> RuntimeEventSubmission {
+        RuntimeEventSubmission {
+            event: TaskEvent::VerificationFailed {
+                gid: self.identity.gid,
+                generation: self.identity.generation,
+                error,
+            }
+            .for_task(self.identity.task_id),
         }
     }
 }

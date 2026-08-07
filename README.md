@@ -2,7 +2,7 @@
 
 Status: implementation is underway. The deterministic `RequestScheduler`
 kernel, core/config contracts, portable storage layout, bounded runtime
-ownership, journal v1 framing/replay, all 24 typed journal payload codecs, and
+ownership, journal v1 framing/replay, all 25 typed journal payload codecs, and
 bounded cross-record recovery are executable. SQLite session schema v2 adds a
 demoted queue and bounded slow-slot metadata; exact v1 databases migrate through
 a private timestamped no-clobber backup and transactional rebuild. Dense queue
@@ -30,9 +30,14 @@ pinned peer, validates a `200` identity-coded known-length response before body
 polling, and streams it through a descriptor-backed `StorageEngine`. The engine
 uses pooled buffers, bounded positional disk writes, piece-aligned provisional
 leases, strict data-before-journal durability, and descriptor-revalidated
-recovery; the experimental CLI exposes that narrow pinned-peer path. HTTPS,
-DNS/SSRF resolution, redirects/proxies, resume/range, scheduler/RPC transfer
-integration, hot-backup crash-residue reconciliation, and native-platform/MSRV
+recovery. Strong-ETag material is persisted and replayed safely; a recovered
+durable prefix is read back, reopened without truncation, and continued with a
+strict `206`/`Content-Range`/`If-Range` request. The bounded runtime effect
+adapter and experimental CLI cover allocation, cancellation, retry
+classification, verification, and completion for this pinned-peer path.
+Resolver/DNS/SSRF policy, TLS, redirects, proxies, weak/Last-Modified or
+digest-only resume, segmented multi-mirror scheduling, live scheduler/RPC
+dispatch, hot-backup crash-residue reconciliation, and native-platform/MSRV
 CI gates remain pending. This checkpoint is not yet a complete downloader or
 release/tag-ready. Phase gates remain normative in
 `implementation-readiness.md` and `implementation-plan.md`.

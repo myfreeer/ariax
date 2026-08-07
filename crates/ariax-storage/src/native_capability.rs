@@ -154,6 +154,36 @@ impl RootFileCapability {
         self.file.set_len(len).map_err(Into::into)
     }
 
+    pub fn len(&self) -> Result<u64, NativeCapabilityError> {
+        self.file
+            .metadata()
+            .map(|metadata| metadata.len())
+            .map_err(Into::into)
+    }
+
+    /// Returns whether the descriptor currently has zero bytes.
+    pub fn is_empty(&self) -> Result<bool, NativeCapabilityError> {
+        self.len().map(|length| length == 0)
+    }
+
+    pub fn read_exact_at(
+        &self,
+        mut offset: u64,
+        mut output: &mut [u8],
+    ) -> Result<(), NativeCapabilityError> {
+        while !output.is_empty() {
+            let read = platform::read_at(&self.file, offset, output)?;
+            if read == 0 {
+                return Err(io::Error::from(io::ErrorKind::UnexpectedEof).into());
+            }
+            offset = offset
+                .checked_add(u64::try_from(read).expect("native read length fits u64"))
+                .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+            output = &mut output[read..];
+        }
+        Ok(())
+    }
+
     pub fn sync_data(&self) -> Result<(), NativeCapabilityError> {
         self.file.sync_data().map_err(Into::into)
     }
@@ -488,9 +518,18 @@ mod platform {
     use std::ffi::{OsStr, OsString};
     use std::fs::File;
     use std::os::unix::ffi::OsStringExt as _;
+    use std::os::unix::fs::FileExt as _;
     use std::path::{Component, Path};
 
     pub(super) type DirectoryHandle = OwnedFd;
+
+    pub(super) fn read_at(
+        file: &File,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<usize, NativeCapabilityError> {
+        file.read_at(output, offset).map_err(Into::into)
+    }
 
     pub(super) fn open_absolute_directory(
         path: &Path,
@@ -761,9 +800,18 @@ mod platform {
     use std::ffi::{OsStr, OsString};
     use std::fs::File;
     use std::io;
+    use std::os::windows::fs::FileExt as _;
     use std::path::Path;
 
     pub(super) type DirectoryHandle = File;
+
+    pub(super) fn read_at(
+        file: &File,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<usize, NativeCapabilityError> {
+        file.seek_read(output, offset).map_err(Into::into)
+    }
 
     pub(super) fn open_absolute_directory(
         path: &Path,
@@ -900,6 +948,7 @@ mod platform {
     unavailable!(open_absolute_directory(path: &Path) -> DirectoryHandle);
     unavailable!(open_relative_directory(root: &DirectoryHandle, relative: &Path) -> DirectoryHandle);
     unavailable!(open_relative_regular_file(root: &DirectoryHandle, relative: &Path, access: FileAccess) -> File);
+    unavailable!(read_at(file: &File, offset: u64, output: &mut [u8]) -> usize);
     unavailable!(directory_identity(handle: &DirectoryHandle) -> NativeIdentityV1);
     unavailable!(file_identity(file: &File, expected: NativeObjectKind) -> NativeIdentityV1);
     unavailable!(directory_entries(handle: &DirectoryHandle) -> Vec<OsString>);
@@ -1063,6 +1112,12 @@ mod tests {
         write_at(&reopened_file, b"ab", 0);
         write_at(&reopened_file, b"ef", 4);
         reopened.sync_all().expect("sync output");
+        assert_eq!(reopened.len().expect("output length"), 6);
+        let mut readback = [0_u8; 4];
+        reopened
+            .read_exact_at(1, &mut readback)
+            .expect("positional readback");
+        assert_eq!(&readback, b"bcde");
         assert_eq!(
             fs::read(directory.0.join("output.bin")).expect("read output"),
             b"abcdef"

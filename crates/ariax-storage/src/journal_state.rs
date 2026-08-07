@@ -224,6 +224,39 @@ pub struct RecoveredRetryState {
     pub retry_reason: RetryReason,
 }
 
+/// Bounded raw strong ETag material retained for one exact HTTP resource and
+/// representation length. This is the only journal value authorized to become
+/// an `If-Range` header after semantic replay.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoveredHttpStrongValidator {
+    resource_fingerprint: JournalHash,
+    validator_fingerprint: JournalHash,
+    total_length: u64,
+    etag: Box<[u8]>,
+}
+
+impl RecoveredHttpStrongValidator {
+    #[must_use]
+    pub const fn resource_fingerprint(&self) -> JournalHash {
+        self.resource_fingerprint
+    }
+
+    #[must_use]
+    pub const fn validator_fingerprint(&self) -> JournalHash {
+        self.validator_fingerprint
+    }
+
+    #[must_use]
+    pub const fn total_length(&self) -> u64 {
+        self.total_length
+    }
+
+    #[must_use]
+    pub fn etag(&self) -> &[u8] {
+        &self.etag
+    }
+}
+
 /// One final rename and whether its matching `FinalizeDone` was observed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecoveredFinalization {
@@ -285,6 +318,7 @@ pub struct RecoveredJournalState {
     current_options: Option<RecoveredOptionSnapshot>,
     pending_options: Option<RecoveredOptionSnapshot>,
     layout: Option<RecoveredLayout>,
+    http_strong_validator: Option<RecoveredHttpStrongValidator>,
     durable_pieces: BTreeMap<PieceId, RecoveredDurablePiece>,
     retry_states: BTreeMap<(u8, u64), RecoveredRetryState>,
     paused: Option<TaskPauseReason>,
@@ -330,6 +364,11 @@ impl RecoveredJournalState {
     #[must_use]
     pub const fn layout(&self) -> Option<&RecoveredLayout> {
         self.layout.as_ref()
+    }
+
+    #[must_use]
+    pub const fn http_strong_validator(&self) -> Option<&RecoveredHttpStrongValidator> {
+        self.http_strong_validator.as_ref()
     }
 
     #[must_use]
@@ -449,6 +488,7 @@ pub enum JournalStateError {
     RootBinding(RootBindingError),
     LayoutHashMismatch,
     RootBindingHashMismatch,
+    InvalidHttpStrongValidator,
     SpanOutsideLayout,
     PieceSpanMismatch,
     DuplicateLease,
@@ -509,6 +549,7 @@ impl JournalStateError {
             Self::RootBinding(_) => "invalid_root_binding",
             Self::LayoutHashMismatch => "layout_hash_mismatch",
             Self::RootBindingHashMismatch => "root_binding_hash_mismatch",
+            Self::InvalidHttpStrongValidator => "invalid_http_strong_validator",
             Self::SpanOutsideLayout => "span_outside_layout",
             Self::PieceSpanMismatch => "piece_span_mismatch",
             Self::DuplicateLease => "duplicate_lease",
@@ -568,6 +609,7 @@ pub const ALL_JOURNAL_STATE_ERROR_CODES: &[&str] = &[
     "invalid_root_binding",
     "layout_hash_mismatch",
     "root_binding_hash_mismatch",
+    "invalid_http_strong_validator",
     "span_outside_layout",
     "piece_span_mismatch",
     "duplicate_lease",
@@ -1460,6 +1502,20 @@ where
                     evidence_runs,
                 },
             ),
+            JournalPayload::HttpStrongValidator {
+                resource_fingerprint,
+                validator_fingerprint,
+                total_length,
+                etag,
+            } => self.apply_http_strong_validator(
+                record,
+                RecoveredHttpStrongValidator {
+                    resource_fingerprint,
+                    validator_fingerprint,
+                    total_length,
+                    etag,
+                },
+            ),
             JournalPayload::CheckpointStart { .. } | JournalPayload::CheckpointEnd { .. } => {
                 Err(JournalStateError::CheckpointRecordForbidden)
             }
@@ -1484,6 +1540,7 @@ where
                 ..
             } => 2,
             JournalPayload::LayoutCommitted { .. } | JournalPayload::LayoutChunk { .. } => 3,
+            JournalPayload::HttpStrongValidator { .. } => 4,
             JournalPayload::RetryState {
                 scope, scope_id, ..
             } => {
@@ -1495,14 +1552,14 @@ where
                     return Err(JournalStateError::NonCanonicalCheckpointOrder);
                 }
                 self.checkpoint_retry_key = Some(key);
-                4
+                5
             }
-            JournalPayload::PieceStateChunk { .. } => 5,
-            JournalPayload::TaskPaused { .. } => 6,
-            JournalPayload::FinalizeIntent { .. } | JournalPayload::FinalizeDone { .. } => 7,
+            JournalPayload::PieceStateChunk { .. } => 6,
+            JournalPayload::TaskPaused { .. } => 7,
+            JournalPayload::FinalizeIntent { .. } | JournalPayload::FinalizeDone { .. } => 8,
             JournalPayload::TaskComplete { .. }
             | JournalPayload::TaskError { .. }
-            | JournalPayload::TaskRemoved { .. } => 8,
+            | JournalPayload::TaskRemoved { .. } => 9,
             _ => return Err(JournalStateError::CheckpointRecordForbidden),
         };
         if rank < self.checkpoint_rank
@@ -1542,6 +1599,7 @@ where
             current_options: None,
             pending_options: None,
             layout: None,
+            http_strong_validator: None,
             durable_pieces: BTreeMap::new(),
             retry_states: BTreeMap::new(),
             paused: None,
@@ -1647,6 +1705,7 @@ where
         state.current_options = Some(pending);
         state.retry_states.clear();
         state.paused = None;
+        state.http_strong_validator = None;
         state.rebind_source_root_binding_hash = None;
         state.clean_shutdown = None;
         self.committed_leases.clear();
@@ -1799,9 +1858,35 @@ where
             BTreeMap::new()
         };
         state.finalizations.clear();
+        state.http_strong_validator = None;
         state.rebind_source_root_binding_hash = rebind_source_root_binding_hash;
         state.layout = Some(layout);
         self.layout_record_generation = Some(state.generation);
+        Ok(())
+    }
+
+    fn apply_http_strong_validator(
+        &mut self,
+        record: &JournalRecord,
+        validator: RecoveredHttpStrongValidator,
+    ) -> Result<(), JournalStateError> {
+        self.require_ready_nonterminal(record)?;
+        if self.network_started {
+            return Err(JournalStateError::InvalidHttpStrongValidator);
+        }
+        let state = self
+            .state
+            .as_mut()
+            .ok_or(JournalStateError::TaskCreatedMissing)?;
+        let total_length = state
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.layout().total_length())
+            .ok_or(JournalStateError::InvalidHttpStrongValidator)?;
+        if state.http_strong_validator.is_some() || total_length != validator.total_length {
+            return Err(JournalStateError::InvalidHttpStrongValidator);
+        }
+        state.http_strong_validator = Some(validator);
         Ok(())
     }
 
@@ -1815,6 +1900,14 @@ where
     ) -> Result<(), JournalStateError> {
         self.require_ready_nonterminal(record)?;
         self.require_span_in_layout(span)?;
+        if self
+            .state
+            .as_ref()
+            .and_then(|state| state.http_strong_validator.as_ref())
+            .is_some_and(|validator| validator.validator_fingerprint != validator_fingerprint)
+        {
+            return Err(JournalStateError::InvalidHttpStrongValidator);
+        }
         if self.seen_leases.contains(&lease_id) {
             return Err(JournalStateError::DuplicateLease);
         }
@@ -2604,6 +2697,7 @@ mod tests {
         JournalFileLayoutEntry, JournalHash, JournalPayload, JournalRecord, JournalRelativePath,
         OptionsSnapshotScope, PathPlatform, PersistedSpan, PlatformPath, RootBinding, RootIdentity,
         SafePathBuilder, SanitizedOptionMap, TaskPauseReason,
+        calculate_http_strong_validator_fingerprint,
     };
     use ariax_config::{SecurityClass, builtin_registry};
     use ariax_core::{
@@ -2900,6 +2994,72 @@ mod tests {
     }
 
     #[test]
+    fn strong_http_validator_replays_before_network_and_binds_lease_fingerprints() {
+        let fixture = layout_fixture(Generation::INITIAL, false);
+        let validator_fingerprint = calculate_http_strong_validator_fingerprint(b"\"v1\"", 2048)
+            .expect("validator fingerprint");
+        let validator = JournalPayload::HttpStrongValidator {
+            resource_fingerprint: hash(70),
+            validator_fingerprint,
+            total_length: 2048,
+            etag: b"\"v1\"".to_vec().into_boxed_slice(),
+        };
+        let mut records = base_records(fixture);
+        records.push(record(4, 0, validator.clone()));
+        records.push(record(
+            5,
+            0,
+            JournalPayload::LeaseStarted {
+                transfer_attempt_id: TransferAttemptId::new(10).expect("attempt"),
+                lease_id: LeaseId::new(11).expect("lease"),
+                span: span(0, 1024),
+                validator_fingerprint,
+            },
+        ));
+        let replay = recover_journal_state(&records, task(), &allow_all, Default::default());
+        assert_eq!(replay.stop, JournalStateStop::CleanEnd);
+        let state = replay.state.expect("state");
+        let recovered = state.http_strong_validator().expect("validator");
+        assert_eq!(recovered.resource_fingerprint(), hash(70));
+        assert_eq!(recovered.validator_fingerprint(), validator_fingerprint);
+        assert_eq!(recovered.total_length(), 2048);
+        assert_eq!(recovered.etag(), b"\"v1\"");
+
+        let mut mismatched = records.clone();
+        mismatched[4] = record(
+            5,
+            0,
+            JournalPayload::LeaseStarted {
+                transfer_attempt_id: TransferAttemptId::new(10).expect("attempt"),
+                lease_id: LeaseId::new(11).expect("lease"),
+                span: span(0, 1024),
+                validator_fingerprint: hash(71),
+            },
+        );
+        let replay = recover_journal_state(&mismatched, task(), &allow_all, Default::default());
+        assert_eq!(replay.accepted_records, 4);
+        assert!(matches!(
+            replay.stop,
+            JournalStateStop::InvalidRecord {
+                error: JournalStateError::InvalidHttpStrongValidator,
+                ..
+            }
+        ));
+
+        let mut duplicate = records;
+        duplicate.push(record(6, 0, validator));
+        let replay = recover_journal_state(&duplicate, task(), &allow_all, Default::default());
+        assert_eq!(replay.accepted_records, 5);
+        assert!(matches!(
+            replay.stop,
+            JournalStateStop::InvalidRecord {
+                error: JournalStateError::InvalidHttpStrongValidator,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn generation_advance_requires_the_exact_staged_snapshot() {
         let fixture = layout_fixture(Generation::INITIAL, false);
         let mut records = base_records(fixture);
@@ -3146,6 +3306,16 @@ mod tests {
             task_created(),
             current_options(&[("piece-length", "1M")]),
             fixture.committed,
+            JournalPayload::HttpStrongValidator {
+                resource_fingerprint: hash(57),
+                validator_fingerprint: calculate_http_strong_validator_fingerprint(
+                    b"\"checkpoint-v1\"",
+                    2048,
+                )
+                .expect("validator fingerprint"),
+                total_length: 2048,
+                etag: b"\"checkpoint-v1\"".to_vec().into_boxed_slice(),
+            },
             JournalPayload::PieceStateChunk {
                 layout_hash,
                 root_binding_hash,
@@ -3168,6 +3338,7 @@ mod tests {
             .enumerate()
             .map(|(index, payload)| record(index as u64 + 2, 2, payload))
             .collect::<Vec<_>>();
+        let state_record_count = state_records.len() as u32;
         let state_hash = calculate_checkpoint_state_hash(&state_records).expect("state hash");
         let checkpoint_id = CheckpointId::new([7; 16]).expect("checkpoint");
         let mut records = Vec::new();
@@ -3178,7 +3349,7 @@ mod tests {
                 checkpoint_id,
                 source_last_sequence: 91,
                 source_segment_hash: hash(56),
-                state_record_count: state_records.len() as u32,
+                state_record_count,
                 created_at_unix_ms: 100,
             },
         ));
@@ -3188,7 +3359,7 @@ mod tests {
             2,
             JournalPayload::CheckpointEnd {
                 checkpoint_id,
-                state_record_count: 5,
+                state_record_count,
                 state_hash,
             },
         ));
@@ -3205,6 +3376,9 @@ mod tests {
                 .all(|piece| piece.origin() == &DurablePieceOrigin::Checkpoint)
         );
         assert_eq!(state.paused(), Some(TaskPauseReason::RecoveryHold));
+        let validator = state.http_strong_validator().expect("checkpoint validator");
+        assert_eq!(validator.etag(), b"\"checkpoint-v1\"");
+        assert_eq!(validator.total_length(), 2048);
         assert_eq!(
             state.checkpoint().expect("checkpoint").state_hash,
             state_hash
@@ -3218,7 +3392,7 @@ mod tests {
             2,
             JournalPayload::CheckpointEnd {
                 checkpoint_id,
-                state_record_count: 5,
+                state_record_count,
                 state_hash: hash(99),
             },
         ));

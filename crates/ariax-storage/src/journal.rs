@@ -140,9 +140,10 @@ record_types!(
     (FinalizeIntent, 22, "finalize_intent"),
     (FinalizeDone, 23, "finalize_done"),
     (PieceStateChunk, 24, "piece_state_chunk"),
+    (HttpStrongValidator, 25, "http_strong_validator"),
 );
 
-pub const ALL_RECORD_TYPES: [RecordType; 24] = RecordType::ALL;
+pub const ALL_RECORD_TYPES: [RecordType; 25] = RecordType::ALL;
 
 /// Exact version-1 segment header fields.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1377,7 +1378,7 @@ mod tests {
             assert_eq!(RecordType::try_from(index as u16 + 1), Ok(record_type));
         }
         assert!(RecordType::try_from(0).is_err());
-        assert!(RecordType::try_from(25).is_err());
+        assert!(RecordType::try_from(26).is_err());
         assert!(JournalId::new([0; 16]).is_none());
     }
 }

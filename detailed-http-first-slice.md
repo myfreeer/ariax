@@ -1,13 +1,18 @@
 # Detailed HTTP First-Slice Design
 
 Status: reviewed first-slice implementation contract. The fresh sequential
-HTTP/1.1 subset is executable with an externally policy-approved pinned peer:
-strict response-head validation precedes layout publication/body polling,
-pooled body chunks cross piece-aligned `StorageEngine` leases, and exact final
-framing produces strict durable journal evidence. Short body and cancellation
-abort only the incomplete lease while prior durable pieces survive recovery.
-HTTPS, ordinary DNS/SSRF resolution, redirects/proxies, resume/range, rate and
-retry integration, and scheduler/RPC wiring remain pending.
+HTTP/1.1 subset and the first recoverable range-resume milestone are executable
+with an externally policy-approved numeric peer. Strict response-head
+validation precedes layout publication/body polling, pooled body chunks cross
+piece-aligned `StorageEngine` leases, and exact final framing produces durable
+journal evidence. Strong ETag material is persisted/replayed with an exact
+resource and known-length binding; recovery readback verifies each trusted
+piece, reopens the descriptor without truncation, and resumes with pinned
+`Range`/`If-Range` headers. The bounded runtime effect adapter and CLI exercise
+allocation, cancellation, retry classification, and completion. Ordinary
+DNS/SSRF resolution, TLS, redirects/proxies, weak or Last-Modified validators,
+digest-only resume, segmented multi-mirror scheduling, and live scheduler/RPC
+dispatch remain pending.
 
 This document defines HTTP(S) sequential download, resume, strict range
 validation, storage integration, retry integration, and stats behavior.
@@ -34,6 +39,12 @@ Excluded from first slice:
 - content decoding,
 - unknown-length/chunked output, which requires the explicit growing-layout
   capability described below.
+
+The current executable milestone deliberately accepts only `http`, an
+already-approved numeric `IP:port`, and a strong ETag. It does not resolve host
+names, apply the destination SSRF classifier, negotiate TLS, follow redirects,
+use proxies, or expose the transfer through RPC. Those policy layers must be
+added before ordinary URI input is enabled.
 
 ## Request Preparation
 
@@ -150,6 +161,12 @@ durable-length plus Last-Modified comparison, with any change classified as
 If validator changes, classify as `StaleValidator`, not transient network
 failure.
 
+The current executable checkpoint implements only the first item: a strong ETag
+whose raw quoted value, exact resource fingerprint, and settled total length are
+persisted in `HttpStrongValidator`. Last-Modified, weak-ETag, digest-only, and
+unsafe-override resume remain design-level policy and are not accepted by the
+checkpoint runner.
+
 ## Cross-Mirror Entity Identity
 
 Multi-URI HTTP treats TAB-separated URIs as mirrors of the same entity. Like
@@ -254,10 +271,12 @@ Accept-Encoding: identity
 Acceptance:
 
 - `206 Partial Content` required,
-- `Content-Range` start equals durable length,
-- end and total are valid,
-- body length equals declared range length unless open-ended and connection EOF
-  is valid for known total,
+- exactly one `Content-Range: bytes start-end/total` is required; `start` equals
+  the durable length, `end` equals `total - 1`, and `total` equals the recovered
+  layout length,
+- exactly one `Content-Length` is required and equals `total - start`; the first
+  milestone intentionally rejects a shorter valid sub-range response,
+- the response carries one matching strong ETag and identity encoding,
 - local existing bytes are not truncated.
 
 The resume response is one new `TransferAttemptId` and a streaming series of
@@ -279,9 +298,10 @@ If server returns `200 OK`:
 
 If server returns `416`:
 
-- compare local durable length and validator,
-- complete only if local data is already fully durable and validators match,
-- otherwise stale-validator or resume-failure policy decides.
+- the runner classifies it as an invalid-range restart-generation result;
+- a fully durable local representation is completed locally before a network
+  request, so the first milestone does not rely on a server `416` as a
+  completion proof.
 
 ## Range Worker
 
@@ -492,7 +512,13 @@ Required tests:
 - chunked, missing-length, gzip, and deflate responses are rejected in the first
   slice without accepting a body byte,
 - resume sends range from durable length,
+- strong ETag/resource/length material survives live replay and compact
+  checkpoint replay, while weak/malformed/oversized values are rejected,
+- recovery reads back every trusted durable piece and rejects local digest
+  corruption before opening a network connection,
 - resume `206` validates `Content-Range`,
+- resume sends the exact persisted strong ETag in `If-Range` and requires the
+  full remaining tail in the first milestone,
 - resume `200 OK` never writes at nonzero offset,
 - range `200 OK` rejected for nonzero lease,
 - invalid `Content-Range` rejected,

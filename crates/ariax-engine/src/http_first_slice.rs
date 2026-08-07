@@ -1,25 +1,33 @@
 use crate::{
-    LeaseCommit, LeaseWritePlan, StorageEngine, StorageEngineConfig, StorageEngineError, WriteBlock,
+    ActiveTransferRequest, AllocationRequest, LeaseCommit, LeaseWritePlan, RuntimeEffectHandle,
+    RuntimeEventSubmission, RuntimeEventSubmitError, StorageEngine, StorageEngineConfig,
+    StorageEngineError, WriteBlock,
 };
-use ariax_core::{FileId, Generation, Gid, LeaseId, PieceId, TaskId, TransferAttemptId};
+use ariax_core::{
+    ErrorKind, FileId, Generation, Gid, LeaseId, MonotonicInstant, PieceId, PublicError,
+    RetryClass, TaskId, TransferAttemptId,
+};
 use ariax_runtime::{OwnerTag, SizeClass};
 use ariax_storage::{
-    ControlJournalAppender, DurabilityMode, FileEntry, FileIdentity, FileLayout, JournalDigest,
-    JournalDigestAlgorithm, JournalDirectoryCapability, JournalFileLayoutEntry, JournalHash,
-    JournalId, JournalPayload, JournalRelativePath, JournalStateLimits, JournalStateReplay,
-    LayoutError, LeaseAbortReason, NativeCapabilityError, OptionsSnapshotScope, PayloadCodecError,
-    PlatformPath, ReplayLimits, RootBinding, RootBindingError, RootDirectoryCapability,
-    RootIdentity, SafeRelativePath, SanitizedOptionMap, recover_journal_state,
+    ControlJournalAppender, DurabilityMode, FileEntry, FileIdentity, FileLayout,
+    JournalContributor, JournalDigest, JournalDigestAlgorithm, JournalDirectoryCapability,
+    JournalFileLayoutEntry, JournalHash, JournalId, JournalPayload, JournalRelativePath,
+    JournalStateLimits, JournalStateReplay, JournalStateStop, LayoutError, LeaseAbortReason,
+    NativeCapabilityError, OptionsSnapshotScope, PayloadCodecError, PlatformPath,
+    RecoveredHttpStrongValidator, ReplayLimits, RootBinding, RootBindingError,
+    RootDirectoryCapability, RootFileCapability, RootIdentity, SafeRelativePath,
+    SanitizedOptionMap, calculate_http_strong_validator_fingerprint,
+    calculate_validator_set_fingerprint, recover_journal_state,
 };
 use bytes::Bytes;
 use http_body_util::{BodyExt as _, Empty};
 use hyper::body::Incoming;
 use hyper::client::conn::http1;
 use hyper::header::{
-    ACCEPT_ENCODING, CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, ETAG, HOST, LAST_MODIFIED,
-    TRANSFER_ENCODING,
+    ACCEPT_ENCODING, CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE, ETAG, HOST,
+    IF_RANGE, LAST_MODIFIED, RANGE, TRANSFER_ENCODING,
 };
-use hyper::{Method, Request, Response, StatusCode, Uri};
+use hyper::{HeaderMap, Method, Request, Response, StatusCode, Uri};
 use hyper_util::rt::TokioIo;
 use sha2::{Digest, Sha256};
 use std::error::Error;
@@ -35,7 +43,9 @@ use tokio::time::timeout;
 
 const MAX_RESPONSE_HEADERS: usize = 128;
 const MAX_RESPONSE_HEAD_BYTES: usize = 64 * 1024;
-const HTTP_VALIDATOR_HASH_DOMAIN: &str = "ariax/http-validator/v1\0";
+const HTTP_METADATA_VALIDATOR_HASH_DOMAIN: &str = "ariax/http-metadata-validator/v1\0";
+const HTTP_RESOURCE_HASH_DOMAIN: &str = "ariax/http-resource/v1\0";
+const RECOVERY_READ_BUFFER_BYTES: usize = 1024 * 1024;
 
 /// Explicit cancellation authority shared with one HTTP response worker.
 #[derive(Clone, Debug)]
@@ -53,7 +63,7 @@ impl HttpCancellation {
     }
 
     pub fn cancel(&self) {
-        let _changed = self.sender.send(true);
+        let _previous = self.sender.send_replace(true);
     }
 
     #[must_use]
@@ -105,6 +115,7 @@ pub struct KnownLengthHttpRequest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct KnownLengthHttpResult {
     pub content_length: u64,
+    pub resumed_from: u64,
     pub durable_piece_count: u64,
     pub terminal_sequence: u64,
     pub validator_fingerprint: JournalHash,
@@ -116,6 +127,7 @@ pub struct KnownLengthHttpResult {
 pub struct KnownLengthHttpRecovery {
     pub replay: JournalStateReplay,
     pub durable_prefix: u64,
+    pub strong_validator: Option<RecoveredHttpStrongValidator>,
 }
 
 /// Exact identities, roots, and budgets required to recover one standalone
@@ -130,6 +142,77 @@ pub struct KnownLengthHttpRecoveryRequest {
     pub output_root: PathBuf,
     pub replay_limits: ReplayLimits,
     pub state_limits: JournalStateLimits,
+}
+
+/// One strict continuation of a recovered fresh-download journal. Layout,
+/// output identity, piece length, and validator authority come only from
+/// replay; the caller supplies a newly policy-approved numeric peer.
+#[derive(Clone, Debug)]
+pub struct KnownLengthHttpResumeRequest {
+    pub recovery: KnownLengthHttpRecoveryRequest,
+    pub uri: String,
+    pub peer: SocketAddr,
+    pub resumed_at_unix_ms: u64,
+    pub connect_timeout: Duration,
+    pub response_head_timeout: Duration,
+    pub response_body_timeout: Duration,
+    pub storage: StorageEngineConfig,
+    pub cancellation: HttpCancellation,
+}
+
+/// Fresh or recovered HTTP work bound to one scheduler allocation authority.
+#[derive(Clone, Debug)]
+pub enum KnownLengthHttpTransfer {
+    Fresh(KnownLengthHttpRequest),
+    Resume(KnownLengthHttpResumeRequest),
+}
+
+impl KnownLengthHttpTransfer {
+    fn identity(&self) -> (TaskId, Gid, Generation) {
+        match self {
+            Self::Fresh(request) => (request.task, request.gid, request.generation),
+            Self::Resume(request) => (
+                request.recovery.task,
+                request.recovery.gid,
+                request.recovery.generation,
+            ),
+        }
+    }
+
+    fn cancellation(&self) -> HttpCancellation {
+        match self {
+            Self::Fresh(request) => request.cancellation.clone(),
+            Self::Resume(request) => request.cancellation.clone(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum KnownLengthHttpRuntimeError {
+    AllocationIdentityMismatch,
+    RuntimeEffectClosed,
+    Transfer(KnownLengthHttpError),
+}
+
+impl fmt::Display for KnownLengthHttpRuntimeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AllocationIdentityMismatch => {
+                formatter.write_str("HTTP allocation identity does not match transfer")
+            }
+            Self::RuntimeEffectClosed => formatter.write_str("runtime effect mailbox is closed"),
+            Self::Transfer(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl Error for KnownLengthHttpRuntimeError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Transfer(error) => Some(error),
+            _ => None,
+        }
+    }
 }
 
 /// Stable failure classes exposed to scheduler/retry integration.
@@ -153,6 +236,20 @@ pub enum KnownLengthHttpError {
     DuplicateContentLength,
     InvalidContentLength,
     ContentEncoding,
+    InvalidValidator,
+    MissingStrongValidator,
+    ResumeResourceMismatch,
+    NoDurablePrefix,
+    AlreadyComplete,
+    RangeIgnored,
+    RangeNotSatisfiable,
+    MissingContentRange,
+    DuplicateContentRange,
+    InvalidContentRange,
+    RangeLengthMismatch,
+    StaleValidator,
+    ExistingLengthMismatch { expected: u64, actual: u64 },
+    DurablePieceDigestMismatch { piece: PieceId },
     OversizedBody,
     ShortBody { expected: u64, actual: u64 },
     ResponseBodyTimeout,
@@ -165,6 +262,7 @@ pub enum KnownLengthHttpError {
     Storage(StorageEngineError),
     RecoveryState,
     Runtime(std::io::Error),
+    RuntimeEffectClosed,
 }
 
 impl KnownLengthHttpError {
@@ -189,6 +287,20 @@ impl KnownLengthHttpError {
             Self::DuplicateContentLength => "duplicate_content_length",
             Self::InvalidContentLength => "invalid_content_length",
             Self::ContentEncoding => "content_encoding",
+            Self::InvalidValidator => "invalid_validator",
+            Self::MissingStrongValidator => "missing_strong_validator",
+            Self::ResumeResourceMismatch => "resume_resource_mismatch",
+            Self::NoDurablePrefix => "no_durable_prefix",
+            Self::AlreadyComplete => "already_complete",
+            Self::RangeIgnored => "range_ignored",
+            Self::RangeNotSatisfiable => "range_not_satisfiable",
+            Self::MissingContentRange => "missing_content_range",
+            Self::DuplicateContentRange => "duplicate_content_range",
+            Self::InvalidContentRange => "invalid_content_range",
+            Self::RangeLengthMismatch => "range_length_mismatch",
+            Self::StaleValidator => "stale_validator",
+            Self::ExistingLengthMismatch { .. } => "existing_length_mismatch",
+            Self::DurablePieceDigestMismatch { .. } => "durable_piece_digest_mismatch",
             Self::OversizedBody => "oversized_body",
             Self::ShortBody { .. } => "short_body",
             Self::ResponseBodyTimeout => "response_body_timeout",
@@ -201,6 +313,7 @@ impl KnownLengthHttpError {
             Self::Storage(error) => error.reject().code(),
             Self::RecoveryState => "recovery_state",
             Self::Runtime(_) => "runtime",
+            Self::RuntimeEffectClosed => "runtime_effect_closed",
         }
     }
 
@@ -234,6 +347,17 @@ impl fmt::Display for KnownLengthHttpError {
             Self::UnexpectedStatus(status) => write!(formatter, "HTTP status {status} is not 200"),
             Self::ShortBody { expected, actual } => {
                 write!(formatter, "HTTP body ended at {actual} of {expected} bytes")
+            }
+            Self::ExistingLengthMismatch { expected, actual } => write!(
+                formatter,
+                "existing output length {actual} does not match recovered length {expected}"
+            ),
+            Self::DurablePieceDigestMismatch { piece } => {
+                write!(
+                    formatter,
+                    "recovered durable piece {} failed readback",
+                    piece.get()
+                )
             }
             Self::Native(error) => write!(formatter, "native output failed: {error}"),
             Self::RootBinding(error) => write!(formatter, "root binding failed: {error}"),
@@ -300,6 +424,228 @@ impl From<StorageEngineError> for KnownLengthHttpError {
     }
 }
 
+struct RuntimeHttpLifecycle {
+    runtime: RuntimeEffectHandle,
+    allocation: Option<AllocationRequest>,
+    active: Option<ActiveTransferRequest>,
+}
+
+impl RuntimeHttpLifecycle {
+    async fn activate(&mut self) -> Result<(), KnownLengthHttpError> {
+        if self.active.is_some() {
+            return Ok(());
+        }
+        let allocation = self
+            .allocation
+            .take()
+            .ok_or(KnownLengthHttpError::RuntimeEffectClosed)?;
+        let (submission, active) = allocation.activate();
+        submit_runtime_event(&self.runtime, submission)
+            .await
+            .map_err(|_| KnownLengthHttpError::RuntimeEffectClosed)?;
+        self.active = Some(active);
+        Ok(())
+    }
+}
+
+/// Executes one exact scheduler-issued allocation through the HTTP worker and
+/// returns every lifecycle transition through the bounded runtime mailbox.
+pub async fn run_known_length_http_runtime(
+    runtime: RuntimeEffectHandle,
+    allocation: AllocationRequest,
+    transfer: KnownLengthHttpTransfer,
+    retry_at: MonotonicInstant,
+) -> Result<KnownLengthHttpResult, KnownLengthHttpRuntimeError> {
+    let identity = transfer.identity();
+    if (
+        allocation.task_id(),
+        allocation.gid(),
+        allocation.generation(),
+    ) != identity
+    {
+        return Err(KnownLengthHttpRuntimeError::AllocationIdentityMismatch);
+    }
+    let cancellation = transfer.cancellation();
+    let mut lifecycle = RuntimeHttpLifecycle {
+        runtime: runtime.clone(),
+        allocation: Some(allocation),
+        active: None,
+    };
+    let (result, cancellation_request) = {
+        let transfer = async {
+            match transfer {
+                KnownLengthHttpTransfer::Fresh(request) => {
+                    download_known_length_http_inner(request, Some(&mut lifecycle)).await
+                }
+                KnownLengthHttpTransfer::Resume(request) => {
+                    resume_known_length_http_inner(request, Some(&mut lifecycle)).await
+                }
+            }
+        };
+        tokio::pin!(transfer);
+        if let Some(cancellation_request) =
+            runtime.take_cancellation_for(identity.0, identity.1, identity.2)
+        {
+            cancellation.cancel();
+            let result = (&mut transfer).await;
+            (result, Some(cancellation_request))
+        } else {
+            let cancellation_request = wait_for_runtime_cancellation(runtime.clone(), identity);
+            tokio::pin!(cancellation_request);
+            tokio::select! {
+                result = &mut transfer => (result, None),
+                cancellation_request = &mut cancellation_request => {
+                    cancellation.cancel();
+                    let result = (&mut transfer).await;
+                    (result, Some(cancellation_request))
+                }
+            }
+        }
+    };
+    if let Some(cancellation_request) = cancellation_request {
+        submit_runtime_event(&runtime, cancellation_request.drained())
+            .await
+            .map_err(|_| KnownLengthHttpRuntimeError::RuntimeEffectClosed)?;
+        return result.map_err(KnownLengthHttpRuntimeError::Transfer);
+    }
+
+    match result {
+        Ok(result) => {
+            let active = lifecycle
+                .active
+                .take()
+                .ok_or(KnownLengthHttpRuntimeError::RuntimeEffectClosed)?;
+            let (data_complete, verifying) = active.data_complete(false);
+            submit_runtime_event(&runtime, data_complete)
+                .await
+                .map_err(|_| KnownLengthHttpRuntimeError::RuntimeEffectClosed)?;
+            submit_runtime_event(&runtime, verifying.succeeded())
+                .await
+                .map_err(|_| KnownLengthHttpRuntimeError::RuntimeEffectClosed)?;
+            Ok(result)
+        }
+        Err(KnownLengthHttpError::RuntimeEffectClosed) => {
+            Err(KnownLengthHttpRuntimeError::RuntimeEffectClosed)
+        }
+        Err(error) => {
+            let retriable = error.retriable();
+            let public = public_http_error(&error);
+            let submission = if let Some(active) = lifecycle.active.take() {
+                if retriable {
+                    active.retryable(retry_at)
+                } else {
+                    active.failed(public)
+                }
+            } else {
+                let allocation = lifecycle
+                    .allocation
+                    .take()
+                    .ok_or(KnownLengthHttpRuntimeError::RuntimeEffectClosed)?;
+                if retriable {
+                    allocation.retryable(retry_at)
+                } else {
+                    allocation.failed(public)
+                }
+            };
+            submit_runtime_event(&runtime, submission)
+                .await
+                .map_err(|_| KnownLengthHttpRuntimeError::RuntimeEffectClosed)?;
+            Err(KnownLengthHttpRuntimeError::Transfer(error))
+        }
+    }
+}
+
+pub fn run_known_length_http_runtime_blocking(
+    runtime: RuntimeEffectHandle,
+    allocation: AllocationRequest,
+    transfer: KnownLengthHttpTransfer,
+    retry_at: MonotonicInstant,
+) -> Result<KnownLengthHttpResult, KnownLengthHttpRuntimeError> {
+    RuntimeBuilder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .map_err(|error| {
+            KnownLengthHttpRuntimeError::Transfer(KnownLengthHttpError::Runtime(error))
+        })?
+        .block_on(run_known_length_http_runtime(
+            runtime, allocation, transfer, retry_at,
+        ))
+}
+
+async fn wait_for_runtime_cancellation(
+    runtime: RuntimeEffectHandle,
+    identity: (TaskId, Gid, Generation),
+) -> crate::CancellationRequest {
+    loop {
+        if let Some(request) = runtime.take_cancellation_for(identity.0, identity.1, identity.2) {
+            return request;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+async fn submit_runtime_event(
+    runtime: &RuntimeEffectHandle,
+    mut submission: RuntimeEventSubmission,
+) -> Result<(), RuntimeEventSubmitError> {
+    loop {
+        match runtime.try_submit_event(submission) {
+            Ok(()) => return Ok(()),
+            Err(rejection) => {
+                let error = rejection.error();
+                submission = rejection.into_submission();
+                match error {
+                    RuntimeEventSubmitError::Full => {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                    RuntimeEventSubmitError::Closed => return Err(error),
+                }
+            }
+        }
+    }
+}
+
+fn public_http_error(error: &KnownLengthHttpError) -> PublicError {
+    let (kind, retry) = match error {
+        KnownLengthHttpError::ConnectTimeout
+        | KnownLengthHttpError::HandshakeTimeout
+        | KnownLengthHttpError::ResponseHeadTimeout
+        | KnownLengthHttpError::ResponseBodyTimeout => (ErrorKind::Timeout, RetryClass::SameSource),
+        KnownLengthHttpError::Connect(_)
+        | KnownLengthHttpError::Hyper(_)
+        | KnownLengthHttpError::ShortBody { .. } => (ErrorKind::Network, RetryClass::SameSource),
+        KnownLengthHttpError::RangeIgnored
+        | KnownLengthHttpError::RangeNotSatisfiable
+        | KnownLengthHttpError::MissingContentRange
+        | KnownLengthHttpError::DuplicateContentRange
+        | KnownLengthHttpError::InvalidContentRange
+        | KnownLengthHttpError::RangeLengthMismatch => {
+            (ErrorKind::InvalidRange, RetryClass::RestartGeneration)
+        }
+        KnownLengthHttpError::StaleValidator
+        | KnownLengthHttpError::MissingStrongValidator
+        | KnownLengthHttpError::ResumeResourceMismatch => {
+            (ErrorKind::StaleValidator, RetryClass::RestartGeneration)
+        }
+        KnownLengthHttpError::Cancelled => (ErrorKind::Cancelled, RetryClass::Never),
+        KnownLengthHttpError::Storage(_) | KnownLengthHttpError::Native(_) => {
+            (ErrorKind::Disk, RetryClass::SameSource)
+        }
+        KnownLengthHttpError::Journal(_)
+        | KnownLengthHttpError::RecoveryState
+        | KnownLengthHttpError::ExistingLengthMismatch { .. }
+        | KnownLengthHttpError::DurablePieceDigestMismatch { .. } => {
+            (ErrorKind::DirtyCheckpoint, RetryClass::RestartGeneration)
+        }
+        KnownLengthHttpError::OversizedBody => {
+            (ErrorKind::ResponseTooLarge, RetryClass::AnotherSource)
+        }
+        _ => (ErrorKind::Network, RetryClass::Never),
+    };
+    PublicError::new(kind, error.code(), retry)
+}
+
 /// Runs one standalone worker on a bounded current-thread Tokio runtime.
 pub fn download_known_length_http_blocking(
     request: KnownLengthHttpRequest,
@@ -312,10 +658,217 @@ pub fn download_known_length_http_blocking(
         .block_on(download_known_length_http(request))
 }
 
+/// Runs one recovered range continuation on a bounded current-thread Tokio
+/// runtime.
+pub fn resume_known_length_http_blocking(
+    request: KnownLengthHttpResumeRequest,
+) -> Result<KnownLengthHttpResult, KnownLengthHttpError> {
+    RuntimeBuilder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .map_err(KnownLengthHttpError::Runtime)?
+        .block_on(resume_known_length_http(request))
+}
+
+/// Revalidates one recovered durable prefix, sends an exact open-ended range
+/// request with the persisted strong ETag, and continues piece leases without
+/// truncating or path-reopening the output after descriptor admission.
+pub async fn resume_known_length_http(
+    request: KnownLengthHttpResumeRequest,
+) -> Result<KnownLengthHttpResult, KnownLengthHttpError> {
+    resume_known_length_http_inner(request, None).await
+}
+
+async fn resume_known_length_http_inner(
+    request: KnownLengthHttpResumeRequest,
+    mut lifecycle: Option<&mut RuntimeHttpLifecycle>,
+) -> Result<KnownLengthHttpResult, KnownLengthHttpError> {
+    let uri: Uri = request
+        .uri
+        .parse()
+        .map_err(|_| KnownLengthHttpError::InvalidUri)?;
+    if uri.scheme_str() != Some("http") {
+        return Err(KnownLengthHttpError::UnsupportedScheme);
+    }
+    let authority = uri
+        .authority()
+        .ok_or(KnownLengthHttpError::MissingAuthority)?;
+    if authority.as_str().contains('@') {
+        return Err(KnownLengthHttpError::UserInfoForbidden);
+    }
+    let expected_port = authority.port_u16().unwrap_or(80);
+    if request.peer.port() != expected_port {
+        return Err(KnownLengthHttpError::PeerPortMismatch {
+            expected: expected_port,
+            actual: request.peer.port(),
+        });
+    }
+
+    let prepared = prepare_known_length_recovery(&request.recovery)?;
+    if !matches!(prepared.replay.stop, JournalStateStop::CleanEnd) {
+        return Err(KnownLengthHttpError::RecoveryState);
+    }
+    let state = prepared
+        .replay
+        .state
+        .as_ref()
+        .ok_or(KnownLengthHttpError::RecoveryState)?;
+    if state.terminal().is_some() {
+        return Err(KnownLengthHttpError::AlreadyComplete);
+    }
+    let validator = prepared
+        .strong_validator
+        .clone()
+        .ok_or(KnownLengthHttpError::MissingStrongValidator)?;
+    if validator.resource_fingerprint() != http_resource_fingerprint(&uri) {
+        return Err(KnownLengthHttpError::ResumeResourceMismatch);
+    }
+    let total_length = prepared
+        .layout
+        .total_length()
+        .ok_or(KnownLengthHttpError::RecoveryState)?;
+    if validator.total_length() != total_length {
+        return Err(KnownLengthHttpError::StaleValidator);
+    }
+    if prepared.durable_prefix == 0 {
+        return Err(KnownLengthHttpError::NoDurablePrefix);
+    }
+    if prepared.durable_prefix > total_length {
+        return Err(KnownLengthHttpError::RecoveryState);
+    }
+    let final_digest = hash_recovered_durable_prefix(&prepared, &validator)?;
+
+    if prepared.durable_prefix == total_length {
+        let PreparedKnownLengthRecovery {
+            appender,
+            layout,
+            output_file,
+            durable_prefix,
+            durable_piece_count,
+            ..
+        } = prepared;
+        let mut storage = StorageEngine::open_layout(
+            layout,
+            [(FileId::new(0), output_file)],
+            appender,
+            request.storage,
+        )?;
+        if let Some(lifecycle) = lifecycle.as_mut() {
+            lifecycle.activate().await?;
+        }
+        let final_digest = JournalDigest::new(
+            JournalDigestAlgorithm::Sha256,
+            final_digest.finalize().to_vec(),
+        )?;
+        let terminal_sequence = storage.complete(
+            Some(final_digest.clone()),
+            now_unix_ms().unwrap_or(request.resumed_at_unix_ms),
+        )?;
+        storage.close()?;
+        return Ok(KnownLengthHttpResult {
+            content_length: total_length,
+            resumed_from: durable_prefix,
+            durable_piece_count,
+            terminal_sequence,
+            validator_fingerprint: validator.validator_fingerprint(),
+            final_digest,
+        });
+    }
+
+    let stream = timeout(request.connect_timeout, TcpStream::connect(request.peer))
+        .await
+        .map_err(|_| KnownLengthHttpError::ConnectTimeout)?
+        .map_err(KnownLengthHttpError::Connect)?;
+    let mut builder = http1::Builder::new();
+    builder
+        .max_headers(MAX_RESPONSE_HEADERS)
+        .max_buf_size(MAX_RESPONSE_HEAD_BYTES);
+    let (mut sender, connection) = timeout(
+        request.response_head_timeout,
+        builder.handshake(TokioIo::new(stream)),
+    )
+    .await
+    .map_err(|_| KnownLengthHttpError::HandshakeTimeout)?
+    .map_err(KnownLengthHttpError::Hyper)?;
+    let connection = tokio::spawn(connection);
+    let path = uri
+        .path_and_query()
+        .map_or("/", hyper::http::uri::PathAndQuery::as_str);
+    let range = format!("bytes={}-", prepared.durable_prefix);
+    let if_range = hyper::header::HeaderValue::from_bytes(validator.etag())
+        .map_err(|_| KnownLengthHttpError::InvalidValidator)?;
+    let outbound = Request::builder()
+        .method(Method::GET)
+        .uri(path)
+        .header(HOST, authority.as_str())
+        .header(RANGE, range)
+        .header(IF_RANGE, if_range)
+        .header(ACCEPT_ENCODING, "identity")
+        .header(CONNECTION, "close")
+        .body(Empty::<Bytes>::new())
+        .map_err(KnownLengthHttpError::Request)?;
+    let response = timeout(request.response_head_timeout, sender.send_request(outbound))
+        .await
+        .map_err(|_| KnownLengthHttpError::ResponseHeadTimeout)?
+        .map_err(KnownLengthHttpError::Hyper)?;
+    drop(sender);
+    validate_resume_response_head(&response, prepared.durable_prefix, total_length, &validator)?;
+
+    let PreparedKnownLengthRecovery {
+        appender,
+        layout,
+        output_file,
+        durable_prefix,
+        durable_piece_count,
+        next_transfer_attempt_id,
+        next_lease_id,
+        ..
+    } = prepared;
+    let storage = StorageEngine::open_layout(
+        layout.clone(),
+        [(FileId::new(0), output_file)],
+        appender,
+        request.storage,
+    )?;
+    if let Some(lifecycle) = lifecycle.as_mut() {
+        lifecycle.activate().await?;
+    }
+    stream_known_length_body(
+        storage,
+        response,
+        connection,
+        BodyTransferPlan {
+            task: layout.task(),
+            generation: layout.generation(),
+            piece_length: layout.piece_length(),
+            content_length: total_length,
+            start_offset: durable_prefix,
+            transfer_attempt: TransferAttemptId::new(next_transfer_attempt_id)
+                .ok_or(KnownLengthHttpError::RecoveryState)?,
+            next_lease_id,
+            validator_fingerprint: validator.validator_fingerprint(),
+            durable_piece_count,
+            final_digest,
+            completed_at_unix_ms: request.resumed_at_unix_ms,
+            response_body_timeout: request.response_body_timeout,
+            cancellation: request.cancellation,
+        },
+    )
+    .await
+}
+
 /// Downloads one identity-coded, known-length HTTP/1.1 response through the
 /// concrete `StorageEngine` and strict per-piece durable journal ordering.
 pub async fn download_known_length_http(
     request: KnownLengthHttpRequest,
+) -> Result<KnownLengthHttpResult, KnownLengthHttpError> {
+    download_known_length_http_inner(request, None).await
+}
+
+async fn download_known_length_http_inner(
+    request: KnownLengthHttpRequest,
+    mut lifecycle: Option<&mut RuntimeHttpLifecycle>,
 ) -> Result<KnownLengthHttpResult, KnownLengthHttpError> {
     if request.piece_length == 0 {
         return Err(KnownLengthHttpError::ZeroPieceLength);
@@ -340,6 +893,7 @@ pub async fn download_known_length_http(
             actual: request.peer.port(),
         });
     }
+    let resource_fingerprint = http_resource_fingerprint(&uri);
 
     let root = RootDirectoryCapability::open_trusted(&request.output_root)?;
     let output_file = root.create_new_file(&request.output)?;
@@ -397,36 +951,89 @@ pub async fn download_known_length_http(
         request.piece_length,
     )?;
     append_layout(&mut journal, &layout)?;
-    let mut storage = StorageEngine::open_layout(
+    if let Some(etag) = head.strong_etag.as_ref() {
+        append_http_strong_validator(
+            &mut journal,
+            request.generation,
+            resource_fingerprint,
+            head.validator_fingerprint,
+            head.content_length,
+            etag,
+        )?;
+    }
+    let storage = StorageEngine::open_layout(
         layout,
         [(FileId::new(0), output_file)],
         journal,
         request.storage,
     )?;
+    if let Some(lifecycle) = lifecycle.as_mut() {
+        lifecycle.activate().await?;
+    }
 
-    let transfer_attempt =
-        TransferAttemptId::new(1).expect("the first HTTP transfer-attempt identifier is nonzero");
-    let mut response = response;
-    let mut offset = 0_u64;
-    let mut next_lease_id = 1_u64;
+    stream_known_length_body(
+        storage,
+        response,
+        connection,
+        BodyTransferPlan {
+            task: request.task,
+            generation: request.generation,
+            piece_length: request.piece_length,
+            content_length: head.content_length,
+            start_offset: 0,
+            transfer_attempt: TransferAttemptId::new(1)
+                .expect("the first HTTP transfer-attempt identifier is nonzero"),
+            next_lease_id: 1,
+            validator_fingerprint: head.validator_fingerprint,
+            durable_piece_count: 0,
+            final_digest: Sha256::new(),
+            completed_at_unix_ms: request.created_at_unix_ms,
+            response_body_timeout: request.response_body_timeout,
+            cancellation: request.cancellation,
+        },
+    )
+    .await
+}
+
+struct BodyTransferPlan {
+    task: TaskId,
+    generation: Generation,
+    piece_length: u64,
+    content_length: u64,
+    start_offset: u64,
+    transfer_attempt: TransferAttemptId,
+    next_lease_id: u64,
+    validator_fingerprint: JournalHash,
+    durable_piece_count: u64,
+    final_digest: Sha256,
+    completed_at_unix_ms: u64,
+    response_body_timeout: Duration,
+    cancellation: HttpCancellation,
+}
+
+async fn stream_known_length_body(
+    mut storage: StorageEngine,
+    mut response: Response<Incoming>,
+    connection: tokio::task::JoinHandle<Result<(), hyper::Error>>,
+    mut plan: BodyTransferPlan,
+) -> Result<KnownLengthHttpResult, KnownLengthHttpError> {
+    let mut offset = plan.start_offset;
     let mut current: Option<(LeaseId, PieceId, u64)> = None;
-    let mut final_digest = Sha256::new();
-    let mut durable_piece_count = 0_u64;
 
     loop {
         let frame = tokio::select! {
-            _ = request.cancellation.cancelled() => {
-                abort_current(&mut storage, request.task, request.generation, current, LeaseAbortReason::Cancelled)?;
+            _ = plan.cancellation.cancelled() => {
+                abort_current(&mut storage, plan.task, plan.generation, current, LeaseAbortReason::Cancelled)?;
                 return Err(KnownLengthHttpError::Cancelled);
             }
-            frame = timeout(request.response_body_timeout, response.body_mut().frame()) => {
+            frame = timeout(plan.response_body_timeout, response.body_mut().frame()) => {
                 match frame {
                     Ok(frame) => frame,
                     Err(_) => {
                         abort_current(
                             &mut storage,
-                            request.task,
-                            request.generation,
+                            plan.task,
+                            plan.generation,
                             current,
                             LeaseAbortReason::Retry,
                         )?;
@@ -441,11 +1048,11 @@ pub async fn download_known_length_http(
         let frame = match frame {
             Ok(frame) => frame,
             Err(error) => {
-                let oversized = offset == head.content_length;
+                let oversized = offset == plan.content_length;
                 abort_current(
                     &mut storage,
-                    request.task,
-                    request.generation,
+                    plan.task,
+                    plan.generation,
                     current,
                     if oversized {
                         LeaseAbortReason::OversizedBody
@@ -458,7 +1065,7 @@ pub async fn download_known_length_http(
                     KnownLengthHttpError::OversizedBody
                 } else {
                     KnownLengthHttpError::ShortBody {
-                        expected: head.content_length,
+                        expected: plan.content_length,
                         actual: offset,
                     }
                 });
@@ -467,8 +1074,8 @@ pub async fn download_known_length_http(
         let Ok(data) = frame.into_data() else {
             abort_current(
                 &mut storage,
-                request.task,
-                request.generation,
+                plan.task,
+                plan.generation,
                 current,
                 LeaseAbortReason::OversizedBody,
             )?;
@@ -478,39 +1085,40 @@ pub async fn download_known_length_http(
             continue;
         }
         let data_len = u64::try_from(data.len()).expect("HTTP frame length fits u64");
-        if body_frame_end(offset, data_len, head.content_length).is_none() {
+        if body_frame_end(offset, data_len, plan.content_length).is_none() {
             abort_current(
                 &mut storage,
-                request.task,
-                request.generation,
+                plan.task,
+                plan.generation,
                 current,
                 LeaseAbortReason::OversizedBody,
             )?;
             return Err(KnownLengthHttpError::OversizedBody);
         }
-        final_digest.update(&data);
+        plan.final_digest.update(&data);
         let mut consumed = 0_usize;
         while consumed < data.len() {
             if current.is_none() {
-                let piece = PieceId::new(offset / request.piece_length);
+                let piece = PieceId::new(offset / plan.piece_length);
                 let lease =
-                    LeaseId::new(next_lease_id).ok_or(KnownLengthHttpError::RecoveryState)?;
-                next_lease_id = next_lease_id
+                    LeaseId::new(plan.next_lease_id).ok_or(KnownLengthHttpError::RecoveryState)?;
+                plan.next_lease_id = plan
+                    .next_lease_id
                     .checked_add(1)
                     .ok_or(KnownLengthHttpError::RecoveryState)?;
-                let lease_len = request.piece_length.min(head.content_length - offset);
+                let lease_len = plan.piece_length.min(plan.content_length - offset);
                 let lease_len =
                     usize::try_from(lease_len).map_err(|_| KnownLengthHttpError::RecoveryState)?;
                 storage.begin_lease(LeaseWritePlan {
-                    task: request.task,
-                    generation: request.generation,
-                    transfer_attempt,
+                    task: plan.task,
+                    generation: plan.generation,
+                    transfer_attempt: plan.transfer_attempt,
                     lease,
                     span: ariax_storage::GlobalSpan {
                         offset,
                         len: lease_len,
                     },
-                    validator: head.validator_fingerprint,
+                    validator: plan.validator_fingerprint,
                 })?;
                 current = Some((
                     lease,
@@ -535,8 +1143,8 @@ pub async fn download_known_length_http(
                 })?;
             let write = storage
                 .write_block(WriteBlock {
-                    task: request.task,
-                    generation: request.generation,
+                    task: plan.task,
+                    generation: plan.generation,
                     lease,
                     global_offset: offset,
                     expected_len: take,
@@ -546,8 +1154,8 @@ pub async fn download_known_length_http(
                 .await;
             if let Err(error) = write {
                 let _aborted = storage.abort_lease(
-                    request.task,
-                    request.generation,
+                    plan.task,
+                    plan.generation,
                     lease,
                     LeaseAbortReason::StorageRejected,
                 );
@@ -558,43 +1166,43 @@ pub async fn download_known_length_http(
             consumed += take;
             let remaining = lease_remaining - taken;
             current = Some((lease, piece, remaining));
-            if remaining == 0 && offset < head.content_length {
+            if remaining == 0 && offset < plan.content_length {
                 storage.commit_lease(LeaseCommit {
-                    task: request.task,
-                    generation: request.generation,
+                    task: plan.task,
+                    generation: plan.generation,
                     lease,
-                    received_len: request.piece_length,
-                    validator: head.validator_fingerprint,
+                    received_len: plan.piece_length,
+                    validator: plan.validator_fingerprint,
                     response_digest: None,
                 })?;
-                durable_piece_count += 1;
+                plan.durable_piece_count += 1;
                 current = None;
             }
         }
     }
 
-    if offset != head.content_length {
+    if offset != plan.content_length {
         abort_current(
             &mut storage,
-            request.task,
-            request.generation,
+            plan.task,
+            plan.generation,
             current,
             LeaseAbortReason::ShortBody,
         )?;
         return Err(KnownLengthHttpError::ShortBody {
-            expected: head.content_length,
+            expected: plan.content_length,
             actual: offset,
         });
     }
-    let connection_result = timeout(request.response_body_timeout, connection)
+    let connection_result = timeout(plan.response_body_timeout, connection)
         .await
         .map_err(|_| KnownLengthHttpError::ResponseBodyTimeout)?
         .map_err(|_| KnownLengthHttpError::RecoveryState)?;
     if let Err(error) = connection_result {
         abort_current(
             &mut storage,
-            request.task,
-            request.generation,
+            plan.task,
+            plan.generation,
             current,
             LeaseAbortReason::OversizedBody,
         )?;
@@ -603,37 +1211,38 @@ pub async fn download_known_length_http(
     }
     if let Some((lease, _piece, remaining)) = current {
         debug_assert_eq!(remaining, 0);
-        let final_piece_len = head.content_length % request.piece_length;
+        let final_piece_len = plan.content_length % plan.piece_length;
         let final_piece_len = if final_piece_len == 0 {
-            request.piece_length
+            plan.piece_length
         } else {
             final_piece_len
         };
         storage.commit_lease(LeaseCommit {
-            task: request.task,
-            generation: request.generation,
+            task: plan.task,
+            generation: plan.generation,
             lease,
             received_len: final_piece_len,
-            validator: head.validator_fingerprint,
+            validator: plan.validator_fingerprint,
             response_digest: None,
         })?;
-        durable_piece_count += 1;
+        plan.durable_piece_count += 1;
     }
     let final_digest = JournalDigest::new(
         JournalDigestAlgorithm::Sha256,
-        final_digest.finalize().to_vec(),
+        plan.final_digest.finalize().to_vec(),
     )
     .expect("SHA-256 output has canonical length");
     let terminal_sequence = storage.complete(
         Some(final_digest.clone()),
-        now_unix_ms().unwrap_or(request.created_at_unix_ms),
+        now_unix_ms().unwrap_or(plan.completed_at_unix_ms),
     )?;
     storage.close()?;
     Ok(KnownLengthHttpResult {
-        content_length: head.content_length,
-        durable_piece_count,
+        content_length: plan.content_length,
+        resumed_from: plan.start_offset,
+        durable_piece_count: plan.durable_piece_count,
         terminal_sequence,
-        validator_fingerprint: head.validator_fingerprint,
+        validator_fingerprint: plan.validator_fingerprint,
         final_digest,
     })
 }
@@ -643,6 +1252,37 @@ pub async fn download_known_length_http(
 pub fn recover_known_length_http(
     request: &KnownLengthHttpRecoveryRequest,
 ) -> Result<KnownLengthHttpRecovery, KnownLengthHttpError> {
+    let prepared = prepare_known_length_recovery(request)?;
+    let PreparedKnownLengthRecovery {
+        mut appender,
+        replay,
+        durable_prefix,
+        strong_validator,
+        ..
+    } = prepared;
+    appender.close_flushed()?;
+    Ok(KnownLengthHttpRecovery {
+        replay,
+        durable_prefix,
+        strong_validator,
+    })
+}
+
+struct PreparedKnownLengthRecovery {
+    appender: ControlJournalAppender,
+    replay: JournalStateReplay,
+    layout: FileLayout,
+    output_file: RootFileCapability,
+    durable_prefix: u64,
+    durable_piece_count: u64,
+    strong_validator: Option<RecoveredHttpStrongValidator>,
+    next_transfer_attempt_id: u64,
+    next_lease_id: u64,
+}
+
+fn prepare_known_length_recovery(
+    request: &KnownLengthHttpRecoveryRequest,
+) -> Result<PreparedKnownLengthRecovery, KnownLengthHttpError> {
     let journal_capability = JournalDirectoryCapability::open_trusted(&request.journal_directory)?;
     let paths = ControlJournalAppender::discover_segment_paths(
         &journal_capability,
@@ -655,7 +1295,7 @@ pub fn recover_known_length_http(
         request.journal_id,
         request.replay_limits,
     )?;
-    let (mut appender, framing) = ControlJournalAppender::open_prepared(
+    let (appender, framing) = ControlJournalAppender::open_prepared(
         prepared,
         request.generation,
         now_unix_ms().unwrap_or(0),
@@ -670,23 +1310,43 @@ pub fn recover_known_length_http(
         .state
         .as_ref()
         .ok_or(KnownLengthHttpError::RecoveryState)?;
+    if state.generation() != request.generation || state.task() != request.task {
+        return Err(KnownLengthHttpError::RecoveryState);
+    }
     let layout = state
         .layout()
         .ok_or(KnownLengthHttpError::RecoveryState)?
-        .layout();
+        .layout()
+        .clone();
     let root = RootDirectoryCapability::open_trusted(&request.output_root)?;
     if PlatformPath::from_current(root.display())? != *layout.root_binding().path()
         || root.identity().encode().as_ref() != layout.root_binding().root_identity().bytes()
     {
         return Err(KnownLengthHttpError::RecoveryState);
     }
-    for entry in layout.files().iter().filter(|entry| entry.selected()) {
-        root.verify_file(
-            entry.safe_path(),
-            entry
-                .identity()
-                .ok_or(KnownLengthHttpError::RecoveryState)?,
-        )?;
+    let mut selected = layout.files().iter().filter(|entry| entry.selected());
+    let entry = selected
+        .next()
+        .filter(|entry| entry.id() == FileId::new(0))
+        .ok_or(KnownLengthHttpError::RecoveryState)?;
+    if selected.next().is_some() {
+        return Err(KnownLengthHttpError::RecoveryState);
+    }
+    let output_file = root.open_existing_file(
+        entry.safe_path(),
+        entry
+            .identity()
+            .ok_or(KnownLengthHttpError::RecoveryState)?,
+    )?;
+    let expected_length = layout
+        .total_length()
+        .ok_or(KnownLengthHttpError::RecoveryState)?;
+    let actual_length = output_file.len()?;
+    if actual_length != expected_length {
+        return Err(KnownLengthHttpError::ExistingLengthMismatch {
+            expected: expected_length,
+            actual: actual_length,
+        });
     }
     let mut durable_prefix = 0_u64;
     for (piece, evidence) in state.durable_pieces() {
@@ -698,27 +1358,204 @@ pub fn recover_known_length_http(
             .checked_add(evidence.piece_span().len())
             .ok_or(KnownLengthHttpError::RecoveryState)?;
     }
-    appender.close_flushed()?;
-    Ok(KnownLengthHttpRecovery {
+    let strong_validator = state.http_strong_validator().cloned();
+    let durable_piece_count = u64::try_from(state.durable_pieces().len())
+        .map_err(|_| KnownLengthHttpError::RecoveryState)?;
+    let (next_transfer_attempt_id, next_lease_id) = next_http_identifiers(
+        &framing.records[..replay.accepted_records.min(framing.records.len())],
+    )?;
+    Ok(PreparedKnownLengthRecovery {
+        appender,
         replay,
+        layout,
+        output_file,
         durable_prefix,
+        durable_piece_count,
+        strong_validator,
+        next_transfer_attempt_id,
+        next_lease_id,
     })
+}
+
+fn next_http_identifiers(
+    records: &[ariax_storage::JournalRecord],
+) -> Result<(u64, u64), KnownLengthHttpError> {
+    let mut max_attempt = 0_u64;
+    let mut max_lease = 0_u64;
+    for record in records {
+        if let JournalPayload::LeaseStarted {
+            transfer_attempt_id,
+            lease_id,
+            ..
+        } = record.decode_payload()?
+        {
+            max_attempt = max_attempt.max(transfer_attempt_id.get());
+            max_lease = max_lease.max(lease_id.get());
+        }
+    }
+    Ok((
+        max_attempt
+            .checked_add(1)
+            .ok_or(KnownLengthHttpError::RecoveryState)?,
+        max_lease
+            .checked_add(1)
+            .ok_or(KnownLengthHttpError::RecoveryState)?,
+    ))
+}
+
+fn hash_recovered_durable_prefix(
+    prepared: &PreparedKnownLengthRecovery,
+    validator: &RecoveredHttpStrongValidator,
+) -> Result<Sha256, KnownLengthHttpError> {
+    let state = prepared
+        .replay
+        .state
+        .as_ref()
+        .ok_or(KnownLengthHttpError::RecoveryState)?;
+    let mut whole = Sha256::new();
+    let mut read_offset = 0_u64;
+    let mut buffer = vec![0_u8; RECOVERY_READ_BUFFER_BYTES];
+    for (piece_id, evidence) in state.durable_pieces() {
+        if evidence.piece_span().offset() >= prepared.durable_prefix {
+            break;
+        }
+        if evidence.piece_span().offset() != read_offset {
+            return Err(KnownLengthHttpError::RecoveryState);
+        }
+        let expected_validator_set =
+            calculate_validator_set_fingerprint(&[JournalContributor::new(
+                LeaseId::new(1).expect("readback contributor lease is nonzero"),
+                evidence.piece_span(),
+                validator.validator_fingerprint(),
+            )])
+            .map_err(|_| KnownLengthHttpError::RecoveryState)?;
+        if evidence.validator_set_fingerprint() != expected_validator_set {
+            return Err(KnownLengthHttpError::StaleValidator);
+        }
+        let digest = evidence
+            .digest()
+            .filter(|digest| digest.algorithm() == JournalDigestAlgorithm::Sha256)
+            .ok_or(KnownLengthHttpError::DurablePieceDigestMismatch { piece: *piece_id })?;
+        let mut piece_digest = Sha256::new();
+        let mut remaining = evidence.piece_span().len();
+        while remaining != 0 {
+            let take = usize::try_from(remaining.min(RECOVERY_READ_BUFFER_BYTES as u64))
+                .expect("bounded recovery read fits usize");
+            prepared
+                .output_file
+                .read_exact_at(read_offset, &mut buffer[..take])?;
+            piece_digest.update(&buffer[..take]);
+            whole.update(&buffer[..take]);
+            let taken = u64::try_from(take).expect("recovery read fits u64");
+            read_offset = read_offset
+                .checked_add(taken)
+                .ok_or(KnownLengthHttpError::RecoveryState)?;
+            remaining -= taken;
+        }
+        let actual: [u8; 32] = piece_digest.finalize().into();
+        if actual.as_slice() != digest.value() {
+            return Err(KnownLengthHttpError::DurablePieceDigestMismatch { piece: *piece_id });
+        }
+    }
+    if read_offset != prepared.durable_prefix {
+        return Err(KnownLengthHttpError::RecoveryState);
+    }
+    Ok(whole)
 }
 
 struct ValidatedResponseHead {
     content_length: u64,
     validator_fingerprint: JournalHash,
+    strong_etag: Option<Box<[u8]>>,
 }
 
-fn validate_fresh_response_head(
+fn validate_resume_response_head(
     response: &Response<Incoming>,
-) -> Result<ValidatedResponseHead, KnownLengthHttpError> {
-    if response.status() != StatusCode::OK {
-        return Err(KnownLengthHttpError::UnexpectedStatus(response.status()));
+    start: u64,
+    total_length: u64,
+    validator: &RecoveredHttpStrongValidator,
+) -> Result<(), KnownLengthHttpError> {
+    match response.status() {
+        StatusCode::PARTIAL_CONTENT => {}
+        StatusCode::OK => return Err(KnownLengthHttpError::RangeIgnored),
+        StatusCode::RANGE_NOT_SATISFIABLE => {
+            return Err(KnownLengthHttpError::RangeNotSatisfiable);
+        }
+        status => return Err(KnownLengthHttpError::UnexpectedStatus(status)),
     }
-    if response.headers().contains_key(TRANSFER_ENCODING) {
-        return Err(KnownLengthHttpError::TransferEncoding);
+    validate_identity_coding(response)?;
+    let response_etag = response_strong_etag(response.headers())
+        .map_err(|_| KnownLengthHttpError::StaleValidator)?
+        .ok_or(KnownLengthHttpError::StaleValidator)?;
+    if response_etag.as_ref() != validator.etag()
+        || calculate_http_strong_validator_fingerprint(&response_etag, total_length)?
+            != validator.validator_fingerprint()
+    {
+        return Err(KnownLengthHttpError::StaleValidator);
     }
+
+    let ranges = response.headers().get_all(CONTENT_RANGE);
+    let mut ranges = ranges.iter();
+    let content_range = ranges
+        .next()
+        .ok_or(KnownLengthHttpError::MissingContentRange)?;
+    if ranges.next().is_some() {
+        return Err(KnownLengthHttpError::DuplicateContentRange);
+    }
+    let content_range = content_range
+        .to_str()
+        .map_err(|_| KnownLengthHttpError::InvalidContentRange)?;
+    let (actual_start, end, actual_total) = parse_content_range(content_range)?;
+    let expected_end = total_length
+        .checked_sub(1)
+        .ok_or(KnownLengthHttpError::InvalidContentRange)?;
+    if actual_start != start || end != expected_end || actual_total != total_length {
+        return Err(KnownLengthHttpError::InvalidContentRange);
+    }
+    let expected_body_length = total_length
+        .checked_sub(start)
+        .ok_or(KnownLengthHttpError::InvalidContentRange)?;
+    let content_length = single_content_length(response)?;
+    if content_length != expected_body_length {
+        return Err(KnownLengthHttpError::RangeLengthMismatch);
+    }
+    Ok(())
+}
+
+fn parse_content_range(value: &str) -> Result<(u64, u64, u64), KnownLengthHttpError> {
+    let value = value
+        .strip_prefix("bytes ")
+        .ok_or(KnownLengthHttpError::InvalidContentRange)?;
+    let (range, total) = value
+        .split_once('/')
+        .ok_or(KnownLengthHttpError::InvalidContentRange)?;
+    if total.contains('/') {
+        return Err(KnownLengthHttpError::InvalidContentRange);
+    }
+    let (start, end) = range
+        .split_once('-')
+        .ok_or(KnownLengthHttpError::InvalidContentRange)?;
+    if end.contains('-') {
+        return Err(KnownLengthHttpError::InvalidContentRange);
+    }
+    let parse = |input: &str| {
+        if input.is_empty() || !input.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(KnownLengthHttpError::InvalidContentRange);
+        }
+        input
+            .parse::<u64>()
+            .map_err(|_| KnownLengthHttpError::InvalidContentRange)
+    };
+    let start = parse(start)?;
+    let end = parse(end)?;
+    let total = parse(total)?;
+    if start > end || end >= total {
+        return Err(KnownLengthHttpError::InvalidContentRange);
+    }
+    Ok((start, end, total))
+}
+
+fn single_content_length(response: &Response<Incoming>) -> Result<u64, KnownLengthHttpError> {
     let lengths = response.headers().get_all(CONTENT_LENGTH);
     let mut lengths = lengths.iter();
     let first = lengths
@@ -733,9 +1570,15 @@ fn validate_fresh_response_head(
     if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(KnownLengthHttpError::InvalidContentLength);
     }
-    let content_length = value
+    value
         .parse::<u64>()
-        .map_err(|_| KnownLengthHttpError::InvalidContentLength)?;
+        .map_err(|_| KnownLengthHttpError::InvalidContentLength)
+}
+
+fn validate_identity_coding(response: &Response<Incoming>) -> Result<(), KnownLengthHttpError> {
+    if response.headers().contains_key(TRANSFER_ENCODING) {
+        return Err(KnownLengthHttpError::TransferEncoding);
+    }
     let encodings = response.headers().get_all(CONTENT_ENCODING);
     let mut encodings = encodings.iter();
     if let Some(encoding) = encodings.next()
@@ -746,15 +1589,35 @@ fn validate_fresh_response_head(
     {
         return Err(KnownLengthHttpError::ContentEncoding);
     }
+    Ok(())
+}
+
+fn validate_fresh_response_head(
+    response: &Response<Incoming>,
+) -> Result<ValidatedResponseHead, KnownLengthHttpError> {
+    if response.status() != StatusCode::OK {
+        return Err(KnownLengthHttpError::UnexpectedStatus(response.status()));
+    }
+    validate_identity_coding(response)?;
+    let content_length = single_content_length(response)?;
+    let strong_etag = response_strong_etag(response.headers())?;
+    let validator_fingerprint = match strong_etag.as_deref() {
+        Some(etag) => calculate_http_strong_validator_fingerprint(etag, content_length)?,
+        None => http_metadata_validator_fingerprint(response, content_length),
+    };
     Ok(ValidatedResponseHead {
         content_length,
-        validator_fingerprint: http_validator_fingerprint(response, content_length),
+        validator_fingerprint,
+        strong_etag,
     })
 }
 
-fn http_validator_fingerprint(response: &Response<Incoming>, content_length: u64) -> JournalHash {
+fn http_metadata_validator_fingerprint(
+    response: &Response<Incoming>,
+    content_length: u64,
+) -> JournalHash {
     let mut digest = Sha256::new();
-    digest.update(HTTP_VALIDATOR_HASH_DOMAIN.as_bytes());
+    digest.update(HTTP_METADATA_VALIDATOR_HASH_DOMAIN.as_bytes());
     digest.update(content_length.to_le_bytes());
     for name in [ETAG, LAST_MODIFIED] {
         let values = response.headers().get_all(name);
@@ -765,6 +1628,46 @@ fn http_validator_fingerprint(response: &Response<Incoming>, content_length: u64
             digest.update((bytes.len() as u32).to_le_bytes());
             digest.update(bytes);
         }
+    }
+    JournalHash::new(digest.finalize().into()).expect("SHA-256 output is nonzero")
+}
+
+fn response_strong_etag(headers: &HeaderMap) -> Result<Option<Box<[u8]>>, KnownLengthHttpError> {
+    let values = headers.get_all(ETAG);
+    let mut values = values.iter();
+    let Some(value) = values.next() else {
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        return Err(KnownLengthHttpError::InvalidValidator);
+    }
+    let bytes = value.as_bytes();
+    if let Some(strong) = bytes.strip_prefix(b"W/") {
+        calculate_http_strong_validator_fingerprint(strong, 0)
+            .map_err(|_| KnownLengthHttpError::InvalidValidator)?;
+        return Ok(None);
+    }
+    calculate_http_strong_validator_fingerprint(bytes, 0)
+        .map_err(|_| KnownLengthHttpError::InvalidValidator)?;
+    Ok(Some(bytes.to_vec().into_boxed_slice()))
+}
+
+fn http_resource_fingerprint(uri: &Uri) -> JournalHash {
+    let mut digest = Sha256::new();
+    digest.update(HTTP_RESOURCE_HASH_DOMAIN.as_bytes());
+    for component in [
+        uri.scheme_str().unwrap_or_default().as_bytes(),
+        uri.authority()
+            .map_or(&[][..], |value| value.as_str().as_bytes()),
+        uri.path_and_query()
+            .map_or(b"/".as_slice(), |value| value.as_str().as_bytes()),
+    ] {
+        digest.update(
+            u32::try_from(component.len())
+                .expect("URI component length fits u32")
+                .to_le_bytes(),
+        );
+        digest.update(component);
     }
     JournalHash::new(digest.finalize().into()).expect("SHA-256 output is nonzero")
 }
@@ -871,6 +1774,27 @@ fn append_layout(
     Ok(())
 }
 
+fn append_http_strong_validator(
+    journal: &mut ControlJournalAppender,
+    generation: Generation,
+    resource_fingerprint: JournalHash,
+    validator_fingerprint: JournalHash,
+    total_length: u64,
+    etag: &[u8],
+) -> Result<(), KnownLengthHttpError> {
+    let appended = journal.append_payload(
+        generation,
+        &JournalPayload::HttpStrongValidator {
+            resource_fingerprint,
+            validator_fingerprint,
+            total_length,
+            etag: etag.to_vec().into_boxed_slice(),
+        },
+    )?;
+    journal.flush(appended.sequence())?;
+    Ok(())
+}
+
 fn abort_current(
     storage: &mut StorageEngine,
     task: TaskId,
@@ -898,11 +1822,15 @@ fn body_frame_end(offset: u64, frame_len: u64, content_length: u64) -> Option<u6
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{NoSpaceProbeTargetCatalog, RuntimeEffectConfig, RuntimeSchedulerEffectSink};
+    use ariax_core::TaskEvent;
     use ariax_storage::{JournalStateStop, PathPlatform, SafePathBuilder};
     use std::fs;
     use std::io::{Read, Write};
     use std::net::{Shutdown, TcpListener};
+    use std::num::NonZeroUsize;
     use std::path::Path;
+    use std::sync::mpsc;
     use std::thread;
 
     struct TestDirectory(PathBuf);
@@ -960,6 +1888,8 @@ mod tests {
                 }
             }
             stream.write_all(response).expect("write response");
+            stream.flush().expect("flush response");
+            thread::sleep(Duration::from_millis(25));
             stream
                 .shutdown(Shutdown::Both)
                 .expect("close response body");
@@ -994,6 +1924,44 @@ mod tests {
         address
     }
 
+    fn serve_sequence(responses: Vec<&'static [u8]>) -> (SocketAddr, mpsc::Receiver<Vec<u8>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let address = listener.local_addr().expect("server address");
+        let (requests, received) = mpsc::channel();
+        thread::spawn(move || {
+            for response in responses {
+                let (mut stream, _) = listener.accept().expect("accept request");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .expect("read timeout");
+                let mut request = vec![0_u8; 4096];
+                let mut used = 0_usize;
+                while used < request.len() {
+                    let read = stream.read(&mut request[used..]).expect("read request");
+                    if read == 0 {
+                        break;
+                    }
+                    used += read;
+                    if request[..used]
+                        .windows(4)
+                        .any(|window| window == b"\r\n\r\n")
+                    {
+                        break;
+                    }
+                }
+                request.truncate(used);
+                requests.send(request).expect("publish request");
+                stream.write_all(response).expect("write response");
+                stream.flush().expect("flush response");
+                thread::sleep(Duration::from_millis(25));
+                stream
+                    .shutdown(Shutdown::Both)
+                    .expect("close response body");
+            }
+        });
+        (address, received)
+    }
+
     fn journal_id(value: u8) -> JournalId {
         JournalId::new([value; 16]).expect("journal id")
     }
@@ -1023,6 +1991,40 @@ mod tests {
             storage: StorageEngineConfig::default(),
             cancellation: HttpCancellation::new(),
         }
+    }
+
+    fn resume_request(
+        root: &TestDirectory,
+        journal: &TestDirectory,
+        peer: SocketAddr,
+        id: JournalId,
+    ) -> KnownLengthHttpResumeRequest {
+        KnownLengthHttpResumeRequest {
+            recovery: recovery_request(root, journal, id),
+            uri: format!("http://127.0.0.1:{}/file", peer.port()),
+            peer,
+            resumed_at_unix_ms: now_unix_ms().unwrap_or(1),
+            connect_timeout: Duration::from_secs(5),
+            response_head_timeout: Duration::from_secs(5),
+            response_body_timeout: Duration::from_secs(5),
+            storage: StorageEngineConfig::default(),
+            cancellation: HttpCancellation::new(),
+        }
+    }
+
+    fn runtime_handle(capacity: usize) -> RuntimeEffectHandle {
+        let capacity = NonZeroUsize::new(capacity).expect("runtime capacity");
+        let (_sink, handle) = RuntimeSchedulerEffectSink::new(
+            RuntimeEffectConfig {
+                request_capacity: capacity,
+                event_capacity: capacity,
+                timer_capacity: capacity,
+                option_plan_capacity: capacity,
+            },
+            NoSpaceProbeTargetCatalog::new(Vec::new()),
+        )
+        .expect("runtime effect mailbox");
+        handle
     }
 
     #[test]
@@ -1081,6 +2083,302 @@ mod tests {
         let state = recovered.replay.state.as_ref().expect("state");
         assert_eq!(state.durable_pieces().len(), 1);
         assert!(state.terminal().is_none());
+    }
+
+    #[test]
+    fn recovered_range_resume_reuses_strong_etag_and_completes_without_truncation() {
+        let root = TestDirectory::new("resume-root");
+        let journal = TestDirectory::new("resume-journal");
+        let (peer, requests) = serve_sequence(vec![
+            b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nETag: \"v1\"\r\nConnection: close\r\n\r\nabcdef",
+            b"HTTP/1.1 206 Partial Content\r\nContent-Length: 6\r\nContent-Range: bytes 4-9/10\r\nETag: \"v1\"\r\nConnection: close\r\n\r\nefghij",
+        ]);
+        let id = journal_id(6);
+        let first = download_known_length_http_blocking(request(&root, &journal, peer, id))
+            .expect_err("short first response is resumable");
+        assert!(matches!(first, KnownLengthHttpError::ShortBody { .. }));
+        let _fresh_request = requests
+            .recv_timeout(Duration::from_secs(5))
+            .expect("fresh request");
+
+        let recovered = recover_known_length_http(&recovery_request(&root, &journal, id))
+            .expect("recover partial download");
+        assert_eq!(recovered.durable_prefix, 4);
+        assert_eq!(
+            recovered
+                .strong_validator
+                .as_ref()
+                .expect("strong validator")
+                .etag(),
+            b"\"v1\""
+        );
+
+        let result = resume_known_length_http_blocking(resume_request(&root, &journal, peer, id))
+            .expect("range resume succeeds");
+        assert_eq!(result.resumed_from, 4);
+        assert_eq!(result.content_length, 10);
+        assert_eq!(result.durable_piece_count, 3);
+        assert_eq!(
+            fs::read(root.0.join("output.bin")).expect("resumed output"),
+            b"abcdefghij"
+        );
+        let resume_request = requests
+            .recv_timeout(Duration::from_secs(5))
+            .expect("resume request");
+        let resume_request = String::from_utf8_lossy(&resume_request).to_ascii_lowercase();
+        assert!(resume_request.contains("range: bytes=4-\r\n"));
+        assert!(resume_request.contains("if-range: \"v1\"\r\n"));
+        assert!(resume_request.contains("accept-encoding: identity\r\n"));
+
+        let recovered = recover_known_length_http(&recovery_request(&root, &journal, id))
+            .expect("recover completed resume");
+        assert_eq!(recovered.durable_prefix, 10);
+        assert!(
+            recovered
+                .replay
+                .state
+                .as_ref()
+                .expect("state")
+                .terminal()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn resume_rejects_ignored_range_without_overwriting_durable_prefix() {
+        let root = TestDirectory::new("ignored-range-root");
+        let journal = TestDirectory::new("ignored-range-journal");
+        let (peer, requests) = serve_sequence(vec![
+            b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nETag: \"v1\"\r\nConnection: close\r\n\r\nabcdef",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nETag: \"v1\"\r\nConnection: close\r\n\r\n0123456789",
+        ]);
+        let id = journal_id(7);
+        let _short = download_known_length_http_blocking(request(&root, &journal, peer, id))
+            .expect_err("short first response");
+        let _fresh_request = requests
+            .recv_timeout(Duration::from_secs(5))
+            .expect("fresh");
+        let error = resume_known_length_http_blocking(resume_request(&root, &journal, peer, id))
+            .expect_err("ignored range is rejected");
+        assert!(matches!(error, KnownLengthHttpError::RangeIgnored));
+        assert_eq!(
+            &fs::read(root.0.join("output.bin")).expect("partial output")[..4],
+            b"abcd"
+        );
+    }
+
+    #[test]
+    fn resume_rejects_stale_etag_and_invalid_content_range_before_writes() {
+        for (label, response, expected) in [
+            (
+                "stale",
+                b"HTTP/1.1 206 Partial Content\r\nContent-Length: 6\r\nContent-Range: bytes 4-9/10\r\nETag: \"v2\"\r\nConnection: close\r\n\r\nefghij".as_slice(),
+                "stale_validator",
+            ),
+            (
+                "range",
+                b"HTTP/1.1 206 Partial Content\r\nContent-Length: 5\r\nContent-Range: bytes 5-9/10\r\nETag: \"v1\"\r\nConnection: close\r\n\r\nfghij".as_slice(),
+                "invalid_content_range",
+            ),
+        ] {
+            let root = TestDirectory::new(&format!("{label}-root"));
+            let journal = TestDirectory::new(&format!("{label}-journal"));
+            let (peer, requests) = serve_sequence(vec![
+                b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nETag: \"v1\"\r\nConnection: close\r\n\r\nabcdef",
+                response,
+            ]);
+            let id = if label == "stale" {
+                journal_id(8)
+            } else {
+                journal_id(9)
+            };
+            let _short = download_known_length_http_blocking(request(&root, &journal, peer, id))
+                .expect_err("short first response");
+            let _fresh_request = requests.recv_timeout(Duration::from_secs(5)).expect("fresh");
+            let error = resume_known_length_http_blocking(resume_request(
+                &root, &journal, peer, id,
+            ))
+            .expect_err("invalid resume response");
+            assert_eq!(error.code(), expected);
+            assert_eq!(
+                &fs::read(root.0.join("output.bin")).expect("partial output")[..4],
+                b"abcd"
+            );
+        }
+    }
+
+    #[test]
+    fn resume_revalidates_durable_piece_bytes_before_connecting() {
+        let root = TestDirectory::new("readback-root");
+        let journal = TestDirectory::new("readback-journal");
+        let peer = serve(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nETag: \"v1\"\r\nConnection: close\r\n\r\nabcdef");
+        let id = journal_id(10);
+        let _short = download_known_length_http_blocking(request(&root, &journal, peer, id))
+            .expect_err("short first response");
+        let mut output = fs::OpenOptions::new()
+            .write(true)
+            .open(root.0.join("output.bin"))
+            .expect("open output for corruption");
+        output.write_all(b"X").expect("corrupt durable byte");
+        drop(output);
+
+        let error = resume_known_length_http_blocking(resume_request(&root, &journal, peer, id))
+            .expect_err("corrupt recovered piece is rejected before connect");
+        assert!(matches!(
+            error,
+            KnownLengthHttpError::DurablePieceDigestMismatch { piece }
+                if piece == PieceId::new(0)
+        ));
+    }
+
+    #[test]
+    fn runtime_worker_reports_allocation_data_and_verification_completion_in_order() {
+        let root = TestDirectory::new("runtime-success-root");
+        let journal = TestDirectory::new("runtime-success-journal");
+        let peer = serve(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nETag: \"v1\"\r\nConnection: close\r\n\r\nariax!");
+        let runtime = runtime_handle(8);
+        runtime.enqueue_allocation_for_test(
+            TaskId::new(1).expect("task"),
+            Gid::new(7).expect("gid"),
+            Generation::INITIAL,
+        );
+        let allocation = runtime.take_allocation().expect("allocation request");
+        let retry_at = MonotonicInstant::now()
+            .checked_add(Duration::from_secs(1))
+            .expect("retry deadline");
+        let result = run_known_length_http_runtime_blocking(
+            runtime.clone(),
+            allocation,
+            KnownLengthHttpTransfer::Fresh(request(&root, &journal, peer, journal_id(11))),
+            retry_at,
+        )
+        .expect("runtime transfer succeeds");
+        assert_eq!(result.content_length, 6);
+
+        let now = MonotonicInstant::now();
+        assert!(matches!(
+            runtime
+                .poll_event_at(now)
+                .expect("allocation event")
+                .into_event(),
+            TaskEvent::AllocationSucceeded { .. }
+        ));
+        assert!(matches!(
+            runtime.poll_event_at(now).expect("data event").into_event(),
+            TaskEvent::DataComplete { seed: false, .. }
+        ));
+        assert!(matches!(
+            runtime
+                .poll_event_at(now)
+                .expect("verification event")
+                .into_event(),
+            TaskEvent::VerificationSucceeded { .. }
+        ));
+        assert!(runtime.poll_event_at(now).is_none());
+    }
+
+    #[test]
+    fn runtime_worker_classifies_active_short_body_as_retryable() {
+        let root = TestDirectory::new("runtime-retry-root");
+        let journal = TestDirectory::new("runtime-retry-journal");
+        let peer = serve(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nETag: \"v1\"\r\nConnection: close\r\n\r\nabcdef");
+        let runtime = runtime_handle(8);
+        runtime.enqueue_allocation_for_test(
+            TaskId::new(1).expect("task"),
+            Gid::new(7).expect("gid"),
+            Generation::INITIAL,
+        );
+        let retry_at = MonotonicInstant::now()
+            .checked_add(Duration::from_secs(1))
+            .expect("retry deadline");
+        let error = run_known_length_http_runtime_blocking(
+            runtime.clone(),
+            runtime.take_allocation().expect("allocation request"),
+            KnownLengthHttpTransfer::Fresh(request(&root, &journal, peer, journal_id(12))),
+            retry_at,
+        )
+        .expect_err("short body is reported to scheduler");
+        assert!(matches!(
+            error,
+            KnownLengthHttpRuntimeError::Transfer(KnownLengthHttpError::ShortBody { .. })
+        ));
+        let now = MonotonicInstant::now();
+        assert!(matches!(
+            runtime
+                .poll_event_at(now)
+                .expect("allocation event")
+                .into_event(),
+            TaskEvent::AllocationSucceeded { .. }
+        ));
+        assert!(matches!(
+            runtime.poll_event_at(now).expect("retry event").into_event(),
+            TaskEvent::ActiveRetryIdle { retry_at: actual, .. } if actual == retry_at
+        ));
+    }
+
+    #[test]
+    fn runtime_worker_drains_exact_scheduler_cancellation_after_lease_abort() {
+        let root = TestDirectory::new("runtime-cancel-root");
+        let journal = TestDirectory::new("runtime-cancel-journal");
+        let peer = serve_stalled(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nETag: \"v1\"\r\nConnection: close\r\n\r\nabcdef",
+            Duration::from_secs(1),
+        );
+        let runtime = runtime_handle(8);
+        let task = TaskId::new(1).expect("task");
+        let gid = Gid::new(7).expect("gid");
+        runtime.enqueue_allocation_for_test(task, gid, Generation::INITIAL);
+        let cancellation_runtime = runtime.clone();
+        let cancellation_thread = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            cancellation_runtime.enqueue_cancellation_for_test(
+                task,
+                gid,
+                Generation::INITIAL,
+                false,
+            );
+        });
+        let error = run_known_length_http_runtime_blocking(
+            runtime.clone(),
+            runtime.take_allocation().expect("allocation request"),
+            KnownLengthHttpTransfer::Fresh(request(&root, &journal, peer, journal_id(13))),
+            MonotonicInstant::now(),
+        )
+        .expect_err("scheduler cancellation stops transfer");
+        cancellation_thread.join().expect("cancellation thread");
+        assert!(
+            matches!(
+                error,
+                KnownLengthHttpRuntimeError::Transfer(KnownLengthHttpError::Cancelled)
+            ),
+            "unexpected runtime cancellation result: {error:?}"
+        );
+        let now = MonotonicInstant::now();
+        assert!(matches!(
+            runtime
+                .poll_event_at(now)
+                .expect("allocation event")
+                .into_event(),
+            TaskEvent::AllocationSucceeded { .. }
+        ));
+        assert!(matches!(
+            runtime
+                .poll_event_at(now)
+                .expect("cancellation event")
+                .into_event(),
+            TaskEvent::CancellationDrained { .. }
+        ));
+        let recovered =
+            recover_known_length_http(&recovery_request(&root, &journal, journal_id(13)))
+                .expect("cancelled runtime transfer remains recoverable");
+        assert_eq!(recovered.durable_prefix, 4);
+    }
+
+    #[test]
+    fn cancellation_before_body_subscription_is_retained() {
+        let cancellation = HttpCancellation::new();
+        cancellation.cancel();
+        assert!(cancellation.is_cancelled());
     }
 
     #[test]

@@ -4,19 +4,23 @@ Status: first-slice implementation in progress. Portable NFC path validation,
 persisted root/file identity binding, immutable layout hashing, and global
 offset mapping are implemented. Journal v1 segment/record framing, CRC-32C and
 commit validation, linked rotation, bounded replay, and valid-prefix recovery
-are executable. Exact typed payload codecs cover all 24 v1 records, including
-bounded option maps, chunked layouts, finalization paths, and checkpoint
-`PieceStateChunk` bitmaps/evidence runs. Policy-gated cross-record recovery now
+are executable. Exact typed payload codecs cover all 25 v1 records, including
+bounded option maps, chunked layouts, finalization paths, checkpoint
+`PieceStateChunk` bitmaps/evidence runs, and the bounded `HttpStrongValidator`
+payload. Policy-gated cross-record recovery now
 verifies snapshot/contributor/state hashes, generation promotion, reassembled
 layout/root hashes, lease/piece evidence, finalization pairs, and whole compact
 checkpoints. The native-startup handoff and ordering contract, exact Unix and
 Windows native-identity codecs, descriptor-safe root/journal capabilities, and
-identity-revalidated journal recovery are now executable. General data-file
-storage execution and compaction writing remain pending. The file-backed
+identity-revalidated journal recovery are now executable. General multi-file
+data-file execution and compaction writing remain pending. The file-backed
 serialized appender now provides gap-free typed append, explicit flush
 acknowledgement, latched failure, descriptor-relative tail/content-validated
 final-segment reopen after exact named-file preflight, and flushed-boundary
-rotation without whole-segment buffering.
+rotation without whole-segment buffering. The single-file HTTP path reopens an
+identity-bound descriptor without truncation, reads back trusted durable pieces
+before resume, and preserves a bounded strong ETag plus resource/length binding
+for strict range continuation.
 
 The SQLite side of checkpoint installation now has transactional
 `installing`/`installed` pointer primitives with identity tokens, old-pointer
@@ -475,6 +479,15 @@ they do not establish written or durable ranges. Whether the filesystem backs
 the resulting unwritten area with sparse extents, zero-filled allocation, or
 eager physical blocks is platform/backend-specific and must not affect recovery.
 
+For the executable HTTP resume path, recovery retains the descriptor-bound
+selected file and verifies its exact length before admitting the appender.
+`RootFileCapability::read_exact_at` performs bounded positional readback through
+that retained descriptor; every recovered durable piece must match its persisted
+SHA-256 evidence before a network request is sent. A recovered strong ETag is
+usable only when its resource fingerprint and settled total length match the
+replayed layout. The validator record is ordered after layout and before any
+network lease, and a duplicate or mismatched lease fingerprint fails replay.
+
 ## Control Journal Format
 
 This is the normative journal spec. `security-recovery.md` and
@@ -638,6 +651,7 @@ Record types (first slice; the number is the version-1 `record_type` value):
 22  FinalizeIntent      (declares the temp -> final rename about to happen)
 23  FinalizeDone        (rename observed complete)
 24  PieceStateChunk     (checkpoint-only compact durable-piece state)
+25  HttpStrongValidator (strong ETag/resource binding for HTTP resume)
 ```
 
 The payload of every first-version record is normative:
@@ -668,6 +682,7 @@ The payload of every first-version record is normative:
 | `FinalizeIntent` | `layout_hash:Hash32`, `root_binding_hash:Hash32`, `file_id:Id`, `temp_relative_path:Bytes`, `final_relative_path:Bytes`, `final_length:u64`, `file_identity:Bytes` |
 | `FinalizeDone` | `layout_hash:Hash32`, `root_binding_hash:Hash32`, `file_id:Id`, `final_relative_path:Bytes` |
 | `PieceStateChunk` | `layout_hash:Hash32`, `root_binding_hash:Hash32`, `chunk_index:u32`, `chunk_count:u32`, `first_piece_id:Id`, `covered_piece_count:u32`, `durable_bitmap:Bytes`, `evidence_run_count:u32`, repeated `DurableEvidenceRun` |
+| `HttpStrongValidator` | `resource_fingerprint:Hash32`, `validator_fingerprint:Hash32`, `total_length:u64`, `etag:Bytes` (bounded strong ETag; exact bytes are retained for `If-Range`) |
 
 `validator_fingerprint` is a fixed hash of the canonical validator tuple, not a
 raw cookie, credential, or header block. `contributors_hash` covers the sorted

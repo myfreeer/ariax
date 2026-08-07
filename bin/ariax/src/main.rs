@@ -12,15 +12,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ariax_config::{SecurityClass, builtin_registry};
 use ariax_core::{Generation, Gid, MonotonicInstant, SchedulerConfig, TaskId};
 use ariax_engine::{
-    HttpCancellation, KnownLengthHttpRequest, ProcessBootstrapConfig, RuntimeEffectConfig,
+    HttpCancellation, KnownLengthHttpRecoveryRequest, KnownLengthHttpRequest,
+    KnownLengthHttpResumeRequest, ProcessBootstrapConfig, RuntimeEffectConfig,
     StartupRecoveryConfig, StorageEngineConfig, download_known_length_http_blocking,
+    resume_known_length_http_blocking,
 };
 use ariax_storage::{
     JournalId, JournalStateLimits, PathPlatform, ReplayLimits, SafePathBuilder, SessionOwnerConfig,
 };
 
 const DEFAULT_HTTP_PIECE_LENGTH: u64 = 1024 * 1024;
-const HELP: &str = "ariax — experimental bounded downloader\n\nUsage: ariax [--help|--version]\n       ariax --check-bootstrap SESSION_DB CONTROL_DIR [OUTPUT_ROOT ...]\n       ariax --download-http-pinned GID JOURNAL_ID URI PEER OUTPUT_ROOT OUTPUT_PATH JOURNAL_DIR [PIECE_LENGTH]\n\nThe pinned HTTP command accepts an already policy-approved numeric PEER (IP:port); it does not perform DNS or SSRF-policy resolution.\n";
+const HELP: &str = "ariax — experimental bounded downloader\n\nUsage: ariax [--help|--version]\n       ariax --check-bootstrap SESSION_DB CONTROL_DIR [OUTPUT_ROOT ...]\n       ariax --download-http-pinned GID JOURNAL_ID URI PEER OUTPUT_ROOT OUTPUT_PATH JOURNAL_DIR [PIECE_LENGTH]\n       ariax --resume-http-pinned GID JOURNAL_ID URI PEER OUTPUT_ROOT JOURNAL_DIR\n\nThe pinned HTTP commands accept an already policy-approved numeric PEER (IP:port); they do not perform DNS or SSRF-policy resolution. Resume requires the same URI and a journal-persisted strong ETag.\n";
 
 fn main() -> ExitCode {
     run(env::args_os().skip(1))
@@ -87,6 +89,17 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
             journal_directory,
             Some(piece_length),
         ),
+        [
+            command,
+            gid,
+            journal_id,
+            uri,
+            peer,
+            output_root,
+            journal_directory,
+        ] if command == "--resume-http-pinned" => {
+            resume_http_pinned(gid, journal_id, uri, peer, output_root, journal_directory)
+        }
         [arg] => {
             eprintln!("ariax: unknown argument: {}", arg.to_string_lossy());
             ExitCode::from(2)
@@ -96,6 +109,84 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
                 "ariax: only one ordinary argument or the exact --check-bootstrap form is accepted"
             );
             ExitCode::from(2)
+        }
+    }
+}
+
+fn resume_http_pinned(
+    gid: &OsString,
+    journal_id: &OsString,
+    uri: &OsString,
+    peer: &OsString,
+    output_root: &OsString,
+    journal_directory: &OsString,
+) -> ExitCode {
+    let gid = match Gid::from_str(&gid.to_string_lossy()) {
+        Ok(gid) => gid,
+        Err(error) => {
+            eprintln!("ariax: invalid GID: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    let journal_id = match parse_journal_id(&journal_id.to_string_lossy()) {
+        Some(journal_id) => journal_id,
+        None => {
+            eprintln!("ariax: JOURNAL_ID must be 32 nonzero hexadecimal digits");
+            return ExitCode::from(2);
+        }
+    };
+    let peer = match SocketAddr::from_str(&peer.to_string_lossy()) {
+        Ok(peer) => peer,
+        Err(error) => {
+            eprintln!("ariax: invalid pinned peer: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    let resumed_at_unix_ms = match now_unix_ms() {
+        Some(value) => value,
+        None => {
+            eprintln!("ariax: system wall clock is before the Unix epoch");
+            return ExitCode::FAILURE;
+        }
+    };
+    let request = KnownLengthHttpResumeRequest {
+        recovery: KnownLengthHttpRecoveryRequest {
+            task: TaskId::new(1).expect("standalone HTTP task id is nonzero"),
+            gid,
+            journal_id,
+            generation: Generation::INITIAL,
+            journal_directory: PathBuf::from(journal_directory),
+            output_root: PathBuf::from(output_root),
+            replay_limits: ReplayLimits::default(),
+            state_limits: JournalStateLimits::default(),
+        },
+        uri: uri.to_string_lossy().into_owned(),
+        peer,
+        resumed_at_unix_ms,
+        connect_timeout: std::time::Duration::from_secs(30),
+        response_head_timeout: std::time::Duration::from_secs(30),
+        response_body_timeout: std::time::Duration::from_secs(60),
+        storage: StorageEngineConfig::default(),
+        cancellation: HttpCancellation::new(),
+    };
+    match resume_known_length_http_blocking(request) {
+        Ok(result) => {
+            println!(
+                "download resumed: gid={gid} from={} bytes={} durable_pieces={} journal_sequence={}",
+                result.resumed_from,
+                result.content_length,
+                result.durable_piece_count,
+                result.terminal_sequence
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!(
+                "ariax: HTTP resume failed [{}{}]: {error}",
+                error.code(),
+                if error.retriable() { ", retriable" } else { "" }
+            );
+            ExitCode::FAILURE
         }
     }
 }

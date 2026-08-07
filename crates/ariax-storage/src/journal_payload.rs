@@ -20,12 +20,34 @@ pub const MAX_OPTION_MAP_ENTRIES: usize = 4096;
 pub const MAX_OPTION_KEY_BYTES: usize = 256;
 pub const MAX_OPTION_VALUE_BYTES: usize = 64 * 1024;
 pub const MAX_OPTION_MAP_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_HTTP_STRONG_ETAG_BYTES: usize = 8 * 1024;
 pub const MAX_PIECE_STATE_COVERED_PIECES: usize = 131_072;
 pub const MAX_PIECE_STATE_BITMAP_BYTES: usize = MAX_PIECE_STATE_COVERED_PIECES.div_ceil(8);
 pub const OPTIONS_SNAPSHOT_HASH_DOMAIN: &str = "ariax/options-snapshot/v1\0";
+pub const HTTP_STRONG_VALIDATOR_HASH_DOMAIN: &str = "ariax/http-strong-validator/v1\0";
 
 /// Every record payload with a complete version-1 typed codec.
-pub const PAYLOAD_CODEC_RECORD_TYPES: [RecordType; 24] = crate::ALL_RECORD_TYPES;
+pub const PAYLOAD_CODEC_RECORD_TYPES: [RecordType; 25] = crate::ALL_RECORD_TYPES;
+
+/// Hashes the exact strong ETag and settled representation length used by
+/// HTTP resume leases. The raw ETag remains separately persisted so `If-Range`
+/// never has to be reconstructed from this one-way value.
+pub fn calculate_http_strong_validator_fingerprint(
+    etag: &[u8],
+    total_length: u64,
+) -> Result<JournalHash, PayloadCodecError> {
+    validate_http_strong_etag(etag)?;
+    let mut digest = Sha256::new();
+    digest.update(HTTP_STRONG_VALIDATOR_HASH_DOMAIN.as_bytes());
+    digest.update(total_length.to_le_bytes());
+    digest.update(
+        u32::try_from(etag.len())
+            .map_err(|_| PayloadCodecError::InvalidHttpStrongValidator)?
+            .to_le_bytes(),
+    );
+    digest.update(etag);
+    Ok(JournalHash::new(digest.finalize().into()).expect("SHA-256 output is nonzero"))
+}
 
 /// A nonzero ID used by payload fields without a more specific core newtype.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -615,6 +637,12 @@ pub enum JournalPayload {
         durable_bitmap: Box<[u8]>,
         evidence_runs: Box<[DurableEvidenceRun]>,
     },
+    HttpStrongValidator {
+        resource_fingerprint: JournalHash,
+        validator_fingerprint: JournalHash,
+        total_length: u64,
+        etag: Box<[u8]>,
+    },
 }
 
 impl JournalPayload {
@@ -645,6 +673,7 @@ impl JournalPayload {
             Self::FinalizeIntent { .. } => RecordType::FinalizeIntent,
             Self::FinalizeDone { .. } => RecordType::FinalizeDone,
             Self::PieceStateChunk { .. } => RecordType::PieceStateChunk,
+            Self::HttpStrongValidator { .. } => RecordType::HttpStrongValidator,
         }
     }
 
@@ -927,6 +956,17 @@ impl JournalPayload {
                 )?;
                 encoder.evidence_runs(evidence_runs)?;
             }
+            Self::HttpStrongValidator {
+                resource_fingerprint,
+                validator_fingerprint,
+                total_length,
+                etag,
+            } => {
+                encoder.hash(*resource_fingerprint)?;
+                encoder.hash(*validator_fingerprint)?;
+                encoder.u64(*total_length)?;
+                encoder.bytes(etag)?;
+            }
         }
         encoder.finish()
     }
@@ -1135,6 +1175,12 @@ impl JournalPayload {
                     evidence_runs,
                 }
             }
+            RecordType::HttpStrongValidator => Self::HttpStrongValidator {
+                resource_fingerprint: decoder.hash()?,
+                validator_fingerprint: decoder.hash()?,
+                total_length: decoder.u64()?,
+                etag: decoder.bytes(MAX_HTTP_STRONG_ETAG_BYTES)?,
+            },
         };
         decoder.finish()?;
         validate_payload(&payload)?;
@@ -1222,8 +1268,35 @@ fn validate_payload(payload: &JournalPayload) -> Result<(), PayloadCodecError> {
             durable_bitmap,
             evidence_runs,
         ),
+        JournalPayload::HttpStrongValidator {
+            validator_fingerprint,
+            total_length,
+            etag,
+            ..
+        } => {
+            let calculated = calculate_http_strong_validator_fingerprint(etag, *total_length)?;
+            if calculated != *validator_fingerprint {
+                Err(PayloadCodecError::InvalidHttpStrongValidator)
+            } else {
+                Ok(())
+            }
+        }
         _ => Ok(()),
     }
+}
+
+fn validate_http_strong_etag(etag: &[u8]) -> Result<(), PayloadCodecError> {
+    if etag.len() < 2
+        || etag.len() > MAX_HTTP_STRONG_ETAG_BYTES
+        || etag.first() != Some(&b'"')
+        || etag.last() != Some(&b'"')
+        || !etag[1..etag.len() - 1]
+            .iter()
+            .all(|byte| *byte == 0x21 || (0x23..=0x7e).contains(byte) || *byte >= 0x80)
+    {
+        return Err(PayloadCodecError::InvalidHttpStrongValidator);
+    }
+    Ok(())
 }
 
 fn validate_option_key(key: &str) -> Result<(), PayloadCodecError> {
@@ -1468,6 +1541,7 @@ pub enum PayloadCodecError {
     ZeroAttempt,
     ZeroSourceSequence,
     ZeroStateRecordCount,
+    InvalidHttpStrongValidator,
     AllocationFailed,
 }
 
@@ -1519,12 +1593,13 @@ impl PayloadCodecError {
             Self::ZeroAttempt => "zero_attempt",
             Self::ZeroSourceSequence => "zero_source_sequence",
             Self::ZeroStateRecordCount => "zero_state_record_count",
+            Self::InvalidHttpStrongValidator => "invalid_http_strong_validator",
             Self::AllocationFailed => "allocation_failed",
         }
     }
 }
 
-pub const ALL_PAYLOAD_CODEC_ERROR_CLASSES: [PayloadCodecError; 45] = [
+pub const ALL_PAYLOAD_CODEC_ERROR_CLASSES: [PayloadCodecError; 46] = [
     PayloadCodecError::PayloadTooLarge,
     PayloadCodecError::Truncated,
     PayloadCodecError::TrailingBytes,
@@ -1569,6 +1644,7 @@ pub const ALL_PAYLOAD_CODEC_ERROR_CLASSES: [PayloadCodecError; 45] = [
     PayloadCodecError::ZeroAttempt,
     PayloadCodecError::ZeroSourceSequence,
     PayloadCodecError::ZeroStateRecordCount,
+    PayloadCodecError::InvalidHttpStrongValidator,
     PayloadCodecError::AllocationFailed,
 ];
 
@@ -2126,7 +2202,7 @@ mod tests {
         JournalDigest, JournalDigestAlgorithm, JournalFileLayoutEntry, JournalHash, JournalPayload,
         JournalRelativePath, MAX_PIECE_STATE_COVERED_PIECES, PAYLOAD_CODEC_RECORD_TYPES,
         PayloadCodecError, PayloadDecoder, PayloadEncoder, PersistedId, PersistedSpan,
-        SanitizedOptionMap,
+        SanitizedOptionMap, calculate_http_strong_validator_fingerprint,
     };
     use crate::{
         DataBarrierKind, DurabilityMode, GenerationStartReason, LeaseAbortReason,
@@ -2365,6 +2441,13 @@ mod tests {
                 ]
                 .into_boxed_slice(),
             },
+            JournalPayload::HttpStrongValidator {
+                resource_fingerprint: hash(14),
+                validator_fingerprint: calculate_http_strong_validator_fingerprint(b"\"v1\"", 2048)
+                    .expect("validator fingerprint"),
+                total_length: 2048,
+                etag: b"\"v1\"".to_vec().into_boxed_slice(),
+            },
         ]
     }
 
@@ -2458,6 +2541,43 @@ mod tests {
         assert_eq!(
             JournalPayload::decode(RecordType::TaskError, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
             Err(PayloadCodecError::InvalidErrorKind(0))
+        );
+    }
+
+    #[test]
+    fn strong_http_validator_rejects_weak_malformed_oversized_and_mismatched_values() {
+        for etag in [
+            b"W/\"v1\"".as_slice(),
+            b"v1".as_slice(),
+            b"\"bad\"quote\"".as_slice(),
+            b"\"bad\nvalue\"".as_slice(),
+        ] {
+            assert_eq!(
+                calculate_http_strong_validator_fingerprint(etag, 10),
+                Err(PayloadCodecError::InvalidHttpStrongValidator)
+            );
+        }
+
+        let oversized = vec![b'a'; super::MAX_HTTP_STRONG_ETAG_BYTES - 1];
+        let mut oversized_etag = Vec::with_capacity(oversized.len() + 2);
+        oversized_etag.push(b'\"');
+        oversized_etag.extend(oversized);
+        oversized_etag.push(b'\"');
+        assert_eq!(
+            calculate_http_strong_validator_fingerprint(&oversized_etag, 10),
+            Err(PayloadCodecError::InvalidHttpStrongValidator)
+        );
+
+        let valid = b"\"v1\"".to_vec().into_boxed_slice();
+        let payload = JournalPayload::HttpStrongValidator {
+            resource_fingerprint: hash(15),
+            validator_fingerprint: hash(16),
+            total_length: 10,
+            etag: valid,
+        };
+        assert_eq!(
+            payload.encode(),
+            Err(PayloadCodecError::InvalidHttpStrongValidator)
         );
     }
 

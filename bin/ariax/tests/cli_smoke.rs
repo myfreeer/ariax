@@ -7,13 +7,15 @@ use std::fs;
 #[cfg(unix)]
 use std::io::{Read, Write};
 #[cfg(unix)]
-use std::net::TcpListener;
+use std::net::{Shutdown, TcpListener};
 #[cfg(unix)]
 use std::os::unix::fs::DirBuilderExt;
 #[cfg(unix)]
 use std::path::PathBuf;
 #[cfg(unix)]
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(unix)]
+use std::sync::mpsc;
 #[cfg(unix)]
 use std::thread;
 
@@ -39,6 +41,7 @@ fn help_succeeds() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Usage: ariax"));
     assert!(stdout.contains("--download-http-pinned"));
+    assert!(stdout.contains("--resume-http-pinned"));
 }
 
 #[test]
@@ -167,6 +170,106 @@ fn pinned_http_control_streams_through_storage_and_reports_completion() {
     );
     assert_eq!(payload, b"ariax!");
     assert!(String::from_utf8_lossy(&output.stdout).contains("download complete"));
+}
+
+#[cfg(unix)]
+#[test]
+fn pinned_http_control_recovers_and_resumes_with_range_and_if_range() {
+    let root = private_test_directory();
+    let output_root = root.join("output");
+    let journal_root = root.join("journal");
+    let mut builder = fs::DirBuilder::new();
+    builder.mode(0o700);
+    builder
+        .create(&output_root)
+        .expect("create output directory");
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind HTTP fixture");
+    let peer = listener.local_addr().expect("fixture address");
+    let (requests, received) = mpsc::channel();
+    let server = thread::spawn(move || {
+        for response in [
+            b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nETag: \"v1\"\r\nConnection: close\r\n\r\nabcdef".as_slice(),
+            b"HTTP/1.1 206 Partial Content\r\nContent-Length: 6\r\nContent-Range: bytes 4-9/10\r\nETag: \"v1\"\r\nConnection: close\r\n\r\nefghij".as_slice(),
+        ] {
+            let (mut stream, _) = listener.accept().expect("accept HTTP request");
+            let mut request = vec![0_u8; 4096];
+            let mut used = 0_usize;
+            while used < request.len() {
+                let read = stream
+                    .read(&mut request[used..])
+                    .expect("read HTTP request");
+                if read == 0 {
+                    break;
+                }
+                used += read;
+                if request[..used]
+                    .windows(4)
+                    .any(|window| window == b"\r\n\r\n")
+                {
+                    break;
+                }
+            }
+            request.truncate(used);
+            requests.send(request).expect("publish request");
+            stream.write_all(response).expect("write HTTP response");
+            stream.flush().expect("flush HTTP response");
+            thread::sleep(std::time::Duration::from_millis(25));
+            stream
+                .shutdown(Shutdown::Both)
+                .expect("close HTTP response");
+        }
+    });
+    let uri = format!("http://127.0.0.1:{}/file", peer.port());
+    let gid = "0000000000000007";
+    let journal_id = "02020202020202020202020202020202";
+    let first = ariax()
+        .args([
+            "--download-http-pinned".into(),
+            gid.into(),
+            journal_id.into(),
+            uri.clone().into(),
+            peer.to_string().into(),
+            output_root.as_os_str().to_owned(),
+            "download.bin".into(),
+            journal_root.as_os_str().to_owned(),
+            "4".into(),
+        ])
+        .output()
+        .expect("run initial pinned HTTP transfer");
+    assert!(!first.status.success());
+    assert!(String::from_utf8_lossy(&first.stderr).contains("short_body"));
+    let _fresh_request = received
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("fresh request");
+
+    let resumed = ariax()
+        .args([
+            "--resume-http-pinned".into(),
+            gid.into(),
+            journal_id.into(),
+            uri.into(),
+            peer.to_string().into(),
+            output_root.as_os_str().to_owned(),
+            journal_root.as_os_str().to_owned(),
+        ])
+        .output()
+        .expect("run pinned HTTP resume");
+    server.join().expect("join HTTP fixture");
+    let resume_request = received
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("resume request");
+    let resume_request = String::from_utf8_lossy(&resume_request).to_ascii_lowercase();
+    let payload = fs::read(output_root.join("download.bin")).expect("read resumed output");
+    let _removed = fs::remove_dir_all(&root);
+    assert!(
+        resumed.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    assert_eq!(payload, b"abcdefghij");
+    assert!(resume_request.contains("range: bytes=4-\r\n"));
+    assert!(resume_request.contains("if-range: \"v1\"\r\n"));
+    assert!(String::from_utf8_lossy(&resumed.stdout).contains("download resumed"));
 }
 
 #[cfg(unix)]

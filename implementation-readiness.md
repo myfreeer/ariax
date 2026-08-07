@@ -18,13 +18,14 @@ publication-last native startup execution are also executable. The bounded
 non-persistence runtime adapters and the process-bootstrap path are now wired
 through the experimental CLI. The first end-to-end downloader slice is not
 complete, but its fresh HTTP/1.1 known-length path is now executable against an
-externally approved pinned peer. It validates the response head before body
+externally approved numeric peer. It validates the response head before body
 polling, uses descriptor-backed strict-durability storage leases, preserves
-prior durable pieces across short-body/cancellation aborts, and revalidates root
-and file identities during recovery. Resume/range, TLS/resolution policy, and
-real scheduler/RPC transfer integration remain gates, so this is not a
-release/tag-ready checkpoint. Each remaining native adapter, transfer module,
-and integration still follows its Definition Of Ready checklist below.
+prior durable pieces across short-body/cancellation aborts, reads back trusted
+pieces before resume, and revalidates root/file identities during recovery.
+Ordinary DNS/SSRF resolution, TLS/redirect/proxy policy, broader validator
+choices, and real scheduler/RPC transfer dispatch remain gates, so this is not
+a release/tag-ready checkpoint. Each remaining native adapter, transfer
+module, and integration still follows its Definition Of Ready checklist below.
 
 ## Start Here
 
@@ -54,8 +55,8 @@ Detailed first-slice docs:
   validation, journal format, recovery, and finalization.
 - `detailed-runtime.md` for lanes, resource budgets, queue wrappers, buffer
   leases, backpressure, and cancellation.
-- `detailed-http-first-slice.md` for sequential HTTP, resume, range validation,
-  retry integration, stats, pause, and tests.
+- `detailed-http-first-slice.md` for sequential HTTP, strong-ETag resume, range
+  validation, retry integration, stats, pause, and tests.
 
 ## Hard Invariants
 
@@ -184,7 +185,8 @@ The first useful vertical slice spans implementation Phases 1–3 and should be:
 6. `SessionStore` with the exact v2 schema, v1 migration, root binding, and
    explicit relocation/rebind entry point,
 7. known-length identity HTTP sequential download through `StorageEngine`,
-8. strict range resume with provisional writes and explicit commit/abort,
+8. strict strong-ETag range resume with provisional writes and explicit
+   commit/abort,
 9. packet-independent `StatsSampler` (bounded pure/runtime primitive complete;
    protocol producers and RPC rendering remain integration work),
 10. JSON-RPC `addUri`, `tellStatus`, `pause`, `remove`, and `getGlobalStat`
@@ -201,11 +203,13 @@ this vertical slice.
 
 ## Current Integration Gates
 
-- Extend the executable fresh known-length identity HTTP worker with resume and
-  range validation, then connect allocation, cancellation, retry, and completion
-  results to the bounded scheduler runtime adapter rather than only the narrow
-  pinned-peer CLI control. Add resolver/SSRF, TLS, redirect, and proxy policy
-  before exposing ordinary URI resolution.
+- Connect the tested fresh/resume HTTP runtime adapter to the live scheduler and
+  control dispatcher; the pinned-peer CLI remains a bounded harness until that
+  process path is complete.
+- Implement the policy-owned connector milestone: bounded DNS, special-use/SSRF
+  filtering, final-peer binding, then TLS trust, redirect revalidation, and
+  proxy/no-proxy destination checks. Do not expose ordinary URI resolution
+  before these policies are enforced.
 - Integrate live protocol retry classification and backoff with the executable
   persisted retry/slow/no-space recovery paths.
 - Drive the bounded orderly-shutdown coordinator across every real lane,
