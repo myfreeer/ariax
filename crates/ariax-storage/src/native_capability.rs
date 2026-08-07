@@ -136,6 +136,49 @@ pub struct RootDirectoryCapability(Arc<DirectoryCapability>);
 #[derive(Clone, Debug)]
 pub struct JournalDirectoryCapability(Arc<DirectoryCapability>);
 
+/// One regular file opened relative to a trusted root without retaining a
+/// pathname as write authority.
+#[derive(Debug)]
+pub struct RootFileCapability {
+    file: File,
+    identity: NativeIdentityV1,
+}
+
+impl RootFileCapability {
+    #[must_use]
+    pub const fn identity(&self) -> NativeIdentityV1 {
+        self.identity
+    }
+
+    pub fn set_len(&self, len: u64) -> Result<(), NativeCapabilityError> {
+        self.file.set_len(len).map_err(Into::into)
+    }
+
+    pub fn sync_data(&self) -> Result<(), NativeCapabilityError> {
+        self.file.sync_data().map_err(Into::into)
+    }
+
+    pub fn sync_all(&self) -> Result<(), NativeCapabilityError> {
+        self.file.sync_all().map_err(Into::into)
+    }
+
+    pub fn try_clone_file(&self) -> Result<File, NativeCapabilityError> {
+        self.file.try_clone().map_err(Into::into)
+    }
+
+    #[must_use]
+    pub fn into_file(self) -> File {
+        self.file
+    }
+}
+
+#[derive(Clone, Copy)]
+enum FileAccess {
+    Read,
+    Append,
+    RandomWrite,
+}
+
 impl RootDirectoryCapability {
     pub fn open_trusted(path: impl AsRef<Path>) -> Result<Self, NativeCapabilityError> {
         DirectoryCapability::open_absolute(path.as_ref())
@@ -185,12 +228,52 @@ impl RootDirectoryCapability {
         expected: &FileIdentity,
     ) -> Result<(), NativeCapabilityError> {
         let expected = NativeIdentityV1::decode_for_current(expected.bytes())?;
-        let file = self.0.open_regular_file(&relative.display_path(), false)?;
+        let file = self
+            .0
+            .open_regular_file(&relative.display_path(), FileAccess::Read)?;
         let actual = platform::file_identity(&file, NativeObjectKind::RegularFile)?;
         if actual != expected {
             return Err(NativeCapabilityError::IdentityMismatch);
         }
         Ok(())
+    }
+
+    /// Creates one new final component below this root. Parent directories must
+    /// already exist and are opened component-by-component without following
+    /// links or reparse points.
+    pub fn create_new_file(
+        &self,
+        relative: &SafeRelativePath,
+    ) -> Result<RootFileCapability, NativeCapabilityError> {
+        let path = relative.display_path();
+        let name = path
+            .file_name()
+            .ok_or(NativeCapabilityError::UnsafePathComponent)?;
+        let parent = path.parent().filter(|value| !value.as_os_str().is_empty());
+        let file = match parent {
+            Some(parent) => self.0.open_directory(parent)?.create_new_file(name)?,
+            None => self.0.create_new_file(name)?,
+        };
+        let identity = platform::file_identity(&file, NativeObjectKind::RegularFile)?;
+        Ok(RootFileCapability { file, identity })
+    }
+
+    /// Reopens one persisted output for positional writes and verifies the
+    /// exact identity before returning descriptor authority.
+    pub fn open_existing_file(
+        &self,
+        relative: &SafeRelativePath,
+        expected: &FileIdentity,
+    ) -> Result<RootFileCapability, NativeCapabilityError> {
+        let expected = NativeIdentityV1::decode_for_current(expected.bytes())?;
+        let file = self
+            .0
+            .open_regular_file(&relative.display_path(), FileAccess::RandomWrite)?;
+        let identity = platform::file_identity(&file, NativeObjectKind::RegularFile)?;
+        if identity != expected {
+            return Err(NativeCapabilityError::IdentityMismatch);
+        }
+        Ok(RootFileCapability { file, identity })
     }
 }
 
@@ -240,7 +323,14 @@ impl JournalDirectoryCapability {
         write: bool,
     ) -> Result<File, NativeCapabilityError> {
         validate_single_name(name)?;
-        self.0.open_regular_file(Path::new(name), write)
+        self.0.open_regular_file(
+            Path::new(name),
+            if write {
+                FileAccess::Append
+            } else {
+                FileAccess::Read
+            },
+        )
     }
 
     pub(crate) fn create_new_file(&self, name: &OsStr) -> Result<File, NativeCapabilityError> {
@@ -294,10 +384,10 @@ impl DirectoryCapability {
     fn open_regular_file(
         &self,
         relative: &Path,
-        write: bool,
+        access: FileAccess,
     ) -> Result<File, NativeCapabilityError> {
         validate_relative_path(relative)?;
-        platform::open_relative_regular_file(&self.native, relative, write)
+        platform::open_relative_regular_file(&self.native, relative, access)
     }
 
     fn create_new_file(&self, name: &OsStr) -> Result<File, NativeCapabilityError> {
@@ -388,7 +478,7 @@ fn validate_single_name(name: &OsStr) -> Result<(), NativeCapabilityError> {
 
 #[cfg(unix)]
 mod platform {
-    use super::{NativeCapabilityError, NativeIdentityV1, NativeObjectKind};
+    use super::{FileAccess, NativeCapabilityError, NativeIdentityV1, NativeObjectKind};
     use rustix::fd::OwnedFd;
     use rustix::fs::{
         self, AtFlags, Dir, FileType, Mode, OFlags, fstat, linkat, open, openat, unlinkat,
@@ -453,26 +543,31 @@ mod platform {
             ) => {}
             Err(error) => return Err(std::io::Error::from(error).into()),
         }
-        open_relative_components(root, relative, NativeObjectKind::Directory, false)
-            .map(|opened| opened.expect_directory())
+        open_relative_components(
+            root,
+            relative,
+            NativeObjectKind::Directory,
+            FileAccess::Read,
+        )
+        .map(|opened| opened.expect_directory())
     }
 
     pub(super) fn open_relative_regular_file(
         root: &DirectoryHandle,
         relative: &Path,
-        write: bool,
+        access: FileAccess,
     ) -> Result<File, NativeCapabilityError> {
         #[cfg(target_os = "linux")]
         {
-            let access = if write {
-                OFlags::RDWR | OFlags::APPEND
-            } else {
-                OFlags::RDONLY
+            let flags = match access {
+                FileAccess::Read => OFlags::RDONLY,
+                FileAccess::Append => OFlags::RDWR | OFlags::APPEND,
+                FileAccess::RandomWrite => OFlags::RDWR,
             };
             match openat2(
                 root,
                 relative,
-                access | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                flags | OFlags::CLOEXEC | OFlags::NOFOLLOW,
                 Mode::empty(),
                 ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
             ) {
@@ -488,7 +583,7 @@ mod platform {
                 Err(error) => return Err(std::io::Error::from(error).into()),
             }
         }
-        open_relative_components(root, relative, NativeObjectKind::RegularFile, write)
+        open_relative_components(root, relative, NativeObjectKind::RegularFile, access)
             .map(|opened| File::from(opened.expect_file()))
     }
 
@@ -517,7 +612,7 @@ mod platform {
         root: &DirectoryHandle,
         relative: &Path,
         final_kind: NativeObjectKind,
-        write: bool,
+        access: FileAccess,
     ) -> Result<Opened, NativeCapabilityError> {
         let components = relative.components().collect::<Vec<_>>();
         let mut current = rustix::io::dup(root).map_err(std::io::Error::from)?;
@@ -531,8 +626,12 @@ mod platform {
             } else {
                 NativeObjectKind::Directory
             };
-            let access = if last && write {
-                OFlags::RDWR | OFlags::APPEND
+            let flags = if last {
+                match access {
+                    FileAccess::Read => OFlags::RDONLY,
+                    FileAccess::Append => OFlags::RDWR | OFlags::APPEND,
+                    FileAccess::RandomWrite => OFlags::RDWR,
+                }
             } else {
                 OFlags::RDONLY
             };
@@ -544,7 +643,7 @@ mod platform {
             current = openat(
                 &current,
                 *name,
-                access | directory | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                flags | directory | OFlags::CLOEXEC | OFlags::NOFOLLOW,
                 Mode::empty(),
             )
             .map_err(std::io::Error::from)?;
@@ -652,7 +751,7 @@ mod platform {
 
 #[cfg(windows)]
 mod platform {
-    use super::{NativeCapabilityError, NativeIdentityV1, NativeObjectKind};
+    use super::{FileAccess, NativeCapabilityError, NativeIdentityV1, NativeObjectKind};
     use ariax_windows_security::{
         create_relative_file_no_reparse, directory_names, link_relative_no_replace,
         open_absolute_directory_no_reparse, open_relative_directory_no_reparse,
@@ -686,9 +785,13 @@ mod platform {
     pub(super) fn open_relative_regular_file(
         root: &DirectoryHandle,
         relative: &Path,
-        write: bool,
+        access: FileAccess,
     ) -> Result<File, NativeCapabilityError> {
-        let file = open_relative_regular_file_no_reparse(root, relative, write)?;
+        let file = open_relative_regular_file_no_reparse(
+            root,
+            relative,
+            !matches!(access, FileAccess::Read),
+        )?;
         validate_file_kind(&file, NativeObjectKind::RegularFile)?;
         Ok(file)
     }
@@ -777,7 +880,7 @@ mod platform {
 
 #[cfg(not(any(unix, windows)))]
 mod platform {
-    use super::{NativeCapabilityError, NativeIdentityV1, NativeObjectKind};
+    use super::{FileAccess, NativeCapabilityError, NativeIdentityV1, NativeObjectKind};
     use std::ffi::{OsStr, OsString};
     use std::fs::File;
     use std::path::Path;
@@ -796,7 +899,7 @@ mod platform {
 
     unavailable!(open_absolute_directory(path: &Path) -> DirectoryHandle);
     unavailable!(open_relative_directory(root: &DirectoryHandle, relative: &Path) -> DirectoryHandle);
-    unavailable!(open_relative_regular_file(root: &DirectoryHandle, relative: &Path, write: bool) -> File);
+    unavailable!(open_relative_regular_file(root: &DirectoryHandle, relative: &Path, access: FileAccess) -> File);
     unavailable!(directory_identity(handle: &DirectoryHandle) -> NativeIdentityV1);
     unavailable!(file_identity(file: &File, expected: NativeObjectKind) -> NativeIdentityV1);
     unavailable!(directory_entries(handle: &DirectoryHandle) -> Vec<OsString>);
@@ -860,6 +963,24 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    fn write_at(file: &std::fs::File, bytes: &[u8], offset: u64) {
+        use std::os::unix::fs::FileExt as _;
+        assert_eq!(
+            file.write_at(bytes, offset).expect("positional write"),
+            bytes.len()
+        );
+    }
+
+    #[cfg(windows)]
+    fn write_at(file: &std::fs::File, bytes: &[u8], offset: u64) {
+        use std::os::windows::fs::FileExt as _;
+        assert_eq!(
+            file.seek_write(bytes, offset).expect("positional write"),
+            bytes.len()
+        );
+    }
+
     #[test]
     fn trusted_directory_identity_is_stable_and_bound_reopen_matches() {
         let directory = TestDirectory::new();
@@ -919,6 +1040,33 @@ mod tests {
             &FileIdentity::new(identity.encode()).expect("identity"),
         )
         .expect("verified file");
+    }
+
+    #[test]
+    fn root_file_capability_creates_and_reopens_for_random_writes() {
+        let directory = TestDirectory::new();
+        let root = RootDirectoryCapability::open_trusted(&directory.0).expect("root");
+        let safe = SafePathBuilder::from_user_path("output.bin", PathPlatform::current())
+            .expect("safe path");
+        let created = root.create_new_file(&safe).expect("create output");
+        created.set_len(6).expect("set output length");
+        let identity = FileIdentity::new(created.identity().encode()).expect("identity");
+        let created_file = created.try_clone_file().expect("clone created file");
+        write_at(&created_file, b"cd", 2);
+        drop(created_file);
+        drop(created);
+
+        let reopened = root
+            .open_existing_file(&safe, &identity)
+            .expect("reopen output");
+        let reopened_file = reopened.try_clone_file().expect("clone reopened file");
+        write_at(&reopened_file, b"ab", 0);
+        write_at(&reopened_file, b"ef", 4);
+        reopened.sync_all().expect("sync output");
+        assert_eq!(
+            fs::read(directory.0.join("output.bin")).expect("read output"),
+            b"abcdef"
+        );
     }
 
     #[test]

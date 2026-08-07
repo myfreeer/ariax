@@ -209,7 +209,9 @@ Design coverage:
   finalization contracts.
 - `detailed-runtime.md`: queue/ownership/cancellation/shutdown contracts.
 - `detailed-http-first-slice.md`: reviewed first-slice HTTP state-machine
-  contract; the protocol adapter and end-to-end slice remain pending.
+  contract plus an executable fresh, pinned-peer HTTP/1.1 known-length subset;
+  TLS/resolution, resume/range, redirects/proxies, and scheduler/RPC integration
+  remain pending.
 
 Acceptance:
 

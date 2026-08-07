@@ -3,17 +3,24 @@
 //! Cross-crate composition for bounded startup reconciliation.
 
 mod effect_sink;
+mod http_first_slice;
 mod process_bootstrap;
 mod runtime_effects;
 mod startup_executor;
 mod startup_filesystem;
 mod startup_native;
+mod storage_engine;
 
 pub use effect_sink::{
     MAX_PERSISTENCE_CATALOG_ENTRIES, MAX_PERSISTENCE_PLAN_STEPS, PersistenceCatalogError,
     PersistenceEffectCatalog, PersistenceEffectPlan, PersistencePlanError, PersistencePlanStep,
     PersistenceSchedulerEffectSink, PersistenceSchedulerPreparation,
     PersistenceSchedulerPrepareError,
+};
+pub use http_first_slice::{
+    HttpCancellation, KnownLengthHttpError, KnownLengthHttpRecovery,
+    KnownLengthHttpRecoveryRequest, KnownLengthHttpRequest, KnownLengthHttpResult,
+    download_known_length_http, download_known_length_http_blocking, recover_known_length_http,
 };
 pub use process_bootstrap::{
     BootstrappedEngine, ProcessBootstrapConfig, ProcessBootstrapError, ProcessBootstrapFailure,
@@ -37,6 +44,10 @@ pub use startup_filesystem::{
 pub use startup_native::{
     NativeEngineStartup, NativeInstallOutcome, NativeStartupBackend, NativeStartupError,
     NativeStartupExecutor, NativeStartupPoll, NativeStartupResult, complete_native_startup,
+};
+pub use storage_engine::{
+    LeaseCommit, LeaseWritePlan, StorageEngine, StorageEngineConfig, StorageEngineError, WriteAck,
+    WriteBlock, WriteReject,
 };
 
 use ariax_core::{

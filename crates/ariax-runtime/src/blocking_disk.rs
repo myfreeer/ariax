@@ -2,9 +2,11 @@ use crate::{
     BufferLease, BufferState, BufferTransitionError, ByteBudget, BytePermit, CompletionDrain,
     CompletionPermit, OwnerTag,
 };
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fmt;
+use std::fs::File;
+use std::io;
 use std::num::NonZeroU64;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -109,6 +111,195 @@ impl BlockingFileHandle {
     pub const fn authorized_len(self) -> u64 {
         self.authorized_len
     }
+}
+
+/// Cloneable registry that mints opaque blocking-file authority only for
+/// already-open native files in one backend epoch.
+///
+/// The registry stores descriptors rather than paths. Removing a registration
+/// prevents later operations from resolving it; a worker that already cloned
+/// the descriptor remains safe to finish its positional write.
+#[derive(Clone)]
+pub struct BlockingFileRegistry {
+    backend_epoch: BlockingBackendEpoch,
+    inner: Arc<Mutex<BlockingFileRegistryState>>,
+}
+
+struct BlockingFileRegistryState {
+    next_id: u64,
+    files: HashMap<NonZeroU64, Arc<File>>,
+}
+
+impl BlockingFileRegistry {
+    #[must_use]
+    pub fn new(backend_epoch: BlockingBackendEpoch) -> Self {
+        Self {
+            backend_epoch,
+            inner: Arc::new(Mutex::new(BlockingFileRegistryState {
+                next_id: 1,
+                files: HashMap::new(),
+            })),
+        }
+    }
+
+    #[must_use]
+    pub const fn backend_epoch(&self) -> BlockingBackendEpoch {
+        self.backend_epoch
+    }
+
+    pub fn register(
+        &self,
+        file: File,
+        authorized_len: u64,
+    ) -> Result<BlockingFileHandle, BlockingFileRegistryError> {
+        let mut state = registry_lock(&self.inner);
+        let id =
+            NonZeroU64::new(state.next_id).ok_or(BlockingFileRegistryError::IdentifierExhausted)?;
+        state
+            .files
+            .try_reserve(1)
+            .map_err(|_| BlockingFileRegistryError::AllocationFailed)?;
+        state.next_id = state
+            .next_id
+            .checked_add(1)
+            .ok_or(BlockingFileRegistryError::IdentifierExhausted)?;
+        let replaced = state.files.insert(id, Arc::new(file));
+        debug_assert!(replaced.is_none(), "monotonic file ids do not collide");
+        Ok(BlockingFileHandle::new(
+            id,
+            self.backend_epoch,
+            authorized_len,
+        ))
+    }
+
+    pub fn unregister(&self, handle: BlockingFileHandle) -> Result<(), BlockingFileRegistryError> {
+        if handle.backend_epoch != self.backend_epoch {
+            return Err(BlockingFileRegistryError::BackendEpochMismatch {
+                registry: self.backend_epoch,
+                handle: handle.backend_epoch,
+            });
+        }
+        let removed = registry_lock(&self.inner).files.remove(&handle.id);
+        if removed.is_none() {
+            return Err(BlockingFileRegistryError::NotRegistered);
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn registered_count(&self) -> usize {
+        registry_lock(&self.inner).files.len()
+    }
+
+    fn resolve(&self, handle: BlockingFileHandle) -> Option<Arc<File>> {
+        if handle.backend_epoch != self.backend_epoch {
+            return None;
+        }
+        registry_lock(&self.inner).files.get(&handle.id).cloned()
+    }
+}
+
+impl fmt::Debug for BlockingFileRegistry {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BlockingFileRegistry")
+            .field("backend_epoch", &self.backend_epoch)
+            .field("registered_count", &self.registered_count())
+            .finish_non_exhaustive()
+    }
+}
+
+impl BlockingDiskExecutor for BlockingFileRegistry {
+    fn write_at(
+        &self,
+        handle: BlockingFileHandle,
+        offset: u64,
+        bytes: &[u8],
+    ) -> Result<usize, BlockingDiskIoError> {
+        let file = self.resolve(handle).ok_or(BlockingDiskIoError {
+            kind: BlockingDiskIoErrorKind::InvalidHandle,
+            raw_os_error: None,
+        })?;
+        positional_write(&file, bytes, offset).map_err(classify_io_error)
+    }
+}
+
+/// Why an opened file could not be installed in the opaque handle registry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BlockingFileRegistryError {
+    AllocationFailed,
+    IdentifierExhausted,
+    BackendEpochMismatch {
+        registry: BlockingBackendEpoch,
+        handle: BlockingBackendEpoch,
+    },
+    NotRegistered,
+}
+
+impl fmt::Display for BlockingFileRegistryError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AllocationFailed => {
+                formatter.write_str("blocking file registry allocation failed")
+            }
+            Self::IdentifierExhausted => {
+                formatter.write_str("blocking file registry identifier exhausted")
+            }
+            Self::BackendEpochMismatch { registry, handle } => write!(
+                formatter,
+                "blocking file handle epoch {} does not match registry epoch {}",
+                handle.get(),
+                registry.get()
+            ),
+            Self::NotRegistered => formatter.write_str("blocking file handle is not registered"),
+        }
+    }
+}
+
+impl Error for BlockingFileRegistryError {}
+
+#[cfg(unix)]
+fn positional_write(file: &File, bytes: &[u8], offset: u64) -> io::Result<usize> {
+    std::os::unix::fs::FileExt::write_at(file, bytes, offset)
+}
+
+#[cfg(windows)]
+fn positional_write(file: &File, bytes: &[u8], offset: u64) -> io::Result<usize> {
+    std::os::windows::fs::FileExt::seek_write(file, bytes, offset)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn positional_write(_file: &File, _bytes: &[u8], _offset: u64) -> io::Result<usize> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "native positional file writes are unavailable",
+    ))
+}
+
+fn classify_io_error(error: io::Error) -> BlockingDiskIoError {
+    let kind = match error.kind() {
+        io::ErrorKind::NotFound => BlockingDiskIoErrorKind::NotFound,
+        io::ErrorKind::PermissionDenied => BlockingDiskIoErrorKind::PermissionDenied,
+        io::ErrorKind::StorageFull => BlockingDiskIoErrorKind::OutOfSpace,
+        io::ErrorKind::QuotaExceeded => BlockingDiskIoErrorKind::QuotaExceeded,
+        io::ErrorKind::Interrupted => BlockingDiskIoErrorKind::Interrupted,
+        io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData => {
+            BlockingDiskIoErrorKind::InvalidHandle
+        }
+        _ => BlockingDiskIoErrorKind::Other,
+    };
+    BlockingDiskIoError {
+        kind,
+        raw_os_error: error.raw_os_error(),
+    }
+}
+
+fn registry_lock(
+    mutex: &Mutex<BlockingFileRegistryState>,
+) -> MutexGuard<'_, BlockingFileRegistryState> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// One explicit operation supported by the first blocking-lane slice.
@@ -1517,14 +1708,48 @@ mod tests {
     use crate::{BufferPool, BufferPoolConfig};
     use ariax_core::BufferId;
     use std::collections::VecDeque;
+    use std::fs::{self, OpenOptions};
     use std::num::NonZeroU64;
+    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
     use std::sync::mpsc;
     use std::time::Instant;
 
     const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+    static REGISTRY_TEST_ID: AtomicU64 = AtomicU64::new(1);
 
     fn backend_epoch(value: u64) -> BlockingBackendEpoch {
         BlockingBackendEpoch::new(value).expect("nonzero epoch")
+    }
+
+    #[test]
+    fn registered_native_file_is_positionally_written_and_revoked() {
+        let path = std::env::temp_dir().join(format!(
+            "ariax-blocking-registry-{}-{}",
+            std::process::id(),
+            REGISTRY_TEST_ID.fetch_add(1, AtomicOrdering::Relaxed)
+        ));
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .expect("create registry test file");
+        file.set_len(8).expect("set file length");
+        let registry = BlockingFileRegistry::new(backend_epoch(9));
+        let handle = registry.register(file, 8).expect("register file");
+        assert_eq!(registry.registered_count(), 1);
+        assert_eq!(registry.write_at(handle, 3, b"xy"), Ok(2));
+        assert_eq!(fs::read(&path).expect("read file"), b"\0\0\0xy\0\0\0");
+        registry.unregister(handle).expect("unregister file");
+        assert_eq!(registry.registered_count(), 0);
+        assert_eq!(
+            registry.write_at(handle, 0, b"z"),
+            Err(BlockingDiskIoError {
+                kind: BlockingDiskIoErrorKind::InvalidHandle,
+                raw_os_error: None,
+            })
+        );
+        fs::remove_file(path).expect("remove registry test file");
     }
 
     fn operation_id(value: u64) -> BlockingDiskOperationId {

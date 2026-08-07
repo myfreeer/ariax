@@ -25,10 +25,16 @@ startup execution are now implemented for Unix and Windows adapters. The
 bounded timer, allocation, option-application, cancellation, and no-space
 adapter boundary is executable, and the experimental CLI drives the complete
 process-bootstrap path through ordered restore and journal-closing shutdown.
-Concrete HTTP workers, the first end-to-end transfer pipeline, hot-backup
-crash-residue reconciliation, and the native-platform/MSRV CI gates remain
-pending. This checkpoint is not yet a complete downloader or release/tag-ready.
-Phase gates remain normative in
+The first concrete HTTP/1.1 worker now accepts an externally policy-approved
+pinned peer, validates a `200` identity-coded known-length response before body
+polling, and streams it through a descriptor-backed `StorageEngine`. The engine
+uses pooled buffers, bounded positional disk writes, piece-aligned provisional
+leases, strict data-before-journal durability, and descriptor-revalidated
+recovery; the experimental CLI exposes that narrow pinned-peer path. HTTPS,
+DNS/SSRF resolution, redirects/proxies, resume/range, scheduler/RPC transfer
+integration, hot-backup crash-residue reconciliation, and native-platform/MSRV
+CI gates remain pending. This checkpoint is not yet a complete downloader or
+release/tag-ready. Phase gates remain normative in
 `implementation-readiness.md` and `implementation-plan.md`.
 
 This design is for a new downloader that keeps the mature aria2 user model

@@ -14,17 +14,21 @@ admission, ordered SQLite startup repair, and packet-independent stats sampling
 are also executable. Descriptor-safe Unix/Windows root and central-journal
 capabilities, install/appender recovery, owner-thread appender construction, and
 publication-last native startup are executable. Bounded non-persistence effect
-adapters and the product process-bootstrap path are also executable. The
-transfer/storage pipeline, hot-backup crash-residue reconciliation, remaining
-backend work, and the native-platform/MSRV release CI gates remain phase and tag
-gates. These checkpoints do not yet satisfy the first vertical slice or the
-project definition of done.
+adapters and the product process-bootstrap path are also executable. A narrow
+fresh HTTP/1.1 known-length transfer now runs through a descriptor-backed
+`StorageEngine`, bounded pooled buffers and positional disk writes, strict
+piece durability, replay recovery, cancellation/short-body aborts, and an
+explicit pinned-peer CLI control. Resume/range, resolver/TLS/redirect policy,
+scheduler/RPC transfer integration, hot-backup crash-residue reconciliation,
+remaining backend work, and the native-platform/MSRV release CI gates remain
+phase and tag gates. These checkpoints do not yet satisfy the complete first
+vertical slice or the project definition of done.
 
 This is a staged plan for building the design without repeating the incomplete
 rewrite pattern. The native-startup orchestration boundary, central-journal
 filesystem backends, runtime-effect boundary, and product bootstrap are now
-executable; the first HTTP/storage slice and native CI evidence remain phase
-gates.
+executable; the rest of the HTTP/storage slice and native CI evidence remain
+phase gates.
 
 ## Phase 0: Contracts, Compatibility Inventory, And Build Baseline
 

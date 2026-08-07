@@ -18,7 +18,8 @@ pub use blocking_disk::{
     BlockingDiskLane, BlockingDiskLaneConfig, BlockingDiskLaneMetrics, BlockingDiskLaneResource,
     BlockingDiskLaneStartError, BlockingDiskOperation, BlockingDiskOperationId,
     BlockingDiskOutcome, BlockingDiskShutdown, BlockingDiskSubmission, BlockingDiskSubmitError,
-    BlockingDiskSubmitErrorKind, BlockingFileHandle, MAX_BLOCKING_DISK_COMPLETION_CAPACITY,
+    BlockingDiskSubmitErrorKind, BlockingFileHandle, BlockingFileRegistry,
+    BlockingFileRegistryError, MAX_BLOCKING_DISK_COMPLETION_CAPACITY,
     MAX_BLOCKING_DISK_QUEUE_CAPACITY, MAX_BLOCKING_DISK_SHUTDOWN_TIMEOUT,
     MAX_BLOCKING_DISK_WORKERS,
 };

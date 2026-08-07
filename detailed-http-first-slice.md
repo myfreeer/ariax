@@ -1,6 +1,13 @@
 # Detailed HTTP First-Slice Design
 
-Status: reviewed first-slice implementation contract. Implementation pending.
+Status: reviewed first-slice implementation contract. The fresh sequential
+HTTP/1.1 subset is executable with an externally policy-approved pinned peer:
+strict response-head validation precedes layout publication/body polling,
+pooled body chunks cross piece-aligned `StorageEngine` leases, and exact final
+framing produces strict durable journal evidence. Short body and cancellation
+abort only the incomplete lease while prior durable pieces survive recovery.
+HTTPS, ordinary DNS/SSRF resolution, redirects/proxies, resume/range, rate and
+retry integration, and scheduler/RPC wiring remain pending.
 
 This document defines HTTP(S) sequential download, resume, strict range
 validation, storage integration, retry integration, and stats behavior.

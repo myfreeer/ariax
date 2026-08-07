@@ -17,9 +17,14 @@ checkpoints. Concrete descriptor-safe capability/install/appender adapters and
 publication-last native startup execution are also executable. The bounded
 non-persistence runtime adapters and the process-bootstrap path are now wired
 through the experimental CLI. The first end-to-end downloader slice is not
-complete, so this is not a release/tag-ready checkpoint. Each remaining native
-adapter, transfer module, and integration still follows its Definition Of Ready
-checklist below.
+complete, but its fresh HTTP/1.1 known-length path is now executable against an
+externally approved pinned peer. It validates the response head before body
+polling, uses descriptor-backed strict-durability storage leases, preserves
+prior durable pieces across short-body/cancellation aborts, and revalidates root
+and file identities during recovery. Resume/range, TLS/resolution policy, and
+real scheduler/RPC transfer integration remain gates, so this is not a
+release/tag-ready checkpoint. Each remaining native adapter, transfer module,
+and integration still follows its Definition Of Ready checklist below.
 
 ## Start Here
 
@@ -196,9 +201,11 @@ this vertical slice.
 
 ## Current Integration Gates
 
-- Implement the known-length identity HTTP worker and connect its allocation,
-  cancellation, retry, and completion results to the bounded runtime adapter
-  and `StorageEngine`.
+- Extend the executable fresh known-length identity HTTP worker with resume and
+  range validation, then connect allocation, cancellation, retry, and completion
+  results to the bounded scheduler runtime adapter rather than only the narrow
+  pinned-peer CLI control. Add resolver/SSRF, TLS, redirect, and proxy policy
+  before exposing ordinary URI resolution.
 - Integrate live protocol retry classification and backoff with the executable
   persisted retry/slow/no-space recovery paths.
 - Drive the bounded orderly-shutdown coordinator across every real lane,

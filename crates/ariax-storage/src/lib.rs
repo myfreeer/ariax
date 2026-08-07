@@ -64,7 +64,7 @@ pub use layout::{
 };
 pub use native_capability::{
     JournalDirectoryCapability, MAX_NATIVE_ALLOWED_ROOTS, NativeCapabilityError, NativeObjectKind,
-    RootDirectoryCapability, platform_path_to_current,
+    RootDirectoryCapability, RootFileCapability, platform_path_to_current,
 };
 pub use native_identity::{
     ALL_NATIVE_IDENTITY_ERROR_CODES, NATIVE_IDENTITY_UNIX_BYTES, NATIVE_IDENTITY_VERSION,

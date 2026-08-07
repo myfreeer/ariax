@@ -37,8 +37,14 @@ handoff, resolves journal-install intents before appenders, and publishes the
 restored scheduler last. Its concrete central-journal Unix and Windows adapters
 now acquire roots, revalidate selected file identities, resolve install
 candidates, prepare appenders without mutation, and move final tail repair and
-appender construction onto the session owner. The checkpoint state writer and
-native release-matrix evidence remain pending.
+appender construction onto the session owner. A first concrete single-file
+`StorageEngine` now consumes descriptor-backed files, validates piece-aligned
+leases and contiguous blocks, submits bounded pooled buffers to the positional
+disk lane, hashes returned immutable buffers, orders strict data flushes before
+`PieceDurable`, and flushes terminal journal state. Descriptor-revalidated
+recovery reports only the contiguous durable prefix. General multi-file writes,
+overlap groups, balanced/fast durability grouping, resume mutation, checkpoint
+state writing, and native release-matrix evidence remain pending.
 
 This document defines `SafePathBuilder`, `FileLayout`, `GlobalOffsetMapper`,
 `StorageEngine`, and `ControlJournal` contracts for HTTP sequential/range

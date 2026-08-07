@@ -24,11 +24,16 @@ ariax-engine = { path = "crates/ariax-engine" }
 ariax-runtime = { path = "crates/ariax-runtime" }
 ariax-storage = { path = "crates/ariax-storage" }
 ariax-windows-security = { path = "crates/ariax-windows-security" }
+bytes = "=1.12.1"
 crc32c = "=0.6.8"
 fs2 = "=0.4.3"
+http-body-util = "=0.1.4"
+hyper = "=1.11.0"
+hyper-util = "=0.1.20"
 rusqlite = { version = "=0.40.1", default-features = false, features = ["bundled", "backup", "cache", "limits"] }
 rustix = { version = "=1.1.4", default-features = false, features = ["fs", "std"] }
 sha2 = { version = "=0.11.0", default-features = false }
+tokio = "=1.53.1"
 unicode-normalization = "=0.1.25"
 windows-sys = { version = "=0.61.2", default-features = false }
 
