@@ -186,6 +186,21 @@ Remote RPC guardrails:
 `README.md` promises that redirects, proxies, and DNS resolution obey SSRF
 guardrails when RPC is remotely exposed. This section defines the mechanism.
 
+Executable status: the plaintext HTTP connector now implements the direct
+origin subset before public RPC exposure. It validates ordinary authorities,
+canonicalizes standard, legacy, and IPv4-mapped numeric forms, bounds one
+system-resolver operation by timeout and 32 distinct answers, rejects mixed or
+over-cardinality answer sets, applies the generated pinned IANA classifier to
+every answer, and connects to the exact selected numeric peer while retaining
+the original authority for `Host`. The default admits only globally reachable
+unicast; explicit local policy can relax loopback for a harness or RFC 1918/
+unique-local destinations, while all other special-use classes remain denied.
+The CLI still requires an explicit pinned peer and ordinary URI resolution is
+not exposed to RPC. Redirect, proxy, TLS, DNS cache/TTL/singleflight, Happy
+Eyeballs, custom resolver, network allow/deny-list composition, and trusted
+proxy policy remain later gates and must re-use this admission boundary rather
+than bypass it.
+
 The guardrail runs whenever a download target is submitted over a non-loopback
 RPC listener (and always for redirect targets, see `redirect-policy.md`):
 

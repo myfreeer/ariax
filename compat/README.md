@@ -1,4 +1,4 @@
-# aria2 Compatibility Reference
+# Compatibility And Registry References
 
 `aria2-reference.pin` pins the source revision used to generate option, manual,
 and RPC compatibility inventories. The source checkout is external to this
@@ -23,3 +23,10 @@ Primary inputs are `src/OptionHandlerFactory.cc`, `src/prefs.cc`,
 `src/OptionHandlerImpl.{h,cc}`, `src/usage_text.h`, `src/help_tags.{h,cc}`,
 `src/RpcMethodFactory.cc`, `src/RpcMethodImpl.{h,cc}`, `src/RpcMethod.cc`, the
 RPC tests, and `doc/manual-src/en/aria2c.rst`.
+
+`iana-special-purpose.pin` separately pins LF-normalized IANA IPv4 and IPv6
+Special-Purpose Address Registry snapshots by source URL, last-modified date,
+SHA-256, and terms reference. `cargo xtask generate` derives the HTTP
+destination classifier and its machine-readable contract from those checked-in
+snapshots plus reviewed metadata/multicast compatibility overrides; contract
+verification fails on input hash or generated-output drift.

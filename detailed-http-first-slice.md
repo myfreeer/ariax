@@ -1,16 +1,22 @@
 # Detailed HTTP First-Slice Design
 
 Status: reviewed first-slice implementation contract. The fresh sequential
-HTTP/1.1 subset and the first recoverable range-resume milestone are executable
-with an externally policy-approved numeric peer. Strict response-head
+HTTP/1.1 subset, first recoverable range-resume milestone, and policy-owned
+plaintext destination connector are executable. Strict response-head
 validation precedes layout publication/body polling, pooled body chunks cross
 piece-aligned `StorageEngine` leases, and exact final framing produces durable
 journal evidence. Strong ETag material is persisted/replayed with an exact
 resource and known-length binding; recovery readback verifies each trusted
 piece, reopens the descriptor without truncation, and resumes with pinned
-`Range`/`If-Range` headers. The bounded runtime effect adapter and CLI exercise
-allocation, cancellation, retry classification, and completion. Ordinary
-DNS/SSRF resolution, TLS, redirects/proxies, weak or Last-Modified validators,
+`Range`/`If-Range` headers. The connector validates ordinary HTTP authorities,
+canonicalizes numeric forms, bounds system DNS by timeout and 32 admitted
+answers, applies the generated pinned IANA special-purpose classifier to every
+answer, and connects only to the selected numeric peer while preserving the
+original authority for `Host`. Fresh and resume work traverse the same bounded
+runtime effect adapter for allocation, cancellation, retry classification, and
+completion. The CLI remains a pinned-peer harness and ordinary URI input is not
+yet exposed through CLI/RPC. TLS, redirects/proxies, DNS cache/TTL/singleflight,
+Happy Eyeballs, Hickory/custom resolvers, weak or Last-Modified validators,
 digest-only resume, segmented multi-mirror scheduling, and live scheduler/RPC
 dispatch remain pending.
 
@@ -40,11 +46,48 @@ Excluded from first slice:
 - unknown-length/chunked output, which requires the explicit growing-layout
   capability described below.
 
-The current executable milestone deliberately accepts only `http`, an
-already-approved numeric `IP:port`, and a strong ETag. It does not resolve host
-names, apply the destination SSRF classifier, negotiate TLS, follow redirects,
-use proxies, or expose the transfer through RPC. Those policy layers must be
-added before ordinary URI input is enabled.
+The current executable worker still accepts an already-approved numeric
+`IP:port` directly for the pinned-peer harness. The policy-owned wrapper accepts
+an ordinary `http` URI, rejects userinfo, invalid/zero ports, overlong or invalid
+DNS labels, unsupported bracketed literals, and malformed numeric forms, then
+resolves and pins one admitted numeric peer before entering that worker. It does
+not negotiate TLS, follow redirects, use proxies, or expose ordinary URI input
+through CLI/RPC. Those remaining policy layers must be added before the public
+control plane enables ordinary URI downloads.
+
+## Executable Destination Admission
+
+The first connector gate is intentionally smaller than the complete DNS design
+in `protocol-modernization.md` but is closed and executable:
+
+- only `http` is admitted; URI userinfo and port zero are rejected,
+- bracketed IPv6 and ordinary dotted IPv4 are canonicalized, and legacy
+  one-to-four-part decimal/octal/hexadecimal IPv4 forms are converted before
+  classification so alternate spellings cannot bypass policy,
+- registered names are resolved through Tokio's system-resolver adapter with a
+  five-second default timeout and a hard maximum of 32 distinct answers,
+- IPv4-mapped IPv6 answers are canonicalized to IPv4 before de-duplication and
+  policy evaluation,
+- every distinct answer must pass the same generated classifier; a mixed
+  allowed/denied answer set fails closed, and an over-cardinality set is
+  rejected rather than partially authorized,
+- the default permits only globally reachable unicast. Separate explicit
+  policy bits may admit loopback for a local harness and RFC 1918/IPv6
+  unique-local destinations for administrator-owned contexts. Carrier-grade
+  NAT, link-local, metadata, documentation, benchmark, unspecified, multicast,
+  broadcast, and reserved/future-use space remain denied,
+- the selected first admitted address is retained as the exact `SocketAddr`
+  used by `TcpStream::connect`; the original URI authority remains the HTTP
+  `Host`, so resolution is not repeated between policy and connect,
+- a reconnect or new worker invocation performs a new resolution and complete
+  admission decision; approval is never transferred to a different answer.
+
+The generated classifier is derived from the LF-normalized, SHA-256-pinned IANA
+IPv4 and IPv6 Special-Purpose Address Registry snapshots recorded in
+`compat/iana-special-purpose.pin`, plus reviewed metadata, multicast, and
+IPv4-compatible security overrides. `cargo xtask verify-contracts` fails if the
+snapshots, generated Rust table, or `generated/http_destination_policy.json`
+drift.
 
 ## Request Preparation
 

@@ -34,12 +34,19 @@ recovery. Strong-ETag material is persisted and replayed safely; a recovered
 durable prefix is read back, reopened without truncation, and continued with a
 strict `206`/`Content-Range`/`If-Range` request. The bounded runtime effect
 adapter and experimental CLI cover allocation, cancellation, retry
-classification, verification, and completion for this pinned-peer path.
-Resolver/DNS/SSRF policy, TLS, redirects, proxies, weak/Last-Modified or
-digest-only resume, segmented multi-mirror scheduling, live scheduler/RPC
-dispatch, hot-backup crash-residue reconciliation, and native-platform/MSRV
-CI gates remain pending. This checkpoint is not yet a complete downloader or
-release/tag-ready. Phase gates remain normative in
+classification, verification, and completion for this pinned-peer path. A
+policy-owned plaintext connector now validates ordinary HTTP authorities,
+bounds system resolution, canonicalizes legacy and mapped numeric forms,
+applies a generated SHA-256-pinned IANA special-purpose classifier to every
+answer, and pins the exact numeric connect peer while retaining the original
+`Host`. Fresh and resume workers can use that connector through the same
+runtime-effect lifecycle. Ordinary URI input remains intentionally unexposed
+through CLI/RPC. TLS, redirects, proxies, DNS cache/TTL/singleflight and Happy
+Eyeballs, weak/Last-Modified or digest-only resume, segmented multi-mirror
+scheduling, live scheduler/RPC dispatch, hot-backup crash-residue
+reconciliation, and native-platform/MSRV CI gates remain pending. This
+checkpoint is not yet a complete downloader or release/tag-ready. Phase gates
+remain normative in
 `implementation-readiness.md` and `implementation-plan.md`.
 
 This design is for a new downloader that keeps the mature aria2 user model

@@ -1,0 +1,9 @@
+schema=1
+ipv4_url=https://www.iana.org/assignments/iana-ipv4-special-registry/iana-ipv4-special-registry-1.csv
+ipv4_last_modified=2025-10-09
+ipv4_sha256=e4a1c06ecf8e934ed5ae30977a1477a78957da1a5fb602fc855e3f74bf01c8ac
+ipv6_url=https://www.iana.org/assignments/iana-ipv6-special-registry/iana-ipv6-special-registry-1.csv
+ipv6_last_modified=2025-10-09
+ipv6_sha256=8b0e181a4ef0c71fcb25403c40702f2050c2f6dc198156b6ec1a5fb746c9a73e
+line_endings=lf
+license=IANA-registry-data; see https://www.icann.org/privacy/tos

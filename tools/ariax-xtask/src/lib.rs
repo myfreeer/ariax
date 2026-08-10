@@ -4,6 +4,7 @@
 
 mod config_contracts;
 mod core_contracts;
+mod http_policy_contracts;
 mod inventory;
 mod journal_contracts;
 mod runtime_contracts;
@@ -17,6 +18,7 @@ use std::process::Command;
 
 use config_contracts::generate_config_contracts;
 use core_contracts::generate_core_contracts;
+use http_policy_contracts::generate_http_policy_contracts;
 use inventory::{GenerationMode, generate_aria2_inventory};
 use journal_contracts::generate_journal_contracts;
 use runtime_contracts::generate_runtime_contracts;
@@ -163,8 +165,9 @@ where
             let journal = generate_journal_contracts(workspace_root, mode)?;
             let session = generate_session_contracts(workspace_root, mode)?;
             let runtime = generate_runtime_contracts(workspace_root, mode)?;
+            let http_policy = generate_http_policy_contracts(workspace_root, mode)?;
             Ok(format!(
-                "{inventory}; {core}; {config}; {storage}; {journal}; {session}; {runtime}"
+                "{inventory}; {core}; {config}; {storage}; {journal}; {session}; {runtime}; {http_policy}"
             ))
         }
         XtaskCommand::VerifyContracts { source_dir } => {
@@ -187,8 +190,10 @@ where
             let journal = generate_journal_contracts(workspace_root, GenerationMode::Check)?;
             let session = generate_session_contracts(workspace_root, GenerationMode::Check)?;
             let runtime = generate_runtime_contracts(workspace_root, GenerationMode::Check)?;
+            let http_policy =
+                generate_http_policy_contracts(workspace_root, GenerationMode::Check)?;
             Ok(format!(
-                "{inventory}; {core}; {config}; {storage}; {journal}; {session}; {runtime}"
+                "{inventory}; {core}; {config}; {storage}; {journal}; {session}; {runtime}; {http_policy}"
             ))
         }
         XtaskCommand::PrintAria2Pin => Ok(reference.commit),
@@ -530,6 +535,18 @@ mod tests {
             let workspace = root.join("ariax");
             let aria2 = root.join("aria2");
             fs::create_dir_all(workspace.join("compat")).expect("create workspace fixture");
+            let source_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .ancestors()
+                .nth(2)
+                .expect("workspace source root");
+            for relative in [
+                "compat/iana-special-purpose.pin",
+                "compat/iana-ipv4-special-registry.csv",
+                "compat/iana-ipv6-special-registry.csv",
+            ] {
+                let input = fs::read(source_root.join(relative)).expect("read pinned IANA fixture");
+                fs::write(workspace.join(relative), input).expect("write pinned IANA fixture");
+            }
             fs::create_dir_all(workspace.join(".cargo")).expect("create Cargo config fixture");
             fs::write(
                 workspace.join("Cargo.toml"),

@@ -30,6 +30,10 @@ stopped metadata, atomic terminal retention/deletion and dense queue
 transitions, host-key semantic validation, preflight-before-backup behavior,
 cooperative owner locking, sidecar preflight/cleanup, WAL/DELETE behavior, and
 backup requirements.
+`http_destination_policy.json` records the pinned IANA IPv4/IPv6
+Special-Purpose Address Registry source URLs, dates, normalized snapshot
+hashes, policy classes, answer cap, and executable status. The same generator
+emits the Rust longest-prefix classifier consumed by the HTTP connector.
 `error_codes.json` includes the stable journal numeric value for each closed
 error class.
 

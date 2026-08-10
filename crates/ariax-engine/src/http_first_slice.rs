@@ -1,3 +1,6 @@
+use crate::http_connector::{
+    HttpDestinationError, HttpDestinationPolicy, resolve_http_destination,
+};
 use crate::{
     ActiveTransferRequest, AllocationRequest, LeaseCommit, LeaseWritePlan, RuntimeEffectHandle,
     RuntimeEventSubmission, RuntimeEventSubmitError, StorageEngine, StorageEngineConfig,
@@ -223,6 +226,7 @@ pub enum KnownLengthHttpError {
     MissingAuthority,
     UserInfoForbidden,
     PeerPortMismatch { expected: u16, actual: u16 },
+    Destination(HttpDestinationError),
     ZeroPieceLength,
     ConnectTimeout,
     Connect(std::io::Error),
@@ -274,6 +278,7 @@ impl KnownLengthHttpError {
             Self::MissingAuthority => "missing_authority",
             Self::UserInfoForbidden => "uri_userinfo_forbidden",
             Self::PeerPortMismatch { .. } => "peer_port_mismatch",
+            Self::Destination(error) => error.code(),
             Self::ZeroPieceLength => "zero_piece_length",
             Self::ConnectTimeout => "connect_timeout",
             Self::Connect(_) => "connect",
@@ -319,16 +324,17 @@ impl KnownLengthHttpError {
 
     #[must_use]
     pub const fn retriable(&self) -> bool {
-        matches!(
-            self,
+        match self {
+            Self::Destination(error) => error.retriable(),
             Self::ConnectTimeout
-                | Self::Connect(_)
-                | Self::HandshakeTimeout
-                | Self::Hyper(_)
-                | Self::ResponseHeadTimeout
-                | Self::ShortBody { .. }
-                | Self::ResponseBodyTimeout
-        )
+            | Self::Connect(_)
+            | Self::HandshakeTimeout
+            | Self::Hyper(_)
+            | Self::ResponseHeadTimeout
+            | Self::ShortBody { .. }
+            | Self::ResponseBodyTimeout => true,
+            _ => false,
+        }
     }
 }
 
@@ -348,6 +354,7 @@ impl fmt::Display for KnownLengthHttpError {
             Self::ShortBody { expected, actual } => {
                 write!(formatter, "HTTP body ended at {actual} of {expected} bytes")
             }
+            Self::Destination(error) => error.fmt(formatter),
             Self::ExistingLengthMismatch { expected, actual } => write!(
                 formatter,
                 "existing output length {actual} does not match recovered length {expected}"
@@ -375,6 +382,7 @@ impl Error for KnownLengthHttpError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Connect(error) | Self::Runtime(error) => Some(error),
+            Self::Destination(error) => Some(error),
             Self::Hyper(error) => Some(error),
             Self::Request(error) => Some(error),
             Self::Native(error) => Some(error),
@@ -391,6 +399,12 @@ impl Error for KnownLengthHttpError {
 impl From<NativeCapabilityError> for KnownLengthHttpError {
     fn from(error: NativeCapabilityError) -> Self {
         Self::Native(error)
+    }
+}
+
+impl From<HttpDestinationError> for KnownLengthHttpError {
+    fn from(error: HttpDestinationError) -> Self {
+        Self::Destination(error)
     }
 }
 
@@ -456,6 +470,16 @@ pub async fn run_known_length_http_runtime(
     transfer: KnownLengthHttpTransfer,
     retry_at: MonotonicInstant,
 ) -> Result<KnownLengthHttpResult, KnownLengthHttpRuntimeError> {
+    run_known_length_http_runtime_with_policy(runtime, allocation, transfer, None, retry_at).await
+}
+
+async fn run_known_length_http_runtime_with_policy(
+    runtime: RuntimeEffectHandle,
+    allocation: AllocationRequest,
+    transfer: KnownLengthHttpTransfer,
+    policy: Option<HttpDestinationPolicy>,
+    retry_at: MonotonicInstant,
+) -> Result<KnownLengthHttpResult, KnownLengthHttpRuntimeError> {
     let identity = transfer.identity();
     if (
         allocation.task_id(),
@@ -475,9 +499,19 @@ pub async fn run_known_length_http_runtime(
         let transfer = async {
             match transfer {
                 KnownLengthHttpTransfer::Fresh(request) => {
+                    let request = match policy {
+                        Some(policy) => resolve_known_length_http_request(request, policy).await?,
+                        None => request,
+                    };
                     download_known_length_http_inner(request, Some(&mut lifecycle)).await
                 }
                 KnownLengthHttpTransfer::Resume(request) => {
+                    let request = match policy {
+                        Some(policy) => {
+                            resolve_known_length_http_resume_request(request, policy).await?
+                        }
+                        None => request,
+                    };
                     resume_known_length_http_inner(request, Some(&mut lifecycle)).await
                 }
             }
@@ -555,6 +589,20 @@ pub async fn run_known_length_http_runtime(
     }
 }
 
+/// Resolves the transfer destination before entering the bounded scheduler
+/// lifecycle adapter. The resulting worker still preserves the original URI
+/// authority for `Host` and uses only the admitted numeric peer for connect.
+pub async fn run_known_length_http_runtime_resolved(
+    runtime: RuntimeEffectHandle,
+    allocation: AllocationRequest,
+    transfer: KnownLengthHttpTransfer,
+    policy: HttpDestinationPolicy,
+    retry_at: MonotonicInstant,
+) -> Result<KnownLengthHttpResult, KnownLengthHttpRuntimeError> {
+    run_known_length_http_runtime_with_policy(runtime, allocation, transfer, Some(policy), retry_at)
+        .await
+}
+
 pub fn run_known_length_http_runtime_blocking(
     runtime: RuntimeEffectHandle,
     allocation: AllocationRequest,
@@ -570,6 +618,26 @@ pub fn run_known_length_http_runtime_blocking(
         })?
         .block_on(run_known_length_http_runtime(
             runtime, allocation, transfer, retry_at,
+        ))
+}
+
+/// Blocking wrapper for [`run_known_length_http_runtime_resolved`].
+pub fn run_known_length_http_runtime_resolved_blocking(
+    runtime: RuntimeEffectHandle,
+    allocation: AllocationRequest,
+    transfer: KnownLengthHttpTransfer,
+    policy: HttpDestinationPolicy,
+    retry_at: MonotonicInstant,
+) -> Result<KnownLengthHttpResult, KnownLengthHttpRuntimeError> {
+    RuntimeBuilder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .map_err(|error| {
+            KnownLengthHttpRuntimeError::Transfer(KnownLengthHttpError::Runtime(error))
+        })?
+        .block_on(run_known_length_http_runtime_resolved(
+            runtime, allocation, transfer, policy, retry_at,
         ))
 }
 
@@ -641,6 +709,10 @@ fn public_http_error(error: &KnownLengthHttpError) -> PublicError {
         KnownLengthHttpError::OversizedBody => {
             (ErrorKind::ResponseTooLarge, RetryClass::AnotherSource)
         }
+        KnownLengthHttpError::Destination(error) if error.retriable() => {
+            (ErrorKind::Network, RetryClass::SameSource)
+        }
+        KnownLengthHttpError::Destination(_) => (ErrorKind::Network, RetryClass::Never),
         _ => (ErrorKind::Network, RetryClass::Never),
     };
     PublicError::new(kind, error.code(), retry)
@@ -658,6 +730,19 @@ pub fn download_known_length_http_blocking(
         .block_on(download_known_length_http(request))
 }
 
+/// Blocking wrapper for [`download_known_length_http_resolved`].
+pub fn download_known_length_http_resolved_blocking(
+    request: KnownLengthHttpRequest,
+    policy: HttpDestinationPolicy,
+) -> Result<KnownLengthHttpResult, KnownLengthHttpError> {
+    RuntimeBuilder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .map_err(KnownLengthHttpError::Runtime)?
+        .block_on(download_known_length_http_resolved(request, policy))
+}
+
 /// Runs one recovered range continuation on a bounded current-thread Tokio
 /// runtime.
 pub fn resume_known_length_http_blocking(
@@ -671,6 +756,19 @@ pub fn resume_known_length_http_blocking(
         .block_on(resume_known_length_http(request))
 }
 
+/// Blocking wrapper for [`resume_known_length_http_resolved`].
+pub fn resume_known_length_http_resolved_blocking(
+    request: KnownLengthHttpResumeRequest,
+    policy: HttpDestinationPolicy,
+) -> Result<KnownLengthHttpResult, KnownLengthHttpError> {
+    RuntimeBuilder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .map_err(KnownLengthHttpError::Runtime)?
+        .block_on(resume_known_length_http_resolved(request, policy))
+}
+
 /// Revalidates one recovered durable prefix, sends an exact open-ended range
 /// request with the persisted strong ETag, and continues piece leases without
 /// truncating or path-reopening the output after descriptor admission.
@@ -678,6 +776,26 @@ pub async fn resume_known_length_http(
     request: KnownLengthHttpResumeRequest,
 ) -> Result<KnownLengthHttpResult, KnownLengthHttpError> {
     resume_known_length_http_inner(request, None).await
+}
+
+/// Resolves and pins a continuation URI before entering the existing resume
+/// worker. Replayed validators and layout state remain authoritative.
+async fn resolve_known_length_http_resume_request(
+    mut request: KnownLengthHttpResumeRequest,
+    policy: HttpDestinationPolicy,
+) -> Result<KnownLengthHttpResumeRequest, KnownLengthHttpError> {
+    let destination = resolve_http_destination(&request.uri, policy).await?;
+    request.peer = destination.peer();
+    Ok(request)
+}
+
+/// Runs a recovered range continuation after local destination admission.
+pub async fn resume_known_length_http_resolved(
+    request: KnownLengthHttpResumeRequest,
+    policy: HttpDestinationPolicy,
+) -> Result<KnownLengthHttpResult, KnownLengthHttpError> {
+    let request = resolve_known_length_http_resume_request(request, policy).await?;
+    resume_known_length_http(request).await
 }
 
 async fn resume_known_length_http_inner(
@@ -864,6 +982,26 @@ pub async fn download_known_length_http(
     request: KnownLengthHttpRequest,
 ) -> Result<KnownLengthHttpResult, KnownLengthHttpError> {
     download_known_length_http_inner(request, None).await
+}
+
+/// Resolves and pins the URI before entering the existing fresh HTTP worker.
+/// The URI authority remains the HTTP `Host`; only the transport peer changes.
+async fn resolve_known_length_http_request(
+    mut request: KnownLengthHttpRequest,
+    policy: HttpDestinationPolicy,
+) -> Result<KnownLengthHttpRequest, KnownLengthHttpError> {
+    let destination = resolve_http_destination(&request.uri, policy).await?;
+    request.peer = destination.peer();
+    Ok(request)
+}
+
+/// Runs a fresh transfer after local destination admission and peer pinning.
+pub async fn download_known_length_http_resolved(
+    request: KnownLengthHttpRequest,
+    policy: HttpDestinationPolicy,
+) -> Result<KnownLengthHttpResult, KnownLengthHttpError> {
+    let request = resolve_known_length_http_request(request, policy).await?;
+    download_known_length_http(request).await
 }
 
 async fn download_known_length_http_inner(
@@ -1823,7 +1961,7 @@ fn body_frame_end(offset: u64, frame_len: u64, content_length: u64) -> Option<u6
 mod tests {
     use super::*;
     use crate::{NoSpaceProbeTargetCatalog, RuntimeEffectConfig, RuntimeSchedulerEffectSink};
-    use ariax_core::TaskEvent;
+    use ariax_core::{ErrorKind, RetryClass, TaskEvent};
     use ariax_storage::{JournalStateStop, PathPlatform, SafePathBuilder};
     use std::fs;
     use std::io::{Read, Write};
@@ -1897,9 +2035,13 @@ mod tests {
         address
     }
 
-    fn serve_stalled(response_prefix: &'static [u8], stall: Duration) -> SocketAddr {
+    fn serve_stalled(
+        response_prefix: &'static [u8],
+        stall: Duration,
+    ) -> (SocketAddr, mpsc::Receiver<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
         let address = listener.local_addr().expect("server address");
+        let (sent, received) = mpsc::channel();
         thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept request");
             let mut request = [0_u8; 4096];
@@ -1919,9 +2061,10 @@ mod tests {
             }
             stream.write_all(response_prefix).expect("write prefix");
             stream.flush().expect("flush prefix");
+            sent.send(()).expect("publish prefix");
             thread::sleep(stall);
         });
-        address
+        (address, received)
     }
 
     fn serve_sequence(responses: Vec<&'static [u8]>) -> (SocketAddr, mpsc::Receiver<Vec<u8>>) {
@@ -2033,8 +2176,14 @@ mod tests {
         let journal = TestDirectory::new("complete-journal");
         let peer = serve(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nETag: \"v1\"\r\nConnection: close\r\n\r\nabcdefghij");
         let id = journal_id(1);
-        let result = download_known_length_http_blocking(request(&root, &journal, peer, id))
-            .expect("download succeeds");
+        let result = download_known_length_http_resolved_blocking(
+            request(&root, &journal, peer, id),
+            HttpDestinationPolicy {
+                allow_loopback: true,
+                ..HttpDestinationPolicy::default()
+            },
+        )
+        .expect("download succeeds");
         assert_eq!(result.content_length, 10);
         assert_eq!(result.durable_piece_count, 3);
         assert_eq!(
@@ -2094,8 +2243,14 @@ mod tests {
             b"HTTP/1.1 206 Partial Content\r\nContent-Length: 6\r\nContent-Range: bytes 4-9/10\r\nETag: \"v1\"\r\nConnection: close\r\n\r\nefghij",
         ]);
         let id = journal_id(6);
-        let first = download_known_length_http_blocking(request(&root, &journal, peer, id))
-            .expect_err("short first response is resumable");
+        let first = download_known_length_http_resolved_blocking(
+            request(&root, &journal, peer, id),
+            HttpDestinationPolicy {
+                allow_loopback: true,
+                ..HttpDestinationPolicy::default()
+            },
+        )
+        .expect_err("short first response is resumable");
         assert!(matches!(first, KnownLengthHttpError::ShortBody { .. }));
         let _fresh_request = requests
             .recv_timeout(Duration::from_secs(5))
@@ -2113,8 +2268,23 @@ mod tests {
             b"\"v1\""
         );
 
-        let result = resume_known_length_http_blocking(resume_request(&root, &journal, peer, id))
-            .expect("range resume succeeds");
+        let runtime = runtime_handle(8);
+        runtime.enqueue_allocation_for_test(
+            TaskId::new(1).expect("task"),
+            Gid::new(7).expect("gid"),
+            Generation::INITIAL,
+        );
+        let result = run_known_length_http_runtime_resolved_blocking(
+            runtime.clone(),
+            runtime.take_allocation().expect("allocation request"),
+            KnownLengthHttpTransfer::Resume(resume_request(&root, &journal, peer, id)),
+            HttpDestinationPolicy {
+                allow_loopback: true,
+                ..HttpDestinationPolicy::default()
+            },
+            MonotonicInstant::now(),
+        )
+        .expect("range resume succeeds");
         assert_eq!(result.resumed_from, 4);
         assert_eq!(result.content_length, 10);
         assert_eq!(result.durable_piece_count, 3);
@@ -2129,6 +2299,27 @@ mod tests {
         assert!(resume_request.contains("range: bytes=4-\r\n"));
         assert!(resume_request.contains("if-range: \"v1\"\r\n"));
         assert!(resume_request.contains("accept-encoding: identity\r\n"));
+
+        let now = MonotonicInstant::now();
+        assert!(matches!(
+            runtime
+                .poll_event_at(now)
+                .expect("allocation event")
+                .into_event(),
+            TaskEvent::AllocationSucceeded { .. }
+        ));
+        assert!(matches!(
+            runtime.poll_event_at(now).expect("data event").into_event(),
+            TaskEvent::DataComplete { seed: false, .. }
+        ));
+        assert!(matches!(
+            runtime
+                .poll_event_at(now)
+                .expect("verification event")
+                .into_event(),
+            TaskEvent::VerificationSucceeded { .. }
+        ));
+        assert!(runtime.poll_event_at(now).is_none());
 
         let recovered = recover_known_length_http(&recovery_request(&root, &journal, id))
             .expect("recover completed resume");
@@ -2235,7 +2426,9 @@ mod tests {
     fn runtime_worker_reports_allocation_data_and_verification_completion_in_order() {
         let root = TestDirectory::new("runtime-success-root");
         let journal = TestDirectory::new("runtime-success-journal");
-        let peer = serve(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nETag: \"v1\"\r\nConnection: close\r\n\r\nariax!");
+        let (peer, requests) = serve_sequence(vec![
+            b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nETag: \"v1\"\r\nConnection: close\r\n\r\nariax!",
+        ]);
         let runtime = runtime_handle(8);
         runtime.enqueue_allocation_for_test(
             TaskId::new(1).expect("task"),
@@ -2246,14 +2439,30 @@ mod tests {
         let retry_at = MonotonicInstant::now()
             .checked_add(Duration::from_secs(1))
             .expect("retry deadline");
-        let result = run_known_length_http_runtime_blocking(
+        let mut transfer_request = request(&root, &journal, peer, journal_id(11));
+        transfer_request.uri = format!("http://2130706433:{}/file", peer.port());
+        transfer_request.peer = SocketAddr::new(
+            "203.0.113.1".parse().expect("unapproved placeholder"),
+            peer.port(),
+        );
+        let result = run_known_length_http_runtime_resolved_blocking(
             runtime.clone(),
             allocation,
-            KnownLengthHttpTransfer::Fresh(request(&root, &journal, peer, journal_id(11))),
+            KnownLengthHttpTransfer::Fresh(transfer_request),
+            HttpDestinationPolicy {
+                allow_loopback: true,
+                ..HttpDestinationPolicy::default()
+            },
             retry_at,
         )
         .expect("runtime transfer succeeds");
         assert_eq!(result.content_length, 6);
+        let request = requests
+            .recv_timeout(Duration::from_secs(5))
+            .expect("captured request");
+        let request = String::from_utf8_lossy(&request).to_ascii_lowercase();
+        assert!(request.starts_with("get /file http/1.1\r\n"));
+        assert!(request.contains(&format!("host: 2130706433:{}\r\n", peer.port())));
 
         let now = MonotonicInstant::now();
         assert!(matches!(
@@ -2275,6 +2484,73 @@ mod tests {
             TaskEvent::VerificationSucceeded { .. }
         ));
         assert!(runtime.poll_event_at(now).is_none());
+    }
+
+    #[test]
+    fn resolved_runtime_rejects_denied_destination_before_activation() {
+        let root = TestDirectory::new("runtime-destination-denied-root");
+        let journal = TestDirectory::new("runtime-destination-denied-journal");
+        let peer = "127.0.0.1:80".parse().expect("peer");
+        let runtime = runtime_handle(8);
+        runtime.enqueue_allocation_for_test(
+            TaskId::new(1).expect("task"),
+            Gid::new(7).expect("gid"),
+            Generation::INITIAL,
+        );
+        let error = run_known_length_http_runtime_resolved_blocking(
+            runtime.clone(),
+            runtime.take_allocation().expect("allocation request"),
+            KnownLengthHttpTransfer::Fresh(request(&root, &journal, peer, journal_id(14))),
+            HttpDestinationPolicy::default(),
+            MonotonicInstant::now(),
+        )
+        .expect_err("loopback is denied before connect");
+        assert!(matches!(
+            error,
+            KnownLengthHttpRuntimeError::Transfer(KnownLengthHttpError::Destination(
+                HttpDestinationError::AddressDenied {
+                    class: crate::HttpAddressClass::Loopback,
+                    ..
+                }
+            ))
+        ));
+        let now = MonotonicInstant::now();
+        let event = runtime
+            .poll_event_at(now)
+            .expect("allocation failure event")
+            .into_event();
+        assert!(matches!(
+            event,
+            TaskEvent::AllocationFailed { error, .. }
+                if error.kind() == ErrorKind::Network
+                    && error.safe_message() == "destination_denied"
+                    && error.retry_class() == RetryClass::Never
+        ));
+        assert!(runtime.poll_event_at(now).is_none());
+        assert!(!root.0.join("output.bin").exists());
+        assert!(!journal.0.join("task").exists());
+    }
+
+    #[test]
+    fn destination_dns_failures_keep_pre_activation_retry_classification() {
+        for error in [
+            HttpDestinationError::ResolveTimeout,
+            HttpDestinationError::NoAddresses,
+            HttpDestinationError::Resolve(std::io::Error::other("resolver unavailable")),
+        ] {
+            let error = KnownLengthHttpError::Destination(error);
+            assert!(error.retriable());
+            let public = public_http_error(&error);
+            assert_eq!(public.kind(), ErrorKind::Network);
+            assert_eq!(public.safe_message(), error.code());
+            assert_eq!(public.retry_class(), RetryClass::SameSource);
+        }
+        let denied = KnownLengthHttpError::Destination(HttpDestinationError::AddressDenied {
+            address: "127.0.0.1".parse().expect("address"),
+            class: crate::HttpAddressClass::Loopback,
+        });
+        assert!(!denied.retriable());
+        assert_eq!(public_http_error(&denied).retry_class(), RetryClass::Never);
     }
 
     #[test]
@@ -2320,8 +2596,8 @@ mod tests {
     fn runtime_worker_drains_exact_scheduler_cancellation_after_lease_abort() {
         let root = TestDirectory::new("runtime-cancel-root");
         let journal = TestDirectory::new("runtime-cancel-journal");
-        let peer = serve_stalled(
-            b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nETag: \"v1\"\r\nConnection: close\r\n\r\nabcdef",
+        let (peer, prefix_sent) = serve_stalled(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nETag: \"v1\"\r\nConnection: close\r\n\r\nabcd",
             Duration::from_secs(1),
         );
         let runtime = runtime_handle(8);
@@ -2330,7 +2606,10 @@ mod tests {
         runtime.enqueue_allocation_for_test(task, gid, Generation::INITIAL);
         let cancellation_runtime = runtime.clone();
         let cancellation_thread = thread::spawn(move || {
-            thread::sleep(Duration::from_millis(100));
+            prefix_sent
+                .recv_timeout(Duration::from_secs(5))
+                .expect("server sent cancellation prefix");
+            thread::sleep(Duration::from_millis(50));
             cancellation_runtime.enqueue_cancellation_for_test(
                 task,
                 gid,
@@ -2413,15 +2692,18 @@ mod tests {
     fn cancellation_aborts_partial_piece_and_preserves_prior_checkpoint() {
         let root = TestDirectory::new("cancel-root");
         let journal = TestDirectory::new("cancel-journal");
-        let peer = serve_stalled(
-            b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nabcdef",
+        let (peer, prefix_sent) = serve_stalled(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nabcd",
             Duration::from_secs(1),
         );
         let id = journal_id(5);
         let input = request(&root, &journal, peer, id);
         let cancellation = input.cancellation.clone();
         thread::spawn(move || {
-            thread::sleep(Duration::from_millis(100));
+            prefix_sent
+                .recv_timeout(Duration::from_secs(5))
+                .expect("server sent cancellation prefix");
+            thread::sleep(Duration::from_millis(50));
             cancellation.cancel();
         });
         let error =

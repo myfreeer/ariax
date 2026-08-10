@@ -22,7 +22,12 @@ explicit pinned-peer CLI control. The first recoverable strong-ETag range
 resume milestone is also executable: safe validator persistence/replay,
 no-truncate descriptor reopen/readback, strict `206`/`Content-Range`/`If-Range`
 validation, continued leases, and bounded runtime lifecycle effects are covered
-by focused tests and the CLI. Resolver/DNS/SSRF, TLS/redirect/proxy policy,
+by focused tests and the CLI. The direct plaintext destination connector is
+also executable: ordinary authority validation, bounded system resolution,
+canonical numeric admission, generated pinned-IANA special-use filtering,
+all-answer rejection, final-peer binding, and fresh/resume runtime-effect
+integration are covered by focused tests and generated contracts. TLS,
+redirect/proxy policy, DNS cache/TTL/singleflight and Happy Eyeballs,
 weak/digest-only resume, segmented scheduling, live scheduler/RPC dispatch,
 hot-backup crash-residue reconciliation, remaining backend work, and the
 native-platform/MSRV release CI gates remain phase and tag gates. These

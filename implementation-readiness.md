@@ -22,10 +22,13 @@ externally approved numeric peer. It validates the response head before body
 polling, uses descriptor-backed strict-durability storage leases, preserves
 prior durable pieces across short-body/cancellation aborts, reads back trusted
 pieces before resume, and revalidates root/file identities during recovery.
-Ordinary DNS/SSRF resolution, TLS/redirect/proxy policy, broader validator
-choices, and real scheduler/RPC transfer dispatch remain gates, so this is not
-a release/tag-ready checkpoint. Each remaining native adapter, transfer
-module, and integration still follows its Definition Of Ready checklist below.
+The direct plaintext connector now performs ordinary authority validation,
+bounded system resolution, generated special-use/SSRF filtering, and exact
+numeric-peer binding for fresh/resume runtime workers. TLS/redirect/proxy
+policy, shared DNS cache/singleflight/Happy Eyeballs, broader validator choices,
+and real scheduler/RPC transfer dispatch remain gates, so this is not a
+release/tag-ready checkpoint. Each remaining native adapter, transfer module,
+and integration still follows its Definition Of Ready checklist below.
 
 ## Start Here
 
@@ -206,10 +209,10 @@ this vertical slice.
 - Connect the tested fresh/resume HTTP runtime adapter to the live scheduler and
   control dispatcher; the pinned-peer CLI remains a bounded harness until that
   process path is complete.
-- Implement the policy-owned connector milestone: bounded DNS, special-use/SSRF
-  filtering, final-peer binding, then TLS trust, redirect revalidation, and
-  proxy/no-proxy destination checks. Do not expose ordinary URI resolution
-  before these policies are enforced.
+- Extend the executable policy-owned direct-origin connector with TLS trust,
+  redirect revalidation, proxy/no-proxy final-hop checks, and the bounded DNS
+  cache/singleflight/Happy Eyeballs design. Ordinary URI resolution remains
+  unexposed through CLI/RPC until those public-surface policies are enforced.
 - Integrate live protocol retry classification and backoff with the executable
   persisted retry/slow/no-space recovery paths.
 - Drive the bounded orderly-shutdown coordinator across every real lane,

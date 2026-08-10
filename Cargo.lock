@@ -79,6 +79,7 @@ dependencies = [
  "ariax-core",
  "ariax-runtime",
  "ariax-storage",
+ "sha2",
 ]
 
 [[package]]

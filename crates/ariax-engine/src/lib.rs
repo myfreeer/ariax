@@ -3,6 +3,7 @@
 //! Cross-crate composition for bounded startup reconciliation.
 
 mod effect_sink;
+mod http_connector;
 mod http_first_slice;
 mod process_bootstrap;
 mod runtime_effects;
@@ -17,13 +18,21 @@ pub use effect_sink::{
     PersistenceSchedulerEffectSink, PersistenceSchedulerPreparation,
     PersistenceSchedulerPrepareError,
 };
+pub use http_connector::{
+    DEFAULT_HTTP_RESOLUTION_TIMEOUT, HttpAddressClass, HttpDestinationError, HttpDestinationPolicy,
+    MAX_HTTP_DESTINATION_ADDRESSES, MAX_HTTP_DESTINATION_HOST_BYTES, ResolvedHttpDestination,
+    classify_http_address, resolve_http_destination,
+};
 pub use http_first_slice::{
     HttpCancellation, KnownLengthHttpError, KnownLengthHttpRecovery,
     KnownLengthHttpRecoveryRequest, KnownLengthHttpRequest, KnownLengthHttpResult,
     KnownLengthHttpResumeRequest, KnownLengthHttpRuntimeError, KnownLengthHttpTransfer,
-    download_known_length_http, download_known_length_http_blocking, recover_known_length_http,
-    resume_known_length_http, resume_known_length_http_blocking, run_known_length_http_runtime,
-    run_known_length_http_runtime_blocking,
+    download_known_length_http, download_known_length_http_blocking,
+    download_known_length_http_resolved, download_known_length_http_resolved_blocking,
+    recover_known_length_http, resume_known_length_http, resume_known_length_http_blocking,
+    resume_known_length_http_resolved, resume_known_length_http_resolved_blocking,
+    run_known_length_http_runtime, run_known_length_http_runtime_blocking,
+    run_known_length_http_runtime_resolved, run_known_length_http_runtime_resolved_blocking,
 };
 pub use process_bootstrap::{
     BootstrappedEngine, ProcessBootstrapConfig, ProcessBootstrapError, ProcessBootstrapFailure,

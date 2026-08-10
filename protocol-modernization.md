@@ -259,6 +259,17 @@ fallback without hard failure unless the user requires ECH.
 
 ## DNS
 
+Executable first connector gate: direct plaintext HTTP can use Tokio's system
+resolver with a five-second default timeout, a hard 32-distinct-answer
+admission limit, full-answer special-use filtering, and exact numeric-peer
+pinning. It has no shared cache, TTL ownership, negative cache, bounded
+singleflight, A/AAAA alternation, Happy Eyeballs racer, Hickory/custom upstream,
+DoH, or DoT yet. Excess answers and mixed allowed/denied sets fail closed rather
+than being truncated into an authorization decision. Fresh and recovered HTTP
+workers use this connector through the bounded runtime effect path, but the
+ordinary-URI surface remains unexposed through CLI/RPC until TLS, redirect, and
+proxy policy gates are complete.
+
 Baseline:
 
 - system resolver,
