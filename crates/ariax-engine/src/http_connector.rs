@@ -236,7 +236,8 @@ pub async fn resolve_http_destination(
     let uri: Uri = uri_text
         .parse()
         .map_err(|_| HttpDestinationError::InvalidUri)?;
-    if uri.scheme_str() != Some("http") {
+    let scheme = uri.scheme_str();
+    if !matches!(scheme, Some("http" | "https")) {
         return Err(HttpDestinationError::UnsupportedScheme);
     }
     let authority = uri
@@ -265,7 +266,9 @@ pub async fn resolve_http_destination(
     if explicit_port && authority.port_u16().is_none() {
         return Err(HttpDestinationError::InvalidPort);
     }
-    let port = authority.port_u16().unwrap_or(80);
+    let port = authority
+        .port_u16()
+        .unwrap_or(if scheme == Some("https") { 443 } else { 80 });
     if port == 0 {
         return Err(HttpDestinationError::InvalidPort);
     }
@@ -610,7 +613,6 @@ mod tests {
     #[tokio::test]
     async fn authority_validation_rejects_unsupported_or_ambiguous_inputs() {
         for (uri, expected) in [
-            ("https://8.8.8.8/file", "unsupported_scheme"),
             ("http://user@8.8.8.8/file", "uri_userinfo_forbidden"),
             ("http://8.8.8.8:0/file", "invalid_port"),
             ("http://-bad.example/file", "invalid_host"),
@@ -622,6 +624,19 @@ mod tests {
                 .expect_err("authority rejected");
             assert_eq!(error.code(), expected, "unexpected result for {uri}");
         }
+        let https =
+            resolve_http_destination("https://8.8.8.8/file", HttpDestinationPolicy::default())
+                .await
+                .expect("HTTPS is a supported direct transport scheme");
+        assert_eq!(
+            https.peer(),
+            "8.8.8.8:443".parse().expect("HTTPS default port")
+        );
+        let unsupported =
+            resolve_http_destination("ftp://8.8.8.8/file", HttpDestinationPolicy::default())
+                .await
+                .expect_err("unsupported scheme");
+        assert_eq!(unsupported.code(), "unsupported_scheme");
         let overlong = format!("http://{}/file", "a".repeat(254));
         assert!(matches!(
             resolve_http_destination(&overlong, HttpDestinationPolicy::default()).await,

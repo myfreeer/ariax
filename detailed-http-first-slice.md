@@ -2,7 +2,9 @@
 
 Status: reviewed first-slice implementation contract. The fresh sequential
 HTTP/1.1 subset, first recoverable range-resume milestone, and policy-owned
-plaintext destination connector are executable. Strict response-head
+destination connector are executable. The Phase-3A policy-owned direct HTTP(S)
+transport is also executable with strict rustls identity, bounded HTTP/1.1
+keep-alive, and the same final-peer binding. Strict response-head
 validation precedes layout publication/body polling, pooled body chunks cross
 piece-aligned `StorageEngine` leases, and exact final framing produces durable
 journal evidence. Strong ETag material is persisted/replayed with an exact
@@ -15,10 +17,11 @@ answer, and connects only to the selected numeric peer while preserving the
 original authority for `Host`. Fresh and resume work traverse the same bounded
 runtime effect adapter for allocation, cancellation, retry classification, and
 completion. The CLI remains a pinned-peer harness and ordinary URI input is not
-yet exposed through CLI/RPC. TLS, redirects/proxies, DNS cache/TTL/singleflight,
+yet exposed through CLI/RPC. Redirects/proxies, DNS cache/TTL/singleflight,
 Happy Eyeballs, Hickory/custom resolvers, weak or Last-Modified validators,
 digest-only resume, segmented multi-mirror scheduling, and live scheduler/RPC
-dispatch remain pending.
+dispatch remain pending. Ordinary URI input stays unavailable through CLI/RPC
+until redirect and proxy gates are executable.
 
 This document defines HTTP(S) sequential download, resume, strict range
 validation, storage integration, retry integration, and stats behavior.
@@ -88,6 +91,45 @@ IPv4 and IPv6 Special-Purpose Address Registry snapshots recorded in
 IPv4-compatible security overrides. `cargo xtask verify-contracts` fails if the
 snapshots, generated Rust table, or `generated/http_destination_policy.json`
 drift.
+
+## Direct HTTP(S) Transport Gate
+
+The executable Phase-3A direct transport is an immutable policy context shared
+by fresh and resume workers. It owns destination admission, TCP/TLS establishment,
+HTTP/1.1 connection reuse, and connection accounting; protocol workers own
+request construction, response validation, body placement, and storage leases.
+
+The public transport policy has these closed choices:
+
+- schemes are `http` and `https`, with default ports 80 and 443,
+- minimum TLS is `TLSv1.2` or `TLSv1.3`; TLS 1.2 is the default minimum,
+- trust is the operating-system root store, one bounded custom PEM bundle, or
+  their union,
+- certificate verification is always enabled in this gate,
+- the HTTP/1-only connector sends no ALPN extension and uses HTTP/1.1,
+- client certificates, CA directories, native TLS, HTTP/2, redirects, and
+  proxies remain unavailable.
+
+One transport instance fixes the destination-policy, TLS, authentication, and
+future proxy context used by its pool. A physical connection retains both a
+socket permit and a worst-case connection-memory permit from connect admission
+until it is closed, including while idle. Per-origin active/idle counts and the
+idle timeout are bounded; disabling keep-alive sets the idle capacity to zero.
+An incomplete response, cancellation, framing ambiguity, protocol error, TLS
+error, or transport error permanently disqualifies that connection from reuse.
+Only an exactly consumed and validated response may return its connection to
+the pool.
+
+A reused connection retains its original approved peer. Every new physical
+connection performs fresh resolution and full destination admission before TCP
+connect. For HTTPS, the original canonical URI host—not the numeric peer—is
+used for SNI and certificate verification; an IP-literal URI is verified as an
+IP subject alternative name. `Host` continues to use the original authority.
+
+Custom PEM loading happens once while constructing the immutable TLS policy.
+The file and certificate counts are hard bounded, an empty bundle is rejected,
+and any malformed certificate rejects the entire bundle. CA bytes, private
+keys, raw URLs, and credentials are not persisted or exposed in diagnostics.
 
 ## Request Preparation
 

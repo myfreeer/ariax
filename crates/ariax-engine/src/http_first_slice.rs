@@ -1,6 +1,9 @@
 use crate::http_connector::{
     HttpDestinationError, HttpDestinationPolicy, resolve_http_destination,
 };
+use crate::http_transport::{
+    HttpDirectTransport, HttpDirectTransportConfig, HttpResponseLease, HttpTransportError,
+};
 use crate::{
     ActiveTransferRequest, AllocationRequest, LeaseCommit, LeaseWritePlan, RuntimeEffectHandle,
     RuntimeEventSubmission, RuntimeEventSubmitError, StorageEngine, StorageEngineConfig,
@@ -25,13 +28,11 @@ use ariax_storage::{
 use bytes::Bytes;
 use http_body_util::{BodyExt as _, Empty};
 use hyper::body::Incoming;
-use hyper::client::conn::http1;
 use hyper::header::{
-    ACCEPT_ENCODING, CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE, ETAG, HOST,
-    IF_RANGE, LAST_MODIFIED, RANGE, TRANSFER_ENCODING,
+    ACCEPT_ENCODING, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE, ETAG, HOST, IF_RANGE,
+    LAST_MODIFIED, RANGE, TRANSFER_ENCODING,
 };
 use hyper::{HeaderMap, Method, Request, Response, StatusCode, Uri};
-use hyper_util::rt::TokioIo;
 use sha2::{Digest, Sha256};
 use std::error::Error;
 use std::fmt;
@@ -39,13 +40,12 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::net::TcpStream;
 use tokio::runtime::Builder as RuntimeBuilder;
 use tokio::sync::watch;
 use tokio::time::timeout;
 
-const MAX_RESPONSE_HEADERS: usize = 128;
-const MAX_RESPONSE_HEAD_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_RESPONSE_HEADERS: usize = 128;
+pub(crate) const MAX_RESPONSE_HEAD_BYTES: usize = 64 * 1024;
 const HTTP_METADATA_VALIDATOR_HASH_DOMAIN: &str = "ariax/http-metadata-validator/v1\0";
 const HTTP_RESOURCE_HASH_DOMAIN: &str = "ariax/http-resource/v1\0";
 const RECOVERY_READ_BUFFER_BYTES: usize = 1024 * 1024;
@@ -227,6 +227,7 @@ pub enum KnownLengthHttpError {
     UserInfoForbidden,
     PeerPortMismatch { expected: u16, actual: u16 },
     Destination(HttpDestinationError),
+    Transport(HttpTransportError),
     ZeroPieceLength,
     ConnectTimeout,
     Connect(std::io::Error),
@@ -279,6 +280,7 @@ impl KnownLengthHttpError {
             Self::UserInfoForbidden => "uri_userinfo_forbidden",
             Self::PeerPortMismatch { .. } => "peer_port_mismatch",
             Self::Destination(error) => error.code(),
+            Self::Transport(error) => error.code(),
             Self::ZeroPieceLength => "zero_piece_length",
             Self::ConnectTimeout => "connect_timeout",
             Self::Connect(_) => "connect",
@@ -326,6 +328,7 @@ impl KnownLengthHttpError {
     pub const fn retriable(&self) -> bool {
         match self {
             Self::Destination(error) => error.retriable(),
+            Self::Transport(error) => error.retriable(),
             Self::ConnectTimeout
             | Self::Connect(_)
             | Self::HandshakeTimeout
@@ -355,6 +358,7 @@ impl fmt::Display for KnownLengthHttpError {
                 write!(formatter, "HTTP body ended at {actual} of {expected} bytes")
             }
             Self::Destination(error) => error.fmt(formatter),
+            Self::Transport(error) => error.fmt(formatter),
             Self::ExistingLengthMismatch { expected, actual } => write!(
                 formatter,
                 "existing output length {actual} does not match recovered length {expected}"
@@ -383,6 +387,7 @@ impl Error for KnownLengthHttpError {
         match self {
             Self::Connect(error) | Self::Runtime(error) => Some(error),
             Self::Destination(error) => Some(error),
+            Self::Transport(error) => Some(error),
             Self::Hyper(error) => Some(error),
             Self::Request(error) => Some(error),
             Self::Native(error) => Some(error),
@@ -405,6 +410,15 @@ impl From<NativeCapabilityError> for KnownLengthHttpError {
 impl From<HttpDestinationError> for KnownLengthHttpError {
     fn from(error: HttpDestinationError) -> Self {
         Self::Destination(error)
+    }
+}
+
+impl From<HttpTransportError> for KnownLengthHttpError {
+    fn from(error: HttpTransportError) -> Self {
+        match error {
+            HttpTransportError::Destination(error) => Self::Destination(error),
+            error => Self::Transport(error),
+        }
     }
 }
 
@@ -499,20 +513,36 @@ async fn run_known_length_http_runtime_with_policy(
         let transfer = async {
             match transfer {
                 KnownLengthHttpTransfer::Fresh(request) => {
-                    let request = match policy {
-                        Some(policy) => resolve_known_length_http_request(request, policy).await?,
-                        None => request,
+                    let transport = if let Some(policy) = policy {
+                        resolve_http_destination(&request.uri, policy).await?;
+                        Some(HttpDirectTransport::resolved(
+                            &request.uri,
+                            transport_config(
+                                policy,
+                                request.connect_timeout,
+                                request.response_head_timeout,
+                            ),
+                        )?)
+                    } else {
+                        None
                     };
-                    download_known_length_http_inner(request, Some(&mut lifecycle)).await
+                    download_known_length_http_inner(request, Some(&mut lifecycle), transport).await
                 }
                 KnownLengthHttpTransfer::Resume(request) => {
-                    let request = match policy {
-                        Some(policy) => {
-                            resolve_known_length_http_resume_request(request, policy).await?
-                        }
-                        None => request,
+                    let transport = if let Some(policy) = policy {
+                        resolve_http_destination(&request.uri, policy).await?;
+                        Some(HttpDirectTransport::resolved(
+                            &request.uri,
+                            transport_config(
+                                policy,
+                                request.connect_timeout,
+                                request.response_head_timeout,
+                            ),
+                        )?)
+                    } else {
+                        None
                     };
-                    resume_known_length_http_inner(request, Some(&mut lifecycle)).await
+                    resume_known_length_http_inner(request, Some(&mut lifecycle), transport).await
                 }
             }
         };
@@ -683,6 +713,15 @@ fn public_http_error(error: &KnownLengthHttpError) -> PublicError {
         KnownLengthHttpError::Connect(_)
         | KnownLengthHttpError::Hyper(_)
         | KnownLengthHttpError::ShortBody { .. } => (ErrorKind::Network, RetryClass::SameSource),
+        KnownLengthHttpError::Transport(
+            HttpTransportError::ConnectTimeout
+            | HttpTransportError::TlsHandshakeTimeout
+            | HttpTransportError::HandshakeTimeout,
+        ) => (ErrorKind::Timeout, RetryClass::SameSource),
+        KnownLengthHttpError::Transport(error) if error.retriable() => {
+            (ErrorKind::Network, RetryClass::SameSource)
+        }
+        KnownLengthHttpError::Transport(_) => (ErrorKind::Network, RetryClass::Never),
         KnownLengthHttpError::RangeIgnored
         | KnownLengthHttpError::RangeNotSatisfiable
         | KnownLengthHttpError::MissingContentRange
@@ -716,6 +755,19 @@ fn public_http_error(error: &KnownLengthHttpError) -> PublicError {
         _ => (ErrorKind::Network, RetryClass::Never),
     };
     PublicError::new(kind, error.code(), retry)
+}
+
+fn transport_config(
+    destination: HttpDestinationPolicy,
+    connect_timeout: Duration,
+    handshake_timeout: Duration,
+) -> HttpDirectTransportConfig {
+    HttpDirectTransportConfig {
+        destination,
+        connect_timeout,
+        handshake_timeout,
+        ..HttpDirectTransportConfig::default()
+    }
 }
 
 /// Runs one standalone worker on a bounded current-thread Tokio runtime.
@@ -775,38 +827,38 @@ pub fn resume_known_length_http_resolved_blocking(
 pub async fn resume_known_length_http(
     request: KnownLengthHttpResumeRequest,
 ) -> Result<KnownLengthHttpResult, KnownLengthHttpError> {
-    resume_known_length_http_inner(request, None).await
+    resume_known_length_http_inner(request, None, None).await
 }
 
 /// Resolves and pins a continuation URI before entering the existing resume
 /// worker. Replayed validators and layout state remain authoritative.
-async fn resolve_known_length_http_resume_request(
-    mut request: KnownLengthHttpResumeRequest,
-    policy: HttpDestinationPolicy,
-) -> Result<KnownLengthHttpResumeRequest, KnownLengthHttpError> {
-    let destination = resolve_http_destination(&request.uri, policy).await?;
-    request.peer = destination.peer();
-    Ok(request)
-}
-
 /// Runs a recovered range continuation after local destination admission.
 pub async fn resume_known_length_http_resolved(
     request: KnownLengthHttpResumeRequest,
     policy: HttpDestinationPolicy,
 ) -> Result<KnownLengthHttpResult, KnownLengthHttpError> {
-    let request = resolve_known_length_http_resume_request(request, policy).await?;
-    resume_known_length_http(request).await
+    resolve_http_destination(&request.uri, policy).await?;
+    let transport = HttpDirectTransport::resolved(
+        &request.uri,
+        transport_config(
+            policy,
+            request.connect_timeout,
+            request.response_head_timeout,
+        ),
+    )?;
+    resume_known_length_http_inner(request, None, Some(transport)).await
 }
 
 async fn resume_known_length_http_inner(
     request: KnownLengthHttpResumeRequest,
     mut lifecycle: Option<&mut RuntimeHttpLifecycle>,
+    transport: Option<HttpDirectTransport>,
 ) -> Result<KnownLengthHttpResult, KnownLengthHttpError> {
     let uri: Uri = request
         .uri
         .parse()
         .map_err(|_| KnownLengthHttpError::InvalidUri)?;
-    if uri.scheme_str() != Some("http") {
+    if !matches!(uri.scheme_str(), Some("http" | "https")) {
         return Err(KnownLengthHttpError::UnsupportedScheme);
     }
     let authority = uri
@@ -815,7 +867,13 @@ async fn resume_known_length_http_inner(
     if authority.as_str().contains('@') {
         return Err(KnownLengthHttpError::UserInfoForbidden);
     }
-    let expected_port = authority.port_u16().unwrap_or(80);
+    let expected_port = authority
+        .port_u16()
+        .unwrap_or(if uri.scheme_str() == Some("https") {
+            443
+        } else {
+            80
+        });
     if request.peer.port() != expected_port {
         return Err(KnownLengthHttpError::PeerPortMismatch {
             expected: expected_port,
@@ -894,43 +952,29 @@ async fn resume_known_length_http_inner(
         });
     }
 
-    let stream = timeout(request.connect_timeout, TcpStream::connect(request.peer))
-        .await
-        .map_err(|_| KnownLengthHttpError::ConnectTimeout)?
-        .map_err(KnownLengthHttpError::Connect)?;
-    let mut builder = http1::Builder::new();
-    builder
-        .max_headers(MAX_RESPONSE_HEADERS)
-        .max_buf_size(MAX_RESPONSE_HEAD_BYTES);
-    let (mut sender, connection) = timeout(
-        request.response_head_timeout,
-        builder.handshake(TokioIo::new(stream)),
-    )
-    .await
-    .map_err(|_| KnownLengthHttpError::HandshakeTimeout)?
-    .map_err(KnownLengthHttpError::Hyper)?;
-    let connection = tokio::spawn(connection);
-    let path = uri
-        .path_and_query()
-        .map_or("/", hyper::http::uri::PathAndQuery::as_str);
+    let transport = transport.unwrap_or(HttpDirectTransport::pinned(
+        &request.uri,
+        request.peer,
+        transport_config(
+            HttpDestinationPolicy::default(),
+            request.connect_timeout,
+            request.response_head_timeout,
+        ),
+    )?);
     let range = format!("bytes={}-", prepared.durable_prefix);
     let if_range = hyper::header::HeaderValue::from_bytes(validator.etag())
         .map_err(|_| KnownLengthHttpError::InvalidValidator)?;
     let outbound = Request::builder()
         .method(Method::GET)
-        .uri(path)
+        .uri(uri.clone())
         .header(HOST, authority.as_str())
         .header(RANGE, range)
         .header(IF_RANGE, if_range)
         .header(ACCEPT_ENCODING, "identity")
-        .header(CONNECTION, "close")
         .body(Empty::<Bytes>::new())
         .map_err(KnownLengthHttpError::Request)?;
-    let response = timeout(request.response_head_timeout, sender.send_request(outbound))
-        .await
-        .map_err(|_| KnownLengthHttpError::ResponseHeadTimeout)?
-        .map_err(KnownLengthHttpError::Hyper)?;
-    drop(sender);
+    let response = transport.send(outbound).await?;
+    let crate::http_transport::HttpTransportResponse { response, lease } = response;
     validate_resume_response_head(&response, prepared.durable_prefix, total_length, &validator)?;
 
     let PreparedKnownLengthRecovery {
@@ -955,7 +999,7 @@ async fn resume_known_length_http_inner(
     stream_known_length_body(
         storage,
         response,
-        connection,
+        lease,
         BodyTransferPlan {
             task: layout.task(),
             generation: layout.generation(),
@@ -981,18 +1025,7 @@ async fn resume_known_length_http_inner(
 pub async fn download_known_length_http(
     request: KnownLengthHttpRequest,
 ) -> Result<KnownLengthHttpResult, KnownLengthHttpError> {
-    download_known_length_http_inner(request, None).await
-}
-
-/// Resolves and pins the URI before entering the existing fresh HTTP worker.
-/// The URI authority remains the HTTP `Host`; only the transport peer changes.
-async fn resolve_known_length_http_request(
-    mut request: KnownLengthHttpRequest,
-    policy: HttpDestinationPolicy,
-) -> Result<KnownLengthHttpRequest, KnownLengthHttpError> {
-    let destination = resolve_http_destination(&request.uri, policy).await?;
-    request.peer = destination.peer();
-    Ok(request)
+    download_known_length_http_inner(request, None, None).await
 }
 
 /// Runs a fresh transfer after local destination admission and peer pinning.
@@ -1000,13 +1033,22 @@ pub async fn download_known_length_http_resolved(
     request: KnownLengthHttpRequest,
     policy: HttpDestinationPolicy,
 ) -> Result<KnownLengthHttpResult, KnownLengthHttpError> {
-    let request = resolve_known_length_http_request(request, policy).await?;
-    download_known_length_http(request).await
+    resolve_http_destination(&request.uri, policy).await?;
+    let transport = HttpDirectTransport::resolved(
+        &request.uri,
+        transport_config(
+            policy,
+            request.connect_timeout,
+            request.response_head_timeout,
+        ),
+    )?;
+    download_known_length_http_inner(request, None, Some(transport)).await
 }
 
 async fn download_known_length_http_inner(
     request: KnownLengthHttpRequest,
     mut lifecycle: Option<&mut RuntimeHttpLifecycle>,
+    transport: Option<HttpDirectTransport>,
 ) -> Result<KnownLengthHttpResult, KnownLengthHttpError> {
     if request.piece_length == 0 {
         return Err(KnownLengthHttpError::ZeroPieceLength);
@@ -1015,7 +1057,7 @@ async fn download_known_length_http_inner(
         .uri
         .parse()
         .map_err(|_| KnownLengthHttpError::InvalidUri)?;
-    if uri.scheme_str() != Some("http") {
+    if !matches!(uri.scheme_str(), Some("http" | "https")) {
         return Err(KnownLengthHttpError::UnsupportedScheme);
     }
     let authority = uri
@@ -1024,7 +1066,13 @@ async fn download_known_length_http_inner(
     if authority.as_str().contains('@') {
         return Err(KnownLengthHttpError::UserInfoForbidden);
     }
-    let expected_port = authority.port_u16().unwrap_or(80);
+    let expected_port = authority
+        .port_u16()
+        .unwrap_or(if uri.scheme_str() == Some("https") {
+            443
+        } else {
+            80
+        });
     if request.peer.port() != expected_port {
         return Err(KnownLengthHttpError::PeerPortMismatch {
             expected: expected_port,
@@ -1044,38 +1092,24 @@ async fn download_known_length_http_inner(
     )?;
     append_initial_admission(&mut journal, request.generation)?;
 
-    let stream = timeout(request.connect_timeout, TcpStream::connect(request.peer))
-        .await
-        .map_err(|_| KnownLengthHttpError::ConnectTimeout)?
-        .map_err(KnownLengthHttpError::Connect)?;
-    let mut builder = http1::Builder::new();
-    builder
-        .max_headers(MAX_RESPONSE_HEADERS)
-        .max_buf_size(MAX_RESPONSE_HEAD_BYTES);
-    let (mut sender, connection) = timeout(
-        request.response_head_timeout,
-        builder.handshake(TokioIo::new(stream)),
-    )
-    .await
-    .map_err(|_| KnownLengthHttpError::HandshakeTimeout)?
-    .map_err(KnownLengthHttpError::Hyper)?;
-    let connection = tokio::spawn(connection);
-    let path = uri
-        .path_and_query()
-        .map_or("/", hyper::http::uri::PathAndQuery::as_str);
+    let transport = transport.unwrap_or(HttpDirectTransport::pinned(
+        &request.uri,
+        request.peer,
+        transport_config(
+            HttpDestinationPolicy::default(),
+            request.connect_timeout,
+            request.response_head_timeout,
+        ),
+    )?);
     let outbound = Request::builder()
         .method(Method::GET)
-        .uri(path)
+        .uri(uri.clone())
         .header(HOST, authority.as_str())
         .header(ACCEPT_ENCODING, "identity")
-        .header(CONNECTION, "close")
         .body(Empty::<Bytes>::new())
         .map_err(KnownLengthHttpError::Request)?;
-    let response = timeout(request.response_head_timeout, sender.send_request(outbound))
-        .await
-        .map_err(|_| KnownLengthHttpError::ResponseHeadTimeout)?
-        .map_err(KnownLengthHttpError::Hyper)?;
-    drop(sender);
+    let response = transport.send(outbound).await?;
+    let crate::http_transport::HttpTransportResponse { response, lease } = response;
     let head = validate_fresh_response_head(&response)?;
 
     output_file.set_len(head.content_length)?;
@@ -1112,7 +1146,7 @@ async fn download_known_length_http_inner(
     stream_known_length_body(
         storage,
         response,
-        connection,
+        lease,
         BodyTransferPlan {
             task: request.task,
             generation: request.generation,
@@ -1152,7 +1186,7 @@ struct BodyTransferPlan {
 async fn stream_known_length_body(
     mut storage: StorageEngine,
     mut response: Response<Incoming>,
-    connection: tokio::task::JoinHandle<Result<(), hyper::Error>>,
+    connection: HttpResponseLease,
     mut plan: BodyTransferPlan,
 ) -> Result<KnownLengthHttpResult, KnownLengthHttpError> {
     let mut offset = plan.start_offset;
@@ -1332,21 +1366,6 @@ async fn stream_known_length_body(
             actual: offset,
         });
     }
-    let connection_result = timeout(plan.response_body_timeout, connection)
-        .await
-        .map_err(|_| KnownLengthHttpError::ResponseBodyTimeout)?
-        .map_err(|_| KnownLengthHttpError::RecoveryState)?;
-    if let Err(error) = connection_result {
-        abort_current(
-            &mut storage,
-            plan.task,
-            plan.generation,
-            current,
-            LeaseAbortReason::OversizedBody,
-        )?;
-        let _protocol_error = error;
-        return Err(KnownLengthHttpError::OversizedBody);
-    }
     if let Some((lease, _piece, remaining)) = current {
         debug_assert_eq!(remaining, 0);
         let final_piece_len = plan.content_length % plan.piece_length;
@@ -1375,6 +1394,7 @@ async fn stream_known_length_body(
         now_unix_ms().unwrap_or(plan.completed_at_unix_ms),
     )?;
     storage.close()?;
+    connection.recycle().await;
     Ok(KnownLengthHttpResult {
         content_length: plan.content_length,
         resumed_from: plan.start_offset,

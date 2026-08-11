@@ -550,7 +550,7 @@ mod tests {
             fs::create_dir_all(workspace.join(".cargo")).expect("create Cargo config fixture");
             fs::write(
                 workspace.join("Cargo.toml"),
-                "[workspace.dependencies]\nrusqlite = { version = \"=0.40.1\", default-features = false, features = [\"bundled\", \"backup\", \"cache\", \"limits\"] }\n",
+                "[workspace.dependencies]\nrusqlite = { version = \"=0.40.2\", default-features = false, features = [\"bundled\", \"backup\", \"cache\", \"limits\"] }\n",
             )
             .expect("write workspace manifest fixture");
             fs::write(

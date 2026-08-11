@@ -4,9 +4,11 @@ Status: reviewed contract with implementation in progress. Core scheduling,
 applied-status publication, bounded persistence ownership, pure cross-store
 startup planning, source-derived credential admission, ordered SQLite startup
 repair, descriptor-safe central-journal native recovery/publication,
-packet-independent stats sampling, and the blocking-disk fallback have
-executable checkpoints; process-bootstrap integration, the first end-to-end
-transfer, the native adapter CI matrix, and the MSRV gate are not yet complete.
+packet-independent stats sampling, the blocking-disk fallback, process-bootstrap
+integration, the first known-length/resume transfer, policy-owned destination
+admission, and the direct HTTP(S) transport have executable checkpoints. Live
+scheduler/RPC dispatch, redirect/proxy/DNS policy, the native release matrix,
+and the MSRV gate are not yet complete.
 
 This maps the requested properties to design documents.
 

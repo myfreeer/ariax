@@ -12,9 +12,14 @@ ariax-storage.workspace = true
 bytes.workspace = true
 http-body-util.workspace = true
 hyper = { workspace = true, features = ["client", "http1"] }
-hyper-util = { workspace = true, features = ["tokio"] }
+hyper-rustls.workspace = true
+hyper-util = { workspace = true, features = ["client", "client-legacy", "http1", "tokio"] }
+rustls.workspace = true
+rustls-native-certs.workspace = true
+rustls-pemfile.workspace = true
 sha2.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+tower-service.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]
 ariax-windows-security.workspace = true

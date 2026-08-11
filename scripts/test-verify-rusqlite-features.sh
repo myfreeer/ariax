@@ -5,9 +5,9 @@ repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 verifier="$repo_root/scripts/verify-rusqlite-features.sh"
 
 valid_tree='ariax-storage v0.1.0|'
-valid_tree+=$'\nrusqlite v0.40.1|backup,bundled,cache,hashlink,limits,modern_sqlite'
-valid_tree+=$'\nlibsqlite3-sys v0.38.1|bundled,bundled_bindings,cc,default,min_sqlite_version_3_34_1,pkg-config,vcpkg'
-valid_tree+=$'\nrusqlite v0.40.1|backup,bundled,cache,hashlink,limits,modern_sqlite (*)'
+valid_tree+=$'\nrusqlite v0.40.2|backup,bundled,cache,hashlink,limits,modern_sqlite'
+valid_tree+=$'\nlibsqlite3-sys v0.38.2|bundled,bundled_bindings,cc,default,min_sqlite_version_3_34_1,pkg-config,vcpkg'
+valid_tree+=$'\nrusqlite v0.40.2|backup,bundled,cache,hashlink,limits,modern_sqlite (*)'
 
 expect_accept() {
     local name=$1
@@ -98,8 +98,8 @@ cargo() {
 
     printf '%s\n' \
         'ariax-storage v0.1.0|' \
-        'rusqlite v0.40.1|backup,bundled,cache,hashlink,limits,modern_sqlite,serialize' \
-        'libsqlite3-sys v0.38.1|bundled,bundled_bindings,cc,default,min_sqlite_version_3_34_1,pkg-config,vcpkg'
+        'rusqlite v0.40.2|backup,bundled,cache,hashlink,limits,modern_sqlite,serialize' \
+        'libsqlite3-sys v0.38.2|bundled,bundled_bindings,cc,default,min_sqlite_version_3_34_1,pkg-config,vcpkg'
 }
 export -f cargo
 

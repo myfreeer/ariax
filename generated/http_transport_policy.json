@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "status": "implemented",
+  "backend": {"http": "hyper-1-http1", "tls": "rustls-0.23", "connector": "hyper-rustls-0.27", "crypto_provider": "ring", "native_roots": "rustls-native-certs"},
+  "schemes": {"http": {"default_port": 80}, "https": {"default_port": 443}},
+  "tls": {"versions": ["TLS1.2", "TLS1.3"], "default_minimum": "TLS1.2", "trust_sources": ["system", "custom_pem", "system_and_custom_pem"], "certificate_verification": "required", "alpn": [], "http1_without_alpn": true, "max_custom_pem_bytes": 4194304, "max_custom_certificates": 4096},
+  "pool": {"scope": "origin", "keep_alive_default": true, "default_max_connections_per_origin": 1, "default_max_idle_connections_per_origin": 1, "max_connections_per_origin": 8, "max_idle_connections_per_origin": 8, "default_idle_timeout_seconds": 30, "connection_reservation_bytes": 262144, "fresh_destination_admission_per_physical_connection": true, "incomplete_or_failed_response_reusable": false},
+  "diagnostics": ["connections_opened", "connections_reused", "connections_expired", "connections_poisoned", "pool_exhausted", "tls_handshakes", "tls_failures"],
+  "errors": [{"code": "http_transport_invalid_policy", "retriable": false}, {"code": "http_transport_invalid_origin", "retriable": false}, {"code": "http_transport_origin_mismatch", "retriable": false}, {"code": "http_transport_pool_exhausted", "retriable": true}, {"code": "connect_timeout", "retriable": true}, {"code": "connect", "retriable": true}, {"code": "tls_configuration", "retriable": false}, {"code": "tls_server_name", "retriable": false}, {"code": "tls_handshake_timeout", "retriable": true}, {"code": "tls_handshake", "retriable": false}, {"code": "handshake_timeout", "retriable": true}, {"code": "http_protocol", "retriable": true}, {"code": "request_build", "retriable": false}],
+  "deferred": ["redirects", "proxies", "dns_cache", "dns_singleflight", "happy_eyeballs", "http2", "client_certificates", "insecure_verification", "native_tls", "ordinary_cli_rpc_uri_exposure"]
+}

@@ -26,9 +26,13 @@ by focused tests and the CLI. The direct plaintext destination connector is
 also executable: ordinary authority validation, bounded system resolution,
 canonical numeric admission, generated pinned-IANA special-use filtering,
 all-answer rejection, final-peer binding, and fresh/resume runtime-effect
-integration are covered by focused tests and generated contracts. TLS,
-redirect/proxy policy, DNS cache/TTL/singleflight and Happy Eyeballs,
-weak/digest-only resume, segmented scheduling, live scheduler/RPC dispatch,
+integration are covered by focused tests and generated contracts. The Phase-3A
+direct transport is executable through downloader-owned Hyper/hyper-rustls with
+ring-only rustls, mandatory certificate verification, system/custom roots,
+original-host SNI, bounded per-origin HTTP/1.1 reuse, connection permits,
+stable errors, diagnostics, and generated contracts. Redirect/proxy policy,
+DNS cache/TTL/singleflight and Happy Eyeballs, weak/digest-only resume,
+segmented scheduling, live scheduler/RPC dispatch,
 hot-backup crash-residue reconciliation, remaining backend work, and the
 native-platform/MSRV release CI gates remain phase and tag gates. These
 checkpoints do not yet satisfy the complete first
@@ -37,8 +41,8 @@ vertical slice or the project definition of done.
 This is a staged plan for building the design without repeating the incomplete
 rewrite pattern. The native-startup orchestration boundary, central-journal
 filesystem backends, runtime-effect boundary, and product bootstrap are now
-executable; the remaining HTTP policy/dispatch slice and native CI evidence
-remain phase gates.
+executable; the remaining redirect/proxy/DNS policy and public-dispatch slice,
+plus native CI evidence, remain phase gates.
 
 ## Phase 0: Contracts, Compatibility Inventory, And Build Baseline
 

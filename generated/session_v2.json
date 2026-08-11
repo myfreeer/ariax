@@ -1,6 +1,6 @@
 {
   "schema": 2,
-  "dependency": {"crate": "rusqlite", "version": "0.40.1", "default_features": false, "features": ["bundled", "backup", "cache", "limits"], "bundled_sqlite_flags": "-DSQLITE_MAX_LIKE_PATTERN_LENGTH=65536"},
+  "dependency": {"crate": "rusqlite", "version": "0.40.2", "default_features": false, "features": ["bundled", "backup", "cache", "limits"], "bundled_sqlite_flags": "-DSQLITE_MAX_LIKE_PATTERN_LENGTH=65536"},
   "pragmas": {"new_page_size_bytes": 4096, "foreign_keys": true, "synchronous": "FULL", "busy_timeout_ms": 5000, "cache_kib_default": 8192, "cache_kib_minimum": 1024, "cache_kib_maximum": 262144, "mmap_size_bytes": 0, "wal_auto_checkpoint_pages": 1000, "preferred_journal_mode": "WAL", "fallback_journal_mode": "DELETE"},
   "connection_limits": [
     {"code": "length", "value": 83886080},

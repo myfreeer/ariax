@@ -1,6 +1,7 @@
 # Library Choice
 
-Status: reviewed decision record. Ecosystem snapshot: 2026-07-25.
+Status: reviewed decision record. Ecosystem snapshot: 2026-07-25, with the
+rusqlite MSRV maintenance pin updated on 2026-08-10.
 
 The downloader should reuse mature infrastructure, but the core should still
 own correctness-sensitive behavior: range validation, disk placement,
@@ -365,7 +366,7 @@ feature/integration surface than SuppaFTP for this design.
 
 ## Session Database
 
-Use `rusqlite` 0.40.1 with `default-features = false` and exactly
+Use `rusqlite` 0.40.2 with `default-features = false` and exactly
 `["bundled", "backup", "cache", "limits"]` for reproducible first-slice
 desktop builds. `bundled` alone does not expose the hot-backup API, and the
 crate's defaults include an unrelated WASM FFI path; the explicit feature set
@@ -376,6 +377,9 @@ Distributions may add a separately tested system-SQLite build feature later.
 The bundled build is compiled with
 `-DSQLITE_MAX_LIKE_PATTERN_LENGTH=65536` from repository Cargo configuration so
 the required 64 KiB runtime limit is attainable and verified exactly.
+The 0.40.2 patch pin selects `libsqlite3-sys` 0.38.2, whose build-script MSRV
+shim preserves the declared Rust 1.88 check; 0.40.1/0.38.1 does not compile
+that bundled build script on Rust 1.88.
 
 The `minimal` first implementation still includes SQLite. A control-files-only
 minimal profile remains deferred until it has its own queue/index/recovery
@@ -560,12 +564,13 @@ tarballs per the README build rules.
   artifact that promises panic containment must use an unwind-capable profile
   and catch panics at every exported boundary.
 
-Exact direct versions observed during the 2026-07-25 review are a research
-snapshot, not unconstrained version requirements: Hyper 1.11.0, hyper-util
+Exact direct versions selected by the review and subsequent compatibility
+maintenance through 2026-08-10 are a controlled snapshot, not unconstrained
+version requirements: Hyper 1.11.0, hyper-util
 0.1.20, hyper-rustls 0.27.9, Hickory Resolver 0.26.1, rustls 0.23.42 stable,
 Tokio 1.53.1, tokio-util 0.7.19, russh 0.62.4, russh-sftp 2.3.0 (patched),
 ssh-key 0.7.0-rc.11 (exact russh dependency), SuppaFTP 10.0.1 (patched),
-quick-xml 0.41.0, tokio-uring 0.5.0, io-uring 0.7.13, rusqlite 0.40.1,
+quick-xml 0.41.0, tokio-uring 0.5.0, io-uring 0.7.13, rusqlite 0.40.2,
 Rayon 1.12.0, Quinn 0.11.11, h3 0.0.8, h3-quinn 0.0.10, crc32c 0.6.8,
 sha2 0.11.0, sha1/md-5 0.11.x, unicode-normalization 0.1.25,
 cookie_store 0.22.1, rustix 1.1.4, windows-sys 0.61.2,

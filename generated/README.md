@@ -34,6 +34,9 @@ backup requirements.
 Special-Purpose Address Registry source URLs, dates, normalized snapshot
 hashes, policy classes, answer cap, and executable status. The same generator
 emits the Rust longest-prefix classifier consumed by the HTTP connector.
+`http_transport_policy.json` freezes the direct HTTP(S) backend, TLS and trust
+choices, bounded per-origin HTTP/1.1 pool, diagnostics, stable error vocabulary,
+and explicitly deferred protocol features.
 `error_codes.json` includes the stable journal numeric value for each closed
 error class.
 

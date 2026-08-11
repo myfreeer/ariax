@@ -11,6 +11,7 @@ const IPV4_PATH: &str = "compat/iana-ipv4-special-registry.csv";
 const IPV6_PATH: &str = "compat/iana-ipv6-special-registry.csv";
 const RUST_OUTPUT: &str = "crates/ariax-engine/src/http_special_purpose_generated.rs";
 const JSON_OUTPUT: &str = "generated/http_destination_policy.json";
+const TRANSPORT_JSON_OUTPUT: &str = "generated/http_transport_policy.json";
 const MAX_DESTINATION_ADDRESSES: usize = 32;
 const MAX_DESTINATION_HOST_BYTES: usize = 253;
 const DEFAULT_RESOLUTION_TIMEOUT_SECONDS: u64 = 5;
@@ -95,16 +96,37 @@ pub(crate) fn generate_http_policy_contracts(
             PathBuf::from(JSON_OUTPUT),
             render_json(&pin, &entries, ipv4.len(), ipv6.len()),
         ),
+        (
+            PathBuf::from(TRANSPORT_JSON_OUTPUT),
+            render_transport_json(),
+        ),
     ];
     apply_outputs(workspace_root, &outputs, mode)?;
     Ok(format!(
-        "{} pinned IANA HTTP destination policy: {} IPv4/IPv6 prefixes",
+        "{} pinned IANA HTTP destination policy and direct HTTP(S) transport contract: {} IPv4/IPv6 prefixes",
         match mode {
             GenerationMode::Write => "generated",
             GenerationMode::Check => "verified",
         },
         entries.len()
     ))
+}
+
+fn render_transport_json() -> String {
+    concat!(
+        "{\n",
+        "  \"schema\": 1,\n",
+        "  \"status\": \"implemented\",\n",
+        "  \"backend\": {\"http\": \"hyper-1-http1\", \"tls\": \"rustls-0.23\", \"connector\": \"hyper-rustls-0.27\", \"crypto_provider\": \"ring\", \"native_roots\": \"rustls-native-certs\"},\n",
+        "  \"schemes\": {\"http\": {\"default_port\": 80}, \"https\": {\"default_port\": 443}},\n",
+        "  \"tls\": {\"versions\": [\"TLS1.2\", \"TLS1.3\"], \"default_minimum\": \"TLS1.2\", \"trust_sources\": [\"system\", \"custom_pem\", \"system_and_custom_pem\"], \"certificate_verification\": \"required\", \"alpn\": [], \"http1_without_alpn\": true, \"max_custom_pem_bytes\": 4194304, \"max_custom_certificates\": 4096},\n",
+        "  \"pool\": {\"scope\": \"origin\", \"keep_alive_default\": true, \"default_max_connections_per_origin\": 1, \"default_max_idle_connections_per_origin\": 1, \"max_connections_per_origin\": 8, \"max_idle_connections_per_origin\": 8, \"default_idle_timeout_seconds\": 30, \"connection_reservation_bytes\": 262144, \"fresh_destination_admission_per_physical_connection\": true, \"incomplete_or_failed_response_reusable\": false},\n",
+        "  \"diagnostics\": [\"connections_opened\", \"connections_reused\", \"connections_expired\", \"connections_poisoned\", \"pool_exhausted\", \"tls_handshakes\", \"tls_failures\"],\n",
+        "  \"errors\": [{\"code\": \"http_transport_invalid_policy\", \"retriable\": false}, {\"code\": \"http_transport_invalid_origin\", \"retriable\": false}, {\"code\": \"http_transport_origin_mismatch\", \"retriable\": false}, {\"code\": \"http_transport_pool_exhausted\", \"retriable\": true}, {\"code\": \"connect_timeout\", \"retriable\": true}, {\"code\": \"connect\", \"retriable\": true}, {\"code\": \"tls_configuration\", \"retriable\": false}, {\"code\": \"tls_server_name\", \"retriable\": false}, {\"code\": \"tls_handshake_timeout\", \"retriable\": true}, {\"code\": \"tls_handshake\", \"retriable\": false}, {\"code\": \"handshake_timeout\", \"retriable\": true}, {\"code\": \"http_protocol\", \"retriable\": true}, {\"code\": \"request_build\", \"retriable\": false}],\n",
+        "  \"deferred\": [\"redirects\", \"proxies\", \"dns_cache\", \"dns_singleflight\", \"happy_eyeballs\", \"http2\", \"client_certificates\", \"insecure_verification\", \"native_tls\", \"ordinary_cli_rpc_uri_exposure\"]\n",
+        "}\n",
+    )
+    .to_owned()
 }
 
 fn parse_pin(input: &str) -> Result<RegistryPin, String> {
@@ -502,7 +524,10 @@ fn hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Class, Prefix, class_for_name, normalize_entries, parse_csv, parse_prefix};
+    use super::{
+        Class, Prefix, class_for_name, normalize_entries, parse_csv, parse_prefix,
+        render_transport_json,
+    };
 
     #[test]
     fn csv_parser_preserves_quoted_commas_and_newlines() {
@@ -551,5 +576,18 @@ mod tests {
         ])
         .expect_err("conflict");
         assert!(error.contains("conflicting classes"));
+    }
+
+    #[test]
+    fn direct_transport_contract_freezes_security_and_pool_bounds() {
+        let contract = render_transport_json();
+        assert!(contract.contains("\"crypto_provider\": \"ring\""));
+        assert!(contract.contains("\"certificate_verification\": \"required\""));
+        assert!(contract.contains("\"alpn\": []"));
+        assert!(contract.contains("\"http1_without_alpn\": true"));
+        assert!(contract.contains("\"max_connections_per_origin\": 8"));
+        assert!(contract.contains("\"fresh_destination_admission_per_physical_connection\": true"));
+        assert!(contract.contains("\"incomplete_or_failed_response_reusable\": false"));
+        assert!(contract.contains("\"ordinary_cli_rpc_uri_exposure\""));
     }
 }

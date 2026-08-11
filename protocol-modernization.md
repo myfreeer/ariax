@@ -1,6 +1,8 @@
 # Protocol Modernization
 
-Status: reviewed pre-implementation contract. Implementation pending.
+Status: reviewed implementation contract. Direct destination admission and the
+Phase-3A HTTP(S) transport foundation below are executable; redirects, proxies,
+shared DNS policy, and public dispatch remain later gates.
 
 Modern protocols should be part of the roadmap, but not all of them belong in
 the mandatory baseline. The downloader must keep the reliable aria2-style
@@ -183,6 +185,27 @@ Config:
 allows UDP. It must fall back cleanly to HTTP/2 or HTTP/1.1.
 
 ## TLS
+
+### Phase 3A Direct Transport Gate
+
+The first executable HTTPS gate uses rustls through the downloader-owned
+Hyper connector. It accepts TLS 1.2 and TLS 1.3, defaults to a TLS 1.2 minimum,
+loads the operating-system trust roots once per immutable transport, and may
+union them with one bounded administrator-supplied PEM bundle. Certificate
+verification is mandatory, the HTTP/1-only connector sends no ALPN extension,
+and the original URI host remains the SNI/certificate identity while the
+connector uses the already admitted numeric peer for TCP.
+
+The transport is origin-bound and owns a bounded HTTP/1.1 keep-alive pool.
+Physical connections retain socket and estimated-memory permits while active or
+idle. A new connection repeats destination resolution and special-use policy;
+an incompletely consumed or ambiguous response poisons its connection rather
+than returning it to the pool. The Phase 3A pool is per transport/origin; the
+process-wide multi-origin LRU and full profile admission belong to live
+dispatcher integration.
+
+Client certificates, native TLS, TLS 1.1 compatibility, HTTP/2 ALPN, ECH, and
+certificate-verification disabling are not part of this gate.
 
 Baseline:
 

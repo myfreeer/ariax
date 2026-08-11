@@ -5,6 +5,7 @@
 mod effect_sink;
 mod http_connector;
 mod http_first_slice;
+mod http_transport;
 mod process_bootstrap;
 mod runtime_effects;
 mod startup_executor;
@@ -33,6 +34,14 @@ pub use http_first_slice::{
     resume_known_length_http_resolved, resume_known_length_http_resolved_blocking,
     run_known_length_http_runtime, run_known_length_http_runtime_blocking,
     run_known_length_http_runtime_resolved, run_known_length_http_runtime_resolved_blocking,
+};
+pub use http_transport::{
+    DEFAULT_HTTP_IDLE_TIMEOUT, DEFAULT_HTTP_MAX_CONNECTIONS_PER_ORIGIN,
+    DEFAULT_HTTP_MAX_IDLE_CONNECTIONS_PER_ORIGIN, HTTP_CONNECTION_RESERVATION_BYTES,
+    HttpDirectTransport, HttpDirectTransportConfig, HttpMinimumTlsVersion, HttpTlsPolicy,
+    HttpTransportBudgets, HttpTransportError, HttpTransportStats, HttpTrustSource,
+    MAX_HTTP_CONNECTIONS_PER_ORIGIN, MAX_HTTP_IDLE_CONNECTIONS_PER_ORIGIN,
+    MAX_HTTP_TLS_BUNDLE_BYTES, MAX_HTTP_TLS_BUNDLE_CERTIFICATES,
 };
 pub use process_bootstrap::{
     BootstrappedEngine, ProcessBootstrapConfig, ProcessBootstrapError, ProcessBootstrapFailure,

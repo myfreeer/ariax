@@ -35,14 +35,17 @@ durable prefix is read back, reopened without truncation, and continued with a
 strict `206`/`Content-Range`/`If-Range` request. The bounded runtime effect
 adapter and experimental CLI cover allocation, cancellation, retry
 classification, verification, and completion for this pinned-peer path. A
-policy-owned plaintext connector now validates ordinary HTTP authorities,
+policy-owned destination-admission connector now validates ordinary HTTP authorities,
 bounds system resolution, canonicalizes legacy and mapped numeric forms,
 applies a generated SHA-256-pinned IANA special-purpose classifier to every
 answer, and pins the exact numeric connect peer while retaining the original
 `Host`. Fresh and resume workers can use that connector through the same
-runtime-effect lifecycle. Ordinary URI input remains intentionally unexposed
-through CLI/RPC. TLS, redirects, proxies, DNS cache/TTL/singleflight and Happy
-Eyeballs, weak/Last-Modified or digest-only resume, segmented multi-mirror
+runtime-effect lifecycle. A downloader-owned Hyper/rustls transport now adds
+verified TLS 1.2/1.3 with system/custom roots, original-host SNI, bounded
+per-origin HTTP/1.1 keep-alive, connection resource permits, stable transport
+errors, and pool/TLS diagnostics. Ordinary URI input remains intentionally
+unexposed through CLI/RPC. Redirects, proxies, DNS cache/TTL/singleflight and
+Happy Eyeballs, weak/Last-Modified or digest-only resume, segmented multi-mirror
 scheduling, live scheduler/RPC dispatch, hot-backup crash-residue
 reconciliation, and native-platform/MSRV CI gates remain pending. This
 checkpoint is not yet a complete downloader or release/tag-ready. Phase gates

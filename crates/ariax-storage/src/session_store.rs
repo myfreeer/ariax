@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const SESSION_SCHEMA_VERSION: u32 = 2;
-pub const SESSION_RUSQLITE_VERSION: &str = "0.40.1";
+pub const SESSION_RUSQLITE_VERSION: &str = "0.40.2";
 pub const SESSION_RUSQLITE_FEATURES: [&str; 4] = ["bundled", "backup", "cache", "limits"];
 pub const SESSION_BUNDLED_SQLITE_FLAGS: &str = "-DSQLITE_MAX_LIKE_PATTERN_LENGTH=65536";
 pub const SESSION_PAGE_SIZE_BYTES: i64 = 4096;
