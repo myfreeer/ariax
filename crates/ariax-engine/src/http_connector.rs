@@ -6,6 +6,7 @@
 //! exact numeric peer selected for one connection attempt. TLS, proxies,
 //! redirects, cache/TTL policy, and Happy Eyeballs are separate gates.
 
+use crate::{HttpResolver, HttpResolverError};
 use hyper::Uri;
 use std::error::Error;
 use std::fmt;
@@ -141,6 +142,7 @@ pub enum HttpDestinationError {
     InvalidPolicy,
     ResolveTimeout,
     Resolve(std::io::Error),
+    PolicyResolver(HttpResolverError),
     NoAddresses,
     TooManyAddresses {
         max: usize,
@@ -165,6 +167,7 @@ impl HttpDestinationError {
             Self::InvalidPolicy => "invalid_destination_policy",
             Self::ResolveTimeout => "dns_timeout",
             Self::Resolve(_) => "dns_resolve",
+            Self::PolicyResolver(error) => error.code(),
             Self::NoAddresses => "no_destination_addresses",
             Self::TooManyAddresses { .. } => "too_many_destination_addresses",
             Self::AddressDenied { .. } => "destination_denied",
@@ -173,10 +176,11 @@ impl HttpDestinationError {
 
     #[must_use]
     pub const fn retriable(&self) -> bool {
-        matches!(
-            self,
-            Self::ResolveTimeout | Self::Resolve(_) | Self::NoAddresses
-        )
+        match self {
+            Self::ResolveTimeout | Self::Resolve(_) | Self::NoAddresses => true,
+            Self::PolicyResolver(error) => error.retriable(),
+            _ => false,
+        }
     }
 }
 
@@ -197,6 +201,7 @@ impl fmt::Display for HttpDestinationError {
                 )
             }
             Self::Resolve(error) => write!(formatter, "destination resolution failed: {error}"),
+            Self::PolicyResolver(error) => error.fmt(formatter),
             _ => formatter.write_str(self.code()),
         }
     }
@@ -206,6 +211,7 @@ impl Error for HttpDestinationError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Resolve(error) => Some(error),
+            Self::PolicyResolver(error) => Some(error),
             _ => None,
         }
     }
@@ -283,6 +289,82 @@ pub async fn resolve_http_destination(
             .map_err(|_| HttpDestinationError::ResolveTimeout)?
             .map_err(HttpDestinationError::Resolve)?;
         admit_addresses(lookup, policy)?
+    };
+
+    Ok(ResolvedHttpDestination {
+        uri,
+        authority: authority_text.into(),
+        peer: addresses[0],
+        addresses,
+    })
+}
+
+/// Resolves a hostname through the shared project-owned resolver, then applies
+/// the same fail-closed full-answer destination policy and numeric peer pinning
+/// as the bootstrap system-resolver path.
+pub async fn resolve_http_destination_with_resolver(
+    uri_text: &str,
+    policy: HttpDestinationPolicy,
+    resolver: &HttpResolver,
+) -> Result<ResolvedHttpDestination, HttpDestinationError> {
+    let policy = policy.validate()?;
+    let uri: Uri = uri_text
+        .parse()
+        .map_err(|_| HttpDestinationError::InvalidUri)?;
+    let scheme = uri.scheme_str();
+    if !matches!(scheme, Some("http" | "https")) {
+        return Err(HttpDestinationError::UnsupportedScheme);
+    }
+    let authority = uri
+        .authority()
+        .ok_or(HttpDestinationError::MissingAuthority)?;
+    if authority.as_str().contains('@') {
+        return Err(HttpDestinationError::UserInfoForbidden);
+    }
+    let authority_host = authority.host();
+    let bracketed = authority_host.starts_with('[');
+    let host = authority_host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(authority_host);
+    if host.is_empty() {
+        return Err(HttpDestinationError::MissingHost);
+    }
+    let explicit_port = if bracketed {
+        authority
+            .as_str()
+            .strip_prefix(authority_host)
+            .is_some_and(|suffix| !suffix.is_empty())
+    } else {
+        authority.as_str()[host.len()..].starts_with(':')
+    };
+    if explicit_port && authority.port_u16().is_none() {
+        return Err(HttpDestinationError::InvalidPort);
+    }
+    let port = authority
+        .port_u16()
+        .unwrap_or(if scheme == Some("https") { 443 } else { 80 });
+    if port == 0 {
+        return Err(HttpDestinationError::InvalidPort);
+    }
+    validate_host(host, bracketed)?;
+    let authority_text = authority.as_str().to_owned();
+
+    let addresses = if let Some(address) = parse_numeric_host(host, bracketed)? {
+        admit_addresses([SocketAddr::new(address, port)], policy)?
+    } else {
+        let resolved = resolver
+            .resolve(host)
+            .await
+            .map_err(HttpDestinationError::PolicyResolver)?;
+        admit_addresses(
+            resolved
+                .addresses()
+                .iter()
+                .copied()
+                .map(|address| SocketAddr::new(address, port)),
+            policy,
+        )?
     };
 
     Ok(ResolvedHttpDestination {

@@ -1,48 +1,30 @@
 # Implementation Plan
 
-Status: implementation is underway. Phase 0 contract generation and the gated
-Phase 1 core/config/storage work have executable checkpoints. This includes the
-deterministic bounded scheduler kernel, journal v1 framing/replay and typed
-payloads, SQLite session schema v2, exact v1 preflight and transactional
-migration, dense queue/slow metadata transitions, owner locking, WAL/DELETE
-probes, journal-install tokens, retained stopped-result transactions, and
-the validated no-clobber backup primitive. An ordered runtime driver, immutable
-applied snapshots, bounded blocking-disk fallback, dedicated session owner, concrete
-persistence-effect sink, host-key write/approval transactions, persisted-delay
-recovery, pure cross-store startup planning, bounded source-derived credential
-admission, ordered SQLite startup repair, and packet-independent stats sampling
-are also executable. Descriptor-safe Unix/Windows root and central-journal
-capabilities, install/appender recovery, owner-thread appender construction, and
-publication-last native startup are executable. Bounded non-persistence effect
-adapters and the product process-bootstrap path are also executable. A narrow
-fresh HTTP/1.1 known-length transfer now runs through a descriptor-backed
-`StorageEngine`, bounded pooled buffers and positional disk writes, strict
-piece durability, replay recovery, cancellation/short-body aborts, and an
-explicit pinned-peer CLI control. The first recoverable strong-ETag range
-resume milestone is also executable: safe validator persistence/replay,
-no-truncate descriptor reopen/readback, strict `206`/`Content-Range`/`If-Range`
-validation, continued leases, and bounded runtime lifecycle effects are covered
-by focused tests and the CLI. The direct plaintext destination connector is
-also executable: ordinary authority validation, bounded system resolution,
-canonical numeric admission, generated pinned-IANA special-use filtering,
-all-answer rejection, final-peer binding, and fresh/resume runtime-effect
-integration are covered by focused tests and generated contracts. The Phase-3A
-direct transport is executable through downloader-owned Hyper/hyper-rustls with
-ring-only rustls, mandatory certificate verification, system/custom roots,
-original-host SNI, bounded per-origin HTTP/1.1 reuse, connection permits,
-stable errors, diagnostics, and generated contracts. Redirect/proxy policy,
-DNS cache/TTL/singleflight and Happy Eyeballs, weak/digest-only resume,
-segmented scheduling, live scheduler/RPC dispatch,
-hot-backup crash-residue reconciliation, remaining backend work, and the
-native-platform/MSRV release CI gates remain phase and tag gates. These
-checkpoints do not yet satisfy the complete first
-vertical slice or the project definition of done.
+Status: implementation is underway. Phase 0 contracts and the gated Phase-1/2
+core, config, persistence, recovery, runtime, storage, and native capability
+work have executable checkpoints. The Phase-3B checkpoint candidate now covers
+the first public known-length multi-mirror HTTP(S) vertical slice: atomic
+task/source/current-option persistence before scheduler publication;
+source-aware restart recovery; verified TLS and bounded HTTP/1.1 reuse;
+policy-owned DNS cache/TTL/singleflight, generated special-use filtering and
+Happy Eyeballs; redirect/proxy/auth/cookie policy; non-overlapping range leases
+with bounded retry and durable-piece restart; packet-independent live stats;
+real worker supervision; and `addUri`, `tellStatus`, `pause`, `remove`, and
+`getGlobalStat` over loopback HTTP and Content-Length stdio. The bundled Mozilla
+Public Suffix List is version/hash/license pinned and verified by generated
+contracts.
+
+The checkpoint intentionally does not complete all of Phase 3 or the project
+definition of done. Rate limiting/stall policy, endgame duplicate ranges,
+broader validators and digests, HTTP/2, growing/chunked transfers, benchmarks,
+hot-backup crash-residue reconciliation, the broader Phase-4 control plane, and
+the full release-platform matrix remain phase/tag gates.
 
 This is a staged plan for building the design without repeating the incomplete
 rewrite pattern. The native-startup orchestration boundary, central-journal
-filesystem backends, runtime-effect boundary, and product bootstrap are now
-executable; the remaining redirect/proxy/DNS policy and public-dispatch slice,
-plus native CI evidence, remain phase gates.
+filesystem backends, runtime-effect boundary, product bootstrap, and the public
+Phase-3B HTTP dispatch slice are now executable; the deferred capabilities and
+release evidence above remain phase gates.
 
 ## Phase 0: Contracts, Compatibility Inventory, And Build Baseline
 
@@ -234,6 +216,12 @@ Exit criteria:
   `getGlobalStat` against the Phase-1 scheduler. This is the RPC surface required
   by the first implementation slice; the full control plane remains Phase 4.
 
+Phase-3B checkpoint boundary: the items above are executable for known-length
+HTTP(S) with ordinary multi-mirror URI admission, except that rate limiting,
+stall diagnostics beyond packet-independent speed decay, and endgame duplicate
+ranges remain deliberately deferred. The full Phase-3 exit criteria below still
+gate a later phase completion claim.
+
 Detailed design input:
 
 - `detailed-http-first-slice.md`
@@ -263,7 +251,8 @@ Exit criteria:
 - Optional slow-slot scheduler policy.
 - CLI add/pause/resume/remove/status.
 - JSON-RPC and WebSocket events.
-- JSON-RPC over stdio transport.
+- Expand the request-only Content-Length stdio transport with authenticated
+  batch/list/event delivery and slow-consumer handling.
 - `changeOption` and `changeGlobalOption`.
 - Config reload/check/dump commands and RPC diagnostics.
 - Session save/load.

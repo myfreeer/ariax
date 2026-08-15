@@ -7,22 +7,26 @@ use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::str::FromStr;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ariax_config::{SecurityClass, builtin_registry};
 use ariax_core::{Generation, Gid, MonotonicInstant, SchedulerConfig, TaskId};
 use ariax_engine::{
-    HttpCancellation, KnownLengthHttpRecoveryRequest, KnownLengthHttpRequest,
-    KnownLengthHttpResumeRequest, ProcessBootstrapConfig, RuntimeEffectConfig,
-    StartupRecoveryConfig, StorageEngineConfig, download_known_length_http_blocking,
-    resume_known_length_http_blocking,
+    HttpCancellation, HttpControlBackend, HttpControlPlane, HttpControlPlaneConfig, HttpCookieJar,
+    HttpCookieLimits, HttpDestinationPolicy, HttpMultiRangeWorker, HttpMultiRangeWorkerConfig,
+    HttpPolicyClient, HttpPolicyClientConfig, HttpResolver, HttpResolverConfig,
+    KnownLengthHttpRecoveryRequest, KnownLengthHttpRequest, KnownLengthHttpResumeRequest,
+    ProcessBootstrapConfig, RuntimeEffectConfig, StartupRecoveryConfig, StorageEngineConfig,
+    download_known_length_http_blocking, resume_known_length_http_blocking,
+    run_content_length_stdio, serve_loopback_http_until,
 };
 use ariax_storage::{
     JournalId, JournalStateLimits, PathPlatform, ReplayLimits, SafePathBuilder, SessionOwnerConfig,
 };
 
 const DEFAULT_HTTP_PIECE_LENGTH: u64 = 1024 * 1024;
-const HELP: &str = "ariax — experimental bounded downloader\n\nUsage: ariax [--help|--version]\n       ariax --check-bootstrap SESSION_DB CONTROL_DIR [OUTPUT_ROOT ...]\n       ariax --download-http-pinned GID JOURNAL_ID URI PEER OUTPUT_ROOT OUTPUT_PATH JOURNAL_DIR [PIECE_LENGTH]\n       ariax --resume-http-pinned GID JOURNAL_ID URI PEER OUTPUT_ROOT JOURNAL_DIR\n\nThe pinned HTTP commands accept an already policy-approved numeric PEER (IP:port); they do not perform DNS or SSRF-policy resolution. Resume requires the same URI and a journal-persisted strong ETag.\n";
+const HELP: &str = "ariax — experimental bounded downloader\n\nUsage: ariax [--help|--version]\n       ariax --check-bootstrap SESSION_DB CONTROL_DIR [OUTPUT_ROOT ...]\n       ariax --rpc-http SESSION_DB CONTROL_DIR OUTPUT_ROOT LOOPBACK_ADDR\n       ariax --rpc-stdio SESSION_DB CONTROL_DIR OUTPUT_ROOT\n       ariax --download-http-pinned GID JOURNAL_ID URI PEER OUTPUT_ROOT OUTPUT_PATH JOURNAL_DIR [PIECE_LENGTH]\n       ariax --resume-http-pinned GID JOURNAL_ID URI PEER OUTPUT_ROOT JOURNAL_DIR\n\nRPC is JSON-RPC 2.0 over loopback HTTP/1.1 or Content-Length-framed stdio. The pinned HTTP commands accept an already policy-approved numeric PEER (IP:port); they do not perform DNS or SSRF-policy resolution.\n";
 
 fn main() -> ExitCode {
     run(env::args_os().skip(1))
@@ -50,6 +54,27 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
                 roots.iter().map(PathBuf::from).collect(),
             )
         }
+        [command, database, control, output_root, bind] if command == "--rpc-http" => {
+            let bind = match SocketAddr::from_str(&bind.to_string_lossy()) {
+                Ok(bind) => bind,
+                Err(error) => {
+                    eprintln!("ariax: invalid RPC bind address: {error}");
+                    return ExitCode::from(2);
+                }
+            };
+            run_rpc(
+                PathBuf::from(database),
+                PathBuf::from(control),
+                PathBuf::from(output_root),
+                Some(bind),
+            )
+        }
+        [command, database, control, output_root] if command == "--rpc-stdio" => run_rpc(
+            PathBuf::from(database),
+            PathBuf::from(control),
+            PathBuf::from(output_root),
+            None,
+        ),
         [
             command,
             gid,
@@ -302,31 +327,21 @@ fn now_unix_ms() -> Option<u64> {
     u64::try_from(duration.as_millis()).ok()
 }
 
-fn check_bootstrap(
+fn process_bootstrap_config(
     database_path: PathBuf,
     control_directory: PathBuf,
     allowed_output_roots: Vec<PathBuf>,
-) -> ExitCode {
-    let now_wall_unix_ms = match now_unix_ms() {
-        Some(value) => value,
-        None => {
-            eprintln!("ariax: system wall clock is before the Unix epoch");
-            return ExitCode::FAILURE;
-        }
-    };
+) -> Result<ProcessBootstrapConfig, String> {
+    let now_wall_unix_ms =
+        now_unix_ms().ok_or_else(|| "system wall clock is before the Unix epoch".to_owned())?;
     let task_capacity = NonZeroUsize::new(1024).expect("bootstrap task capacity is nonzero");
     let active_capacity = NonZeroUsize::new(64).expect("active capacity is nonzero");
     let runtime_capacity = NonZeroUsize::new(1024).expect("bootstrap runtime capacity is nonzero");
     let plan_capacity = NonZeroUsize::new(64).expect("plan capacity is nonzero");
     let max_wait_ms = NonZeroU64::new(86_400_000).expect("maximum wait is nonzero");
-    let scheduler = match SchedulerConfig::new(task_capacity, active_capacity, false) {
-        Ok(config) => config,
-        Err(error) => {
-            eprintln!("ariax: invalid scheduler bootstrap policy: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let config = ProcessBootstrapConfig {
+    let scheduler = SchedulerConfig::new(task_capacity, active_capacity, false)
+        .map_err(|error| format!("invalid scheduler bootstrap policy: {error}"))?;
+    Ok(ProcessBootstrapConfig {
         session_owner: SessionOwnerConfig::new(database_path),
         control_directory,
         allowed_output_roots,
@@ -350,7 +365,174 @@ fn check_bootstrap(
         persistence_plan_capacity: plan_capacity,
         updated_ms: now_wall_unix_ms,
         recovery_created_at_unix_ms: now_wall_unix_ms,
+    })
+}
+
+fn run_rpc(
+    database_path: PathBuf,
+    control_directory: PathBuf,
+    output_root: PathBuf,
+    bind: Option<SocketAddr>,
+) -> ExitCode {
+    if let Err(error) = std::fs::create_dir_all(&control_directory) {
+        eprintln!("ariax: cannot create control directory: {error}");
+        return ExitCode::FAILURE;
+    }
+    if let Err(error) = std::fs::create_dir_all(&output_root) {
+        eprintln!("ariax: cannot create output root: {error}");
+        return ExitCode::FAILURE;
+    }
+    let journal_root = control_directory.join("http-journals");
+    if let Err(error) = std::fs::create_dir_all(&journal_root) {
+        eprintln!("ariax: cannot create HTTP journal root: {error}");
+        return ExitCode::FAILURE;
+    }
+    let config =
+        match process_bootstrap_config(database_path, control_directory, vec![output_root.clone()])
+        {
+            Ok(config) => config,
+            Err(error) => {
+                eprintln!("ariax: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+    let engine = match ariax_engine::bootstrap_process(config, persisted_option_is_safe) {
+        Ok(engine) => engine,
+        Err(error) => {
+            eprintln!("ariax: bootstrap failed: {error}");
+            return ExitCode::FAILURE;
+        }
     };
+    let task_capacity = NonZeroUsize::new(1024).expect("task capacity is nonzero");
+    let mut plane = match HttpControlPlane::new(
+        engine,
+        HttpControlPlaneConfig {
+            output_root,
+            journal_root: journal_root.clone(),
+            task_capacity,
+            supervisor: ariax_engine::HttpWorkerSupervisorConfig::default(),
+        },
+    ) {
+        Ok(plane) => plane,
+        Err(error) => {
+            eprintln!("ariax: control plane initialization failed: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let resolver = match HttpResolver::new(HttpResolverConfig::default()) {
+        Ok(resolver) => resolver,
+        Err(error) => {
+            eprintln!("ariax: resolver initialization failed: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let cookies = match HttpCookieJar::bundled(HttpCookieLimits::default()) {
+        Ok(cookies) => Arc::new(tokio::sync::Mutex::new(cookies)),
+        Err(error) => {
+            eprintln!("ariax: bundled cookie policy failed verification: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let client = HttpPolicyClient::new(
+        resolver,
+        HttpPolicyClientConfig {
+            destination: HttpDestinationPolicy::default(),
+            cookies: Some(cookies),
+            ..HttpPolicyClientConfig::default()
+        },
+    );
+    let worker = match HttpMultiRangeWorker::new(
+        client,
+        HttpMultiRangeWorkerConfig {
+            journal_root,
+            ..HttpMultiRangeWorkerConfig::default()
+        },
+        plane.stats_catalog(),
+    ) {
+        Ok(worker) => worker.with_session_owner(plane.session_handle()),
+        Err(error) => {
+            eprintln!("ariax: HTTP worker initialization failed: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(error) = plane.attach_worker(Arc::new(worker)) {
+        eprintln!("ariax: HTTP supervisor initialization failed: {error}");
+        return ExitCode::FAILURE;
+    }
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("ariax: cannot start async runtime: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    runtime.block_on(async move {
+        let backend = Arc::new(HttpControlBackend::new(plane));
+        let progress_plane = backend.plane();
+        let progress = tokio::spawn(async move {
+            loop {
+                let result = {
+                    let mut plane = progress_plane.lock().await;
+                    plane.poll_once()
+                };
+                if let Err(error) = result {
+                    eprintln!("ariax: control progress failed: {error}");
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        });
+        let transport_result = if let Some(bind) = bind {
+            serve_loopback_http_until(bind, backend.clone(), tokio::signal::ctrl_c()).await
+        } else {
+            run_content_length_stdio(backend.clone(), tokio::io::stdin(), tokio::io::stdout()).await
+        };
+        progress.abort();
+        let _ = progress.await;
+        let shutdown_result = shutdown_rpc_backend(backend).await;
+        if let Err(error) = &transport_result {
+            eprintln!("ariax: RPC transport failed: {error}");
+        }
+        if let Err(error) = &shutdown_result {
+            eprintln!("ariax: RPC shutdown failed: {error}");
+        }
+        if transport_result.is_ok() && shutdown_result.is_ok() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        }
+    })
+}
+
+async fn shutdown_rpc_backend(backend: Arc<HttpControlBackend>) -> Result<(), String> {
+    let backend = Arc::try_unwrap(backend)
+        .map_err(|_| "RPC transport retained a backend reference after drain".to_owned())?;
+    let plane = backend.try_into_control_plane().map_err(|_| {
+        "RPC progress loop retained a control-plane reference after drain".to_owned()
+    })?;
+    plane
+        .shutdown_async()
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+fn check_bootstrap(
+    database_path: PathBuf,
+    control_directory: PathBuf,
+    allowed_output_roots: Vec<PathBuf>,
+) -> ExitCode {
+    let config =
+        match process_bootstrap_config(database_path, control_directory, allowed_output_roots) {
+            Ok(config) => config,
+            Err(error) => {
+                eprintln!("ariax: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
     match ariax_engine::bootstrap_process(config, persisted_option_is_safe) {
         Ok(engine) => {
             let tasks = engine.task_count();

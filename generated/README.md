@@ -34,9 +34,13 @@ backup requirements.
 Special-Purpose Address Registry source URLs, dates, normalized snapshot
 hashes, policy classes, answer cap, and executable status. The same generator
 emits the Rust longest-prefix classifier consumed by the HTTP connector.
-`http_transport_policy.json` freezes the direct HTTP(S) backend, TLS and trust
-choices, bounded per-origin HTTP/1.1 pool, diagnostics, stable error vocabulary,
-and explicitly deferred protocol features.
+`http_transport_policy.json` freezes the Phase-3B HTTP(S) backend, TLS/trust and
+bounded pool choices, DNS/Happy-Eyeballs/redirect/proxy/auth policy, the exact
+bundled Mozilla Public Suffix List provenance and cookie limits, range/retry and
+worker-supervision caps, the five-method RPC boundary, diagnostics, and
+explicitly deferred features. Generation hashes
+`assets/public-suffix-list.dat` against its strict manifest and fails on byte,
+line-ending, metadata, or digest drift.
 `error_codes.json` includes the stable journal numeric value for each closed
 error class.
 

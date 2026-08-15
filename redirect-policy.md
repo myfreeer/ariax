@@ -1,6 +1,11 @@
 # Redirect Policy
 
-Status: reviewed pre-implementation contract. Implementation pending.
+Status: reviewed contract with the Phase-3B redirect state machine and policy
+client integration executable. The implemented gate covers bounded hop/loop
+handling, method rewriting, HTTPS downgrade rejection, per-hop destination and
+proxy re-admission, request reconstruction, origin-scoped credentials/cookies,
+and nonzero durable-prefix restart decisions. Shared RFC 9530/Metalink digest
+admission and endgame duplicate-range behavior remain later gates.
 
 Several documents defer to a "redirect policy" (`detailed-http-first-slice.md`,
 `retry-policy.md`, `library-choice.md`) but none defined it. This document owns

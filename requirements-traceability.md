@@ -1,14 +1,13 @@
 # Requirements Traceability
 
 Status: reviewed contract with implementation in progress. Core scheduling,
-applied-status publication, bounded persistence ownership, pure cross-store
-startup planning, source-derived credential admission, ordered SQLite startup
-repair, descriptor-safe central-journal native recovery/publication,
-packet-independent stats sampling, the blocking-disk fallback, process-bootstrap
-integration, the first known-length/resume transfer, policy-owned destination
-admission, and the direct HTTP(S) transport have executable checkpoints. Live
-scheduler/RPC dispatch, redirect/proxy/DNS policy, the native release matrix,
-and the MSRV gate are not yet complete.
+bounded persistence/recovery, native storage handoff, runtime ownership,
+packet-independent stats, process bootstrap, and the first public Phase-3B
+multi-mirror HTTP(S) slice have executable checkpoints. The latter includes
+atomic source-aware admission/recovery, DNS/SSRF/Happy-Eyeballs,
+redirect/proxy/auth/cookie policy, supervised range/retry workers, and five real
+scheduler RPC methods. Rate limiting/endgame, broader protocols/control APIs,
+benchmarks, and the complete release matrix remain incomplete.
 
 This maps the requested properties to design documents.
 
@@ -211,11 +210,12 @@ Design coverage:
   finalization contracts.
 - `detailed-runtime.md`: queue/ownership/cancellation/shutdown contracts.
 - `detailed-http-first-slice.md`: reviewed first-slice HTTP state-machine
-  contract plus executable fresh and strong-ETag HTTP/1.1 known-length/resume
-  paths and a policy-owned direct-origin connector with bounded system DNS,
-  generated special-use filtering, and final-peer binding. TLS, redirects/
-  proxies, DNS cache/singleflight/Happy Eyeballs, broader validators, segmented
-  scheduling, and live scheduler/RPC integration remain pending.
+  contract plus executable fresh/strong-ETag resume and the public Phase-3B
+  known-length multi-mirror path: verified TLS, generated destination policy,
+  bounded DNS cache/singleflight/Happy Eyeballs, redirect/proxy/auth/cookies,
+  segmented range/retry recovery, live stats, worker supervision, and five real
+  scheduler RPC methods. Broader validators, rate limiting/endgame, HTTP/2,
+  growing bodies, and the rest of Phase 4 remain pending.
 
 Acceptance:
 

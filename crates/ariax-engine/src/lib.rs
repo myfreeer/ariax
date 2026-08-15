@@ -3,8 +3,26 @@
 //! Cross-crate composition for bounded startup reconciliation.
 
 mod effect_sink;
+mod http_auth;
+mod http_client;
 mod http_connector;
+mod http_control;
+mod http_cookie;
 mod http_first_slice;
+mod http_happy_eyeballs;
+mod http_multi;
+mod http_proxy;
+mod http_proxy_client;
+mod http_proxy_io;
+mod http_range;
+mod http_redirect;
+mod http_request;
+mod http_resolver;
+mod http_response;
+mod http_retry;
+mod http_rpc;
+mod http_supervisor;
+mod http_task;
 mod http_transport;
 mod process_bootstrap;
 mod runtime_effects;
@@ -19,10 +37,29 @@ pub use effect_sink::{
     PersistenceSchedulerEffectSink, PersistenceSchedulerPreparation,
     PersistenceSchedulerPrepareError,
 };
+pub use http_auth::{
+    HttpAuthError, HttpAuthPolicy, HttpAuthorization, HttpBasicCredentials, HttpNetrc,
+    MAX_HTTP_BASIC_PASSWORD_BYTES, MAX_HTTP_BASIC_USERNAME_BYTES, MAX_HTTP_NETRC_BYTES,
+    MAX_HTTP_NETRC_ENTRIES, MAX_HTTP_NETRC_TOKEN_BYTES,
+};
+pub use http_client::{
+    HttpClientRequest, HttpPolicyClient, HttpPolicyClientConfig, HttpPolicyClientError,
+    HttpStreamingResponse,
+};
 pub use http_connector::{
     DEFAULT_HTTP_RESOLUTION_TIMEOUT, HttpAddressClass, HttpDestinationError, HttpDestinationPolicy,
     MAX_HTTP_DESTINATION_ADDRESSES, MAX_HTTP_DESTINATION_HOST_BYTES, ResolvedHttpDestination,
-    classify_http_address, resolve_http_destination,
+    classify_http_address, resolve_http_destination, resolve_http_destination_with_resolver,
+};
+pub use http_control::{
+    HttpControlBackend, HttpControlError, HttpControlPlane, HttpControlPlaneConfig,
+};
+pub use http_cookie::{
+    DEFAULT_HTTP_COOKIE_TOTAL_ENTRIES, HTTP_PSL_SHA256, HTTP_PSL_SNAPSHOT_ID, HttpCookieError,
+    HttpCookieHeader, HttpCookieJar, HttpCookieLimits, MAX_HTTP_COOKIE_BYTES,
+    MAX_HTTP_COOKIE_BYTES_PER_DOMAIN, MAX_HTTP_COOKIE_ENTRIES_PER_DOMAIN,
+    MAX_HTTP_COOKIE_FILE_BYTES, MAX_HTTP_COOKIE_FILE_LINES, MAX_HTTP_COOKIE_HEADER_BYTES,
+    MAX_HTTP_PSL_BYTES, MAX_HTTP_PSL_SNAPSHOT_ID_BYTES,
 };
 pub use http_first_slice::{
     HttpCancellation, KnownLengthHttpError, KnownLengthHttpRecovery,
@@ -34,6 +71,80 @@ pub use http_first_slice::{
     resume_known_length_http_resolved, resume_known_length_http_resolved_blocking,
     run_known_length_http_runtime, run_known_length_http_runtime_blocking,
     run_known_length_http_runtime_resolved, run_known_length_http_runtime_resolved_blocking,
+};
+pub use http_happy_eyeballs::{
+    DEFAULT_HTTP_HAPPY_EYEBALLS_DELAY, HttpConnectedPeer, HttpHappyEyeballsConfig,
+    HttpHappyEyeballsError, MAX_HTTP_HAPPY_EYEBALLS_ADDRESSES, connect_http_happy_eyeballs,
+};
+pub use http_multi::{
+    DEFAULT_HTTP_RANGE_EVENT_CAPACITY, HttpCompletedEvidence, HttpMultiRangeError,
+    HttpMultiRangeWorker, HttpMultiRangeWorkerConfig, HttpStatsCatalogError, HttpTransferStats,
+    HttpTransferStatsSnapshot, MAX_HTTP_RANGE_EVENT_CAPACITY, SharedHttpTransferStats,
+    derive_http_journal_id, http_journal_directory,
+};
+pub use http_proxy::{
+    HttpProxyEndpoint, HttpProxyKind, HttpProxyNameResolution, HttpProxyPolicy,
+    HttpProxyPolicyError, HttpProxyRoute, HttpSocksTarget, MAX_HTTP_NO_PROXY_RULE_BYTES,
+    MAX_HTTP_NO_PROXY_RULES, TrustedProxyEnforcement,
+};
+pub use http_proxy_client::{
+    DEFAULT_HTTP_PROXY_MAX_BODY_BYTES, HttpBufferedResponse, HttpProxyRequestConfig,
+    HttpProxyRequestError, execute_http_proxy_request,
+};
+pub use http_proxy_io::{
+    HttpProxyAuthorization, HttpProxyConnectConfig, HttpProxyConnectError, HttpProxyConnection,
+    MAX_HTTP_PROXY_RESPONSE_HEAD_BYTES, MAX_SOCKS5_DOMAIN_BYTES, connect_http_proxy_route,
+};
+pub use http_range::{
+    DEFAULT_HTTP_MAX_ATTEMPTS_PER_SOURCE, DEFAULT_HTTP_MAX_TOTAL_ATTEMPTS, HttpRangeAssignment,
+    HttpRangeCoordinator, HttpRangeCoordinatorConfig, HttpRangeCoordinatorError, HttpRangeFailure,
+    HttpRangePoll, HttpRangeSource, HttpRangeStats, MAX_HTTP_RANGE_PIECES,
+};
+pub use http_redirect::{
+    DEFAULT_HTTP_MAX_REDIRECTS, HttpRedirectContext, HttpRedirectDecision, HttpRedirectError,
+    HttpRedirectPolicy, HttpRedirectState, MAX_HTTP_LOCATION_BYTES, MAX_HTTP_REDIRECTS,
+};
+pub use http_request::{
+    HttpCustomHeader, HttpCustomHeaders, HttpPolicyRequest, HttpRequestPolicy,
+    HttpRequestPolicyError, MAX_HTTP_CUSTOM_HEADER_NAME_BYTES, MAX_HTTP_CUSTOM_HEADER_VALUE_BYTES,
+    MAX_HTTP_CUSTOM_HEADERS, MAX_HTTP_CUSTOM_HEADERS_BYTES, build_http_request,
+};
+pub use http_resolver::{
+    DEFAULT_HTTP_DNS_MAX_ADDRESSES, DEFAULT_HTTP_DNS_MAX_IN_FLIGHT,
+    DEFAULT_HTTP_DNS_MAX_NEGATIVE_TTL, DEFAULT_HTTP_DNS_MAX_POSITIVE_TTL,
+    DEFAULT_HTTP_DNS_MAX_TOTAL_WAITERS, DEFAULT_HTTP_DNS_MAX_WAITERS_PER_NAME,
+    DEFAULT_HTTP_DNS_NEGATIVE_CACHE_CAPACITY, DEFAULT_HTTP_DNS_POSITIVE_CACHE_CAPACITY,
+    HttpResolvedHost, HttpResolver, HttpResolverBackend, HttpResolverConfig, HttpResolverError,
+    MAX_HTTP_DNS_HOST_BYTES,
+};
+pub use http_response::{HttpRangeResponseError, HttpRangeResponseValidator};
+pub use http_retry::{
+    DEFAULT_HTTP_RETRY_BASE_WAIT, DEFAULT_HTTP_RETRY_MAX_ATTEMPTS,
+    DEFAULT_HTTP_RETRY_MAX_ATTEMPTS_PER_MIRROR, DEFAULT_HTTP_RETRY_MAX_ELAPSED,
+    DEFAULT_HTTP_RETRY_MAX_WAIT, HttpRetryBudget, HttpRetryCause, HttpRetryDecision,
+    HttpRetryDelaySource, HttpRetryError, HttpRetryPolicy, HttpRetryStats, HttpRetryStopReason,
+    HttpRetryTransportFailure,
+};
+pub use http_rpc::{
+    DEFAULT_HTTP_RPC_SHUTDOWN_TIMEOUT, HttpRpcBackend, HttpRpcBackendError, HttpRpcTransportError,
+    MAX_HTTP_RPC_CONNECTIONS, MAX_HTTP_RPC_HEADER_BYTES, MAX_HTTP_RPC_REQUEST_BYTES,
+    MAX_HTTP_RPC_RESPONSE_BYTES, RpcFuture, dispatch_json, run_content_length_stdio,
+    serve_loopback_http, serve_loopback_http_listener, serve_loopback_http_listener_until,
+    serve_loopback_http_until,
+};
+pub use http_supervisor::{
+    DEFAULT_HTTP_SUPERVISOR_POLL_INTERVAL, DEFAULT_HTTP_SUPERVISOR_SHUTDOWN_TIMEOUT,
+    HttpTaskWorker, HttpWorkerFuture, HttpWorkerSuccess, HttpWorkerSupervisor,
+    HttpWorkerSupervisorConfig, HttpWorkerSupervisorConfigError, HttpWorkerSupervisorError,
+    HttpWorkerSupervisorPoll, MAX_HTTP_SUPERVISOR_ACTIVE_WORKERS,
+    MAX_HTTP_SUPERVISOR_PENDING_EVENTS,
+};
+pub use http_task::{
+    DEFAULT_HTTP_MAX_CONNECTIONS_PER_SERVER, DEFAULT_HTTP_MIN_SPLIT_SIZE,
+    DEFAULT_HTTP_PIECE_LENGTH, DEFAULT_HTTP_SPLIT, HTTP_SOURCE_FINGERPRINT_DOMAIN,
+    HttpMirrorIdentityPolicy, HttpSourceSpec, HttpTaskCatalog, HttpTaskCatalogError,
+    HttpTaskOptions, HttpTaskSpec, HttpTaskSpecError, MAX_HTTP_PIECE_LENGTH, MAX_HTTP_TASK_SOURCES,
+    MAX_HTTP_TIMEOUT_SECS, SharedHttpTaskCatalog,
 };
 pub use http_transport::{
     DEFAULT_HTTP_IDLE_TIMEOUT, DEFAULT_HTTP_MAX_CONNECTIONS_PER_ORIGIN,

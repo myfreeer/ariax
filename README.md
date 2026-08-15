@@ -1,56 +1,28 @@
 # Downloader Design
 
-Status: implementation is underway. The deterministic `RequestScheduler`
-kernel, core/config contracts, portable storage layout, bounded runtime
-ownership, journal v1 framing/replay, all 25 typed journal payload codecs, and
-bounded cross-record recovery are executable. SQLite session schema v2 adds a
-demoted queue and bounded slow-slot metadata; exact v1 databases migrate through
-a private timestamped no-clobber backup and transactional rebuild. Dense queue
-updates, owner locking, committed-version preflight, WAL fallback/checkpoint,
-the validated no-clobber hot-backup primitive, and atomic stopped-result
-retention/deletion are implemented. The current integration checkpoint also
-has an ordered
-one-effect-in-flight scheduler driver, immutable applied-status roots, bounded
-blocking positional writes with correlated cancellation and timed shutdown, a
-dedicated bounded session owner, concrete persistence-effect composition,
-atomic host-key challenge resolution, persisted retry/slow/no-space recovery,
-and a bounded pure cross-store startup plan that emits exact pre-publication
-repair work. The session owner now materializes exact bounded source sets,
-composition derives non-secret credential admissions, an ordered SQLite repair
-executor applies queue/terminal/journal-authority work before scheduler
-construction, and the packet-independent bounded stats sampler is executable.
-Descriptor-safe native filesystem capabilities, central journal-install and
-appender recovery, owner-thread appender construction, and publication-last
-startup execution are now implemented for Unix and Windows adapters. The
-bounded timer, allocation, option-application, cancellation, and no-space
-adapter boundary is executable, and the experimental CLI drives the complete
-process-bootstrap path through ordered restore and journal-closing shutdown.
-The first concrete HTTP/1.1 worker now accepts an externally policy-approved
-pinned peer, validates a `200` identity-coded known-length response before body
-polling, and streams it through a descriptor-backed `StorageEngine`. The engine
-uses pooled buffers, bounded positional disk writes, piece-aligned provisional
-leases, strict data-before-journal durability, and descriptor-revalidated
-recovery. Strong-ETag material is persisted and replayed safely; a recovered
-durable prefix is read back, reopened without truncation, and continued with a
-strict `206`/`Content-Range`/`If-Range` request. The bounded runtime effect
-adapter and experimental CLI cover allocation, cancellation, retry
-classification, verification, and completion for this pinned-peer path. A
-policy-owned destination-admission connector now validates ordinary HTTP authorities,
-bounds system resolution, canonicalizes legacy and mapped numeric forms,
-applies a generated SHA-256-pinned IANA special-purpose classifier to every
-answer, and pins the exact numeric connect peer while retaining the original
-`Host`. Fresh and resume workers can use that connector through the same
-runtime-effect lifecycle. A downloader-owned Hyper/rustls transport now adds
-verified TLS 1.2/1.3 with system/custom roots, original-host SNI, bounded
-per-origin HTTP/1.1 keep-alive, connection resource permits, stable transport
-errors, and pool/TLS diagnostics. Ordinary URI input remains intentionally
-unexposed through CLI/RPC. Redirects, proxies, DNS cache/TTL/singleflight and
-Happy Eyeballs, weak/Last-Modified or digest-only resume, segmented multi-mirror
-scheduling, live scheduler/RPC dispatch, hot-backup crash-residue
-reconciliation, and native-platform/MSRV CI gates remain pending. This
-checkpoint is not yet a complete downloader or release/tag-ready. Phase gates
-remain normative in
-`implementation-readiness.md` and `implementation-plan.md`.
+Status: implementation is underway. Phase 0 through the core Phase-1/2
+scheduler, configuration, journal, SQLite session owner, bounded runtime,
+descriptor-safe storage, startup recovery, and platform capability work have
+executable checkpoints. The Phase-3B checkpoint candidate adds the first public
+multi-mirror HTTP(S) vertical slice: atomic task/source/option admission,
+source-aware recovery, verified TLS 1.2/1.3, bounded HTTP/1.1 reuse,
+policy-owned Hickory/system DNS caching and singleflight, generated SSRF
+classification, two-racer Happy Eyeballs, redirects, HTTP CONNECT/forward and
+SOCKS5 proxies, Basic/private-netrc credentials, and a bounded cookie jar using
+a hash-pinned Mozilla Public Suffix List. Scheduler-owned workers coordinate
+non-overlapping range leases across mirrors, enforce strict response placement,
+retry within total/per-source budgets, preserve durable pieces across restart,
+and publish packet-independent speed, connection, retry, discard, and durable
+progress counters. The experimental CLI exposes ordinary HTTP(S) URIs through
+five real-scheduler JSON-RPC methods over loopback HTTP/1.1 and Content-Length
+stdio, with atomic rejection and orderly worker/journal/session shutdown.
+
+This is still not a complete downloader or release/tag-ready. Rate limiting,
+stall policy, endgame duplicate ranges, HTTP/2, unknown-length/chunked layouts,
+broader validator/digest modes, WebSocket/NDJSON and non-loopback RPC, the rest
+of Phase 4, hot-backup crash-residue reconciliation, benchmarks, and the full
+native release matrix remain gated by `implementation-readiness.md` and
+`implementation-plan.md`.
 
 This design is for a new downloader that keeps the mature aria2 user model
 while fixing the major safety, scalability, and completeness problems found in

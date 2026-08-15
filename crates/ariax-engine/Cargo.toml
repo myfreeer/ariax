@@ -10,18 +10,30 @@ ariax-core.workspace = true
 ariax-runtime.workspace = true
 ariax-storage.workspace = true
 bytes.workspace = true
+cookie.workspace = true
+cookie_store.workspace = true
 http-body-util.workspace = true
+httpdate.workspace = true
+hickory-resolver.workspace = true
 hyper = { workspace = true, features = ["client", "http1"] }
 hyper-rustls.workspace = true
 hyper-util = { workspace = true, features = ["client", "client-legacy", "http1", "tokio"] }
+publicsuffix.workspace = true
 rustls.workspace = true
 rustls-native-certs.workspace = true
 rustls-pemfile.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+tokio-rustls.workspace = true
 tower-service.workspace = true
+url.workspace = true
 
-[target.'cfg(windows)'.dev-dependencies]
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
+[target.'cfg(windows)'.dependencies]
 ariax-windows-security.workspace = true
 
 [lints]

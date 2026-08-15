@@ -9,28 +9,20 @@ This document is the handoff checklist from architecture design to detailed
 module design and implementation.
 
 Repository scaffolding, generated inventories, core/config types, the scheduler
-kernel and ordered driver, journal work, SQLite session storage and owner,
-persistence-effect composition, bounded pure startup reconciliation planning,
-source-derived credential admission, ordered SQLite startup repair, the native
-startup handoff/coordinator, and bounded stats sampling now have executable
-checkpoints. Concrete descriptor-safe capability/install/appender adapters and
-publication-last native startup execution are also executable. The bounded
-non-persistence runtime adapters and the process-bootstrap path are now wired
-through the experimental CLI. The first end-to-end downloader slice is not
-complete, but its fresh HTTP/1.1 known-length path is now executable against an
-externally approved numeric peer. It validates the response head before body
-polling, uses descriptor-backed strict-durability storage leases, preserves
-prior durable pieces across short-body/cancellation aborts, reads back trusted
-pieces before resume, and revalidates root/file identities during recovery.
-The direct connector now performs ordinary authority validation, bounded system
-resolution, generated special-use/SSRF filtering, and exact numeric-peer
-binding for fresh/resume runtime workers. The Phase-3A direct HTTP(S) transport
-adds verified TLS 1.2/1.3 with system/custom roots, original-host SNI, bounded
-HTTP/1.1 reuse, resource permits, stable errors, and diagnostics.
-Redirect/proxy policy, shared DNS cache/singleflight/Happy Eyeballs, broader
-validator choices, and real scheduler/RPC transfer dispatch remain gates, so
-this is not a release/tag-ready checkpoint. Each remaining native adapter,
-transfer module, and integration still follows its Definition Of Ready
+kernel and ordered driver, journal/SQLite persistence, bounded startup repair,
+native capability handoff, runtime adapters, stats sampling, and process
+bootstrap have executable checkpoints. The Phase-3B checkpoint candidate now
+connects that foundation to ordinary HTTP(S) URI admission and the real
+scheduler: task/source/options persist atomically, recovery rebuilds the source
+catalog, the policy client owns DNS/SSRF/Happy-Eyeballs/redirect/proxy/auth/cookie
+decisions, and supervised multi-mirror range workers commit only validated
+non-overlapping leases. Durable-piece restart and terminal evidence are
+persisted before public completion. Five bounded JSON-RPC methods run over
+loopback HTTP/1.1 and Content-Length stdio and expose packet-independent live
+stats. This remains a phase checkpoint, not a release/tag: rate limiting,
+endgame, broader validators, growing/chunked transfers, HTTP/2, broader RPC,
+benchmarks, and the complete release matrix remain gates. Each remaining
+adapter, transfer module, and integration still follows its Definition Of Ready
 checklist below.
 
 ## Start Here
@@ -193,8 +185,8 @@ The first useful vertical slice spans implementation Phases 1–3 and should be:
 7. known-length identity HTTP sequential download through `StorageEngine`,
 8. strict strong-ETag range resume with provisional writes and explicit
    commit/abort,
-9. packet-independent `StatsSampler` (bounded pure/runtime primitive complete;
-   protocol producers and RPC rendering remain integration work),
+9. packet-independent `StatsSampler` connected to HTTP worker counters and RPC
+   current/durable speed rendering,
 10. JSON-RPC `addUri`, `tellStatus`, `pause`, `remove`, and `getGlobalStat`
     against the real scheduler.
 
@@ -204,20 +196,25 @@ This removes the earlier circular Phase-0/Phase-4 gate. The slice proves the cor
 contracts before adding growing/chunked layouts, Metalink, FTP/SFTP, BitTorrent,
 or HTTP/3.
 
+All ten items now have an executable Phase-3B checkpoint candidate. This does
+not imply that the broader Phase-3 benchmark, rate-limit, stall-diagnostic, or
+endgame exit criteria are complete.
+
 The detailed first-slice docs above are the intended module design input for
 this vertical slice.
 
 ## Current Integration Gates
 
-- Connect the tested fresh/resume HTTP runtime adapter to the live scheduler and
-  control dispatcher; the pinned-peer CLI remains a bounded harness until that
-  process path is complete.
-- Extend the executable policy-owned direct HTTP(S) transport with redirect
-  revalidation, proxy/no-proxy final-hop checks, and the bounded DNS
-  cache/singleflight/Happy Eyeballs design. Ordinary URI resolution remains
-  unexposed through CLI/RPC until those public-surface policies are enforced.
-- Integrate live protocol retry classification and backoff with the executable
-  persisted retry/slow/no-space recovery paths.
+- Integrate the designed hierarchical rate limiter, lowest-speed/stall policy,
+  and diagnostic conditions with the executable range worker and live RPC
+  counters.
+- Add endgame duplicate-range fencing and the stronger shared-digest identity
+  modes without weakening the current non-overlapping ordinary-lease invariant.
+- Expand validator support beyond strong ETag and add HTTP/2 only behind its
+  separately bounded stream/pool contract.
+- Expand the five-method request-only dispatcher into the authenticated,
+  batch/list/event-capable Phase-4 control plane without widening the default
+  loopback boundary.
 - Drive the bounded orderly-shutdown coordinator across every real lane,
   including dirty-checkpoint persistence when an adapter times out or detaches.
 - Close the hot-backup publication residue window with verified same-file

@@ -1,8 +1,10 @@
 # Protocol Modernization
 
-Status: reviewed implementation contract. Direct destination admission and the
-Phase-3A HTTP(S) transport foundation below are executable; redirects, proxies,
-shared DNS policy, and public dispatch remain later gates.
+Status: reviewed implementation contract. Direct HTTP(S), the Phase-3B shared
+DNS/Happy-Eyeballs policy client, redirects, HTTP/SOCKS5 proxy routing,
+Basic/netrc authentication, bounded cookies, and the five-method public RPC
+dispatch are executable. HTTP/2, advanced DNS transports, client certificates,
+and the broader control plane remain later gates.
 
 Modern protocols should be part of the roadmap, but not all of them belong in
 the mandatory baseline. The downloader must keep the reliable aria2-style
@@ -207,6 +209,27 @@ dispatcher integration.
 Client certificates, native TLS, TLS 1.1 compatibility, HTTP/2 ALPN, ECH, and
 certificate-verification disabling are not part of this gate.
 
+### Phase 3B Policy Client Gate
+
+The direct transport is now wrapped by one immutable `HttpPolicyClient`
+configuration. Every initial URI and redirect hop uses the shared resolver and
+generated destination classifier. Route selection supports direct, HTTP
+absolute-form forwarding, HTTPS `CONNECT`, and SOCKS5. Local-pinned proxy mode
+sends an admitted numeric final target; hostname-form proxy resolution requires
+startup-owned `TrustedProxyEnforcement` evidence. Proxy endpoints themselves
+are independently resolved and admitted.
+
+Requests are rebuilt after each redirect. Cross-origin `Authorization` and
+`If-Range` are not forwarded, cookies are recalculated from origin/site state,
+and HTTPS downgrade is denied by default. Explicit per-host or private-netrc
+Basic credentials and proxy credentials use redacting wrapper types and are
+never accepted from URI userinfo. The cookie wrapper enforces entry/domain/header
+budgets, schemeful SameSite decisions, public-suffix rejection, and
+transactional private Netscape-file import plus atomic private export. Its
+bundled Mozilla PSL snapshot and provenance are pinned in
+`assets/public-suffix-list.toml`; contract verification hashes the exact data
+asset and fails on drift.
+
 Baseline:
 
 - TLS 1.2 and TLS 1.3,
@@ -282,16 +305,16 @@ fallback without hard failure unless the user requires ECH.
 
 ## DNS
 
-Executable first connector gate: direct plaintext HTTP can use Tokio's system
-resolver with a five-second default timeout, a hard 32-distinct-answer
-admission limit, full-answer special-use filtering, and exact numeric-peer
-pinning. It has no shared cache, TTL ownership, negative cache, bounded
-singleflight, A/AAAA alternation, Happy Eyeballs racer, Hickory/custom upstream,
-DoH, or DoT yet. Excess answers and mixed allowed/denied sets fail closed rather
-than being truncated into an authorization decision. Fresh and recovered HTTP
-workers use this connector through the bounded runtime effect path, but the
-ordinary-URI surface remains unexposed through CLI/RPC until TLS, redirect, and
-proxy policy gates are complete.
+Executable Phase-3B gate: the default Hickory resolver and selectable system
+adapter feed one project-owned cache/singleflight layer. Positive and negative
+cache cardinality, TTL clamps, in-flight work, per-name/total waiters, host
+length, timeout, and returned-address count are all bounded. TTL-zero answers
+are not retained. Excess answers and mixed allowed/denied sets fail closed
+rather than being truncated into an authorization decision. Up to 32 admitted
+addresses advance through a two-racer Happy Eyeballs connector with a 250 ms
+default fallback delay. Every reconnect and redirect/proxy hop repeats
+admission; the public loopback/stdio RPC surface now uses this path for ordinary
+HTTP(S) URIs. Custom upstream servers, DoH, and DoT remain deferred.
 
 Baseline:
 

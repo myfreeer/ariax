@@ -701,6 +701,15 @@ impl StorageEngine {
         self.journal.close_flushed().map_err(journal_error)
     }
 
+    /// Quiesces storage and returns the flushed journal to its serialized
+    /// session owner. The caller must install it before emitting a scheduler
+    /// event that can require further journal-backed persistence.
+    pub fn into_flushed_journal(mut self) -> Result<ControlJournalAppender, StorageEngineError> {
+        self.shutdown_lane()?;
+        self.journal.close_flushed().map_err(journal_error)?;
+        Ok(self.journal)
+    }
+
     fn validate_identity(
         &self,
         task: TaskId,

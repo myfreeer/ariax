@@ -1,6 +1,8 @@
 # APIs, Integrations, And Embedding
 
-Status: reviewed pre-implementation contract. Implementation pending.
+Status: reviewed contract with a bounded Phase-3B RPC subset executable. The
+full aria2-compatible control plane, authentication, events, native embedding
+API, and C ABI remain pending.
 
 Decision: expose aria2-compatible RPC for ecosystem compatibility, and expose a
 typed native library API for embedding. Add a stable C ABI only after the core
@@ -33,6 +35,31 @@ C ABI
 
 Yes, the downloader should provide aria2-compatible RPC as a first-class
 compatibility surface.
+
+### Executable Phase 3B Subset
+
+The experimental `ariax` binary currently exposes one dispatcher through:
+
+- HTTP/1.1 `POST /jsonrpc` on an explicitly IP-loopback listener, and
+- stdio frames with exactly one `Content-Length` header.
+
+Both transports cap requests at 2 MiB and responses at 8 MiB; stdio headers are
+capped at 16 KiB, HTTP connection tasks at 64, and graceful HTTP drain at five
+seconds. Missing, duplicate, invalid, oversized, or truncated stdio framing is
+rejected. The listener refuses non-loopback bind addresses. On EOF or Ctrl-C,
+the transport and progress handles are drained, live HTTP workers are cancelled
+and joined, and the process bootstrap closes its journals/session owner.
+
+Only `aria2.addUri`, `aria2.tellStatus`, `aria2.pause`, `aria2.remove`, and
+`aria2.getGlobalStat` (plus their unprefixed aliases) are implemented. They
+operate on the real scheduler and persisted session, not placeholder state.
+`addUri` supports a URI array plus the reviewed HTTP option subset documented in
+`detailed-http-first-slice.md`; task/source/options admission is atomic and
+recovery restores the source-aware catalog. The three GID methods currently
+require one full hexadecimal GID rather than the broader prefix lookup contract
+below. Notifications, batches, WebSocket/NDJSON, method tokens/HTTP Basic RPC
+authentication, list methods, runtime mutation, and non-loopback serving are
+explicitly deferred to Phase 4.
 
 Reasons:
 

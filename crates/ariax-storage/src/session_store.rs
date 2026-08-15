@@ -1284,6 +1284,123 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Atomically creates one task and its complete non-secret protocol metadata.
+    ///
+    /// Existing task rows are rejected rather than updated so a GID collision
+    /// cannot replace another task's sources or option snapshot.
+    pub fn create_task_with_metadata(
+        &mut self,
+        task: &SessionTaskRecord,
+        sources: &[SessionTaskSourceRecord],
+        options: &SanitizedOptionMap,
+        policy: &impl PersistedOptionPolicy,
+    ) -> Result<(), SessionStoreError> {
+        if task.queue_state == SessionQueueState::Stopped {
+            return Err(SessionStoreError::QueueTransitionRequired);
+        }
+        validate_task(task)?;
+        validate_task_sources_for_write(sources)?;
+        validate_options_for_persistence(options, policy)?;
+
+        let primary_path = encode_platform_path(&task.primary_journal_path)?;
+        let replica_path = task
+            .replica_journal_path
+            .as_ref()
+            .map(encode_platform_path)
+            .transpose()?;
+        let replica_sequence = task.replica_sequence.map(encode_u64);
+        let root_display = encode_platform_path(&task.root_display)?;
+        let no_space_target = task
+            .no_space
+            .as_ref()
+            .map(|value| encode_platform_path(&value.target))
+            .transpose()?;
+        let no_space_scheduled = task
+            .no_space
+            .as_ref()
+            .map(|value| time_to_i64(value.scheduled_at_ms, "task.no_space_scheduled_at_ms"))
+            .transpose()?;
+        let no_space_delay = task
+            .no_space
+            .as_ref()
+            .map(|value| encode_u64(value.delay_ms));
+        let slow_original_position = task
+            .slow_slot
+            .as_ref()
+            .map(|value| i64::from(value.original_position));
+        let slow_demotion_count = i64::from(task.slow_demotion_count);
+        let slow_retry_scheduled = task
+            .slow_slot
+            .as_ref()
+            .and_then(|value| value.retry.as_ref())
+            .map(|value| time_to_i64(value.scheduled_at_ms, "task.slow_retry_scheduled_at_ms"))
+            .transpose()?;
+        let slow_retry_delay = task
+            .slow_slot
+            .as_ref()
+            .and_then(|value| value.retry.as_ref())
+            .map(|value| encode_u64(value.delay_ms));
+
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if task_exists(&transaction, task.gid)? {
+            return Err(SessionStoreError::InvalidRecord("task.gid_exists"));
+        }
+        transaction.execute(
+            "INSERT INTO task(gid, session_id, queue_state, queue_position, desired_paused, slow_original_position, slow_demotion_count, slow_retry_scheduled_at_ms, slow_retry_delay_ms, primary_journal_id, primary_journal_path, replica_journal_path, replica_sequence, root_display, cached_layout_hash, cached_root_binding_hash, cached_snapshot_hash, no_space_target, no_space_scheduled_at_ms, no_space_delay_ms, created_ms, updated_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+            params![
+                task.gid.to_string(),
+                task.session_id.as_bytes().as_slice(),
+                task.queue_state as i64,
+                i64::from(task.queue_position),
+                bool_to_i64(task.desired_paused),
+                slow_original_position,
+                slow_demotion_count,
+                slow_retry_scheduled,
+                slow_retry_delay,
+                task.primary_journal_id.as_bytes().as_slice(),
+                primary_path,
+                replica_path,
+                replica_sequence,
+                root_display,
+                task.cached_layout_hash.map(|value| value.as_bytes().to_vec()),
+                task.cached_root_binding_hash.map(|value| value.as_bytes().to_vec()),
+                task.cached_snapshot_hash.as_bytes().as_slice(),
+                no_space_target,
+                no_space_scheduled,
+                no_space_delay,
+                time_to_i64(task.created_ms, "task.created_ms")?,
+                time_to_i64(task.updated_ms, "task.updated_ms")?,
+            ],
+        )?;
+        {
+            let mut statement = transaction.prepare(
+                "INSERT INTO task_source(gid, uri_id, persistence_safe_uri, redacted_fingerprint, needs_credentials, priority) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            for source in sources {
+                statement.execute(params![
+                    task.gid.to_string(),
+                    i64::from(source.uri_id),
+                    source.persistence_safe_uri,
+                    source.redacted_fingerprint.as_slice(),
+                    bool_to_i64(source.needs_credentials),
+                    source.priority,
+                ])?;
+            }
+        }
+        replace_task_options_in_transaction(
+            &transaction,
+            task.gid,
+            OptionsSnapshotScope::CurrentGeneration,
+            options,
+        )?;
+        validate_dense_queues(&transaction)?;
+        validate_stopped_result_pairing(&transaction)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn tasks(&self) -> Result<Vec<SessionTaskRecord>, SessionStoreError> {
         validate_dense_queues(&self.connection)?;
         validate_stopped_result_pairing(&self.connection)?;
@@ -8696,6 +8813,88 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn task_creation_persists_sources_and_options_atomically_without_replacement() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        let task = task_record(gid(1), 0);
+        let sources = vec![
+            SessionTaskSourceRecord {
+                uri_id: 2,
+                persistence_safe_uri: Some("https://second.example/file".to_owned()),
+                redacted_fingerprint: [2; 32],
+                needs_credentials: false,
+                priority: 20,
+            },
+            SessionTaskSourceRecord {
+                uri_id: 1,
+                persistence_safe_uri: Some("https://first.example/file".to_owned()),
+                redacted_fingerprint: [1; 32],
+                needs_credentials: false,
+                priority: 10,
+            },
+        ];
+        let options = SanitizedOptionMap::new([
+            ("piece-length".to_owned(), "1M".to_owned()),
+            ("split".to_owned(), "5".to_owned()),
+        ])
+        .expect("options");
+        let permit_all = |_: &str| true;
+
+        store
+            .create_task_with_metadata(&task, &sources, &options, &permit_all)
+            .expect("atomic task creation");
+        assert_eq!(store.tasks().expect("tasks"), vec![task.clone()]);
+        assert_eq!(
+            store.task_sources(task.gid).expect("sources"),
+            vec![sources[1].clone(), sources[0].clone()]
+        );
+        assert_eq!(
+            store
+                .task_options(
+                    task.gid,
+                    OptionsSnapshotScope::CurrentGeneration,
+                    &permit_all,
+                )
+                .expect("options"),
+            options
+        );
+
+        let replacement_sources = vec![SessionTaskSourceRecord {
+            uri_id: 9,
+            persistence_safe_uri: Some("https://replacement.example/file".to_owned()),
+            redacted_fingerprint: [9; 32],
+            needs_credentials: false,
+            priority: 0,
+        }];
+        assert!(matches!(
+            store.create_task_with_metadata(
+                &task,
+                &replacement_sources,
+                &SanitizedOptionMap::new([("split".to_owned(), "1".to_owned())])
+                    .expect("replacement options"),
+                &permit_all,
+            ),
+            Err(SessionStoreError::InvalidRecord("task.gid_exists"))
+        ));
+        assert_eq!(
+            store.task_sources(task.gid).expect("unchanged sources"),
+            vec![sources[1].clone(), sources[0].clone()]
+        );
+
+        let rejected = task_record(gid(2), 1);
+        let deny_split = |name: &str| name != "split";
+        assert!(matches!(
+            store.create_task_with_metadata(&rejected, &sources, &options, &deny_split),
+            Err(SessionStoreError::ForbiddenPersistedOption)
+        ));
+        assert_eq!(store.tasks().expect("rollback tasks"), vec![task]);
+        assert!(matches!(
+            store.task_sources(rejected.gid),
+            Err(SessionStoreError::NotFound)
+        ));
     }
 
     #[test]

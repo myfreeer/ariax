@@ -1,5 +1,11 @@
+use crate::HttpResolver;
 use crate::http_connector::{
     HttpDestinationError, HttpDestinationPolicy, resolve_http_destination,
+    resolve_http_destination_with_resolver,
+};
+use crate::http_happy_eyeballs::{
+    DEFAULT_HTTP_HAPPY_EYEBALLS_DELAY, HttpHappyEyeballsConfig, HttpHappyEyeballsError,
+    connect_http_happy_eyeballs,
 };
 use ariax_runtime::{ByteBudget, BytePermit};
 use bytes::Bytes;
@@ -111,6 +117,7 @@ pub struct HttpDirectTransportConfig {
     pub destination: HttpDestinationPolicy,
     pub tls: HttpTlsPolicy,
     pub connect_timeout: Duration,
+    pub happy_eyeballs_delay: Duration,
     pub handshake_timeout: Duration,
     pub keep_alive: bool,
     pub max_connections_per_origin: usize,
@@ -125,6 +132,7 @@ impl Default for HttpDirectTransportConfig {
             destination: HttpDestinationPolicy::default(),
             tls: HttpTlsPolicy::default(),
             connect_timeout: Duration::from_secs(30),
+            happy_eyeballs_delay: DEFAULT_HTTP_HAPPY_EYEBALLS_DELAY,
             handshake_timeout: Duration::from_secs(30),
             keep_alive: true,
             max_connections_per_origin: DEFAULT_HTTP_MAX_CONNECTIONS_PER_ORIGIN,
@@ -282,10 +290,12 @@ struct TransportInner {
     stats: Arc<Stats>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum ConnectPeer {
     Pinned(SocketAddr),
+    Admitted(Arc<[SocketAddr]>),
     Resolved,
+    PolicyResolved(HttpResolver),
 }
 
 struct IdleConnection {
@@ -343,6 +353,45 @@ impl HttpDirectTransport {
         Self::new(uri_text, ConnectPeer::Pinned(peer), config)
     }
 
+    /// Connects only to a previously policy-admitted answer set. The caller
+    /// retains the original URI authority for HTTP and TLS identity while the
+    /// connector uses these exact numeric peers for Happy Eyeballs.
+    pub fn admitted(
+        uri_text: &str,
+        addresses: Arc<[SocketAddr]>,
+        config: HttpDirectTransportConfig,
+    ) -> Result<Self, HttpTransportError> {
+        if addresses.is_empty() || addresses.len() > crate::MAX_HTTP_HAPPY_EYEBALLS_ADDRESSES {
+            return Err(HttpTransportError::InvalidPolicy);
+        }
+        let uri: Uri = uri_text
+            .parse()
+            .map_err(|_| HttpTransportError::InvalidOrigin)?;
+        validate_origin(&uri)?;
+        let expected_port = uri.port_u16().unwrap_or_else(|| {
+            if uri.scheme_str() == Some("https") {
+                443
+            } else {
+                80
+            }
+        });
+        if addresses
+            .iter()
+            .any(|address| address.port() != expected_port)
+        {
+            return Err(HttpTransportError::OriginMismatch);
+        }
+        Self::new(uri_text, ConnectPeer::Admitted(addresses), config)
+    }
+
+    pub fn resolved_with(
+        uri_text: &str,
+        resolver: HttpResolver,
+        config: HttpDirectTransportConfig,
+    ) -> Result<Self, HttpTransportError> {
+        Self::new(uri_text, ConnectPeer::PolicyResolved(resolver), config)
+    }
+
     fn new(
         uri_text: &str,
         peer: ConnectPeer,
@@ -368,6 +417,7 @@ impl HttpDirectTransport {
                 peer,
                 destination: config.destination,
                 connect_timeout: config.connect_timeout,
+                happy_eyeballs_delay: config.happy_eyeballs_delay,
                 budgets: config.budgets.clone(),
                 active_permits,
                 stats: Arc::clone(&stats),
@@ -621,6 +671,19 @@ impl HttpResponseLease {
             }
         }
     }
+
+    pub(crate) async fn discard(mut self) {
+        if let Some(connection) = self.connection.take() {
+            let ActiveConnection { sender, driver, .. } = connection;
+            drop(sender);
+            driver.abort();
+            let _joined = driver.await;
+            self.transport
+                .stats
+                .connections_poisoned
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
 }
 
 impl Drop for HttpResponseLease {
@@ -656,6 +719,7 @@ struct PolicyConnector {
     peer: ConnectPeer,
     destination: HttpDestinationPolicy,
     connect_timeout: Duration,
+    happy_eyeballs_delay: Duration,
     budgets: HttpTransportBudgets,
     active_permits: Arc<Semaphore>,
     stats: Arc<Stats>,
@@ -671,14 +735,15 @@ impl Service<Uri> for PolicyConnector {
     }
 
     fn call(&mut self, uri: Uri) -> Self::Future {
-        let peer = self.peer;
+        let peer = self.peer.clone();
         let destination = self.destination;
         let connect_timeout = self.connect_timeout;
+        let happy_eyeballs_delay = self.happy_eyeballs_delay;
         let budgets = self.budgets.clone();
         let active_permits = Arc::clone(&self.active_permits);
         let stats = Arc::clone(&self.stats);
         Box::pin(async move {
-            let peer = match peer {
+            let addresses = match peer {
                 ConnectPeer::Pinned(peer) => {
                     let expected = uri.port_u16().unwrap_or_else(|| {
                         if uri.scheme_str() == Some("https") {
@@ -690,14 +755,25 @@ impl Service<Uri> for PolicyConnector {
                     if peer.port() != expected {
                         return Err(HttpTransportError::OriginMismatch);
                     }
-                    peer
+                    vec![peer]
                 }
+                ConnectPeer::Admitted(addresses) => addresses.to_vec(),
                 ConnectPeer::Resolved => {
                     resolve_http_destination(uri.to_string().as_str(), destination)
                         .await
                         .map_err(HttpTransportError::Destination)?
-                        .peer()
+                        .addresses()
+                        .to_vec()
                 }
+                ConnectPeer::PolicyResolved(resolver) => resolve_http_destination_with_resolver(
+                    uri.to_string().as_str(),
+                    destination,
+                    &resolver,
+                )
+                .await
+                .map_err(HttpTransportError::Destination)?
+                .addresses()
+                .to_vec(),
             };
             let global_socket_permit =
                 budgets.sockets.clone().try_acquire_owned().map_err(|_| {
@@ -715,10 +791,16 @@ impl Service<Uri> for PolicyConnector {
                     stats.pool_exhausted.fetch_add(1, Ordering::Relaxed);
                     HttpTransportError::PoolExhausted
                 })?;
-            let stream = timeout(connect_timeout, TcpStream::connect(peer))
-                .await
-                .map_err(|_| HttpTransportError::ConnectTimeout)?
-                .map_err(HttpTransportError::Connect)?;
+            let stream = connect_http_happy_eyeballs(
+                &addresses,
+                HttpHappyEyeballsConfig {
+                    connect_timeout,
+                    fallback_delay: happy_eyeballs_delay,
+                },
+            )
+            .await
+            .map_err(map_happy_eyeballs_error)?
+            .stream;
             Ok(TokioIo::new(BudgetedTcpStream {
                 stream,
                 _global_socket_permit: Some(global_socket_permit),
@@ -772,6 +854,7 @@ impl Connection for BudgetedTcpStream {
 
 fn validate_config(config: &HttpDirectTransportConfig) -> Result<(), HttpTransportError> {
     if config.connect_timeout.is_zero()
+        || config.happy_eyeballs_delay.is_zero()
         || config.handshake_timeout.is_zero()
         || config.idle_timeout.is_zero()
         || config.max_connections_per_origin == 0
@@ -782,6 +865,16 @@ fn validate_config(config: &HttpDirectTransportConfig) -> Result<(), HttpTranspo
         return Err(HttpTransportError::InvalidPolicy);
     }
     Ok(())
+}
+
+fn map_happy_eyeballs_error(error: HttpHappyEyeballsError) -> HttpTransportError {
+    match error {
+        HttpHappyEyeballsError::Timeout => HttpTransportError::ConnectTimeout,
+        HttpHappyEyeballsError::Connect(error) => HttpTransportError::Connect(error),
+        HttpHappyEyeballsError::InvalidConfig
+        | HttpHappyEyeballsError::NoAddresses
+        | HttpHappyEyeballsError::TooManyAddresses => HttpTransportError::InvalidPolicy,
+    }
 }
 
 fn validate_origin(uri: &Uri) -> Result<(), HttpTransportError> {
@@ -796,7 +889,7 @@ fn validate_origin(uri: &Uri) -> Result<(), HttpTransportError> {
     Ok(())
 }
 
-fn build_tls_config(policy: &HttpTlsPolicy) -> Result<ClientConfig, HttpTransportError> {
+pub(crate) fn build_tls_config(policy: &HttpTlsPolicy) -> Result<ClientConfig, HttpTransportError> {
     let mut roots = RootCertStore::empty();
     match &policy.trust {
         HttpTrustSource::System | HttpTrustSource::SystemAndCustom(_) => {

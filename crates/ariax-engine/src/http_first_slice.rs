@@ -74,7 +74,7 @@ impl HttpCancellation {
         *self.sender.borrow()
     }
 
-    async fn cancelled(&self) {
+    pub async fn cancelled(&self) {
         let mut receiver = self.sender.subscribe();
         if *receiver.borrow() {
             return;
@@ -1830,9 +1830,17 @@ fn http_resource_fingerprint(uri: &Uri) -> JournalHash {
     JournalHash::new(digest.finalize().into()).expect("SHA-256 output is nonzero")
 }
 
-fn append_initial_admission(
+pub(crate) fn append_initial_admission(
     journal: &mut ControlJournalAppender,
     generation: Generation,
+) -> Result<(), KnownLengthHttpError> {
+    append_initial_admission_with_options(journal, generation, SanitizedOptionMap::new([])?)
+}
+
+pub(crate) fn append_initial_admission_with_options(
+    journal: &mut ControlJournalAppender,
+    generation: Generation,
+    options: SanitizedOptionMap,
 ) -> Result<(), KnownLengthHttpError> {
     let created = journal.append_payload(
         generation,
@@ -1841,7 +1849,6 @@ fn append_initial_admission(
             creator_version: 1,
         },
     )?;
-    let options = SanitizedOptionMap::new([])?;
     let options = journal.append_payload(
         generation,
         &JournalPayload::OptionsSnapshot {
@@ -1856,7 +1863,7 @@ fn append_initial_admission(
     Ok(())
 }
 
-fn build_single_file_layout(
+pub(crate) fn build_single_file_layout(
     task: TaskId,
     generation: Generation,
     root: &RootDirectoryCapability,
@@ -1890,7 +1897,7 @@ fn build_single_file_layout(
     )?)
 }
 
-fn append_layout(
+pub(crate) fn append_layout(
     journal: &mut ControlJournalAppender,
     layout: &FileLayout,
 ) -> Result<(), KnownLengthHttpError> {
@@ -1966,7 +1973,7 @@ fn abort_current(
     Ok(())
 }
 
-fn now_unix_ms() -> Option<u64> {
+pub(crate) fn now_unix_ms() -> Option<u64> {
     let duration = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
     u64::try_from(duration.as_millis()).ok()
 }

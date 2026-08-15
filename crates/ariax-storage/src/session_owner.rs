@@ -72,6 +72,11 @@ pub struct SessionStartupSnapshot {
 pub enum SessionCommand {
     PutSession(SessionRecord),
     PutTask(SessionTaskRecord),
+    CreateTaskWithMetadata {
+        task: SessionTaskRecord,
+        sources: Vec<SessionTaskSourceRecord>,
+        options: SanitizedOptionMap,
+    },
     ReadTasks,
     ReadStoppedResults,
     TransitionTaskQueue(SessionQueueTransition),
@@ -814,6 +819,14 @@ fn execute_command(
         }
         SessionCommand::PutTask(record) => {
             store.put_task(&record)?;
+            Ok(SessionCommandResult::Unit)
+        }
+        SessionCommand::CreateTaskWithMetadata {
+            task,
+            sources,
+            options,
+        } => {
+            store.create_task_with_metadata(&task, &sources, &options, policy)?;
             Ok(SessionCommandResult::Unit)
         }
         SessionCommand::ReadTasks => store

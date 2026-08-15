@@ -3,6 +3,7 @@
   "allowed_runtime_updates": ["none", "live", "waiting_only", "active_restart", "new_generation", "startup_only", "unsafe_compat_only", "bt_live", "bt_restart_required"],
   "options": [
     {"name": "allow-overwrite", "runtime_update": "waiting_only", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
+    {"name": "connect-timeout", "runtime_update": "active_restart", "scopes": ["startup", "global", "per_download", "input_file", "rpc_change", "rpc_global"]},
     {"name": "continue", "runtime_update": "waiting_only", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
     {"name": "dir", "runtime_update": "new_generation", "scopes": ["startup", "global", "per_download", "input_file", "rpc_change", "rpc_global"]},
     {"name": "disk-io-backend", "runtime_update": "startup_only", "scopes": ["startup"]},
@@ -21,6 +22,7 @@
     {"name": "rpc-secret", "runtime_update": "startup_only", "scopes": ["startup"]},
     {"name": "session-store", "runtime_update": "startup_only", "scopes": ["startup"]},
     {"name": "split", "runtime_update": "active_restart", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
+    {"name": "timeout", "runtime_update": "active_restart", "scopes": ["startup", "global", "per_download", "input_file", "rpc_change", "rpc_global"]},
     {"name": "verify-mirror-identity", "runtime_update": "active_restart", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]}
   ]
 }

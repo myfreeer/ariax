@@ -21,6 +21,8 @@ ariax-config.workspace = true
 ariax-core.workspace = true
 ariax-engine.workspace = true
 ariax-storage.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["io-std", "macros", "net", "rt-multi-thread", "signal"] }
 
 [lints]
 workspace = true

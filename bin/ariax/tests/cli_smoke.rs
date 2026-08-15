@@ -3,6 +3,9 @@
 use std::process::Command;
 
 #[cfg(unix)]
+use std::process::Stdio;
+
+#[cfg(unix)]
 use std::fs;
 #[cfg(unix)]
 use std::io::{Read, Write};
@@ -270,6 +273,96 @@ fn pinned_http_control_recovers_and_resumes_with_range_and_if_range() {
     assert!(resume_request.contains("range: bytes=4-\r\n"));
     assert!(resume_request.contains("if-range: \"v1\"\r\n"));
     assert!(String::from_utf8_lossy(&resumed.stdout).contains("download resumed"));
+}
+
+#[cfg(unix)]
+#[test]
+fn stdio_rpc_admits_paused_http_task_persists_metadata_and_shuts_down_on_eof() {
+    let root = private_test_directory();
+    let database = root.join("session.db");
+    let control = root.join("control");
+    let output_root = root.join("output");
+    let mut child = ariax()
+        .arg("--rpc-stdio")
+        .arg(&database)
+        .arg(&control)
+        .arg(&output_root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start stdio RPC process");
+    let request = serde_json::to_vec(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "aria2.addUri",
+        "params": [["http://example.invalid/file"], {
+            "out": "queued.bin",
+            "pause": true
+        }]
+    }))
+    .expect("encode JSON-RPC request");
+    {
+        let mut stdin = child.stdin.take().expect("child stdin");
+        write!(stdin, "Content-Length: {}\r\n\r\n", request.len()).expect("write frame header");
+        stdin.write_all(&request).expect("write frame body");
+    }
+    let process = child.wait_with_output().expect("wait for stdio RPC exit");
+    assert!(
+        process.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&process.stderr)
+    );
+    let separator = process
+        .stdout
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .expect("response header terminator");
+    let header = std::str::from_utf8(&process.stdout[..separator]).expect("response header UTF-8");
+    let declared = header
+        .strip_prefix("Content-Length: ")
+        .expect("Content-Length response header")
+        .parse::<usize>()
+        .expect("numeric response length");
+    let body = &process.stdout[separator + 4..];
+    assert_eq!(body.len(), declared);
+    let response: serde_json::Value = serde_json::from_slice(body).expect("JSON-RPC response");
+    assert_eq!(response["jsonrpc"], "2.0");
+    assert_eq!(response["id"], 1);
+    let gid = response["result"].as_str().expect("admitted GID");
+
+    let store =
+        ariax_storage::SessionStore::open(&database, ariax_storage::SessionStoreConfig::default())
+            .expect("open persisted RPC session");
+    let tasks = store.tasks().expect("persisted tasks");
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].gid.to_string(), gid);
+    assert_eq!(
+        tasks[0].queue_state,
+        ariax_storage::SessionQueueState::Paused
+    );
+    assert!(tasks[0].desired_paused);
+    let sources = store.task_sources(tasks[0].gid).expect("persisted sources");
+    assert_eq!(sources.len(), 1);
+    assert_eq!(
+        sources[0].persistence_safe_uri.as_deref(),
+        Some("http://example.invalid/file")
+    );
+    assert!(!sources[0].needs_credentials);
+    let options = store
+        .task_options(
+            tasks[0].gid,
+            ariax_storage::OptionsSnapshotScope::CurrentGeneration,
+            &|_: &str| true,
+        )
+        .expect("persisted HTTP options");
+    assert!(
+        options
+            .entries()
+            .any(|entry| entry == ("out", "queued.bin"))
+    );
+    drop(store);
+    let _removed = fs::remove_dir_all(&root);
 }
 
 #[cfg(unix)]

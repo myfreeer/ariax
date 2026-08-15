@@ -12,6 +12,9 @@ const IPV6_PATH: &str = "compat/iana-ipv6-special-registry.csv";
 const RUST_OUTPUT: &str = "crates/ariax-engine/src/http_special_purpose_generated.rs";
 const JSON_OUTPUT: &str = "generated/http_destination_policy.json";
 const TRANSPORT_JSON_OUTPUT: &str = "generated/http_transport_policy.json";
+const PSL_MANIFEST_PATH: &str = "assets/public-suffix-list.toml";
+const PSL_DATA_PATH: &str = "assets/public-suffix-list.dat";
+const PSL_SOURCE: &str = "https://publicsuffix.org/list/public_suffix_list.dat";
 const MAX_DESTINATION_ADDRESSES: usize = 32;
 const MAX_DESTINATION_HOST_BYTES: usize = 253;
 const DEFAULT_RESOLUTION_TIMEOUT_SECONDS: u64 = 5;
@@ -25,6 +28,20 @@ struct RegistryPin {
     ipv6_url: String,
     ipv6_last_modified: String,
     ipv6_sha256: String,
+    line_endings: String,
+    license: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PublicSuffixPin {
+    schema: u32,
+    snapshot_id: String,
+    source: String,
+    retrieved_utc: String,
+    upstream_version: String,
+    upstream_commit: String,
+    sha256: String,
+    bytes: usize,
     line_endings: String,
     license: String,
 }
@@ -90,6 +107,7 @@ pub(crate) fn generate_http_policy_contracts(
     entries.extend(parse_registry(&ipv6, true)?);
     entries.extend(security_overrides());
     let entries = normalize_entries(entries)?;
+    let public_suffix = read_public_suffix_pin(workspace_root)?;
     let outputs = [
         (PathBuf::from(RUST_OUTPUT), render_rust(&entries)),
         (
@@ -98,12 +116,12 @@ pub(crate) fn generate_http_policy_contracts(
         ),
         (
             PathBuf::from(TRANSPORT_JSON_OUTPUT),
-            render_transport_json(),
+            render_transport_json(&public_suffix),
         ),
     ];
     apply_outputs(workspace_root, &outputs, mode)?;
     Ok(format!(
-        "{} pinned IANA HTTP destination policy and direct HTTP(S) transport contract: {} IPv4/IPv6 prefixes",
+        "{} pinned IANA HTTP destination policy and Phase-3B HTTP(S) policy contract: {} IPv4/IPv6 prefixes",
         match mode {
             GenerationMode::Write => "generated",
             GenerationMode::Check => "verified",
@@ -112,21 +130,181 @@ pub(crate) fn generate_http_policy_contracts(
     ))
 }
 
-fn render_transport_json() -> String {
-    concat!(
-        "{\n",
-        "  \"schema\": 1,\n",
-        "  \"status\": \"implemented\",\n",
-        "  \"backend\": {\"http\": \"hyper-1-http1\", \"tls\": \"rustls-0.23\", \"connector\": \"hyper-rustls-0.27\", \"crypto_provider\": \"ring\", \"native_roots\": \"rustls-native-certs\"},\n",
-        "  \"schemes\": {\"http\": {\"default_port\": 80}, \"https\": {\"default_port\": 443}},\n",
-        "  \"tls\": {\"versions\": [\"TLS1.2\", \"TLS1.3\"], \"default_minimum\": \"TLS1.2\", \"trust_sources\": [\"system\", \"custom_pem\", \"system_and_custom_pem\"], \"certificate_verification\": \"required\", \"alpn\": [], \"http1_without_alpn\": true, \"max_custom_pem_bytes\": 4194304, \"max_custom_certificates\": 4096},\n",
-        "  \"pool\": {\"scope\": \"origin\", \"keep_alive_default\": true, \"default_max_connections_per_origin\": 1, \"default_max_idle_connections_per_origin\": 1, \"max_connections_per_origin\": 8, \"max_idle_connections_per_origin\": 8, \"default_idle_timeout_seconds\": 30, \"connection_reservation_bytes\": 262144, \"fresh_destination_admission_per_physical_connection\": true, \"incomplete_or_failed_response_reusable\": false},\n",
-        "  \"diagnostics\": [\"connections_opened\", \"connections_reused\", \"connections_expired\", \"connections_poisoned\", \"pool_exhausted\", \"tls_handshakes\", \"tls_failures\"],\n",
-        "  \"errors\": [{\"code\": \"http_transport_invalid_policy\", \"retriable\": false}, {\"code\": \"http_transport_invalid_origin\", \"retriable\": false}, {\"code\": \"http_transport_origin_mismatch\", \"retriable\": false}, {\"code\": \"http_transport_pool_exhausted\", \"retriable\": true}, {\"code\": \"connect_timeout\", \"retriable\": true}, {\"code\": \"connect\", \"retriable\": true}, {\"code\": \"tls_configuration\", \"retriable\": false}, {\"code\": \"tls_server_name\", \"retriable\": false}, {\"code\": \"tls_handshake_timeout\", \"retriable\": true}, {\"code\": \"tls_handshake\", \"retriable\": false}, {\"code\": \"handshake_timeout\", \"retriable\": true}, {\"code\": \"http_protocol\", \"retriable\": true}, {\"code\": \"request_build\", \"retriable\": false}],\n",
-        "  \"deferred\": [\"redirects\", \"proxies\", \"dns_cache\", \"dns_singleflight\", \"happy_eyeballs\", \"http2\", \"client_certificates\", \"insecure_verification\", \"native_tls\", \"ordinary_cli_rpc_uri_exposure\"]\n",
-        "}\n",
+fn render_transport_json(public_suffix: &PublicSuffixPin) -> String {
+    let mut output = String::new();
+    output.push_str(
+        concat!(
+            "{\n",
+            "  \"schema\": 2,\n",
+            "  \"status\": \"implemented_phase_3b\",\n",
+            "  \"backend\": {\"http\": \"hyper-1-http1\", \"tls\": \"rustls-0.23\", \"connector\": \"hyper-rustls-0.27\", \"crypto_provider\": \"ring\", \"native_roots\": \"rustls-native-certs\"},\n",
+            "  \"schemes\": {\"http\": {\"default_port\": 80}, \"https\": {\"default_port\": 443}},\n",
+            "  \"tls\": {\"versions\": [\"TLS1.2\", \"TLS1.3\"], \"default_minimum\": \"TLS1.2\", \"trust_sources\": [\"system\", \"custom_pem\", \"system_and_custom_pem\"], \"certificate_verification\": \"required\", \"alpn\": [], \"http1_without_alpn\": true, \"max_custom_pem_bytes\": 4194304, \"max_custom_certificates\": 4096},\n",
+            "  \"pool\": {\"scope\": \"origin\", \"keep_alive_default\": true, \"default_max_connections_per_origin\": 1, \"default_max_idle_connections_per_origin\": 1, \"max_connections_per_origin\": 8, \"max_idle_connections_per_origin\": 8, \"default_idle_timeout_seconds\": 30, \"connection_reservation_bytes\": 262144, \"fresh_destination_admission_per_physical_connection\": true, \"incomplete_or_failed_response_reusable\": false},\n",
+            "  \"destination_policy\": {\"registry_contract\": \"http_destination_policy.json\", \"admission_points\": [\"initial_resolution\", \"redirect_hop\", \"proxy_endpoint\", \"physical_connection\"], \"dns\": {\"default_backend\": \"hickory\", \"system_backend_available\": true, \"positive_cache_capacity\": 4096, \"negative_cache_capacity\": 512, \"max_positive_ttl_seconds\": 86400, \"max_negative_ttl_seconds\": 30, \"max_in_flight\": 128, \"max_total_waiters\": 4096, \"max_waiters_per_name\": 1024, \"max_addresses\": 32, \"singleflight\": true}, \"happy_eyeballs\": {\"max_addresses\": 32, \"fallback_delay_ms\": 250, \"simultaneous_racers\": 2}},\n",
+            "  \"redirects\": {\"statuses\": [301, 302, 303, 307, 308], \"default_max_hops\": 20, \"max_hops\": 100, \"max_location_bytes\": 8192, \"https_downgrade_default\": false, \"cross_origin_authorization_dropped\": true, \"cross_origin_if_range_dropped\": true, \"open_lease_aborted\": true, \"durable_prefix_requires_restart_without_shared_digest\": true},\n",
+            "  \"proxies\": {\"routes\": [\"direct\", \"http_forward\", \"http_connect\", \"socks5\"], \"name_resolution\": [\"local_pinned\", \"trusted_proxy_enforced_with_startup_evidence\"], \"proxy_userinfo_forbidden\": true, \"max_no_proxy_rules\": 256, \"max_no_proxy_rule_bytes\": 253},\n",
+            "  \"authentication\": {\"schemes\": [\"basic\"], \"sources\": [\"explicit_host_credentials\", \"private_netrc\"], \"max_netrc_bytes\": 1048576, \"max_netrc_entries\": 1024, \"max_netrc_token_bytes\": 4096, \"max_username_bytes\": 1024, \"max_password_bytes\": 4096, \"cross_origin_forwarding\": false, \"debug_redaction\": true},\n"
+        ),
+    );
+    writeln!(
+        output,
+        "  \"cookies\": {{\"public_suffix_list\": {{\"snapshot_id\": {}, \"source\": {}, \"retrieved_utc\": {}, \"upstream_version\": {}, \"upstream_commit\": {}, \"sha256\": {}, \"bytes\": {}, \"line_endings\": {}, \"license\": {}}}, \"limits\": {{\"total_entries\": 3000, \"entries_per_domain\": 180, \"bytes_per_domain\": 65536, \"cookie_bytes\": 4096, \"header_bytes\": 16384, \"file_bytes\": 8388608, \"file_lines\": 16384}}, \"same_site_policy_owned\": true, \"public_suffix_rejection\": true, \"persistence\": {{\"format\": \"netscape\", \"load\": \"transactional_private_regular_file\", \"save\": \"atomic_private_replace\", \"session_cookies_saved\": false, \"symlink_and_hardlink_rejected\": true}}}},",
+        json_string(&public_suffix.snapshot_id),
+        json_string(&public_suffix.source),
+        json_string(&public_suffix.retrieved_utc),
+        json_string(&public_suffix.upstream_version),
+        json_string(&public_suffix.upstream_commit),
+        json_string(&public_suffix.sha256),
+        public_suffix.bytes,
+        json_string(&public_suffix.line_endings),
+        json_string(&public_suffix.license),
     )
-    .to_owned()
+    .expect("write generated transport JSON");
+    output.push_str(
+        concat!(
+            "  \"parallel_ranges\": {\"non_overlapping_leases\": true, \"max_pieces\": 1048576, \"default_split\": 5, \"max_split\": 1024, \"default_piece_length\": 1048576, \"max_piece_length\": 1073741824, \"default_max_connections_per_server\": 1, \"max_connections_per_server\": 1024, \"durable_piece_restart_recovery\": true, \"mirror_identity_modes\": [\"strict_shared_digest\", \"trust_submitted_mirrors\"]},\n",
+            "  \"retry\": {\"default_total_attempts\": 5, \"default_attempts_per_mirror\": 3, \"default_max_elapsed_seconds\": 3600, \"default_base_wait_seconds\": 1, \"default_max_wait_seconds\": 300, \"retry_after_bounded\": true, \"jitter\": \"equal\"},\n",
+            "  \"supervision\": {\"default_max_active_workers\": 64, \"max_active_workers\": 1024, \"default_pending_events\": 256, \"max_pending_events\": 4096, \"default_poll_interval_ms\": 1, \"shutdown_timeout_seconds\": 5, \"scheduler_lifecycle_authority_owned\": true},\n",
+            "  \"rpc\": {\"methods\": [\"aria2.addUri\", \"aria2.tellStatus\", \"aria2.pause\", \"aria2.remove\", \"aria2.getGlobalStat\"], \"transports\": [\"loopback_http1_post_jsonrpc\", \"stdio_content_length\"], \"request_bytes\": 2097152, \"response_bytes\": 8388608, \"stdio_header_bytes\": 16384, \"http_connections\": 64, \"shutdown_timeout_seconds\": 5, \"notifications\": false, \"batch\": false, \"non_loopback\": false},\n",
+            "  \"diagnostics\": [\"connections_opened\", \"connections_reused\", \"connections_expired\", \"connections_poisoned\", \"pool_exhausted\", \"tls_handshakes\", \"tls_failures\", \"durable_bytes\", \"active_connections\", \"retry_count\"],\n",
+            "  \"deferred\": [\"rate_limiting\", \"endgame_duplicate_ranges\", \"http2\", \"growing_or_chunked_transfers\", \"websocket_rpc\", \"ndjson_rpc\", \"non_loopback_rpc\", \"broader_phase_4_control_plane\", \"client_certificates\", \"insecure_verification\", \"native_tls\"]\n",
+            "}\n"
+        ),
+    );
+    output
+}
+
+fn read_public_suffix_pin(workspace_root: &Path) -> Result<PublicSuffixPin, String> {
+    let input = fs::read_to_string(workspace_root.join(PSL_MANIFEST_PATH))
+        .map_err(|error| format!("failed to read {PSL_MANIFEST_PATH}: {error}"))?;
+    let pin = parse_public_suffix_pin(&input)?;
+    let bytes = fs::read(workspace_root.join(PSL_DATA_PATH))
+        .map_err(|error| format!("failed to read {PSL_DATA_PATH}: {error}"))?;
+    if bytes.contains(&b'\r') {
+        return Err(format!("{PSL_DATA_PATH} contains non-LF line endings"));
+    }
+    if bytes.len() != pin.bytes {
+        return Err(format!(
+            "{PSL_DATA_PATH} has {} bytes but the manifest pins {}",
+            bytes.len(),
+            pin.bytes
+        ));
+    }
+    let actual = hex(&Sha256::digest(&bytes));
+    if actual != pin.sha256 {
+        return Err(format!(
+            "{PSL_DATA_PATH} hash {actual} does not match pinned hash"
+        ));
+    }
+    Ok(pin)
+}
+
+fn parse_public_suffix_pin(input: &str) -> Result<PublicSuffixPin, String> {
+    let mut values = BTreeMap::new();
+    for (line_number, line) in input.lines().enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        if line.trim() != line {
+            return Err(format!(
+                "{PSL_MANIFEST_PATH} line {} has surrounding whitespace",
+                line_number + 1
+            ));
+        }
+        let (key, value) = line.split_once(" = ").ok_or_else(|| {
+            format!(
+                "{PSL_MANIFEST_PATH} line {} is not key = value",
+                line_number + 1
+            )
+        })?;
+        if key.is_empty() || value.is_empty() || values.insert(key, value).is_some() {
+            return Err(format!(
+                "{PSL_MANIFEST_PATH} line {} is malformed",
+                line_number + 1
+            ));
+        }
+    }
+    let expected = [
+        "schema",
+        "snapshot_id",
+        "source",
+        "retrieved_utc",
+        "upstream_version",
+        "upstream_commit",
+        "sha256",
+        "bytes",
+        "line_endings",
+        "license",
+    ];
+    if values.len() != expected.len() || values.keys().any(|key| !expected.contains(key)) {
+        return Err(format!(
+            "{PSL_MANIFEST_PATH} contains unknown or missing keys"
+        ));
+    }
+    let take = |key: &str| {
+        values
+            .get(key)
+            .copied()
+            .ok_or_else(|| format!("{PSL_MANIFEST_PATH} is missing {key}"))
+    };
+    let schema = parse_manifest_usize(take("schema")?, "schema")?;
+    let bytes = parse_manifest_usize(take("bytes")?, "bytes")?;
+    let pin = PublicSuffixPin {
+        schema: u32::try_from(schema)
+            .map_err(|_| format!("{PSL_MANIFEST_PATH} has an invalid schema"))?,
+        snapshot_id: parse_manifest_string(take("snapshot_id")?, "snapshot_id")?,
+        source: parse_manifest_string(take("source")?, "source")?,
+        retrieved_utc: parse_manifest_string(take("retrieved_utc")?, "retrieved_utc")?,
+        upstream_version: parse_manifest_string(take("upstream_version")?, "upstream_version")?,
+        upstream_commit: parse_manifest_string(take("upstream_commit")?, "upstream_commit")?,
+        sha256: parse_manifest_string(take("sha256")?, "sha256")?,
+        bytes,
+        line_endings: parse_manifest_string(take("line_endings")?, "line_endings")?,
+        license: parse_manifest_string(take("license")?, "license")?,
+    };
+    if pin.schema != 1
+        || pin.source != PSL_SOURCE
+        || pin.snapshot_id.is_empty()
+        || pin.snapshot_id.len() > 128
+        || pin.bytes == 0
+        || pin.line_endings != "lf"
+        || pin.license != "MPL-2.0"
+        || pin.sha256.len() != 64
+        || !pin.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || pin.upstream_commit.len() != 40
+        || !pin
+            .upstream_commit
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(format!(
+            "{PSL_MANIFEST_PATH} contains invalid pinned metadata"
+        ));
+    }
+    Ok(pin)
+}
+
+fn parse_manifest_string(value: &str, key: &str) -> Result<String, String> {
+    let value = value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .ok_or_else(|| format!("{PSL_MANIFEST_PATH} {key} must be a quoted string"))?;
+    if value.is_empty()
+        || !value.is_ascii()
+        || value
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || matches!(byte, b'"' | b'\\'))
+    {
+        return Err(format!("{PSL_MANIFEST_PATH} {key} is invalid"));
+    }
+    Ok(value.to_owned())
+}
+
+fn parse_manifest_usize(value: &str, key: &str) -> Result<usize, String> {
+    value
+        .parse::<usize>()
+        .map_err(|_| format!("{PSL_MANIFEST_PATH} {key} must be an integer"))
 }
 
 fn parse_pin(input: &str) -> Result<RegistryPin, String> {
@@ -525,8 +703,8 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Class, Prefix, class_for_name, normalize_entries, parse_csv, parse_prefix,
-        render_transport_json,
+        Class, Prefix, PublicSuffixPin, class_for_name, normalize_entries, parse_csv, parse_prefix,
+        parse_public_suffix_pin, render_transport_json,
     };
 
     #[test]
@@ -580,7 +758,19 @@ mod tests {
 
     #[test]
     fn direct_transport_contract_freezes_security_and_pool_bounds() {
-        let contract = render_transport_json();
+        let pin = PublicSuffixPin {
+            schema: 1,
+            snapshot_id: "test-psl".to_owned(),
+            source: super::PSL_SOURCE.to_owned(),
+            retrieved_utc: "2026-08-15".to_owned(),
+            upstream_version: "test".to_owned(),
+            upstream_commit: "0123456789abcdef0123456789abcdef01234567".to_owned(),
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
+            bytes: 123,
+            line_endings: "lf".to_owned(),
+            license: "MPL-2.0".to_owned(),
+        };
+        let contract = render_transport_json(&pin);
         assert!(contract.contains("\"crypto_provider\": \"ring\""));
         assert!(contract.contains("\"certificate_verification\": \"required\""));
         assert!(contract.contains("\"alpn\": []"));
@@ -588,6 +778,37 @@ mod tests {
         assert!(contract.contains("\"max_connections_per_origin\": 8"));
         assert!(contract.contains("\"fresh_destination_admission_per_physical_connection\": true"));
         assert!(contract.contains("\"incomplete_or_failed_response_reusable\": false"));
-        assert!(contract.contains("\"ordinary_cli_rpc_uri_exposure\""));
+        assert!(contract.contains("\"snapshot_id\": \"test-psl\""));
+        assert!(
+            contract.contains(
+                "\"routes\": [\"direct\", \"http_forward\", \"http_connect\", \"socks5\"]"
+            )
+        );
+        assert!(contract.contains("\"aria2.addUri\""));
+        assert!(contract.contains("\"rate_limiting\""));
+    }
+
+    #[test]
+    fn public_suffix_manifest_parser_is_strict() {
+        let valid = concat!(
+            "schema = 1\n",
+            "snapshot_id = \"test-psl\"\n",
+            "source = \"https://publicsuffix.org/list/public_suffix_list.dat\"\n",
+            "retrieved_utc = \"2026-08-15\"\n",
+            "upstream_version = \"test\"\n",
+            "upstream_commit = \"0123456789abcdef0123456789abcdef01234567\"\n",
+            "sha256 = \"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"\n",
+            "bytes = 123\n",
+            "line_endings = \"lf\"\n",
+            "license = \"MPL-2.0\"\n",
+        );
+        assert_eq!(
+            parse_public_suffix_pin(valid)
+                .expect("valid manifest")
+                .snapshot_id,
+            "test-psl"
+        );
+        assert!(parse_public_suffix_pin(&valid.replace("bytes = 123", "bytes = \"123\"")).is_err());
+        assert!(parse_public_suffix_pin(&format!("{valid}unknown = 1\n")).is_err());
     }
 }

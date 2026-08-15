@@ -514,6 +514,16 @@ mod tests {
         )
         .expect("check reads committed object rather than worktree");
 
+        let public_suffix_path = fixture.workspace.join("assets/public-suffix-list.dat");
+        let public_suffix = fs::read(&public_suffix_path).expect("read PSL fixture");
+        let mut changed_public_suffix = public_suffix.clone();
+        changed_public_suffix.push(b'\n');
+        fs::write(&public_suffix_path, changed_public_suffix).expect("change PSL fixture");
+        let error = execute(["verify-contracts"], &fixture.workspace)
+            .expect_err("changed PSL asset must fail verification");
+        assert!(error.contains("public-suffix-list.dat"));
+        fs::write(&public_suffix_path, public_suffix).expect("restore PSL fixture");
+
         fs::write(&options_path, "stale\n").expect("make generated output stale");
         let error = execute(["verify-contracts"], &fixture.workspace)
             .expect_err("stale generated output must fail");
@@ -543,9 +553,14 @@ mod tests {
                 "compat/iana-special-purpose.pin",
                 "compat/iana-ipv4-special-registry.csv",
                 "compat/iana-ipv6-special-registry.csv",
+                "assets/public-suffix-list.toml",
+                "assets/public-suffix-list.dat",
             ] {
                 let input = fs::read(source_root.join(relative)).expect("read pinned IANA fixture");
-                fs::write(workspace.join(relative), input).expect("write pinned IANA fixture");
+                let destination = workspace.join(relative);
+                fs::create_dir_all(destination.parent().expect("fixture input parent"))
+                    .expect("create fixture input parent");
+                fs::write(destination, input).expect("write pinned policy fixture");
             }
             fs::create_dir_all(workspace.join(".cargo")).expect("create Cargo config fixture");
             fs::write(

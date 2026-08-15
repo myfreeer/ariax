@@ -1,0 +1,10 @@
+schema = 1
+snapshot_id = "mozilla-psl-2026-07-25-e1b8015c"
+source = "https://publicsuffix.org/list/public_suffix_list.dat"
+retrieved_utc = "2026-08-15"
+upstream_version = "2026-07-25_14-20-03_UTC"
+upstream_commit = "e1b8015c3b2f0f4f8c18659c2480fc1a22c07b20"
+sha256 = "084a5674d77c1d14900b16da5fc8afee9765af2f00a638552a8c7aa18f44ae81"
+bytes = 332855
+line_endings = "lf"
+license = "MPL-2.0"

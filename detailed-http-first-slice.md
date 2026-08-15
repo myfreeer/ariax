@@ -1,27 +1,24 @@
 # Detailed HTTP First-Slice Design
 
-Status: reviewed first-slice implementation contract. The fresh sequential
-HTTP/1.1 subset, first recoverable range-resume milestone, and policy-owned
-destination connector are executable. The Phase-3A policy-owned direct HTTP(S)
-transport is also executable with strict rustls identity, bounded HTTP/1.1
-keep-alive, and the same final-peer binding. Strict response-head
-validation precedes layout publication/body polling, pooled body chunks cross
-piece-aligned `StorageEngine` leases, and exact final framing produces durable
-journal evidence. Strong ETag material is persisted/replayed with an exact
-resource and known-length binding; recovery readback verifies each trusted
-piece, reopens the descriptor without truncation, and resumes with pinned
-`Range`/`If-Range` headers. The connector validates ordinary HTTP authorities,
-canonicalizes numeric forms, bounds system DNS by timeout and 32 admitted
-answers, applies the generated pinned IANA special-purpose classifier to every
-answer, and connects only to the selected numeric peer while preserving the
-original authority for `Host`. Fresh and resume work traverse the same bounded
-runtime effect adapter for allocation, cancellation, retry classification, and
-completion. The CLI remains a pinned-peer harness and ordinary URI input is not
-yet exposed through CLI/RPC. Redirects/proxies, DNS cache/TTL/singleflight,
-Happy Eyeballs, Hickory/custom resolvers, weak or Last-Modified validators,
-digest-only resume, segmented multi-mirror scheduling, and live scheduler/RPC
-dispatch remain pending. Ordinary URI input stays unavailable through CLI/RPC
-until redirect and proxy gates are executable.
+Status: reviewed Phase-3B implementation contract. The fresh sequential and
+strong-ETag resume paths remain executable, and the public known-length
+multi-mirror slice now drives ordinary `http`/`https` URIs through the real
+scheduler. Task, source, and current-generation option metadata are admitted in
+one SQLite transaction before scheduler publication; recovery reconstructs the
+source catalog and safe output path before a task can run. The policy client
+owns bounded Hickory/system DNS resolution, positive/negative TTL caches,
+singleflight waiters, generated special-purpose-address admission, two-racer
+Happy Eyeballs, redirect rebuilding, HTTP forward/CONNECT and SOCKS5 routing,
+Basic/private-netrc credentials, and a bounded cookie jar backed by a verified
+bundled Mozilla Public Suffix List. Non-overlapping range leases run across
+submitted mirrors with per-range/per-source retry budgets, durable-piece
+restart recovery, packet-independent live speed sampling, and scheduler-owned
+worker supervision. Five methods (`addUri`, `tellStatus`, `pause`, `remove`,
+and `getGlobalStat`) are executable over loopback HTTP/1.1 and bounded
+Content-Length stdio framing. The older pinned-peer CLI remains as a diagnostic
+harness. Rate limiting, endgame duplicate leases, HTTP/2, unknown-length or
+chunked layouts, WebSocket/NDJSON and non-loopback RPC, broader validators, and
+the rest of the Phase-4 control plane remain outside this checkpoint.
 
 This document defines HTTP(S) sequential download, resume, strict range
 validation, storage integration, retry integration, and stats behavior.
@@ -34,7 +31,7 @@ Included:
 - single-file sequential download,
 - resume from durable local state,
 - range request validation,
-- basic split range workers after sequential path is correct,
+- non-overlapping multi-mirror range workers,
 - retry policy hooks,
 - storage and control journal integration,
 - JSON-RPC-visible snapshots.
@@ -49,26 +46,30 @@ Excluded from first slice:
 - unknown-length/chunked output, which requires the explicit growing-layout
   capability described below.
 
-The current executable worker still accepts an already-approved numeric
-`IP:port` directly for the pinned-peer harness. The policy-owned wrapper accepts
-an ordinary `http` URI, rejects userinfo, invalid/zero ports, overlong or invalid
-DNS labels, unsupported bracketed literals, and malformed numeric forms, then
-resolves and pins one admitted numeric peer before entering that worker. It does
-not negotiate TLS, follow redirects, use proxies, or expose ordinary URI input
-through CLI/RPC. Those remaining policy layers must be added before the public
-control plane enables ordinary URI downloads.
+The executable code retains two intentionally different entry points. The
+pinned-peer harness accepts an already-approved numeric `IP:port` for focused
+transport/recovery diagnostics. The public RPC path accepts ordinary
+`http`/`https` mirror URIs, rejects userinfo and malformed authorities, runs
+every destination and proxy endpoint through policy, and passes only admitted
+numeric addresses into connection establishment while retaining the original
+authority for `Host`, SNI, and certificate verification.
 
 ## Executable Destination Admission
 
-The first connector gate is intentionally smaller than the complete DNS design
-in `protocol-modernization.md` but is closed and executable:
+The public connector gate is closed and executable:
 
-- only `http` is admitted; URI userinfo and port zero are rejected,
+- only `http` and `https` are admitted; URI userinfo and port zero are rejected,
 - bracketed IPv6 and ordinary dotted IPv4 are canonicalized, and legacy
   one-to-four-part decimal/octal/hexadecimal IPv4 forms are converted before
   classification so alternate spellings cannot bypass policy,
-- registered names are resolved through Tokio's system-resolver adapter with a
-  five-second default timeout and a hard maximum of 32 distinct answers,
+- registered names are resolved through the project-owned resolver. Hickory is
+  the default backend and the system adapter remains selectable. Resolution is
+  bounded by a ten-second default timeout, 128 in-flight names, 4,096 total
+  waiters, 1,024 waiters per name, and 32 distinct answers,
+- positive and negative caches are separately bounded (4,096 and 512 entries),
+  clamp positive TTLs to one day and negative TTLs to 30 seconds, and preserve
+  TTL-zero no-cache behavior. Concurrent requests for the same normalized name
+  share one bounded singleflight result,
 - IPv4-mapped IPv6 answers are canonicalized to IPv4 before de-duplication and
   policy evaluation,
 - every distinct answer must pass the same generated classifier; a mixed
@@ -79,11 +80,13 @@ in `protocol-modernization.md` but is closed and executable:
   unique-local destinations for administrator-owned contexts. Carrier-grade
   NAT, link-local, metadata, documentation, benchmark, unspecified, multicast,
   broadcast, and reserved/future-use space remain denied,
-- the selected first admitted address is retained as the exact `SocketAddr`
-  used by `TcpStream::connect`; the original URI authority remains the HTTP
-  `Host`, so resolution is not repeated between policy and connect,
-- a reconnect or new worker invocation performs a new resolution and complete
-  admission decision; approval is never transferred to a different answer.
+- approved addresses enter a two-racer Happy Eyeballs connector with a 250 ms
+  default fallback delay and at most 32 candidates. Losing racers are cancelled
+  and closed; the winning `SocketAddr` is retained with the connection,
+- the original URI authority remains the HTTP `Host` and TLS identity. A new
+  physical direct connection, redirect hop, or proxy endpoint resolution runs
+  the complete admission decision; approval is never transferred to an
+  unclassified answer.
 
 The generated classifier is derived from the LF-normalized, SHA-256-pinned IANA
 IPv4 and IPv6 Special-Purpose Address Registry snapshots recorded in
@@ -107,8 +110,9 @@ The public transport policy has these closed choices:
   their union,
 - certificate verification is always enabled in this gate,
 - the HTTP/1-only connector sends no ALPN extension and uses HTTP/1.1,
-- client certificates, CA directories, native TLS, HTTP/2, redirects, and
-  proxies remain unavailable.
+- client certificates, CA directories, native TLS, and HTTP/2 remain
+  unavailable. Redirect and proxy policy are implemented above this direct
+  transport and rebuild each request/route without weakening its pool identity.
 
 One transport instance fixes the destination-policy, TLS, authentication, and
 future proxy context used by its pool. A physical connection retains both a
@@ -130,6 +134,34 @@ Custom PEM loading happens once while constructing the immutable TLS policy.
 The file and certificate counts are hard bounded, an empty bundle is rejected,
 and any malformed certificate rejects the entire bundle. CA bytes, private
 keys, raw URLs, and credentials are not persisted or exposed in diagnostics.
+
+## Executable Phase 3B Public Control Slice
+
+`ariax --rpc-http SESSION_DB CONTROL_DIR OUTPUT_ROOT LOOPBACK_ADDR` serves only
+`POST /jsonrpc` on an IP-loopback bind. `ariax --rpc-stdio` uses the same
+dispatcher with one required, non-duplicated `Content-Length` header per frame.
+Request bodies are capped at 2 MiB, responses at 8 MiB, stdio headers at 16 KiB,
+and the HTTP listener at 64 established connection tasks. HTTP shutdown stops
+accepting, gives current requests a five-second graceful window, drains worker
+references, and then closes journals and the SQLite session owner.
+
+The checkpoint implements only these request forms:
+
+- `aria2.addUri([uris], [options])`, with one or more HTTP(S) mirrors and the
+  reviewed options `dir`, `out`, `pause`, `split`,
+  `max-connection-per-server`, `min-split-size`, `piece-length`,
+  `connect-timeout`, `timeout`, and `verify-mirror-identity`,
+- `aria2.tellStatus(gid)`, `aria2.pause(gid)`, and `aria2.remove(gid)`, each
+  requiring exactly one full hexadecimal GID,
+- `aria2.getGlobalStat()` with no arguments.
+
+The configured output root is the only accepted `dir`; `out` must pass
+`SafePathBuilder`. Unsupported options and malformed method arity fail before a
+task row, source row, option snapshot, journal, or scheduler-visible task is
+published. `tellStatus` reports durable and discarded lengths, active
+connections, retry count, and packet-independent current/durable speed. Batch,
+notifications, authentication, token handling, list methods, runtime option
+mutation, and non-loopback listeners remain Phase 4 work.
 
 ## Request Preparation
 

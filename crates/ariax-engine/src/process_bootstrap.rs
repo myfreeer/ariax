@@ -15,9 +15,10 @@ use ariax_runtime::{
 };
 use ariax_storage::{
     JournalStateLimits, PersistedOptionPolicy, ReplayLimits, RootDirectoryCapability,
-    SessionCommand, SessionCommandResult, SessionHandle, SessionOwner, SessionOwnerConfig,
-    SessionOwnerError,
+    SessionCommand, SessionCommandResult, SessionHandle, SessionId, SessionOwner,
+    SessionOwnerConfig, SessionOwnerError, SessionRecord,
 };
+use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
@@ -48,8 +49,12 @@ pub struct ProcessBootstrapConfig {
 /// scheduler restore effect chain have succeeded.
 pub struct BootstrappedEngine {
     session: SessionHandle,
+    session_id: SessionId,
     driver: ProcessSchedulerDriver,
     runtime: RuntimeEffectHandle,
+    control_directory: PathBuf,
+    replay_limits: ReplayLimits,
+    journal_state_limits: JournalStateLimits,
     roots: BTreeMap<TaskId, Option<RootDirectoryCapability>>,
     tasks: Vec<RecoveredEngineTask>,
     installed_journals: BTreeSet<ariax_core::Gid>,
@@ -75,6 +80,31 @@ impl BootstrappedEngine {
     #[must_use]
     pub fn runtime_handle(&self) -> RuntimeEffectHandle {
         self.runtime.clone()
+    }
+
+    #[must_use]
+    pub fn session_handle(&self) -> SessionHandle {
+        self.session.clone()
+    }
+
+    #[must_use]
+    pub const fn session_id(&self) -> SessionId {
+        self.session_id
+    }
+
+    #[must_use]
+    pub fn control_directory(&self) -> &std::path::Path {
+        &self.control_directory
+    }
+
+    #[must_use]
+    pub const fn replay_limits(&self) -> ReplayLimits {
+        self.replay_limits
+    }
+
+    #[must_use]
+    pub const fn journal_state_limits(&self) -> JournalStateLimits {
+        self.journal_state_limits
     }
 
     #[must_use]
@@ -247,6 +277,7 @@ impl Error for ProcessShutdownError {}
 #[derive(Debug)]
 pub enum ProcessBootstrapFailure {
     Owner(SessionOwnerError),
+    UnexpectedSessionResult(&'static str),
     Filesystem(NativeFilesystemError),
     Reconciliation(DerivedStartupError),
     Repairs(StartupSessionRepairFinishError),
@@ -266,6 +297,12 @@ impl fmt::Display for ProcessBootstrapFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Owner(error) => write!(formatter, "session owner startup failed: {error}"),
+            Self::UnexpectedSessionResult(result) => {
+                write!(
+                    formatter,
+                    "session initialization returned unexpected {result}"
+                )
+            }
             Self::Filesystem(error) => {
                 write!(formatter, "native filesystem startup failed: {error}")
             }
@@ -355,13 +392,40 @@ pub fn bootstrap_process<P>(
 where
     P: PersistedOptionPolicy + Clone + Send + Sync + 'static,
 {
-    let (session, snapshot) =
+    let (session, mut snapshot) =
         SessionOwner::spawn(config.session_owner.clone(), option_policy.clone()).map_err(
             |failure| ProcessBootstrapError {
                 failure: Box::new(ProcessBootstrapFailure::Owner(failure)),
                 shutdown: None,
             },
         )?;
+    if snapshot.session.is_none() {
+        let record = SessionRecord {
+            session_id: derive_process_session_id(&config),
+            created_ms: config.recovery_created_at_unix_ms,
+            updated_ms: config.updated_ms,
+            clean_shutdown: false,
+        };
+        match session.execute(SessionCommand::PutSession(record.clone())) {
+            Ok(SessionCommandResult::Unit) => snapshot.session = Some(record),
+            Ok(result) => {
+                let shutdown = session.shutdown().err().map(Box::new);
+                return Err(ProcessBootstrapError {
+                    failure: Box::new(ProcessBootstrapFailure::UnexpectedSessionResult(
+                        session_result_code(&result),
+                    )),
+                    shutdown,
+                });
+            }
+            Err(error) => {
+                let shutdown = session.shutdown().err().map(Box::new);
+                return Err(ProcessBootstrapError {
+                    failure: Box::new(ProcessBootstrapFailure::Owner(error)),
+                    shutdown,
+                });
+            }
+        }
+    }
     let result = bootstrap_after_owner(&config, option_policy, session.clone(), snapshot);
     match result {
         Ok(engine) => Ok(engine),
@@ -381,6 +445,11 @@ fn bootstrap_after_owner<P>(
 where
     P: PersistedOptionPolicy + Send + Sync + 'static,
 {
+    let session_id = snapshot
+        .session
+        .as_ref()
+        .expect("bootstrap installs a session before reconciliation")
+        .session_id;
     let native_policy = NativeFilesystemPolicy::new(
         &config.control_directory,
         config.allowed_output_roots.iter().cloned(),
@@ -506,13 +575,36 @@ where
     }
     Ok(BootstrappedEngine {
         session,
+        session_id,
         driver,
         runtime,
+        control_directory: config.control_directory.clone(),
+        replay_limits: config.replay_limits,
+        journal_state_limits: config.journal_state_limits,
         roots: native.roots,
         tasks,
         installed_journals: native.installed_journals,
         retirement_failures: native.retirement_failures,
     })
+}
+
+fn derive_process_session_id(config: &ProcessBootstrapConfig) -> SessionId {
+    const DOMAIN: &[u8] = b"ariax/process-session/v1\0";
+    let mut digest = Sha256::new();
+    digest.update(DOMAIN);
+    digest.update(
+        config
+            .session_owner
+            .database_path
+            .to_string_lossy()
+            .as_bytes(),
+    );
+    digest.update(config.recovery_created_at_unix_ms.to_le_bytes());
+    digest.update(u64::from(std::process::id()).to_le_bytes());
+    let digest: [u8; 32] = digest.finalize().into();
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    SessionId::new(bytes)
 }
 
 fn session_result_code(result: &SessionCommandResult) -> &'static str {

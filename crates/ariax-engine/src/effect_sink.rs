@@ -11,7 +11,7 @@ use ariax_storage::{
     SessionCommandResult, SessionCompletion, SessionHandle, SessionHostKeyChallengeRecord,
     SessionHostKeyResolution, SessionNoSpaceCondition, SessionOwnerError, SessionPersistenceError,
     SessionQueueOrder, SessionQueueState, SessionQueueTransition, SessionSlowSlotState,
-    SessionStoppedResultRecord, SessionTaskRecord, SessionTerminalStatus,
+    SessionStoppedResultRecord, SessionTaskRecord, SessionTaskSourceRecord, SessionTerminalStatus,
     session_host_key_pin_value,
 };
 use std::collections::VecDeque;
@@ -27,6 +27,11 @@ pub const MAX_PERSISTENCE_PLAN_STEPS: usize = 4;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PersistencePlanStep {
     PutTask(SessionTaskRecord),
+    CreateTaskWithMetadata {
+        task: SessionTaskRecord,
+        sources: Vec<SessionTaskSourceRecord>,
+        options: SanitizedOptionMap,
+    },
     TransitionTaskQueue(SessionQueueTransition),
     ReplaceTaskOptions {
         gid: Gid,
@@ -576,6 +581,37 @@ fn validate_plan(
             Ok(())
         }
         (
+            TransitionEffect::PersistTask {
+                gid,
+                queue,
+                position,
+                desired_paused,
+                slow_demotion_count,
+                conditions,
+                ..
+            },
+            [PersistencePlanStep::CreateTaskWithMetadata { task, sources, .. }],
+        ) => {
+            if task.gid != *gid
+                || sources.is_empty()
+                || sources.iter().any(|source| {
+                    source.persistence_safe_uri.is_none() && !source.needs_credentials
+                })
+            {
+                return Err(PersistencePlanError::IdentityMismatch);
+            }
+            if task.queue_state != session_queue(*queue)
+                || usize::try_from(task.queue_position).ok() != Some(*position)
+                || task.desired_paused != *desired_paused
+                || task.slow_demotion_count != *slow_demotion_count
+                || task.slow_slot.is_some()
+                || task.no_space.is_some() != conditions.no_space.is_some()
+            {
+                return Err(PersistencePlanError::StateMismatch);
+            }
+            Ok(())
+        }
+        (
             TransitionEffect::PersistQueueTransition {
                 gid,
                 from: Some(from),
@@ -807,6 +843,50 @@ fn validate_plan(
             )
         }
         (
+            TransitionEffect::PersistTerminal {
+                gid,
+                status: Aria2Status::Complete,
+                error: None,
+                from,
+                to,
+                desired_paused,
+                slow_demotion_count,
+                slow_slot,
+                orders,
+                ..
+            },
+            [
+                PersistencePlanStep::FlushJournal {
+                    gid: journal_gid,
+                    through_sequence,
+                },
+                PersistencePlanStep::PersistStoppedResult { result, transition },
+            ],
+        ) => {
+            if journal_gid != gid || result.gid != *gid || transition.gid != *gid {
+                return Err(PersistencePlanError::IdentityMismatch);
+            }
+            if *through_sequence == 0
+                || result.status != SessionTerminalStatus::Complete
+                || result.error_kind.is_some()
+                || !result.safe_message.is_empty()
+                || result.total_length.is_none()
+                || result.layout_hash.is_none()
+            {
+                return Err(PersistencePlanError::TerminalMismatch);
+            }
+            validate_transition(
+                *gid,
+                *from,
+                *to,
+                *desired_paused,
+                *slow_demotion_count,
+                slow_slot.as_ref(),
+                orders,
+                transition,
+            )
+        }
+        (
             TransitionEffect::DeleteStoppedTaskMetadata {
                 gid,
                 remaining_order,
@@ -989,6 +1069,18 @@ fn command_for_step(step: &PersistencePlanStep) -> PendingOwnerCommand {
     let (command, expected) = match step {
         PersistencePlanStep::PutTask(record) => (
             SessionCommand::PutTask(record.clone()),
+            ExpectedResult::Unit,
+        ),
+        PersistencePlanStep::CreateTaskWithMetadata {
+            task,
+            sources,
+            options,
+        } => (
+            SessionCommand::CreateTaskWithMetadata {
+                task: task.clone(),
+                sources: sources.clone(),
+                options: options.clone(),
+            },
             ExpectedResult::Unit,
         ),
         PersistencePlanStep::TransitionTaskQueue(transition) => (
@@ -1859,6 +1951,139 @@ mod tests {
             ),
             Err(PersistenceCatalogError::CapacityTooLarge)
         ));
+    }
+
+    #[test]
+    fn metadata_task_plan_requires_an_atomic_recoverable_source_set() {
+        let task_gid = gid(1);
+        let source = SessionTaskSourceRecord {
+            uri_id: 1,
+            persistence_safe_uri: Some("https://example.test/file".to_owned()),
+            redacted_fingerprint: [7; 32],
+            needs_credentials: false,
+            priority: 0,
+        };
+        let options = SanitizedOptionMap::new([("out".to_owned(), "file".to_owned())])
+            .expect("sanitized options");
+        assert!(
+            PersistenceEffectPlan::new(
+                persist_task_effect(task_gid),
+                vec![PersistencePlanStep::CreateTaskWithMetadata {
+                    task: task_record(task_gid),
+                    sources: vec![source.clone()],
+                    options: options.clone(),
+                }],
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            PersistenceEffectPlan::new(
+                persist_task_effect(task_gid),
+                vec![PersistencePlanStep::CreateTaskWithMetadata {
+                    task: task_record(task_gid),
+                    sources: Vec::new(),
+                    options: options.clone(),
+                }],
+            ),
+            Err(PersistencePlanError::IdentityMismatch)
+        );
+        let mut unrecoverable = source;
+        unrecoverable.persistence_safe_uri = None;
+        assert_eq!(
+            PersistenceEffectPlan::new(
+                persist_task_effect(task_gid),
+                vec![PersistencePlanStep::CreateTaskWithMetadata {
+                    task: task_record(task_gid),
+                    sources: vec![unrecoverable],
+                    options,
+                }],
+            ),
+            Err(PersistencePlanError::IdentityMismatch)
+        );
+    }
+
+    #[test]
+    fn completed_terminal_plan_flushes_exact_evidence_before_stopped_result() {
+        let task_gid = gid(1);
+        let orders = vec![
+            QueueOrder {
+                class: QueueClass::Active,
+                order: Vec::new(),
+            },
+            QueueOrder {
+                class: QueueClass::Stopped,
+                order: vec![task_gid],
+            },
+        ];
+        let effect = TransitionEffect::PersistTerminal {
+            task_id: task_id(1),
+            gid: task_gid,
+            generation: Generation::INITIAL,
+            status: Aria2Status::Complete,
+            error: None,
+            from: QueueClass::Active,
+            to: QueueClass::Stopped,
+            desired_paused: false,
+            slow_demotion_count: 0,
+            slow_slot: None,
+            orders: orders.clone(),
+        };
+        let result = SessionStoppedResultRecord {
+            gid: task_gid,
+            status: SessionTerminalStatus::Complete,
+            error_kind: None,
+            safe_message: String::new(),
+            total_length: Some(1024),
+            layout_hash: Some(hash(9)),
+            completed_ms: 30,
+        };
+        let transition = SessionQueueTransition {
+            gid: task_gid,
+            expected_state: SessionQueueState::Active,
+            target_state: SessionQueueState::Stopped,
+            desired_paused: false,
+            slow_demotion_count: 0,
+            slow_slot: None,
+            final_orders: orders
+                .into_iter()
+                .map(|order| SessionQueueOrder {
+                    state: session_queue(order.class),
+                    gids: order.order,
+                })
+                .collect(),
+            updated_ms: 30,
+        };
+        let valid_steps = vec![
+            PersistencePlanStep::FlushJournal {
+                gid: task_gid,
+                through_sequence: 7,
+            },
+            PersistencePlanStep::PersistStoppedResult {
+                result: result.clone(),
+                transition: transition.clone(),
+            },
+        ];
+        assert!(PersistenceEffectPlan::new(effect.clone(), valid_steps.clone()).is_ok());
+
+        let mut reversed = valid_steps;
+        reversed.reverse();
+        assert_eq!(
+            PersistenceEffectPlan::new(effect.clone(), reversed),
+            Err(PersistencePlanError::InvalidSequence)
+        );
+        assert_eq!(
+            PersistenceEffectPlan::new(
+                effect,
+                vec![
+                    PersistencePlanStep::FlushJournal {
+                        gid: task_gid,
+                        through_sequence: 0,
+                    },
+                    PersistencePlanStep::PersistStoppedResult { result, transition },
+                ],
+            ),
+            Err(PersistencePlanError::TerminalMismatch)
+        );
     }
 
     #[test]

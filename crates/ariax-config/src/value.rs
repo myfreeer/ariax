@@ -489,6 +489,22 @@ mod tests {
     }
 
     #[test]
+    fn http_timeouts_accept_contract_bounds_and_reject_outside_values() {
+        for name in ["connect-timeout", "timeout"] {
+            assert_eq!(parse(name, "1"), Ok(OptionValue::DurationSeconds(1)));
+            assert_eq!(parse(name, "600"), Ok(OptionValue::DurationSeconds(600)));
+            assert!(matches!(
+                parse(name, "0"),
+                Err(ParseOptionValueError::OutOfRange { .. })
+            ));
+            assert!(matches!(
+                parse(name, "601"),
+                Err(ParseOptionValueError::OutOfRange { .. })
+            ));
+        }
+    }
+
+    #[test]
     fn parses_and_bounds_status_code_sets() {
         assert_eq!(
             parse("retry-on-http-status", "408,500-502,502"),
