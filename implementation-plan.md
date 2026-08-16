@@ -13,16 +13,18 @@ pooling, bounded body ingress, hierarchical download-rate arbitration,
 lowest-speed/stall diagnostics, packet-independent live stats, real worker
 supervision; pre-network descriptor-bound SHA-256 validation of recovered
 pieces; exact strong-ETag/resource/length recovery binding for single-source and
-strict-fallback range tasks; and `addUri`, `tellStatus`, `pause`, `remove`, and
-`getGlobalStat` over loopback HTTP and Content-Length stdio. The bundled Mozilla
-Public Suffix List is version/hash/license pinned and verified by generated
-contracts.
+strict-fallback range tasks; persisted user SHA-256 final verification and
+digest-bound restart; strict concurrent mirrors when that checksum is present;
+and `addUri`, `tellStatus`, `pause`, `remove`, and `getGlobalStat` over loopback
+HTTP and Content-Length stdio. The bundled Mozilla Public Suffix List is
+version/hash/license pinned and verified by generated contracts.
 
 The checkpoint intentionally does not complete all of Phase 3 or the project
-definition of done. Endgame duplicate ranges, shared whole-representation
-digests and the remaining validator policies, HTTP/2, growing/chunked transfers,
-benchmarks, hot-backup crash-residue reconciliation, the broader Phase-4 control
-plane, and the full release-platform matrix remain phase/tag gates.
+definition of done. Endgame duplicate ranges, RFC 9530/Metalink digest identity,
+additional checksum algorithms and the remaining validator policies, HTTP/2,
+growing/chunked transfers, benchmarks, hot-backup crash-residue reconciliation,
+the broader Phase-4 control plane, and the full release-platform matrix remain
+phase/tag gates.
 
 This is a staged plan for building the design without repeating the incomplete
 rewrite pattern. The native-startup orchestration boundary, central-journal
@@ -226,9 +228,12 @@ hierarchical rate limiting, lowest-speed diagnostics, and persisted range retry
 waits. Single-source and strict-fallback recovery additionally verifies
 journaled durable-piece SHA-256 evidence before network access and requires the
 exact persisted strong ETag, resource fingerprint, and length before releasing
-pending ranges. Endgame duplicate ranges, shared whole-representation digests,
-the remaining validator policies, and the full Phase-3 exit criteria below
-still gate a later phase completion claim.
+pending ranges. A persisted user SHA-256 checksum additionally admits strict
+concurrent mirrors, permits digest-bound recovery, and gates `TaskComplete` on a
+bounded descriptor-based whole-file hash. Endgame duplicate ranges, RFC 9530
+and Metalink digest identity, additional checksum algorithms, the remaining
+validator policies, and the full Phase-3 exit criteria below still gate a later
+phase completion claim.
 
 Detailed design input:
 

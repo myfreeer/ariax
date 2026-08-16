@@ -196,6 +196,16 @@ impl RootFileCapability {
         self.file.try_clone().map_err(Into::into)
     }
 
+    /// Duplicates the already-open descriptor while preserving its verified
+    /// native identity. The clone carries no path authority and is suitable
+    /// for independent descriptor-bound verification work.
+    pub fn try_clone_capability(&self) -> Result<Self, NativeCapabilityError> {
+        Ok(Self {
+            file: self.file.try_clone()?,
+            identity: self.identity,
+        })
+    }
+
     #[must_use]
     pub fn into_file(self) -> File {
         self.file
@@ -1118,6 +1128,15 @@ mod tests {
             .read_exact_at(1, &mut readback)
             .expect("positional readback");
         assert_eq!(&readback, b"bcde");
+        let verification = reopened
+            .try_clone_capability()
+            .expect("clone verification capability");
+        assert_eq!(verification.identity(), reopened.identity());
+        let mut cloned_readback = [0_u8; 6];
+        verification
+            .read_exact_at(0, &mut cloned_readback)
+            .expect("cloned positional readback");
+        assert_eq!(&cloned_readback, b"abcdef");
         assert_eq!(
             fs::read(directory.0.join("output.bin")).expect("read output"),
             b"abcdef"

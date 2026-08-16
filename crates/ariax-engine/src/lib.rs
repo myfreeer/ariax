@@ -78,11 +78,12 @@ pub use http_happy_eyeballs::{
     HttpHappyEyeballsError, MAX_HTTP_HAPPY_EYEBALLS_ADDRESSES, connect_http_happy_eyeballs,
 };
 pub use http_multi::{
-    DEFAULT_HTTP_INGRESS_BUDGET_BYTES, DEFAULT_HTTP_INGRESS_FRAME_BYTES,
-    DEFAULT_HTTP_RANGE_EVENT_CAPACITY, HttpCompletedEvidence, HttpMultiRangeError,
-    HttpMultiRangeWorker, HttpMultiRangeWorkerConfig, HttpStatsCatalogError, HttpTransferStats,
-    HttpTransferStatsSnapshot, MAX_HTTP_RANGE_EVENT_CAPACITY, SharedHttpTransferStats,
-    derive_http_journal_id, http_journal_directory,
+    DEFAULT_HTTP_DIGEST_WORKERS, DEFAULT_HTTP_INGRESS_BUDGET_BYTES,
+    DEFAULT_HTTP_INGRESS_FRAME_BYTES, DEFAULT_HTTP_RANGE_EVENT_CAPACITY, HttpCompletedEvidence,
+    HttpMultiRangeError, HttpMultiRangeWorker, HttpMultiRangeWorkerConfig, HttpStatsCatalogError,
+    HttpTransferStats, HttpTransferStatsSnapshot, MAX_HTTP_DIGEST_WORKERS,
+    MAX_HTTP_RANGE_EVENT_CAPACITY, SharedHttpTransferStats, derive_http_journal_id,
+    http_journal_directory,
 };
 pub use http_proxy::{
     HttpProxyEndpoint, HttpProxyKind, HttpProxyNameResolution, HttpProxyPolicy,
@@ -146,7 +147,8 @@ pub use http_supervisor::{
 };
 pub use http_task::{
     DEFAULT_HTTP_MAX_CONNECTIONS_PER_SERVER, DEFAULT_HTTP_MIN_SPLIT_SIZE,
-    DEFAULT_HTTP_PIECE_LENGTH, DEFAULT_HTTP_SPLIT, HTTP_SOURCE_FINGERPRINT_DOMAIN,
+    DEFAULT_HTTP_PIECE_LENGTH, DEFAULT_HTTP_SPLIT, HTTP_SHA256_CHECKSUM_TEXT_BYTES,
+    HTTP_SOURCE_FINGERPRINT_DOMAIN, HttpContentChecksum, HttpContentChecksumError,
     HttpMirrorIdentityPolicy, HttpSourceSpec, HttpTaskCatalog, HttpTaskCatalogError,
     HttpTaskOptions, HttpTaskSpec, HttpTaskSpecError, MAX_HTTP_PIECE_LENGTH, MAX_HTTP_TASK_SOURCES,
     MAX_HTTP_TIMEOUT_SECS, SharedHttpTaskCatalog,

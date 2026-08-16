@@ -570,6 +570,24 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         behavior_tests: NONE,
     },
     OptionDef {
+        name: "checksum",
+        short: None,
+        value_type: ValueType::String { max_len: 72 },
+        default: None,
+        category: "integrity",
+        scopes: DOWNLOAD_SCOPES,
+        runtime_update: RuntimeUpdate::ActiveRestart,
+        owner: "checksum_verifier",
+        build_features: MINIMAL,
+        security: SecurityClass::Normal,
+        compat: PARTIAL,
+        aria2_available: true,
+        aria2_runtime_update: RuntimeUpdate::None,
+        compatibility_difference: CompatibilityDifference::Intentional,
+        docs: "detailed-http-first-slice.md#cross-mirror-entity-identity",
+        behavior_tests: NONE,
+    },
+    OptionDef {
         name: "verify-mirror-identity",
         short: None,
         value_type: ValueType::Enum {
@@ -845,6 +863,10 @@ mod tests {
         let registry = builtin_registry();
         assert_eq!(registry.definitions(), BUILTIN_OPTIONS);
         assert_eq!(registry.find("split").expect("split").short, Some('s'));
+        assert_eq!(
+            registry.find("checksum").expect("checksum").value_type,
+            ValueType::String { max_len: 72 }
+        );
         assert!(registry.find("missing").is_none());
     }
 

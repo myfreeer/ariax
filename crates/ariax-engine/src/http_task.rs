@@ -6,7 +6,8 @@ use crate::http_retry::{
 };
 use ariax_core::{Gid, TaskId, UriId};
 use ariax_storage::{
-    SafePathBuilder, SafeRelativePath, SanitizedOptionMap, SessionTaskSourceRecord,
+    JournalDigest, JournalDigestAlgorithm, SafePathBuilder, SafeRelativePath, SanitizedOptionMap,
+    SessionTaskSourceRecord,
 };
 use hyper::Uri;
 use sha2::{Digest, Sha256};
@@ -26,6 +27,111 @@ pub const DEFAULT_HTTP_PIECE_LENGTH: u64 = 1024 * 1024;
 pub const MAX_HTTP_PIECE_LENGTH: u64 = 1024 * 1024 * 1024;
 pub const MAX_HTTP_TIMEOUT_SECS: u64 = 600;
 pub const HTTP_SOURCE_FINGERPRINT_DOMAIN: &str = "ariax/http-source/v1\0";
+pub const HTTP_SHA256_CHECKSUM_TEXT_BYTES: usize = 72;
+
+/// One canonical user-supplied whole-representation checksum accepted by the
+/// executable HTTP slice. The enum leaves room for the reviewed digest
+/// vocabulary while this milestone intentionally admits only SHA-256.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HttpContentChecksum {
+    Sha256([u8; 32]),
+}
+
+impl HttpContentChecksum {
+    pub fn parse(value: &str) -> Result<Self, HttpContentChecksumError> {
+        if value.len() > HTTP_SHA256_CHECKSUM_TEXT_BYTES {
+            return Err(HttpContentChecksumError::InvalidLength);
+        }
+        let (algorithm, digest) = value
+            .split_once('=')
+            .ok_or(HttpContentChecksumError::InvalidFormat)?;
+        if digest.contains('=') {
+            return Err(HttpContentChecksumError::InvalidFormat);
+        }
+        if algorithm != JournalDigestAlgorithm::Sha256.code() {
+            return Err(HttpContentChecksumError::UnsupportedAlgorithm);
+        }
+        if digest.len() != JournalDigestAlgorithm::Sha256.value_len() * 2 {
+            return Err(HttpContentChecksumError::InvalidLength);
+        }
+        let mut bytes = [0_u8; 32];
+        for (target, pair) in bytes.iter_mut().zip(digest.as_bytes().chunks_exact(2)) {
+            let high = decode_hex_digit(pair[0]).ok_or(HttpContentChecksumError::InvalidHex)?;
+            let low = decode_hex_digit(pair[1]).ok_or(HttpContentChecksumError::InvalidHex)?;
+            *target = (high << 4) | low;
+        }
+        Ok(Self::Sha256(bytes))
+    }
+
+    #[must_use]
+    pub const fn sha256(value: [u8; 32]) -> Self {
+        Self::Sha256(value)
+    }
+
+    #[must_use]
+    pub const fn algorithm(self) -> JournalDigestAlgorithm {
+        match self {
+            Self::Sha256(_) => JournalDigestAlgorithm::Sha256,
+        }
+    }
+
+    #[must_use]
+    pub const fn value(self) -> [u8; 32] {
+        match self {
+            Self::Sha256(value) => value,
+        }
+    }
+
+    #[must_use]
+    pub fn canonical(self) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let value = self.value();
+        let mut canonical = String::with_capacity(HTTP_SHA256_CHECKSUM_TEXT_BYTES);
+        canonical.push_str(self.algorithm().code());
+        canonical.push('=');
+        for byte in value {
+            canonical.push(char::from(HEX[usize::from(byte >> 4)]));
+            canonical.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+        canonical
+    }
+
+    #[must_use]
+    pub fn journal_digest(self) -> JournalDigest {
+        JournalDigest::new(self.algorithm(), self.value().to_vec())
+            .expect("HTTP checksum has the canonical algorithm length")
+    }
+}
+
+fn decode_hex_digit(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HttpContentChecksumError {
+    InvalidFormat,
+    UnsupportedAlgorithm,
+    InvalidLength,
+    InvalidHex,
+}
+
+impl fmt::Display for HttpContentChecksumError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::InvalidFormat => "checksum must use TYPE=DIGEST syntax",
+            Self::UnsupportedAlgorithm => "only sha-256 checksums are supported",
+            Self::InvalidLength => "checksum has the wrong length",
+            Self::InvalidHex => "checksum digest is not hexadecimal",
+        })
+    }
+}
+
+impl Error for HttpContentChecksumError {}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum HttpMirrorIdentityPolicy {
@@ -60,6 +166,9 @@ pub struct HttpTaskOptions {
     /// lowest-speed retry trigger.
     pub lowest_speed_limit: u64,
     pub mirror_identity: HttpMirrorIdentityPolicy,
+    /// Optional whole-representation checksum used for terminal verification
+    /// and as the shared identity proof for strict concurrent mirrors.
+    pub checksum: Option<HttpContentChecksum>,
     /// An explicitly resolved per-task retry policy. Tasks without one inherit
     /// the process worker policy at admission.
     pub retry: Option<HttpRetryPolicy>,
@@ -79,6 +188,7 @@ impl Default for HttpTaskOptions {
             max_download_limit: 0,
             lowest_speed_limit: 0,
             mirror_identity: HttpMirrorIdentityPolicy::TrustSubmittedMirrors,
+            checksum: None,
             retry: None,
         }
     }
@@ -140,6 +250,9 @@ impl HttpTaskOptions {
         ];
         if let Some(retry) = &self.retry {
             entries.extend(retry_sanitized_entries(retry));
+        }
+        if let Some(checksum) = self.checksum {
+            entries.push(("checksum".to_owned(), checksum.canonical()));
         }
         SanitizedOptionMap::new(entries).map_err(|_| HttpTaskSpecError::InvalidOptions)
     }
@@ -211,6 +324,12 @@ impl HttpTaskOptions {
                         "off" => HttpMirrorIdentityPolicy::TrustSubmittedMirrors,
                         _ => return Err(HttpTaskSpecError::InvalidOptions),
                     };
+                }
+                "checksum" => {
+                    value.checksum = Some(
+                        HttpContentChecksum::parse(setting)
+                            .map_err(|_| HttpTaskSpecError::InvalidOptions)?,
+                    );
                 }
                 // Task placement is persisted in the same atomic option
                 // snapshot but is owned by `HttpTaskSpec`, not this protocol
@@ -784,6 +903,7 @@ mod tests {
     fn task_spec_canonicalizes_multiple_sources_and_builds_restart_rows() {
         let options = HttpTaskOptions {
             max_download_limit: 64 * 1024,
+            checksum: Some(HttpContentChecksum::sha256([0xab; 32])),
             ..HttpTaskOptions::default()
         };
         let spec = HttpTaskSpec::new(
@@ -832,6 +952,42 @@ mod tests {
                 .max_download_limit,
             64 * 1024
         );
+        assert_eq!(
+            spec.options()
+                .sanitized()
+                .expect("sanitized")
+                .entries()
+                .find(|(name, _)| *name == "checksum")
+                .map(|(_, value)| value),
+            Some("sha-256=abababababababababababababababababababababababababababababababab")
+        );
+        assert_eq!(
+            HttpTaskOptions::from_sanitized(&spec.options().sanitized().expect("sanitized"))
+                .expect("recover options")
+                .checksum,
+            Some(HttpContentChecksum::sha256([0xab; 32]))
+        );
+    }
+
+    #[test]
+    fn checksum_parser_canonicalizes_sha256_and_rejects_unsafe_shapes() {
+        let uppercase = "sha-256=ABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD";
+        let checksum = HttpContentChecksum::parse(uppercase).expect("valid checksum");
+        assert_eq!(
+            checksum.canonical(),
+            "sha-256=abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"
+        );
+        assert_eq!(checksum.journal_digest().value(), checksum.value());
+
+        for invalid in [
+            "sha-256",
+            "sha-512=abcdef",
+            "sha-256=abcdef",
+            "sha-256=ggcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+            "sha-256=abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd=",
+        ] {
+            assert!(HttpContentChecksum::parse(invalid).is_err(), "{invalid}");
+        }
     }
 
     #[test]

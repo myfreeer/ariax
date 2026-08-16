@@ -6,11 +6,12 @@
 
 use crate::http_first_slice::append_initial_admission_with_options;
 use crate::{
-    HttpRetryAfterPolicy, HttpRetryBackoff, HttpRetryPolicy, HttpRetryProfile, HttpRetryStatusSet,
-    HttpRetryTriggerSet, HttpRpcBackend, HttpRpcBackendError, HttpTaskCatalogError,
-    HttpTaskOptions, HttpTaskSpec, HttpTaskSpecError, HttpTaskWorker, HttpTransferStatsSnapshot,
-    HttpWorkerSupervisor, HttpWorkerSupervisorConfig, PersistenceEffectPlan, PersistencePlanStep,
-    SharedHttpTaskCatalog, SharedHttpTransferStats, derive_http_journal_id, http_journal_directory,
+    HttpContentChecksum, HttpRetryAfterPolicy, HttpRetryBackoff, HttpRetryPolicy, HttpRetryProfile,
+    HttpRetryStatusSet, HttpRetryTriggerSet, HttpRpcBackend, HttpRpcBackendError,
+    HttpTaskCatalogError, HttpTaskOptions, HttpTaskSpec, HttpTaskSpecError, HttpTaskWorker,
+    HttpTransferStatsSnapshot, HttpWorkerSupervisor, HttpWorkerSupervisorConfig,
+    PersistenceEffectPlan, PersistencePlanStep, SharedHttpTaskCatalog, SharedHttpTransferStats,
+    derive_http_journal_id, http_journal_directory,
 };
 use ariax_core::{
     Aria2Status, Generation, Gid, MonotonicInstant, PublicError, QueueClass, QueueOrder,
@@ -1132,6 +1133,16 @@ fn parse_add_options(
             "timeout" => parsed.response_body_timeout = Duration::from_secs(parse_timeout(value)?),
             "max-download-limit" => parsed.max_download_limit = parse_size(value)?,
             "lowest-speed-limit" => parsed.lowest_speed_limit = parse_size(value)?,
+            "checksum" => {
+                parsed.checksum = Some(
+                    HttpContentChecksum::parse(
+                        value
+                            .as_str()
+                            .ok_or(HttpControlError::InvalidParams("checksum must be a string"))?,
+                    )
+                    .map_err(|_| HttpControlError::InvalidParams("invalid checksum"))?,
+                );
+            }
             "verify-mirror-identity" => {
                 parsed.mirror_identity = match value.as_str() {
                     Some("strict") => crate::HttpMirrorIdentityPolicy::RequireSharedDigest,
@@ -1849,6 +1860,7 @@ mod tests {
                 "retry-after-max": 60,
                 "retry-max-wait": 60,
                 "retry-max-elapsed": 600,
+                "checksum": "sha-256=abababababababababababababababababababababababababababababababab",
                 "pause": "true",
             }),
             &directory.output,
@@ -1862,6 +1874,10 @@ mod tests {
         assert_eq!(options.connect_timeout, Duration::from_secs(1));
         assert_eq!(options.response_body_timeout, Duration::from_secs(600));
         assert_eq!(options.max_download_limit, 64 * 1024);
+        assert_eq!(
+            options.checksum,
+            Some(HttpContentChecksum::sha256([0xab; 32]))
+        );
         let retry = options.retry.expect("resolved retry policy");
         assert_eq!(retry.profile, HttpRetryProfile::Custom);
         assert_eq!(retry.max_attempts.get(), 4);
@@ -1884,6 +1900,8 @@ mod tests {
             json!({"retry-max-wait": 0}),
             json!({"retry-on-http-status": "99"}),
             json!({"piece-length": "18446744073709551615T"}),
+            json!({"checksum": "sha-512=abcd"}),
+            json!({"checksum": 7}),
         ] {
             assert!(matches!(
                 parse_add_options(&invalid, &directory.output, &uris),
@@ -1932,8 +1950,13 @@ mod tests {
         plane
             .attach_worker(Arc::new(worker))
             .expect("attach worker");
+        let checksum =
+            HttpContentChecksum::sha256(Sha256::digest(data.as_ref()).into()).canonical();
         let gid = plane
-            .call("aria2.addUri", json!([[uri], {"pause": false}]))
+            .call(
+                "aria2.addUri",
+                json!([[uri], {"pause": false, "checksum": checksum}]),
+            )
             .expect("add URI")
             .as_str()
             .expect("GID")

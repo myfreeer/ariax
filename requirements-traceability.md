@@ -9,9 +9,12 @@ redirect/proxy/auth/cookie policy, supervised range/retry workers, and five real
 scheduler RPC methods. It also includes process-owned pooling, bounded ingress,
 hierarchical rate limiting and stall diagnostics, persisted retry waits, and
 strong-ETag-bound single-source/strict-fallback recovery with pre-network
-durable-piece digest verification. Endgame, shared whole-representation
-digests and remaining validator policies, broader protocols/control APIs,
-benchmarks, and the complete release matrix remain incomplete.
+durable-piece digest verification. Persisted user SHA-256 now also provides
+strict concurrent-mirror identity, digest-bound restart, bounded descriptor-
+based final verification, and terminal digest evidence. Endgame, RFC 9530 and
+Metalink identity, additional checksum algorithms and remaining validator
+policies, broader protocols/control APIs, benchmarks, and the complete release
+matrix remain incomplete.
 
 This maps the requested properties to design documents.
 
@@ -219,10 +222,11 @@ Design coverage:
   bounded DNS cache/singleflight/Happy Eyeballs, redirect/proxy/auth/cookies,
   segmented range/retry recovery, process-owned bounded ingress/rate control,
   live stats, worker supervision, pre-network durable-piece digest readback,
-  strong-ETag-bound single-source/strict-fallback recovery, and five real
-  scheduler RPC methods. Shared whole-representation digests, remaining
-  validator policies, endgame, HTTP/2, growing bodies, and the rest of Phase 4
-  remain pending.
+  strong-ETag-bound single-source/strict-fallback recovery, user SHA-256-bound
+  strict concurrent mirrors and final verification, and five real scheduler RPC
+  methods. RFC 9530/Metalink digest identity, additional checksum algorithms,
+  remaining validator policies, endgame, HTTP/2, growing bodies, and the rest of
+  Phase 4 remain pending.
 
 Acceptance:
 

@@ -440,7 +440,8 @@ slow-slot-policy                   live
 split                              active_restart
 max-connection-per-server          active_restart
 min-split-size                     active_restart
-piece-length                      new_generation
+piece-length                       new_generation
+checksum                           active_restart
 allow-piece-length-change         waiting_only
 dir,out                            waiting_only or new_generation
 ca-certificate,ca-store            active_restart
@@ -519,10 +520,12 @@ HTTP/FTP/SFTP:
   resume model, even for a nominally sequential transfer, until the separate
   growing/transformed-output mode in `detailed-ftp-sftp.md` is implemented.
 - Transfer: `split`, `max-connection-per-server`, `min-split-size`,
-  `piece-length`, `allow-piece-length-change`,
+  `piece-length`, `checksum`, `allow-piece-length-change`,
   `max-tries`, `retry-wait`, `timeout`, `connect-timeout`,
   `lowest-speed-limit`, `max-file-not-found`, `max-resume-failure-tries`:
-  implemented.
+  implemented for the stated protocol slices. The executable HTTP checksum
+  subset currently accepts SHA-256 only; the broader aria2 digest vocabulary
+  remains partial.
 - `piece-length` defaults to 1 MiB for HTTP/FTP, is persisted, and is ignored
   when Metalink/BitTorrent metadata owns the verification piece size.
   `allow-piece-length-change=false` rejects a recovery mismatch; explicit true
@@ -707,6 +710,11 @@ Protocol modernization:
 
 Transfer integrity and redirects:
 
+- `checksum=sha-256=<64 hexadecimal digits>` (the executable HTTP slice accepts
+  SHA-256, persists its lowercase canonical form, verifies the complete
+  descriptor-bound file before terminal completion, and uses it as the shared
+  identity proof for strict concurrent mirrors; other algorithms remain
+  pending)
 - `verify-mirror-identity=off|strict` (default `off`, aria2-compatible: trust
   the mirror list for concurrent split; `strict` gates concurrent multi-mirror
   split on a shared content digest — see `split-download.md`)

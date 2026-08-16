@@ -18,10 +18,14 @@ strict-fallback resume, packet-independent live speed sampling, and
 scheduler-owned worker supervision. Five methods (`addUri`, `tellStatus`,
 `pause`, `remove`, and `getGlobalStat`) are executable over loopback HTTP/1.1
 and bounded Content-Length stdio framing. The older pinned-peer CLI remains as
-a diagnostic harness. Endgame duplicate leases, shared whole-representation
-digests, Last-Modified/digest-only/unsafe-override resume, HTTP/2,
-unknown-length or chunked layouts, WebSocket/NDJSON and non-loopback RPC, and
-the rest of the Phase-4 control plane remain outside this checkpoint.
+a diagnostic harness. A persisted user `checksum=sha-256=<64 hex>` now gates
+strict concurrent mirrors, verifies the descriptor-bound assembled file on a
+bounded blocking worker before `TaskComplete`, and permits digest-bound restart
+without a strong server validator. Endgame duplicate leases, RFC 9530/Metalink
+digest identity, additional checksum algorithms, Last-Modified and unsafe-
+override resume, HTTP/2, unknown-length or chunked layouts, WebSocket/NDJSON and
+non-loopback RPC, and the rest of the Phase-4 control plane remain outside this
+checkpoint.
 
 This document defines HTTP(S) sequential download, resume, strict range
 validation, storage integration, retry integration, and stats behavior.
@@ -153,7 +157,9 @@ The checkpoint implements only these request forms:
 - `aria2.addUri([uris], [options])`, with one or more HTTP(S) mirrors and the
   reviewed options `dir`, `out`, `pause`, `split`,
   `max-connection-per-server`, `min-split-size`, `piece-length`,
-  `connect-timeout`, `timeout`, and `verify-mirror-identity`,
+  `connect-timeout`, `timeout`, `max-download-limit`, `lowest-speed-limit`,
+  `checksum`, the bounded retry-policy options, and
+  `verify-mirror-identity`,
 - `aria2.tellStatus(gid)`, `aria2.pause(gid)`, and `aria2.remove(gid)`, each
   requiring exactly one full hexadecimal GID,
 - `aria2.getGlobalStat()` with no arguments.
@@ -281,15 +287,19 @@ durable-length plus Last-Modified comparison, with any change classified as
 If validator changes, classify as `StaleValidator`, not transient network
 failure.
 
-The current executable checkpoint implements only the first item for sequential
+The current executable checkpoint implements the first item for sequential
 downloads and for range tasks that settle on one source: a strong ETag whose
 raw quoted value, exact resource fingerprint, and settled total length are
-persisted in `HttpStrongValidator`. Recovery first verifies every durable piece
-against its journaled SHA-256 digest without opening a network connection, then
-requires the newly probed source to reproduce that exact strong-validator
-binding before pending ranges can run. Last-Modified, weak-ETag, digest-only,
-and unsafe-override resume remain design-level policy and are not accepted by
-the checkpoint runner.
+persisted in `HttpStrongValidator`. It also implements configured SHA-256
+digest-bound range recovery. Recovery first verifies every durable piece
+against its journaled SHA-256 digest without opening a network connection.
+Strong-validator recovery then requires the newly probed source to reproduce
+the exact binding before pending ranges can run; checksum-bound recovery may
+continue across a weak or changed server validator and verifies the complete
+descriptor-bound file before terminal publication. A fully durable checksum-
+bound file is reverified and completed locally without a network connection.
+Last-Modified and unsafe-override resume remain design-level policy and are not
+accepted by the checkpoint runner.
 
 ## Cross-Mirror Entity Identity
 
@@ -335,9 +345,13 @@ The behavior is selected by `--verify-mirror-identity`:
   its own range responses — a valid per-origin guarantee); the other URIs remain
   sequential-download or restart fallbacks.
 
-The executable strict-mode checkpoint implements the single-mirror fallback and
-persists its exact strong-ETag binding. Admission of concurrent strict mirrors
-under a shared whole-representation digest remains pending.
+The executable strict-mode checkpoint implements both the single-mirror strong-
+ETag fallback and concurrent mirrors backed by a user-supplied SHA-256 checksum.
+The checksum is persisted in the immutable task option snapshot; the assembled
+file is read through a duplicated descriptor capability on a process-bounded
+blocking hash worker, and a mismatch leaves all piece evidence nonterminal.
+RFC 9530 identity tuples, Metalink chunk hashes, and additional user checksum
+algorithms remain pending.
 
 A redirect target never joins the mirror pool merely because a redirect was
 followed. Its admission and per-lease exclusivity follow `redirect-policy.md`.
@@ -667,6 +681,12 @@ Required tests:
   content digest (Metalink chunk hashes, an exactly matching RFC 9530 identity
   tuple on every mirror, or a whole-file checksum); otherwise strict mode is
   restricted to a single mirror,
+- a user SHA-256 checksum admits strict concurrent mirrors, survives option
+  persistence/recovery, writes the matching final digest into `TaskComplete`,
+  and rejects a divergent equal-length mirror without terminal completion,
+- a fully durable checksum-bound task rehashes and completes or rejects locally
+  without reconnecting, and partial checksum-bound recovery can retain verified
+  local pieces despite a weak server ETag,
 - equal-length mirrors with different RFC 9530 digest values, coverage, or
   representations fail the strict identity gate even if their algorithms match,
 - normal split under `off` retains the documented aria2-compatible residual

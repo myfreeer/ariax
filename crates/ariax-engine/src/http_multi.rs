@@ -5,14 +5,14 @@ use crate::http_first_slice::{
     append_layout, build_single_file_layout, now_unix_ms,
 };
 use crate::{
-    HttpCancellation, HttpClientRequest, HttpMirrorIdentityPolicy, HttpPolicyClient,
-    HttpPolicyClientError, HttpRangeAssignment, HttpRangeCoordinator, HttpRangeCoordinatorConfig,
-    HttpRangeCoordinatorError, HttpRangeFailure, HttpRangePoll, HttpRangeResponseError,
-    HttpRangeResponseValidator, HttpRangeSource, HttpRetryBudget, HttpRetryCause,
-    HttpRetryDecision, HttpRetryDelaySource, HttpRetryError, HttpRetryPolicy, HttpRetryStopReason,
-    HttpRetryTransportFailure, HttpTaskSpec, HttpTaskWorker, HttpTransportError, HttpWorkerFuture,
-    HttpWorkerSuccess, LeaseCommit, LeaseWritePlan, RetryStateWrite, StorageEngine,
-    StorageEngineConfig, StorageEngineError, WriteBlock,
+    HttpCancellation, HttpClientRequest, HttpContentChecksum, HttpMirrorIdentityPolicy,
+    HttpPolicyClient, HttpPolicyClientError, HttpRangeAssignment, HttpRangeCoordinator,
+    HttpRangeCoordinatorConfig, HttpRangeCoordinatorError, HttpRangeFailure, HttpRangePoll,
+    HttpRangeResponseError, HttpRangeResponseValidator, HttpRangeSource, HttpRetryBudget,
+    HttpRetryCause, HttpRetryDecision, HttpRetryDelaySource, HttpRetryError, HttpRetryPolicy,
+    HttpRetryStopReason, HttpRetryTransportFailure, HttpTaskSpec, HttpTaskWorker,
+    HttpTransportError, HttpWorkerFuture, HttpWorkerSuccess, LeaseCommit, LeaseWritePlan,
+    RetryStateWrite, StorageEngine, StorageEngineConfig, StorageEngineError, WriteBlock,
 };
 use ariax_core::{
     ErrorKind, FileId, Generation, Gid, LeaseId, MonotonicInstant, PersistedDelayDecision, PieceId,
@@ -24,12 +24,13 @@ use ariax_runtime::{
     SizeClass, StatsCounters, StatsDiagnostic, StatsProfile, StatsSampler, StatsSamplerConfig,
 };
 use ariax_storage::{
-    ControlJournalAppender, FileLayout, GlobalSpan, JournalContributor, JournalDigestAlgorithm,
-    JournalDirectoryCapability, JournalId, JournalStateLimits, LeaseAbortReason, PersistedId,
-    PersistedSpan, PlatformPath, RecoveredDurablePiece, RecoveredHttpStrongValidator,
-    RecoveredJournalState, RecoveredRetryState, ReplayLimits, RetryReason, RetryScope,
-    RootDirectoryCapability, RootFileCapability, SessionCommand, SessionHandle, SessionOwnerError,
-    SessionPersistenceError, calculate_validator_set_fingerprint, recover_journal_state,
+    ControlJournalAppender, FileLayout, GlobalSpan, JournalContributor, JournalDigest,
+    JournalDigestAlgorithm, JournalDirectoryCapability, JournalId, JournalStateLimits,
+    LeaseAbortReason, PersistedId, PersistedSpan, PlatformPath, RecoveredDurablePiece,
+    RecoveredHttpStrongValidator, RecoveredJournalState, RecoveredRetryState, ReplayLimits,
+    RetryReason, RetryScope, RootDirectoryCapability, RootFileCapability, SessionCommand,
+    SessionHandle, SessionOwnerError, SessionPersistenceError, calculate_validator_set_fingerprint,
+    recover_journal_state,
 };
 use hyper::header::RETRY_AFTER;
 use sha2::{Digest, Sha256};
@@ -41,15 +42,18 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Semaphore, mpsc, oneshot};
 use tokio::task::JoinSet;
 
 pub const MAX_HTTP_RANGE_EVENT_CAPACITY: usize = 4096;
 pub const DEFAULT_HTTP_RANGE_EVENT_CAPACITY: usize = 64;
 pub const DEFAULT_HTTP_INGRESS_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 pub const DEFAULT_HTTP_INGRESS_FRAME_BYTES: usize = SizeClass::MiB1.capacity();
+pub const DEFAULT_HTTP_DIGEST_WORKERS: usize = 1;
+pub const MAX_HTTP_DIGEST_WORKERS: usize = 64;
 const HTTP_JOURNAL_ID_DOMAIN: &str = "ariax/http-journal-id/v1\0";
 const HTTP_RECOVERY_READ_BUFFER_BYTES: usize = 64 * 1024;
+const HTTP_FINAL_DIGEST_READ_BUFFER_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct HttpTransferStatsSnapshot {
@@ -437,6 +441,9 @@ pub struct HttpMultiRangeWorkerConfig {
     pub ingress_budget: ByteBudget,
     pub ingress_frame_bytes: NonZeroUsize,
     pub event_capacity: NonZeroUsize,
+    /// Process-local cap for CPU-heavy whole-file digest verification. Worker
+    /// clones share the semaphore created from this value.
+    pub digest_workers: NonZeroUsize,
 }
 
 impl HttpMultiRangeWorkerConfig {
@@ -446,6 +453,7 @@ impl HttpMultiRangeWorkerConfig {
             || self.event_capacity.get() > MAX_HTTP_RANGE_EVENT_CAPACITY
             || self.ingress_frame_bytes.get() > SizeClass::MiB1.capacity()
             || self.ingress_budget.limit() < self.ingress_frame_bytes.get()
+            || self.digest_workers.get() > MAX_HTTP_DIGEST_WORKERS
             || HttpRetryBudget::new(self.retry.clone()).is_err()
         {
             return Err(HttpMultiRangeError::InvalidConfig);
@@ -467,6 +475,8 @@ impl Default for HttpMultiRangeWorkerConfig {
                 .expect("default ingress frame is nonzero"),
             event_capacity: NonZeroUsize::new(DEFAULT_HTTP_RANGE_EVENT_CAPACITY)
                 .expect("default range event capacity is nonzero"),
+            digest_workers: NonZeroUsize::new(DEFAULT_HTTP_DIGEST_WORKERS)
+                .expect("default digest worker count is nonzero"),
         }
     }
 }
@@ -477,6 +487,7 @@ pub struct HttpMultiRangeWorker {
     config: HttpMultiRangeWorkerConfig,
     stats: SharedHttpTransferStats,
     session: Option<SessionHandle>,
+    digest_slots: Arc<Semaphore>,
 }
 
 impl fmt::Debug for HttpMultiRangeWorker {
@@ -495,11 +506,14 @@ impl HttpMultiRangeWorker {
         config: HttpMultiRangeWorkerConfig,
         stats: SharedHttpTransferStats,
     ) -> Result<Self, HttpMultiRangeError> {
+        let config = config.validate()?;
+        let digest_slots = Arc::new(Semaphore::new(config.digest_workers.get()));
         Ok(Self {
             client,
-            config: config.validate()?,
+            config,
             stats,
             session: None,
+            digest_slots,
         })
     }
 
@@ -537,6 +551,44 @@ impl HttpMultiRangeWorker {
                 return Err(error);
             }
         };
+        if task.options().checksum.is_some()
+            && let Some(total_length) = prepared_storage.fully_durable_length()
+        {
+            stats.set_total_length(total_length);
+            let mut no_sources = Vec::new();
+            let OpenedHttpStorage {
+                storage,
+                layout_hash,
+                durable_bytes,
+                verification_output,
+                ..
+            } = match self.finish_storage(
+                prepared_storage,
+                &task,
+                generation,
+                total_length,
+                &mut no_sources,
+            ) {
+                Ok(storage) => storage,
+                Err(error) => {
+                    self.handoff_new_or_recovered_journal(&task, generation)
+                        .await?;
+                    return Err(error);
+                }
+            };
+            stats.set_durable(durable_bytes);
+            let outcome = self
+                .verify_expected_checksum(
+                    task.options().checksum,
+                    verification_output,
+                    total_length,
+                    &cancellation,
+                )
+                .await;
+            return self
+                .complete_storage_outcome(&task, storage, layout_hash, total_length, outcome)
+                .await;
+        }
         let mut sources = match self.probe_sources(&task, &cancellation, &stats).await {
             Ok(sources) => sources,
             Err(error) => {
@@ -556,6 +608,7 @@ impl HttpMultiRangeWorker {
             durable_pieces,
             durable_bytes,
             recovered_retry_states,
+            verification_output,
         } = match self.finish_storage(
             prepared_storage,
             &task,
@@ -571,7 +624,7 @@ impl HttpMultiRangeWorker {
             }
         };
         stats.set_durable(durable_bytes);
-        let outcome = self
+        let range_outcome = self
             .run_ranges(
                 &task,
                 generation,
@@ -583,10 +636,43 @@ impl HttpMultiRangeWorker {
                 &mut storage,
             )
             .await;
-        match outcome {
+        let outcome = match range_outcome {
             Ok(()) => {
+                self.verify_expected_checksum(
+                    task.options().checksum,
+                    verification_output,
+                    total_length,
+                    &cancellation,
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        };
+        self.complete_storage_outcome(&task, storage, layout_hash, total_length, outcome)
+            .await
+    }
+
+    async fn complete_storage_outcome(
+        &self,
+        task: &HttpTaskSpec,
+        mut storage: StorageEngine,
+        layout_hash: ariax_storage::JournalHash,
+        total_length: u64,
+        outcome: Result<Option<JournalDigest>, HttpMultiRangeError>,
+    ) -> Result<HttpWorkerSuccess, HttpMultiRangeError> {
+        match outcome {
+            Ok(final_digest) => {
                 let completed_at_unix_ms = now_unix_ms().unwrap_or(0);
-                let terminal_sequence = storage.complete(None, completed_at_unix_ms)?;
+                let terminal_sequence = match storage.complete(final_digest, completed_at_unix_ms) {
+                    Ok(sequence) => sequence,
+                    Err(error) => {
+                        let journal = storage
+                            .into_flushed_journal()
+                            .map_err(HttpMultiRangeError::Storage)?;
+                        self.handoff_journal(task.gid(), journal).await?;
+                        return Err(HttpMultiRangeError::Storage(error));
+                    }
+                };
                 let journal = storage
                     .into_flushed_journal()
                     .map_err(HttpMultiRangeError::Storage)?;
@@ -620,6 +706,7 @@ impl HttpMultiRangeWorker {
     ) -> Result<Vec<PreparedSource>, HttpMultiRangeError> {
         let source_limit = if task.options().mirror_identity
             == HttpMirrorIdentityPolicy::RequireSharedDigest
+            && task.options().checksum.is_none()
             && task.sources().len() > 1
         {
             1
@@ -629,12 +716,16 @@ impl HttpMultiRangeWorker {
         let mut prepared = Vec::new();
         let mut settled_total = None;
         let mut last_error = None;
+        let mirror_identity = HttpMirrorIdentityContext {
+            policy: task.options().mirror_identity,
+            shared_whole_entity_digest: task.options().checksum.is_some(),
+        };
         for source in &task.sources()[..source_limit] {
             match probe_source(
                 &self.client,
                 source.id(),
                 source.uri(),
-                task.options().mirror_identity,
+                mirror_identity,
                 task.options().response_body_timeout,
                 cancellation,
                 stats,
@@ -791,7 +882,8 @@ impl HttpMultiRangeWorker {
                     task.options().piece_length,
                 )?;
                 append_layout(&mut appender, &layout)?;
-                if let [source] = sources.as_mut_slice()
+                if task.options().checksum.is_none()
+                    && let [source] = sources.as_mut_slice()
                     && let (Some(etag), Some(validator_fingerprint)) = (
                         source.validator.if_range(),
                         source.validator.strong_validator_fingerprint(),
@@ -825,8 +917,14 @@ impl HttpMultiRangeWorker {
                         KnownLengthHttpError::RecoveryState,
                     ));
                 }
-                bind_recovered_strong_validator(sources, strong_validator.as_ref(), total_length)?;
-                verify_recovered_piece_validators(&durable_evidence, sources)?;
+                if task.options().checksum.is_none() {
+                    bind_recovered_strong_validator(
+                        sources,
+                        strong_validator.as_ref(),
+                        total_length,
+                    )?;
+                    verify_recovered_piece_validators(&durable_evidence, sources)?;
+                }
                 (
                     appender,
                     layout,
@@ -839,6 +937,12 @@ impl HttpMultiRangeWorker {
         };
         let layout_hash = ariax_storage::JournalHash::new(*layout.layout_hash().as_bytes())
             .expect("layout SHA-256 is nonzero");
+        let verification_output = task
+            .options()
+            .checksum
+            .map(|_| output.try_clone_capability())
+            .transpose()
+            .map_err(KnownLengthHttpError::from)?;
         let storage = StorageEngine::open_layout(
             layout,
             [(ariax_core::FileId::new(0), output)],
@@ -852,7 +956,41 @@ impl HttpMultiRangeWorker {
             durable_pieces,
             durable_bytes,
             recovered_retry_states: retry_states,
+            verification_output,
         })
+    }
+
+    async fn verify_expected_checksum(
+        &self,
+        expected: Option<HttpContentChecksum>,
+        output: Option<RootFileCapability>,
+        total_length: u64,
+        cancellation: &HttpCancellation,
+    ) -> Result<Option<JournalDigest>, HttpMultiRangeError> {
+        let Some(expected) = expected else {
+            debug_assert!(output.is_none());
+            return Ok(None);
+        };
+        let output = output.ok_or(HttpMultiRangeError::Protocol)?;
+        let slots = Arc::clone(&self.digest_slots);
+        let permit = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(HttpMultiRangeError::Cancelled),
+            permit = slots.acquire_owned() => permit.map_err(|_| HttpMultiRangeError::Protocol)?,
+        };
+        let hash_cancellation = cancellation.clone();
+        let actual = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            hash_output_sha256(&output, total_length, &hash_cancellation)
+        })
+        .await
+        .map_err(|_| HttpMultiRangeError::Protocol)??;
+        let expected_value = expected.value();
+        if actual.algorithm() != expected.algorithm() || actual.value() != expected_value.as_slice()
+        {
+            return Err(HttpMultiRangeError::ChecksumMismatch);
+        }
+        Ok(Some(actual))
     }
 
     fn open_task_journal(
@@ -1071,7 +1209,10 @@ impl HttpMultiRangeWorker {
                         let cancellation = cancellation.clone();
                         let sender = events.clone();
                         let attempt_stats = stats.clone();
-                        let mirror_identity = task.options().mirror_identity;
+                        let mirror_identity = HttpMirrorIdentityContext {
+                            policy: task.options().mirror_identity,
+                            shared_whole_entity_digest: task.options().checksum.is_some(),
+                        };
                         let body_timeout = task.options().response_body_timeout;
                         let lowest_speed_limit = task.options().lowest_speed_limit;
                         let rate_path = RatePath {
@@ -1226,6 +1367,12 @@ struct PreparedSource {
     lease_fingerprint: ariax_storage::JournalHash,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct HttpMirrorIdentityContext {
+    policy: HttpMirrorIdentityPolicy,
+    shared_whole_entity_digest: bool,
+}
+
 fn bind_recovered_strong_validator(
     sources: &mut Vec<PreparedSource>,
     recovered: Option<&RecoveredHttpStrongValidator>,
@@ -1353,6 +1500,56 @@ fn verify_recovered_piece_digests(
     Ok((durable_pieces, durable_bytes))
 }
 
+fn hash_output_sha256(
+    output: &RootFileCapability,
+    total_length: u64,
+    cancellation: &HttpCancellation,
+) -> Result<JournalDigest, HttpMultiRangeError> {
+    let actual_length = output.len().map_err(KnownLengthHttpError::from)?;
+    if actual_length != total_length {
+        return Err(HttpMultiRangeError::Setup(
+            KnownLengthHttpError::ExistingLengthMismatch {
+                expected: total_length,
+                actual: actual_length,
+            },
+        ));
+    }
+    let mut digest = Sha256::new();
+    let mut buffer = vec![0_u8; HTTP_FINAL_DIGEST_READ_BUFFER_BYTES];
+    let mut offset = 0_u64;
+    while offset != total_length {
+        if cancellation.is_cancelled() {
+            return Err(HttpMultiRangeError::Cancelled);
+        }
+        let take = usize::try_from(
+            (total_length - offset).min(HTTP_FINAL_DIGEST_READ_BUFFER_BYTES as u64),
+        )
+        .expect("bounded digest read fits usize");
+        output
+            .read_exact_at(offset, &mut buffer[..take])
+            .map_err(KnownLengthHttpError::from)?;
+        digest.update(&buffer[..take]);
+        offset = offset
+            .checked_add(u64::try_from(take).expect("digest read length fits u64"))
+            .ok_or(HttpMultiRangeError::Protocol)?;
+    }
+    if cancellation.is_cancelled() {
+        return Err(HttpMultiRangeError::Cancelled);
+    }
+    let final_length = output.len().map_err(KnownLengthHttpError::from)?;
+    if final_length != total_length {
+        return Err(HttpMultiRangeError::Setup(
+            KnownLengthHttpError::ExistingLengthMismatch {
+                expected: total_length,
+                actual: final_length,
+            },
+        ));
+    }
+    JournalDigest::new(JournalDigestAlgorithm::Sha256, digest.finalize().to_vec())
+        .map_err(KnownLengthHttpError::from)
+        .map_err(HttpMultiRangeError::from)
+}
+
 /// Assigns compact process-local host keys without hashing. Sources sharing an
 /// HTTP origin share the host bucket, while distinct origins cannot collide.
 fn source_host_keys(
@@ -1406,6 +1603,14 @@ struct RecoveredPreparedHttpStorage {
 }
 
 impl PreparedHttpStorage {
+    fn fully_durable_length(&self) -> Option<u64> {
+        let Self::Recovered(recovered) = self else {
+            return None;
+        };
+        let total_length = recovered.layout.total_length()?;
+        (recovered.durable_bytes == total_length).then_some(total_length)
+    }
+
     fn into_appender(self) -> ControlJournalAppender {
         match self {
             Self::Fresh(fresh) => fresh.appender,
@@ -1420,6 +1625,7 @@ struct OpenedHttpStorage {
     durable_pieces: Vec<PieceId>,
     durable_bytes: u64,
     recovered_retry_states: Vec<RecoveredRetryState>,
+    verification_output: Option<RootFileCapability>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1641,6 +1847,7 @@ pub enum HttpMultiRangeError {
     Exhausted,
     IdentifierExhausted,
     Protocol,
+    ChecksumMismatch,
     Setup(KnownLengthHttpError),
     Storage(StorageEngineError),
     Coordinator(HttpRangeCoordinatorError),
@@ -1663,6 +1870,7 @@ impl HttpMultiRangeError {
             Self::Exhausted => "http_range_attempts_exhausted",
             Self::IdentifierExhausted => "http_identifier_exhausted",
             Self::Protocol => "http_range_protocol_invariant",
+            Self::ChecksumMismatch => "checksum_mismatch",
             Self::Setup(error) => error.code(),
             Self::Storage(error) => error.reject().code(),
             Self::Coordinator(error) => error.code(),
@@ -1691,6 +1899,7 @@ impl HttpMultiRangeError {
             Self::Setup(KnownLengthHttpError::DurablePieceDigestMismatch { .. }) => {
                 (ErrorKind::ChecksumMismatch, RetryClass::RestartGeneration)
             }
+            Self::ChecksumMismatch => (ErrorKind::ChecksumMismatch, RetryClass::RestartGeneration),
             Self::Storage(_) | Self::Setup(_) => (ErrorKind::Disk, RetryClass::Never),
             Self::StatsCatalogFull => (ErrorKind::ResourceLimit, RetryClass::Never),
             Self::NoUsableSources | Self::SourceLengthMismatch | Self::Exhausted => {
@@ -1752,14 +1961,15 @@ async fn probe_source(
     client: &HttpPolicyClient,
     source: UriId,
     uri: &str,
-    mirror_identity: HttpMirrorIdentityPolicy,
+    mirror_identity: HttpMirrorIdentityContext,
     body_timeout: Duration,
     cancellation: &HttpCancellation,
     stats: &HttpTransferStats,
 ) -> Result<HttpRangeResponseValidator, HttpMultiRangeError> {
     let mut request = HttpClientRequest::get(uri.to_owned());
     request.range = Some(GlobalSpan { offset: 0, len: 1 });
-    request.mirror_identity = mirror_identity;
+    request.mirror_identity = mirror_identity.policy;
+    request.shared_whole_entity_digest = mirror_identity.shared_whole_entity_digest;
     let response = tokio::select! {
         biased;
         _ = cancellation.cancelled() => return Err(HttpMultiRangeError::Cancelled),
@@ -1802,7 +2012,7 @@ async fn range_attempt(
     client: HttpPolicyClient,
     assignment: HttpRangeAssignment,
     validator: Arc<HttpRangeResponseValidator>,
-    mirror_identity: HttpMirrorIdentityPolicy,
+    mirror_identity: HttpMirrorIdentityContext,
     body_timeout: Duration,
     lowest_speed_limit: u64,
     rate: RateArbiter,
@@ -1842,7 +2052,7 @@ async fn range_attempt_inner(
     client: &HttpPolicyClient,
     assignment: HttpRangeAssignment,
     validator: &HttpRangeResponseValidator,
-    mirror_identity: HttpMirrorIdentityPolicy,
+    mirror_identity: HttpMirrorIdentityContext,
     body_timeout: Duration,
     lowest_speed_limit: u64,
     rate: &RateArbiter,
@@ -1858,7 +2068,8 @@ async fn range_attempt_inner(
     request.if_range = validator
         .if_range()
         .map(|value| value.to_vec().into_boxed_slice());
-    request.mirror_identity = mirror_identity;
+    request.mirror_identity = mirror_identity.policy;
+    request.shared_whole_entity_digest = mirror_identity.shared_whole_entity_digest;
     let response = tokio::select! {
         biased;
         _ = cancellation.cancelled() => return Err(RangeAttemptFailure::Cancelled),
@@ -2842,6 +3053,17 @@ mod tests {
         retry: Option<HttpRetryPolicy>,
         mirror_identity: HttpMirrorIdentityPolicy,
     ) -> HttpTaskSpec {
+        task_with_identity_and_checksum(root, sources, total_length, retry, mirror_identity, None)
+    }
+
+    fn task_with_identity_and_checksum(
+        root: &TestDirectory,
+        sources: impl IntoIterator<Item = SocketAddr>,
+        total_length: usize,
+        retry: Option<HttpRetryPolicy>,
+        mirror_identity: HttpMirrorIdentityPolicy,
+        checksum: Option<HttpContentChecksum>,
+    ) -> HttpTaskSpec {
         let options = HttpTaskOptions {
             split: NonZeroUsize::new(2).expect("split"),
             max_connections_per_server: NonZeroUsize::new(1).expect("per server"),
@@ -2853,6 +3075,7 @@ mod tests {
             max_download_limit: 0,
             lowest_speed_limit: 0,
             mirror_identity,
+            checksum,
             retry,
         };
         assert!(total_length >= MIB);
@@ -2869,6 +3092,10 @@ mod tests {
             false,
         )
         .expect("task spec")
+    }
+
+    fn checksum(data: &[u8]) -> HttpContentChecksum {
+        HttpContentChecksum::sha256(Sha256::digest(data).into())
     }
 
     fn worker(
@@ -3241,6 +3468,200 @@ mod tests {
         .expect("recover strict journal");
         assert!(recovered.strong_validator.is_some());
         assert_eq!(recovered.durable_prefix, MIB as u64);
+    }
+
+    #[tokio::test]
+    async fn strict_identity_with_user_checksum_uses_all_mirrors_and_persists_final_digest() {
+        let root = TestDirectory::new("strict-checksum-root");
+        let journal = TestDirectory::new("strict-checksum-journal");
+        let expected = data(2 * MIB);
+        let expected_checksum = checksum(expected.as_ref());
+        let (first, first_server) = serve_mirror(Arc::clone(&expected), MirrorMode::Valid, 2).await;
+        let (second, second_server) =
+            serve_mirror(Arc::clone(&expected), MirrorMode::Valid, 2).await;
+        let spec = task_with_identity_and_checksum(
+            &root,
+            [first, second],
+            expected.len(),
+            None,
+            HttpMirrorIdentityPolicy::RequireSharedDigest,
+            Some(expected_checksum),
+        );
+        let stats = SharedHttpTransferStats::new(NonZeroUsize::new(4).expect("stats"));
+        worker(&journal, stats, 4)
+            .run_task(
+                Arc::new(spec.clone()),
+                Generation::INITIAL,
+                HttpCancellation::new(),
+            )
+            .await
+            .expect("strict digest transfer");
+        first_server.await.expect("first server");
+        second_server.await.expect("second server");
+        assert_eq!(
+            fs::read(root.0.join("output.bin")).expect("output"),
+            expected.as_ref()
+        );
+
+        let recovered = recover_known_length_http(&KnownLengthHttpRecoveryRequest {
+            task: spec.task(),
+            gid: spec.gid(),
+            journal_id: derive_http_journal_id(spec.task(), spec.gid()),
+            generation: Generation::INITIAL,
+            journal_directory: http_journal_directory(&journal.0, spec.gid()),
+            output_root: root.0.clone(),
+            replay_limits: ReplayLimits::default(),
+            state_limits: JournalStateLimits::default(),
+        })
+        .expect("recover strict digest journal");
+        assert!(recovered.strong_validator.is_none());
+        let terminal = recovered
+            .replay
+            .state
+            .as_ref()
+            .and_then(RecoveredJournalState::terminal)
+            .expect("terminal evidence");
+        assert!(matches!(
+            terminal,
+            ariax_storage::RecoveredTerminal::Complete {
+                final_digest: Some(digest),
+                ..
+            } if digest == &expected_checksum.journal_digest()
+        ));
+    }
+
+    #[tokio::test]
+    async fn strict_checksum_mismatch_never_publishes_terminal_completion() {
+        let root = TestDirectory::new("strict-checksum-mismatch-root");
+        let journal = TestDirectory::new("strict-checksum-mismatch-journal");
+        let expected = data(2 * MIB);
+        let divergent: Arc<[u8]> = expected
+            .iter()
+            .map(|byte| byte ^ 0xff)
+            .collect::<Vec<_>>()
+            .into();
+        let expected_checksum = checksum(expected.as_ref());
+        let (first, first_server) = serve_mirror(Arc::clone(&expected), MirrorMode::Valid, 2).await;
+        let (second, second_server) = serve_mirror(divergent, MirrorMode::Valid, 2).await;
+        let spec = task_with_identity_and_checksum(
+            &root,
+            [first, second],
+            expected.len(),
+            None,
+            HttpMirrorIdentityPolicy::RequireSharedDigest,
+            Some(expected_checksum),
+        );
+        let stats = SharedHttpTransferStats::new(NonZeroUsize::new(4).expect("stats"));
+        assert!(matches!(
+            worker(&journal, stats.clone(), 4)
+                .run_task(
+                    Arc::new(spec.clone()),
+                    Generation::INITIAL,
+                    HttpCancellation::new(),
+                )
+                .await,
+            Err(HttpMultiRangeError::ChecksumMismatch)
+        ));
+        first_server.await.expect("first server");
+        second_server.await.expect("second server");
+        assert!(
+            matches!(
+                worker(&journal, stats, 4)
+                    .run_task(
+                        Arc::new(spec.clone()),
+                        Generation::INITIAL,
+                        HttpCancellation::new(),
+                    )
+                    .await,
+                Err(HttpMultiRangeError::ChecksumMismatch)
+            ),
+            "a fully durable digest-bound task must reverify locally without reconnecting"
+        );
+
+        let recovered = recover_known_length_http(&KnownLengthHttpRecoveryRequest {
+            task: spec.task(),
+            gid: spec.gid(),
+            journal_id: derive_http_journal_id(spec.task(), spec.gid()),
+            generation: Generation::INITIAL,
+            journal_directory: http_journal_directory(&journal.0, spec.gid()),
+            output_root: root.0.clone(),
+            replay_limits: ReplayLimits::default(),
+            state_limits: JournalStateLimits::default(),
+        })
+        .expect("recover checksum mismatch journal");
+        assert_eq!(recovered.durable_prefix, (2 * MIB) as u64);
+        assert!(
+            recovered
+                .replay
+                .state
+                .as_ref()
+                .and_then(RecoveredJournalState::terminal)
+                .is_none(),
+            "a checksum mismatch must not append TaskComplete"
+        );
+    }
+
+    #[tokio::test]
+    async fn checksum_bound_restart_accepts_weak_validator_and_verifies_whole_file() {
+        let root = TestDirectory::new("checksum-resume-root");
+        let journal = TestDirectory::new("checksum-resume-journal");
+        let expected = data(2 * MIB);
+        let expected_checksum = checksum(expected.as_ref());
+        let (mirror, ranges, _etag, server) =
+            serve_recovery_validator_mirror(Arc::clone(&expected), "W/\"v1\"").await;
+        let spec = task_with_identity_and_checksum(
+            &root,
+            [mirror],
+            expected.len(),
+            None,
+            HttpMirrorIdentityPolicy::RequireSharedDigest,
+            Some(expected_checksum),
+        );
+        let stats = SharedHttpTransferStats::new(NonZeroUsize::new(2).expect("stats"));
+        interrupt_after_first_durable_piece(worker(&journal, stats.clone(), 2), &spec, &stats)
+            .await;
+        let interrupted = recover_known_length_http(&KnownLengthHttpRecoveryRequest {
+            task: spec.task(),
+            gid: spec.gid(),
+            journal_id: derive_http_journal_id(spec.task(), spec.gid()),
+            generation: Generation::INITIAL,
+            journal_directory: http_journal_directory(&journal.0, spec.gid()),
+            output_root: root.0.clone(),
+            replay_limits: ReplayLimits::default(),
+            state_limits: JournalStateLimits::default(),
+        })
+        .expect("recover interrupted digest task");
+        assert!(interrupted.strong_validator.is_none());
+
+        worker(&journal, stats, 2)
+            .run_task(
+                Arc::new(spec.clone()),
+                Generation::INITIAL,
+                HttpCancellation::new(),
+            )
+            .await
+            .expect("digest-bound restart");
+        assert_eq!(
+            fs::read(root.0.join("output.bin")).expect("output"),
+            expected.as_ref()
+        );
+        let piece_zero_requests = ranges
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|range| **range == (0, MIB - 1))
+            .count();
+        assert_eq!(
+            piece_zero_requests, 1,
+            "durable piece must not be fetched again"
+        );
+        server.abort();
+        assert!(
+            server
+                .await
+                .expect_err("server was cancelled")
+                .is_cancelled()
+        );
     }
 
     #[tokio::test]
