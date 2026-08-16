@@ -4,13 +4,14 @@ use ariax_core::UriId;
 use ariax_engine::HttpRangeResponseValidator;
 use ariax_storage::GlobalSpan;
 use hyper::header::{
-    CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE, ETAG, HeaderValue, LAST_MODIFIED,
+    CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE, ETAG, HeaderName, HeaderValue, LAST_MODIFIED,
     TRANSFER_ENCODING,
 };
 use hyper::{HeaderMap, StatusCode};
 use libfuzzer_sys::fuzz_target;
 
 const MAX_INPUT_BYTES: usize = 65_536;
+const REPR_DIGEST: HeaderName = HeaderName::from_static("repr-digest");
 
 fn bounded_u64(data: &[u8], offset: usize) -> u64 {
     let mut bytes = [0_u8; 8];
@@ -75,6 +76,12 @@ fuzz_target!(|data: &[u8]| {
             LAST_MODIFIED,
             HeaderValue::from_static("Wed, 21 Oct 2015 07:28:00 GMT"),
         );
+    }
+    if data.get(9).is_some_and(|byte| byte & 1 != 0) {
+        let value = String::from_utf8_lossy(data.get(32..160).unwrap_or_default());
+        if let Some(value) = header_value(&value) {
+            headers.insert(REPR_DIGEST, value);
+        }
     }
 
     let final_uri = if data.get(7).is_some_and(|byte| byte & 1 != 0) {

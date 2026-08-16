@@ -4,8 +4,11 @@ Status: reviewed contract with the Phase-3B redirect state machine and policy
 client integration executable. The implemented gate covers bounded hop/loop
 handling, method rewriting, HTTPS downgrade rejection, per-hop destination and
 proxy re-admission, request reconstruction, origin-scoped credentials/cookies,
-and nonzero durable-prefix restart decisions. Shared RFC 9530/Metalink digest
-admission and endgame duplicate-range behavior remain later gates.
+and nonzero durable-prefix restart decisions. The bounded SHA-256 `Repr-Digest`
+endgame profile applies only to explicitly submitted, independently probed
+mirrors; it does not promote a redirect target. Cross-origin pool admission
+therefore still requires the configured whole-entity checksum. Broader RFC
+9530/Metalink redirect identity remains a later gate.
 
 Several documents defer to a "redirect policy" (`detailed-http-first-slice.md`,
 `retry-policy.md`, `library-choice.md`) but none defined it. This document owns
@@ -45,11 +48,10 @@ byte offsets do not transfer implicitly.
   competing duplicate, do not add the target to the mirror pool, and do not race
   it against another origin for the same span.
 - Under `--verify-mirror-identity=strict`, a redirect target may join the mirror
-  pool only after passing the same shared-digest identity gate as an explicitly
-  configured mirror. An RFC 9530 gate matches field kind, algorithm, value,
-  covered representation, content coding, and covered range; matching only the
-  algorithm is insufficient. Cross-mirror endgame additionally requires an
-  exact range-verifiable digest as specified in `split-download.md`.
+  pool only when the persisted whole-entity checksum already authorizes the
+  cross-origin representation. The executable `Repr-Digest` exact-range gate
+  applies only to explicitly submitted mirrors and cannot admit a redirect
+  target as an ordinary or endgame peer.
 
 A `200` response to any nonzero follow-up range never writes at that offset; it
 enters the normal fail/new-generation restart policy.
@@ -111,8 +113,8 @@ flow through the same guardrail as the initial request:
   `0` in a new generation),
 - split redirect under identity mode `off` replaces only that lease's source and
   never joins/races the mirror pool,
-- strict redirect admission rejects equal-algorithm RFC 9530 digests whose
-  value, representation, coding, or coverage differs,
+- strict redirect admission without a persisted whole-entity checksum cannot
+  promote a target even if it advertises `Repr-Digest`,
 - redirect aborts any begun provisional lease before a new `LeaseId` is used,
 - harmless custom headers are rebuilt while reserved, credential, and framing
   fields cannot be overridden or blindly forwarded,

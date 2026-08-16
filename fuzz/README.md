@@ -7,8 +7,8 @@ the libFuzzer runtime.
 The targets exercise bounded untrusted-input surfaces in the implemented HTTP
 slice and journal replay path:
 
-- `http_response_validator`: status, range, length, encoding, ETag, and date
-  response-head validation;
+- `http_response_validator`: status, range, length, encoding, ETag, date, and
+  bounded SHA-256 `Repr-Digest` response-head validation;
 - `http_request_headers`: custom-header admission and generated request
   header ownership;
 - `http_retry_specs`: retry profiles, trigger sets, status ranges, and policy

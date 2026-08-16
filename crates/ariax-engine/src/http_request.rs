@@ -22,6 +22,7 @@ const RESERVED_HEADERS: &[&str] = &[
     "accept-encoding",
     "authorization",
     "connection",
+    "content-digest",
     "content-length",
     "cookie",
     "expect",
@@ -29,11 +30,15 @@ const RESERVED_HEADERS: &[&str] = &[
     "if-range",
     "proxy-authorization",
     "range",
+    "repr-digest",
     "te",
     "trailer",
     "transfer-encoding",
     "upgrade",
+    "want-repr-digest",
 ];
+
+const WANT_REPR_DIGEST: HeaderName = HeaderName::from_static("want-repr-digest");
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HttpCustomHeader {
@@ -108,6 +113,10 @@ pub struct HttpRequestPolicy<'a> {
     pub route: Option<&'a HttpProxyRoute>,
     pub range: Option<GlobalSpan>,
     pub if_range: Option<&'a [u8]>,
+    /// Requests a SHA-256 `Repr-Digest` response when strict mirror identity
+    /// is being negotiated. The preference is advisory; absence fails only
+    /// after the probe has selected the bounded range-digest profile.
+    pub want_repr_digest: bool,
     pub authorization: Option<&'a HttpAuthorization>,
     pub proxy_authorization: Option<&'a HttpProxyAuthorization>,
     pub cookie: Option<&'a HttpCookieHeader>,
@@ -159,6 +168,9 @@ pub fn build_http_request(
             .map_err(|_| HttpRequestPolicyError::InvalidUri)?,
     );
     headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
+    if policy.want_repr_digest {
+        headers.insert(WANT_REPR_DIGEST, HeaderValue::from_static("sha-256=10"));
+    }
     if let Some(span) = policy.range {
         if span.len == 0 {
             return Err(HttpRequestPolicyError::InvalidRange);
@@ -290,6 +302,7 @@ mod tests {
             route: None,
             range: Some(GlobalSpan { offset: 4, len: 6 }),
             if_range: Some(b"\"v1\""),
+            want_repr_digest: false,
             authorization: Some(&authorization),
             proxy_authorization: None,
             cookie: None,
@@ -302,6 +315,31 @@ mod tests {
         assert_eq!(request.headers()[IF_RANGE], "\"v1\"");
         assert_eq!(request.headers()["x-client"], "ariax");
         assert_eq!(request.headers()[AUTHORIZATION], "Basic dXNlcjpzZWNyZXQ=");
+    }
+
+    #[test]
+    fn strict_digest_preference_is_generated_and_reserved() {
+        for name in ["Want-Repr-Digest", "Repr-Digest", "Content-Digest"] {
+            assert_eq!(
+                HttpCustomHeaders::new([(name.to_owned(), "sha-256=1".to_owned(),)]),
+                Err(HttpRequestPolicyError::ReservedHeader),
+                "{name}"
+            );
+        }
+        let request = build_http_request(HttpRequestPolicy {
+            method: Method::GET,
+            uri: "https://example.test/file",
+            route: None,
+            range: Some(GlobalSpan { offset: 0, len: 1 }),
+            if_range: None,
+            want_repr_digest: true,
+            authorization: None,
+            proxy_authorization: None,
+            cookie: None,
+            custom_headers: &HttpCustomHeaders::default(),
+        })
+        .expect("request");
+        assert_eq!(request.headers()[WANT_REPR_DIGEST], "sha-256=10");
     }
 
     #[test]
@@ -327,6 +365,7 @@ mod tests {
             route: Some(&route),
             range: None,
             if_range: None,
+            want_repr_digest: false,
             authorization: None,
             proxy_authorization: Some(&proxy_auth),
             cookie: None,
@@ -344,6 +383,7 @@ mod tests {
                 route: None,
                 range: None,
                 if_range: None,
+                want_repr_digest: false,
                 authorization: None,
                 proxy_authorization: Some(&proxy_auth),
                 cookie: None,

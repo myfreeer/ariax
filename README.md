@@ -17,14 +17,19 @@ progress counters. The experimental CLI exposes ordinary HTTP(S) URIs through
 five real-scheduler JSON-RPC methods over loopback HTTP/1.1 and Content-Length
 stdio, with atomic rejection and orderly worker/journal/session shutdown.
 
+Strict HTTP identity now distinguishes whole-file and exact-range evidence. A
+persisted user SHA-256 admits ordinary concurrent mirrors and final verification;
+the bounded SHA-256 `Repr-Digest` profile verifies probe/range bodies and keeps
+secondary origins only for fenced exact-range endgame races.
+
 This is still not a complete downloader or release/tag-ready. The first
 hierarchical rate limiter, stall policy, process-owned discard guard, same-origin
-endgame fencing, and local capacity benchmarks are executable; HTTP/2,
-unknown-length/chunked layouts, broader validator/digest modes, WebSocket/NDJSON
-and non-loopback RPC, the remaining crash/power-loss fault matrix, the rest of
-Phase 4, hot-backup crash-residue reconciliation, and the full native release
-matrix remain gated by `implementation-readiness.md` and
-`implementation-plan.md`.
+endgame fencing, bounded exact-range cross-origin digest fencing, and local
+capacity benchmarks are executable; HTTP/2, unknown-length/chunked layouts,
+broader RFC 9530/Metalink and `Content-Digest` modes, WebSocket/NDJSON and
+non-loopback RPC, the remaining crash/power-loss fault matrix, the rest of Phase
+4, hot-backup crash-residue reconciliation, and the full native release matrix
+remain gated by `implementation-readiness.md` and `implementation-plan.md`.
 
 This design is for a new downloader that keeps the mature aria2 user model
 while fixing the major safety, scalability, and completeness problems found in

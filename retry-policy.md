@@ -389,10 +389,10 @@ Stale validator handling is separate from stale connection retry.
   are aborted.
 - Under mirror-identity `off`, a cross-origin redirect is scoped as an exclusive
   replacement for the redirected split lease and cannot silently join or race
-  the mirror pool. Under `strict`, pool admission requires the complete shared
-  identity gate. For RFC 9530, field kind, algorithm, digest value, covered
-  representation, content coding, and covered range must match—algorithm alone
-  is not evidence of identity.
+  the mirror pool. Under `strict`, ordinary pool admission requires the
+  persisted whole-entity checksum. The bounded SHA-256 `Repr-Digest` profile
+  admits only explicitly submitted, independently probed mirrors as endgame-
+  only peers; it does not promote redirect targets or ordinary pieces.
 - A cross-origin redirect cannot continue a nonzero durable resume prefix without
   a shared whole-entity digest; it must fail or restart at `0` in a new
   generation.

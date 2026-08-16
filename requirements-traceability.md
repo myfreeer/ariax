@@ -16,10 +16,14 @@ stale-validator `fail`, fresh `revalidate`, and descriptor-authorized bounded
 `restart-if-safe` now cross the worker, scheduler, journal-v2, and public option
 boundaries without retaining old durable bytes. Same-origin strong-ETag endgame
 fencing, candidate settlement, dirty-overlap rollback, and crash-safe replay are
-implemented. Cross-mirror RFC 9530/Metalink digest identity, additional checksum
-algorithms, Last-Modified/unsafe-override resume, broader protocols/control APIs,
-adaptive profile tuning, native release benchmark evidence, and the complete
-release matrix remain incomplete.
+implemented. The bounded SHA-256 `Repr-Digest` profile now negotiates strict
+probe/range evidence, verifies response bodies, journals accepted digests, and
+admits secondary origins only for exact-range endgame. Broader RFC 9530/Metalink
+identity, `Content-Digest`, alternate checksum algorithms, Last-Modified/unsafe-
+override resume, digest-only durable-piece restart admission, broader
+protocols/control APIs, adaptive profile tuning,
+native release benchmark evidence, and the complete release matrix remain
+incomplete.
 
 The implemented HTTP discard hierarchy now has deterministic process/task/host
 fault coverage and a standalone bounded fuzz package (`fuzz/`) for HTTP
@@ -243,8 +247,10 @@ Design coverage:
   strong-ETag-bound single-source/strict-fallback recovery, user SHA-256-bound
   strict concurrent mirrors and final verification, public stale-validator
   policy, crash-safe representation-generation restart, same-origin strong-ETag
-  endgame fencing/rollback, and five real scheduler RPC methods. Cross-mirror RFC
-  9530/Metalink digest identity, additional checksum algorithms,
+  endgame fencing/rollback, bounded SHA-256 `Repr-Digest` parsing and body
+  verification, exact-range cross-origin endgame fencing, journaled response
+  digest evidence, and five real scheduler RPC methods. Broader RFC
+  9530/Metalink identity, `Content-Digest`, additional checksum algorithms,
   Last-Modified/unsafe-override resume, HTTP/2, growing bodies, and the rest of
   Phase 4 remain pending.
 

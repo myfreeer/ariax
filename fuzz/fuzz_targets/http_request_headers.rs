@@ -51,6 +51,7 @@ fuzz_target!(|data: &[u8]| {
         route: None,
         range: span,
         if_range: span.map(|_| b"\"fuzz-etag\"".as_slice()),
+        want_repr_digest: data.get(5).copied().unwrap_or_default() & 1 != 0,
         authorization: None,
         proxy_authorization: None,
         cookie: None,

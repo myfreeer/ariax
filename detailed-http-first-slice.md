@@ -33,12 +33,18 @@ duplicates: only an original lease pinned by a strong ETag may be duplicated,
 the duplicate uses that same source and validator, and storage withholds the
 candidate commit until the losing attempt is cancellation-confirmed. Any loser
 write rolls the whole overlap group back to pending metadata for a normal
-same-generation overwrite. Cross-mirror endgame remains refused because the
-implemented user SHA-256 is a whole-file identity proof, not a range-verifiable
-digest. RFC 9530/Metalink digest identity, additional checksum algorithms,
-Last-Modified and unsafe-override resume, HTTP/2, unknown-length or chunked
-layouts, WebSocket/NDJSON and non-loopback RPC, and the rest of the Phase-4
-control plane remain outside this checkpoint.
+same-generation overwrite. A bounded RFC 9530 `Repr-Digest` SHA-256 profile now
+also supports exact-range cross-origin endgame: strict probes request a
+one-byte digest, matching responders retain secondary mirrors as endgame-only
+peers, every range body is hashed, and a duplicate must match the original
+exact-range digest before its lease opens. A `Repr-Digest` on a `206` is not
+treated as a whole-file checksum, so ordinary concurrent split and final
+whole-file verification still require a persisted user SHA-256. `Content-Digest`,
+digest parameters/coverage metadata, alternate algorithms, server-advertised
+whole-entity admission, Metalink chunk hashes, Last-Modified and unsafe-
+override resume, HTTP/2, unknown-length or chunked layouts, WebSocket/NDJSON and
+non-loopback RPC, and the rest of the Phase-4 control plane remain outside this
+checkpoint.
 
 The process-capacity boundary is executable for this HTTP slice. A resolved
 runtime profile creates one process-owned handle budget, one global resident-byte
@@ -256,7 +262,8 @@ any request is sent.
 The request builder owns safety-critical and connection-specific fields. User
 headers MUST NOT set `Host`, `Content-Length`, `Transfer-Encoding`, `Range`,
 `If-Range`, `Accept-Encoding`, `Authorization`, `Proxy-Authorization`,
-`Cookie`, `Content-Digest`, `Repr-Digest`, `Signature`, or `Signature-Input`. A
+`Cookie`, `Content-Digest`, `Repr-Digest`, `Want-Repr-Digest`, `Signature`, or
+`Signature-Input`. A
 case-insensitive conflict or duplicate is rejected; it is never resolved by
 last-write-wins. The generated value is authoritative inside the request
 builder as a defense in depth.
@@ -379,26 +386,33 @@ The behavior is selected by `--verify-mirror-identity`:
   across all mirrors. If a whole-file or Metalink checksum is configured it is
   still verified at the end, so corruption is detected before completion, just not
   before bytes are written. This matches aria2's guarantee.
-- `strict` (opt-in): concurrent multi-mirror split is admitted only when
-  the assembled result will be verified by a shared content digest — Metalink
-  per-chunk checksums (see `metalink-chunking.md`, preferred because divergence is
-  caught per chunk rather than at end-of-file), a `Content-Digest`/`Repr-Digest`
-  (RFC 9530) identity tuple that matches on every mirror, or a user-supplied
-  whole-file checksum. The RFC 9530 tuple includes field kind, algorithm, digest
-  value, covered representation, content coding, and covered byte range (whole
-  entity or the exact same range); matching only the algorithm is insufficient.
-  When no such digest is available, split is restricted to a single mirror
-  (whose own `ETag`/`Last-Modified` via `If-Range` keeps it self-consistent across
-  its own range responses — a valid per-origin guarantee); the other URIs remain
-  sequential-download or restart fallbacks.
+- `strict` (opt-in): a persisted user SHA-256 admits ordinary concurrent
+  multi-mirror split and gates final whole-file verification. Without that
+  checksum, all submitted mirrors are probed with `Want-Repr-Digest:
+  sha-256=10`; if every usable mirror returns the same bounded SHA-256 digest
+  for the probe range, the first mirror receives ordinary pieces and the other
+  mirrors are retained only for exact-range endgame. The digest is required on
+  each range response, the response body is hashed before commit, and a
+  cross-origin duplicate must match the original response digest before its
+  lease opens. If any mirror lacks a matching probe digest, strict mode falls
+  back to one ordinary source. This profile deliberately does not claim that a
+  one-byte `206` digest proves whole-entity identity.
 
-The executable strict-mode checkpoint implements both the single-mirror strong-
-ETag fallback and concurrent mirrors backed by a user-supplied SHA-256 checksum.
-The checksum is persisted in the immutable task option snapshot; the assembled
-file is read through a duplicated descriptor capability on a process-bounded
-blocking hash worker, and a mismatch leaves all piece evidence nonterminal.
-RFC 9530 identity tuples, Metalink chunk hashes, and additional user checksum
-algorithms remain pending.
+The executable strict-mode checkpoint therefore implements the single-mirror
+strong-ETag fallback, user-SHA-256 ordinary concurrency/final verification,
+and bounded SHA-256 `Repr-Digest` exact-range endgame. The parser accepts only a
+bounded Structured Fields dictionary (16 members, 64-byte keys, 4 KiB field,
+64 decoded bytes), selects one `sha-256` member, rejects malformed or
+parameterized members, and fails closed before proportional allocation.
+`Content-Digest`, digest parameters/coverage metadata, alternate algorithms,
+server-advertised whole-entity admission, Metalink chunk hashes, and additional
+user checksum algorithms remain pending.
+
+The per-range digest is journaled as lease evidence, but this bounded profile is
+not yet a restart validator. If a digest-only multi-source task has durable
+pieces when the process stops, recovery fails closed until a persistent
+range-identity record is added; strong-ETag or user-checksum recovery remains
+the executable restart path.
 
 A redirect target never joins the mirror pool merely because a redirect was
 followed. Its admission and per-lease exclusivity follow `redirect-policy.md`.
@@ -521,9 +535,10 @@ Acceptance:
 - `Content-Encoding` must be absent or identity (see Content Encoding And Range
   Requests); a content-coded body is rejected, not decoded,
 - total length must match the task total (via `Content-Range` known-total). In
-  strict mode (`--verify-mirror-identity=strict`), concurrent multi-mirror split
-  additionally requires the task to satisfy the digest requirement in Cross-Mirror
-  Entity Identity before this lease is admitted.
+  strict mode (`--verify-mirror-identity=strict`), ordinary concurrent mirrors
+  require the persisted whole-file checksum; an exact-range cross-origin
+  duplicate instead requires the bounded `Repr-Digest` gate in Cross-Mirror
+  Entity Identity before its lease is admitted.
 
 After the response head passes these checks, the worker issues `BeginLease` for
 the unique `(generation, LeaseId, attempt)` before polling body bytes. Every
@@ -756,21 +771,24 @@ Required tests:
   old progress into the new generation,
 - range/resume requests send `Accept-Encoding: identity`,
 - content-coded body to a range request is rejected, not written,
-- strict concurrent multi-mirror split is refused unless the task has a shared
-  content digest (Metalink chunk hashes, an exactly matching RFC 9530 identity
-  tuple on every mirror, or a whole-file checksum); otherwise strict mode is
-  restricted to a single mirror,
+- strict concurrent ordinary multi-mirror split requires a persisted user
+  SHA-256; without it, matching probe `Repr-Digest` values retain secondary
+  mirrors only for exact-range endgame and otherwise strict mode uses one
+  ordinary source,
 - a user SHA-256 checksum admits strict concurrent mirrors, survives option
   persistence/recovery, writes the matching final digest into `TaskComplete`,
   and rejects a divergent equal-length mirror without terminal completion,
 - a fully durable checksum-bound task rehashes and completes or rejects locally
   without reconnecting, and partial checksum-bound recovery can retain verified
   local pieces despite a weak server ETag,
-- equal-length mirrors with different RFC 9530 digest values, coverage, or
-  representations fail the strict identity gate even if their algorithms match,
+- strict probes reject a malformed, missing, or body-mismatched SHA-256
+  `Repr-Digest`; a valid but different probe digest falls back to one mirror,
+- each digest-bearing range body is rehashed; a cross-origin endgame duplicate
+  must present the same exact-range digest at the head fence and again match its
+  body before storage can commit it,
 - normal split under `off` retains the documented aria2-compatible residual
-  risk, but cross-mirror endgame races and implicit redirect-target pool
-  admission are prohibited without the stronger gates in `split-download.md`,
+  risk, while cross-mirror endgame and implicit redirect-target pool admission
+  require the stronger gates in `split-download.md`,
 - a dirty endgame group exposes no committed progress, clears touched in-memory
   piece state, and is overwritten by a later ordinary range request without
   truncating or restoring the file,

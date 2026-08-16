@@ -101,6 +101,7 @@ pub struct HttpClientRequest {
     pub if_range: Option<Box<[u8]>>,
     pub mirror_identity: HttpMirrorIdentityPolicy,
     pub shared_whole_entity_digest: bool,
+    pub want_repr_digest: bool,
 }
 
 impl HttpClientRequest {
@@ -114,6 +115,7 @@ impl HttpClientRequest {
             if_range: None,
             mirror_identity: HttpMirrorIdentityPolicy::TrustSubmittedMirrors,
             shared_whole_entity_digest: false,
+            want_repr_digest: false,
         }
     }
 }
@@ -208,6 +210,7 @@ impl HttpPolicyClient {
                 route: Some(&route),
                 range: request.range,
                 if_range: if_range.as_deref(),
+                want_repr_digest: request.want_repr_digest,
                 authorization: authorization.as_ref(),
                 proxy_authorization,
                 cookie: cookie.as_ref(),

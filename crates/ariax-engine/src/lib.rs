@@ -132,7 +132,10 @@ pub use http_resolver::{
     HttpResolvedHost, HttpResolver, HttpResolverBackend, HttpResolverConfig, HttpResolverError,
     MAX_HTTP_DNS_HOST_BYTES,
 };
-pub use http_response::{HttpRangeResponseError, HttpRangeResponseValidator};
+pub use http_response::{
+    HttpRangeResponseError, HttpRangeResponseValidator, HttpRepresentationDigest,
+    MAX_HTTP_REPR_DIGEST_BYTES,
+};
 pub use http_retry::{
     DEFAULT_HTTP_RETRY_BASE_WAIT, DEFAULT_HTTP_RETRY_MAX_ATTEMPTS,
     DEFAULT_HTTP_RETRY_MAX_ATTEMPTS_PER_MIRROR, DEFAULT_HTTP_RETRY_MAX_ELAPSED,

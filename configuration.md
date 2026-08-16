@@ -716,8 +716,10 @@ Transfer integrity and redirects:
   identity proof for strict concurrent mirrors; other algorithms remain
   pending)
 - `verify-mirror-identity=off|strict` (default `off`, aria2-compatible: trust
-  the mirror list for concurrent split; `strict` gates concurrent multi-mirror
-  split on a shared content digest — see `split-download.md`)
+  the mirror list for concurrent split; `strict` requires the persisted user
+  SHA-256 for ordinary concurrent mirrors, while matching bounded SHA-256
+  `Repr-Digest` probes retain secondary origins only for exact-range endgame —
+  see `split-download.md`)
 - `max-redirects` (default 20; see `redirect-policy.md`)
 - `allow-redirect-downgrade=true|false` (default `false`; permit `https -> http`
   redirects)

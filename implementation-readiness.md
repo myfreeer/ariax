@@ -20,8 +20,10 @@ non-overlapping leases. Durable-piece restart and terminal evidence are
 persisted before public completion. Five bounded JSON-RPC methods run over
 loopback HTTP/1.1 and Content-Length stdio and expose packet-independent live
 stats. Same-origin strong-ETag endgame duplicate fencing, candidate settlement,
-dirty-overlap rollback, and crash-safe replay are now executable. The
-process-owned profile-capacity boundary is also executable for HTTP: profile
+dirty-overlap rollback, and crash-safe replay are now executable. The bounded
+SHA-256 `Repr-Digest` profile also verifies probe/range bodies and admits
+secondary origins only for exact-range endgame after digest equality is fenced.
+The process-owned profile-capacity boundary is also executable for HTTP: profile
 resolution, native handle subtraction, shared resident and transport-socket
 permits (including proxy routes), selected storage-file descriptor permits,
 profile selection in RPC startup, and the local C10k/active-range harness are
@@ -32,10 +34,11 @@ file-handle LRU and non-HTTP consumers remain pending. A standalone,
 workspace-excluded cargo-fuzz package now covers HTTP response/request headers,
 retry specifications, discard-budget invariants, and journal replay; the
 remaining protocol/crash fault matrix is still pending.
-This remains a phase checkpoint, not a release/tag: cross-mirror digest-backed
-endgame, broader validators, growing/chunked transfers, HTTP/2, broader RPC,
-native release benchmark evidence, adaptive profile tuning, and the complete
-release matrix remain gates. Each remaining
+This remains a phase checkpoint, not a release/tag: broader RFC 9530/Metalink
+identity, `Content-Digest`, alternate digest algorithms, broader validators,
+growing/chunked transfers, HTTP/2, broader RPC, native release benchmark
+evidence, adaptive profile tuning, and the complete release matrix remain
+gates. Each remaining
 adapter, transfer module, and integration still follows its Definition Of Ready
 checklist below.
 
@@ -210,20 +213,25 @@ This removes the earlier circular Phase-0/Phase-4 gate. The slice proves the cor
 contracts before adding growing/chunked layouts, Metalink, FTP/SFTP, BitTorrent,
 or HTTP/3.
 
-All ten items now have an executable Phase-3B checkpoint candidate. This does
-not imply that the broader Phase-3 benchmark, rate-limit, stall-diagnostic, or
-endgame exit criteria are complete.
+All ten items now have an executable Phase-3B checkpoint candidate. The local
+rate-limit, stall-diagnostic, same-origin endgame, bounded exact-range
+cross-origin endgame, and C10k/active-range harnesses are executable; the
+remaining crash/power-loss/disk-fault matrix and native release evidence still
+gate Phase 3 completion.
 
 The detailed first-slice docs above are the intended module design input for
 this vertical slice.
 
 ## Current Integration Gates
 
-- Integrate the designed hierarchical rate limiter, lowest-speed/stall policy,
-  and diagnostic conditions with the executable range worker and live RPC
-  counters.
-- Add exact range-verifiable shared-digest identity for cross-mirror endgame
-  without weakening the current non-overlapping ordinary-lease invariant.
+- Complete deterministic disk-full, permission, partial-fsync, process-kill,
+  and power-loss recovery coverage for the executable HTTP/storage boundary.
+- Add a persistent range-identity record before allowing durable-piece restart
+  for a digest-only multi-source task; the current bounded `Repr-Digest`
+  profile is fresh-transfer/endgame evidence and fails closed on such recovery.
+- Expand the bounded SHA-256 `Repr-Digest` exact-range profile only after
+  `Content-Digest`, coverage metadata/parameters, alternate algorithms, and
+  server-advertised whole-entity admission have explicit bounded contracts.
 - Expand validator support beyond strong ETag and add HTTP/2 only behind its
   separately bounded stream/pool contract.
 - Expand the five-method request-only dispatcher into the authenticated,

@@ -23,13 +23,16 @@ Public Suffix List is version/hash/license pinned and verified by generated
 contracts.
 
 The checkpoint intentionally does not complete all of Phase 3 or the project
-definition of done. Same-origin endgame duplicate ranges with a strong ETag are
-now executable under the bounded overlap-fence contract. Cross-mirror endgame
-still requires an exact range-verifiable RFC 9530/Metalink digest identity;
-additional checksum algorithms, Last-Modified/unsafe-override resume, HTTP/2,
-growing/chunked transfers, native release benchmark evidence, hot-backup
-crash-residue reconciliation, the broader Phase-4 control plane, and the full
-release-platform matrix remain phase/tag gates.
+definition of done. Same-origin endgame duplicate ranges with a strong ETag and
+the bounded SHA-256 `Repr-Digest` exact-range cross-origin profile are now
+executable under the overlap-fence contract. Matching probe digests retain
+secondary mirrors as endgame-only peers; they do not authorize ordinary
+concurrent pieces or replace the persisted whole-file checksum. `Content-Digest`,
+digest parameters/coverage metadata, alternate algorithms, server-advertised
+whole-entity admission, Metalink chunk hashes, Last-Modified/unsafe-override
+resume, HTTP/2, growing/chunked transfers, native release benchmark evidence,
+hot-backup crash-residue reconciliation, the broader Phase-4 control plane, and
+the full release-platform matrix remain phase/tag gates.
 
 The profile-capacity slice is now executable: profile-derived process/socket/file
 and resident limits are resolved, HTTP direct and proxy sockets consume the
@@ -261,11 +264,13 @@ bounded descriptor-based whole-file hash. Stale-validator `fail`, fresh
 admission, worker supervision, exact next-admission snapshot persistence, and a
 new generation that invalidates all old durable pieces before descriptor-bound
 rewrite. Same-origin strong-ETag endgame duplicate fencing, candidate settlement,
-dirty-overlap rollback, and crash-safe replay are executable. Cross-mirror
-endgame still requires RFC 9530/Metalink range-verifiable digest identity;
-additional checksum algorithms, Last-Modified/unsafe-override resume, adaptive
-profile tuning, and the native portion of the full Phase-3 exit criteria below
-still gate a later phase completion claim.
+dirty-overlap rollback, and crash-safe replay are executable. Strict mode also
+negotiates and bounds SHA-256 `Repr-Digest`, verifies probe and range bodies,
+journals accepted response digests, and permits a secondary origin only for an
+exact-span endgame race whose head digest matches the original. Broader RFC
+9530/Metalink identity, additional checksum algorithms, Last-Modified/unsafe-
+override resume, adaptive profile tuning, and the native portion of the full
+Phase-3 exit criteria below still gate a later phase completion claim.
 
 Detailed design input:
 

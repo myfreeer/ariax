@@ -499,9 +499,9 @@ The protocol stack validates custom HTTP fields before request construction.
 Field names are case-insensitive tokens; CR, LF, NUL, forbidden controls, and
 ambiguous singleton duplicates reject the task. `Host`, `Content-Length`,
 `Transfer-Encoding`, `Range`, `If-Range`, `Accept-Encoding`, `Authorization`,
-`Proxy-Authorization`, `Cookie`, `Content-Digest`, `Repr-Digest`, `Signature`, and
-`Signature-Input` are generated/reserved and cannot be supplied through the
-generic custom-header option.
+`Proxy-Authorization`, `Cookie`, `Content-Digest`, `Repr-Digest`,
+`Want-Repr-Digest`, `Signature`, and `Signature-Input` are generated/reserved
+and cannot be supplied through the generic custom-header option.
 
 The request builder is authoritative for reserved fields. Redirects rebuild
 rather than clone the header map, then re-run origin credential, cookie, proxy,

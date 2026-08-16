@@ -10,12 +10,12 @@ use crate::{
     HttpDiscardTaskGuard, HttpMirrorIdentityPolicy, HttpOverlapSettlement, HttpPolicyClient,
     HttpPolicyClientError, HttpRangeAssignment, HttpRangeCoordinator, HttpRangeCoordinatorConfig,
     HttpRangeCoordinatorError, HttpRangeFailure, HttpRangePoll, HttpRangeResponseError,
-    HttpRangeResponseValidator, HttpRangeSource, HttpRetryBudget, HttpRetryCause,
-    HttpRetryDecision, HttpRetryDelaySource, HttpRetryError, HttpRetryPolicy, HttpRetryStopReason,
-    HttpRetryTransportFailure, HttpStaleValidatorPolicy, HttpTaskSpec, HttpTaskWorker,
-    HttpTransportError, HttpWorkerFuture, HttpWorkerSuccess, LeaseCommit, LeaseWritePlan,
-    RetryStateWrite, StorageEngine, StorageEngineConfig, StorageEngineError, WriteAck, WriteBlock,
-    WriteReject,
+    HttpRangeResponseValidator, HttpRangeSource, HttpRepresentationDigest, HttpRetryBudget,
+    HttpRetryCause, HttpRetryDecision, HttpRetryDelaySource, HttpRetryError, HttpRetryPolicy,
+    HttpRetryStopReason, HttpRetryTransportFailure, HttpStaleValidatorPolicy, HttpTaskSpec,
+    HttpTaskWorker, HttpTransportError, HttpWorkerFuture, HttpWorkerSuccess, LeaseCommit,
+    LeaseWritePlan, RetryStateWrite, StorageEngine, StorageEngineConfig, StorageEngineError,
+    WriteAck, WriteBlock, WriteReject,
 };
 use ariax_core::{
     ErrorKind, FileId, Generation, Gid, LeaseId, MonotonicInstant, PersistedDelayDecision, PieceId,
@@ -56,6 +56,7 @@ pub const DEFAULT_HTTP_INGRESS_FRAME_BYTES: usize = SizeClass::MiB1.capacity();
 pub const DEFAULT_HTTP_DIGEST_WORKERS: usize = 1;
 pub const MAX_HTTP_DIGEST_WORKERS: usize = 64;
 const HTTP_JOURNAL_ID_DOMAIN: &str = "ariax/http-journal-id/v1\0";
+const HTTP_SHARED_RANGE_DIGEST_DOMAIN: &str = "ariax/http-shared-range-digest/v1\0";
 const HTTP_RECOVERY_READ_BUFFER_BYTES: usize = 64 * 1024;
 const HTTP_FINAL_DIGEST_READ_BUFFER_BYTES: usize = 1024 * 1024;
 
@@ -725,6 +726,7 @@ impl HttpMultiRangeWorker {
             .first()
             .map(|source| source.validator.total_length())
             .ok_or(HttpMultiRangeError::NoUsableSources)?;
+        let mirror_identity = mirror_identity_context(&task, &sources);
         stats.set_total_length(total_length);
         let OpenedHttpStorage {
             mut storage,
@@ -755,6 +757,7 @@ impl HttpMultiRangeWorker {
                 &cancellation,
                 &stats,
                 &sources,
+                mirror_identity,
                 &durable_pieces,
                 &recovered_retry_states,
                 &mut storage,
@@ -831,21 +834,18 @@ impl HttpMultiRangeWorker {
         stats: &HttpTransferStats,
         discard_task: &HttpDiscardTaskGuard,
     ) -> Result<Vec<PreparedSource>, HttpMultiRangeError> {
-        let source_limit = if task.options().mirror_identity
-            == HttpMirrorIdentityPolicy::RequireSharedDigest
-            && task.options().checksum.is_none()
-            && task.sources().len() > 1
-        {
-            1
-        } else {
-            task.sources().len()
-        };
+        // Strict identity inspects every submitted mirror so matching
+        // range-digest responders can remain available for exact-span
+        // endgame races. Ordinary pieces still use one source unless a
+        // separately persisted whole-entity checksum authorizes the pool.
+        let source_limit = task.sources().len();
         let mut prepared = Vec::new();
         let mut settled_total = None;
         let mut last_error = None;
         let mirror_identity = HttpMirrorIdentityContext {
             policy: task.options().mirror_identity,
             shared_whole_entity_digest: task.options().checksum.is_some(),
+            shared_range_digest: false,
         };
         for source in &task.sources()[..source_limit] {
             match probe_source(
@@ -868,6 +868,8 @@ impl HttpMultiRangeWorker {
                         prepared.push(PreparedSource {
                             lease_fingerprint: validator.fingerprint(),
                             validator: Arc::new(validator),
+                            ordinary_assignments: true,
+                            range_digest_endgame: false,
                         });
                     } else {
                         last_error = Some(HttpMultiRangeError::SourceLengthMismatch);
@@ -879,6 +881,27 @@ impl HttpMultiRangeWorker {
         }
         if prepared.is_empty() {
             return Err(last_error.unwrap_or(HttpMultiRangeError::NoUsableSources));
+        }
+        if task.options().mirror_identity == HttpMirrorIdentityPolicy::RequireSharedDigest
+            && task.options().checksum.is_none()
+            && prepared.len() > 1
+        {
+            let shared = prepared[0].validator.representation_digest();
+            let all_match = shared.is_some()
+                && prepared
+                    .iter()
+                    .all(|source| source.validator.representation_digest() == shared);
+            if !all_match {
+                prepared.truncate(1);
+            } else if let Some(shared) = shared {
+                let fingerprint =
+                    shared_range_identity_fingerprint(shared, prepared[0].validator.total_length());
+                for (index, source) in prepared.iter_mut().enumerate() {
+                    source.lease_fingerprint = fingerprint;
+                    source.ordinary_assignments = index == 0;
+                    source.range_digest_endgame = true;
+                }
+            }
         }
         Ok(prepared)
     }
@@ -1314,6 +1337,7 @@ impl HttpMultiRangeWorker {
         cancellation: &HttpCancellation,
         stats: &HttpTransferStats,
         sources: &[PreparedSource],
+        mirror_identity: HttpMirrorIdentityContext,
         durable_pieces: &[PieceId],
         recovered_retry_states: &[RecoveredRetryState],
         storage: &mut StorageEngine,
@@ -1339,7 +1363,12 @@ impl HttpMultiRangeWorker {
             .map(|source| {
                 HttpRangeSource::from_uri(source.validator.source(), source.validator.final_uri())
                     .map(|source_id| {
-                        source_id.with_same_source_endgame(source.validator.if_range().is_some())
+                        source_id
+                            .with_ordinary_assignments(source.ordinary_assignments)
+                            .with_same_source_endgame(source.validator.if_range().is_some())
+                            .with_shared_identity_endgame(
+                                mirror_identity.shared_range_digest && source.range_digest_endgame,
+                            )
                     })
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -1446,6 +1475,7 @@ impl HttpMultiRangeWorker {
                                 assignment,
                                 transfer_attempt,
                                 validator: source.lease_fingerprint,
+                                response_digest: None,
                                 opened: false,
                                 received: 0,
                                 last_progress_ms: now_ms,
@@ -1456,10 +1486,6 @@ impl HttpMultiRangeWorker {
                         let cancellation = cancellation.clone();
                         let sender = events.clone();
                         let attempt_stats = stats.clone();
-                        let mirror_identity = HttpMirrorIdentityContext {
-                            policy: task.options().mirror_identity,
-                            shared_whole_entity_digest: task.options().checksum.is_some(),
-                        };
                         let body_timeout = task.options().response_body_timeout;
                         let lowest_speed_limit = task.options().lowest_speed_limit;
                         let rate_path = RatePath {
@@ -1653,7 +1679,7 @@ impl HttpMultiRangeWorker {
         while let Ok(event) = receiver.try_recv() {
             match event {
                 AttemptEvent::Head { start, .. } => {
-                    let _ignored = start.send(false);
+                    let _ignored = start.send(Err(RangeAttemptFailure::Cancelled));
                 }
                 AttemptEvent::PrepareRead { response, .. } => {
                     let _ignored = response.send(None);
@@ -1718,6 +1744,7 @@ impl HttpMultiRangeWorker {
         let mirror_identity = HttpMirrorIdentityContext {
             policy: task.options().mirror_identity,
             shared_whole_entity_digest: task.options().checksum.is_some(),
+            shared_range_digest: current.range_digest_endgame,
         };
         let fresh = probe_source(
             &self.client,
@@ -1748,6 +1775,8 @@ impl HttpMultiRangeWorker {
         Ok(PreparedSource {
             validator: Arc::new(fresh),
             lease_fingerprint,
+            ordinary_assignments: current.ordinary_assignments,
+            range_digest_endgame: current.range_digest_endgame,
         })
     }
 }
@@ -1778,12 +1807,39 @@ impl HttpTaskWorker for HttpMultiRangeWorker {
 struct PreparedSource {
     validator: Arc<HttpRangeResponseValidator>,
     lease_fingerprint: ariax_storage::JournalHash,
+    ordinary_assignments: bool,
+    range_digest_endgame: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct HttpMirrorIdentityContext {
     policy: HttpMirrorIdentityPolicy,
     shared_whole_entity_digest: bool,
+    shared_range_digest: bool,
+}
+
+fn mirror_identity_context(
+    task: &HttpTaskSpec,
+    sources: &[PreparedSource],
+) -> HttpMirrorIdentityContext {
+    HttpMirrorIdentityContext {
+        policy: task.options().mirror_identity,
+        shared_whole_entity_digest: task.options().checksum.is_some(),
+        shared_range_digest: sources.len() > 1
+            && sources.iter().all(|source| source.range_digest_endgame),
+    }
+}
+
+fn shared_range_identity_fingerprint(
+    digest: HttpRepresentationDigest,
+    total_length: u64,
+) -> ariax_storage::JournalHash {
+    let mut fingerprint = Sha256::new();
+    fingerprint.update(HTTP_SHARED_RANGE_DIGEST_DOMAIN.as_bytes());
+    fingerprint.update(total_length.to_le_bytes());
+    fingerprint.update(digest.value());
+    ariax_storage::JournalHash::new(fingerprint.finalize().into())
+        .expect("SHA-256 shared representation identity is nonzero")
 }
 
 fn bind_recovered_strong_validator(
@@ -2218,6 +2274,7 @@ struct ActiveAttempt {
     assignment: HttpRangeAssignment,
     transfer_attempt: TransferAttemptId,
     validator: ariax_storage::JournalHash,
+    response_digest: Option<HttpRepresentationDigest>,
     opened: bool,
     received: usize,
     last_progress_ms: u64,
@@ -2239,7 +2296,8 @@ enum AttemptAction {
 enum AttemptEvent {
     Head {
         lease: LeaseId,
-        start: oneshot::Sender<bool>,
+        response_digest: Option<HttpRepresentationDigest>,
+        start: oneshot::Sender<Result<(), RangeAttemptFailure>>,
     },
     PrepareRead {
         lease: LeaseId,
@@ -2255,7 +2313,7 @@ enum AttemptEvent {
     },
     Terminal {
         lease: LeaseId,
-        result: Result<(), RangeAttemptFailure>,
+        result: Result<Option<JournalDigest>, RangeAttemptFailure>,
     },
 }
 
@@ -2341,6 +2399,10 @@ impl HttpMultiRangeError {
                 ErrorKind::StaleValidator,
                 stale_validator_retry_class(policy, generation),
             ),
+            Self::Response(
+                HttpRangeResponseError::RepresentationDigestChanged
+                | HttpRangeResponseError::RepresentationDigestMismatch,
+            ) => (ErrorKind::ChecksumMismatch, RetryClass::AnotherSource),
             Self::Response(_) | Self::ShortBody | Self::OversizedBody => {
                 (ErrorKind::InvalidRange, RetryClass::AnotherSource)
             }
@@ -2454,6 +2516,9 @@ async fn probe_source(
     request.range = Some(GlobalSpan { offset: 0, len: 1 });
     request.mirror_identity = mirror_identity.policy;
     request.shared_whole_entity_digest = mirror_identity.shared_whole_entity_digest;
+    request.want_repr_digest = mirror_identity.policy
+        == HttpMirrorIdentityPolicy::RequireSharedDigest
+        && !mirror_identity.shared_whole_entity_digest;
     let response = tokio::select! {
         biased;
         _ = cancellation.cancelled() => return Err(HttpMultiRangeError::Cancelled),
@@ -2471,6 +2536,7 @@ async fn probe_source(
         .begin_attempt(discard_host_key(validator.final_uri())?)
         .map_err(discard_setup_error)?;
     let mut received = 0_usize;
+    let mut probe_digest = validator.representation_digest().map(|_| Sha256::new());
     loop {
         if let Some(scope) = discard.exhausted_scope() {
             return Err(HttpMultiRangeError::DiscardBudgetExhausted(scope));
@@ -2483,6 +2549,9 @@ async fn probe_source(
         let Some(data) = data else {
             break;
         };
+        if let Some(digest) = &mut probe_digest {
+            digest.update(&data);
+        }
         stats.add_raw(data.len());
         record_discarded(&discard, stats, data.len())?;
         received = received.saturating_add(data.len());
@@ -2492,6 +2561,14 @@ async fn probe_source(
     }
     if received != 1 {
         return Err(HttpMultiRangeError::ShortBody);
+    }
+    if let (Some(expected), Some(actual)) = (validator.representation_digest(), probe_digest) {
+        let actual: [u8; 32] = actual.finalize().into();
+        if actual != expected.value() {
+            return Err(HttpMultiRangeError::Response(
+                HttpRangeResponseError::RepresentationDigestMismatch,
+            ));
+        }
     }
     response.finish().await;
     Ok(validator)
@@ -2620,7 +2697,7 @@ async fn range_attempt_inner(
     cancellation: &HttpCancellation,
     events: &mpsc::Sender<AttemptEvent>,
     stats: &HttpTransferStats,
-) -> Result<(), RangeAttemptFailure> {
+) -> Result<Option<JournalDigest>, RangeAttemptFailure> {
     let mut request = HttpClientRequest::get(validator.final_uri().to_owned());
     request.range = Some(assignment.span);
     request.if_range = validator
@@ -2628,6 +2705,8 @@ async fn range_attempt_inner(
         .map(|value| value.to_vec().into_boxed_slice());
     request.mirror_identity = mirror_identity.policy;
     request.shared_whole_entity_digest = mirror_identity.shared_whole_entity_digest;
+    request.want_repr_digest =
+        mirror_identity.policy == HttpMirrorIdentityPolicy::RequireSharedDigest;
     let response = tokio::select! {
         biased;
         _ = cancellation.cancelled() => return Err(RangeAttemptFailure::Cancelled),
@@ -2639,7 +2718,7 @@ async fn range_attempt_inner(
         .get(RETRY_AFTER)
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
-    validator
+    let response_digest = validator
         .validate_range(
             response.final_uri(),
             response.status(),
@@ -2651,15 +2730,17 @@ async fn range_attempt_inner(
     events
         .send(AttemptEvent::Head {
             lease: assignment.lease,
+            response_digest,
             start,
         })
         .await
         .map_err(|_| RangeAttemptFailure::Cancelled)?;
-    if !proceed.await.unwrap_or(false) {
-        return Err(RangeAttemptFailure::Cancelled);
-    }
+    proceed
+        .await
+        .map_err(|_| RangeAttemptFailure::Cancelled)??;
     let expected = assignment.span.len;
     let mut received = 0_usize;
+    let mut body_digest = response_digest.map(|_| Sha256::new());
     let mut speed_window_bytes = 0_usize;
     let mut speed_window_elapsed = Duration::ZERO;
     loop {
@@ -2722,6 +2803,9 @@ async fn range_attempt_inner(
             return Err(RangeAttemptFailure::OversizedBody);
         }
         speed_window_bytes = speed_window_bytes.saturating_add(data.len());
+        if let Some(digest) = &mut body_digest {
+            digest.update(&data);
+        }
         if lowest_speed_limit != 0
             && speed_window_elapsed >= body_timeout
             && below_lowest_speed(speed_window_bytes, speed_window_elapsed, lowest_speed_limit)
@@ -2769,7 +2853,17 @@ async fn range_attempt_inner(
         return Err(RangeAttemptFailure::ShortBody);
     }
     response.finish().await;
-    Ok(())
+    if let (Some(expected), Some(actual)) = (response_digest, body_digest) {
+        let actual: [u8; 32] = actual.finalize().into();
+        if actual != expected.value() {
+            return Err(RangeAttemptFailure::Response {
+                error: HttpRangeResponseError::RepresentationDigestMismatch,
+                retry_after: None,
+            });
+        }
+        return Ok(Some(expected.journal_digest()));
+    }
+    Ok(None)
 }
 
 fn below_lowest_speed(bytes: usize, elapsed: Duration, limit: u64) -> bool {
@@ -2961,19 +3055,44 @@ async fn process_attempt_event(
     stats: &HttpTransferStats,
 ) -> Result<AttemptAction, HttpMultiRangeError> {
     match event {
-        AttemptEvent::Head { lease, start } => {
+        AttemptEvent::Head {
+            lease,
+            response_digest,
+            start,
+        } => {
             if endgame_losers.contains_key(&lease) || cancelled_leases.contains(&lease) {
-                let _ignored = start.send(false);
+                let _ignored = start.send(Err(RangeAttemptFailure::Cancelled));
                 return Ok(AttemptAction::None);
             }
-            let Some(attempt) = active.get_mut(&lease) else {
-                let _ignored = start.send(false);
+            let Some(attempt) = active.get(&lease) else {
+                let _ignored = start.send(Err(RangeAttemptFailure::Cancelled));
                 return Ok(AttemptAction::None);
             };
             if attempt.opened {
-                let _ignored = start.send(false);
+                let _ignored = start.send(Err(RangeAttemptFailure::Cancelled));
                 return Err(HttpMultiRangeError::Protocol);
             }
+            if let Some(group) = attempt.assignment.overlap_group {
+                let peer = active
+                    .iter()
+                    .find(|(peer_lease, peer)| {
+                        **peer_lease != lease && peer.assignment.overlap_group == Some(group)
+                    })
+                    .map(|(_, peer)| peer)
+                    .ok_or(HttpMultiRangeError::Protocol)?;
+                if peer.assignment.source != attempt.assignment.source
+                    && (response_digest.is_none() || peer.response_digest != response_digest)
+                {
+                    let _ignored = start.send(Err(RangeAttemptFailure::Response {
+                        error: HttpRangeResponseError::RepresentationDigestChanged,
+                        retry_after: None,
+                    }));
+                    return Ok(AttemptAction::None);
+                }
+            }
+            let attempt = active
+                .get_mut(&lease)
+                .ok_or(HttpMultiRangeError::Protocol)?;
             if let Err(error) = storage.begin_lease(LeaseWritePlan {
                 task,
                 generation,
@@ -2983,13 +3102,14 @@ async fn process_attempt_event(
                 validator: attempt.validator,
                 overlap_group: attempt.assignment.overlap_group,
             }) {
-                let _ignored = start.send(false);
+                let _ignored = start.send(Err(RangeAttemptFailure::Cancelled));
                 return Err(HttpMultiRangeError::Storage(error));
             }
+            attempt.response_digest = response_digest;
             attempt.opened = true;
             attempt.last_progress_ms = elapsed_ms(started);
             start
-                .send(true)
+                .send(Ok(()))
                 .map_err(|_| HttpMultiRangeError::Protocol)?;
         }
         AttemptEvent::PrepareRead {
@@ -3064,7 +3184,7 @@ async fn process_attempt_event(
                 return Ok(AttemptAction::None);
             };
             match result {
-                Ok(()) => {
+                Ok(response_digest) => {
                     if !attempt.opened || attempt.received != attempt.assignment.span.len {
                         return Err(HttpMultiRangeError::Protocol);
                     }
@@ -3075,7 +3195,7 @@ async fn process_attempt_event(
                         received_len: u64::try_from(attempt.received)
                             .map_err(|_| HttpMultiRangeError::Protocol)?,
                         validator: attempt.validator,
-                        response_digest: None,
+                        response_digest,
                     })?;
                     if let [
                         WriteAck::LeaseCommitPending {
@@ -3426,6 +3546,12 @@ fn retry_cause(failure: &RangeAttemptFailure) -> HttpRetryCause {
                 HttpRangeResponseError::ValidatorChanged | HttpRangeResponseError::ResourceChanged,
             ..
         } => HttpRetryCause::StaleValidator,
+        RangeAttemptFailure::Response {
+            error:
+                HttpRangeResponseError::RepresentationDigestChanged
+                | HttpRangeResponseError::RepresentationDigestMismatch,
+            ..
+        } => HttpRetryCause::Checksum,
         RangeAttemptFailure::Response { .. } | RangeAttemptFailure::OversizedBody => {
             HttpRetryCause::InvalidRange
         }
@@ -3554,9 +3680,12 @@ mod tests {
         }
     }
 
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, Debug)]
     enum MirrorMode {
         Valid,
+        SharedRepresentationDigest,
+        IncorrectRepresentationDigest,
+        IncorrectRangeRepresentationDigest,
         IgnoreRange,
         ShortRange,
     }
@@ -3583,8 +3712,27 @@ mod tests {
                     continue;
                 }
                 let body = &data[start..=end];
+                let digest_header = match mode {
+                    MirrorMode::SharedRepresentationDigest => format!(
+                        "Repr-Digest: sha-256=:{}:\r\n",
+                        base64_encode(&Sha256::digest(body))
+                    ),
+                    MirrorMode::IncorrectRepresentationDigest => {
+                        format!("Repr-Digest: sha-256=:{}:\r\n", base64_encode(&[0x55; 32]))
+                    }
+                    MirrorMode::IncorrectRangeRepresentationDigest if probe => format!(
+                        "Repr-Digest: sha-256=:{}:\r\n",
+                        base64_encode(&Sha256::digest(body))
+                    ),
+                    MirrorMode::IncorrectRangeRepresentationDigest => {
+                        format!("Repr-Digest: sha-256=:{}:\r\n", base64_encode(&[0x55; 32]))
+                    }
+                    MirrorMode::Valid | MirrorMode::IgnoreRange | MirrorMode::ShortRange => {
+                        String::new()
+                    }
+                };
                 let response = format!(
-                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\nETag: \"v1\"\r\nConnection: close\r\n\r\n",
+                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\nETag: \"v1\"\r\n{digest_header}Connection: close\r\n\r\n",
                     body.len(),
                     data.len()
                 );
@@ -3822,19 +3970,6 @@ mod tests {
         (address, ranges, task)
     }
 
-    async fn observe_mirror_connection()
-    -> (SocketAddr, Arc<AtomicBool>, tokio::task::JoinHandle<()>) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
-        let address = listener.local_addr().expect("address");
-        let connected = Arc::new(AtomicBool::new(false));
-        let observed = Arc::clone(&connected);
-        let task = tokio::spawn(async move {
-            let _accepted = listener.accept().await;
-            observed.store(true, Ordering::Release);
-        });
-        (address, connected, task)
-    }
-
     async fn read_request_head(stream: &mut TcpStream) -> String {
         let mut bytes = Vec::new();
         let mut byte = [0_u8; 1];
@@ -3872,6 +4007,33 @@ mod tests {
             .map(|index| u8::try_from(index % 251).expect("bounded byte"))
             .collect::<Vec<_>>()
             .into()
+    }
+
+    fn base64_encode(bytes: &[u8]) -> String {
+        const TABLE: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut output = String::new();
+        for chunk in bytes.chunks(3) {
+            let first = chunk[0];
+            let second = chunk.get(1).copied();
+            let third = chunk.get(2).copied();
+            output.push(char::from(TABLE[usize::from(first >> 2)]));
+            output.push(char::from(
+                TABLE[usize::from((first & 0x03) << 4 | second.unwrap_or(0) >> 4)],
+            ));
+            match second {
+                Some(second) => {
+                    output.push(char::from(
+                        TABLE[usize::from((second & 0x0f) << 2 | third.unwrap_or(0) >> 6)],
+                    ));
+                    output.push(
+                        third.map_or('=', |third| char::from(TABLE[usize::from(third & 0x3f)])),
+                    );
+                }
+                None => output.push_str("=="),
+            }
+        }
+        output
     }
 
     fn policy_client(max_sockets: usize) -> HttpPolicyClient {
@@ -3957,6 +4119,42 @@ mod tests {
         .expect("endgame task")
     }
 
+    fn strict_cross_mirror_endgame_task(
+        root: &TestDirectory,
+        sources: [SocketAddr; 2],
+        total_length: usize,
+    ) -> HttpTaskSpec {
+        assert!(total_length >= MIB);
+        let options = HttpTaskOptions {
+            split: NonZeroUsize::new(1).expect("split"),
+            max_connections_per_server: NonZeroUsize::new(1).expect("per server"),
+            min_split_size: MIB as u64,
+            piece_length: MIB as u64,
+            connect_timeout: Duration::from_secs(5),
+            response_head_timeout: Duration::from_secs(5),
+            response_body_timeout: Duration::from_secs(1),
+            max_download_limit: 0,
+            lowest_speed_limit: 0,
+            endgame_max_duplicates: 1,
+            mirror_identity: HttpMirrorIdentityPolicy::RequireSharedDigest,
+            checksum: None,
+            retry: None,
+        };
+        HttpTaskSpec::new(
+            TaskId::new(1).expect("task"),
+            Gid::new(7).expect("gid"),
+            sources
+                .into_iter()
+                .map(|source| format!("http://{source}/file")),
+            root.0.clone(),
+            SafePathBuilder::from_user_path("output.bin", PathPlatform::current())
+                .expect("safe output"),
+            options,
+            false,
+        )
+        .expect("strict cross-mirror endgame task")
+    }
+
     async fn serve_endgame_mirror(
         responses: Vec<Arc<[u8]>>,
         dirty: bool,
@@ -4013,6 +4211,54 @@ mod tests {
                         tokio::time::sleep(Duration::from_millis(50)).await;
                         stream.write_all(body).await.expect("range body");
                     }
+                });
+            }
+        });
+        (address, ranges, task)
+    }
+
+    async fn serve_digest_endgame_mirror(
+        data: Arc<[u8]>,
+        range_delay: Duration,
+    ) -> (
+        SocketAddr,
+        Arc<Mutex<Vec<(usize, usize)>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let ranges = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&ranges);
+        let task = tokio::spawn(async move {
+            let mut handlers = tokio::task::JoinSet::new();
+            loop {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                let recorded = Arc::clone(&recorded);
+                let data = Arc::clone(&data);
+                handlers.spawn(async move {
+                    let request = read_request_head(&mut stream).await;
+                    let (start, end) = request_range(&request).expect("range request");
+                    recorded
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push((start, end));
+                    let body = &data[start..=end];
+                    let digest = format!(
+                        "sha-256=:{}:",
+                        base64_encode(&Sha256::digest(body))
+                    );
+                    let head = format!(
+                        "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\nETag: \"endgame\"\r\nRepr-Digest: {digest}\r\nConnection: close\r\n\r\n",
+                        body.len(),
+                        data.len()
+                    );
+                    if stream.write_all(head.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    if start != 0 || end != 0 {
+                        tokio::time::sleep(range_delay).await;
+                    }
+                    let _written = stream.write_all(body).await;
                 });
             }
         });
@@ -4159,6 +4405,39 @@ mod tests {
             .flush(started.sequence())
             .expect("flush generation start");
         appender.close_flushed().expect("close advanced journal");
+    }
+
+    fn replay_payloads(
+        journal: &TestDirectory,
+        task: &HttpTaskSpec,
+        generation: Generation,
+    ) -> Vec<JournalPayload> {
+        let directory = http_journal_directory(&journal.0, task.gid());
+        let capability = JournalDirectoryCapability::open_trusted(&directory)
+            .expect("journal directory capability");
+        let paths = ControlJournalAppender::discover_segment_paths(
+            &capability,
+            ReplayLimits::default().max_segments,
+        )
+        .expect("journal paths");
+        let (mut appender, framing) = ControlJournalAppender::open_recovered(
+            &directory,
+            &paths,
+            task.gid(),
+            derive_http_journal_id(task.task(), task.gid()),
+            ReplayLimits::default(),
+            generation,
+            now_unix_ms().unwrap_or(0),
+        )
+        .expect("open journal for payload replay");
+        assert_eq!(framing.stop, ariax_storage::ReplayStop::CleanEnd);
+        let payloads = framing
+            .records
+            .iter()
+            .map(|record| record.decode_payload().expect("decode journal payload"))
+            .collect();
+        appender.close_flushed().expect("close replay journal");
+        payloads
     }
 
     fn checksum(data: &[u8]) -> HttpContentChecksum {
@@ -4325,6 +4604,18 @@ mod tests {
             retry_cause(&RangeAttemptFailure::LowestSpeed),
             HttpRetryCause::Transport(HttpRetryTransportFailure::LowestSpeed)
         );
+        for error in [
+            HttpRangeResponseError::RepresentationDigestChanged,
+            HttpRangeResponseError::RepresentationDigestMismatch,
+        ] {
+            assert_eq!(
+                retry_cause(&RangeAttemptFailure::Response {
+                    error,
+                    retry_after: None,
+                }),
+                HttpRetryCause::Checksum
+            );
+        }
     }
 
     #[test]
@@ -4694,7 +4985,8 @@ mod tests {
         let expected = data(MIB);
         let (primary, primary_server) =
             serve_mirror(Arc::clone(&expected), MirrorMode::Valid, 2).await;
-        let (secondary, secondary_connected, secondary_server) = observe_mirror_connection().await;
+        let (secondary, secondary_server) =
+            serve_mirror(Arc::clone(&expected), MirrorMode::Valid, 1).await;
         let spec = task_with_identity(
             &root,
             [primary, secondary],
@@ -4712,18 +5004,7 @@ mod tests {
             .await
             .expect("strict single-origin transfer");
         primary_server.await.expect("primary server");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(
-            !secondary_connected.load(Ordering::Acquire),
-            "strict mode must not probe or lease the unproven mirror"
-        );
-        secondary_server.abort();
-        assert!(
-            secondary_server
-                .await
-                .expect_err("secondary observer was cancelled")
-                .is_cancelled()
-        );
+        secondary_server.await.expect("secondary probe server");
         assert_eq!(
             fs::read(root.0.join("output.bin")).expect("output"),
             expected.as_ref()
@@ -4741,6 +5022,237 @@ mod tests {
         .expect("recover strict journal");
         assert!(recovered.strong_validator.is_some());
         assert_eq!(recovered.durable_prefix, MIB as u64);
+    }
+
+    #[tokio::test]
+    async fn strict_identity_with_shared_repr_digest_keeps_secondary_for_range_endgame() {
+        let root = TestDirectory::new("strict-repr-digest-root");
+        let journal = TestDirectory::new("strict-repr-digest-journal");
+        let expected = data(2 * MIB);
+        let (first, first_server) = serve_mirror(
+            Arc::clone(&expected),
+            MirrorMode::SharedRepresentationDigest,
+            3,
+        )
+        .await;
+        let (second, second_server) = serve_mirror(
+            Arc::clone(&expected),
+            MirrorMode::SharedRepresentationDigest,
+            1,
+        )
+        .await;
+        let spec = task_with_identity(
+            &root,
+            [first, second],
+            expected.len(),
+            None,
+            HttpMirrorIdentityPolicy::RequireSharedDigest,
+        );
+        let stats = SharedHttpTransferStats::new(NonZeroUsize::new(4).expect("stats"));
+        worker(&journal, stats, 4)
+            .run_task(
+                Arc::new(spec.clone()),
+                Generation::INITIAL,
+                HttpCancellation::new(),
+            )
+            .await
+            .expect("strict digest transfer");
+        first_server.await.expect("first server");
+        second_server.await.expect("second server");
+        assert_eq!(
+            fs::read(root.0.join("output.bin")).expect("output"),
+            expected.as_ref()
+        );
+        let committed_digests = replay_payloads(&journal, &spec, Generation::INITIAL)
+            .into_iter()
+            .filter_map(|payload| match payload {
+                JournalPayload::LeaseCommitted {
+                    response_digest, ..
+                } => Some(response_digest),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(committed_digests.len(), 2);
+        assert!(committed_digests.into_iter().all(|digest| {
+            digest.is_some_and(|digest| digest.algorithm() == JournalDigestAlgorithm::Sha256)
+        }));
+        let recovered = recover_known_length_http(&KnownLengthHttpRecoveryRequest {
+            task: spec.task(),
+            gid: spec.gid(),
+            journal_id: derive_http_journal_id(spec.task(), spec.gid()),
+            generation: Generation::INITIAL,
+            journal_directory: http_journal_directory(&journal.0, spec.gid()),
+            output_root: root.0.clone(),
+            replay_limits: ReplayLimits::default(),
+            state_limits: JournalStateLimits::default(),
+        })
+        .expect("recover strict representation-digest journal");
+        assert!(recovered.strong_validator.is_none());
+        assert!(matches!(
+            recovered
+                .replay
+                .state
+                .as_ref()
+                .and_then(RecoveredJournalState::terminal),
+            Some(ariax_storage::RecoveredTerminal::Complete {
+                final_digest: None,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn strict_identity_with_different_repr_digests_falls_back_to_one_mirror() {
+        let root = TestDirectory::new("strict-repr-mismatch-root");
+        let journal = TestDirectory::new("strict-repr-mismatch-journal");
+        let expected = data(2 * MIB);
+        let divergent = (0..expected.len())
+            .map(|index| u8::try_from((index + 1) % 251).expect("bounded byte"))
+            .collect::<Vec<_>>()
+            .into();
+        let (first, first_server) = serve_mirror(
+            Arc::clone(&expected),
+            MirrorMode::SharedRepresentationDigest,
+            3,
+        )
+        .await;
+        let (second, second_server) =
+            serve_mirror(divergent, MirrorMode::SharedRepresentationDigest, 3).await;
+        let spec = task_with_identity(
+            &root,
+            [first, second],
+            expected.len(),
+            None,
+            HttpMirrorIdentityPolicy::RequireSharedDigest,
+        );
+        worker(
+            &journal,
+            SharedHttpTransferStats::new(NonZeroUsize::new(4).expect("stats")),
+            4,
+        )
+        .run_task(Arc::new(spec), Generation::INITIAL, HttpCancellation::new())
+        .await
+        .expect("strict fallback transfer");
+        first_server.abort();
+        second_server.abort();
+        let _ = first_server.await;
+        let _ = second_server.await;
+        assert_eq!(
+            fs::read(root.0.join("output.bin")).expect("output"),
+            expected.as_ref()
+        );
+    }
+
+    #[tokio::test]
+    async fn strict_identity_rejects_a_shared_but_incorrect_repr_digest() {
+        let root = TestDirectory::new("strict-repr-invalid-root");
+        let journal = TestDirectory::new("strict-repr-invalid-journal");
+        let expected = data(2 * MIB);
+        let (first, first_server) = serve_mirror(
+            Arc::clone(&expected),
+            MirrorMode::IncorrectRepresentationDigest,
+            1,
+        )
+        .await;
+        let (second, second_server) = serve_mirror(
+            Arc::clone(&expected),
+            MirrorMode::IncorrectRepresentationDigest,
+            1,
+        )
+        .await;
+        let retry = HttpRetryPolicy {
+            max_attempts: NonZeroU32::new(1).expect("one attempt"),
+            max_attempts_per_mirror: NonZeroU32::new(1).expect("one mirror attempt"),
+            ..HttpRetryPolicy::default()
+        };
+        let spec = task_with_identity(
+            &root,
+            [first, second],
+            expected.len(),
+            Some(retry),
+            HttpMirrorIdentityPolicy::RequireSharedDigest,
+        );
+        let stats = SharedHttpTransferStats::new(NonZeroUsize::new(4).expect("stats"));
+        assert!(matches!(
+            worker(&journal, stats.clone(), 4)
+                .run_task(
+                    Arc::new(spec.clone()),
+                    Generation::INITIAL,
+                    HttpCancellation::new(),
+                )
+                .await,
+            Err(HttpMultiRangeError::Response(
+                HttpRangeResponseError::RepresentationDigestMismatch,
+            ))
+        ));
+        first_server.await.expect("first server");
+        second_server.await.expect("second server");
+        // Probe rejection happens before the length-dependent storage layout is
+        // admitted, so recovery has no layout to reopen.  The observable
+        // invariant is that the failed admission leaves no output or durable
+        // progress behind.
+        assert!(!root.0.join("output.bin").exists());
+        assert_eq!(stats.get(spec.task()).unwrap().snapshot().durable_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn strict_range_digest_mismatch_aborts_without_durable_progress() {
+        let root = TestDirectory::new("strict-range-digest-invalid-root");
+        let journal = TestDirectory::new("strict-range-digest-invalid-journal");
+        let expected = data(MIB);
+        let (mirror, server) = serve_mirror(
+            Arc::clone(&expected),
+            MirrorMode::IncorrectRangeRepresentationDigest,
+            2,
+        )
+        .await;
+        let retry = HttpRetryPolicy {
+            max_attempts: NonZeroU32::new(1).expect("one attempt"),
+            max_attempts_per_mirror: NonZeroU32::new(1).expect("one mirror attempt"),
+            ..HttpRetryPolicy::default()
+        };
+        let spec = task_with_identity(
+            &root,
+            [mirror],
+            expected.len(),
+            Some(retry),
+            HttpMirrorIdentityPolicy::RequireSharedDigest,
+        );
+        assert!(matches!(
+            worker(
+                &journal,
+                SharedHttpTransferStats::new(NonZeroUsize::new(2).expect("stats")),
+                2,
+            )
+            .run_task(
+                Arc::new(spec.clone()),
+                Generation::INITIAL,
+                HttpCancellation::new(),
+            )
+            .await,
+            Err(HttpMultiRangeError::Exhausted)
+        ));
+        server.await.expect("server");
+        let recovered = recover_known_length_http(&KnownLengthHttpRecoveryRequest {
+            task: spec.task(),
+            gid: spec.gid(),
+            journal_id: derive_http_journal_id(spec.task(), spec.gid()),
+            generation: Generation::INITIAL,
+            journal_directory: http_journal_directory(&journal.0, spec.gid()),
+            output_root: root.0.clone(),
+            replay_limits: ReplayLimits::default(),
+            state_limits: JournalStateLimits::default(),
+        })
+        .expect("recover range digest mismatch journal");
+        assert_eq!(recovered.durable_prefix, 0);
+        assert!(
+            recovered
+                .replay
+                .state
+                .as_ref()
+                .and_then(RecoveredJournalState::terminal)
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -5530,6 +6042,115 @@ mod tests {
         );
         server.abort();
         assert!(server.await.expect_err("server cancelled").is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn shared_repr_digest_endgame_races_a_different_origin() {
+        let root = TestDirectory::new("cross-endgame-root");
+        let journal = TestDirectory::new("cross-endgame-journal");
+        let expected = data(MIB);
+        let (slow, slow_ranges, slow_server) =
+            serve_digest_endgame_mirror(Arc::clone(&expected), Duration::from_millis(500)).await;
+        let (fast, fast_ranges, fast_server) =
+            serve_digest_endgame_mirror(Arc::clone(&expected), Duration::from_millis(10)).await;
+        let spec = strict_cross_mirror_endgame_task(&root, [slow, fast], expected.len());
+        let stats = SharedHttpTransferStats::new(NonZeroUsize::new(2).expect("stats"));
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            worker(&journal, stats.clone(), 4).run_task(
+                Arc::new(spec.clone()),
+                Generation::INITIAL,
+                HttpCancellation::new(),
+            ),
+        )
+        .await
+        .expect("cross-mirror endgame deadline")
+        .expect("cross-mirror endgame completes");
+        assert_eq!(
+            fs::read(root.0.join("output.bin")).expect("output"),
+            expected.as_ref()
+        );
+        for (label, ranges) in [("slow", slow_ranges), ("fast", fast_ranges)] {
+            assert!(
+                ranges
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .contains(&(0, MIB - 1)),
+                "{label} origin must receive the same endgame range"
+            );
+        }
+        let snapshot = stats.get(spec.task()).expect("stats").snapshot();
+        assert_eq!(snapshot.durable_bytes, MIB as u64);
+        slow_server.abort();
+        fast_server.abort();
+        assert!(
+            slow_server
+                .await
+                .expect_err("slow server cancelled")
+                .is_cancelled()
+        );
+        assert!(
+            fast_server
+                .await
+                .expect_err("fast server cancelled")
+                .is_cancelled()
+        );
+    }
+
+    #[tokio::test]
+    async fn cross_mirror_endgame_rejects_a_different_exact_range_digest() {
+        let root = TestDirectory::new("cross-endgame-mismatch-root");
+        let journal = TestDirectory::new("cross-endgame-mismatch-journal");
+        let expected = data(MIB);
+        let mut divergent = expected.to_vec();
+        for byte in &mut divergent[1..] {
+            *byte ^= 0xff;
+        }
+        let divergent: Arc<[u8]> = divergent.into();
+        let (primary, primary_ranges, primary_server) =
+            serve_digest_endgame_mirror(Arc::clone(&expected), Duration::from_millis(100)).await;
+        let (secondary, secondary_ranges, secondary_server) =
+            serve_digest_endgame_mirror(divergent, Duration::from_millis(10)).await;
+        let spec = strict_cross_mirror_endgame_task(&root, [primary, secondary], expected.len());
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            worker(
+                &journal,
+                SharedHttpTransferStats::new(NonZeroUsize::new(2).expect("stats")),
+                4,
+            )
+            .run_task(Arc::new(spec), Generation::INITIAL, HttpCancellation::new()),
+        )
+        .await
+        .expect("cross-mirror mismatch deadline")
+        .expect("primary exact range remains eligible");
+        assert_eq!(
+            fs::read(root.0.join("output.bin")).expect("output"),
+            expected.as_ref()
+        );
+        for (label, ranges) in [("primary", primary_ranges), ("secondary", secondary_ranges)] {
+            assert!(
+                ranges
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .contains(&(0, MIB - 1)),
+                "{label} origin must expose its exact-range digest"
+            );
+        }
+        primary_server.abort();
+        secondary_server.abort();
+        assert!(
+            primary_server
+                .await
+                .expect_err("primary server cancelled")
+                .is_cancelled()
+        );
+        assert!(
+            secondary_server
+                .await
+                .expect_err("secondary server cancelled")
+                .is_cancelled()
+        );
     }
 
     #[tokio::test]

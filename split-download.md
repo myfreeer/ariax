@@ -115,14 +115,17 @@ Allowed behavior:
   provisional until one attempt is eligible for `CommitLease`,
 - a duplicate against the same mirror is allowed only when both requests are
   pinned by the same strong per-origin validator (`If-Range` where applicable),
-- a duplicate against a different mirror is allowed only when the exact range is
-  covered by a shared per-chunk/range digest that can be checked before commit.
-  Strict mode backed only by a whole-file checksum is not sufficient for this
-  same-offset race,
+- a duplicate against a different mirror is allowed only under the bounded
+  SHA-256 `Repr-Digest` exact-range profile: strict probes from every submitted
+  mirror must carry the same digest, secondary mirrors are endgame-only, and
+  both candidates must present and verify the digest for the exact requested
+  span before the duplicate lease opens or commits. Strict mode backed only by
+  a whole-file checksum is not sufficient for this same-offset race,
 - when a piece/chunk digest exists, the first exact-length, hash-valid attempt
-  whose `CommitLease` becomes the candidate wins the network race. With no
-  range-verifiable digest, endgame is confined to the same validator-pinned
-  mirror,
+  whose `CommitLease` becomes the candidate wins the network race. A `206`
+  probe digest is not treated as a whole-entity checksum and does not authorize
+  ordinary concurrent pieces; without the bounded exact-range profile,
+  endgame is confined to the same validator-pinned mirror,
 - every duplicate belongs to one `OverlapGroupId`. A candidate commit freezes
   the group, cancels competitors, and waits for all accepted competing disk
   operations to complete or receive cancellation confirmation before it can
@@ -290,25 +293,27 @@ Default behavior (`--verify-mirror-identity=off`, aria2-compatible):
 
 Strict opt-in (`--verify-mirror-identity=strict`):
 
-- Concurrent multi-mirror split is admitted only when the assembled result will
-  be verified by a shared content digest: Metalink per-chunk checksums (see
-  `metalink-chunking.md`, preferred because divergence is caught per chunk), a
-  `Content-Digest`/`Repr-Digest` (RFC 9530) identity tuple present on every
-  mirror, or a user-supplied whole-file checksum. An RFC 9530 identity tuple
-  matches only when field kind, algorithm, digest value, covered
-  representation, content coding, and covered range all match; equal algorithms
-  alone do not establish identity.
-- Without such a digest, split is restricted to a single mirror. That origin's own
-  `ETag`/`Last-Modified` (via `If-Range`) keeps it self-consistent across its own
-  range responses — a valid per-origin guarantee; only the cross-origin
-  comparison is invalid. Other URIs remain sequential-download or restart
-  fallbacks, not concurrent split sources.
+- A persisted user SHA-256 is required for ordinary concurrent multi-mirror
+  split and final whole-file verification. Without it, strict mode probes every
+  submitted mirror with `Want-Repr-Digest: sha-256=10`; matching probe values
+  retain secondary mirrors only as exact-range endgame peers, while ordinary
+  pieces remain on the first mirror. A missing, malformed, or different probe
+  digest falls back to one ordinary source.
+- The executable profile parses a bounded `Repr-Digest` dictionary, requires
+  SHA-256 on every digest-bearing range response, hashes the response body, and
+  compares exact-span digests at the cross-origin head fence. It deliberately
+  does not infer whole-entity identity from a one-byte `206` digest.
+- `Content-Digest`, digest parameters/coverage metadata, alternate algorithms,
+  server-advertised whole-entity admission, Metalink chunk hashes, and broader
+  RFC 9530 identity tuples remain deferred. A single source's own strong ETag
+  (via `If-Range`) still provides the per-origin resume guarantee.
 
 A redirect target is not added as another eligible mirror implicitly. Under
 `off`, it is at most an exclusive replacement for the source of the redirected
-lease; under `strict`, it must pass the same full identity gate before joining
-the pool. Cross-mirror endgame has the stronger range-verifiable digest rule
-above. See `redirect-policy.md`.
+lease; under `strict`, only the persisted whole-file checksum can admit a
+cross-origin target to the ordinary pool. The bounded range-digest profile is
+limited to explicitly submitted, independently probed sources and does not
+promote redirect targets. See `redirect-policy.md`.
 
 ## Fallback To Sequential
 
@@ -383,8 +388,10 @@ Expose per task:
   bytes in place for the next lease to overwrite,
 - crash during overlap settlement leaves no `LeaseCommitted`/`PieceDurable` and
   replays the group as pending,
-- cross-mirror endgame is refused without an exact range-verifiable digest,
-- two RFC 9530 responses with the same algorithm but different value, coverage,
-  representation, or range fail the strict identity gate,
+- matching SHA-256 probe digests retain a secondary mirror only for endgame,
+- a missing or mismatched exact-range digest rejects the duplicate before it can
+  open a storage lease, while a body mismatch rolls back through the normal
+  overlap fence,
+- malformed, parameterized, or over-cap `Repr-Digest` dictionaries fail closed,
 - a redirect target under `off` cannot become an additional concurrent mirror,
 - FTP sources are never assigned noncontiguous leases or endgame duplicates.

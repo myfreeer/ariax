@@ -30,7 +30,9 @@ pub struct HttpRangeCoordinatorConfig {
 pub struct HttpRangeSource {
     id: UriId,
     origin: Arc<str>,
+    ordinary_assignments: bool,
     same_source_endgame: bool,
+    shared_identity_endgame: bool,
 }
 
 impl HttpRangeSource {
@@ -67,8 +69,19 @@ impl HttpRangeSource {
         Ok(Self {
             id,
             origin: origin.into(),
+            ordinary_assignments: true,
             same_source_endgame: false,
+            shared_identity_endgame: false,
         })
+    }
+
+    /// Controls whether this source may receive ordinary non-overlapping
+    /// pieces. A strict range-digest mirror can be retained as an endgame-only
+    /// peer without widening ordinary multi-mirror trust.
+    #[must_use]
+    pub const fn with_ordinary_assignments(mut self, allowed: bool) -> Self {
+        self.ordinary_assignments = allowed;
+        self
     }
 
     /// Marks this source as safe for one same-source, same-validator endgame
@@ -77,6 +90,16 @@ impl HttpRangeSource {
     #[must_use]
     pub const fn with_same_source_endgame(mut self, allowed: bool) -> Self {
         self.same_source_endgame = allowed;
+        self
+    }
+
+    /// Marks this source as eligible to race an active lease from another
+    /// origin after the bounded range-digest probe gate. The worker, not the
+    /// coordinator, compares the exact response digests before opening the
+    /// duplicate and verifies each response body before commit.
+    #[must_use]
+    pub const fn with_shared_identity_endgame(mut self, allowed: bool) -> Self {
+        self.shared_identity_endgame = allowed;
         self
     }
 
@@ -810,7 +833,10 @@ impl HttpRangeCoordinator {
             .find_map(|piece| {
                 (0..self.sources.len())
                     .map(|offset| (self.next_source + offset) % self.sources.len())
-                    .find(|source_index| self.source_available(piece, *source_index, now_ms))
+                    .find(|source_index| {
+                        self.sources[*source_index].source.ordinary_assignments
+                            && self.source_available(piece, *source_index, now_ms)
+                    })
                     .map(|source| (piece, source))
             })
     }
@@ -845,14 +871,32 @@ impl HttpRangeCoordinator {
                 return None;
             };
             let source = &self.sources[active.source_index].source;
-            (state.original == original
-                && state.duplicate.is_none()
-                && state.overlap_group.is_none()
-                && state.candidate.is_none()
-                && source.same_source_endgame
-                && self.piece_attempts[active.piece_index] < self.config.max_total_attempts
-                && self.source_available(active.piece_index, active.source_index, now_ms))
-            .then_some((original, active.piece_index, active.source_index))
+            if state.original != original {
+                return None;
+            }
+            if state.duplicate.is_some()
+                || state.overlap_group.is_some()
+                || state.candidate.is_some()
+                || self.piece_attempts[active.piece_index] >= self.config.max_total_attempts
+            {
+                return None;
+            }
+            let shared_source = if source.shared_identity_endgame {
+                (1..self.sources.len()).find_map(|offset| {
+                    let source_index = (active.source_index + offset) % self.sources.len();
+                    (self.sources[source_index].source.shared_identity_endgame
+                        && self.source_available(active.piece_index, source_index, now_ms))
+                    .then_some(source_index)
+                })
+            } else {
+                None
+            };
+            let duplicate_source = shared_source.or_else(|| {
+                (source.same_source_endgame
+                    && self.source_available(active.piece_index, active.source_index, now_ms))
+                .then_some(active.source_index)
+            })?;
+            Some((original, active.piece_index, duplicate_source))
         })
     }
 
@@ -957,6 +1001,14 @@ mod tests {
 
     fn endgame_source(id: u32, uri: &str) -> HttpRangeSource {
         source(id, uri).with_same_source_endgame(true)
+    }
+
+    fn shared_endgame_source(id: u32, uri: &str) -> HttpRangeSource {
+        source(id, uri).with_shared_identity_endgame(true)
+    }
+
+    fn digest_endgame_only_source(id: u32, uri: &str) -> HttpRangeSource {
+        shared_endgame_source(id, uri).with_ordinary_assignments(false)
     }
 
     fn config() -> HttpRangeCoordinatorConfig {
@@ -1185,6 +1237,110 @@ mod tests {
             .expect("clean settlement");
         assert_eq!(coordinator.stats().completed_length, 4);
         assert_eq!(coordinator.stats().active_endgame_duplicates, 0);
+    }
+
+    #[test]
+    fn shared_identity_endgame_uses_a_different_origin() {
+        let mut endgame_config = config();
+        endgame_config.total_length = 4;
+        endgame_config.split = NonZeroUsize::new(1).expect("split");
+        endgame_config.max_connections_per_origin = NonZeroUsize::new(1).expect("origin cap");
+        endgame_config.endgame_max_duplicates = 1;
+        let mut coordinator = HttpRangeCoordinator::new(
+            endgame_config,
+            [
+                shared_endgame_source(0, "https://one.example/file"),
+                shared_endgame_source(1, "https://two.example/file"),
+            ],
+        )
+        .expect("coordinator");
+        let HttpRangePoll::Assignment(original) = coordinator.poll(0).expect("original") else {
+            panic!("original assignment expected");
+        };
+        let HttpRangePoll::Endgame {
+            assignment: duplicate,
+            original: original_id,
+        } = coordinator
+            .poll_with_endgame(0, &[original.lease])
+            .expect("endgame poll")
+        else {
+            panic!("cross-source duplicate expected");
+        };
+        assert_eq!(original_id, original.lease);
+        assert_ne!(duplicate.source, original.source);
+        assert_eq!(duplicate.span, original.span);
+    }
+
+    #[test]
+    fn range_digest_peer_is_endgame_only_for_ordinary_scheduling() {
+        let mut endgame_config = config();
+        endgame_config.total_length = 4;
+        endgame_config.split = NonZeroUsize::new(2).expect("split");
+        endgame_config.max_connections_per_origin = NonZeroUsize::new(1).expect("origin cap");
+        endgame_config.endgame_max_duplicates = 1;
+        let mut coordinator = HttpRangeCoordinator::new(
+            endgame_config,
+            [
+                shared_endgame_source(0, "https://one.example/file"),
+                digest_endgame_only_source(1, "https://two.example/file"),
+            ],
+        )
+        .expect("coordinator");
+        let HttpRangePoll::Assignment(original) = coordinator.poll(0).expect("original") else {
+            panic!("ordinary assignment expected");
+        };
+        assert_eq!(original.source, UriId::new(0));
+        assert_eq!(
+            coordinator.poll(0).expect("ordinary saturation"),
+            HttpRangePoll::Saturated
+        );
+        let HttpRangePoll::Endgame {
+            assignment: duplicate,
+            ..
+        } = coordinator
+            .poll_with_endgame(0, &[original.lease])
+            .expect("endgame poll")
+        else {
+            panic!("endgame assignment expected");
+        };
+        assert_eq!(duplicate.source, UriId::new(1));
+    }
+
+    #[test]
+    fn shared_identity_endgame_falls_back_to_the_validator_pinned_source() {
+        let mut endgame_config = config();
+        endgame_config.total_length = 4;
+        endgame_config.split = NonZeroUsize::new(1).expect("split");
+        endgame_config.max_connections_per_origin = NonZeroUsize::new(2).expect("origin cap");
+        endgame_config.endgame_max_duplicates = 1;
+        let mut coordinator = HttpRangeCoordinator::new(
+            endgame_config,
+            [
+                shared_endgame_source(0, "https://one.example/file").with_same_source_endgame(true),
+                digest_endgame_only_source(1, "https://two.example/file"),
+            ],
+        )
+        .expect("coordinator");
+        let piece = PieceId::new(0);
+        coordinator
+            .restore_piece_attempts(piece, 1)
+            .expect("piece retry count");
+        coordinator
+            .restore_source_piece_retry(piece, UriId::new(1), 1, 100)
+            .expect("secondary wait");
+        let HttpRangePoll::Assignment(original) = coordinator.poll(0).expect("original") else {
+            panic!("ordinary assignment expected");
+        };
+        let HttpRangePoll::Endgame {
+            assignment: duplicate,
+            ..
+        } = coordinator
+            .poll_with_endgame(0, &[original.lease])
+            .expect("endgame poll")
+        else {
+            panic!("same-source fallback expected");
+        };
+        assert_eq!(duplicate.source, original.source);
     }
 
     #[test]
