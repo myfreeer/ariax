@@ -99,9 +99,10 @@ pub use http_proxy_io::{
     MAX_HTTP_PROXY_RESPONSE_HEAD_BYTES, MAX_SOCKS5_DOMAIN_BYTES, connect_http_proxy_route,
 };
 pub use http_range::{
-    DEFAULT_HTTP_MAX_ATTEMPTS_PER_SOURCE, DEFAULT_HTTP_MAX_TOTAL_ATTEMPTS, HttpRangeAssignment,
-    HttpRangeCoordinator, HttpRangeCoordinatorConfig, HttpRangeCoordinatorError, HttpRangeFailure,
-    HttpRangePoll, HttpRangeSource, HttpRangeStats, MAX_HTTP_RANGE_PIECES,
+    DEFAULT_HTTP_MAX_ATTEMPTS_PER_SOURCE, DEFAULT_HTTP_MAX_TOTAL_ATTEMPTS, HttpOverlapFence,
+    HttpOverlapSettlement, HttpRangeAssignment, HttpRangeCoordinator, HttpRangeCoordinatorConfig,
+    HttpRangeCoordinatorError, HttpRangeFailure, HttpRangePoll, HttpRangeSource, HttpRangeStats,
+    MAX_HTTP_RANGE_PIECES,
 };
 pub use http_redirect::{
     DEFAULT_HTTP_MAX_REDIRECTS, HttpRedirectContext, HttpRedirectDecision, HttpRedirectError,
@@ -146,11 +147,12 @@ pub use http_supervisor::{
     MAX_HTTP_SUPERVISOR_PENDING_EVENTS,
 };
 pub use http_task::{
-    DEFAULT_HTTP_MAX_CONNECTIONS_PER_SERVER, DEFAULT_HTTP_MIN_SPLIT_SIZE,
-    DEFAULT_HTTP_PIECE_LENGTH, DEFAULT_HTTP_SPLIT, HTTP_SHA256_CHECKSUM_TEXT_BYTES,
-    HTTP_SOURCE_FINGERPRINT_DOMAIN, HttpContentChecksum, HttpContentChecksumError,
-    HttpMirrorIdentityPolicy, HttpSourceSpec, HttpTaskCatalog, HttpTaskCatalogError,
-    HttpTaskOptions, HttpTaskSpec, HttpTaskSpecError, MAX_HTTP_PIECE_LENGTH, MAX_HTTP_TASK_SOURCES,
+    DEFAULT_HTTP_ENDGAME_MAX_DUPLICATES, DEFAULT_HTTP_MAX_CONNECTIONS_PER_SERVER,
+    DEFAULT_HTTP_MIN_SPLIT_SIZE, DEFAULT_HTTP_PIECE_LENGTH, DEFAULT_HTTP_SPLIT,
+    HTTP_SHA256_CHECKSUM_TEXT_BYTES, HTTP_SOURCE_FINGERPRINT_DOMAIN, HttpContentChecksum,
+    HttpContentChecksumError, HttpMirrorIdentityPolicy, HttpSourceSpec, HttpTaskCatalog,
+    HttpTaskCatalogError, HttpTaskOptions, HttpTaskSpec, HttpTaskSpecError,
+    MAX_HTTP_ENDGAME_MAX_DUPLICATES, MAX_HTTP_PIECE_LENGTH, MAX_HTTP_TASK_SOURCES,
     MAX_HTTP_TIMEOUT_SECS, SharedHttpTaskCatalog,
 };
 pub use http_transport::{

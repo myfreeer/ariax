@@ -10,8 +10,8 @@ use crate::{
     HttpRetryStatusSet, HttpRetryTriggerSet, HttpRpcBackend, HttpRpcBackendError,
     HttpTaskCatalogError, HttpTaskOptions, HttpTaskSpec, HttpTaskSpecError, HttpTaskWorker,
     HttpTransferStatsSnapshot, HttpWorkerSupervisor, HttpWorkerSupervisorConfig,
-    PersistenceEffectPlan, PersistencePlanStep, SharedHttpTaskCatalog, SharedHttpTransferStats,
-    derive_http_journal_id, http_journal_directory,
+    MAX_HTTP_ENDGAME_MAX_DUPLICATES, PersistenceEffectPlan, PersistencePlanStep,
+    SharedHttpTaskCatalog, SharedHttpTransferStats, derive_http_journal_id, http_journal_directory,
 };
 use ariax_core::{
     Aria2Status, Generation, Gid, MonotonicInstant, PublicError, QueueClass, QueueOrder,
@@ -1159,6 +1159,17 @@ fn parse_add_options(
             "timeout" => parsed.response_body_timeout = Duration::from_secs(parse_timeout(value)?),
             "max-download-limit" => parsed.max_download_limit = parse_size(value)?,
             "lowest-speed-limit" => parsed.lowest_speed_limit = parse_size(value)?,
+            "endgame-max-duplicates" => {
+                parsed.endgame_max_duplicates =
+                    usize::try_from(parse_u64(value, name)?).map_err(|_| {
+                        HttpControlError::InvalidParams("endgame duplicate cap is too large")
+                    })?;
+                if parsed.endgame_max_duplicates > MAX_HTTP_ENDGAME_MAX_DUPLICATES {
+                    return Err(HttpControlError::InvalidParams(
+                        "endgame duplicate cap is too large",
+                    ));
+                }
+            }
             "checksum" => {
                 parsed.checksum = Some(
                     HttpContentChecksum::parse(
@@ -1973,6 +1984,7 @@ mod tests {
                 "retry-max-wait": 60,
                 "retry-max-elapsed": 600,
                 "stale-validator-policy": "revalidate",
+                "endgame-max-duplicates": 8,
                 "checksum": "sha-256=abababababababababababababababababababababababababababababababab",
                 "pause": "true",
             }),
@@ -1987,6 +1999,7 @@ mod tests {
         assert_eq!(options.connect_timeout, Duration::from_secs(1));
         assert_eq!(options.response_body_timeout, Duration::from_secs(600));
         assert_eq!(options.max_download_limit, 64 * 1024);
+        assert_eq!(options.endgame_max_duplicates, 8);
         assert_eq!(
             options.checksum,
             Some(HttpContentChecksum::sha256([0xab; 32]))
@@ -2007,6 +2020,14 @@ mod tests {
         assert_eq!(output.canonical_string(), "file");
         assert!(paused);
 
+        let (disabled, _, _, _) = parse_add_options(
+            &json!({"endgame-max-duplicates": 0}),
+            &directory.output,
+            &uris,
+        )
+        .expect("zero disables endgame");
+        assert_eq!(disabled.endgame_max_duplicates, 0);
+
         for invalid in [
             json!({"split": 1025}),
             json!({"max-connection-per-server": 0}),
@@ -2016,6 +2037,8 @@ mod tests {
             json!({"retry-max-attempts": 0}),
             json!({"retry-max-wait": 0}),
             json!({"retry-on-http-status": "99"}),
+            json!({"endgame-max-duplicates": 9}),
+            json!({"endgame-max-duplicates": -1}),
             json!({"stale-validator-policy": "unsafe"}),
             json!({"stale-validator-policy": 7}),
             json!({"piece-length": "18446744073709551615T"}),

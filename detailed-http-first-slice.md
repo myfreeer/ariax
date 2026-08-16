@@ -28,10 +28,17 @@ identity unless a configured whole-file digest gates completion, and
 `restart-if-safe` drains the worker, stages the unchanged option snapshot,
 persists a new representation generation, invalidates all old durable pieces,
 and reopens only the exact task-owned output identity before rewriting from
-offset zero. Endgame duplicate leases, RFC 9530/Metalink digest identity,
-additional checksum algorithms, Last-Modified and unsafe-override resume,
-HTTP/2, unknown-length or chunked layouts, WebSocket/NDJSON and non-loopback
-RPC, and the rest of the Phase-4 control plane remain outside this checkpoint.
+offset zero. The executable boundary now includes bounded same-origin endgame
+duplicates: only an original lease pinned by a strong ETag may be duplicated,
+the duplicate uses that same source and validator, and storage withholds the
+candidate commit until the losing attempt is cancellation-confirmed. Any loser
+write rolls the whole overlap group back to pending metadata for a normal
+same-generation overwrite. Cross-mirror endgame remains refused because the
+implemented user SHA-256 is a whole-file identity proof, not a range-verifiable
+digest. RFC 9530/Metalink digest identity, additional checksum algorithms,
+Last-Modified and unsafe-override resume, HTTP/2, unknown-length or chunked
+layouts, WebSocket/NDJSON and non-loopback RPC, and the rest of the Phase-4
+control plane remain outside this checkpoint.
 
 This document defines HTTP(S) sequential download, resume, strict range
 validation, storage integration, retry integration, and stats behavior.
@@ -509,6 +516,24 @@ metadata and clears the touched pieces' in-memory written/verified state. It
 does not restore the file contents; the next ordinary lease overwrites those
 untrusted offsets. No affected piece is eligible for `PieceDurable` before this
 settlement.
+
+For the executable HTTP/1.1 boundary, `endgame-max-duplicates` is a bounded
+task option with default 2, accepted range 0 through 8, and at most one extra
+attempt for any original lease. Zero disables endgame. Admission begins only
+when remaining non-durable work is at most `max(8 MiB, 2 * piece_length)` and an
+opened original is within `max(1 second, 25% of response_body_timeout)` of its
+between-byte deadline. The duplicate consumes the task-wide duplicate cap,
+normal split/origin/transport permits, ingress and rate tokens, and retry
+attempt accounting. It never targets a durable piece.
+
+The first exact-length completion receives `LeaseCommitPending`. The worker
+then cancels the one competitor and waits for that attempt's join/cancellation
+confirmation. A clean loser with zero accepted disk bytes is journal-aborted
+before the candidate receives `LeaseCommitted` and `PieceDurable`. If the loser
+wrote any bytes, storage journal-aborts both members, returns
+`SpanRolledBack`, and the coordinator exposes the piece only as pending. A
+process crash before settlement replays only provisional lease starts and
+therefore also exposes the piece as pending.
 
 Each body buffer is mapped to:
 

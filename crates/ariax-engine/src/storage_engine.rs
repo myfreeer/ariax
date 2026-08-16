@@ -1,4 +1,6 @@
-use ariax_core::{ErrorKind, FileId, Generation, LeaseId, PieceId, TaskId, TransferAttemptId};
+use ariax_core::{
+    ErrorKind, FileId, Generation, LeaseId, OverlapGroupId, PieceId, TaskId, TransferAttemptId,
+};
 use ariax_runtime::{
     BlockingBackendEpoch, BlockingDiskCancelHandle, BlockingDiskError, BlockingDiskLane,
     BlockingDiskLaneConfig, BlockingDiskLaneStartError, BlockingDiskOperation,
@@ -52,6 +54,7 @@ pub struct LeaseWritePlan {
     pub lease: LeaseId,
     pub span: GlobalSpan,
     pub validator: JournalHash,
+    pub overlap_group: Option<OverlapGroupId>,
 }
 
 /// One immutable transfer buffer submitted for positional placement.
@@ -93,10 +96,29 @@ pub struct RetryStateWrite {
 /// Storage-visible acknowledgement for the executable first slice.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WriteAck {
-    ProvisionalAccepted { lease: LeaseId, span: GlobalSpan },
-    LeaseCommitted { lease: LeaseId, span: GlobalSpan },
-    LeaseAborted { lease: LeaseId },
-    PieceDurable { piece: PieceId, sequence: u64 },
+    ProvisionalAccepted {
+        lease: LeaseId,
+        span: GlobalSpan,
+    },
+    LeaseCommitPending {
+        lease: LeaseId,
+        group: OverlapGroupId,
+    },
+    LeaseCommitted {
+        lease: LeaseId,
+        span: GlobalSpan,
+    },
+    LeaseAborted {
+        lease: LeaseId,
+    },
+    SpanRolledBack {
+        group: OverlapGroupId,
+        span: GlobalSpan,
+    },
+    PieceDurable {
+        piece: PieceId,
+        sequence: u64,
+    },
 }
 
 /// Stable rejection classes at the protocol/storage boundary.
@@ -108,6 +130,7 @@ pub enum WriteReject {
     DuplicateLease,
     LeaseMismatch,
     NonPieceAlignedLease,
+    OverlapPolicy,
     NonContiguousWrite,
     PieceMismatch,
     BufferLengthMismatch,
@@ -131,6 +154,7 @@ impl WriteReject {
             Self::DuplicateLease => "duplicate_lease",
             Self::LeaseMismatch => "lease_mismatch",
             Self::NonPieceAlignedLease => "non_piece_aligned_lease",
+            Self::OverlapPolicy => "overlap_policy",
             Self::NonContiguousWrite => "noncontiguous_write",
             Self::PieceMismatch => "piece_mismatch",
             Self::BufferLengthMismatch => "buffer_length_mismatch",
@@ -227,6 +251,15 @@ struct ActiveLease {
     digest: Sha256,
 }
 
+#[derive(Debug)]
+struct OverlapGroup {
+    piece: PieceId,
+    span: GlobalSpan,
+    members: BTreeSet<LeaseId>,
+    candidate: Option<LeaseCommit>,
+    frozen: bool,
+}
+
 /// First concrete `StorageEngine`: descriptor-only output authority, bounded
 /// pooled buffers, bounded positional writes, and strict per-piece durability.
 pub struct StorageEngine {
@@ -239,6 +272,7 @@ pub struct StorageEngine {
     lane: Option<BlockingDiskLane>,
     files: BTreeMap<FileId, StorageFile>,
     active: BTreeMap<LeaseId, ActiveLease>,
+    overlap_groups: BTreeMap<OverlapGroupId, OverlapGroup>,
     seen_leases: BTreeSet<LeaseId>,
     next_operation_id: u64,
     journal: ControlJournalAppender,
@@ -336,6 +370,7 @@ impl StorageEngine {
             lane: Some(lane),
             files,
             active: BTreeMap::new(),
+            overlap_groups: BTreeMap::new(),
             seen_leases: BTreeSet::new(),
             next_operation_id: 1,
             journal,
@@ -382,6 +417,13 @@ impl StorageEngine {
         Ok(lease)
     }
 
+    /// Returns a filled network buffer that became obsolete before positional
+    /// submission, for example after an endgame candidate froze its overlap
+    /// group. No storage visibility or journal fact is produced.
+    pub fn discard_network_buffer(&self, lease: BufferLease) -> Result<(), StorageEngineError> {
+        self.release_buffer(lease)
+    }
+
     pub fn begin_lease(&mut self, plan: LeaseWritePlan) -> Result<WriteAck, StorageEngineError> {
         self.validate_identity(plan.task, plan.generation)?;
         if self.seen_leases.contains(&plan.lease) || self.active.contains_key(&plan.lease) {
@@ -393,6 +435,44 @@ impl StorageEngine {
             || usize::try_from(expected.len()).ok() != Some(plan.span.len)
         {
             return Err(StorageEngineError::bare(WriteReject::NonPieceAlignedLease));
+        }
+        let overlapping = self
+            .active
+            .iter()
+            .filter(|(_, active)| active.piece == piece)
+            .map(|(&lease, _)| lease)
+            .collect::<Vec<_>>();
+        match plan.overlap_group {
+            None => {
+                if !overlapping.is_empty() {
+                    return Err(StorageEngineError::bare(WriteReject::OverlapPolicy));
+                }
+            }
+            Some(group) => {
+                let overlap = self
+                    .overlap_groups
+                    .get(&group)
+                    .ok_or_else(|| StorageEngineError::bare(WriteReject::OverlapPolicy))?;
+                if overlap.frozen
+                    || overlap.piece != piece
+                    || overlap.span != plan.span
+                    || !overlap.members.contains(&plan.lease)
+                    || overlapping.len() != 1
+                {
+                    return Err(StorageEngineError::bare(WriteReject::OverlapPolicy));
+                }
+                let peer = overlapping[0];
+                let active = self
+                    .active
+                    .get(&peer)
+                    .ok_or_else(|| StorageEngineError::bare(WriteReject::OverlapPolicy))?;
+                if active.plan.overlap_group != Some(group)
+                    || active.plan.span != plan.span
+                    || active.plan.validator != plan.validator
+                {
+                    return Err(StorageEngineError::bare(WriteReject::OverlapPolicy));
+                }
+            }
         }
         let persisted = expected;
         self.journal
@@ -431,6 +511,92 @@ impl StorageEngine {
             lease: plan.lease,
             span: plan.span,
         })
+    }
+
+    /// Reserves the logical two-member overlap group before the duplicate's
+    /// response head is accepted. This closes the race where the original
+    /// reaches `CommitLease` while the duplicate is still in flight.
+    #[allow(clippy::too_many_arguments)]
+    pub fn register_overlap_group(
+        &mut self,
+        task: TaskId,
+        generation: Generation,
+        group: OverlapGroupId,
+        original: LeaseId,
+        duplicate: LeaseId,
+        span: GlobalSpan,
+        validator: JournalHash,
+    ) -> Result<(), StorageEngineError> {
+        self.validate_identity(task, generation)?;
+        if original == duplicate || self.overlap_groups.contains_key(&group) {
+            return Err(StorageEngineError::bare(WriteReject::OverlapPolicy));
+        }
+        let active = self
+            .active
+            .get_mut(&original)
+            .ok_or_else(|| StorageEngineError::bare(WriteReject::UnknownLease))?;
+        if active.plan.overlap_group.is_some()
+            || active.plan.span != span
+            || active.plan.validator != validator
+        {
+            return Err(StorageEngineError::bare(WriteReject::OverlapPolicy));
+        }
+        if self.seen_leases.contains(&duplicate) {
+            return Err(StorageEngineError::bare(WriteReject::DuplicateLease));
+        }
+        active.plan.overlap_group = Some(group);
+        self.overlap_groups.insert(
+            group,
+            OverlapGroup {
+                piece: active.piece,
+                span,
+                members: BTreeSet::from([original, duplicate]),
+                candidate: None,
+                frozen: false,
+            },
+        );
+        Ok(())
+    }
+
+    /// Settles a duplicate that was cancelled before its response head could
+    /// begin a storage lease. It has no journal abort because no lease-start
+    /// fact exists yet; a pending candidate can therefore commit cleanly.
+    pub fn settle_unopened_overlap_member(
+        &mut self,
+        task: TaskId,
+        generation: Generation,
+        group_id: OverlapGroupId,
+        lease: LeaseId,
+    ) -> Result<Vec<WriteAck>, StorageEngineError> {
+        self.validate_identity(task, generation)?;
+        if self.active.contains_key(&lease) {
+            return Err(StorageEngineError::bare(WriteReject::OverlapPolicy));
+        }
+        let mut group = self
+            .overlap_groups
+            .remove(&group_id)
+            .ok_or_else(|| StorageEngineError::bare(WriteReject::OverlapPolicy))?;
+        if !group.members.remove(&lease) || group.members.len() != 1 {
+            return Err(StorageEngineError::bare(WriteReject::OverlapPolicy));
+        }
+        let remaining = group
+            .members
+            .iter()
+            .copied()
+            .next()
+            .ok_or_else(|| StorageEngineError::bare(WriteReject::OverlapPolicy))?;
+        if let Some(candidate) = group.candidate {
+            if candidate.lease != remaining {
+                return Err(StorageEngineError::bare(WriteReject::OverlapPolicy));
+            }
+            return self.commit_active(candidate);
+        }
+        self.active
+            .get_mut(&remaining)
+            .ok_or_else(|| StorageEngineError::bare(WriteReject::OverlapPolicy))?
+            .plan
+            .overlap_group = None;
+        Ok(Vec::new())
     }
 
     pub async fn write_block(&mut self, block: WriteBlock) -> Result<WriteAck, StorageEngineError> {
@@ -552,21 +718,63 @@ impl StorageEngine {
     pub fn commit_lease(
         &mut self,
         commit: LeaseCommit,
-    ) -> Result<[WriteAck; 2], StorageEngineError> {
+    ) -> Result<Vec<WriteAck>, StorageEngineError> {
         self.validate_identity(commit.task, commit.generation)?;
         let active = self
             .active
-            .remove(&commit.lease)
+            .get(&commit.lease)
             .ok_or_else(|| StorageEngineError::bare(WriteReject::UnknownLease))?;
+        self.validate_commit(active, &commit)?;
+        if let Some(group_id) = active.plan.overlap_group {
+            let group = self
+                .overlap_groups
+                .get_mut(&group_id)
+                .ok_or_else(|| StorageEngineError::bare(WriteReject::OverlapPolicy))?;
+            if group.frozen
+                || group.candidate.is_some()
+                || group.members.len() != 2
+                || !group.members.contains(&commit.lease)
+                || group.piece != active.piece
+                || group.span != active.plan.span
+            {
+                return Err(StorageEngineError::bare(WriteReject::OverlapPolicy));
+            }
+            group.frozen = true;
+            group.candidate = Some(commit.clone());
+            return Ok(vec![WriteAck::LeaseCommitPending {
+                lease: commit.lease,
+                group: group_id,
+            }]);
+        }
+        self.commit_active(commit)
+    }
+
+    fn validate_commit(
+        &self,
+        active: &ActiveLease,
+        commit: &LeaseCommit,
+    ) -> Result<(), StorageEngineError> {
         let expected_len = u64::try_from(active.plan.span.len)
             .map_err(|_| StorageEngineError::bare(WriteReject::LeaseMismatch))?;
         if active.plan.validator != commit.validator
             || active.written_len != expected_len
             || commit.received_len != expected_len
         {
-            self.active.insert(commit.lease, active);
             return Err(StorageEngineError::bare(WriteReject::LeaseMismatch));
         }
+        Ok(())
+    }
+
+    fn commit_active(&mut self, commit: LeaseCommit) -> Result<Vec<WriteAck>, StorageEngineError> {
+        let active = self
+            .active
+            .get(&commit.lease)
+            .ok_or_else(|| StorageEngineError::bare(WriteReject::UnknownLease))?;
+        self.validate_commit(active, &commit)?;
+        let active = self
+            .active
+            .remove(&commit.lease)
+            .ok_or_else(|| StorageEngineError::bare(WriteReject::UnknownLease))?;
         let span = self.piece_span(active.piece)?;
         let digest = JournalDigest::new(
             JournalDigestAlgorithm::Sha256,
@@ -638,7 +846,7 @@ impl StorageEngine {
             .journal
             .flush(durable.sequence())
             .map_err(journal_error)?;
-        Ok([
+        Ok(vec![
             WriteAck::LeaseCommitted {
                 lease: commit.lease,
                 span: active.plan.span,
@@ -656,13 +864,95 @@ impl StorageEngine {
         generation: Generation,
         lease: LeaseId,
         reason: LeaseAbortReason,
-    ) -> Result<WriteAck, StorageEngineError> {
+    ) -> Result<Vec<WriteAck>, StorageEngineError> {
         self.validate_identity(task, generation)?;
-        if self.active.remove(&lease).is_none() {
-            return Err(StorageEngineError::bare(WriteReject::UnknownLease));
+        let active = self
+            .active
+            .get(&lease)
+            .ok_or_else(|| StorageEngineError::bare(WriteReject::UnknownLease))?;
+        let Some(group_id) = active.plan.overlap_group else {
+            self.active.remove(&lease);
+            let sequence = self.append_lease_abort(lease, reason)?;
+            self.journal.flush(sequence).map_err(journal_error)?;
+            return Ok(vec![WriteAck::LeaseAborted { lease }]);
+        };
+        let group = self
+            .overlap_groups
+            .get(&group_id)
+            .ok_or_else(|| StorageEngineError::bare(WriteReject::OverlapPolicy))?;
+        if !group.members.contains(&lease) {
+            return Err(StorageEngineError::bare(WriteReject::OverlapPolicy));
         }
-        let appended = self
-            .journal
+        let candidate = group.candidate.clone();
+        let wrote = active.written_len != 0;
+        if candidate
+            .as_ref()
+            .is_some_and(|candidate| candidate.lease == lease)
+            || wrote
+        {
+            return self.rollback_overlap(group_id, reason);
+        }
+        self.active.remove(&lease);
+        let abort_sequence = self.append_lease_abort(lease, reason)?;
+        let mut group = self
+            .overlap_groups
+            .remove(&group_id)
+            .expect("validated overlap group exists");
+        group.members.remove(&lease);
+        let remaining = group
+            .members
+            .iter()
+            .copied()
+            .next()
+            .ok_or_else(|| StorageEngineError::bare(WriteReject::OverlapPolicy))?;
+        if let Some(candidate) = candidate {
+            if candidate.lease != remaining {
+                return Err(StorageEngineError::bare(WriteReject::OverlapPolicy));
+            }
+            let mut acknowledgements = vec![WriteAck::LeaseAborted { lease }];
+            acknowledgements.extend(self.commit_active(candidate)?);
+            return Ok(acknowledgements);
+        }
+        if let Some(remaining) = self.active.get_mut(&remaining) {
+            remaining.plan.overlap_group = None;
+        }
+        self.journal.flush(abort_sequence).map_err(journal_error)?;
+        Ok(vec![WriteAck::LeaseAborted { lease }])
+    }
+
+    fn rollback_overlap(
+        &mut self,
+        group_id: OverlapGroupId,
+        reason: LeaseAbortReason,
+    ) -> Result<Vec<WriteAck>, StorageEngineError> {
+        let group = self
+            .overlap_groups
+            .remove(&group_id)
+            .ok_or_else(|| StorageEngineError::bare(WriteReject::OverlapPolicy))?;
+        let mut acknowledgements = Vec::with_capacity(group.members.len() + 1);
+        let mut last_sequence = None;
+        for lease in group.members {
+            if self.active.remove(&lease).is_some() {
+                last_sequence = Some(self.append_lease_abort(lease, reason)?);
+                acknowledgements.push(WriteAck::LeaseAborted { lease });
+            }
+        }
+        let sequence =
+            last_sequence.ok_or_else(|| StorageEngineError::bare(WriteReject::OverlapPolicy))?;
+        self.journal.flush(sequence).map_err(journal_error)?;
+        acknowledgements.push(WriteAck::SpanRolledBack {
+            group: group_id,
+            span: group.span,
+        });
+        Ok(acknowledgements)
+    }
+
+    fn append_lease_abort(
+        &mut self,
+        lease: LeaseId,
+        reason: LeaseAbortReason,
+    ) -> Result<u64, StorageEngineError> {
+        self.journal
             .append_payload(
                 self.generation,
                 &JournalPayload::LeaseAborted {
@@ -670,11 +960,8 @@ impl StorageEngine {
                     reason,
                 },
             )
-            .map_err(journal_error)?;
-        self.journal
-            .flush(appended.sequence())
-            .map_err(journal_error)?;
-        Ok(WriteAck::LeaseAborted { lease })
+            .map(|appended| appended.sequence())
+            .map_err(journal_error)
     }
 
     pub fn record_retry_state(&mut self, retry: RetryStateWrite) -> Result<(), StorageEngineError> {
@@ -708,7 +995,7 @@ impl StorageEngine {
         final_digest: Option<JournalDigest>,
         completed_at_unix_ms: u64,
     ) -> Result<u64, StorageEngineError> {
-        if !self.active.is_empty() {
+        if !self.active.is_empty() || !self.overlap_groups.is_empty() {
             return Err(StorageEngineError::bare(WriteReject::LeaseMismatch));
         }
         let final_length = self
@@ -770,6 +1057,13 @@ impl StorageEngine {
             .active
             .get(&block.lease)
             .ok_or_else(|| StorageEngineError::bare(WriteReject::UnknownLease))?;
+        if active.plan.overlap_group.is_some_and(|group| {
+            self.overlap_groups
+                .get(&group)
+                .is_none_or(|state| state.frozen)
+        }) {
+            return Err(StorageEngineError::bare(WriteReject::OverlapPolicy));
+        }
         if active.piece != block.piece {
             return Err(StorageEngineError::bare(WriteReject::PieceMismatch));
         }
@@ -908,4 +1202,202 @@ fn journal_error(error: JournalAppenderError) -> StorageEngineError {
         WriteReject::Journal,
         StorageEngineErrorDetail::Journal(error),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::http_first_slice::{
+        append_initial_admission, append_layout, build_single_file_layout,
+    };
+    use ariax_core::Gid;
+    use ariax_storage::{JournalId, PathPlatform, RootDirectoryCapability, SafePathBuilder};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(1);
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new() -> Self {
+            let ordinal = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "ariax-storage-engine-{}-{ordinal}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).expect("test directory");
+            Self(path)
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _removed = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn lease_plan(
+        lease: LeaseId,
+        attempt: u64,
+        span: GlobalSpan,
+        validator: JournalHash,
+        overlap_group: Option<OverlapGroupId>,
+    ) -> LeaseWritePlan {
+        LeaseWritePlan {
+            task: TaskId::new(1).expect("task"),
+            generation: Generation::INITIAL,
+            transfer_attempt: TransferAttemptId::new(attempt).expect("attempt"),
+            lease,
+            span,
+            validator,
+            overlap_group,
+        }
+    }
+
+    async fn write_piece(engine: &mut StorageEngine, lease: LeaseId, bytes: &[u8]) {
+        let mut buffer = engine
+            .reserve_network_buffer(bytes.len())
+            .expect("reserve network buffer");
+        buffer.writable().expect("writable buffer")[..bytes.len()].copy_from_slice(bytes);
+        buffer
+            .mark_filled(bytes.len(), OwnerTag::Storage)
+            .expect("filled buffer");
+        engine
+            .write_block(WriteBlock {
+                task: TaskId::new(1).expect("task"),
+                generation: Generation::INITIAL,
+                lease,
+                global_offset: 0,
+                expected_len: bytes.len(),
+                buffer,
+                piece: PieceId::new(0),
+            })
+            .await
+            .expect("piece write");
+    }
+
+    #[tokio::test]
+    async fn aborting_pending_candidate_rolls_back_before_clean_loser_can_commit_it() {
+        let directory = TestDirectory::new();
+        let output_root = directory.0.join("output");
+        let journal_root = directory.0.join("journal");
+        fs::create_dir_all(&output_root).expect("output root");
+        let root = RootDirectoryCapability::open_trusted(&output_root).expect("root capability");
+        let output =
+            SafePathBuilder::from_user_path("output.bin", PathPlatform::current()).expect("path");
+        let output_file = root.create_new_file(&output).expect("output file");
+        output_file.set_len(4).expect("preallocate output");
+        let layout = build_single_file_layout(
+            TaskId::new(1).expect("task"),
+            Generation::INITIAL,
+            &root,
+            &output,
+            &output_file,
+            4,
+            4,
+        )
+        .expect("layout");
+        let mut journal = ControlJournalAppender::create(
+            &journal_root,
+            Gid::new(1).expect("gid"),
+            JournalId::new([1; 16]).expect("journal id"),
+            Generation::INITIAL,
+            1,
+        )
+        .expect("journal");
+        append_initial_admission(&mut journal, Generation::INITIAL).expect("admission");
+        append_layout(&mut journal, &layout).expect("layout journal");
+        let mut engine = StorageEngine::open_layout(
+            layout,
+            [(FileId::new(0), output_file)],
+            journal,
+            StorageEngineConfig::default(),
+        )
+        .expect("storage engine");
+
+        let original = LeaseId::new(1).expect("original");
+        let candidate = LeaseId::new(2).expect("candidate");
+        let replacement = LeaseId::new(3).expect("replacement");
+        let group = OverlapGroupId::new(1).expect("group");
+        let span = GlobalSpan { offset: 0, len: 4 };
+        let validator = JournalHash::new([7; 32]).expect("validator");
+        engine
+            .begin_lease(lease_plan(original, 1, span, validator, None))
+            .expect("original lease");
+        engine
+            .register_overlap_group(
+                TaskId::new(1).expect("task"),
+                Generation::INITIAL,
+                group,
+                original,
+                candidate,
+                span,
+                validator,
+            )
+            .expect("overlap group");
+        engine
+            .begin_lease(lease_plan(candidate, 2, span, validator, Some(group)))
+            .expect("candidate lease");
+        write_piece(&mut engine, candidate, &[1, 2, 3, 4]).await;
+        assert_eq!(
+            engine
+                .commit_lease(LeaseCommit {
+                    task: TaskId::new(1).expect("task"),
+                    generation: Generation::INITIAL,
+                    lease: candidate,
+                    received_len: 4,
+                    validator,
+                    response_digest: None,
+                })
+                .expect("pending commit"),
+            vec![WriteAck::LeaseCommitPending {
+                lease: candidate,
+                group,
+            }]
+        );
+
+        let rollback = engine
+            .abort_lease(
+                TaskId::new(1).expect("task"),
+                Generation::INITIAL,
+                candidate,
+                LeaseAbortReason::Cancelled,
+            )
+            .expect("candidate rollback");
+        assert!(rollback.contains(&WriteAck::LeaseAborted { lease: original }));
+        assert!(rollback.contains(&WriteAck::LeaseAborted { lease: candidate }));
+        assert!(rollback.contains(&WriteAck::SpanRolledBack { group, span }));
+        assert!(
+            !rollback
+                .iter()
+                .any(|ack| matches!(ack, WriteAck::PieceDurable { .. }))
+        );
+
+        engine
+            .begin_lease(lease_plan(replacement, 3, span, validator, None))
+            .expect("replacement lease");
+        write_piece(&mut engine, replacement, &[9, 9, 9, 9]).await;
+        let committed = engine
+            .commit_lease(LeaseCommit {
+                task: TaskId::new(1).expect("task"),
+                generation: Generation::INITIAL,
+                lease: replacement,
+                received_len: 4,
+                validator,
+                response_digest: None,
+            })
+            .expect("replacement commit");
+        assert!(
+            committed
+                .iter()
+                .any(|ack| matches!(ack, WriteAck::PieceDurable { .. }))
+        );
+        engine.close().expect("close engine");
+        assert_eq!(
+            fs::read(output_root.join("output.bin")).expect("output bytes"),
+            [9, 9, 9, 9]
+        );
+    }
 }

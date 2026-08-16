@@ -14,10 +14,11 @@ strict concurrent-mirror identity, digest-bound restart, bounded descriptor-
 based final verification, and terminal digest evidence. Persisted
 stale-validator `fail`, fresh `revalidate`, and descriptor-authorized bounded
 `restart-if-safe` now cross the worker, scheduler, journal-v2, and public option
-boundaries without retaining old durable bytes. Endgame, RFC 9530 and Metalink
-identity, additional checksum algorithms, Last-Modified/unsafe-override resume,
-broader protocols/control APIs, benchmarks, and the complete release matrix
-remain incomplete.
+boundaries without retaining old durable bytes. Same-origin strong-ETag endgame
+fencing, candidate settlement, dirty-overlap rollback, and crash-safe replay are
+implemented. Cross-mirror RFC 9530/Metalink digest identity, additional checksum
+algorithms, Last-Modified/unsafe-override resume, broader protocols/control APIs,
+benchmarks, and the complete release matrix remain incomplete.
 
 This maps the requested properties to design documents.
 
@@ -227,10 +228,11 @@ Design coverage:
   live stats, worker supervision, pre-network durable-piece digest readback,
   strong-ETag-bound single-source/strict-fallback recovery, user SHA-256-bound
   strict concurrent mirrors and final verification, public stale-validator
-  policy, crash-safe representation-generation restart, and five real scheduler
-  RPC methods. RFC 9530/Metalink digest identity, additional checksum
-  algorithms, Last-Modified/unsafe-override resume, endgame, HTTP/2, growing
-  bodies, and the rest of Phase 4 remain pending.
+  policy, crash-safe representation-generation restart, same-origin strong-ETag
+  endgame fencing/rollback, and five real scheduler RPC methods. Cross-mirror RFC
+  9530/Metalink digest identity, additional checksum algorithms,
+  Last-Modified/unsafe-override resume, HTTP/2, growing bodies, and the rest of
+  Phase 4 remain pending.
 
 Acceptance:
 

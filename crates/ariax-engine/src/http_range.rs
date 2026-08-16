@@ -1,6 +1,7 @@
 //! Deterministic, bounded coordination for parallel HTTP range workers.
 
-use ariax_core::{LeaseId, PieceId, UriId};
+use crate::http_task::MAX_HTTP_ENDGAME_MAX_DUPLICATES;
+use ariax_core::{LeaseId, OverlapGroupId, PieceId, UriId};
 use ariax_storage::GlobalSpan;
 use hyper::Uri;
 use std::collections::BTreeMap;
@@ -12,6 +13,7 @@ use std::sync::Arc;
 pub const MAX_HTTP_RANGE_PIECES: usize = 1_048_576;
 pub const DEFAULT_HTTP_MAX_TOTAL_ATTEMPTS: u32 = 5;
 pub const DEFAULT_HTTP_MAX_ATTEMPTS_PER_SOURCE: u32 = 3;
+pub const HTTP_ENDGAME_MIN_TAIL_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HttpRangeCoordinatorConfig {
@@ -21,12 +23,14 @@ pub struct HttpRangeCoordinatorConfig {
     pub max_connections_per_origin: NonZeroUsize,
     pub max_total_attempts: u32,
     pub max_attempts_per_source: u32,
+    pub endgame_max_duplicates: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HttpRangeSource {
     id: UriId,
     origin: Arc<str>,
+    same_source_endgame: bool,
 }
 
 impl HttpRangeSource {
@@ -63,7 +67,17 @@ impl HttpRangeSource {
         Ok(Self {
             id,
             origin: origin.into(),
+            same_source_endgame: false,
         })
+    }
+
+    /// Marks this source as safe for one same-source, same-validator endgame
+    /// duplicate. The HTTP worker enables this only for a strong ETag-pinned
+    /// source; the coordinator never authorizes a cross-source race.
+    #[must_use]
+    pub const fn with_same_source_endgame(mut self, allowed: bool) -> Self {
+        self.same_source_endgame = allowed;
+        self
     }
 
     #[must_use]
@@ -83,11 +97,16 @@ pub struct HttpRangeAssignment {
     pub source: UriId,
     pub piece: PieceId,
     pub span: GlobalSpan,
+    pub overlap_group: Option<OverlapGroupId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HttpRangePoll {
     Assignment(HttpRangeAssignment),
+    Endgame {
+        assignment: HttpRangeAssignment,
+        original: LeaseId,
+    },
     RetryAt(u64),
     Saturated,
     Complete,
@@ -101,10 +120,24 @@ pub enum HttpRangeFailure {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HttpOverlapFence {
+    pub group: OverlapGroupId,
+    pub candidate: LeaseId,
+    pub competitor: LeaseId,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HttpOverlapSettlement {
+    CandidateCommitted,
+    RolledBack,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HttpRangeStats {
     pub total_length: u64,
     pub completed_length: u64,
     pub active_connections: usize,
+    pub active_endgame_duplicates: usize,
     pub completed_pieces: usize,
     pub total_pieces: usize,
     pub retry_count: u32,
@@ -113,8 +146,16 @@ pub struct HttpRangeStats {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PieceState {
     Pending,
-    Active(LeaseId),
+    Active(ActivePiece),
     Durable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ActivePiece {
+    original: LeaseId,
+    duplicate: Option<LeaseId>,
+    overlap_group: Option<OverlapGroupId>,
+    candidate: Option<LeaseId>,
 }
 
 #[derive(Clone, Debug)]
@@ -127,6 +168,8 @@ struct SourceState {
 struct ActiveRange {
     source_index: usize,
     piece_index: usize,
+    overlap_group: Option<OverlapGroupId>,
+    duplicate: bool,
 }
 
 #[derive(Debug)]
@@ -136,6 +179,7 @@ pub enum HttpRangeCoordinatorError {
     NoSources,
     TooManyPieces,
     DuplicateSource,
+    InvalidOverlap,
     IdentifierExhausted,
     UnknownLease,
 }
@@ -149,6 +193,7 @@ impl HttpRangeCoordinatorError {
             Self::NoSources => "no_range_sources",
             Self::TooManyPieces => "too_many_range_pieces",
             Self::DuplicateSource => "duplicate_range_source",
+            Self::InvalidOverlap => "invalid_range_overlap",
             Self::IdentifierExhausted => "range_identifier_exhausted",
             Self::UnknownLease => "unknown_range_lease",
         }
@@ -174,11 +219,13 @@ pub struct HttpRangeCoordinator {
     active: BTreeMap<LeaseId, ActiveRange>,
     active_by_origin: BTreeMap<Arc<str>, usize>,
     next_lease: u64,
+    next_overlap_group: u64,
     next_piece: usize,
     next_source: usize,
     completed_length: u64,
     completed_pieces: usize,
     retry_count: u32,
+    active_endgame_duplicates: usize,
 }
 
 impl HttpRangeCoordinator {
@@ -193,6 +240,7 @@ impl HttpRangeCoordinator {
             || config.max_connections_per_origin.get() > 1024
             || config.max_total_attempts == 0
             || config.max_attempts_per_source == 0
+            || config.endgame_max_duplicates > MAX_HTTP_ENDGAME_MAX_DUPLICATES
         {
             return Err(HttpRangeCoordinatorError::InvalidConfig);
         }
@@ -230,35 +278,160 @@ impl HttpRangeCoordinator {
             active: BTreeMap::new(),
             active_by_origin: BTreeMap::new(),
             next_lease: 1,
+            next_overlap_group: 1,
             next_piece: 0,
             next_source: 0,
             completed_length: 0,
             completed_pieces: 0,
             retry_count: 0,
+            active_endgame_duplicates: 0,
         })
     }
 
     pub fn poll(&mut self, now_ms: u64) -> Result<HttpRangePoll, HttpRangeCoordinatorError> {
+        self.poll_with_endgame(now_ms, &[])
+    }
+
+    /// Polls ordinary work first, then admits at most one same-source
+    /// duplicate for an explicitly slow original lease. The caller supplies
+    /// the slow/near-deadline lease ids; the coordinator still enforces the
+    /// tail threshold, source validator capability, attempt caps, and the
+    /// task-wide duplicate budget.
+    pub fn poll_with_endgame(
+        &mut self,
+        now_ms: u64,
+        eligible_originals: &[LeaseId],
+    ) -> Result<HttpRangePoll, HttpRangeCoordinatorError> {
         if self.completed_pieces == self.pieces.len() {
             return Ok(HttpRangePoll::Complete);
         }
-        if self.active.len() >= self.config.split.get() {
+        if self.active.len() < self.config.split.get()
+            && let Some((piece_index, source_index)) = self.find_assignment(now_ms)
+        {
+            return self.issue_normal_assignment(piece_index, source_index);
+        }
+        if let Some((original, piece_index, source_index)) =
+            self.find_endgame_assignment(now_ms, eligible_originals)
+        {
+            return self.issue_endgame_assignment(original, piece_index, source_index);
+        }
+        if !self.active.is_empty() {
             return Ok(HttpRangePoll::Saturated);
         }
-        let Some((piece_index, source_index)) = self.find_assignment(now_ms) else {
-            if !self.active.is_empty() {
-                return Ok(HttpRangePoll::Saturated);
-            }
-            return Ok(self
-                .next_retry_deadline(now_ms)
-                .map_or(HttpRangePoll::Exhausted, HttpRangePoll::RetryAt));
+        Ok(self
+            .next_retry_deadline(now_ms)
+            .map_or(HttpRangePoll::Exhausted, HttpRangePoll::RetryAt))
+    }
+
+    fn issue_normal_assignment(
+        &mut self,
+        piece_index: usize,
+        source_index: usize,
+    ) -> Result<HttpRangePoll, HttpRangeCoordinatorError> {
+        let lease = self.next_lease_id()?;
+        let span = self.piece_span_global(piece_index)?;
+        let source_id = self.sources[source_index].source.id;
+        let source_origin = Arc::clone(&self.sources[source_index].source.origin);
+        self.record_attempt(piece_index, source_index, false);
+        *self.active_by_origin.entry(source_origin).or_default() += 1;
+        self.pieces[piece_index] = PieceState::Active(ActivePiece {
+            original: lease,
+            duplicate: None,
+            overlap_group: None,
+            candidate: None,
+        });
+        self.active.insert(
+            lease,
+            ActiveRange {
+                source_index,
+                piece_index,
+                overlap_group: None,
+                duplicate: false,
+            },
+        );
+        self.advance_cursor(piece_index, source_index);
+        Ok(HttpRangePoll::Assignment(HttpRangeAssignment {
+            lease,
+            source: source_id,
+            piece: PieceId::new(u64::try_from(piece_index).expect("piece index fits u64")),
+            span,
+            overlap_group: None,
+        }))
+    }
+
+    fn issue_endgame_assignment(
+        &mut self,
+        original: LeaseId,
+        piece_index: usize,
+        source_index: usize,
+    ) -> Result<HttpRangePoll, HttpRangeCoordinatorError> {
+        let group = OverlapGroupId::new(self.next_overlap_group)
+            .ok_or(HttpRangeCoordinatorError::IdentifierExhausted)?;
+        self.next_overlap_group = self
+            .next_overlap_group
+            .checked_add(1)
+            .ok_or(HttpRangeCoordinatorError::IdentifierExhausted)?;
+        let lease = self.next_lease_id()?;
+        let span = self.piece_span_global(piece_index)?;
+        let source_id = self.sources[source_index].source.id;
+        let source_origin = Arc::clone(&self.sources[source_index].source.origin);
+        self.record_attempt(piece_index, source_index, true);
+        *self.active_by_origin.entry(source_origin).or_default() += 1;
+        let PieceState::Active(mut state) = self.pieces[piece_index] else {
+            return Err(HttpRangeCoordinatorError::InvalidOverlap);
         };
+        if state.original != original
+            || state.duplicate.is_some()
+            || state.overlap_group.is_some()
+            || state.candidate.is_some()
+        {
+            return Err(HttpRangeCoordinatorError::InvalidOverlap);
+        }
+        state.duplicate = Some(lease);
+        state.overlap_group = Some(group);
+        self.pieces[piece_index] = PieceState::Active(state);
+        if let Some(active) = self.active.get_mut(&original) {
+            active.overlap_group = Some(group);
+        } else {
+            return Err(HttpRangeCoordinatorError::UnknownLease);
+        }
+        self.active.insert(
+            lease,
+            ActiveRange {
+                source_index,
+                piece_index,
+                overlap_group: Some(group),
+                duplicate: true,
+            },
+        );
+        self.active_endgame_duplicates += 1;
+        self.advance_cursor(piece_index, source_index);
+        Ok(HttpRangePoll::Endgame {
+            assignment: HttpRangeAssignment {
+                lease,
+                source: source_id,
+                piece: PieceId::new(u64::try_from(piece_index).expect("piece index fits u64")),
+                span,
+                overlap_group: Some(group),
+            },
+            original,
+        })
+    }
+
+    fn next_lease_id(&mut self) -> Result<LeaseId, HttpRangeCoordinatorError> {
         let lease =
             LeaseId::new(self.next_lease).ok_or(HttpRangeCoordinatorError::IdentifierExhausted)?;
         self.next_lease = self
             .next_lease
             .checked_add(1)
             .ok_or(HttpRangeCoordinatorError::IdentifierExhausted)?;
+        Ok(lease)
+    }
+
+    fn piece_span_global(
+        &self,
+        piece_index: usize,
+    ) -> Result<GlobalSpan, HttpRangeCoordinatorError> {
         let offset = u64::try_from(piece_index)
             .ok()
             .and_then(|piece| piece.checked_mul(self.config.piece_length))
@@ -267,40 +440,26 @@ impl HttpRangeCoordinator {
             .config
             .piece_length
             .min(self.config.total_length - offset);
-        let length =
-            usize::try_from(length).map_err(|_| HttpRangeCoordinatorError::InvalidConfig)?;
-        let source = &self.sources[source_index].source;
+        Ok(GlobalSpan {
+            offset,
+            len: usize::try_from(length).map_err(|_| HttpRangeCoordinatorError::InvalidConfig)?,
+        })
+    }
+
+    fn record_attempt(&mut self, piece_index: usize, source_index: usize, duplicate: bool) {
         self.piece_attempts[piece_index] += 1;
         *self
             .source_piece_attempts
             .entry((piece_index, source_index))
             .or_default() += 1;
-        if self.piece_attempts[piece_index] > 1 {
+        if !duplicate && self.piece_attempts[piece_index] > 1 {
             self.retry_count = self.retry_count.saturating_add(1);
         }
-        *self
-            .active_by_origin
-            .entry(Arc::clone(&source.origin))
-            .or_default() += 1;
-        self.pieces[piece_index] = PieceState::Active(lease);
-        self.active.insert(
-            lease,
-            ActiveRange {
-                source_index,
-                piece_index,
-            },
-        );
+    }
+
+    fn advance_cursor(&mut self, piece_index: usize, source_index: usize) {
         self.next_piece = (piece_index + 1) % self.pieces.len();
         self.next_source = (source_index + 1) % self.sources.len();
-        Ok(HttpRangePoll::Assignment(HttpRangeAssignment {
-            lease,
-            source: source.id,
-            piece: PieceId::new(u64::try_from(piece_index).expect("piece index fits u64")),
-            span: GlobalSpan {
-                offset,
-                len: length,
-            },
-        }))
     }
 
     /// Restores scheduler-independent durable pieces after journal recovery.
@@ -384,24 +543,144 @@ impl HttpRangeCoordinator {
     }
 
     pub fn complete(&mut self, lease: LeaseId) -> Result<(), HttpRangeCoordinatorError> {
-        let active = self.release_active(lease)?;
-        let PieceState::Active(owner) = self.pieces[active.piece_index] else {
+        let active = self
+            .active
+            .get(&lease)
+            .copied()
+            .ok_or(HttpRangeCoordinatorError::UnknownLease)?;
+        let PieceState::Active(state) = self.pieces[active.piece_index] else {
             return Err(HttpRangeCoordinatorError::UnknownLease);
         };
-        if owner != lease {
+        if state.original != lease
+            || state.duplicate.is_some()
+            || state.overlap_group.is_some()
+            || state.candidate.is_some()
+        {
             return Err(HttpRangeCoordinatorError::UnknownLease);
         }
-        self.pieces[active.piece_index] = PieceState::Durable;
-        self.source_piece_attempts
-            .retain(|(piece, _), _| *piece != active.piece_index);
-        self.source_piece_retry_at
-            .retain(|(piece, _), _| *piece != active.piece_index);
-        self.completed_pieces += 1;
-        self.completed_length = self.completed_length.saturating_add(
-            self.piece_length(active.piece_index)
-                .expect("active piece has a valid length"),
-        );
+        self.release_active(lease)?;
+        self.mark_piece_durable(active.piece_index);
         Ok(())
+    }
+
+    /// Freezes one two-member overlap group after storage accepts the first
+    /// exact-length commit candidate. The returned competitor is the only
+    /// network attempt that may still need cancellation confirmation.
+    pub fn begin_overlap_commit(
+        &mut self,
+        lease: LeaseId,
+    ) -> Result<HttpOverlapFence, HttpRangeCoordinatorError> {
+        let active = self
+            .active
+            .get(&lease)
+            .copied()
+            .ok_or(HttpRangeCoordinatorError::UnknownLease)?;
+        let group = active
+            .overlap_group
+            .ok_or(HttpRangeCoordinatorError::InvalidOverlap)?;
+        let PieceState::Active(mut state) = self.pieces[active.piece_index] else {
+            return Err(HttpRangeCoordinatorError::InvalidOverlap);
+        };
+        if state.overlap_group != Some(group) || state.candidate.is_some() {
+            return Err(HttpRangeCoordinatorError::InvalidOverlap);
+        }
+        let competitor = if state.original == lease {
+            state
+                .duplicate
+                .ok_or(HttpRangeCoordinatorError::InvalidOverlap)?
+        } else if state.duplicate == Some(lease) {
+            state.original
+        } else {
+            return Err(HttpRangeCoordinatorError::InvalidOverlap);
+        };
+        state.candidate = Some(lease);
+        self.pieces[active.piece_index] = PieceState::Active(state);
+        Ok(HttpOverlapFence {
+            group,
+            candidate: lease,
+            competitor,
+        })
+    }
+
+    /// Applies storage's fully fenced overlap result. Both active lease slots
+    /// are released together so a rolled-back span cannot be observed as
+    /// durable between member completions.
+    pub fn settle_overlap(
+        &mut self,
+        group: OverlapGroupId,
+        candidate: LeaseId,
+        settlement: HttpOverlapSettlement,
+    ) -> Result<(), HttpRangeCoordinatorError> {
+        let candidate_active = self
+            .active
+            .get(&candidate)
+            .copied()
+            .ok_or(HttpRangeCoordinatorError::UnknownLease)?;
+        let PieceState::Active(state) = self.pieces[candidate_active.piece_index] else {
+            return Err(HttpRangeCoordinatorError::InvalidOverlap);
+        };
+        if state.overlap_group != Some(group) || state.candidate != Some(candidate) {
+            return Err(HttpRangeCoordinatorError::InvalidOverlap);
+        }
+        let competitor = if state.original == candidate {
+            state
+                .duplicate
+                .ok_or(HttpRangeCoordinatorError::InvalidOverlap)?
+        } else if state.duplicate == Some(candidate) {
+            state.original
+        } else {
+            return Err(HttpRangeCoordinatorError::InvalidOverlap);
+        };
+        let competitor_active = self
+            .active
+            .get(&competitor)
+            .copied()
+            .ok_or(HttpRangeCoordinatorError::UnknownLease)?;
+        if competitor_active.piece_index != candidate_active.piece_index
+            || competitor_active.overlap_group != Some(group)
+        {
+            return Err(HttpRangeCoordinatorError::InvalidOverlap);
+        }
+        self.release_active(candidate)?;
+        self.release_active(competitor)?;
+        match settlement {
+            HttpOverlapSettlement::CandidateCommitted => {
+                self.mark_piece_durable(candidate_active.piece_index)
+            }
+            HttpOverlapSettlement::RolledBack => {
+                self.pieces[candidate_active.piece_index] = PieceState::Pending;
+            }
+        }
+        Ok(())
+    }
+
+    /// Rolls back a group before a commit candidate exists, such as when one
+    /// duplicate fails after already writing provisional bytes. Both leases
+    /// are removed atomically from coordinator visibility and the piece
+    /// becomes ordinary pending work again.
+    pub fn rollback_overlap(
+        &mut self,
+        group: OverlapGroupId,
+    ) -> Result<[LeaseId; 2], HttpRangeCoordinatorError> {
+        let (piece_index, state) = self
+            .pieces
+            .iter()
+            .copied()
+            .enumerate()
+            .find_map(|(piece, state)| match state {
+                PieceState::Active(active) if active.overlap_group == Some(group) => {
+                    Some((piece, active))
+                }
+                _ => None,
+            })
+            .ok_or(HttpRangeCoordinatorError::InvalidOverlap)?;
+        let duplicate = state
+            .duplicate
+            .ok_or(HttpRangeCoordinatorError::InvalidOverlap)?;
+        self.release_active(state.original)?;
+        self.release_active(duplicate)?;
+        self.pieces[piece_index] = PieceState::Pending;
+        Ok([state.original, duplicate])
     }
 
     pub fn fail(
@@ -409,19 +688,85 @@ impl HttpRangeCoordinator {
         lease: LeaseId,
         failure: HttpRangeFailure,
     ) -> Result<(), HttpRangeCoordinatorError> {
-        let active = self.release_active(lease)?;
-        let PieceState::Active(owner) = self.pieces[active.piece_index] else {
+        let active = self
+            .active
+            .get(&lease)
+            .copied()
+            .ok_or(HttpRangeCoordinatorError::UnknownLease)?;
+        let PieceState::Active(state) = self.pieces[active.piece_index] else {
             return Err(HttpRangeCoordinatorError::UnknownLease);
         };
-        if owner != lease {
+        if state.candidate.is_some() {
+            return Err(HttpRangeCoordinatorError::InvalidOverlap);
+        }
+        let owns_piece = state.original == lease || state.duplicate == Some(lease);
+        if !owns_piece {
             return Err(HttpRangeCoordinatorError::UnknownLease);
         }
-        self.pieces[active.piece_index] = PieceState::Pending;
+        self.release_active(lease)?;
+        if let (Some(group), Some(duplicate)) = (state.overlap_group, state.duplicate) {
+            let remaining = if state.original == lease {
+                duplicate
+            } else {
+                state.original
+            };
+            let remaining_active = self
+                .active
+                .get_mut(&remaining)
+                .ok_or(HttpRangeCoordinatorError::UnknownLease)?;
+            if remaining_active.overlap_group != Some(group) {
+                return Err(HttpRangeCoordinatorError::InvalidOverlap);
+            }
+            if remaining_active.duplicate {
+                remaining_active.duplicate = false;
+                self.active_endgame_duplicates = self.active_endgame_duplicates.saturating_sub(1);
+            }
+            remaining_active.overlap_group = None;
+            self.pieces[active.piece_index] = PieceState::Active(ActivePiece {
+                original: remaining,
+                duplicate: None,
+                overlap_group: None,
+                candidate: None,
+            });
+        } else {
+            self.pieces[active.piece_index] = PieceState::Pending;
+        }
         let source = &mut self.sources[active.source_index];
         match failure {
             HttpRangeFailure::DisableSource => source.disabled = true,
             HttpRangeFailure::RetryAt(retry_at_ms) => {
                 let key = (active.piece_index, active.source_index);
+                let retry_at = self.source_piece_retry_at.entry(key).or_default();
+                *retry_at = (*retry_at).max(retry_at_ms);
+            }
+        }
+        Ok(())
+    }
+
+    /// Applies a retry/source decision after a whole overlap group was already
+    /// removed and returned to pending. This preserves the same bounded source
+    /// accounting without requiring a stale lease id to remain active.
+    pub fn record_released_failure(
+        &mut self,
+        piece: PieceId,
+        source: UriId,
+        failure: HttpRangeFailure,
+    ) -> Result<(), HttpRangeCoordinatorError> {
+        let piece_index =
+            usize::try_from(piece.get()).map_err(|_| HttpRangeCoordinatorError::InvalidConfig)?;
+        if self.pieces.get(piece_index) != Some(&PieceState::Pending) {
+            return Err(HttpRangeCoordinatorError::InvalidOverlap);
+        }
+        let source_index = self
+            .sources
+            .iter()
+            .position(|candidate| candidate.source.id == source)
+            .ok_or(HttpRangeCoordinatorError::InvalidSource)?;
+        let source = &mut self.sources[source_index];
+        match failure {
+            HttpRangeFailure::DisableSource => source.disabled = true,
+            HttpRangeFailure::RetryAt(retry_at_ms) => {
+                let key = (piece_index, source_index);
                 let retry_at = self.source_piece_retry_at.entry(key).or_default();
                 *retry_at = (*retry_at).max(retry_at_ms);
             }
@@ -435,10 +780,24 @@ impl HttpRangeCoordinator {
             total_length: self.config.total_length,
             completed_length: self.completed_length,
             active_connections: self.active.len(),
+            active_endgame_duplicates: self.active_endgame_duplicates,
             completed_pieces: self.completed_pieces,
             total_pieces: self.pieces.len(),
             retry_count: self.retry_count,
         }
+    }
+
+    fn mark_piece_durable(&mut self, piece_index: usize) {
+        self.pieces[piece_index] = PieceState::Durable;
+        self.source_piece_attempts
+            .retain(|(piece, _), _| *piece != piece_index);
+        self.source_piece_retry_at
+            .retain(|(piece, _), _| *piece != piece_index);
+        self.completed_pieces += 1;
+        self.completed_length = self.completed_length.saturating_add(
+            self.piece_length(piece_index)
+                .expect("active piece has a valid length"),
+        );
     }
 
     fn find_assignment(&self, now_ms: u64) -> Option<(usize, usize)> {
@@ -454,6 +813,47 @@ impl HttpRangeCoordinator {
                     .find(|source_index| self.source_available(piece, *source_index, now_ms))
                     .map(|source| (piece, source))
             })
+    }
+
+    fn find_endgame_assignment(
+        &self,
+        now_ms: u64,
+        eligible_originals: &[LeaseId],
+    ) -> Option<(LeaseId, usize, usize)> {
+        if self.config.endgame_max_duplicates == 0
+            || self.active_endgame_duplicates >= self.config.endgame_max_duplicates
+            || self.active.len()
+                >= self
+                    .config
+                    .split
+                    .get()
+                    .saturating_add(self.config.endgame_max_duplicates)
+            || self
+                .config
+                .total_length
+                .saturating_sub(self.completed_length)
+                > HTTP_ENDGAME_MIN_TAIL_BYTES.max(self.config.piece_length.saturating_mul(2))
+        {
+            return None;
+        }
+        eligible_originals.iter().find_map(|&original| {
+            let active = self.active.get(&original)?;
+            if active.duplicate || active.overlap_group.is_some() {
+                return None;
+            }
+            let PieceState::Active(state) = self.pieces[active.piece_index] else {
+                return None;
+            };
+            let source = &self.sources[active.source_index].source;
+            (state.original == original
+                && state.duplicate.is_none()
+                && state.overlap_group.is_none()
+                && state.candidate.is_none()
+                && source.same_source_endgame
+                && self.piece_attempts[active.piece_index] < self.config.max_total_attempts
+                && self.source_available(active.piece_index, active.source_index, now_ms))
+            .then_some((original, active.piece_index, active.source_index))
+        })
     }
 
     fn next_retry_deadline(&self, now_ms: u64) -> Option<u64> {
@@ -520,6 +920,9 @@ impl HttpRangeCoordinator {
             .active
             .remove(&lease)
             .ok_or(HttpRangeCoordinatorError::UnknownLease)?;
+        if active.duplicate {
+            self.active_endgame_duplicates = self.active_endgame_duplicates.saturating_sub(1);
+        }
         let origin = Arc::clone(&self.sources[active.source_index].source.origin);
         let count = self
             .active_by_origin
@@ -552,6 +955,10 @@ mod tests {
         HttpRangeSource::from_uri(UriId::new(id), uri).expect("source is valid")
     }
 
+    fn endgame_source(id: u32, uri: &str) -> HttpRangeSource {
+        source(id, uri).with_same_source_endgame(true)
+    }
+
     fn config() -> HttpRangeCoordinatorConfig {
         HttpRangeCoordinatorConfig {
             total_length: 10,
@@ -560,6 +967,7 @@ mod tests {
             max_connections_per_origin: NonZeroUsize::new(1).expect("nonzero"),
             max_total_attempts: 5,
             max_attempts_per_source: 3,
+            endgame_max_duplicates: 0,
         }
     }
 
@@ -608,6 +1016,7 @@ mod tests {
                 total_length: 10,
                 completed_length: 10,
                 active_connections: 0,
+                active_endgame_duplicates: 0,
                 completed_pieces: 3,
                 total_pieces: 3,
                 retry_count: 0,
@@ -727,5 +1136,108 @@ mod tests {
             coordinator.complete(assignment.lease),
             Err(HttpRangeCoordinatorError::UnknownLease)
         ));
+    }
+
+    #[test]
+    fn same_source_endgame_is_bounded_and_clean_settlement_wins_once() {
+        let mut endgame_config = config();
+        endgame_config.total_length = 4;
+        endgame_config.split = NonZeroUsize::new(1).expect("split");
+        endgame_config.max_connections_per_origin = NonZeroUsize::new(2).expect("origin cap");
+        endgame_config.endgame_max_duplicates = 2;
+        let mut coordinator = HttpRangeCoordinator::new(
+            endgame_config,
+            [endgame_source(0, "https://one.example/file")],
+        )
+        .expect("coordinator");
+        let HttpRangePoll::Assignment(original) = coordinator.poll(0).expect("original") else {
+            panic!("original assignment expected");
+        };
+        let HttpRangePoll::Endgame {
+            assignment: duplicate,
+            original: original_id,
+        } = coordinator
+            .poll_with_endgame(0, &[original.lease])
+            .expect("endgame poll")
+        else {
+            panic!("same-source duplicate expected");
+        };
+        assert_eq!(original_id, original.lease);
+        assert_eq!(duplicate.span, original.span);
+        assert_ne!(duplicate.lease, original.lease);
+        assert!(duplicate.overlap_group.is_some());
+        assert_eq!(
+            coordinator
+                .poll_with_endgame(0, &[original.lease])
+                .expect("cap poll"),
+            HttpRangePoll::Saturated
+        );
+        let fence = coordinator
+            .begin_overlap_commit(original.lease)
+            .expect("candidate fence");
+        assert_eq!(fence.competitor, duplicate.lease);
+        coordinator
+            .settle_overlap(
+                fence.group,
+                fence.candidate,
+                HttpOverlapSettlement::CandidateCommitted,
+            )
+            .expect("clean settlement");
+        assert_eq!(coordinator.stats().completed_length, 4);
+        assert_eq!(coordinator.stats().active_endgame_duplicates, 0);
+    }
+
+    #[test]
+    fn endgame_requires_strong_same_source_identity_and_dirty_rollback_returns_pending() {
+        let mut endgame_config = config();
+        endgame_config.total_length = 4;
+        endgame_config.split = NonZeroUsize::new(1).expect("split");
+        endgame_config.max_connections_per_origin = NonZeroUsize::new(2).expect("origin cap");
+        endgame_config.endgame_max_duplicates = 8;
+        let mut without_identity =
+            HttpRangeCoordinator::new(endgame_config, [source(0, "https://one.example/file")])
+                .expect("coordinator");
+        let HttpRangePoll::Assignment(original) = without_identity.poll(0).expect("original")
+        else {
+            panic!("original assignment expected");
+        };
+        assert_eq!(
+            without_identity
+                .poll_with_endgame(0, &[original.lease])
+                .expect("identity gate"),
+            HttpRangePoll::Saturated
+        );
+
+        let mut coordinator = HttpRangeCoordinator::new(
+            endgame_config,
+            [endgame_source(0, "https://one.example/file")],
+        )
+        .expect("coordinator");
+        let HttpRangePoll::Assignment(original) = coordinator.poll(0).expect("original") else {
+            panic!("original assignment expected");
+        };
+        let HttpRangePoll::Endgame { assignment, .. } = coordinator
+            .poll_with_endgame(0, &[original.lease])
+            .expect("duplicate")
+        else {
+            panic!("duplicate expected");
+        };
+        let fence = coordinator
+            .begin_overlap_commit(original.lease)
+            .expect("candidate fence");
+        assert_eq!(fence.competitor, assignment.lease);
+        coordinator
+            .settle_overlap(
+                fence.group,
+                fence.candidate,
+                HttpOverlapSettlement::RolledBack,
+            )
+            .expect("dirty rollback");
+        assert_eq!(coordinator.stats().completed_length, 0);
+        assert_eq!(coordinator.stats().active_connections, 0);
+        let HttpRangePoll::Assignment(retry) = coordinator.poll(0).expect("pending retry") else {
+            panic!("rolled-back piece must be pending");
+        };
+        assert_eq!(retry.piece, original.piece);
     }
 }

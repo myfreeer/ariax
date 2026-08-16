@@ -1291,6 +1291,7 @@ async fn stream_known_length_body(
                         len: lease_len,
                     },
                     validator: plan.validator_fingerprint,
+                    overlap_group: None,
                 })?;
                 current = Some((
                     lease,

@@ -26,6 +26,8 @@ pub const DEFAULT_HTTP_MIN_SPLIT_SIZE: u64 = 20 * 1024 * 1024;
 pub const DEFAULT_HTTP_PIECE_LENGTH: u64 = 1024 * 1024;
 pub const MAX_HTTP_PIECE_LENGTH: u64 = 1024 * 1024 * 1024;
 pub const MAX_HTTP_TIMEOUT_SECS: u64 = 600;
+pub const DEFAULT_HTTP_ENDGAME_MAX_DUPLICATES: usize = 2;
+pub const MAX_HTTP_ENDGAME_MAX_DUPLICATES: usize = 8;
 pub const HTTP_SOURCE_FINGERPRINT_DOMAIN: &str = "ariax/http-source/v1\0";
 pub const HTTP_SHA256_CHECKSUM_TEXT_BYTES: usize = 72;
 
@@ -165,6 +167,9 @@ pub struct HttpTaskOptions {
     /// Useful protocol progress threshold in bytes/second. Zero disables the
     /// lowest-speed retry trigger.
     pub lowest_speed_limit: u64,
+    /// Task-wide concurrent duplicate-attempt cap for the bounded endgame
+    /// path. Zero disables endgame; one original may have only one duplicate.
+    pub endgame_max_duplicates: usize,
     pub mirror_identity: HttpMirrorIdentityPolicy,
     /// Optional whole-representation checksum used for terminal verification
     /// and as the shared identity proof for strict concurrent mirrors.
@@ -187,6 +192,7 @@ impl Default for HttpTaskOptions {
             response_body_timeout: Duration::from_secs(60),
             max_download_limit: 0,
             lowest_speed_limit: 0,
+            endgame_max_duplicates: DEFAULT_HTTP_ENDGAME_MAX_DUPLICATES,
             mirror_identity: HttpMirrorIdentityPolicy::TrustSubmittedMirrors,
             checksum: None,
             retry: None,
@@ -208,6 +214,7 @@ impl HttpTaskOptions {
             || self.connect_timeout.as_secs() > MAX_HTTP_TIMEOUT_SECS
             || self.response_head_timeout.as_secs() > MAX_HTTP_TIMEOUT_SECS
             || self.response_body_timeout.as_secs() > MAX_HTTP_TIMEOUT_SECS
+            || self.endgame_max_duplicates > MAX_HTTP_ENDGAME_MAX_DUPLICATES
             || self
                 .retry
                 .as_ref()
@@ -241,6 +248,10 @@ impl HttpTaskOptions {
             (
                 "lowest-speed-limit".to_owned(),
                 self.lowest_speed_limit.to_string(),
+            ),
+            (
+                "endgame-max-duplicates".to_owned(),
+                self.endgame_max_duplicates.to_string(),
             ),
             ("split".to_owned(), self.split.get().to_string()),
             (
@@ -307,6 +318,11 @@ impl HttpTaskOptions {
                 }
                 "lowest-speed-limit" => {
                     value.lowest_speed_limit = setting
+                        .parse()
+                        .map_err(|_| HttpTaskSpecError::InvalidOptions)?;
+                }
+                "endgame-max-duplicates" => {
+                    value.endgame_max_duplicates = setting
                         .parse()
                         .map_err(|_| HttpTaskSpecError::InvalidOptions)?;
                 }
@@ -1004,9 +1020,17 @@ mod tests {
         retry.respect_retry_after = false;
         let options = HttpTaskOptions {
             retry: Some(retry.clone()),
+            endgame_max_duplicates: 7,
             ..HttpTaskOptions::default()
         };
         let snapshot = options.sanitized().expect("sanitized");
+        assert_eq!(
+            snapshot
+                .entries()
+                .find(|(name, _)| *name == "endgame-max-duplicates")
+                .map(|(_, value)| value),
+            Some("7")
+        );
         assert_eq!(
             snapshot
                 .entries()
@@ -1016,6 +1040,7 @@ mod tests {
         );
         let restored = HttpTaskOptions::from_sanitized(&snapshot).expect("restored");
         assert_eq!(restored.retry, Some(retry));
+        assert_eq!(restored.endgame_max_duplicates, 7);
     }
 
     #[test]

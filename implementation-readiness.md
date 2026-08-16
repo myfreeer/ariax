@@ -19,9 +19,11 @@ decisions, and supervised multi-mirror range workers commit only validated
 non-overlapping leases. Durable-piece restart and terminal evidence are
 persisted before public completion. Five bounded JSON-RPC methods run over
 loopback HTTP/1.1 and Content-Length stdio and expose packet-independent live
-stats. This remains a phase checkpoint, not a release/tag: rate limiting,
-endgame, broader validators, growing/chunked transfers, HTTP/2, broader RPC,
-benchmarks, and the complete release matrix remain gates. Each remaining
+stats. Same-origin strong-ETag endgame duplicate fencing, candidate settlement,
+dirty-overlap rollback, and crash-safe replay are now executable. This remains a
+phase checkpoint, not a release/tag: cross-mirror digest-backed endgame,
+broader validators, growing/chunked transfers, HTTP/2, broader RPC, benchmarks,
+and the complete release matrix remain gates. Each remaining
 adapter, transfer module, and integration still follows its Definition Of Ready
 checklist below.
 
@@ -208,8 +210,8 @@ this vertical slice.
 - Integrate the designed hierarchical rate limiter, lowest-speed/stall policy,
   and diagnostic conditions with the executable range worker and live RPC
   counters.
-- Add endgame duplicate-range fencing and the stronger shared-digest identity
-  modes without weakening the current non-overlapping ordinary-lease invariant.
+- Add exact range-verifiable shared-digest identity for cross-mirror endgame
+  without weakening the current non-overlapping ordinary-lease invariant.
 - Expand validator support beyond strong ETag and add HTTP/2 only behind its
   separately bounded stream/pool contract.
 - Expand the five-method request-only dispatcher into the authenticated,

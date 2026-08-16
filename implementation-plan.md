@@ -23,7 +23,9 @@ Public Suffix List is version/hash/license pinned and verified by generated
 contracts.
 
 The checkpoint intentionally does not complete all of Phase 3 or the project
-definition of done. Endgame duplicate ranges, RFC 9530/Metalink digest identity,
+definition of done. Same-origin endgame duplicate ranges with a strong ETag are
+now executable under the bounded overlap-fence contract. Cross-mirror endgame
+still requires an exact range-verifiable RFC 9530/Metalink digest identity;
 additional checksum algorithms, Last-Modified/unsafe-override resume, HTTP/2,
 growing/chunked transfers, benchmarks, hot-backup crash-residue reconciliation,
 the broader Phase-4 control plane, and the full release-platform matrix remain
@@ -237,7 +239,9 @@ bounded descriptor-based whole-file hash. Stale-validator `fail`, fresh
 `revalidate`, and bounded `restart-if-safe` are wired through public option
 admission, worker supervision, exact next-admission snapshot persistence, and a
 new generation that invalidates all old durable pieces before descriptor-bound
-rewrite. Endgame duplicate ranges, RFC 9530 and Metalink digest identity,
+rewrite. Same-origin strong-ETag endgame duplicate fencing, candidate settlement,
+dirty-overlap rollback, and crash-safe replay are executable. Cross-mirror
+endgame still requires RFC 9530/Metalink range-verifiable digest identity;
 additional checksum algorithms, Last-Modified/unsafe-override resume, and the
 full Phase-3 exit criteria below still gate a later phase completion claim.
 

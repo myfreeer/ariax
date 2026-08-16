@@ -6,14 +6,14 @@ use crate::http_first_slice::{
 };
 use crate::{
     HttpCancellation, HttpClientRequest, HttpContentChecksum, HttpMirrorIdentityPolicy,
-    HttpPolicyClient, HttpPolicyClientError, HttpRangeAssignment, HttpRangeCoordinator,
-    HttpRangeCoordinatorConfig, HttpRangeCoordinatorError, HttpRangeFailure, HttpRangePoll,
-    HttpRangeResponseError, HttpRangeResponseValidator, HttpRangeSource, HttpRetryBudget,
-    HttpRetryCause, HttpRetryDecision, HttpRetryDelaySource, HttpRetryError, HttpRetryPolicy,
-    HttpRetryStopReason, HttpRetryTransportFailure, HttpStaleValidatorPolicy, HttpTaskSpec,
-    HttpTaskWorker, HttpTransportError, HttpWorkerFuture, HttpWorkerSuccess, LeaseCommit,
-    LeaseWritePlan, RetryStateWrite, StorageEngine, StorageEngineConfig, StorageEngineError,
-    WriteBlock,
+    HttpOverlapSettlement, HttpPolicyClient, HttpPolicyClientError, HttpRangeAssignment,
+    HttpRangeCoordinator, HttpRangeCoordinatorConfig, HttpRangeCoordinatorError, HttpRangeFailure,
+    HttpRangePoll, HttpRangeResponseError, HttpRangeResponseValidator, HttpRangeSource,
+    HttpRetryBudget, HttpRetryCause, HttpRetryDecision, HttpRetryDelaySource, HttpRetryError,
+    HttpRetryPolicy, HttpRetryStopReason, HttpRetryTransportFailure, HttpStaleValidatorPolicy,
+    HttpTaskSpec, HttpTaskWorker, HttpTransportError, HttpWorkerFuture, HttpWorkerSuccess,
+    LeaseCommit, LeaseWritePlan, RetryStateWrite, StorageEngine, StorageEngineConfig,
+    StorageEngineError, WriteAck, WriteBlock, WriteReject,
 };
 use ariax_core::{
     ErrorKind, FileId, Generation, Gid, LeaseId, MonotonicInstant, PersistedDelayDecision, PieceId,
@@ -44,7 +44,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::{Semaphore, mpsc, oneshot};
-use tokio::task::JoinSet;
+use tokio::task::{AbortHandle, JoinSet};
 
 pub const MAX_HTTP_RANGE_EVENT_CAPACITY: usize = 4096;
 pub const DEFAULT_HTTP_RANGE_EVENT_CAPACITY: usize = 64;
@@ -1210,6 +1210,9 @@ impl HttpMultiRangeWorker {
             .iter()
             .map(|source| {
                 HttpRangeSource::from_uri(source.validator.source(), source.validator.final_uri())
+                    .map(|source_id| {
+                        source_id.with_same_source_endgame(source.validator.if_range().is_some())
+                    })
             })
             .collect::<Result<Vec<_>, _>>()?;
         let mut coordinator = HttpRangeCoordinator::new(
@@ -1220,6 +1223,7 @@ impl HttpMultiRangeWorker {
                 max_connections_per_origin: task.options().max_connections_per_server,
                 max_total_attempts: retry_policy.max_attempts.get(),
                 max_attempts_per_source: retry_policy.max_attempts_per_mirror.get(),
+                endgame_max_duplicates: task.options().endgame_max_duplicates,
             },
             range_sources,
         )?;
@@ -1240,7 +1244,11 @@ impl HttpMultiRangeWorker {
         let (events, mut receiver) = mpsc::channel(self.config.event_capacity.get());
         let mut joins = JoinSet::new();
         let mut by_join = HashMap::new();
+        let mut abort_handles = BTreeMap::<LeaseId, AbortHandle>::new();
         let mut active = BTreeMap::new();
+        let mut pending_endgame = BTreeMap::new();
+        let mut endgame_losers = BTreeMap::new();
+        let mut cancelled_leases = BTreeSet::new();
         let started = Instant::now();
         let mut next_attempt = 1_u64;
 
@@ -1248,8 +1256,21 @@ impl HttpMultiRangeWorker {
             let now_ms = elapsed_ms(started);
             let mut retry_at = None;
             loop {
-                match coordinator.poll(now_ms)? {
-                    HttpRangePoll::Assignment(assignment) => {
+                let eligible_endgame = endgame_eligible_originals(
+                    &active,
+                    now_ms,
+                    task.options().response_body_timeout,
+                );
+                match coordinator.poll_with_endgame(now_ms, &eligible_endgame)? {
+                    poll @ (HttpRangePoll::Assignment(_) | HttpRangePoll::Endgame { .. }) => {
+                        let (assignment, original) = match poll {
+                            HttpRangePoll::Assignment(assignment) => (assignment, None),
+                            HttpRangePoll::Endgame {
+                                assignment,
+                                original,
+                            } => (assignment, Some(original)),
+                            _ => unreachable!("matched assignment poll"),
+                        };
                         let source = validators
                             .get(&assignment.source)
                             .cloned()
@@ -1264,6 +1285,25 @@ impl HttpMultiRangeWorker {
                                 .fail(assignment.lease, HttpRangeFailure::RetryAt(now_ms))?;
                             continue;
                         }
+                        if let Some(original) = original {
+                            let group = assignment
+                                .overlap_group
+                                .ok_or(HttpMultiRangeError::Protocol)?;
+                            storage.register_overlap_group(
+                                task.task(),
+                                generation,
+                                group,
+                                original,
+                                assignment.lease,
+                                assignment.span,
+                                source.lease_fingerprint,
+                            )?;
+                            active
+                                .get_mut(&original)
+                                .ok_or(HttpMultiRangeError::Protocol)?
+                                .assignment
+                                .overlap_group = assignment.overlap_group;
+                        }
                         let transfer_attempt = TransferAttemptId::new(next_attempt)
                             .ok_or(HttpMultiRangeError::IdentifierExhausted)?;
                         next_attempt = next_attempt
@@ -1277,6 +1317,7 @@ impl HttpMultiRangeWorker {
                                 validator: source.lease_fingerprint,
                                 opened: false,
                                 received: 0,
+                                last_progress_ms: now_ms,
                             },
                         );
                         let client = self.client.clone();
@@ -1319,6 +1360,7 @@ impl HttpMultiRangeWorker {
                             assignment.lease
                         });
                         by_join.insert(abort.id(), assignment.lease);
+                        abort_handles.insert(assignment.lease, abort);
                         stats.set_active(active.len());
                     }
                     HttpRangePoll::Saturated => break,
@@ -1366,9 +1408,18 @@ impl HttpMultiRangeWorker {
                         &mut coordinator,
                         &mut budgets,
                         &mut active,
+                        &mut pending_endgame,
+                        &mut endgame_losers,
+                        &mut cancelled_leases,
                         stats,
                     ).await {
-                        Ok(()) => {}
+                        Ok(AttemptAction::None) => {}
+                        Ok(AttemptAction::CancelLease(lease)) => {
+                            let Some(handle) = abort_handles.get(&lease) else {
+                                break 'download Err(HttpMultiRangeError::Protocol);
+                            };
+                            handle.abort();
+                        }
                         Err(HttpMultiRangeError::RevalidateSource(source)) => {
                             let current = validators
                                 .get(&source)
@@ -1398,13 +1449,52 @@ impl HttpMultiRangeWorker {
                         continue;
                     };
                     match joined {
-                        Ok((join_id, _lease)) => {
+                        Ok((join_id, lease)) => {
                             by_join.remove(&join_id);
+                            abort_handles.remove(&lease);
+                            if cancelled_leases.remove(&lease) {
+                                continue;
+                            }
+                            if let Some(group) = endgame_losers.remove(&lease)
+                                && let Err(error) = settle_endgame_loser(
+                                    lease,
+                                    group,
+                                    task.task(),
+                                    generation,
+                                    storage,
+                                    &mut coordinator,
+                                    &mut active,
+                                    &mut pending_endgame,
+                                    stats,
+                                )
+                            {
+                                break 'download Err(error);
+                            }
                         }
                         Err(error) => {
                             let Some(lease) = by_join.remove(&error.id()) else {
                                 break 'download Err(HttpMultiRangeError::Protocol);
                             };
+                            abort_handles.remove(&lease);
+                            if cancelled_leases.remove(&lease) {
+                                continue;
+                            }
+                            if let Some(group) = endgame_losers.remove(&lease) {
+                                if let Err(error) = settle_endgame_loser(
+                                    lease,
+                                    group,
+                                    task.task(),
+                                    generation,
+                                    storage,
+                                    &mut coordinator,
+                                    &mut active,
+                                    &mut pending_endgame,
+                                    stats,
+                                ) {
+                                    break 'download Err(error);
+                                }
+                                continue;
+                            }
                             if let Err(error) = fail_panicked_attempt(
                                 lease,
                                 task.task(),
@@ -1430,9 +1520,20 @@ impl HttpMultiRangeWorker {
         } else {
             LeaseAbortReason::Retry
         };
-        for attempt in active.values() {
-            if attempt.opened {
-                storage.abort_lease(task.task(), generation, attempt.assignment.lease, reason)?;
+        let pending_candidates = pending_endgame
+            .values()
+            .map(|candidate| candidate.attempt.assignment.lease)
+            .collect::<Vec<_>>();
+        let active_leases = active
+            .values()
+            .filter(|attempt| attempt.opened)
+            .map(|attempt| attempt.assignment.lease)
+            .collect::<Vec<_>>();
+        for lease in pending_candidates.into_iter().chain(active_leases) {
+            match storage.abort_lease(task.task(), generation, lease, reason) {
+                Ok(_) => {}
+                Err(error) if error.reject() == WriteReject::UnknownLease => {}
+                Err(error) => return Err(HttpMultiRangeError::Storage(error)),
             }
         }
         stats.set_active(0);
@@ -1949,13 +2050,26 @@ fn restore_range_retry_budgets(
     Ok(budgets)
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct ActiveAttempt {
     assignment: HttpRangeAssignment,
     transfer_attempt: TransferAttemptId,
     validator: ariax_storage::JournalHash,
     opened: bool,
     received: usize,
+    last_progress_ms: u64,
+}
+
+#[derive(Debug)]
+struct PendingEndgameCandidate {
+    attempt: ActiveAttempt,
+    competitor: LeaseId,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AttemptAction {
+    None,
+    CancelLease(LeaseId),
 }
 
 enum AttemptEvent {
@@ -2500,6 +2614,79 @@ async fn acquire_read_slot(
     }
 }
 
+fn endgame_eligible_originals(
+    active: &BTreeMap<LeaseId, ActiveAttempt>,
+    now_ms: u64,
+    body_timeout: Duration,
+) -> Vec<LeaseId> {
+    let timeout_ms = u64::try_from(body_timeout.as_millis()).unwrap_or(u64::MAX);
+    let grace_ms = timeout_ms.checked_div(4).unwrap_or(0).max(1_000);
+    active
+        .values()
+        .filter(|attempt| {
+            attempt.opened
+                && attempt.assignment.overlap_group.is_none()
+                && now_ms.saturating_sub(attempt.last_progress_ms)
+                    >= timeout_ms.saturating_sub(grace_ms)
+        })
+        .map(|attempt| attempt.assignment.lease)
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn settle_endgame_loser(
+    lease: LeaseId,
+    group: ariax_core::OverlapGroupId,
+    task: TaskId,
+    generation: Generation,
+    storage: &mut StorageEngine,
+    coordinator: &mut HttpRangeCoordinator,
+    active: &mut BTreeMap<LeaseId, ActiveAttempt>,
+    pending_endgame: &mut BTreeMap<ariax_core::OverlapGroupId, PendingEndgameCandidate>,
+    stats: &HttpTransferStats,
+) -> Result<(), HttpMultiRangeError> {
+    let pending = pending_endgame
+        .remove(&group)
+        .ok_or(HttpMultiRangeError::Protocol)?;
+    if pending.competitor != lease {
+        return Err(HttpMultiRangeError::Protocol);
+    }
+    let loser = active.remove(&lease).ok_or(HttpMultiRangeError::Protocol)?;
+    let acknowledgements = if loser.opened {
+        storage.abort_lease(task, generation, lease, LeaseAbortReason::OverlapLost)?
+    } else {
+        storage.settle_unopened_overlap_member(task, generation, group, lease)?
+    };
+    let rolled_back = acknowledgements
+        .iter()
+        .any(|ack| matches!(ack, WriteAck::SpanRolledBack { group: id, .. } if *id == group));
+    let committed = acknowledgements
+        .iter()
+        .any(|ack| matches!(ack, WriteAck::PieceDurable { .. }));
+    if rolled_back == committed {
+        return Err(HttpMultiRangeError::Protocol);
+    }
+    coordinator.settle_overlap(
+        group,
+        pending.attempt.assignment.lease,
+        if rolled_back {
+            HttpOverlapSettlement::RolledBack
+        } else {
+            HttpOverlapSettlement::CandidateCommitted
+        },
+    )?;
+    stats.remove_provisional(loser.received);
+    stats.add_discarded(loser.received);
+    stats.remove_provisional(pending.attempt.received);
+    if committed {
+        stats.add_durable(pending.attempt.received);
+    } else {
+        stats.add_discarded(pending.attempt.received);
+    }
+    stats.set_active(active.len());
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn process_attempt_event(
     event: AttemptEvent,
@@ -2511,13 +2698,20 @@ async fn process_attempt_event(
     coordinator: &mut HttpRangeCoordinator,
     budgets: &mut BTreeMap<PieceId, HttpRetryBudget>,
     active: &mut BTreeMap<LeaseId, ActiveAttempt>,
+    pending_endgame: &mut BTreeMap<ariax_core::OverlapGroupId, PendingEndgameCandidate>,
+    endgame_losers: &mut BTreeMap<LeaseId, ariax_core::OverlapGroupId>,
+    cancelled_leases: &mut BTreeSet<LeaseId>,
     stats: &HttpTransferStats,
-) -> Result<(), HttpMultiRangeError> {
+) -> Result<AttemptAction, HttpMultiRangeError> {
     match event {
         AttemptEvent::Head { lease, start } => {
+            if endgame_losers.contains_key(&lease) || cancelled_leases.contains(&lease) {
+                let _ignored = start.send(false);
+                return Ok(AttemptAction::None);
+            }
             let Some(attempt) = active.get_mut(&lease) else {
                 let _ignored = start.send(false);
-                return Ok(());
+                return Ok(AttemptAction::None);
             };
             if attempt.opened {
                 let _ignored = start.send(false);
@@ -2530,11 +2724,13 @@ async fn process_attempt_event(
                 lease,
                 span: attempt.assignment.span,
                 validator: attempt.validator,
+                overlap_group: attempt.assignment.overlap_group,
             }) {
                 let _ignored = start.send(false);
                 return Err(HttpMultiRangeError::Storage(error));
             }
             attempt.opened = true;
+            attempt.last_progress_ms = elapsed_ms(started);
             start
                 .send(true)
                 .map_err(|_| HttpMultiRangeError::Protocol)?;
@@ -2544,6 +2740,10 @@ async fn process_attempt_event(
             minimum_capacity,
             response,
         } => {
+            if endgame_losers.contains_key(&lease) || cancelled_leases.contains(&lease) {
+                let _sent = response.send(None);
+                return Ok(AttemptAction::None);
+            }
             let buffer = active
                 .get(&lease)
                 .filter(|attempt| attempt.opened)
@@ -2557,9 +2757,15 @@ async fn process_attempt_event(
             _ingress: _,
         } => {
             let data_len = buffer.len();
-            let Some(attempt) = active.get(&lease).copied() else {
+            if endgame_losers.contains_key(&lease) || cancelled_leases.contains(&lease) {
+                storage.discard_network_buffer(buffer)?;
                 stats.add_discarded(data_len);
-                return Ok(());
+                return Ok(AttemptAction::None);
+            }
+            let Some(attempt) = active.get(&lease).cloned() else {
+                stats.add_discarded(data_len);
+                storage.discard_network_buffer(buffer)?;
+                return Ok(AttemptAction::None);
             };
             if !attempt.opened
                 || offset
@@ -2585,19 +2791,26 @@ async fn process_attempt_event(
                 .get_mut(&lease)
                 .ok_or(HttpMultiRangeError::Protocol)?
                 .received += data_len;
+            active
+                .get_mut(&lease)
+                .ok_or(HttpMultiRangeError::Protocol)?
+                .last_progress_ms = elapsed_ms(started);
             stats.add_accepted(data_len);
             stats.add_provisional(data_len);
         }
         AttemptEvent::Terminal { lease, result } => {
+            if endgame_losers.contains_key(&lease) || cancelled_leases.contains(&lease) {
+                return Ok(AttemptAction::None);
+            }
             let Some(attempt) = active.remove(&lease) else {
-                return Ok(());
+                return Ok(AttemptAction::None);
             };
             match result {
                 Ok(()) => {
                     if !attempt.opened || attempt.received != attempt.assignment.span.len {
                         return Err(HttpMultiRangeError::Protocol);
                     }
-                    storage.commit_lease(LeaseCommit {
+                    let acknowledgements = storage.commit_lease(LeaseCommit {
                         task,
                         generation,
                         lease,
@@ -2606,35 +2819,108 @@ async fn process_attempt_event(
                         validator: attempt.validator,
                         response_digest: None,
                     })?;
+                    if let [
+                        WriteAck::LeaseCommitPending {
+                            group,
+                            lease: pending,
+                        },
+                    ] = acknowledgements.as_slice()
+                    {
+                        if *pending != lease {
+                            return Err(HttpMultiRangeError::Protocol);
+                        }
+                        let fence = coordinator.begin_overlap_commit(lease)?;
+                        if fence.group != *group {
+                            return Err(HttpMultiRangeError::Protocol);
+                        }
+                        if endgame_losers.contains_key(&fence.competitor)
+                            || pending_endgame.contains_key(&fence.group)
+                        {
+                            return Err(HttpMultiRangeError::Protocol);
+                        }
+                        endgame_losers.insert(fence.competitor, fence.group);
+                        pending_endgame.insert(
+                            fence.group,
+                            PendingEndgameCandidate {
+                                attempt,
+                                competitor: fence.competitor,
+                            },
+                        );
+                        stats.set_active(active.len());
+                        return Ok(AttemptAction::CancelLease(fence.competitor));
+                    }
+                    if !matches!(
+                        acknowledgements.as_slice(),
+                        [
+                            WriteAck::LeaseCommitted { .. },
+                            WriteAck::PieceDurable { .. }
+                        ]
+                    ) {
+                        return Err(HttpMultiRangeError::Protocol);
+                    }
                     coordinator.complete(lease)?;
                     stats.add_durable(attempt.received);
                     stats.remove_provisional(attempt.received);
                 }
                 Err(failure) => {
+                    let mut range_released = false;
+                    let mut action = AttemptAction::None;
                     if attempt.opened {
-                        storage.abort_lease(task, generation, lease, abort_reason(&failure))?;
+                        let acknowledgements =
+                            storage.abort_lease(task, generation, lease, abort_reason(&failure))?;
+                        if let Some(group) = acknowledgements.iter().find_map(|ack| match ack {
+                            WriteAck::SpanRolledBack { group, .. } => Some(*group),
+                            _ => None,
+                        }) {
+                            let members = coordinator.rollback_overlap(group)?;
+                            let peer = members
+                                .into_iter()
+                                .find(|member| *member != lease)
+                                .ok_or(HttpMultiRangeError::Protocol)?;
+                            if let Some(peer_attempt) = active.remove(&peer) {
+                                stats.remove_provisional(peer_attempt.received);
+                                stats.add_discarded(peer_attempt.received);
+                            }
+                            cancelled_leases.insert(peer);
+                            action = AttemptAction::CancelLease(peer);
+                            range_released = true;
+                        }
+                    } else if let Some(group) = attempt.assignment.overlap_group {
+                        storage.settle_unopened_overlap_member(task, generation, group, lease)?;
                     }
                     stats.remove_provisional(attempt.received);
                     stats.add_discarded(attempt.received);
                     let now_ms = elapsed_ms(started);
                     apply_attempt_failure(
                         failure,
-                        attempt,
+                        attempt.clone(),
                         AttemptFailureContext {
                             now_ms,
                             retry_elapsed_ms: retry_elapsed_offset_ms.saturating_add(now_ms),
                             storage,
                             coordinator,
                             budgets,
+                            released: range_released,
                             stats,
                         },
                     )?;
+                    if let Some(group) = attempt.assignment.overlap_group
+                        && !range_released
+                    {
+                        for other in active.values_mut() {
+                            if other.assignment.overlap_group == Some(group) {
+                                other.assignment.overlap_group = None;
+                            }
+                        }
+                    }
+                    stats.set_active(active.len());
+                    return Ok(action);
                 }
             }
             stats.set_active(active.len());
         }
     }
-    Ok(())
+    Ok(AttemptAction::None)
 }
 
 struct AttemptFailureContext<'a> {
@@ -2643,6 +2929,7 @@ struct AttemptFailureContext<'a> {
     storage: &'a mut StorageEngine,
     coordinator: &'a mut HttpRangeCoordinator,
     budgets: &'a mut BTreeMap<PieceId, HttpRetryBudget>,
+    released: bool,
     stats: &'a HttpTransferStats,
 }
 
@@ -2657,6 +2944,7 @@ fn apply_attempt_failure(
         storage,
         coordinator,
         budgets,
+        released,
         stats,
     } = context;
     if matches!(failure, RangeAttemptFailure::Cancelled) {
@@ -2671,7 +2959,12 @@ fn apply_attempt_failure(
         .get(&attempt.assignment.piece)
         .ok_or(HttpMultiRangeError::Protocol)?;
     if cause == HttpRetryCause::StaleValidator {
-        coordinator.fail(attempt.assignment.lease, HttpRangeFailure::RetryAt(now_ms))?;
+        record_coordinator_failure(
+            coordinator,
+            &attempt,
+            HttpRangeFailure::RetryAt(now_ms),
+            released,
+        )?;
         return match budget.policy().stale_validator_policy {
             HttpStaleValidatorPolicy::Fail => Err(HttpMultiRangeError::StaleValidator),
             HttpStaleValidatorPolicy::RestartIfSafe => {
@@ -2699,7 +2992,7 @@ fn apply_attempt_failure(
         HttpRetryDecision::Retry { delay, source } => {
             persist_range_retry_state(
                 storage,
-                attempt,
+                attempt.clone(),
                 budget,
                 cause,
                 retry_elapsed_ms,
@@ -2720,11 +3013,34 @@ fn apply_attempt_failure(
         HttpRetryDecision::Stop(
             HttpRetryStopReason::TotalAttemptCap | HttpRetryStopReason::ElapsedCap,
         ) => {
-            coordinator.fail(attempt.assignment.lease, HttpRangeFailure::RetryAt(now_ms))?;
+            record_coordinator_failure(
+                coordinator,
+                &attempt,
+                HttpRangeFailure::RetryAt(now_ms),
+                released,
+            )?;
             return Err(HttpMultiRangeError::Exhausted);
         }
     };
-    coordinator.fail(attempt.assignment.lease, range_failure)?;
+    record_coordinator_failure(coordinator, &attempt, range_failure, released)?;
+    Ok(())
+}
+
+fn record_coordinator_failure(
+    coordinator: &mut HttpRangeCoordinator,
+    attempt: &ActiveAttempt,
+    failure: HttpRangeFailure,
+    released: bool,
+) -> Result<(), HttpMultiRangeError> {
+    if released {
+        coordinator.record_released_failure(
+            attempt.assignment.piece,
+            attempt.assignment.source,
+            failure,
+        )?;
+    } else {
+        coordinator.fail(attempt.assignment.lease, failure)?;
+    }
     Ok(())
 }
 
@@ -2940,7 +3256,7 @@ mod tests {
     use std::net::SocketAddr;
     use std::num::NonZeroU32;
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::{TcpListener, TcpStream};
 
@@ -3340,6 +3656,98 @@ mod tests {
         )
     }
 
+    fn endgame_task(root: &TestDirectory, source: SocketAddr, total_length: usize) -> HttpTaskSpec {
+        assert!(total_length >= MIB);
+        let options = HttpTaskOptions {
+            split: NonZeroUsize::new(1).expect("split"),
+            max_connections_per_server: NonZeroUsize::new(2).expect("per server"),
+            min_split_size: MIB as u64,
+            piece_length: MIB as u64,
+            connect_timeout: Duration::from_secs(5),
+            response_head_timeout: Duration::from_secs(5),
+            response_body_timeout: Duration::from_secs(1),
+            max_download_limit: 0,
+            lowest_speed_limit: 0,
+            endgame_max_duplicates: 2,
+            mirror_identity: HttpMirrorIdentityPolicy::TrustSubmittedMirrors,
+            checksum: None,
+            retry: None,
+        };
+        HttpTaskSpec::new(
+            TaskId::new(1).expect("task"),
+            Gid::new(7).expect("gid"),
+            [format!("http://{source}/file")],
+            root.0.clone(),
+            SafePathBuilder::from_user_path("output.bin", PathPlatform::current())
+                .expect("safe output"),
+            options,
+            false,
+        )
+        .expect("endgame task")
+    }
+
+    async fn serve_endgame_mirror(
+        responses: Vec<Arc<[u8]>>,
+        dirty: bool,
+    ) -> (
+        SocketAddr,
+        Arc<Mutex<Vec<(usize, usize)>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let ranges = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&ranges);
+        let ordinal = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(tokio::sync::Barrier::new(if dirty { 2 } else { 1 }));
+        let task = tokio::spawn(async move {
+            let mut handlers = tokio::task::JoinSet::new();
+            loop {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                let recorded = Arc::clone(&recorded);
+                let ordinal = Arc::clone(&ordinal);
+                let responses = responses.clone();
+                let barrier = Arc::clone(&barrier);
+                handlers.spawn(async move {
+                    let request = read_request_head(&mut stream).await;
+                    let (start, end) = request_range(&request).expect("range request");
+                    recorded
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push((start, end));
+                    let request_index = ordinal.fetch_add(1, Ordering::AcqRel);
+                    let probe = start == 0 && end == 0;
+                    let response_index = request_index.saturating_sub(1);
+                    let body = if probe {
+                        &responses[0][start..=end]
+                    } else {
+                        let index = response_index.min(responses.len().saturating_sub(1));
+                        &responses[index][start..=end]
+                    };
+                    let head = format!(
+                        "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\nETag: \"endgame\"\r\nConnection: close\r\n\r\n",
+                        body.len(),
+                        responses[0].len()
+                    );
+                    stream.write_all(head.as_bytes()).await.expect("head");
+                    if probe {
+                        stream.write_all(body).await.expect("probe body");
+                    } else if !dirty && response_index > 0 {
+                        let mut closed = [0_u8; 1];
+                        let _closed = stream.read(&mut closed).await;
+                    } else {
+                        if dirty && response_index < 2 {
+                            barrier.wait().await;
+                        }
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        stream.write_all(body).await.expect("range body");
+                    }
+                });
+            }
+        });
+        (address, ranges, task)
+    }
+
     fn task_with_identity(
         root: &TestDirectory,
         sources: impl IntoIterator<Item = SocketAddr>,
@@ -3368,6 +3776,7 @@ mod tests {
             response_body_timeout: Duration::from_secs(5),
             max_download_limit: 0,
             lowest_speed_limit: 0,
+            endgame_max_duplicates: 0,
             mirror_identity,
             checksum,
             retry,
@@ -3405,6 +3814,7 @@ mod tests {
             response_body_timeout: Duration::from_secs(5),
             max_download_limit: 0,
             lowest_speed_limit: 0,
+            endgame_max_duplicates: 0,
             mirror_identity: HttpMirrorIdentityPolicy::TrustSubmittedMirrors,
             checksum: None,
             retry: Some(retry),
@@ -3703,6 +4113,7 @@ mod tests {
                 max_connections_per_origin: NonZeroUsize::new(1).expect("origin cap"),
                 max_total_attempts: policy.max_attempts.get(),
                 max_attempts_per_source: policy.max_attempts_per_mirror.get(),
+                endgame_max_duplicates: 0,
             },
             [HttpRangeSource::from_uri(source, "http://one.example/file").expect("source")],
         )
@@ -4673,5 +5084,92 @@ mod tests {
                 .durable_bytes,
             (2 * MIB) as u64
         );
+    }
+
+    #[tokio::test]
+    async fn same_source_endgame_clean_fence_commits_after_unopened_or_empty_loser() {
+        let root = TestDirectory::new("endgame-clean-root");
+        let journal = TestDirectory::new("endgame-clean-journal");
+        let expected = data(MIB);
+        let (mirror, ranges, server) =
+            serve_endgame_mirror(vec![Arc::clone(&expected)], false).await;
+        let spec = endgame_task(&root, mirror, expected.len());
+        let stats = SharedHttpTransferStats::new(NonZeroUsize::new(2).expect("stats"));
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            worker(&journal, stats.clone(), 2).run_task(
+                Arc::new(spec.clone()),
+                Generation::INITIAL,
+                HttpCancellation::new(),
+            ),
+        )
+        .await
+        .expect("endgame worker deadline")
+        .expect("clean endgame completes");
+        assert_eq!(
+            fs::read(root.0.join("output.bin")).expect("output"),
+            expected.as_ref()
+        );
+        let snapshot = stats.get(spec.task()).expect("stats").snapshot();
+        assert_eq!(snapshot.durable_bytes, MIB as u64);
+        assert!(
+            snapshot.discarded_bytes < MIB as u64,
+            "a clean loser may have a discarded network fragment but must not write a full piece"
+        );
+        assert!(
+            ranges
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len()
+                >= 2,
+            "probe plus the original range must be observed"
+        );
+        server.abort();
+        assert!(server.await.expect_err("server cancelled").is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn same_source_endgame_dirty_overlap_rolls_back_and_overwrites() {
+        let root = TestDirectory::new("endgame-dirty-root");
+        let journal = TestDirectory::new("endgame-dirty-journal");
+        let expected = data(MIB);
+        let first = vec![0xA5_u8; MIB].into();
+        let second = vec![0x5A_u8; MIB].into();
+        let (mirror, ranges, server) =
+            serve_endgame_mirror(vec![first, second, Arc::clone(&expected)], true).await;
+        let spec = endgame_task(&root, mirror, expected.len());
+        let stats = SharedHttpTransferStats::new(NonZeroUsize::new(2).expect("stats"));
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            worker(&journal, stats.clone(), 3).run_task(
+                Arc::new(spec.clone()),
+                Generation::INITIAL,
+                HttpCancellation::new(),
+            ),
+        )
+        .await
+        .expect("endgame worker deadline")
+        .expect("dirty overlap is retried and completes");
+        assert_eq!(
+            fs::read(root.0.join("output.bin")).expect("output"),
+            expected.as_ref(),
+            "the post-rollback ordinary lease must overwrite both provisional bodies"
+        );
+        let snapshot = stats.get(spec.task()).expect("stats").snapshot();
+        assert_eq!(snapshot.durable_bytes, MIB as u64);
+        assert!(
+            snapshot.discarded_bytes > 0,
+            "overlap losers consume discard accounting"
+        );
+        assert!(
+            ranges
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len()
+                >= 4,
+            "probe, two duplicate attempts, and a replacement lease are required"
+        );
+        server.abort();
+        assert!(server.await.expect_err("server cancelled").is_cancelled());
     }
 }

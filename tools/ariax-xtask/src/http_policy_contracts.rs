@@ -164,11 +164,11 @@ fn render_transport_json(public_suffix: &PublicSuffixPin) -> String {
     output.push_str(
         concat!(
             "  \"parallel_ranges\": {\"non_overlapping_leases\": true, \"max_pieces\": 1048576, \"default_split\": 5, \"max_split\": 1024, \"default_piece_length\": 1048576, \"max_piece_length\": 1073741824, \"default_max_connections_per_server\": 1, \"max_connections_per_server\": 1024, \"durable_piece_restart_recovery\": true, \"mirror_identity_modes\": [\"strict_shared_digest\", \"trust_submitted_mirrors\"]},\n",
-            "  \"retry\": {\"default_total_attempts\": 5, \"default_attempts_per_mirror\": 3, \"default_max_elapsed_seconds\": 3600, \"default_base_wait_seconds\": 1, \"default_max_wait_seconds\": 300, \"retry_after_bounded\": true, \"jitter\": \"equal\"},\n",
+            "  \"retry\": {\"default_total_attempts\": 5, \"default_attempts_per_mirror\": 3, \"default_max_elapsed_seconds\": 3600, \"default_base_wait_seconds\": 1, \"default_max_wait_seconds\": 300, \"retry_after_bounded\": true, \"jitter\": \"equal\", \"rate_limiting\": \"hierarchical_task_origin_stream\"},\n",
             "  \"supervision\": {\"default_max_active_workers\": 64, \"max_active_workers\": 1024, \"default_pending_events\": 256, \"max_pending_events\": 4096, \"default_poll_interval_ms\": 1, \"shutdown_timeout_seconds\": 5, \"scheduler_lifecycle_authority_owned\": true},\n",
             "  \"rpc\": {\"methods\": [\"aria2.addUri\", \"aria2.tellStatus\", \"aria2.pause\", \"aria2.remove\", \"aria2.getGlobalStat\"], \"transports\": [\"loopback_http1_post_jsonrpc\", \"stdio_content_length\"], \"request_bytes\": 2097152, \"response_bytes\": 8388608, \"stdio_header_bytes\": 16384, \"http_connections\": 64, \"shutdown_timeout_seconds\": 5, \"notifications\": false, \"batch\": false, \"non_loopback\": false},\n",
             "  \"diagnostics\": [\"connections_opened\", \"connections_reused\", \"connections_expired\", \"connections_poisoned\", \"pool_exhausted\", \"tls_handshakes\", \"tls_failures\", \"durable_bytes\", \"active_connections\", \"retry_count\"],\n",
-            "  \"deferred\": [\"rate_limiting\", \"endgame_duplicate_ranges\", \"http2\", \"growing_or_chunked_transfers\", \"websocket_rpc\", \"ndjson_rpc\", \"non_loopback_rpc\", \"broader_phase_4_control_plane\", \"client_certificates\", \"insecure_verification\", \"native_tls\"]\n",
+            "  \"deferred\": [\"cross_mirror_endgame_digest_identity\", \"http2\", \"growing_or_chunked_transfers\", \"websocket_rpc\", \"ndjson_rpc\", \"non_loopback_rpc\", \"broader_phase_4_control_plane\", \"client_certificates\", \"insecure_verification\", \"native_tls\"]\n",
             "}\n"
         ),
     );

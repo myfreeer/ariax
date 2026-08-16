@@ -3001,6 +3001,81 @@ mod tests {
     }
 
     #[test]
+    fn crash_with_pending_overlap_candidates_replays_no_durable_piece() {
+        let fixture = layout_fixture(Generation::INITIAL, false);
+        let mut records = base_records(fixture);
+        let validator = hash(91);
+        let original = LeaseId::new(21).expect("original lease");
+        let duplicate = LeaseId::new(22).expect("duplicate lease");
+        records.extend([
+            record(
+                4,
+                0,
+                JournalPayload::LeaseStarted {
+                    transfer_attempt_id: TransferAttemptId::new(20).expect("attempt"),
+                    lease_id: original,
+                    span: span(0, 1024),
+                    validator_fingerprint: validator,
+                },
+            ),
+            record(
+                5,
+                0,
+                JournalPayload::PieceStarted {
+                    lease_id: original,
+                    piece_id: PieceId::new(0),
+                    piece_span: span(0, 1024),
+                },
+            ),
+            record(
+                6,
+                0,
+                JournalPayload::PieceWritten {
+                    lease_id: original,
+                    piece_id: PieceId::new(0),
+                    written_span: span(0, 1024),
+                },
+            ),
+            record(
+                7,
+                0,
+                JournalPayload::LeaseStarted {
+                    transfer_attempt_id: TransferAttemptId::new(21).expect("attempt"),
+                    lease_id: duplicate,
+                    span: span(0, 1024),
+                    validator_fingerprint: validator,
+                },
+            ),
+            record(
+                8,
+                0,
+                JournalPayload::PieceStarted {
+                    lease_id: duplicate,
+                    piece_id: PieceId::new(0),
+                    piece_span: span(0, 1024),
+                },
+            ),
+            record(
+                9,
+                0,
+                JournalPayload::PieceWritten {
+                    lease_id: duplicate,
+                    piece_id: PieceId::new(0),
+                    written_span: span(0, 1024),
+                },
+            ),
+        ]);
+
+        let replay = recover_journal_state(&records, task(), &allow_all, Default::default());
+        assert_eq!(replay.stop, JournalStateStop::CleanEnd);
+        let state = replay.state.expect("safe crash prefix");
+        assert!(
+            state.durable_pieces().is_empty(),
+            "unsettled overlap members cannot publish a durable piece after restart"
+        );
+    }
+
+    #[test]
     fn strong_http_validator_replays_before_network_and_binds_lease_fingerprints() {
         let fixture = layout_fixture(Generation::INITIAL, false);
         let validator_fingerprint = calculate_http_strong_validator_fingerprint(b"\"v1\"", 2048)
