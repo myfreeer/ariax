@@ -1706,6 +1706,13 @@ where
         state.retry_states.clear();
         state.paused = None;
         state.http_strong_validator = None;
+        if reason == GenerationStartReason::RepresentationRestart {
+            // The old layout remains only as descriptor-bound authority for
+            // reopening the task-owned file. No byte from the prior
+            // representation may remain publishable in the new generation.
+            state.durable_pieces.clear();
+            state.finalizations.clear();
+        }
         state.rebind_source_root_binding_hash = None;
         state.clean_shutdown = None;
         self.committed_leases.clear();
@@ -3638,6 +3645,24 @@ mod tests {
             ),
             record(11, 1, replacement.committed),
         ];
+        let restarted =
+            recover_journal_state(&records[..10], task(), &allow_all, Default::default());
+        assert_eq!(restarted.stop, JournalStateStop::CleanEnd);
+        let restarted = restarted.state.expect("restarted generation state");
+        assert_eq!(restarted.generation(), Generation::new(1));
+        assert_eq!(
+            restarted
+                .layout()
+                .expect("old layout remains reopen authority")
+                .layout()
+                .generation(),
+            Generation::INITIAL
+        );
+        assert!(
+            restarted.durable_pieces().is_empty(),
+            "representation restart must invalidate old publishable progress before layout replacement"
+        );
+
         let replay = recover_journal_state(&records, task(), &allow_all, Default::default());
         assert_eq!(
             replay.stop,

@@ -458,7 +458,7 @@ impl HttpControlPlane {
         let outcome = simulation
             .execute_command_at(command.clone(), MonotonicInstant::now())
             .map_err(|error| HttpControlError::Scheduler(error.to_string()))?;
-        self.prepare_outcome_plans(&mut simulation, outcome.effects)?;
+        self.prepare_outcome_plans(&mut simulation, outcome.effects, None)?;
         self.engine
             .execute_command_at(command, MonotonicInstant::now())
             .map_err(|error| HttpControlError::Scheduler(format!("{error:?}")))?;
@@ -512,7 +512,11 @@ impl HttpControlPlane {
             Ok(outcome) => outcome,
             Err(_) => return Ok(()),
         };
-        self.prepare_outcome_plans(&mut simulation, outcome.effects)?;
+        self.prepare_outcome_plans(
+            &mut simulation,
+            outcome.effects,
+            Some(GenerationStartReason::RetryReadmission),
+        )?;
         self.engine
             .admit_next_at(now)
             .map_err(|error| HttpControlError::Scheduler(format!("{error:?}")))?;
@@ -523,12 +527,13 @@ impl HttpControlPlane {
         &mut self,
         simulation: &mut RequestScheduler,
         effects: Vec<TransitionEffect>,
+        generation_reason: Option<GenerationStartReason>,
     ) -> Result<(), HttpControlError> {
         let mut queue = VecDeque::from(effects);
         while let Some(effect) = queue.pop_front() {
             if effect.kind().persistence_effect() {
                 self.engine
-                    .prepare_persistence(self.plan_for_effect(&effect)?)
+                    .prepare_persistence(self.plan_for_effect(&effect, generation_reason)?)
                     .map_err(|error| HttpControlError::Persistence(format!("{error:?}")))?;
                 if let Some(ack) = persistence_ack(&effect) {
                     let outcome = simulation
@@ -550,12 +555,20 @@ impl HttpControlPlane {
         let outcome = simulation
             .handle_event_at(event, at)
             .map_err(|error| HttpControlError::Scheduler(error.to_string()))?;
-        self.prepare_outcome_plans(&mut simulation, outcome.effects)
+        let generation_reason = match event.event() {
+            TaskEvent::RetryReady { .. } => Some(GenerationStartReason::RetryReadmission),
+            TaskEvent::ActiveRepresentationRestart { .. } => {
+                Some(GenerationStartReason::RepresentationRestart)
+            }
+            _ => None,
+        };
+        self.prepare_outcome_plans(&mut simulation, outcome.effects, generation_reason)
     }
 
     fn plan_for_effect(
         &self,
         effect: &TransitionEffect,
+        generation_reason: Option<GenerationStartReason>,
     ) -> Result<PersistenceEffectPlan, HttpControlError> {
         match effect {
             TransitionEffect::PersistTask { .. } => Err(HttpControlError::Unsupported(
@@ -578,18 +591,31 @@ impl HttpControlPlane {
                         .ok_or(HttpControlError::NotFound)?
                         .persistence_options()
                         .map_err(HttpControlError::TaskSpec)?;
-                    vec![PersistencePlanStep::AppendAndFlushJournal {
-                        gid: *gid,
-                        generation: *generation,
-                        payload: JournalPayload::GenerationStarted {
-                            previous_generation: Generation::new(
-                                generation.get().saturating_sub(1),
-                            ),
-                            reason: GenerationStartReason::RecoveryRepair,
-                            next_snapshot_hash: options.snapshot_hash(),
-                            patch_id: None,
+                    let previous_generation = Generation::new(generation.get().saturating_sub(1));
+                    let snapshot_hash = options.snapshot_hash();
+                    vec![
+                        PersistencePlanStep::AppendAndFlushJournal {
+                            gid: *gid,
+                            generation: previous_generation,
+                            payload: JournalPayload::OptionsSnapshot {
+                                scope: OptionsSnapshotScope::NextAdmission,
+                                patch_id: None,
+                                snapshot_hash,
+                                options: options.clone(),
+                            },
                         },
-                    }]
+                        PersistencePlanStep::AppendAndFlushJournal {
+                            gid: *gid,
+                            generation: *generation,
+                            payload: JournalPayload::GenerationStarted {
+                                previous_generation,
+                                reason: generation_reason
+                                    .unwrap_or(GenerationStartReason::RecoveryRepair),
+                                next_snapshot_hash: snapshot_hash,
+                                patch_id: None,
+                            },
+                        },
+                    ]
                 };
                 PersistenceEffectPlan::new(effect.clone(), steps)
                     .map_err(|error| HttpControlError::Persistence(format!("{error:?}")))
@@ -1187,6 +1213,7 @@ fn is_retry_option(name: &str) -> bool {
             | "retry-max-attempts"
             | "retry-max-attempts-per-mirror"
             | "retry-max-elapsed"
+            | "stale-validator-policy"
     )
 }
 
@@ -1279,6 +1306,11 @@ fn parse_retry_options(
         policy.backoff = HttpRetryBackoff::parse(retry_text(value, "retry-backoff")?)
             .map_err(|_| HttpControlError::InvalidParams("invalid retry backoff"))?;
     }
+    if let Some(value) = object.get("stale-validator-policy") {
+        policy.stale_validator_policy =
+            crate::HttpStaleValidatorPolicy::parse(retry_text(value, "stale-validator-policy")?)
+                .map_err(|_| HttpControlError::InvalidParams("invalid stale validator policy"))?;
+    }
     policy
         .validate()
         .map_err(|_| HttpControlError::InvalidParams("invalid retry policy"))?;
@@ -1296,6 +1328,7 @@ fn retry_text<'a>(value: &'a Value, name: &str) -> Result<&'a str, HttpControlEr
             }
             "retry-after" => "retry-after must be a string",
             "retry-backoff" => "retry-backoff must be a string",
+            "stale-validator-policy" => "stale-validator-policy must be a string",
             _ => "retry option must be a string",
         }))
 }
@@ -1649,6 +1682,85 @@ mod tests {
         (format!("http://{address}/file.bin"), task)
     }
 
+    async fn serve_control_restart_file(data: Arc<[u8]>) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let task = tokio::spawn(async move {
+            for index in 0..4 {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                let mut request = Vec::new();
+                let mut byte = [0_u8; 1];
+                while !request.ends_with(b"\r\n\r\n") {
+                    stream.read_exact(&mut byte).await.expect("request");
+                    request.push(byte[0]);
+                }
+                let text = String::from_utf8(request).expect("ASCII request");
+                let (start, end) = text
+                    .lines()
+                    .find_map(|line| {
+                        let value = line
+                            .strip_prefix("Range: bytes=")
+                            .or_else(|| line.strip_prefix("range: bytes="))?;
+                        let (start, end) = value.split_once('-')?;
+                        Some((start.parse::<usize>().ok()?, end.parse::<usize>().ok()?))
+                    })
+                    .expect("range");
+                let body = &data[start..=end];
+                let etag = if index == 0 { "\"v1\"" } else { "\"v2\"" };
+                let response = format!(
+                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\nAccept-Ranges: bytes\r\nETag: {etag}\r\nConnection: close\r\n\r\n",
+                    body.len(),
+                    data.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("response");
+                if index != 1 {
+                    stream.write_all(body).await.expect("body");
+                }
+            }
+        });
+        (format!("http://{address}/restart.bin"), task)
+    }
+
+    fn attach_loopback_worker(plane: &mut HttpControlPlane, directory: &TestDirectory) {
+        let resolver = HttpResolver::new(HttpResolverConfig::default()).expect("resolver");
+        let client = HttpPolicyClient::new(
+            resolver,
+            HttpPolicyClientConfig {
+                destination: HttpDestinationPolicy {
+                    allow_loopback: true,
+                    ..HttpDestinationPolicy::default()
+                },
+                direct: HttpDirectTransportConfig {
+                    connect_timeout: Duration::from_secs(5),
+                    handshake_timeout: Duration::from_secs(5),
+                    max_connections_per_origin: 2,
+                    max_idle_connections_per_origin: 0,
+                    budgets: HttpTransportBudgets::new(2, 2 * HTTP_CONNECTION_RESERVATION_BYTES)
+                        .expect("transport budgets"),
+                    ..HttpDirectTransportConfig::default()
+                },
+                ..HttpPolicyClientConfig::default()
+            },
+        );
+        let worker = HttpMultiRangeWorker::new(
+            client,
+            HttpMultiRangeWorkerConfig {
+                journal_root: directory.journals.clone(),
+                storage: StorageEngineConfig::default(),
+                ..HttpMultiRangeWorkerConfig::default()
+            },
+            plane.stats_catalog(),
+        )
+        .expect("worker")
+        .with_session_owner(plane.session_handle());
+        plane
+            .attach_worker(Arc::new(worker))
+            .expect("attach worker");
+    }
+
     #[test]
     fn paused_add_persists_task_sources_and_options_before_publication() {
         let directory = TestDirectory::new();
@@ -1860,6 +1972,7 @@ mod tests {
                 "retry-after-max": 60,
                 "retry-max-wait": 60,
                 "retry-max-elapsed": 600,
+                "stale-validator-policy": "revalidate",
                 "checksum": "sha-256=abababababababababababababababababababababababababababababababab",
                 "pause": "true",
             }),
@@ -1886,6 +1999,10 @@ mod tests {
         assert_eq!(retry.retryable_statuses.canonical(), "418,500,501");
         assert_eq!(retry.backoff, HttpRetryBackoff::Fixed);
         assert!(!retry.respect_retry_after);
+        assert_eq!(
+            retry.stale_validator_policy,
+            crate::HttpStaleValidatorPolicy::Revalidate
+        );
         assert_eq!(root, directory.output);
         assert_eq!(output.canonical_string(), "file");
         assert!(paused);
@@ -1899,6 +2016,8 @@ mod tests {
             json!({"retry-max-attempts": 0}),
             json!({"retry-max-wait": 0}),
             json!({"retry-on-http-status": "99"}),
+            json!({"stale-validator-policy": "unsafe"}),
+            json!({"stale-validator-policy": 7}),
             json!({"piece-length": "18446744073709551615T"}),
             json!({"checksum": "sha-512=abcd"}),
             json!({"checksum": 7}),
@@ -1916,40 +2035,7 @@ mod tests {
         let data: Arc<[u8]> = vec![0x5a; 1024 * 1024].into();
         let (uri, server) = serve_control_file(Arc::clone(&data)).await;
         let mut plane = directory.control_plane();
-        let resolver = HttpResolver::new(HttpResolverConfig::default()).expect("resolver");
-        let client = HttpPolicyClient::new(
-            resolver,
-            HttpPolicyClientConfig {
-                destination: HttpDestinationPolicy {
-                    allow_loopback: true,
-                    ..HttpDestinationPolicy::default()
-                },
-                direct: HttpDirectTransportConfig {
-                    connect_timeout: Duration::from_secs(5),
-                    handshake_timeout: Duration::from_secs(5),
-                    max_connections_per_origin: 2,
-                    max_idle_connections_per_origin: 0,
-                    budgets: HttpTransportBudgets::new(2, 2 * HTTP_CONNECTION_RESERVATION_BYTES)
-                        .expect("transport budgets"),
-                    ..HttpDirectTransportConfig::default()
-                },
-                ..HttpPolicyClientConfig::default()
-            },
-        );
-        let worker = HttpMultiRangeWorker::new(
-            client,
-            HttpMultiRangeWorkerConfig {
-                journal_root: directory.journals.clone(),
-                storage: StorageEngineConfig::default(),
-                ..HttpMultiRangeWorkerConfig::default()
-            },
-            plane.stats_catalog(),
-        )
-        .expect("worker")
-        .with_session_owner(plane.session_handle());
-        plane
-            .attach_worker(Arc::new(worker))
-            .expect("attach worker");
+        attach_loopback_worker(&mut plane, &directory);
         let checksum =
             HttpContentChecksum::sha256(Sha256::digest(data.as_ref()).into()).canonical();
         let gid = plane
@@ -1979,6 +2065,63 @@ mod tests {
         server.await.expect("server");
         assert_eq!(
             fs::read(directory.output.join("file.bin")).expect("output"),
+            data.as_ref()
+        );
+        let stopped = match plane
+            .session_handle()
+            .execute(SessionCommand::ReadStoppedResults)
+            .expect("stopped results")
+        {
+            SessionCommandResult::StoppedResults(results) => results,
+            result => panic!("unexpected stopped response: {result:?}"),
+        };
+        assert_eq!(stopped.len(), 1);
+        assert_eq!(stopped[0].gid, gid);
+        assert_eq!(stopped[0].status, SessionTerminalStatus::Complete);
+        assert_eq!(stopped[0].total_length, Some(data.len() as u64));
+        assert_eq!(plane.shutdown().expect("shutdown").journals_closed, 1);
+    }
+
+    #[tokio::test]
+    async fn live_stale_validator_restart_persists_and_completes_the_next_generation() {
+        let directory = TestDirectory::new();
+        let data: Arc<[u8]> = vec![0x73; 1024 * 1024].into();
+        let (uri, server) = serve_control_restart_file(Arc::clone(&data)).await;
+        let mut plane = directory.control_plane();
+        attach_loopback_worker(&mut plane, &directory);
+        let gid = plane
+            .call(
+                "aria2.addUri",
+                json!([[uri], {
+                    "pause": false,
+                    "split": 1,
+                    "retry-max-attempts": 2,
+                    "retry-max-attempts-per-mirror": 2,
+                    "stale-validator-policy": "restart-if-safe"
+                }]),
+            )
+            .expect("add restarting URI")
+            .as_str()
+            .expect("GID")
+            .parse::<Gid>()
+            .expect("valid GID");
+
+        let mut complete = false;
+        for _ in 0..4_000 {
+            plane.poll_once().expect("restart control progress");
+            let status = plane
+                .call("aria2.tellStatus", json!([gid.to_string()]))
+                .expect("status");
+            if status["status"] == "complete" {
+                complete = true;
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(complete, "restarted worker did not reach complete status");
+        server.await.expect("server");
+        assert_eq!(
+            fs::read(directory.output.join("restart.bin")).expect("output"),
             data.as_ref()
         );
         let stopped = match plane

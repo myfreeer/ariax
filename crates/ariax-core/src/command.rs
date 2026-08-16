@@ -480,6 +480,13 @@ pub enum TaskEvent {
         generation: Generation,
         retry_at: MonotonicInstant,
     },
+    /// The active worker drained after proving that continuing the current
+    /// representation would mix incompatible bytes. Admission of the next
+    /// generation remains fenced behind durable generation persistence.
+    ActiveRepresentationRestart {
+        gid: Gid,
+        generation: Generation,
+    },
     DataComplete {
         gid: Gid,
         generation: Generation,
@@ -643,6 +650,7 @@ pub enum TaskEventKind {
     AllocationFailed,
     RetryReady,
     ActiveRetryIdle,
+    ActiveRepresentationRestart,
     DataComplete,
     BitTorrentPayloadComplete,
     NoSpace,
@@ -676,6 +684,7 @@ pub const ALL_TASK_EVENT_KINDS: &[TaskEventKind] = &[
     TaskEventKind::AllocationFailed,
     TaskEventKind::RetryReady,
     TaskEventKind::ActiveRetryIdle,
+    TaskEventKind::ActiveRepresentationRestart,
     TaskEventKind::DataComplete,
     TaskEventKind::BitTorrentPayloadComplete,
     TaskEventKind::NoSpace,
@@ -712,6 +721,7 @@ impl TaskEventKind {
             Self::AllocationFailed => "allocation_failed",
             Self::RetryReady => "retry_ready",
             Self::ActiveRetryIdle => "active_retry_idle",
+            Self::ActiveRepresentationRestart => "active_representation_restart",
             Self::DataComplete => "data_complete",
             Self::BitTorrentPayloadComplete => "bt_payload_complete",
             Self::NoSpace => "no_space",
@@ -759,6 +769,7 @@ impl TaskEvent {
             | Self::AllocationFailed { gid, .. }
             | Self::RetryReady { gid, .. }
             | Self::ActiveRetryIdle { gid, .. }
+            | Self::ActiveRepresentationRestart { gid, .. }
             | Self::DataComplete { gid, .. }
             | Self::NoSpace { gid, .. }
             | Self::TerminalFailure { gid, .. }
@@ -794,6 +805,7 @@ impl TaskEvent {
             | Self::AllocationFailed { generation, .. }
             | Self::RetryReady { generation, .. }
             | Self::ActiveRetryIdle { generation, .. }
+            | Self::ActiveRepresentationRestart { generation, .. }
             | Self::DataComplete { generation, .. }
             | Self::NoSpace { generation, .. }
             | Self::TerminalFailure { generation, .. }
@@ -833,6 +845,7 @@ impl TaskEvent {
             Self::AllocationFailed { .. } => TaskEventKind::AllocationFailed,
             Self::RetryReady { .. } => TaskEventKind::RetryReady,
             Self::ActiveRetryIdle { .. } => TaskEventKind::ActiveRetryIdle,
+            Self::ActiveRepresentationRestart { .. } => TaskEventKind::ActiveRepresentationRestart,
             Self::DataComplete { seed: false, .. } => TaskEventKind::DataComplete,
             Self::DataComplete { seed: true, .. } => TaskEventKind::BitTorrentPayloadComplete,
             Self::NoSpace { .. } => TaskEventKind::NoSpace,
@@ -1477,7 +1490,7 @@ mod tests {
         assert_eq!(drain_targets.len(), ALL_DRAIN_TARGETS.len());
         assert_eq!(effects.len(), ALL_TRANSITION_EFFECT_KINDS.len());
         assert_eq!(ALL_SCHEDULER_COMMAND_KINDS.len(), 9);
-        assert_eq!(ALL_TASK_EVENT_KINDS.len(), 30);
+        assert_eq!(ALL_TASK_EVENT_KINDS.len(), 31);
         assert_eq!(ALL_NO_SPACE_PROBE_ORIGINS.len(), 2);
         assert_eq!(ALL_SCHEDULER_COMMAND_HANDLINGS.len(), 3);
         assert_eq!(ALL_DRAIN_TARGETS.len(), 7);

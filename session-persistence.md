@@ -561,7 +561,11 @@ Global queue mutation:
 1. if a mutation requires a future generation, append/flush its sanitized
    `OptionsSnapshot(scope=NextAdmission)` before acknowledging it; after the old
    generation drains, admission appends/flushes the one `GenerationStarted`
-   record that references and promotes that snapshot,
+   record that references and promotes that snapshot. Automatic retry or
+   representation readmission performs the same ordering inside one bounded
+   persistence effect: append/flush the unchanged next-admission snapshot, then
+   append/flush `GenerationStarted`; a generation record without its staged
+   snapshot is invalid,
 2. one SQLite `BEGIN IMMEDIATE` transaction updates its queue/desired-state
    fields and journal snapshot hash; a cross-queue move shifts both queues and
    validates their final dense positions before commit,

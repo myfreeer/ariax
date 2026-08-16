@@ -554,6 +554,19 @@ impl ActiveTransferRequest {
         }
     }
 
+    /// Requests a newly persisted generation after the worker has drained and
+    /// determined that continuing the current representation is unsafe.
+    #[must_use]
+    pub fn restart_representation(self) -> RuntimeEventSubmission {
+        RuntimeEventSubmission {
+            event: TaskEvent::ActiveRepresentationRestart {
+                gid: self.identity.gid,
+                generation: self.identity.generation,
+            }
+            .for_task(self.identity.task_id),
+        }
+    }
+
     #[must_use]
     pub fn failed(self, error: PublicError) -> RuntimeEventSubmission {
         RuntimeEventSubmission {

@@ -52,6 +52,7 @@ pub enum StateReason {
     HostKeyApprovalRequired,
     AllocationTerminalFailure,
     LeaseRetry,
+    RepresentationRestart,
     PayloadReceived,
     BitTorrentSeeding,
     SlowSlotDemotion,
@@ -109,6 +110,7 @@ pub const ALL_STATE_REASONS: &[StateReason] = &[
     StateReason::HostKeyApprovalRequired,
     StateReason::AllocationTerminalFailure,
     StateReason::LeaseRetry,
+    StateReason::RepresentationRestart,
     StateReason::PayloadReceived,
     StateReason::BitTorrentSeeding,
     StateReason::SlowSlotDemotion,
@@ -169,6 +171,7 @@ impl StateReason {
             Self::HostKeyApprovalRequired => "host_key_approval_required",
             Self::AllocationTerminalFailure => "allocation_terminal_failure",
             Self::LeaseRetry => "lease_retry",
+            Self::RepresentationRestart => "representation_restart",
             Self::PayloadReceived => "payload_received",
             Self::BitTorrentSeeding => "bit_torrent_seeding",
             Self::SlowSlotDemotion => "slow_slot_demotion",
@@ -244,6 +247,7 @@ pub enum SchedulerAction {
     ActiveRestartOptionPatchPersistenceFailed,
     LeaseRetryableWithRunnableWork,
     LeaseRetryableWithoutRunnableWork,
+    RepresentationRestart,
     AllRequiredDataReceived,
     BitTorrentPayloadComplete,
     SlowSlotDemote,
@@ -318,6 +322,7 @@ pub const ALL_SCHEDULER_ACTIONS: &[SchedulerAction] = &[
     SchedulerAction::ActiveRestartOptionPatchPersistenceFailed,
     SchedulerAction::LeaseRetryableWithRunnableWork,
     SchedulerAction::LeaseRetryableWithoutRunnableWork,
+    SchedulerAction::RepresentationRestart,
     SchedulerAction::AllRequiredDataReceived,
     SchedulerAction::BitTorrentPayloadComplete,
     SchedulerAction::SlowSlotDemote,
@@ -401,6 +406,7 @@ impl SchedulerAction {
             }
             Self::LeaseRetryableWithRunnableWork => "lease_retryable_with_runnable_work",
             Self::LeaseRetryableWithoutRunnableWork => "lease_retryable_without_runnable_work",
+            Self::RepresentationRestart => "representation_restart",
             Self::AllRequiredDataReceived => "all_required_data_received",
             Self::BitTorrentPayloadComplete => "bit_torrent_payload_complete",
             Self::SlowSlotDemote => "slow_slot_demote",
@@ -563,6 +569,9 @@ impl SchedulerAction {
             }
             Self::LeaseRetryableWithoutRunnableWork => {
                 SchedulerActionSource::TaskEvent(TaskEventKind::ActiveRetryIdle)
+            }
+            Self::RepresentationRestart => {
+                SchedulerActionSource::TaskEvent(TaskEventKind::ActiveRepresentationRestart)
             }
             Self::AllRequiredDataReceived => {
                 SchedulerActionSource::TaskEvent(TaskEventKind::DataComplete)
@@ -1285,6 +1294,10 @@ pub const fn transition_contract(state: TaskState, action: SchedulerAction) -> T
             TaskState::Active => transition(StateReason::LeaseRetry, RETRY_WAIT_TARGET),
             _ => conflict(),
         },
+        SchedulerAction::RepresentationRestart => match state {
+            TaskState::Active => transition(StateReason::RepresentationRestart, ALLOCATING_TARGET),
+            _ => conflict(),
+        },
         SchedulerAction::AllRequiredDataReceived => match state {
             TaskState::Active => transition(StateReason::PayloadReceived, VERIFYING_TARGET),
             _ => conflict(),
@@ -1617,7 +1630,7 @@ mod tests {
             }
         }
         assert_eq!(cells, ALL_TASK_STATES.len() * ALL_SCHEDULER_ACTIONS.len());
-        assert_eq!(cells, 16 * 70);
+        assert_eq!(cells, 16 * 71);
     }
 
     #[test]

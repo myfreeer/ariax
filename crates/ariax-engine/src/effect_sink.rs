@@ -675,11 +675,62 @@ fn validate_plan(
             },
             [
                 PersistencePlanStep::AppendAndFlushJournal {
+                    gid: snapshot_gid,
+                    generation: snapshot_generation,
+                    payload:
+                        JournalPayload::OptionsSnapshot {
+                            scope,
+                            patch_id: snapshot_patch,
+                            snapshot_hash,
+                            options,
+                        },
+                },
+                PersistencePlanStep::AppendAndFlushJournal {
                     gid: journal_gid,
                     generation: journal_generation,
                     payload:
                         JournalPayload::GenerationStarted {
                             previous_generation,
+                            reason,
+                            next_snapshot_hash,
+                            patch_id: generation_patch,
+                        },
+                },
+            ],
+        ) => {
+            if snapshot_gid != gid || journal_gid != gid {
+                return Err(PersistencePlanError::IdentityMismatch);
+            }
+            if journal_generation != generation
+                || previous_generation.checked_next() != Some(*generation)
+                || snapshot_generation != previous_generation
+            {
+                return Err(PersistencePlanError::GenerationMismatch);
+            }
+            if *scope != OptionsSnapshotScope::NextAdmission
+                || snapshot_patch.is_some()
+                || generation_patch.is_some()
+                || *reason == ariax_storage::GenerationStartReason::OptionPatch
+                || snapshot_hash != next_snapshot_hash
+                || *snapshot_hash != options.snapshot_hash()
+            {
+                return Err(PersistencePlanError::StateMismatch);
+            }
+            Ok(())
+        }
+        (
+            TransitionEffect::PersistGenerationStarted {
+                gid, generation, ..
+            },
+            [
+                PersistencePlanStep::AppendAndFlushJournal {
+                    gid: journal_gid,
+                    generation: journal_generation,
+                    payload:
+                        JournalPayload::GenerationStarted {
+                            previous_generation,
+                            reason,
+                            patch_id,
                             ..
                         },
                 },
@@ -692,6 +743,9 @@ fn validate_plan(
                 || previous_generation.checked_next() != Some(*generation)
             {
                 return Err(PersistencePlanError::GenerationMismatch);
+            }
+            if *reason != ariax_storage::GenerationStartReason::OptionPatch || patch_id.is_none() {
+                return Err(PersistencePlanError::StateMismatch);
             }
             Ok(())
         }
@@ -1056,10 +1110,27 @@ fn validate_dispatched_plan(
         return Err(PersistencePlanError::GenerationMismatch);
     }
     for step in &plan.steps {
-        if let PersistencePlanStep::AppendAndFlushJournal { generation, .. } = step
+        if let PersistencePlanStep::AppendAndFlushJournal {
+            generation,
+            payload,
+            ..
+        } = step
             && *generation != dispatched.task_generation()
         {
-            return Err(PersistencePlanError::GenerationMismatch);
+            let stages_next_admission = matches!(
+                (dispatched.effect(), payload),
+                (
+                    TransitionEffect::PersistGenerationStarted { generation: next, .. },
+                    JournalPayload::OptionsSnapshot {
+                        scope: OptionsSnapshotScope::NextAdmission,
+                        patch_id: None,
+                        ..
+                    }
+                ) if generation.checked_next() == Some(*next)
+            );
+            if !stages_next_admission {
+                return Err(PersistencePlanError::GenerationMismatch);
+            }
         }
     }
     Ok(())
@@ -2487,6 +2558,62 @@ mod tests {
                 }],
             )
             .is_ok()
+        );
+
+        let options =
+            SanitizedOptionMap::new([("out".to_owned(), "file.bin".to_owned())]).expect("options");
+        let snapshot_hash = options.snapshot_hash();
+        assert!(
+            PersistenceEffectPlan::new(
+                TransitionEffect::PersistGenerationStarted {
+                    task_id: task_id(1),
+                    gid: task_gid,
+                    generation: next,
+                },
+                vec![
+                    PersistencePlanStep::AppendAndFlushJournal {
+                        gid: task_gid,
+                        generation: Generation::INITIAL,
+                        payload: JournalPayload::OptionsSnapshot {
+                            scope: OptionsSnapshotScope::NextAdmission,
+                            patch_id: None,
+                            snapshot_hash,
+                            options: options.clone(),
+                        },
+                    },
+                    PersistencePlanStep::AppendAndFlushJournal {
+                        gid: task_gid,
+                        generation: next,
+                        payload: JournalPayload::GenerationStarted {
+                            previous_generation: Generation::INITIAL,
+                            reason: GenerationStartReason::RetryReadmission,
+                            next_snapshot_hash: snapshot_hash,
+                            patch_id: None,
+                        },
+                    },
+                ],
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            PersistenceEffectPlan::new(
+                TransitionEffect::PersistGenerationStarted {
+                    task_id: task_id(1),
+                    gid: task_gid,
+                    generation: next,
+                },
+                vec![PersistencePlanStep::AppendAndFlushJournal {
+                    gid: task_gid,
+                    generation: next,
+                    payload: JournalPayload::GenerationStarted {
+                        previous_generation: Generation::INITIAL,
+                        reason: GenerationStartReason::RetryReadmission,
+                        next_snapshot_hash: snapshot_hash,
+                        patch_id: None,
+                    },
+                }],
+            ),
+            Err(PersistencePlanError::StateMismatch)
         );
     }
 }

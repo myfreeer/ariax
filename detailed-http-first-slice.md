@@ -21,11 +21,17 @@ and bounded Content-Length stdio framing. The older pinned-peer CLI remains as
 a diagnostic harness. A persisted user `checksum=sha-256=<64 hex>` now gates
 strict concurrent mirrors, verifies the descriptor-bound assembled file on a
 bounded blocking worker before `TaskComplete`, and permits digest-bound restart
-without a strong server validator. Endgame duplicate leases, RFC 9530/Metalink
-digest identity, additional checksum algorithms, Last-Modified and unsafe-
-override resume, HTTP/2, unknown-length or chunked layouts, WebSocket/NDJSON and
-non-loopback RPC, and the rest of the Phase-4 control plane remain outside this
-checkpoint.
+without a strong server validator. The persisted stale-validator policy is also
+executable: `fail` terminates before unvalidated bytes become durable,
+`revalidate` performs a fresh bounded range probe and requires the original
+identity unless a configured whole-file digest gates completion, and
+`restart-if-safe` drains the worker, stages the unchanged option snapshot,
+persists a new representation generation, invalidates all old durable pieces,
+and reopens only the exact task-owned output identity before rewriting from
+offset zero. Endgame duplicate leases, RFC 9530/Metalink digest identity,
+additional checksum algorithms, Last-Modified and unsafe-override resume,
+HTTP/2, unknown-length or chunked layouts, WebSocket/NDJSON and non-loopback
+RPC, and the rest of the Phase-4 control plane remain outside this checkpoint.
 
 This document defines HTTP(S) sequential download, resume, strict range
 validation, storage integration, retry integration, and stats behavior.
@@ -298,8 +304,18 @@ the exact binding before pending ranges can run; checksum-bound recovery may
 continue across a weak or changed server validator and verifies the complete
 descriptor-bound file before terminal publication. A fully durable checksum-
 bound file is reverified and completed locally without a network connection.
-Last-Modified and unsafe-override resume remain design-level policy and are not
-accepted by the checkpoint runner.
+For a mid-generation stale response, `fail` stops immediately; `revalidate`
+aborts the current lease, probes the submitted source again, and only retries
+when the original final URI, total length, and validator identity are restored.
+A configured whole-file checksum may accept a changed validator at that same
+resource because terminal publication still requires the exact expected
+digest. `restart-if-safe` is bounded by the task attempt cap and is authorized
+only after descriptor-bound reopening proves that the partial file is the
+task-owned output. The new `GenerationStarted(reason=representation_restart)`
+record clears old durable evidence before any replacement layout or lease can
+be admitted; crashes before or after the replacement layout therefore cannot
+publish mixed bytes. Last-Modified and unsafe-override resume remain
+design-level policy and are not accepted by the checkpoint runner.
 
 ## Cross-Mirror Entity Identity
 
@@ -554,7 +570,7 @@ Scheduler decides:
 - different mirror retry,
 - smaller lease retry,
 - sequential fallback,
-- stale validator restart,
+- stale-validator fail, fresh revalidation, or fenced representation restart,
 - terminal error.
 
 Retry wait releases buffers and does not block worker threads.
@@ -675,6 +691,16 @@ Required tests:
 - disk backpressure stops reads,
 - pause races with body read and disk completion,
 - stale validator creates restart/fail decision,
+- `fail` publishes a terminal stale-validator error without releasing the
+  rejected range,
+- `revalidate` restores the original validator through a fresh probe before a
+  retry and fails closed when that identity is not restored,
+- `restart-if-safe` advances exactly one persisted generation, clears old
+  durable pieces at the generation record, reopens the exact task-owned file,
+  redownloads every piece, and leaves the final file with no mixed old bytes,
+- a crash after the staged next-admission snapshot or after
+  `GenerationStarted(reason=representation_restart)` replays without admitting
+  old progress into the new generation,
 - range/resume requests send `Accept-Encoding: identity`,
 - content-coded body to a range request is rejected, not written,
 - strict concurrent multi-mirror split is refused unless the task has a shared

@@ -10,9 +10,10 @@ use crate::{
     HttpRangeCoordinatorConfig, HttpRangeCoordinatorError, HttpRangeFailure, HttpRangePoll,
     HttpRangeResponseError, HttpRangeResponseValidator, HttpRangeSource, HttpRetryBudget,
     HttpRetryCause, HttpRetryDecision, HttpRetryDelaySource, HttpRetryError, HttpRetryPolicy,
-    HttpRetryStopReason, HttpRetryTransportFailure, HttpTaskSpec, HttpTaskWorker,
-    HttpTransportError, HttpWorkerFuture, HttpWorkerSuccess, LeaseCommit, LeaseWritePlan,
-    RetryStateWrite, StorageEngine, StorageEngineConfig, StorageEngineError, WriteBlock,
+    HttpRetryStopReason, HttpRetryTransportFailure, HttpStaleValidatorPolicy, HttpTaskSpec,
+    HttpTaskWorker, HttpTransportError, HttpWorkerFuture, HttpWorkerSuccess, LeaseCommit,
+    LeaseWritePlan, RetryStateWrite, StorageEngine, StorageEngineConfig, StorageEngineError,
+    WriteBlock,
 };
 use ariax_core::{
     ErrorKind, FileId, Generation, Gid, LeaseId, MonotonicInstant, PersistedDelayDecision, PieceId,
@@ -840,6 +841,20 @@ impl HttpMultiRangeWorker {
         let durable_evidence = state.durable_pieces().clone();
         let (durable_pieces, durable_bytes) =
             verify_recovered_piece_digests(&output, &durable_evidence)?;
+        if recovered.layout().generation() != generation {
+            return Ok(PreparedHttpStorage::Readmission(Box::new(
+                ReadmissionPreparedHttpStorage {
+                    root,
+                    appender,
+                    previous_layout_hash: recovered.layout().layout_hash(),
+                    output,
+                    durable_evidence,
+                    durable_pieces,
+                    durable_bytes,
+                    retry_states: state.retry_states().values().cloned().collect(),
+                },
+            )));
+        }
         Ok(PreparedHttpStorage::Recovered(Box::new(
             RecoveredPreparedHttpStorage {
                 appender,
@@ -924,6 +939,65 @@ impl HttpMultiRangeWorker {
                         total_length,
                     )?;
                     verify_recovered_piece_validators(&durable_evidence, sources)?;
+                }
+                (
+                    appender,
+                    layout,
+                    output,
+                    durable_pieces,
+                    durable_bytes,
+                    retry_states,
+                )
+            }
+            PreparedHttpStorage::Readmission(readmission) => {
+                let ReadmissionPreparedHttpStorage {
+                    root,
+                    mut appender,
+                    previous_layout_hash,
+                    output,
+                    durable_evidence,
+                    mut durable_pieces,
+                    mut durable_bytes,
+                    retry_states,
+                } = *readmission;
+                output
+                    .set_len(total_length)
+                    .map_err(KnownLengthHttpError::from)?;
+                let layout = build_single_file_layout(
+                    task.task(),
+                    generation,
+                    &root,
+                    task.output(),
+                    &output,
+                    total_length,
+                    task.options().piece_length,
+                )?;
+                let retains_layout_identity = layout.layout_hash() == previous_layout_hash;
+                append_layout(&mut appender, &layout)?;
+                if !retains_layout_identity {
+                    durable_pieces.clear();
+                    durable_bytes = 0;
+                }
+                if task.options().checksum.is_none() {
+                    if retains_layout_identity {
+                        verify_recovered_piece_validators(&durable_evidence, sources)?;
+                    }
+                    if let [source] = sources.as_mut_slice()
+                        && let (Some(etag), Some(validator_fingerprint)) = (
+                            source.validator.if_range(),
+                            source.validator.strong_validator_fingerprint(),
+                        )
+                    {
+                        append_http_strong_validator(
+                            &mut appender,
+                            generation,
+                            source.validator.resource_fingerprint(),
+                            validator_fingerprint,
+                            total_length,
+                            etag,
+                        )?;
+                        source.lease_fingerprint = validator_fingerprint;
+                    }
                 }
                 (
                     appender,
@@ -1158,7 +1232,7 @@ impl HttpMultiRangeWorker {
             retry_policy,
         )?;
         let retry_elapsed_offset_ms = recovered_retries.elapsed_ms;
-        let validators = sources
+        let mut validators = sources
             .iter()
             .map(|source| (source.validator.source(), source.clone()))
             .collect::<BTreeMap<_, _>>();
@@ -1282,7 +1356,7 @@ impl HttpMultiRangeWorker {
                     let Some(event) = event else {
                         break 'download Err(HttpMultiRangeError::Protocol);
                     };
-                    if let Err(error) = process_attempt_event(
+                    match process_attempt_event(
                         event,
                         task.task(),
                         generation,
@@ -1294,7 +1368,29 @@ impl HttpMultiRangeWorker {
                         &mut active,
                         stats,
                     ).await {
-                        break 'download Err(error);
+                        Ok(()) => {}
+                        Err(HttpMultiRangeError::RevalidateSource(source)) => {
+                            let current = validators
+                                .get(&source)
+                                .cloned()
+                                .ok_or(HttpMultiRangeError::Protocol)?;
+                            match self
+                                .revalidate_range_source(
+                                    task,
+                                    current,
+                                    total_length,
+                                    cancellation,
+                                    stats,
+                                )
+                                .await
+                            {
+                                Ok(revalidated) => {
+                                    validators.insert(source, revalidated);
+                                }
+                                Err(error) => break 'download Err(error),
+                            }
+                        }
+                        Err(error) => break 'download Err(error),
                     }
                 }
                 joined = joins.join_next_with_id(), if !joins.is_empty() => {
@@ -1342,6 +1438,54 @@ impl HttpMultiRangeWorker {
         stats.set_active(0);
         outcome
     }
+
+    async fn revalidate_range_source(
+        &self,
+        task: &HttpTaskSpec,
+        current: PreparedSource,
+        total_length: u64,
+        cancellation: &HttpCancellation,
+        stats: &HttpTransferStats,
+    ) -> Result<PreparedSource, HttpMultiRangeError> {
+        let submitted = task
+            .sources()
+            .iter()
+            .find(|source| source.id() == current.validator.source())
+            .ok_or(HttpMultiRangeError::Protocol)?;
+        let mirror_identity = HttpMirrorIdentityContext {
+            policy: task.options().mirror_identity,
+            shared_whole_entity_digest: task.options().checksum.is_some(),
+        };
+        let fresh = probe_source(
+            &self.client,
+            submitted.id(),
+            submitted.uri(),
+            mirror_identity,
+            task.options().response_body_timeout,
+            cancellation,
+            stats,
+        )
+        .await
+        .map_err(|error| match error {
+            HttpMultiRangeError::Cancelled => HttpMultiRangeError::Cancelled,
+            _ => HttpMultiRangeError::StaleValidator,
+        })?;
+        if fresh.total_length() != total_length
+            || fresh.final_uri() != current.validator.final_uri()
+            || (task.options().checksum.is_none() && fresh != *current.validator)
+        {
+            return Err(HttpMultiRangeError::StaleValidator);
+        }
+        let lease_fingerprint = if task.options().checksum.is_some() {
+            fresh.fingerprint()
+        } else {
+            current.lease_fingerprint
+        };
+        Ok(PreparedSource {
+            validator: Arc::new(fresh),
+            lease_fingerprint,
+        })
+    }
 }
 
 impl HttpTaskWorker for HttpMultiRangeWorker {
@@ -1352,11 +1496,16 @@ impl HttpTaskWorker for HttpMultiRangeWorker {
         cancellation: HttpCancellation,
     ) -> HttpWorkerFuture {
         let worker = self.clone();
+        let retry_policy = task
+            .options()
+            .retry
+            .clone()
+            .unwrap_or_else(|| worker.config.retry.clone());
         Box::pin(async move {
             worker
                 .run_task(task, generation, cancellation)
                 .await
-                .map_err(HttpMultiRangeError::into_public)
+                .map_err(|error| error.into_public(&retry_policy, generation))
         })
     }
 }
@@ -1584,6 +1733,7 @@ struct OpenedTaskJournal {
 enum PreparedHttpStorage {
     Fresh(Box<FreshPreparedHttpStorage>),
     Recovered(Box<RecoveredPreparedHttpStorage>),
+    Readmission(Box<ReadmissionPreparedHttpStorage>),
 }
 
 struct FreshPreparedHttpStorage {
@@ -1602,6 +1752,17 @@ struct RecoveredPreparedHttpStorage {
     strong_validator: Option<RecoveredHttpStrongValidator>,
 }
 
+struct ReadmissionPreparedHttpStorage {
+    root: RootDirectoryCapability,
+    appender: ControlJournalAppender,
+    previous_layout_hash: ariax_storage::LayoutHash,
+    output: RootFileCapability,
+    durable_evidence: BTreeMap<PieceId, RecoveredDurablePiece>,
+    durable_pieces: Vec<PieceId>,
+    durable_bytes: u64,
+    retry_states: Vec<RecoveredRetryState>,
+}
+
 impl PreparedHttpStorage {
     fn fully_durable_length(&self) -> Option<u64> {
         let Self::Recovered(recovered) = self else {
@@ -1615,6 +1776,7 @@ impl PreparedHttpStorage {
         match self {
             Self::Fresh(fresh) => fresh.appender,
             Self::Recovered(recovered) => recovered.appender,
+            Self::Readmission(readmission) => readmission.appender,
         }
     }
 }
@@ -1848,6 +2010,9 @@ pub enum HttpMultiRangeError {
     IdentifierExhausted,
     Protocol,
     ChecksumMismatch,
+    StaleValidator,
+    RepresentationRestart,
+    RevalidateSource(UriId),
     Setup(KnownLengthHttpError),
     Storage(StorageEngineError),
     Coordinator(HttpRangeCoordinatorError),
@@ -1871,6 +2036,9 @@ impl HttpMultiRangeError {
             Self::IdentifierExhausted => "http_identifier_exhausted",
             Self::Protocol => "http_range_protocol_invariant",
             Self::ChecksumMismatch => "checksum_mismatch",
+            Self::StaleValidator => "stale_validator",
+            Self::RepresentationRestart => "representation_restart_required",
+            Self::RevalidateSource(_) => "http_revalidation_not_completed",
             Self::Setup(error) => error.code(),
             Self::Storage(error) => error.reject().code(),
             Self::Coordinator(error) => error.code(),
@@ -1878,16 +2046,19 @@ impl HttpMultiRangeError {
         }
     }
 
-    fn into_public(self) -> PublicError {
+    fn into_public(self, policy: &HttpRetryPolicy, generation: Generation) -> PublicError {
         let (kind, retry) = match &self {
             Self::Cancelled => (ErrorKind::Cancelled, RetryClass::Never),
             Self::Client(error) if error.retriable() => {
                 (ErrorKind::Network, RetryClass::AnotherSource)
             }
             Self::Client(_) => (ErrorKind::Network, RetryClass::Never),
-            Self::Response(HttpRangeResponseError::ValidatorChanged) => {
-                (ErrorKind::StaleValidator, RetryClass::RestartGeneration)
-            }
+            Self::Response(
+                HttpRangeResponseError::ValidatorChanged | HttpRangeResponseError::ResourceChanged,
+            ) => (
+                ErrorKind::StaleValidator,
+                stale_validator_retry_class(policy, generation),
+            ),
             Self::Response(_) | Self::ShortBody | Self::OversizedBody => {
                 (ErrorKind::InvalidRange, RetryClass::AnotherSource)
             }
@@ -1895,11 +2066,21 @@ impl HttpMultiRangeError {
                 KnownLengthHttpError::MissingStrongValidator
                 | KnownLengthHttpError::ResumeResourceMismatch
                 | KnownLengthHttpError::StaleValidator,
-            ) => (ErrorKind::StaleValidator, RetryClass::RestartGeneration),
+            ) => (
+                ErrorKind::StaleValidator,
+                stale_validator_retry_class(policy, generation),
+            ),
             Self::Setup(KnownLengthHttpError::DurablePieceDigestMismatch { .. }) => {
                 (ErrorKind::ChecksumMismatch, RetryClass::RestartGeneration)
             }
             Self::ChecksumMismatch => (ErrorKind::ChecksumMismatch, RetryClass::RestartGeneration),
+            Self::StaleValidator | Self::RevalidateSource(_) => {
+                (ErrorKind::StaleValidator, RetryClass::Never)
+            }
+            Self::RepresentationRestart => (
+                ErrorKind::StaleValidator,
+                bounded_representation_restart(policy, generation),
+            ),
             Self::Storage(_) | Self::Setup(_) => (ErrorKind::Disk, RetryClass::Never),
             Self::StatsCatalogFull => (ErrorKind::ResourceLimit, RetryClass::Never),
             Self::NoUsableSources | Self::SourceLengthMismatch | Self::Exhausted => {
@@ -1908,6 +2089,23 @@ impl HttpMultiRangeError {
             _ => (ErrorKind::InternalInvariant, RetryClass::Never),
         };
         PublicError::new(kind, self.code(), retry)
+    }
+}
+
+fn stale_validator_retry_class(policy: &HttpRetryPolicy, generation: Generation) -> RetryClass {
+    if policy.stale_validator_policy == HttpStaleValidatorPolicy::RestartIfSafe {
+        bounded_representation_restart(policy, generation)
+    } else {
+        RetryClass::Never
+    }
+}
+
+fn bounded_representation_restart(policy: &HttpRetryPolicy, generation: Generation) -> RetryClass {
+    let attempts_used = generation.get().saturating_add(1);
+    if attempts_used < u64::from(policy.max_attempts.get()) {
+        RetryClass::RestartGeneration
+    } else {
+        RetryClass::Never
     }
 }
 
@@ -2472,6 +2670,21 @@ fn apply_attempt_failure(
     let budget = budgets
         .get(&attempt.assignment.piece)
         .ok_or(HttpMultiRangeError::Protocol)?;
+    if cause == HttpRetryCause::StaleValidator {
+        coordinator.fail(attempt.assignment.lease, HttpRangeFailure::RetryAt(now_ms))?;
+        return match budget.policy().stale_validator_policy {
+            HttpStaleValidatorPolicy::Fail => Err(HttpMultiRangeError::StaleValidator),
+            HttpStaleValidatorPolicy::RestartIfSafe => {
+                Err(HttpMultiRangeError::RepresentationRestart)
+            }
+            HttpStaleValidatorPolicy::Revalidate => {
+                stats.add_retry();
+                Err(HttpMultiRangeError::RevalidateSource(
+                    attempt.assignment.source,
+                ))
+            }
+        };
+    }
     let decision = budget
         .decide_after_failure(
             attempt.assignment.source,
@@ -2718,7 +2931,10 @@ mod tests {
         HttpRetryBackoff, HttpTaskOptions, HttpTransportBudgets, KnownLengthHttpRecoveryRequest,
         recover_known_length_http,
     };
-    use ariax_storage::{JournalStateLimits, PathPlatform, ReplayLimits, SafePathBuilder};
+    use ariax_storage::{
+        GenerationStartReason, JournalPayload, JournalStateLimits, OptionsSnapshotScope,
+        PathPlatform, ReplayLimits, SafePathBuilder,
+    };
     use std::fs;
     use std::io::{Seek as _, SeekFrom, Write as _};
     use std::net::SocketAddr;
@@ -2941,6 +3157,84 @@ mod tests {
         (address, ranges, etag, task)
     }
 
+    async fn serve_validator_sequence(
+        data: Arc<[u8]>,
+        etags: Vec<&'static str>,
+    ) -> (
+        SocketAddr,
+        Arc<Mutex<Vec<(usize, usize)>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let ranges = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&ranges);
+        let task = tokio::spawn(async move {
+            for (index, etag) in etags.into_iter().enumerate() {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                let request = read_request_head(&mut stream).await;
+                let (start, end) = request_range(&request).expect("range request");
+                recorded
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push((start, end));
+                let body = &data[start..=end];
+                let response = format!(
+                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\nETag: {etag}\r\nConnection: close\r\n\r\n",
+                    body.len(),
+                    data.len()
+                );
+                stream.write_all(response.as_bytes()).await.expect("head");
+                if index != 1 {
+                    stream.write_all(body).await.expect("body");
+                }
+            }
+        });
+        (address, ranges, task)
+    }
+
+    async fn serve_representation_restart_mirror(
+        old: Arc<[u8]>,
+        replacement: Arc<[u8]>,
+    ) -> (
+        SocketAddr,
+        Arc<Mutex<Vec<(usize, usize)>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        assert_eq!(old.len(), replacement.len());
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let ranges = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&ranges);
+        let task = tokio::spawn(async move {
+            for index in 0..6 {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                let request = read_request_head(&mut stream).await;
+                let (start, end) = request_range(&request).expect("range request");
+                recorded
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push((start, end));
+                let (etag, data) = if index < 2 {
+                    ("\"v1\"", &old)
+                } else {
+                    ("\"v2\"", &replacement)
+                };
+                let body = &data[start..=end];
+                let response = format!(
+                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\nETag: {etag}\r\nConnection: close\r\n\r\n",
+                    body.len(),
+                    data.len()
+                );
+                stream.write_all(response.as_bytes()).await.expect("head");
+                if index != 2 {
+                    stream.write_all(body).await.expect("body");
+                }
+            }
+        });
+        (address, ranges, task)
+    }
+
     async fn observe_mirror_connection()
     -> (SocketAddr, Arc<AtomicBool>, tokio::task::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
@@ -3092,6 +3386,98 @@ mod tests {
             false,
         )
         .expect("task spec")
+    }
+
+    fn single_stream_task_with_retry(
+        root: &TestDirectory,
+        source: SocketAddr,
+        total_length: usize,
+        retry: HttpRetryPolicy,
+    ) -> HttpTaskSpec {
+        assert!(total_length >= MIB);
+        let options = HttpTaskOptions {
+            split: NonZeroUsize::new(1).expect("split"),
+            max_connections_per_server: NonZeroUsize::new(1).expect("per server"),
+            min_split_size: MIB as u64,
+            piece_length: MIB as u64,
+            connect_timeout: Duration::from_secs(5),
+            response_head_timeout: Duration::from_secs(5),
+            response_body_timeout: Duration::from_secs(5),
+            max_download_limit: 0,
+            lowest_speed_limit: 0,
+            mirror_identity: HttpMirrorIdentityPolicy::TrustSubmittedMirrors,
+            checksum: None,
+            retry: Some(retry),
+        };
+        HttpTaskSpec::new(
+            TaskId::new(1).expect("task"),
+            Gid::new(7).expect("gid"),
+            [format!("http://{source}/file")],
+            root.0.clone(),
+            SafePathBuilder::from_user_path("output.bin", PathPlatform::current())
+                .expect("safe output"),
+            options,
+            false,
+        )
+        .expect("task spec")
+    }
+
+    fn append_representation_generation(
+        journal: &TestDirectory,
+        task: &HttpTaskSpec,
+        generation: Generation,
+    ) {
+        let directory = http_journal_directory(&journal.0, task.gid());
+        let capability = JournalDirectoryCapability::open_trusted(&directory)
+            .expect("journal directory capability");
+        let paths = ControlJournalAppender::discover_segment_paths(
+            &capability,
+            ReplayLimits::default().max_segments,
+        )
+        .expect("journal paths");
+        let (mut appender, replay) = ControlJournalAppender::open_recovered(
+            &directory,
+            &paths,
+            task.gid(),
+            derive_http_journal_id(task.task(), task.gid()),
+            ReplayLimits::default(),
+            generation,
+            now_unix_ms().unwrap_or(0),
+        )
+        .expect("open journal for generation advance");
+        assert_eq!(replay.stop, ariax_storage::ReplayStop::CleanEnd);
+        let previous = Generation::new(generation.get().saturating_sub(1));
+        let options = task.persistence_options().expect("persistence options");
+        let snapshot_hash = options.snapshot_hash();
+        let snapshot = appender
+            .append_payload(
+                previous,
+                &JournalPayload::OptionsSnapshot {
+                    scope: OptionsSnapshotScope::NextAdmission,
+                    patch_id: None,
+                    snapshot_hash,
+                    options,
+                },
+            )
+            .expect("append next options");
+        appender
+            .flush(snapshot.sequence())
+            .expect("flush next options");
+        let started = appender
+            .append_payload(
+                generation,
+                &JournalPayload::GenerationStarted {
+                    previous_generation: previous,
+                    reason: GenerationStartReason::RepresentationRestart,
+                    next_snapshot_hash: snapshot_hash,
+                    patch_id: None,
+                },
+            )
+            .expect("append generation start");
+        appender
+            .flush(started.sequence())
+            .expect("flush generation start");
+        appender.close_flushed().expect("close advanced journal");
     }
 
     fn checksum(data: &[u8]) -> HttpContentChecksum {
@@ -3369,6 +3755,176 @@ mod tests {
                 .expect("next attempt"),
             2
         );
+    }
+
+    #[tokio::test]
+    async fn stale_validator_fail_stops_without_releasing_an_unvalidated_range() {
+        let root = TestDirectory::new("stale-fail-root");
+        let journal = TestDirectory::new("stale-fail-journal");
+        let expected = data(MIB);
+        let (mirror, ranges, server) =
+            serve_validator_sequence(Arc::clone(&expected), vec!["\"v1\"", "\"v2\""]).await;
+        let retry = HttpRetryPolicy {
+            stale_validator_policy: HttpStaleValidatorPolicy::Fail,
+            ..HttpRetryPolicy::default()
+        };
+        let spec = single_stream_task_with_retry(&root, mirror, expected.len(), retry);
+        let stats = SharedHttpTransferStats::new(NonZeroUsize::new(1).expect("stats"));
+
+        assert!(matches!(
+            worker(&journal, stats.clone(), 1)
+                .run_task(
+                    Arc::new(spec.clone()),
+                    Generation::INITIAL,
+                    HttpCancellation::new(),
+                )
+                .await,
+            Err(HttpMultiRangeError::StaleValidator)
+        ));
+        server.await.expect("server");
+        assert_eq!(
+            *ranges
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![(0, 0), (0, MIB - 1)]
+        );
+        assert_eq!(stats.get(spec.task()).unwrap().snapshot().durable_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn stale_validator_revalidate_requires_the_original_identity_then_retries() {
+        let root = TestDirectory::new("stale-revalidate-root");
+        let journal = TestDirectory::new("stale-revalidate-journal");
+        let expected = data(MIB);
+        let (mirror, ranges, server) = serve_validator_sequence(
+            Arc::clone(&expected),
+            vec!["\"v1\"", "\"v2\"", "\"v1\"", "\"v1\""],
+        )
+        .await;
+        let retry = HttpRetryPolicy {
+            max_attempts: NonZeroU32::new(3).expect("attempts"),
+            max_attempts_per_mirror: NonZeroU32::new(3).expect("mirror attempts"),
+            stale_validator_policy: HttpStaleValidatorPolicy::Revalidate,
+            ..HttpRetryPolicy::default()
+        };
+        let spec = single_stream_task_with_retry(&root, mirror, expected.len(), retry);
+        let stats = SharedHttpTransferStats::new(NonZeroUsize::new(1).expect("stats"));
+
+        worker(&journal, stats.clone(), 1)
+            .run_task(
+                Arc::new(spec.clone()),
+                Generation::INITIAL,
+                HttpCancellation::new(),
+            )
+            .await
+            .expect("revalidated transfer");
+        server.await.expect("server");
+        assert_eq!(
+            *ranges
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![(0, 0), (0, MIB - 1), (0, 0), (0, MIB - 1)]
+        );
+        assert_eq!(
+            fs::read(root.0.join("output.bin")).expect("output"),
+            expected.as_ref()
+        );
+        assert_eq!(stats.get(spec.task()).unwrap().snapshot().retry_count, 1);
+    }
+
+    #[tokio::test]
+    async fn restart_if_safe_discards_old_progress_and_rewrites_the_whole_entity() {
+        let root = TestDirectory::new("representation-restart-root");
+        let journal = TestDirectory::new("representation-restart-journal");
+        let old: Arc<[u8]> = vec![0x11; 2 * MIB].into();
+        let replacement: Arc<[u8]> = vec![0x77; 2 * MIB].into();
+        let (mirror, ranges, server) =
+            serve_representation_restart_mirror(Arc::clone(&old), Arc::clone(&replacement)).await;
+        let retry = HttpRetryPolicy {
+            max_attempts: NonZeroU32::new(3).expect("attempts"),
+            max_attempts_per_mirror: NonZeroU32::new(3).expect("mirror attempts"),
+            stale_validator_policy: HttpStaleValidatorPolicy::RestartIfSafe,
+            ..HttpRetryPolicy::default()
+        };
+        let spec = single_stream_task_with_retry(&root, mirror, old.len(), retry);
+        let stats = SharedHttpTransferStats::new(NonZeroUsize::new(1).expect("stats"));
+
+        assert!(matches!(
+            worker(&journal, stats.clone(), 1)
+                .run_task(
+                    Arc::new(spec.clone()),
+                    Generation::INITIAL,
+                    HttpCancellation::new(),
+                )
+                .await,
+            Err(HttpMultiRangeError::RepresentationRestart)
+        ));
+        let partial = fs::read(root.0.join("output.bin")).expect("partial output");
+        assert_eq!(&partial[..MIB], &old[..MIB]);
+        assert_ne!(partial, replacement.as_ref());
+
+        let next = Generation::new(1);
+        append_representation_generation(&journal, &spec, next);
+        worker(&journal, stats, 1)
+            .run_task(Arc::new(spec.clone()), next, HttpCancellation::new())
+            .await
+            .expect("replacement generation");
+        server.await.expect("server");
+
+        assert_eq!(
+            fs::read(root.0.join("output.bin")).expect("replacement output"),
+            replacement.as_ref()
+        );
+        assert_eq!(
+            *ranges
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![
+                (0, 0),
+                (0, MIB - 1),
+                (MIB, 2 * MIB - 1),
+                (0, 0),
+                (0, MIB - 1),
+                (MIB, 2 * MIB - 1),
+            ]
+        );
+        let recovered = recover_known_length_http(&KnownLengthHttpRecoveryRequest {
+            task: spec.task(),
+            gid: spec.gid(),
+            journal_id: derive_http_journal_id(spec.task(), spec.gid()),
+            generation: next,
+            journal_directory: http_journal_directory(&journal.0, spec.gid()),
+            output_root: root.0.clone(),
+            replay_limits: ReplayLimits::default(),
+            state_limits: JournalStateLimits::default(),
+        })
+        .expect("recover replacement generation");
+        assert_eq!(recovered.durable_prefix, (2 * MIB) as u64);
+    }
+
+    #[test]
+    fn representation_restart_public_class_is_policy_and_generation_bounded() {
+        let policy = HttpRetryPolicy {
+            max_attempts: NonZeroU32::new(2).expect("attempts"),
+            stale_validator_policy: HttpStaleValidatorPolicy::RestartIfSafe,
+            ..HttpRetryPolicy::default()
+        };
+        let first =
+            HttpMultiRangeError::RepresentationRestart.into_public(&policy, Generation::INITIAL);
+        assert_eq!(first.kind(), ErrorKind::StaleValidator);
+        assert_eq!(first.retry_class(), RetryClass::RestartGeneration);
+
+        let exhausted =
+            HttpMultiRangeError::RepresentationRestart.into_public(&policy, Generation::new(1));
+        assert_eq!(exhausted.retry_class(), RetryClass::Never);
+
+        let fail = HttpRetryPolicy {
+            stale_validator_policy: HttpStaleValidatorPolicy::Fail,
+            ..policy
+        };
+        let terminal = HttpMultiRangeError::Setup(KnownLengthHttpError::StaleValidator)
+            .into_public(&fail, Generation::INITIAL);
+        assert_eq!(terminal.retry_class(), RetryClass::Never);
     }
 
     #[tokio::test]

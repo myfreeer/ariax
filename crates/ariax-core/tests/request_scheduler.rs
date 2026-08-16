@@ -1347,6 +1347,66 @@ fn stale_duplicate_and_wrong_retry_tokens_never_mutate_state() {
 }
 
 #[test]
+fn active_representation_restart_is_an_immediate_persisted_generation_fence() {
+    let at = MonotonicInstant::now();
+    let task_gid = gid(1);
+    let mut scheduler = new_scheduler(1, 1, false);
+    let initial = make_active(&mut scheduler, task_id(1), task_gid, at);
+
+    let outcome = scheduler
+        .handle_event_at(
+            TaskEvent::ActiveRepresentationRestart {
+                gid: task_gid,
+                generation: initial,
+            },
+            later(at, 4),
+        )
+        .expect("request representation restart");
+    let next = initial.checked_next().expect("next generation");
+    assert_transition(
+        &outcome,
+        TaskState::Active,
+        TaskState::Allocating,
+        StateReason::RepresentationRestart,
+    );
+    assert!(outcome.effects.iter().any(|effect| matches!(
+        effect,
+        TransitionEffect::PersistGenerationStarted {
+            task_id: effect_task,
+            gid,
+            generation,
+        } if *effect_task == task_id(1) && *gid == task_gid && *generation == next
+    )));
+    assert!(
+        outcome
+            .effects
+            .iter()
+            .all(|effect| !matches!(effect, TransitionEffect::ScheduleRetry { .. }))
+    );
+    let view = scheduler.task(task_gid).expect("restarting task");
+    assert_eq!(view.generation, next);
+    assert_eq!(view.slot, SlotOwnership::Reserved);
+    assert_eq!(
+        view.pending_barrier,
+        Some(PendingBarrier::GenerationPersistence { generation: next })
+    );
+
+    let persisted = scheduler
+        .handle_event_at(
+            TaskEvent::GenerationPersisted {
+                gid: task_gid,
+                generation: next,
+            },
+            later(at, 5),
+        )
+        .expect("persist restart generation");
+    assert!(persisted.effects.iter().any(|effect| matches!(
+        effect,
+        TransitionEffect::StartAllocation { generation, .. } if *generation == next
+    )));
+}
+
+#[test]
 fn no_space_probe_completion_preserves_a_later_user_pause() {
     let at = MonotonicInstant::now();
     let task_gid = gid(1);

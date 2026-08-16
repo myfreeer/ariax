@@ -2507,6 +2507,9 @@ impl RequestScheduler {
             TaskEvent::ActiveRetryIdle { retry_at, .. } => {
                 self.active_retry_idle(original, retry_at, at)
             }
+            TaskEvent::ActiveRepresentationRestart { .. } => {
+                self.active_representation_restart(original, at)
+            }
             TaskEvent::DataComplete { seed, .. } => self.data_complete(original, seed, at),
             TaskEvent::NoSpace { condition, .. } => self.no_space(original, condition, at),
             TaskEvent::TerminalFailure { error, .. } => self.terminal_failure(original, error, at),
@@ -3105,6 +3108,31 @@ impl RequestScheduler {
             effects,
             true,
             ids,
+        )
+    }
+
+    fn active_representation_restart(
+        &mut self,
+        original: ScheduledTask,
+        at: MonotonicInstant,
+    ) -> Result<SchedulerOutcome, SchedulerError> {
+        let action = SchedulerAction::RepresentationRestart;
+        if let Some(outcome) = Self::stale_if_rejected_event(&original, action, at)? {
+            return Ok(outcome);
+        }
+        let mut updated = original.clone();
+        let mut effects = Vec::new();
+        self.plan_admission(&mut updated, action, &mut effects)?;
+        Self::mark_non_token_event(&mut updated, TaskEventKind::ActiveRepresentationRestart);
+        self.finish_action(
+            original,
+            Some(updated),
+            true,
+            action,
+            at,
+            effects,
+            true,
+            self.ids,
         )
     }
 

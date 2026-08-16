@@ -463,6 +463,12 @@ impl HttpWorkerSupervisor {
                 self.enqueue_event(data_complete)?;
                 self.enqueue_event(verifying.succeeded())
             }
+            Err(error)
+                if error.kind() == ErrorKind::StaleValidator
+                    && error.retry_class() == RetryClass::RestartGeneration =>
+            {
+                self.enqueue_event(worker.authority.restart_representation())
+            }
             Err(error) => self.enqueue_event(worker.authority.failed(error)),
         }
     }
@@ -644,6 +650,79 @@ mod tests {
         ));
         assert!(matches!(events[2], TaskEvent::VerificationSucceeded { .. }));
         assert_eq!(supervisor.active_workers(), 0);
+    }
+
+    #[tokio::test]
+    async fn stale_restart_class_requests_a_new_generation_after_worker_drain() {
+        let runtime = runtime(8);
+        let tasks = SharedHttpTaskCatalog::new(NonZeroUsize::new(1).expect("tasks"));
+        tasks.insert(task(task_id(1), gid(7))).expect("insert");
+        runtime.enqueue_allocation_for_test(task_id(1), gid(7), Generation::INITIAL);
+        let worker = Arc::new(ImmediateWorker {
+            result: Mutex::new(Some(Err(PublicError::new(
+                ErrorKind::StaleValidator,
+                "representation_restart_required",
+                RetryClass::RestartGeneration,
+            )))),
+        });
+        let mut supervisor = HttpWorkerSupervisor::new(runtime.clone(), tasks, worker, config(1))
+            .expect("supervisor");
+
+        supervisor
+            .poll_once(MonotonicInstant::now())
+            .expect("start");
+        tokio::task::yield_now().await;
+        supervisor.poll_once(MonotonicInstant::now()).expect("reap");
+
+        assert!(matches!(
+            runtime
+                .poll_event_at(MonotonicInstant::now())
+                .expect("allocation")
+                .into_event(),
+            TaskEvent::AllocationSucceeded { .. }
+        ));
+        assert!(matches!(
+            runtime
+                .poll_event_at(MonotonicInstant::now())
+                .expect("restart")
+                .into_event(),
+            TaskEvent::ActiveRepresentationRestart { .. }
+        ));
+        assert!(runtime.poll_event_at(MonotonicInstant::now()).is_none());
+    }
+
+    #[tokio::test]
+    async fn non_validator_restart_class_remains_a_terminal_worker_failure() {
+        let runtime = runtime(8);
+        let tasks = SharedHttpTaskCatalog::new(NonZeroUsize::new(1).expect("tasks"));
+        tasks.insert(task(task_id(1), gid(7))).expect("insert");
+        runtime.enqueue_allocation_for_test(task_id(1), gid(7), Generation::INITIAL);
+        let worker = Arc::new(ImmediateWorker {
+            result: Mutex::new(Some(Err(PublicError::new(
+                ErrorKind::ChecksumMismatch,
+                "checksum_mismatch",
+                RetryClass::RestartGeneration,
+            )))),
+        });
+        let mut supervisor = HttpWorkerSupervisor::new(runtime.clone(), tasks, worker, config(1))
+            .expect("supervisor");
+
+        supervisor
+            .poll_once(MonotonicInstant::now())
+            .expect("start");
+        tokio::task::yield_now().await;
+        supervisor.poll_once(MonotonicInstant::now()).expect("reap");
+        let _allocation = runtime
+            .poll_event_at(MonotonicInstant::now())
+            .expect("allocation");
+        assert!(matches!(
+            runtime
+                .poll_event_at(MonotonicInstant::now())
+                .expect("failure")
+                .into_event(),
+            TaskEvent::TerminalFailure { error, .. }
+                if error.kind() == ErrorKind::ChecksumMismatch
+        ));
     }
 
     #[tokio::test]

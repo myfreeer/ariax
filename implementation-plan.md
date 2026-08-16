@@ -15,13 +15,16 @@ supervision; pre-network descriptor-bound SHA-256 validation of recovered
 pieces; exact strong-ETag/resource/length recovery binding for single-source and
 strict-fallback range tasks; persisted user SHA-256 final verification and
 digest-bound restart; strict concurrent mirrors when that checksum is present;
-and `addUri`, `tellStatus`, `pause`, `remove`, and `getGlobalStat` over loopback
-HTTP and Content-Length stdio. The bundled Mozilla Public Suffix List is
-version/hash/license pinned and verified by generated contracts.
+bounded stale-validator `fail`, fresh `revalidate`, and descriptor-authorized
+`restart-if-safe` with crash-safe generation persistence and old-progress
+invalidation; and `addUri`, `tellStatus`, `pause`, `remove`, and
+`getGlobalStat` over loopback HTTP and Content-Length stdio. The bundled Mozilla
+Public Suffix List is version/hash/license pinned and verified by generated
+contracts.
 
 The checkpoint intentionally does not complete all of Phase 3 or the project
 definition of done. Endgame duplicate ranges, RFC 9530/Metalink digest identity,
-additional checksum algorithms and the remaining validator policies, HTTP/2,
+additional checksum algorithms, Last-Modified/unsafe-override resume, HTTP/2,
 growing/chunked transfers, benchmarks, hot-backup crash-residue reconciliation,
 the broader Phase-4 control plane, and the full release-platform matrix remain
 phase/tag gates.
@@ -230,10 +233,13 @@ journaled durable-piece SHA-256 evidence before network access and requires the
 exact persisted strong ETag, resource fingerprint, and length before releasing
 pending ranges. A persisted user SHA-256 checksum additionally admits strict
 concurrent mirrors, permits digest-bound recovery, and gates `TaskComplete` on a
-bounded descriptor-based whole-file hash. Endgame duplicate ranges, RFC 9530
-and Metalink digest identity, additional checksum algorithms, the remaining
-validator policies, and the full Phase-3 exit criteria below still gate a later
-phase completion claim.
+bounded descriptor-based whole-file hash. Stale-validator `fail`, fresh
+`revalidate`, and bounded `restart-if-safe` are wired through public option
+admission, worker supervision, exact next-admission snapshot persistence, and a
+new generation that invalidates all old durable pieces before descriptor-bound
+rewrite. Endgame duplicate ranges, RFC 9530 and Metalink digest identity,
+additional checksum algorithms, Last-Modified/unsafe-override resume, and the
+full Phase-3 exit criteria below still gate a later phase completion claim.
 
 Detailed design input:
 
