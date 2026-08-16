@@ -184,8 +184,8 @@ pub use startup_native::{
     NativeStartupExecutor, NativeStartupPoll, NativeStartupResult, complete_native_startup,
 };
 pub use storage_engine::{
-    LeaseCommit, LeaseWritePlan, StorageEngine, StorageEngineConfig, StorageEngineError, WriteAck,
-    WriteBlock, WriteReject,
+    LeaseCommit, LeaseWritePlan, RetryStateWrite, StorageEngine, StorageEngineConfig,
+    StorageEngineError, WriteAck, WriteBlock, WriteReject,
 };
 
 use ariax_core::{

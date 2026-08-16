@@ -8,17 +8,18 @@ task/source/current-option persistence before scheduler publication;
 source-aware restart recovery; verified TLS and bounded HTTP/1.1 reuse;
 policy-owned DNS cache/TTL/singleflight, generated special-use filtering and
 Happy Eyeballs; redirect/proxy/auth/cookie policy; non-overlapping range leases
-with bounded retry and durable-piece restart; packet-independent live stats;
-real worker supervision; and `addUri`, `tellStatus`, `pause`, `remove`, and
-`getGlobalStat` over loopback HTTP and Content-Length stdio. The bundled Mozilla
-Public Suffix List is version/hash/license pinned and verified by generated
-contracts.
+with bounded persisted retry and durable-piece restart; process-owned transport
+pooling, bounded body ingress, hierarchical download-rate arbitration,
+lowest-speed/stall diagnostics, packet-independent live stats, real worker
+supervision; and `addUri`, `tellStatus`, `pause`, `remove`, and `getGlobalStat`
+over loopback HTTP and Content-Length stdio. The bundled Mozilla Public Suffix
+List is version/hash/license pinned and verified by generated contracts.
 
 The checkpoint intentionally does not complete all of Phase 3 or the project
-definition of done. Rate limiting/stall policy, endgame duplicate ranges,
-broader validators and digests, HTTP/2, growing/chunked transfers, benchmarks,
-hot-backup crash-residue reconciliation, the broader Phase-4 control plane, and
-the full release-platform matrix remain phase/tag gates.
+definition of done. Endgame duplicate ranges, broader validators and digests,
+HTTP/2, growing/chunked transfers, benchmarks, hot-backup crash-residue
+reconciliation, the broader Phase-4 control plane, and the full release-platform
+matrix remain phase/tag gates.
 
 This is a staged plan for building the design without repeating the incomplete
 rewrite pattern. The native-startup orchestration boundary, central-journal
@@ -217,10 +218,10 @@ Exit criteria:
   by the first implementation slice; the full control plane remains Phase 4.
 
 Phase-3B checkpoint boundary: the items above are executable for known-length
-HTTP(S) with ordinary multi-mirror URI admission, except that rate limiting,
-stall diagnostics beyond packet-independent speed decay, and endgame duplicate
-ranges remain deliberately deferred. The full Phase-3 exit criteria below still
-gate a later phase completion claim.
+HTTP(S) with ordinary multi-mirror URI admission, including bounded ingress,
+hierarchical rate limiting, lowest-speed diagnostics, and persisted range retry
+waits. Endgame duplicate ranges, stronger resume identity/digests, and the full
+Phase-3 exit criteria below still gate a later phase completion claim.
 
 Detailed design input:
 

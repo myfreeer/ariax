@@ -120,7 +120,6 @@ enum PieceState {
 #[derive(Clone, Debug)]
 struct SourceState {
     source: HttpRangeSource,
-    retry_at_ms: u64,
     disabled: bool,
 }
 
@@ -171,6 +170,7 @@ pub struct HttpRangeCoordinator {
     pieces: Vec<PieceState>,
     piece_attempts: Vec<u32>,
     source_piece_attempts: BTreeMap<(usize, usize), u32>,
+    source_piece_retry_at: BTreeMap<(usize, usize), u64>,
     active: BTreeMap<LeaseId, ActiveRange>,
     active_by_origin: BTreeMap<Arc<str>, usize>,
     next_lease: u64,
@@ -214,7 +214,6 @@ impl HttpRangeCoordinator {
             }
             source_states.push(SourceState {
                 source,
-                retry_at_ms: 0,
                 disabled: false,
             });
         }
@@ -227,6 +226,7 @@ impl HttpRangeCoordinator {
             pieces: vec![PieceState::Pending; piece_count],
             piece_attempts: vec![0; piece_count],
             source_piece_attempts: BTreeMap::new(),
+            source_piece_retry_at: BTreeMap::new(),
             active: BTreeMap::new(),
             active_by_origin: BTreeMap::new(),
             next_lease: 1,
@@ -330,6 +330,59 @@ impl HttpRangeCoordinator {
         Ok(())
     }
 
+    /// Restores the completed number of attempts for a pending piece before
+    /// replayed retry work is admitted. The stored value includes the initial
+    /// attempt and is therefore never zero.
+    pub fn restore_piece_attempts(
+        &mut self,
+        piece: PieceId,
+        attempts: u32,
+    ) -> Result<(), HttpRangeCoordinatorError> {
+        let index =
+            usize::try_from(piece.get()).map_err(|_| HttpRangeCoordinatorError::InvalidConfig)?;
+        if attempts == 0
+            || attempts > self.config.max_total_attempts
+            || self.pieces.get(index) != Some(&PieceState::Pending)
+            || self.piece_attempts.get(index).copied() != Some(0)
+        {
+            return Err(HttpRangeCoordinatorError::InvalidConfig);
+        }
+        self.piece_attempts[index] = attempts;
+        self.retry_count = self.retry_count.saturating_add(attempts.saturating_sub(1));
+        Ok(())
+    }
+
+    /// Restores one source-specific retry delay and accounting row. Delays are
+    /// relative to the new process monotonic origin and may be zero when the
+    /// persisted wait has already elapsed.
+    pub fn restore_source_piece_retry(
+        &mut self,
+        piece: PieceId,
+        source: UriId,
+        attempts: u32,
+        retry_at_ms: u64,
+    ) -> Result<(), HttpRangeCoordinatorError> {
+        let piece_index =
+            usize::try_from(piece.get()).map_err(|_| HttpRangeCoordinatorError::InvalidConfig)?;
+        let source_index = self
+            .sources
+            .iter()
+            .position(|candidate| candidate.source.id() == source)
+            .ok_or(HttpRangeCoordinatorError::InvalidSource)?;
+        let key = (piece_index, source_index);
+        if attempts == 0
+            || attempts > self.config.max_attempts_per_source
+            || self.pieces.get(piece_index) != Some(&PieceState::Pending)
+            || self.piece_attempts.get(piece_index).copied().unwrap_or(0) < attempts
+            || self.source_piece_attempts.contains_key(&key)
+        {
+            return Err(HttpRangeCoordinatorError::InvalidConfig);
+        }
+        self.source_piece_attempts.insert(key, attempts);
+        self.source_piece_retry_at.insert(key, retry_at_ms);
+        Ok(())
+    }
+
     pub fn complete(&mut self, lease: LeaseId) -> Result<(), HttpRangeCoordinatorError> {
         let active = self.release_active(lease)?;
         let PieceState::Active(owner) = self.pieces[active.piece_index] else {
@@ -339,6 +392,10 @@ impl HttpRangeCoordinator {
             return Err(HttpRangeCoordinatorError::UnknownLease);
         }
         self.pieces[active.piece_index] = PieceState::Durable;
+        self.source_piece_attempts
+            .retain(|(piece, _), _| *piece != active.piece_index);
+        self.source_piece_retry_at
+            .retain(|(piece, _), _| *piece != active.piece_index);
         self.completed_pieces += 1;
         self.completed_length = self.completed_length.saturating_add(
             self.piece_length(active.piece_index)
@@ -364,7 +421,9 @@ impl HttpRangeCoordinator {
         match failure {
             HttpRangeFailure::DisableSource => source.disabled = true,
             HttpRangeFailure::RetryAt(retry_at_ms) => {
-                source.retry_at_ms = source.retry_at_ms.max(retry_at_ms);
+                let key = (active.piece_index, active.source_index);
+                let retry_at = self.source_piece_retry_at.entry(key).or_default();
+                *retry_at = (*retry_at).max(retry_at_ms);
             }
         }
         Ok(())
@@ -410,8 +469,13 @@ impl HttpRangeCoordinator {
                     .iter()
                     .enumerate()
                     .filter(move |(source_index, source)| {
+                        let retry_at_ms = self
+                            .source_piece_retry_at
+                            .get(&(piece, *source_index))
+                            .copied()
+                            .unwrap_or(0);
                         !source.disabled
-                            && source.retry_at_ms > now_ms
+                            && retry_at_ms > now_ms
                             && self
                                 .source_piece_attempts
                                 .get(&(piece, *source_index))
@@ -419,15 +483,24 @@ impl HttpRangeCoordinator {
                                 .unwrap_or(0)
                                 < self.config.max_attempts_per_source
                     })
-                    .map(|(_, source)| source.retry_at_ms)
+                    .filter_map(move |(source_index, _)| {
+                        self.source_piece_retry_at
+                            .get(&(piece, source_index))
+                            .copied()
+                    })
             })
             .min()
     }
 
     fn source_available(&self, piece: usize, source_index: usize, now_ms: u64) -> bool {
         let source = &self.sources[source_index];
+        let retry_at_ms = self
+            .source_piece_retry_at
+            .get(&(piece, source_index))
+            .copied()
+            .unwrap_or(0);
         !source.disabled
-            && source.retry_at_ms <= now_ms
+            && retry_at_ms <= now_ms
             && self
                 .source_piece_attempts
                 .get(&(piece, source_index))
@@ -576,6 +649,52 @@ mod tests {
             HttpRangePoll::Exhausted
         );
         assert_eq!(coordinator.stats().retry_count, 1);
+    }
+
+    #[test]
+    fn restored_piece_retry_wait_preserves_caps_without_stalling_other_pieces() {
+        let mut retry_config = config();
+        retry_config.total_length = 8;
+        retry_config.split = NonZeroUsize::new(1).expect("nonzero");
+        let mut coordinator =
+            HttpRangeCoordinator::new(retry_config, [source(0, "https://one.example/a")])
+                .expect("coordinator starts");
+        let delayed = PieceId::new(0);
+        coordinator
+            .restore_piece_attempts(delayed, 1)
+            .expect("piece attempts restore");
+        coordinator
+            .restore_source_piece_retry(delayed, UriId::new(0), 1, 100)
+            .expect("source retry restores");
+
+        let HttpRangePoll::Assignment(available) = coordinator.poll(99).expect("other piece poll")
+        else {
+            panic!("the other piece remains assignable");
+        };
+        assert_eq!(available.piece, PieceId::new(1));
+        coordinator
+            .complete(available.lease)
+            .expect("piece completes");
+        assert_eq!(
+            coordinator.poll(99).expect("restored wait poll"),
+            HttpRangePoll::RetryAt(100)
+        );
+        let HttpRangePoll::Assignment(retry) = coordinator.poll(100).expect("retry poll") else {
+            panic!("restored retry becomes assignable");
+        };
+        assert_eq!(retry.piece, delayed);
+        assert_eq!(coordinator.stats().retry_count, 1);
+
+        let mut invalid =
+            HttpRangeCoordinator::new(retry_config, [source(0, "https://one.example/a")])
+                .expect("coordinator starts");
+        invalid
+            .restore_piece_attempts(delayed, 1)
+            .expect("piece attempts restore");
+        assert!(matches!(
+            invalid.restore_source_piece_retry(delayed, UriId::new(0), 2, 100),
+            Err(HttpRangeCoordinatorError::InvalidConfig)
+        ));
     }
 
     #[test]

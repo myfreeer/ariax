@@ -631,6 +631,7 @@ pub enum HttpRetryError {
     InvalidProfile,
     InvalidTriggerSet,
     InvalidStatusSet,
+    InvalidRecoveredState,
     AttemptCap,
     FailureWithoutAttempt,
 }
@@ -643,6 +644,7 @@ impl HttpRetryError {
             Self::InvalidProfile => "invalid_retry_profile",
             Self::InvalidTriggerSet => "invalid_retry_trigger_set",
             Self::InvalidStatusSet => "invalid_retry_status_set",
+            Self::InvalidRecoveredState => "invalid_recovered_retry_state",
             Self::AttemptCap => "retry_attempt_cap",
             Self::FailureWithoutAttempt => "retry_failure_without_attempt",
         }
@@ -689,6 +691,36 @@ impl HttpRetryBudget {
         self.attempts += 1;
         *self.attempts_by_mirror.entry(mirror).or_default() += 1;
         Ok(self.attempts)
+    }
+
+    pub fn restore_attempts(
+        &mut self,
+        attempts: u32,
+        attempts_by_mirror: BTreeMap<UriId, u32>,
+    ) -> Result<(), HttpRetryError> {
+        if self.attempts != 0
+            || !self.attempts_by_mirror.is_empty()
+            || attempts == 0
+            || attempts > self.policy.max_attempts.get()
+            || attempts_by_mirror.values().any(|attempts| {
+                *attempts == 0 || *attempts > self.policy.max_attempts_per_mirror.get()
+            })
+            || attempts_by_mirror
+                .values()
+                .copied()
+                .try_fold(0_u32, u32::checked_add)
+                != Some(attempts)
+        {
+            return Err(HttpRetryError::InvalidRecoveredState);
+        }
+        self.attempts = attempts;
+        self.attempts_by_mirror = attempts_by_mirror;
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn attempts_for_mirror(&self, mirror: UriId) -> u32 {
+        self.attempts_by_mirror.get(&mirror).copied().unwrap_or(0)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1110,6 +1142,24 @@ mod tests {
                 delay: Duration::from_secs(2),
                 source: HttpRetryDelaySource::FixedBackoff,
             }
+        );
+    }
+
+    #[test]
+    fn restored_attempts_preserve_total_and_per_mirror_caps() {
+        let mut budget = HttpRetryBudget::new(HttpRetryPolicy::default()).expect("budget");
+        let attempts = BTreeMap::from([(mirror(0), 2), (mirror(1), 1)]);
+        budget
+            .restore_attempts(3, attempts)
+            .expect("restored attempts");
+        assert_eq!(budget.stats().attempts, 3);
+        assert_eq!(budget.attempts_for_mirror(mirror(0)), 2);
+        assert_eq!(budget.attempts_for_mirror(mirror(1)), 1);
+        assert_eq!(
+            HttpRetryBudget::new(HttpRetryPolicy::default())
+                .expect("new budget")
+                .restore_attempts(3, BTreeMap::from([(mirror(0), 2)])),
+            Err(HttpRetryError::InvalidRecoveredState)
         );
     }
 }

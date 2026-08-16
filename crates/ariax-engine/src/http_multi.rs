@@ -9,14 +9,14 @@ use crate::{
     HttpPolicyClientError, HttpRangeAssignment, HttpRangeCoordinator, HttpRangeCoordinatorConfig,
     HttpRangeCoordinatorError, HttpRangeFailure, HttpRangePoll, HttpRangeResponseError,
     HttpRangeResponseValidator, HttpRangeSource, HttpRetryBudget, HttpRetryCause,
-    HttpRetryDecision, HttpRetryError, HttpRetryPolicy, HttpRetryStopReason,
+    HttpRetryDecision, HttpRetryDelaySource, HttpRetryError, HttpRetryPolicy, HttpRetryStopReason,
     HttpRetryTransportFailure, HttpTaskSpec, HttpTaskWorker, HttpTransportError, HttpWorkerFuture,
-    HttpWorkerSuccess, LeaseCommit, LeaseWritePlan, StorageEngine, StorageEngineConfig,
-    StorageEngineError, WriteBlock,
+    HttpWorkerSuccess, LeaseCommit, LeaseWritePlan, RetryStateWrite, StorageEngine,
+    StorageEngineConfig, StorageEngineError, WriteBlock,
 };
 use ariax_core::{
-    ErrorKind, FileId, Generation, Gid, LeaseId, PieceId, PublicError, RetryClass, TaskId,
-    TransferAttemptId, UriId,
+    ErrorKind, FileId, Generation, Gid, LeaseId, MonotonicInstant, PersistedDelayDecision, PieceId,
+    PublicError, RetryClass, TaskId, TransferAttemptId, UriId,
 };
 use ariax_runtime::{
     BufferLease, ByteBudget, BytePermit, ConnectionCondition, ConnectionConditionReason, OwnerTag,
@@ -25,16 +25,17 @@ use ariax_runtime::{
 };
 use ariax_storage::{
     ControlJournalAppender, FileLayout, GlobalSpan, JournalDirectoryCapability, JournalId,
-    JournalStateLimits, LeaseAbortReason, PlatformPath, RecoveredJournalState, ReplayLimits,
-    RootDirectoryCapability, SessionCommand, SessionHandle, SessionOwnerError,
-    SessionPersistenceError, recover_journal_state,
+    JournalStateLimits, LeaseAbortReason, PersistedId, PlatformPath, RecoveredJournalState,
+    RecoveredRetryState, ReplayLimits, RetryReason, RetryScope, RootDirectoryCapability,
+    SessionCommand, SessionHandle, SessionOwnerError, SessionPersistenceError,
+    recover_journal_state,
 };
 use hyper::header::RETRY_AFTER;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::error::Error;
 use std::fmt;
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -250,6 +251,10 @@ impl HttpTransferStats {
 
     fn add_retry(&self) {
         self.inner.retry_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn set_retry_count(&self, value: u64) {
+        self.inner.retry_count.store(value, Ordering::Relaxed);
     }
 
     fn set_rate_debt(&self, value: u64) {
@@ -535,15 +540,20 @@ impl HttpMultiRangeWorker {
             .map(|source| source.validator.total_length())
             .ok_or(HttpMultiRangeError::NoUsableSources)?;
         stats.set_total_length(total_length);
-        let (mut storage, layout_hash, durable_pieces, durable_bytes) =
-            match self.open_storage(&task, generation, total_length) {
-                Ok(storage) => storage,
-                Err(error) => {
-                    self.handoff_new_or_recovered_journal(&task, generation)
-                        .await?;
-                    return Err(error);
-                }
-            };
+        let OpenedHttpStorage {
+            mut storage,
+            layout_hash,
+            durable_pieces,
+            durable_bytes,
+            recovered_retry_states,
+        } = match self.open_storage(&task, generation, total_length) {
+            Ok(storage) => storage,
+            Err(error) => {
+                self.handoff_new_or_recovered_journal(&task, generation)
+                    .await?;
+                return Err(error);
+            }
+        };
         stats.set_durable(durable_bytes);
         let outcome = self
             .run_ranges(
@@ -553,6 +563,7 @@ impl HttpMultiRangeWorker {
                 &stats,
                 &sources,
                 &durable_pieces,
+                &recovered_retry_states,
                 &mut storage,
             )
             .await;
@@ -641,15 +652,15 @@ impl HttpMultiRangeWorker {
         task: &HttpTaskSpec,
         generation: Generation,
         total_length: u64,
-    ) -> Result<(StorageEngine, ariax_storage::JournalHash, Vec<PieceId>, u64), HttpMultiRangeError>
-    {
+    ) -> Result<OpenedHttpStorage, HttpMultiRangeError> {
         let root = RootDirectoryCapability::open_trusted(task.output_root())
             .map_err(KnownLengthHttpError::from)?;
         let OpenedTaskJournal {
             mut appender,
             state,
         } = self.open_task_journal(task, generation)?;
-        let (layout, output, durable_pieces, durable_bytes) = if let Some(state) = state
+        let (layout, output, durable_pieces, durable_bytes, retry_states) = if let Some(state) =
+            state
             && let Some(recovered) = state.layout()
         {
             if state.generation() != generation
@@ -711,7 +722,8 @@ impl HttpMultiRangeWorker {
                 .values()
                 .map(|piece| piece.piece_span().len())
                 .sum();
-            (layout, output, durable_pieces, durable_bytes)
+            let retry_states = state.retry_states().values().cloned().collect();
+            (layout, output, durable_pieces, durable_bytes, retry_states)
         } else {
             let output = root
                 .create_new_file(task.output())
@@ -729,7 +741,7 @@ impl HttpMultiRangeWorker {
                 task.options().piece_length,
             )?;
             append_layout(&mut appender, &layout)?;
-            (layout, output, Vec::new(), 0)
+            (layout, output, Vec::new(), 0, Vec::new())
         };
         let layout_hash = ariax_storage::JournalHash::new(*layout.layout_hash().as_bytes())
             .expect("layout SHA-256 is nonzero");
@@ -740,7 +752,13 @@ impl HttpMultiRangeWorker {
             self.config.storage,
         )
         .map_err(HttpMultiRangeError::Storage)?;
-        Ok((storage, layout_hash, durable_pieces, durable_bytes))
+        Ok(OpenedHttpStorage {
+            storage,
+            layout_hash,
+            durable_pieces,
+            durable_bytes,
+            recovered_retry_states: retry_states,
+        })
     }
 
     fn open_task_journal(
@@ -864,10 +882,19 @@ impl HttpMultiRangeWorker {
         stats: &HttpTransferStats,
         sources: &[PreparedSource],
         durable_pieces: &[PieceId],
+        recovered_retry_states: &[RecoveredRetryState],
         storage: &mut StorageEngine,
     ) -> Result<(), HttpMultiRangeError> {
         let total_length = sources[0].validator.total_length();
         let retry_policy = task.options().retry.as_ref().unwrap_or(&self.config.retry);
+        let recovered_retries = recover_range_retries(recovered_retry_states, retry_policy)?;
+        stats.set_retry_count(
+            recovered_retries
+                .pieces
+                .values()
+                .map(|retry| u64::from(retry.attempts))
+                .fold(0_u64, u64::saturating_add),
+        );
         let split = if total_length <= task.options().min_split_size {
             NonZeroUsize::new(1).expect("one is nonzero")
         } else {
@@ -891,6 +918,14 @@ impl HttpMultiRangeWorker {
             range_sources,
         )?;
         coordinator.restore_durable(durable_pieces.iter().copied())?;
+        let durable_pieces = durable_pieces.iter().copied().collect::<BTreeSet<_>>();
+        let mut budgets = restore_range_retry_budgets(
+            &mut coordinator,
+            recovered_retries.pieces,
+            &durable_pieces,
+            retry_policy,
+        )?;
+        let retry_elapsed_offset_ms = recovered_retries.elapsed_ms;
         let validators = sources
             .iter()
             .map(|source| (source.validator.source(), Arc::clone(&source.validator)))
@@ -900,7 +935,6 @@ impl HttpMultiRangeWorker {
         let mut joins = JoinSet::new();
         let mut by_join = HashMap::new();
         let mut active = BTreeMap::new();
-        let mut budgets = BTreeMap::new();
         let started = Instant::now();
         let mut next_attempt = 1_u64;
 
@@ -1017,6 +1051,7 @@ impl HttpMultiRangeWorker {
                         task.task(),
                         generation,
                         started,
+                        retry_elapsed_offset_ms,
                         storage,
                         &mut coordinator,
                         &mut budgets,
@@ -1124,6 +1159,173 @@ fn source_host_keys(
 struct OpenedTaskJournal {
     appender: ControlJournalAppender,
     state: Option<RecoveredJournalState>,
+}
+
+struct OpenedHttpStorage {
+    storage: StorageEngine,
+    layout_hash: ariax_storage::JournalHash,
+    durable_pieces: Vec<PieceId>,
+    durable_bytes: u64,
+    recovered_retry_states: Vec<RecoveredRetryState>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct RecoveredRangeRetries {
+    pieces: BTreeMap<PieceId, RecoveredPieceRetry>,
+    elapsed_ms: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+struct RecoveredPieceRetry {
+    attempts: u32,
+    attempts_by_mirror: BTreeMap<UriId, u32>,
+    retry_at_by_mirror: BTreeMap<UriId, u64>,
+}
+
+fn piece_retry_scope_id(piece: PieceId) -> Option<PersistedId> {
+    PersistedId::new(piece.get().checked_add(1)?)
+}
+
+fn span_retry_scope_id(piece: PieceId, source: UriId) -> Option<PersistedId> {
+    let piece = piece.get().checked_add(1)?;
+    let source = u64::from(source.get()).checked_add(1)?;
+    if piece > u64::from(u32::MAX) || source > u64::from(u32::MAX) {
+        return None;
+    }
+    PersistedId::new((piece << 32) | source)
+}
+
+fn decode_piece_retry_scope_id(scope_id: PersistedId) -> Option<PieceId> {
+    let value = scope_id.get().checked_sub(1)?;
+    Some(PieceId::new(value))
+}
+
+fn decode_span_retry_scope_id(scope_id: PersistedId) -> Option<(PieceId, UriId)> {
+    let value = scope_id.get();
+    let piece = (value >> 32).checked_sub(1)?;
+    let source = (value & u64::from(u32::MAX)).checked_sub(1)?;
+    Some((PieceId::new(piece), UriId::new(u32::try_from(source).ok()?)))
+}
+
+fn recover_range_retries(
+    states: &[RecoveredRetryState],
+    policy: &HttpRetryPolicy,
+) -> Result<RecoveredRangeRetries, HttpMultiRangeError> {
+    recover_range_retries_at(
+        states,
+        policy,
+        now_unix_ms().unwrap_or(0),
+        MonotonicInstant::now(),
+    )
+}
+
+fn recover_range_retries_at(
+    states: &[RecoveredRetryState],
+    policy: &HttpRetryPolicy,
+    now_wall: u64,
+    now_monotonic: MonotonicInstant,
+) -> Result<RecoveredRangeRetries, HttpMultiRangeError> {
+    let max_wait_ms = u64::try_from(policy.max_wait.as_millis())
+        .ok()
+        .and_then(NonZeroU64::new)
+        .ok_or(HttpMultiRangeError::Retry(
+            HttpRetryError::InvalidRecoveredState,
+        ))?;
+    let max_elapsed_ms = u64::try_from(policy.max_elapsed.as_millis()).unwrap_or(u64::MAX);
+    let mut recovered = RecoveredRangeRetries::default();
+    for state in states {
+        if matches!(state.scope, RetryScope::Task | RetryScope::Uri) {
+            continue;
+        }
+        let decision = PersistedDelayDecision::new(state.scheduled_at_unix_ms, state.delay_ms)
+            .and_then(|decision| decision.recover(now_wall, now_monotonic, max_wait_ms))
+            .map_err(|_| HttpMultiRangeError::Retry(HttpRetryError::InvalidRecoveredState))?;
+        recovered.elapsed_ms = recovered
+            .elapsed_ms
+            .max(decision.retry_budget_elapsed_ms(state.elapsed_before_wait_ms, max_elapsed_ms));
+        match state.scope {
+            RetryScope::Piece => {
+                let piece = decode_piece_retry_scope_id(state.scope_id).ok_or(
+                    HttpMultiRangeError::Retry(HttpRetryError::InvalidRecoveredState),
+                )?;
+                let entry = recovered.pieces.entry(piece).or_default();
+                if entry.attempts != 0 {
+                    return Err(HttpMultiRangeError::Retry(
+                        HttpRetryError::InvalidRecoveredState,
+                    ));
+                }
+                entry.attempts = state.attempt;
+            }
+            RetryScope::Span => {
+                let (piece, source) = decode_span_retry_scope_id(state.scope_id).ok_or(
+                    HttpMultiRangeError::Retry(HttpRetryError::InvalidRecoveredState),
+                )?;
+                let entry = recovered.pieces.entry(piece).or_default();
+                if entry
+                    .attempts_by_mirror
+                    .insert(source, state.attempt)
+                    .is_some()
+                    || entry
+                        .retry_at_by_mirror
+                        .insert(source, decision.remaining_ms())
+                        .is_some()
+                {
+                    return Err(HttpMultiRangeError::Retry(
+                        HttpRetryError::InvalidRecoveredState,
+                    ));
+                }
+            }
+            RetryScope::Task | RetryScope::Uri => unreachable!("generic retries were filtered"),
+        }
+    }
+    for retry in recovered.pieces.values() {
+        if retry.attempts == 0
+            || retry.attempts > policy.max_attempts.get()
+            || retry
+                .attempts_by_mirror
+                .values()
+                .any(|attempts| *attempts == 0 || *attempts > policy.max_attempts_per_mirror.get())
+            || retry
+                .attempts_by_mirror
+                .values()
+                .copied()
+                .try_fold(0_u32, u32::checked_add)
+                != Some(retry.attempts)
+        {
+            return Err(HttpMultiRangeError::Retry(
+                HttpRetryError::InvalidRecoveredState,
+            ));
+        }
+    }
+    Ok(recovered)
+}
+
+fn restore_range_retry_budgets(
+    coordinator: &mut HttpRangeCoordinator,
+    retries: BTreeMap<PieceId, RecoveredPieceRetry>,
+    durable_pieces: &BTreeSet<PieceId>,
+    policy: &HttpRetryPolicy,
+) -> Result<BTreeMap<PieceId, HttpRetryBudget>, HttpMultiRangeError> {
+    let mut budgets = BTreeMap::new();
+    for (piece, retry) in retries {
+        if durable_pieces.contains(&piece) {
+            continue;
+        }
+        coordinator.restore_piece_attempts(piece, retry.attempts)?;
+        for (&source, &attempts) in &retry.attempts_by_mirror {
+            let retry_at_ms = retry.retry_at_by_mirror.get(&source).copied().ok_or(
+                HttpMultiRangeError::Retry(HttpRetryError::InvalidRecoveredState),
+            )?;
+            coordinator.restore_source_piece_retry(piece, source, attempts, retry_at_ms)?;
+        }
+        let mut budget =
+            HttpRetryBudget::new(policy.clone()).map_err(HttpMultiRangeError::Retry)?;
+        budget
+            .restore_attempts(retry.attempts, retry.attempts_by_mirror)
+            .map_err(HttpMultiRangeError::Retry)?;
+        budgets.insert(piece, budget);
+    }
+    Ok(budgets)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1634,6 +1836,7 @@ async fn process_attempt_event(
     task: TaskId,
     generation: Generation,
     started: Instant,
+    retry_elapsed_offset_ms: u64,
     storage: &mut StorageEngine,
     coordinator: &mut HttpRangeCoordinator,
     budgets: &mut BTreeMap<PieceId, HttpRetryBudget>,
@@ -1743,13 +1946,18 @@ async fn process_attempt_event(
                     }
                     stats.remove_provisional(attempt.received);
                     stats.add_discarded(attempt.received);
+                    let now_ms = elapsed_ms(started);
                     apply_attempt_failure(
                         failure,
                         attempt,
-                        elapsed_ms(started),
-                        coordinator,
-                        budgets,
-                        stats,
+                        AttemptFailureContext {
+                            now_ms,
+                            retry_elapsed_ms: retry_elapsed_offset_ms.saturating_add(now_ms),
+                            storage,
+                            coordinator,
+                            budgets,
+                            stats,
+                        },
                     )?;
                 }
             }
@@ -1759,14 +1967,28 @@ async fn process_attempt_event(
     Ok(())
 }
 
+struct AttemptFailureContext<'a> {
+    now_ms: u64,
+    retry_elapsed_ms: u64,
+    storage: &'a mut StorageEngine,
+    coordinator: &'a mut HttpRangeCoordinator,
+    budgets: &'a mut BTreeMap<PieceId, HttpRetryBudget>,
+    stats: &'a HttpTransferStats,
+}
+
 fn apply_attempt_failure(
     failure: RangeAttemptFailure,
     attempt: ActiveAttempt,
-    now_ms: u64,
-    coordinator: &mut HttpRangeCoordinator,
-    budgets: &mut BTreeMap<PieceId, HttpRetryBudget>,
-    stats: &HttpTransferStats,
+    context: AttemptFailureContext<'_>,
 ) -> Result<(), HttpMultiRangeError> {
+    let AttemptFailureContext {
+        now_ms,
+        retry_elapsed_ms,
+        storage,
+        coordinator,
+        budgets,
+        stats,
+    } = context;
     if matches!(failure, RangeAttemptFailure::Cancelled) {
         return Err(HttpMultiRangeError::Cancelled);
     }
@@ -1782,14 +2004,23 @@ fn apply_attempt_failure(
         .decide_after_failure(
             attempt.assignment.source,
             cause,
-            Duration::from_millis(now_ms),
+            Duration::from_millis(retry_elapsed_ms),
             retry_after,
             SystemTime::now(),
             attempt.assignment.lease.get() ^ u64::from(attempt.assignment.source.get()),
         )
         .map_err(HttpMultiRangeError::Retry)?;
     let range_failure = match decision {
-        HttpRetryDecision::Retry { delay, .. } => {
+        HttpRetryDecision::Retry { delay, source } => {
+            persist_range_retry_state(
+                storage,
+                attempt,
+                budget,
+                cause,
+                retry_elapsed_ms,
+                delay,
+                source,
+            )?;
             stats.add_retry();
             HttpRangeFailure::RetryAt(
                 now_ms.saturating_add(u64::try_from(delay.as_millis()).unwrap_or(u64::MAX)),
@@ -1798,10 +2029,91 @@ fn apply_attempt_failure(
         HttpRetryDecision::Stop(HttpRetryStopReason::NonRetriable) => {
             HttpRangeFailure::DisableSource
         }
-        HttpRetryDecision::Stop(_) => HttpRangeFailure::RetryAt(now_ms),
+        HttpRetryDecision::Stop(HttpRetryStopReason::MirrorAttemptCap) => {
+            HttpRangeFailure::RetryAt(now_ms)
+        }
+        HttpRetryDecision::Stop(
+            HttpRetryStopReason::TotalAttemptCap | HttpRetryStopReason::ElapsedCap,
+        ) => {
+            coordinator.fail(attempt.assignment.lease, HttpRangeFailure::RetryAt(now_ms))?;
+            return Err(HttpMultiRangeError::Exhausted);
+        }
     };
     coordinator.fail(attempt.assignment.lease, range_failure)?;
     Ok(())
+}
+
+fn persist_range_retry_state(
+    storage: &mut StorageEngine,
+    attempt: ActiveAttempt,
+    budget: &HttpRetryBudget,
+    cause: HttpRetryCause,
+    retry_elapsed_ms: u64,
+    delay: Duration,
+    source: HttpRetryDelaySource,
+) -> Result<(), HttpMultiRangeError> {
+    let delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX);
+    if delay_ms == 0 {
+        return Ok(());
+    }
+    let piece = attempt.assignment.piece;
+    let mirror = attempt.assignment.source;
+    let piece_scope_id =
+        piece_retry_scope_id(piece).ok_or(HttpMultiRangeError::IdentifierExhausted)?;
+    let span_scope_id =
+        span_retry_scope_id(piece, mirror).ok_or(HttpMultiRangeError::IdentifierExhausted)?;
+    let max_elapsed_ms = u64::try_from(budget.policy().max_elapsed.as_millis()).unwrap_or(u64::MAX);
+    let scheduled_at_unix_ms = now_unix_ms().unwrap_or(0);
+    let error_class = retry_error_kind(cause);
+    let retry_reason = retry_reason(source);
+    let common = RetryStateWrite {
+        scope: RetryScope::Piece,
+        scope_id: piece_scope_id,
+        attempt: budget.stats().attempts,
+        elapsed_before_wait_ms: retry_elapsed_ms.min(max_elapsed_ms),
+        scheduled_at_unix_ms,
+        delay_ms,
+        error_class,
+        retry_reason,
+    };
+    storage.record_retry_state(common)?;
+    storage.record_retry_state(RetryStateWrite {
+        scope: RetryScope::Span,
+        scope_id: span_scope_id,
+        attempt: budget.attempts_for_mirror(mirror),
+        ..common
+    })?;
+    Ok(())
+}
+
+const fn retry_error_kind(cause: HttpRetryCause) -> ErrorKind {
+    match cause {
+        HttpRetryCause::Transport(
+            HttpRetryTransportFailure::Timeout
+            | HttpRetryTransportFailure::Hang
+            | HttpRetryTransportFailure::LowestSpeed,
+        ) => ErrorKind::Timeout,
+        HttpRetryCause::Transport(_) | HttpRetryCause::HttpStatus(_) => ErrorKind::Network,
+        HttpRetryCause::Authentication => ErrorKind::NeedsCredentials,
+        HttpRetryCause::InvalidRange => ErrorKind::InvalidRange,
+        HttpRetryCause::StaleValidator => ErrorKind::StaleValidator,
+        HttpRetryCause::Checksum => ErrorKind::ChecksumMismatch,
+        HttpRetryCause::Storage => ErrorKind::Disk,
+        HttpRetryCause::Cancelled => ErrorKind::Cancelled,
+        HttpRetryCause::Policy => ErrorKind::Config,
+    }
+}
+
+const fn retry_reason(source: HttpRetryDelaySource) -> RetryReason {
+    match source {
+        HttpRetryDelaySource::RetryAfter => RetryReason::RetryAfter,
+        HttpRetryDelaySource::RetryAfterClamped => RetryReason::PolicyClamp,
+        HttpRetryDelaySource::FixedBackoff
+        | HttpRetryDelaySource::ExponentialBackoff
+        | HttpRetryDelaySource::EqualJitterBackoff
+        | HttpRetryDelaySource::RetryAfterIgnored
+        | HttpRetryDelaySource::BackoffAfterInvalidRetryAfter => RetryReason::Backoff,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1931,7 +2243,7 @@ mod tests {
     use crate::{
         HTTP_CONNECTION_RESERVATION_BYTES, HttpDestinationPolicy, HttpDirectTransportConfig,
         HttpPolicyClientConfig, HttpResolver, HttpResolverBackend, HttpResolverConfig,
-        HttpTaskOptions, HttpTransportBudgets, KnownLengthHttpRecoveryRequest,
+        HttpRetryBackoff, HttpTaskOptions, HttpTransportBudgets, KnownLengthHttpRecoveryRequest,
         recover_known_length_http,
     };
     use ariax_storage::{JournalStateLimits, PathPlatform, ReplayLimits, SafePathBuilder};
@@ -2053,6 +2365,58 @@ mod tests {
             }
         });
         (address, ranges, task)
+    }
+
+    async fn serve_retry_wait_mirror(
+        data: Arc<[u8]>,
+    ) -> (
+        SocketAddr,
+        Arc<Mutex<Vec<(usize, usize, Instant)>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&requests);
+        let task = tokio::spawn(async move {
+            let mut range_attempts = 0_usize;
+            loop {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                let Some(request) = try_read_request_head(&mut stream).await else {
+                    continue;
+                };
+                let (start, end) = request_range(&request).expect("range request");
+                recorded
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push((start, end, Instant::now()));
+                let probe = start == 0 && end == 0;
+                if !probe {
+                    range_attempts += 1;
+                }
+                if !probe && range_attempts == 1 {
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nRetry-After: 5\r\nConnection: close\r\n\r\n",
+                        )
+                        .await
+                        .expect("retry response");
+                    continue;
+                }
+                let body = &data[start..=end];
+                let response = format!(
+                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\nETag: \"v1\"\r\nConnection: close\r\n\r\n",
+                    body.len(),
+                    data.len()
+                );
+                stream.write_all(response.as_bytes()).await.expect("head");
+                stream.write_all(body).await.expect("body");
+                if !probe {
+                    break;
+                }
+            }
+        });
+        (address, requests, task)
     }
 
     async fn read_request_head(stream: &mut TcpStream) -> String {
@@ -2261,6 +2625,152 @@ mod tests {
         );
     }
 
+    #[test]
+    fn retry_scope_ids_round_trip_without_zero_or_truncation() {
+        let piece = PieceId::new(17);
+        let source = UriId::new(9);
+        let piece_scope = piece_retry_scope_id(piece).expect("piece scope");
+        let span_scope = span_retry_scope_id(piece, source).expect("span scope");
+        assert_eq!(decode_piece_retry_scope_id(piece_scope), Some(piece));
+        assert_eq!(
+            decode_span_retry_scope_id(span_scope),
+            Some((piece, source))
+        );
+        assert_eq!(
+            decode_span_retry_scope_id(PersistedId::new(1).unwrap()),
+            None
+        );
+        assert_eq!(piece_retry_scope_id(PieceId::new(u64::MAX)), None);
+        assert_eq!(
+            span_retry_scope_id(PieceId::new(u64::from(u32::MAX)), UriId::new(0)),
+            None
+        );
+        assert_eq!(
+            span_retry_scope_id(PieceId::new(0), UriId::new(u32::MAX)),
+            None
+        );
+    }
+
+    #[test]
+    fn recovered_range_retry_restores_remaining_wait_and_elapsed_budget() {
+        let piece = PieceId::new(2);
+        let source = UriId::new(3);
+        let common = RecoveredRetryState {
+            scope: RetryScope::Piece,
+            scope_id: piece_retry_scope_id(piece).expect("piece scope"),
+            attempt: 2,
+            elapsed_before_wait_ms: 700,
+            scheduled_at_unix_ms: 1_000,
+            delay_ms: 5_000,
+            error_class: ErrorKind::Network,
+            retry_reason: RetryReason::Backoff,
+        };
+        let states = vec![
+            common.clone(),
+            RecoveredRetryState {
+                scope: RetryScope::Span,
+                scope_id: span_retry_scope_id(piece, source).expect("span scope"),
+                ..common.clone()
+            },
+            RecoveredRetryState {
+                scope: RetryScope::Task,
+                scope_id: PersistedId::new(1).expect("task scope"),
+                delay_ms: 0,
+                ..common.clone()
+            },
+        ];
+        let recovered = recover_range_retries_at(
+            &states,
+            &HttpRetryPolicy::default(),
+            3_000,
+            MonotonicInstant::now(),
+        )
+        .expect("retry state recovers");
+        assert_eq!(recovered.elapsed_ms, 2_700);
+        let retry = recovered.pieces.get(&piece).expect("piece retry");
+        assert_eq!(retry.attempts, 2);
+        assert_eq!(retry.attempts_by_mirror.get(&source), Some(&2));
+        assert_eq!(retry.retry_at_by_mirror.get(&source), Some(&3_000));
+
+        assert!(matches!(
+            recover_range_retries_at(
+                &states[..1],
+                &HttpRetryPolicy::default(),
+                3_000,
+                MonotonicInstant::now(),
+            ),
+            Err(HttpMultiRangeError::Retry(
+                HttpRetryError::InvalidRecoveredState
+            ))
+        ));
+    }
+
+    #[test]
+    fn retry_restore_ignores_stale_waits_for_durable_pieces() {
+        let policy = HttpRetryPolicy::default();
+        let source = UriId::new(0);
+        let mut coordinator = HttpRangeCoordinator::new(
+            HttpRangeCoordinatorConfig {
+                total_length: (2 * MIB) as u64,
+                piece_length: MIB as u64,
+                split: NonZeroUsize::new(1).expect("split"),
+                max_connections_per_origin: NonZeroUsize::new(1).expect("origin cap"),
+                max_total_attempts: policy.max_attempts.get(),
+                max_attempts_per_source: policy.max_attempts_per_mirror.get(),
+            },
+            [HttpRangeSource::from_uri(source, "http://one.example/file").expect("source")],
+        )
+        .expect("coordinator");
+        let durable = PieceId::new(0);
+        let pending = PieceId::new(1);
+        coordinator
+            .restore_durable([durable])
+            .expect("durable piece restores");
+        let retries = BTreeMap::from([
+            (
+                durable,
+                RecoveredPieceRetry {
+                    attempts: 1,
+                    attempts_by_mirror: BTreeMap::from([(source, 1)]),
+                    retry_at_by_mirror: BTreeMap::from([(source, 999)]),
+                },
+            ),
+            (
+                pending,
+                RecoveredPieceRetry {
+                    attempts: 1,
+                    attempts_by_mirror: BTreeMap::from([(source, 1)]),
+                    retry_at_by_mirror: BTreeMap::from([(source, 100)]),
+                },
+            ),
+        ]);
+        let mut budgets = restore_range_retry_budgets(
+            &mut coordinator,
+            retries,
+            &BTreeSet::from([durable]),
+            &policy,
+        )
+        .expect("retry budgets restore");
+        assert!(!budgets.contains_key(&durable));
+        assert_eq!(
+            coordinator.poll(99).expect("wait poll"),
+            HttpRangePoll::RetryAt(100)
+        );
+        let HttpRangePoll::Assignment(assignment) = coordinator.poll(100).expect("retry poll")
+        else {
+            panic!("pending retry becomes assignable");
+        };
+        assert_eq!(assignment.piece, pending);
+        assert_eq!(
+            budgets
+                .get_mut(&pending)
+                .expect("pending budget")
+                .begin_attempt(source)
+                .expect("next attempt"),
+            2
+        );
+    }
+
     #[tokio::test]
     async fn two_mirrors_commit_non_overlapping_pieces_and_recover_durable_total() {
         let root = TestDirectory::new("parallel-root");
@@ -2396,6 +2906,137 @@ mod tests {
         first_server.await.expect("first server");
         second_server.await.expect("second probe");
         assert_eq!(stats.get(spec.task()).unwrap().snapshot().retry_count, 0);
+    }
+
+    #[tokio::test]
+    async fn restart_keeps_a_persisted_retry_wait_from_releasing_the_span_early() {
+        let root = TestDirectory::new("retry-wait-restart-root");
+        let journal = TestDirectory::new("retry-wait-restart-journal");
+        let expected = data(MIB);
+        let (mirror, requests, server) = serve_retry_wait_mirror(Arc::clone(&expected)).await;
+        let retry = HttpRetryPolicy {
+            max_wait: Duration::from_secs(5),
+            retry_after_max: Duration::from_secs(5),
+            backoff: HttpRetryBackoff::Fixed,
+            ..HttpRetryPolicy::default()
+        };
+        let spec = task_with_retry(&root, [mirror], expected.len(), Some(retry));
+        let stats = SharedHttpTransferStats::new(NonZeroUsize::new(2).expect("stats"));
+        let first_worker = worker(&journal, stats.clone(), 2);
+        let first_cancellation = HttpCancellation::new();
+        let cancellation = first_cancellation.clone();
+        let first_spec = Arc::new(spec.clone());
+        let first = tokio::spawn(async move {
+            first_worker
+                .run_task(first_spec, Generation::INITIAL, cancellation)
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if stats
+                    .get(spec.task())
+                    .is_some_and(|stats| stats.snapshot().retry_count == 1)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("retry wait was durably selected");
+        first_cancellation.cancel();
+        assert!(matches!(
+            first.await.expect("first worker join"),
+            Err(HttpMultiRangeError::Cancelled)
+        ));
+
+        let recovered = recover_known_length_http(&KnownLengthHttpRecoveryRequest {
+            task: spec.task(),
+            gid: spec.gid(),
+            journal_id: derive_http_journal_id(spec.task(), spec.gid()),
+            generation: Generation::INITIAL,
+            journal_directory: http_journal_directory(&journal.0, spec.gid()),
+            output_root: root.0.clone(),
+            replay_limits: ReplayLimits::default(),
+            state_limits: JournalStateLimits::default(),
+        })
+        .expect("recover retry wait journal");
+        let retry_states = recovered
+            .replay
+            .state
+            .as_ref()
+            .expect("recovered state")
+            .retry_states();
+        assert_eq!(retry_states.len(), 2);
+        assert!(retry_states.values().any(|retry| {
+            retry.scope == RetryScope::Piece
+                && retry.attempt == 1
+                && retry.delay_ms == 5_000
+                && retry.retry_reason == RetryReason::RetryAfter
+        }));
+        assert!(retry_states.values().any(|retry| {
+            retry.scope == RetryScope::Span
+                && retry.attempt == 1
+                && retry.delay_ms == 5_000
+                && retry.retry_reason == RetryReason::RetryAfter
+        }));
+
+        let second_worker = worker(&journal, stats.clone(), 2);
+        let second_cancellation = HttpCancellation::new();
+        let cancellation = second_cancellation.clone();
+        let second_spec = Arc::new(spec.clone());
+        let second = tokio::spawn(async move {
+            second_worker
+                .run_task(second_spec, Generation::INITIAL, cancellation)
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if requests
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .len()
+                    >= 3
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("restart probe completed");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            stats
+                .get(spec.task())
+                .expect("restart stats")
+                .snapshot()
+                .retry_count,
+            1,
+            "recovered retry accounting remains visible"
+        );
+        let range_attempts = requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|(_, end, _)| *end != 0)
+            .count();
+        assert_eq!(
+            range_attempts, 1,
+            "the recovered span wait must remain armed"
+        );
+        second_cancellation.cancel();
+        assert!(matches!(
+            second.await.expect("second worker join"),
+            Err(HttpMultiRangeError::Cancelled)
+        ));
+        server.abort();
+        assert!(
+            server
+                .await
+                .expect_err("server was cancelled")
+                .is_cancelled()
+        );
     }
 
     #[tokio::test]

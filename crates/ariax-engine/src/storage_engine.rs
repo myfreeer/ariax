@@ -1,4 +1,4 @@
-use ariax_core::{FileId, Generation, LeaseId, PieceId, TaskId, TransferAttemptId};
+use ariax_core::{ErrorKind, FileId, Generation, LeaseId, PieceId, TaskId, TransferAttemptId};
 use ariax_runtime::{
     BlockingBackendEpoch, BlockingDiskCancelHandle, BlockingDiskError, BlockingDiskLane,
     BlockingDiskLaneConfig, BlockingDiskLaneStartError, BlockingDiskOperation,
@@ -10,8 +10,8 @@ use ariax_storage::{
     ControlJournalAppender, DataBarrierKind, FileLayout, GlobalOffsetMapper, GlobalSpan,
     JournalAppenderError, JournalContributor, JournalDigest, JournalDigestAlgorithm, JournalHash,
     JournalPayload, JournalStateError, LeaseAbortReason, MapSpanError, NativeCapabilityError,
-    PersistedSpan, RootFileCapability, calculate_contributors_hash,
-    calculate_validator_set_fingerprint,
+    PersistedId, PersistedSpan, RetryReason, RetryScope, RootFileCapability,
+    calculate_contributors_hash, calculate_validator_set_fingerprint,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -74,6 +74,20 @@ pub struct LeaseCommit {
     pub received_len: u64,
     pub validator: JournalHash,
     pub response_digest: Option<JournalDigest>,
+}
+
+/// A fully selected, flushed retry wait decision. It is intentionally separate
+/// from lease writes so span retries release storage ownership before waiting.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RetryStateWrite {
+    pub scope: RetryScope,
+    pub scope_id: PersistedId,
+    pub attempt: u32,
+    pub elapsed_before_wait_ms: u64,
+    pub scheduled_at_unix_ms: u64,
+    pub delay_ms: u64,
+    pub error_class: ErrorKind,
+    pub retry_reason: RetryReason,
 }
 
 /// Storage-visible acknowledgement for the executable first slice.
@@ -661,6 +675,32 @@ impl StorageEngine {
             .flush(appended.sequence())
             .map_err(journal_error)?;
         Ok(WriteAck::LeaseAborted { lease })
+    }
+
+    pub fn record_retry_state(&mut self, retry: RetryStateWrite) -> Result<(), StorageEngineError> {
+        if retry.attempt == 0 || retry.delay_ms == 0 {
+            return Err(StorageEngineError::bare(WriteReject::Journal));
+        }
+        let appended = self
+            .journal
+            .append_payload(
+                self.generation,
+                &JournalPayload::RetryState {
+                    scope: retry.scope,
+                    scope_id: retry.scope_id,
+                    attempt: retry.attempt,
+                    elapsed_before_wait_ms: retry.elapsed_before_wait_ms,
+                    scheduled_at_unix_ms: retry.scheduled_at_unix_ms,
+                    delay_ms: retry.delay_ms,
+                    error_class: retry.error_class,
+                    retry_reason: retry.retry_reason,
+                },
+            )
+            .map_err(journal_error)?;
+        self.journal
+            .flush(appended.sequence())
+            .map_err(journal_error)?;
+        Ok(())
     }
 
     pub fn complete(

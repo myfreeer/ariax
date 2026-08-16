@@ -6,9 +6,12 @@ and scheduler-owned correlated automatic no-space probes are executable. The
 known-length HTTP worker now executes bounded per-range aria2, conservative,
 aggressive, and validated custom retry profiles; task admission persists the
 resolved trigger/status sets, caps, and delay policy; and timeout, hang, and
-lowest-speed failures remain distinct at policy selection. Persisted live
-per-lease retry waits/recovery, stale-validator restart or revalidation, and
-full retry status diagnostics remain pending.
+lowest-speed failures remain distinct at policy selection. Nonzero span waits
+are flushed as paired piece/source retry decisions before scheduling; restart
+reconstructs bounded monotonic deadlines, generation elapsed budget, attempt
+caps, and visible retry counts while ignoring unrelated task/URI waits and
+fail-closing partial state. Stale-validator restart or revalidation and full
+retry status diagnostics remain pending.
 
 Retry behavior must be configurable, bounded, observable, and safe. A retry
 policy may decide whether to retry a failed transfer span, but it must not
