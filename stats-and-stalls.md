@@ -3,8 +3,9 @@
 Status: first-slice sampler implemented. The bounded lane-local sampler,
 profile/override interval policy, cumulative-counter validation, zero-speed
 sampling, integer EWMA decay, diagnostic-condition separation, and
-query-derived sample age are executable. Protocol counter producers, timeout
-adapters, RPC rendering, and libtorrent import remain pending.
+query-derived sample age are executable. The HTTP producer, timeout/lowest-speed
+diagnostics, hierarchical discard-budget counters, and RPC rendering are also
+executable. FTP/SFTP producers and libtorrent import remain pending.
 
 Problem: many downloaders update speed only when bytes arrive. If a socket gets
 stuck, the displayed speed can freeze at the previous value until another packet
@@ -196,7 +197,8 @@ RPC:
   `lastProgressAt`, `stallReason`, `backpressureReason`, `smoothedSpeed`,
   `sampleAge`, `slotState`, `slotReason`, `readmitAfter`, `wireSpeed`,
   `usefulSpeed`, `durableSpeed`, `receivedPayloadBytes`, `committedBytes`,
-  `durableBytes`, `discardedBytes`, and discard-budget consumption.
+  `durableBytes`, `discardedBytes`, `discardBudgetConsumed`, and
+  `discardBudgetRemaining`.
 
 Logs:
 

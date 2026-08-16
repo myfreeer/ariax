@@ -54,6 +54,15 @@ baseline by default. A deterministic benchmark opens 10,000 real low-activity
 loopback sockets and drives 1,000 simultaneous 64 KiB loopback `206` range
 responses under the same permits; native release-platform runs remain a gate.
 
+The finite HTTP discard guard is executable. One process-owned ledger charges
+canonical final-origin host, task, and attempt scopes atomically for probe,
+failed/aborted range, queued stale-chunk, endgame-loser/rollback, and checksum-
+failure bytes. No abort or rollback refunds a charge. Credit is checked before
+another body poll; crossing a limit accounts only the bounded accepted frame,
+closes the attempt, and fails the retry cycle with
+`http_discard_budget_exhausted`. The process host-key table is capped, and
+`tellStatus` exposes cumulative budget consumption and remaining task credit.
+
 This document defines HTTP(S) sequential download, resume, strict range
 validation, storage integration, retry integration, and stats behavior.
 
@@ -194,8 +203,9 @@ The checkpoint implements only these request forms:
 The configured output root is the only accepted `dir`; `out` must pass
 `SafePathBuilder`. Unsupported options and malformed method arity fail before a
 task row, source row, option snapshot, journal, or scheduler-visible task is
-published. `tellStatus` reports durable and discarded lengths, active
-connections, retry count, and packet-independent current/durable speed. Batch,
+published. `tellStatus` reports durable and discarded lengths, discard-budget
+consumption and remaining credit, active connections, retry count, and
+packet-independent current/durable speed. Batch,
 notifications, authentication, token handling, list methods, runtime option
 mutation, and non-loopback listeners remain Phase 4 work.
 
@@ -636,6 +646,10 @@ Rules:
 - a worker acquires rate credit before body polling. Once a frame/chunk is read
   and charged, its disk write is not rate-delayed; discarded bodies keep the
   debit and also consume the separate discard guard,
+- the finite discard hierarchy is checked before each body poll and charged
+  atomically at process, final-origin host, task, and attempt scopes; short,
+  oversized, cancelled, retry, checksum-failed, stale queued, and endgame-loser
+  bytes have no refund path,
 - lease retry waits remain visible in status.
 
 ## Storage Integration

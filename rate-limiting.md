@@ -1,6 +1,8 @@
 # Rate Limiting Design
 
-Status: reviewed streaming contract.
+Status: reviewed streaming contract. The HTTP download limiter, ordered read
+gate, stall diagnostics, and finite hierarchical discard guard are executable;
+FTP/SFTP and libtorrent integration remain later adapter work.
 
 `max-overall-download-limit`, `max-download-limit`,
 `max-overall-upload-limit`, and `max-upload-limit` are live token-bucket
@@ -180,9 +182,31 @@ Protocol rules:
 - charge short, checksum-failed, cancelled, and retry payload normally,
 - expose discard bytes, budget consumption, and source penalties in diagnostics.
 
-The first slice uses registry-controlled internal discard defaults scaled from
-lease size, retry caps, and endgame limits. A user-facing override requires a
-normal option-registry addition.
+The HTTP slice now uses a process-owned `HttpDiscardBudget` with atomic
+process/host/task/attempt charging and no refund operation. Host identity is the
+canonical final `scheme://authority`; the retained process host table is capped
+at 4,096 entries, after which new origins share one fail-closed overflow host
+bucket instead of allocating more metadata or bypassing the guard. Effective
+attempt credit is the configured piece length plus one bounded ingress frame.
+Effective task and host ceilings multiply that
+attempt bound by the applicable total/per-mirror retry cap, the configured
+endgame duplicate factor, and an internal factor of 64, then clamp to the
+registry-controlled maxima. Current maxima are 16 GiB process-wide, 4 GiB per
+host, 2 GiB per task, and 1 GiB per attempt. These are cumulative traffic
+guards, not resident-memory reservations. Retained task scopes are capped at
+100,000 entries and use the same fail-closed overflow rule.
+
+Probe payload, short and oversized responses, lowest-speed aborts, retry and
+cancellation cleanup, queued stale chunks, endgame losers/rollbacks, and
+whole-file checksum failure all charge the same hierarchy. The worker checks
+that credit remains before another body poll, charges the bounded frame already
+accepted if a limit is crossed, closes the attempt, and returns the terminal
+`http_discard_budget_exhausted` resource-limit error instead of admitting
+another retry. `tellStatus` exposes `discardBudgetConsumed` and
+`discardBudgetRemaining` separately from `discardedLength`.
+
+A user-facing override requires a normal option-registry addition; the current
+limits remain internal executable policy.
 
 ## Reconciliation With libtorrent
 

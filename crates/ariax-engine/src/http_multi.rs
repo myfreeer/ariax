@@ -5,15 +5,17 @@ use crate::http_first_slice::{
     append_layout, build_single_file_layout, now_unix_ms,
 };
 use crate::{
-    HttpCancellation, HttpClientRequest, HttpContentChecksum, HttpMirrorIdentityPolicy,
-    HttpOverlapSettlement, HttpPolicyClient, HttpPolicyClientError, HttpRangeAssignment,
-    HttpRangeCoordinator, HttpRangeCoordinatorConfig, HttpRangeCoordinatorError, HttpRangeFailure,
-    HttpRangePoll, HttpRangeResponseError, HttpRangeResponseValidator, HttpRangeSource,
-    HttpRetryBudget, HttpRetryCause, HttpRetryDecision, HttpRetryDelaySource, HttpRetryError,
-    HttpRetryPolicy, HttpRetryStopReason, HttpRetryTransportFailure, HttpStaleValidatorPolicy,
-    HttpTaskSpec, HttpTaskWorker, HttpTransportError, HttpWorkerFuture, HttpWorkerSuccess,
-    LeaseCommit, LeaseWritePlan, RetryStateWrite, StorageEngine, StorageEngineConfig,
-    StorageEngineError, WriteAck, WriteBlock, WriteReject,
+    HttpCancellation, HttpClientRequest, HttpContentChecksum, HttpDiscardAttemptGuard,
+    HttpDiscardBudget, HttpDiscardBudgetError, HttpDiscardBudgetLimits, HttpDiscardScope,
+    HttpDiscardTaskGuard, HttpMirrorIdentityPolicy, HttpOverlapSettlement, HttpPolicyClient,
+    HttpPolicyClientError, HttpRangeAssignment, HttpRangeCoordinator, HttpRangeCoordinatorConfig,
+    HttpRangeCoordinatorError, HttpRangeFailure, HttpRangePoll, HttpRangeResponseError,
+    HttpRangeResponseValidator, HttpRangeSource, HttpRetryBudget, HttpRetryCause,
+    HttpRetryDecision, HttpRetryDelaySource, HttpRetryError, HttpRetryPolicy, HttpRetryStopReason,
+    HttpRetryTransportFailure, HttpStaleValidatorPolicy, HttpTaskSpec, HttpTaskWorker,
+    HttpTransportError, HttpWorkerFuture, HttpWorkerSuccess, LeaseCommit, LeaseWritePlan,
+    RetryStateWrite, StorageEngine, StorageEngineConfig, StorageEngineError, WriteAck, WriteBlock,
+    WriteReject,
 };
 use ariax_core::{
     ErrorKind, FileId, Generation, Gid, LeaseId, MonotonicInstant, PersistedDelayDecision, PieceId,
@@ -127,6 +129,8 @@ pub struct HttpTransferStatsSnapshot {
     pub provisional_bytes: u64,
     pub durable_bytes: u64,
     pub discarded_bytes: u64,
+    pub discard_budget_consumed: u64,
+    pub discard_budget_remaining: u64,
     pub retry_count: u64,
     pub active_connections: u64,
     pub current_speed: u64,
@@ -158,6 +162,8 @@ struct HttpTransferStatsInner {
     provisional_bytes: AtomicU64,
     durable_bytes: AtomicU64,
     discarded_bytes: AtomicU64,
+    discard_budget_consumed: AtomicU64,
+    discard_budget_remaining: AtomicU64,
     retry_count: AtomicU64,
     active_connections: AtomicU64,
     rate_debt_bytes: AtomicU64,
@@ -174,6 +180,8 @@ impl Default for HttpTransferStatsInner {
             provisional_bytes: AtomicU64::new(0),
             durable_bytes: AtomicU64::new(0),
             discarded_bytes: AtomicU64::new(0),
+            discard_budget_consumed: AtomicU64::new(0),
+            discard_budget_remaining: AtomicU64::new(0),
             retry_count: AtomicU64::new(0),
             active_connections: AtomicU64::new(0),
             rate_debt_bytes: AtomicU64::new(0),
@@ -252,6 +260,8 @@ impl HttpTransferStats {
             &self.inner.provisional_bytes,
             &self.inner.durable_bytes,
             &self.inner.discarded_bytes,
+            &self.inner.discard_budget_consumed,
+            &self.inner.discard_budget_remaining,
             &self.inner.retry_count,
             &self.inner.active_connections,
             &self.inner.rate_debt_bytes,
@@ -313,10 +323,23 @@ impl HttpTransferStats {
         self.inner.accepted_bytes.store(value, Ordering::Relaxed);
     }
 
-    fn add_discarded(&self, value: usize) {
+    fn add_discarded_u64(&self, value: u64) {
         self.inner
             .discarded_bytes
-            .fetch_add(u64::try_from(value).unwrap_or(u64::MAX), Ordering::Relaxed);
+            .fetch_add(value, Ordering::Relaxed);
+    }
+
+    fn set_discarded(&self, value: u64) {
+        self.inner.discarded_bytes.store(value, Ordering::Relaxed);
+    }
+
+    fn set_discard_budget(&self, consumed: u64, remaining: u64) {
+        self.inner
+            .discard_budget_consumed
+            .store(consumed, Ordering::Relaxed);
+        self.inner
+            .discard_budget_remaining
+            .store(remaining, Ordering::Relaxed);
     }
 
     fn add_retry(&self) {
@@ -364,6 +387,8 @@ impl HttpTransferStats {
         let provisional_bytes = self.inner.provisional_bytes.load(Ordering::Relaxed);
         let durable_bytes = self.inner.durable_bytes.load(Ordering::Relaxed);
         let discarded_bytes = self.inner.discarded_bytes.load(Ordering::Relaxed);
+        let discard_budget_consumed = self.inner.discard_budget_consumed.load(Ordering::Relaxed);
+        let discard_budget_remaining = self.inner.discard_budget_remaining.load(Ordering::Relaxed);
         let retry_count = self.inner.retry_count.load(Ordering::Relaxed);
         let active_connections = self.inner.active_connections.load(Ordering::Relaxed);
         let rate_debt_bytes = self.inner.rate_debt_bytes.load(Ordering::Relaxed);
@@ -382,6 +407,8 @@ impl HttpTransferStats {
             committed_bytes: durable_bytes,
             durable_bytes,
             discarded_bytes,
+            discard_budget_consumed,
+            discard_budget_remaining,
             ..StatsCounters::default()
         };
         let (current_speed, wire_speed, useful_speed, durable_speed, smoothed_speed, sample_age) = {
@@ -407,6 +434,8 @@ impl HttpTransferStats {
             provisional_bytes,
             durable_bytes,
             discarded_bytes,
+            discard_budget_consumed,
+            discard_budget_remaining,
             retry_count,
             active_connections,
             current_speed,
@@ -500,6 +529,10 @@ pub struct HttpMultiRangeWorkerConfig {
     /// Process-owned download limiter shared by all workers constructed from
     /// this config. Per-task limits are installed at task admission.
     pub download_rate: RateArbiter,
+    /// Process-owned cumulative discard ledger shared by every worker clone.
+    /// Task admission derives finite host/task/attempt ceilings from the
+    /// current piece, retry, ingress-frame, and endgame bounds.
+    pub discard_budget: HttpDiscardBudget,
     /// Bounds body frames retained between Hyper and storage. The permit moves
     /// with the frame until positional disk submission has consumed it.
     pub ingress_budget: HttpIngressBudgets,
@@ -534,6 +567,7 @@ impl Default for HttpMultiRangeWorkerConfig {
             retry: HttpRetryPolicy::default(),
             download_rate: RateArbiter::new(RateDirection::Download, RateArbiterConfig::default())
                 .expect("default download rate arbiter is valid"),
+            discard_budget: HttpDiscardBudget::default(),
             ingress_budget: HttpIngressBudgets::new(DEFAULT_HTTP_INGRESS_BUDGET_BYTES),
             ingress_frame_bytes: NonZeroUsize::new(DEFAULT_HTTP_INGRESS_FRAME_BYTES)
                 .expect("default ingress frame is nonzero"),
@@ -593,11 +627,32 @@ impl HttpMultiRangeWorker {
         generation: Generation,
         cancellation: HttpCancellation,
     ) -> Result<HttpWorkerSuccess, HttpMultiRangeError> {
+        let retry_policy = task.options().retry.as_ref().unwrap_or(&self.config.retry);
+        let discard_limits = HttpDiscardBudgetLimits::for_http_task(
+            self.config.discard_budget.process_limit(),
+            task.options().piece_length,
+            u64::try_from(self.config.ingress_frame_bytes.get()).unwrap_or(u64::MAX),
+            retry_policy.max_attempts.get(),
+            retry_policy.max_attempts_per_mirror.get(),
+            task.options().endgame_max_duplicates,
+        )
+        .clamp_to(self.config.discard_budget.configured_limits());
+        let discard_task = self
+            .config
+            .discard_budget
+            .begin_task(task.task(), discard_limits.scope())
+            .map_err(|_| HttpMultiRangeError::InvalidConfig)?;
         let stats = self
             .stats
             .get_or_create(task.task())
             .map_err(|_| HttpMultiRangeError::StatsCatalogFull)?;
         stats.begin();
+        let discard_snapshot = discard_task.snapshot();
+        stats.set_discarded(discard_snapshot.task_consumed);
+        stats.set_discard_budget(
+            discard_snapshot.task_consumed,
+            discard_snapshot.task_remaining,
+        );
         self.config
             .download_rate
             .set_scoped_limit(
@@ -649,11 +704,16 @@ impl HttpMultiRangeWorker {
                     &cancellation,
                 )
                 .await;
+            let outcome =
+                account_checksum_outcome(&task, &discard_task, &stats, total_length, outcome);
             return self
                 .complete_storage_outcome(&task, storage, layout_hash, total_length, outcome)
                 .await;
         }
-        let mut sources = match self.probe_sources(&task, &cancellation, &stats).await {
+        let mut sources = match self
+            .probe_sources(&task, &cancellation, &stats, &discard_task)
+            .await
+        {
             Ok(sources) => sources,
             Err(error) => {
                 self.handoff_journal(task.gid(), prepared_storage.into_appender())
@@ -698,6 +758,7 @@ impl HttpMultiRangeWorker {
                 &durable_pieces,
                 &recovered_retry_states,
                 &mut storage,
+                &discard_task,
             )
             .await;
         let outcome = match range_outcome {
@@ -712,6 +773,7 @@ impl HttpMultiRangeWorker {
             }
             Err(error) => Err(error),
         };
+        let outcome = account_checksum_outcome(&task, &discard_task, &stats, total_length, outcome);
         self.complete_storage_outcome(&task, storage, layout_hash, total_length, outcome)
             .await
     }
@@ -767,6 +829,7 @@ impl HttpMultiRangeWorker {
         task: &HttpTaskSpec,
         cancellation: &HttpCancellation,
         stats: &HttpTransferStats,
+        discard_task: &HttpDiscardTaskGuard,
     ) -> Result<Vec<PreparedSource>, HttpMultiRangeError> {
         let source_limit = if task.options().mirror_identity
             == HttpMirrorIdentityPolicy::RequireSharedDigest
@@ -793,6 +856,7 @@ impl HttpMultiRangeWorker {
                 task.options().response_body_timeout,
                 cancellation,
                 stats,
+                discard_task,
             )
             .await
             {
@@ -1253,6 +1317,7 @@ impl HttpMultiRangeWorker {
         durable_pieces: &[PieceId],
         recovered_retry_states: &[RecoveredRetryState],
         storage: &mut StorageEngine,
+        discard_task: &HttpDiscardTaskGuard,
     ) -> Result<(), HttpMultiRangeError> {
         let total_length = sources[0].validator.total_length();
         let retry_policy = task.options().retry.as_ref().unwrap_or(&self.config.retry);
@@ -1372,6 +1437,9 @@ impl HttpMultiRangeWorker {
                         next_attempt = next_attempt
                             .checked_add(1)
                             .ok_or(HttpMultiRangeError::IdentifierExhausted)?;
+                        let discard = discard_task
+                            .begin_attempt(discard_host_key(validator.final_uri())?)
+                            .map_err(discard_setup_error)?;
                         active.insert(
                             assignment.lease,
                             ActiveAttempt {
@@ -1381,6 +1449,7 @@ impl HttpMultiRangeWorker {
                                 opened: false,
                                 received: 0,
                                 last_progress_ms: now_ms,
+                                discard: discard.clone(),
                             },
                         );
                         let client = self.client.clone();
@@ -1415,6 +1484,7 @@ impl HttpMultiRangeWorker {
                                 rate_path,
                                 ingress_budget,
                                 ingress_frame_bytes,
+                                discard,
                                 cancellation,
                                 sender,
                                 attempt_stats,
@@ -1495,6 +1565,7 @@ impl HttpMultiRangeWorker {
                                     total_length,
                                     cancellation,
                                     stats,
+                                    discard_task,
                                 )
                                 .await
                             {
@@ -1578,6 +1649,27 @@ impl HttpMultiRangeWorker {
 
         joins.abort_all();
         while joins.join_next().await.is_some() {}
+        let mut cleanup_error = None;
+        while let Ok(event) = receiver.try_recv() {
+            match event {
+                AttemptEvent::Head { start, .. } => {
+                    let _ignored = start.send(false);
+                }
+                AttemptEvent::PrepareRead { response, .. } => {
+                    let _ignored = response.send(None);
+                }
+                AttemptEvent::Chunk {
+                    buffer, discard, ..
+                } => {
+                    let data_len = buffer.len();
+                    storage.discard_network_buffer(buffer)?;
+                    if let Err(error) = record_discarded(&discard, stats, data_len) {
+                        cleanup_error.get_or_insert(error);
+                    }
+                }
+                AttemptEvent::Terminal { .. } => {}
+            }
+        }
         let reason = if matches!(outcome, Err(HttpMultiRangeError::Cancelled)) {
             LeaseAbortReason::Cancelled
         } else {
@@ -1585,22 +1677,28 @@ impl HttpMultiRangeWorker {
         };
         let pending_candidates = pending_endgame
             .values()
-            .map(|candidate| candidate.attempt.assignment.lease)
+            .map(|candidate| candidate.attempt.clone())
             .collect::<Vec<_>>();
-        let active_leases = active
-            .values()
-            .filter(|attempt| attempt.opened)
-            .map(|attempt| attempt.assignment.lease)
-            .collect::<Vec<_>>();
-        for lease in pending_candidates.into_iter().chain(active_leases) {
-            match storage.abort_lease(task.task(), generation, lease, reason) {
-                Ok(_) => {}
-                Err(error) if error.reject() == WriteReject::UnknownLease => {}
-                Err(error) => return Err(HttpMultiRangeError::Storage(error)),
+        let active_attempts = active.values().cloned().collect::<Vec<_>>();
+        for attempt in pending_candidates.into_iter().chain(active_attempts) {
+            if attempt.opened {
+                match storage.abort_lease(task.task(), generation, attempt.assignment.lease, reason)
+                {
+                    Ok(_) => {}
+                    Err(error) if error.reject() == WriteReject::UnknownLease => {}
+                    Err(error) => return Err(HttpMultiRangeError::Storage(error)),
+                }
+            }
+            stats.remove_provisional(attempt.received);
+            if let Err(error) = record_discarded(&attempt.discard, stats, attempt.received) {
+                cleanup_error.get_or_insert(error);
             }
         }
         stats.set_active(0);
-        outcome
+        match cleanup_error {
+            Some(error) => Err(error),
+            None => outcome,
+        }
     }
 
     async fn revalidate_range_source(
@@ -1610,6 +1708,7 @@ impl HttpMultiRangeWorker {
         total_length: u64,
         cancellation: &HttpCancellation,
         stats: &HttpTransferStats,
+        discard_task: &HttpDiscardTaskGuard,
     ) -> Result<PreparedSource, HttpMultiRangeError> {
         let submitted = task
             .sources()
@@ -1628,6 +1727,7 @@ impl HttpMultiRangeWorker {
             task.options().response_body_timeout,
             cancellation,
             stats,
+            discard_task,
         )
         .await
         .map_err(|error| match error {
@@ -1871,14 +1971,7 @@ fn source_host_keys(
     let mut origin_ids = BTreeMap::<String, u64>::new();
     let mut source_ids = BTreeMap::new();
     for source in sources {
-        let uri: hyper::Uri = source
-            .validator
-            .final_uri()
-            .parse()
-            .map_err(|_| HttpMultiRangeError::Protocol)?;
-        let scheme = uri.scheme_str().ok_or(HttpMultiRangeError::Protocol)?;
-        let authority = uri.authority().ok_or(HttpMultiRangeError::Protocol)?;
-        let origin = format!("{scheme}://{authority}");
+        let origin = discard_host_key(source.validator.final_uri())?;
         let next = u64::try_from(origin_ids.len())
             .ok()
             .and_then(|value| value.checked_add(1))
@@ -1887,6 +1980,13 @@ fn source_host_keys(
         source_ids.insert(source.validator.source(), host);
     }
     Ok(source_ids)
+}
+
+fn discard_host_key(uri: &str) -> Result<String, HttpMultiRangeError> {
+    let uri: hyper::Uri = uri.parse().map_err(|_| HttpMultiRangeError::Protocol)?;
+    let scheme = uri.scheme_str().ok_or(HttpMultiRangeError::Protocol)?;
+    let authority = uri.authority().ok_or(HttpMultiRangeError::Protocol)?;
+    Ok(format!("{scheme}://{authority}"))
 }
 
 struct OpenedTaskJournal {
@@ -2121,6 +2221,7 @@ struct ActiveAttempt {
     opened: bool,
     received: usize,
     last_progress_ms: u64,
+    discard: HttpDiscardAttemptGuard,
 }
 
 #[derive(Debug)]
@@ -2150,6 +2251,7 @@ enum AttemptEvent {
         offset: u64,
         buffer: BufferLease,
         _ingress: HttpIngressPermit,
+        discard: HttpDiscardAttemptGuard,
     },
     Terminal {
         lease: LeaseId,
@@ -2169,6 +2271,7 @@ enum RangeAttemptFailure {
     Timeout,
     Hang,
     LowestSpeed,
+    DiscardBudgetExhausted(HttpDiscardScope),
     Cancelled,
 }
 
@@ -2176,6 +2279,7 @@ enum RangeAttemptFailure {
 pub enum HttpMultiRangeError {
     InvalidConfig,
     StatsCatalogFull,
+    DiscardBudgetExhausted(HttpDiscardScope),
     NoUsableSources,
     SourceLengthMismatch,
     Client(HttpPolicyClientError),
@@ -2202,6 +2306,7 @@ impl HttpMultiRangeError {
         match self {
             Self::InvalidConfig => "invalid_multi_range_config",
             Self::StatsCatalogFull => "http_stats_catalog_full",
+            Self::DiscardBudgetExhausted(_) => "http_discard_budget_exhausted",
             Self::NoUsableSources => "no_usable_http_sources",
             Self::SourceLengthMismatch => "mirror_length_mismatch",
             Self::Client(error) => error.code(),
@@ -2259,7 +2364,9 @@ impl HttpMultiRangeError {
                 bounded_representation_restart(policy, generation),
             ),
             Self::Storage(_) | Self::Setup(_) => (ErrorKind::Disk, RetryClass::Never),
-            Self::StatsCatalogFull => (ErrorKind::ResourceLimit, RetryClass::Never),
+            Self::StatsCatalogFull | Self::DiscardBudgetExhausted(_) => {
+                (ErrorKind::ResourceLimit, RetryClass::Never)
+            }
             Self::NoUsableSources | Self::SourceLengthMismatch | Self::Exhausted => {
                 (ErrorKind::Network, RetryClass::Never)
             }
@@ -2332,6 +2439,7 @@ impl From<HttpRangeCoordinatorError> for HttpMultiRangeError {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn probe_source(
     client: &HttpPolicyClient,
     source: UriId,
@@ -2340,6 +2448,7 @@ async fn probe_source(
     body_timeout: Duration,
     cancellation: &HttpCancellation,
     stats: &HttpTransferStats,
+    discard_task: &HttpDiscardTaskGuard,
 ) -> Result<HttpRangeResponseValidator, HttpMultiRangeError> {
     let mut request = HttpClientRequest::get(uri.to_owned());
     request.range = Some(GlobalSpan { offset: 0, len: 1 });
@@ -2358,8 +2467,14 @@ async fn probe_source(
         response.headers(),
     )
     .map_err(HttpMultiRangeError::Response)?;
+    let discard = discard_task
+        .begin_attempt(discard_host_key(validator.final_uri())?)
+        .map_err(discard_setup_error)?;
     let mut received = 0_usize;
     loop {
+        if let Some(scope) = discard.exhausted_scope() {
+            return Err(HttpMultiRangeError::DiscardBudgetExhausted(scope));
+        }
         let data = tokio::select! {
             biased;
             _ = cancellation.cancelled() => return Err(HttpMultiRangeError::Cancelled),
@@ -2369,7 +2484,7 @@ async fn probe_source(
             break;
         };
         stats.add_raw(data.len());
-        stats.add_discarded(data.len());
+        record_discarded(&discard, stats, data.len())?;
         received = received.saturating_add(data.len());
         if received > 1 {
             return Err(HttpMultiRangeError::OversizedBody);
@@ -2380,6 +2495,71 @@ async fn probe_source(
     }
     response.finish().await;
     Ok(validator)
+}
+
+fn discard_setup_error(error: HttpDiscardBudgetError) -> HttpMultiRangeError {
+    match error {
+        HttpDiscardBudgetError::AttemptIdExhausted => HttpMultiRangeError::IdentifierExhausted,
+        HttpDiscardBudgetError::ZeroLimit => HttpMultiRangeError::InvalidConfig,
+    }
+}
+
+fn record_discarded(
+    discard: &HttpDiscardAttemptGuard,
+    stats: &HttpTransferStats,
+    bytes: usize,
+) -> Result<(), HttpMultiRangeError> {
+    record_discarded_u64(discard, stats, u64::try_from(bytes).unwrap_or(u64::MAX))
+}
+
+fn record_discarded_u64(
+    discard: &HttpDiscardAttemptGuard,
+    stats: &HttpTransferStats,
+    bytes: u64,
+) -> Result<(), HttpMultiRangeError> {
+    stats.add_discarded_u64(bytes);
+    let charge = discard.charge_u64(bytes);
+    let snapshot = discard.snapshot();
+    stats.set_discard_budget(snapshot.task_consumed, snapshot.task_remaining);
+    match charge.exhausted {
+        Some(scope) => Err(HttpMultiRangeError::DiscardBudgetExhausted(scope)),
+        None => Ok(()),
+    }
+}
+
+fn record_attempt_discarded(
+    discard: &HttpDiscardAttemptGuard,
+    stats: &HttpTransferStats,
+    bytes: usize,
+) -> Result<(), RangeAttemptFailure> {
+    record_discarded(discard, stats, bytes).map_err(|error| match error {
+        HttpMultiRangeError::DiscardBudgetExhausted(scope) => {
+            RangeAttemptFailure::DiscardBudgetExhausted(scope)
+        }
+        _ => RangeAttemptFailure::Cancelled,
+    })
+}
+
+fn account_checksum_outcome(
+    task: &HttpTaskSpec,
+    discard_task: &HttpDiscardTaskGuard,
+    stats: &HttpTransferStats,
+    total_length: u64,
+    outcome: Result<Option<JournalDigest>, HttpMultiRangeError>,
+) -> Result<Option<JournalDigest>, HttpMultiRangeError> {
+    if matches!(&outcome, Err(HttpMultiRangeError::ChecksumMismatch)) {
+        let host = task
+            .sources()
+            .first()
+            .map(|source| discard_host_key(source.uri()))
+            .transpose()?
+            .unwrap_or_else(|| format!("http-checksum-task-{}", task.task().get()));
+        let discard = discard_task
+            .begin_attempt_with_limit(host, total_length.max(1))
+            .map_err(discard_setup_error)?;
+        record_discarded_u64(&discard, stats, total_length)?;
+    }
+    outcome
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2394,6 +2574,7 @@ async fn range_attempt(
     rate_path: RatePath,
     ingress_budget: HttpIngressBudgets,
     ingress_frame_bytes: NonZeroUsize,
+    discard: HttpDiscardAttemptGuard,
     cancellation: HttpCancellation,
     events: mpsc::Sender<AttemptEvent>,
     stats: HttpTransferStats,
@@ -2409,6 +2590,7 @@ async fn range_attempt(
         rate_path,
         &ingress_budget,
         ingress_frame_bytes,
+        &discard,
         &cancellation,
         &events,
         &stats,
@@ -2434,6 +2616,7 @@ async fn range_attempt_inner(
     rate_path: RatePath,
     ingress_budget: &HttpIngressBudgets,
     ingress_frame_bytes: NonZeroUsize,
+    discard: &HttpDiscardAttemptGuard,
     cancellation: &HttpCancellation,
     events: &mpsc::Sender<AttemptEvent>,
     stats: &HttpTransferStats,
@@ -2493,6 +2676,7 @@ async fn range_attempt_inner(
             rate,
             rate_path,
             ingress_budget,
+            discard,
             cancellation,
             stats,
         )
@@ -2534,7 +2718,7 @@ async fn range_attempt_inner(
             .checked_add(data.len())
             .ok_or(RangeAttemptFailure::OversizedBody)?;
         if next > expected || data.len() > buffer.capacity() {
-            stats.add_discarded(data.len());
+            record_attempt_discarded(discard, stats, data.len())?;
             return Err(RangeAttemptFailure::OversizedBody);
         }
         speed_window_bytes = speed_window_bytes.saturating_add(data.len());
@@ -2546,7 +2730,7 @@ async fn range_attempt_inner(
                 condition: ConnectionCondition::Stalled,
                 reason: Some(ConnectionConditionReason::LowestSpeed),
             });
-            stats.add_discarded(data.len());
+            record_attempt_discarded(discard, stats, data.len())?;
             return Err(RangeAttemptFailure::LowestSpeed);
         }
         if speed_window_elapsed >= body_timeout {
@@ -2565,15 +2749,20 @@ async fn range_attempt_inner(
         buffer
             .mark_filled(data.len(), OwnerTag::Storage)
             .map_err(|_| RangeAttemptFailure::Cancelled)?;
-        events
+        if events
             .send(AttemptEvent::Chunk {
                 lease: assignment.lease,
                 offset,
                 buffer,
                 _ingress: ingress,
+                discard: discard.clone(),
             })
             .await
-            .map_err(|_| RangeAttemptFailure::Cancelled)?;
+            .is_err()
+        {
+            record_attempt_discarded(discard, stats, data.len())?;
+            return Err(RangeAttemptFailure::Cancelled);
+        }
         received = next;
     }
     if received != expected {
@@ -2601,6 +2790,7 @@ async fn acquire_read_slot(
     rate: &RateArbiter,
     rate_path: RatePath,
     ingress_budget: &HttpIngressBudgets,
+    discard: &HttpDiscardAttemptGuard,
     cancellation: &HttpCancellation,
     stats: &HttpTransferStats,
 ) -> Result<(BufferLease, HttpIngressPermit, RatePermit), RangeAttemptFailure> {
@@ -2632,6 +2822,10 @@ async fn acquire_read_slot(
             }
             continue;
         };
+        if let Some(scope) = discard.exhausted_scope() {
+            drop(buffer);
+            return Err(RangeAttemptFailure::DiscardBudgetExhausted(scope));
+        }
         let rate_request = NonZeroUsize::new(buffer.capacity())
             .expect("a pooled HTTP ingress buffer has nonzero capacity");
         let permit = match rate
@@ -2739,12 +2933,12 @@ fn settle_endgame_loser(
         },
     )?;
     stats.remove_provisional(loser.received);
-    stats.add_discarded(loser.received);
+    record_discarded(&loser.discard, stats, loser.received)?;
     stats.remove_provisional(pending.attempt.received);
     if committed {
         stats.add_durable(pending.attempt.received);
     } else {
-        stats.add_discarded(pending.attempt.received);
+        record_discarded(&pending.attempt.discard, stats, pending.attempt.received)?;
     }
     stats.set_active(active.len());
     Ok(())
@@ -2818,16 +3012,17 @@ async fn process_attempt_event(
             offset,
             buffer,
             _ingress: _,
+            discard,
         } => {
             let data_len = buffer.len();
             if endgame_losers.contains_key(&lease) || cancelled_leases.contains(&lease) {
                 storage.discard_network_buffer(buffer)?;
-                stats.add_discarded(data_len);
+                record_discarded(&discard, stats, data_len)?;
                 return Ok(AttemptAction::None);
             }
             let Some(attempt) = active.get(&lease).cloned() else {
-                stats.add_discarded(data_len);
                 storage.discard_network_buffer(buffer)?;
+                record_discarded(&discard, stats, data_len)?;
                 return Ok(AttemptAction::None);
             };
             if !attempt.opened
@@ -2926,6 +3121,10 @@ async fn process_attempt_event(
                     stats.remove_provisional(attempt.received);
                 }
                 Err(failure) => {
+                    let discard_exhaustion = match &failure {
+                        RangeAttemptFailure::DiscardBudgetExhausted(scope) => Some(*scope),
+                        _ => None,
+                    };
                     let mut range_released = false;
                     let mut action = AttemptAction::None;
                     if attempt.opened {
@@ -2942,7 +3141,11 @@ async fn process_attempt_event(
                                 .ok_or(HttpMultiRangeError::Protocol)?;
                             if let Some(peer_attempt) = active.remove(&peer) {
                                 stats.remove_provisional(peer_attempt.received);
-                                stats.add_discarded(peer_attempt.received);
+                                record_discarded(
+                                    &peer_attempt.discard,
+                                    stats,
+                                    peer_attempt.received,
+                                )?;
                             }
                             cancelled_leases.insert(peer);
                             action = AttemptAction::CancelLease(peer);
@@ -2952,7 +3155,10 @@ async fn process_attempt_event(
                         storage.settle_unopened_overlap_member(task, generation, group, lease)?;
                     }
                     stats.remove_provisional(attempt.received);
-                    stats.add_discarded(attempt.received);
+                    record_discarded(&attempt.discard, stats, attempt.received)?;
+                    if let Some(scope) = discard_exhaustion {
+                        return Err(HttpMultiRangeError::DiscardBudgetExhausted(scope));
+                    }
                     let now_ms = elapsed_ms(started);
                     apply_attempt_failure(
                         failure,
@@ -3198,7 +3404,7 @@ fn fail_panicked_attempt(
         storage.abort_lease(task, generation, lease, LeaseAbortReason::Retry)?;
     }
     stats.remove_provisional(attempt.received);
-    stats.add_discarded(attempt.received);
+    record_discarded(&attempt.discard, stats, attempt.received)?;
     coordinator.fail(lease, HttpRangeFailure::RetryAt(now_ms))?;
     stats.add_retry();
     stats.set_active(active.len());
@@ -3233,6 +3439,7 @@ fn retry_cause(failure: &RangeAttemptFailure) -> HttpRetryCause {
             HttpRetryCause::Transport(HttpRetryTransportFailure::Timeout)
         }
         RangeAttemptFailure::Hang => HttpRetryCause::Transport(HttpRetryTransportFailure::Hang),
+        RangeAttemptFailure::DiscardBudgetExhausted(_) => HttpRetryCause::Policy,
         RangeAttemptFailure::Cancelled => HttpRetryCause::Cancelled,
     }
 }
@@ -3262,6 +3469,7 @@ fn abort_reason(failure: &RangeAttemptFailure) -> LeaseAbortReason {
         RangeAttemptFailure::Timeout
         | RangeAttemptFailure::Hang
         | RangeAttemptFailure::LowestSpeed
+        | RangeAttemptFailure::DiscardBudgetExhausted(_)
         | RangeAttemptFailure::Client(_)
         | RangeAttemptFailure::Response { .. } => LeaseAbortReason::Retry,
     }
@@ -4062,6 +4270,41 @@ mod tests {
     }
 
     #[test]
+    fn discard_charge_updates_stats_and_stops_at_the_attempt_cap() {
+        let stats = HttpTransferStats::default();
+        stats.begin();
+        let budget = HttpDiscardBudget::new(HttpDiscardBudgetLimits {
+            process_bytes: 16,
+            host_bytes: 16,
+            task_bytes: 16,
+            attempt_bytes: 4,
+        })
+        .expect("limits");
+        let task = budget
+            .begin_task(
+                TaskId::new(1).expect("task"),
+                crate::HttpDiscardScopeLimits {
+                    host_bytes: 16,
+                    task_bytes: 16,
+                    attempt_bytes: 4,
+                },
+            )
+            .expect("task guard");
+        let attempt = task.begin_attempt("https://discard.test").expect("attempt");
+        record_discarded(&attempt, &stats, 3).expect("first charge");
+        let error = record_discarded(&attempt, &stats, 3).expect_err("cap");
+        assert_eq!(
+            error.code(),
+            "http_discard_budget_exhausted",
+            "the caller must stop polling after a partial overrun charge"
+        );
+        let snapshot = stats.snapshot();
+        assert_eq!(snapshot.discarded_bytes, 6);
+        assert_eq!(snapshot.discard_budget_consumed, 4);
+        assert_eq!(snapshot.discard_budget_remaining, 12);
+    }
+
+    #[test]
     fn lowest_speed_check_uses_elapsed_useful_bytes() {
         assert!(below_lowest_speed(100, Duration::from_secs(2), 100,));
         assert!(!below_lowest_speed(200, Duration::from_secs(2), 100,));
@@ -4755,6 +4998,53 @@ mod tests {
             expected.as_ref()
         );
         assert_eq!(stats.get(spec.task()).unwrap().snapshot().retry_count, 1);
+    }
+
+    #[tokio::test]
+    async fn short_body_exhausts_attempt_discard_budget_before_another_retry() {
+        let root = TestDirectory::new("discard-cap-root");
+        let journal = TestDirectory::new("discard-cap-journal");
+        let expected = data(MIB);
+        let (mirror, server) = serve_mirror(Arc::clone(&expected), MirrorMode::ShortRange, 2).await;
+        let spec = task(&root, [mirror], expected.len());
+        let stats = SharedHttpTransferStats::new(NonZeroUsize::new(2).expect("stats"));
+        let discard_budget = HttpDiscardBudget::new(HttpDiscardBudgetLimits {
+            process_bytes: MIB as u64,
+            host_bytes: MIB as u64,
+            task_bytes: MIB as u64,
+            attempt_bytes: 128 * 1024,
+        })
+        .expect("discard budget");
+        let worker = HttpMultiRangeWorker::new(
+            policy_client(2),
+            HttpMultiRangeWorkerConfig {
+                journal_root: journal.0.clone(),
+                storage: StorageEngineConfig::default(),
+                discard_budget,
+                event_capacity: NonZeroUsize::new(16).expect("events"),
+                ..HttpMultiRangeWorkerConfig::default()
+            },
+            stats.clone(),
+        )
+        .expect("worker");
+        let error = worker
+            .run_task(
+                Arc::new(spec.clone()),
+                Generation::INITIAL,
+                HttpCancellation::new(),
+            )
+            .await
+            .expect_err("discard cap must stop the retry cycle");
+        assert!(matches!(
+            error,
+            HttpMultiRangeError::DiscardBudgetExhausted(HttpDiscardScope::Attempt)
+        ));
+        server.await.expect("server");
+        let snapshot = stats.get(spec.task()).expect("stats").snapshot();
+        assert_eq!(snapshot.retry_count, 0);
+        assert!(snapshot.discarded_bytes >= (MIB / 2) as u64);
+        assert_eq!(snapshot.discard_budget_consumed, 128 * 1024 + 1);
+        assert_eq!(snapshot.durable_bytes, 0);
     }
 
     #[tokio::test]

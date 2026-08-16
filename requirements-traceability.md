@@ -394,7 +394,10 @@ Acceptance:
 - local disk/CPU/buffer/rate-limit backpressure never triggers remote-slow
   demotion,
 - retry waits do not hold transfer buffers.
-- discarded traffic is separately observable and bounded; the configured
+- discarded traffic is separately observable and bounded; HTTP now atomically
+  charges finite process/final-origin-host/task/attempt scopes with no refund,
+  stops polling/retrying on exhaustion, and exposes consumed/remaining credit;
+  other protocol producers remain phase gates. The configured
   limiter's wire-versus-committed accounting is explicit rather than permitting
   an unbounded bypass.
 

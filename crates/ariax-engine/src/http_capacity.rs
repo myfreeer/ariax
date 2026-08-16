@@ -1,5 +1,5 @@
 use crate::{
-    HttpDirectTransportConfig, HttpIngressBudgets, HttpMultiRangeWorkerConfig,
+    HttpDirectTransportConfig, HttpDiscardBudget, HttpIngressBudgets, HttpMultiRangeWorkerConfig,
     HttpPolicyClientConfig, HttpProxyConnectConfig, HttpProxyRequestConfig, HttpTransportBudgets,
     HttpTransportError, StorageEngineConfig,
 };
@@ -22,6 +22,7 @@ pub struct HttpProcessResources {
     resident: ByteBudget,
     transport: HttpTransportBudgets,
     ingress: HttpIngressBudgets,
+    discard: HttpDiscardBudget,
 }
 
 impl HttpProcessResources {
@@ -64,6 +65,7 @@ impl HttpProcessResources {
             resident,
             transport,
             ingress,
+            discard: HttpDiscardBudget::default(),
         })
     }
 
@@ -91,6 +93,11 @@ impl HttpProcessResources {
     #[must_use]
     pub fn ingress_budgets(&self) -> HttpIngressBudgets {
         self.ingress.clone()
+    }
+
+    #[must_use]
+    pub fn discard_budget(&self) -> HttpDiscardBudget {
+        self.discard.clone()
     }
 
     #[must_use]
@@ -137,6 +144,7 @@ impl HttpProcessResources {
             journal_root,
             storage,
             ingress_budget: self.ingress.clone(),
+            discard_budget: self.discard.clone(),
             ..HttpMultiRangeWorkerConfig::default()
         }
     }
@@ -177,6 +185,8 @@ impl Error for HttpCapacityError {
 #[cfg(test)]
 mod tests {
     use super::HttpProcessResources;
+    use crate::HttpDiscardScopeLimits;
+    use ariax_core::TaskId;
     use ariax_runtime::{
         C10K_LOW_ACTIVITY_SOCKET_TARGET, HTTP_IDLE_CONNECTION_RESERVATION_BYTES,
         PROFILE_CONTROL_HANDLE_RESERVE, ProfileCapacityError, RuntimeProfile,
@@ -210,6 +220,29 @@ mod tests {
         assert_eq!(worker.storage.max_in_flight_bytes, 64 * 1024 * 1024);
         assert_eq!(worker.storage.buffer_pool_bytes, 256 * 1024 * 1024);
         assert!(worker.storage.handle_budgets.is_some());
+        let limits = worker.discard_budget.configured_limits();
+        let guard = worker
+            .discard_budget
+            .begin_task(
+                TaskId::new(1).expect("task"),
+                HttpDiscardScopeLimits {
+                    host_bytes: limits.host_bytes,
+                    task_bytes: limits.task_bytes,
+                    attempt_bytes: limits.attempt_bytes,
+                },
+            )
+            .expect("discard task");
+        let attempt = guard
+            .begin_attempt("https://capacity.test")
+            .expect("attempt");
+        assert_eq!(attempt.charge(1).exhausted, None);
+        assert_eq!(
+            resources
+                .discard_budget()
+                .process_snapshot()
+                .process_consumed,
+            1
+        );
     }
 
     #[test]

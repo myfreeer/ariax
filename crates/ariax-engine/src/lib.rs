@@ -9,6 +9,7 @@ mod http_client;
 mod http_connector;
 mod http_control;
 mod http_cookie;
+mod http_discard;
 mod http_first_slice;
 mod http_happy_eyeballs;
 mod http_multi;
@@ -63,6 +64,14 @@ pub use http_cookie::{
     MAX_HTTP_COOKIE_BYTES_PER_DOMAIN, MAX_HTTP_COOKIE_ENTRIES_PER_DOMAIN,
     MAX_HTTP_COOKIE_FILE_BYTES, MAX_HTTP_COOKIE_FILE_LINES, MAX_HTTP_COOKIE_HEADER_BYTES,
     MAX_HTTP_PSL_BYTES, MAX_HTTP_PSL_SNAPSHOT_ID_BYTES,
+};
+pub use http_discard::{
+    DEFAULT_HTTP_DISCARD_ATTEMPT_BYTES, DEFAULT_HTTP_DISCARD_HOST_BYTES,
+    DEFAULT_HTTP_DISCARD_PROCESS_BYTES, DEFAULT_HTTP_DISCARD_SCOPE_MULTIPLIER,
+    DEFAULT_HTTP_DISCARD_TASK_BYTES, HttpDiscardAttemptGuard, HttpDiscardBudget,
+    HttpDiscardBudgetError, HttpDiscardBudgetLimits, HttpDiscardCharge, HttpDiscardScope,
+    HttpDiscardScopeLimits, HttpDiscardScopeSnapshot, HttpDiscardTaskGuard,
+    MAX_HTTP_DISCARD_HOST_SCOPES, MAX_HTTP_DISCARD_TASK_SCOPES,
 };
 pub use http_first_slice::{
     HttpCancellation, KnownLengthHttpError, KnownLengthHttpRecovery,

@@ -25,8 +25,10 @@ process-owned profile-capacity boundary is also executable for HTTP: profile
 resolution, native handle subtraction, shared resident and transport-socket
 permits (including proxy routes), selected storage-file descriptor permits,
 profile selection in RPC startup, and the local C10k/active-range harness are
-covered. The broader evictable file-handle LRU and non-HTTP consumers remain
-pending.
+covered. HTTP discarded payload is also bounded by a process-owned atomic
+process/host/task/attempt guard, including probe, retry/cancel, checksum, and
+endgame cleanup paths, with separate RPC diagnostics. The broader evictable
+file-handle LRU and non-HTTP consumers remain pending.
 This remains a phase checkpoint, not a release/tag: cross-mirror digest-backed
 endgame, broader validators, growing/chunked transfers, HTTP/2, broader RPC,
 native release benchmark evidence, adaptive profile tuning, and the complete

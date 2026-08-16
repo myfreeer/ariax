@@ -140,7 +140,7 @@ fn render_transport_json(public_suffix: &PublicSuffixPin) -> String {
             "  \"backend\": {\"http\": \"hyper-1-http1\", \"tls\": \"rustls-0.23\", \"connector\": \"hyper-rustls-0.27\", \"crypto_provider\": \"ring\", \"native_roots\": \"rustls-native-certs\"},\n",
             "  \"schemes\": {\"http\": {\"default_port\": 80}, \"https\": {\"default_port\": 443}},\n",
             "  \"tls\": {\"versions\": [\"TLS1.2\", \"TLS1.3\"], \"default_minimum\": \"TLS1.2\", \"trust_sources\": [\"system\", \"custom_pem\", \"system_and_custom_pem\"], \"certificate_verification\": \"required\", \"alpn\": [], \"http1_without_alpn\": true, \"max_custom_pem_bytes\": 4194304, \"max_custom_certificates\": 4096},\n",
-            "  \"pool\": {\"scope\": \"process_owned_direct_origin_cache\", \"keep_alive_default\": true, \"default_max_connections_per_origin\": 1, \"default_max_idle_connections_per_origin\": 1, \"max_connections_per_origin\": 8, \"max_idle_connections_per_origin\": 8, \"default_idle_timeout_seconds\": 30, \"standalone_connection_reservation_bytes\": 262144, \"profile_idle_connection_reservation_bytes\": 32768, \"profile_active_tls_connection_ceiling_bytes\": 98304, \"profile_contract\": \"runtime_buffers.json#profile_resources\", \"native_handle_gated\": true, \"shared_process_handle_budget\": true, \"shared_global_resident_budget\": true, \"proxy_capacity_wiring\": \"implemented_shared_socket_budget\", \"file_handle_capacity_wiring\": \"implemented_two_descriptors_per_selected_file\", \"fresh_destination_admission_per_physical_connection\": true, \"incomplete_or_failed_response_reusable\": false},\n",
+            "  \"pool\": {\"scope\": \"process_owned_direct_origin_cache\", \"keep_alive_default\": true, \"default_max_connections_per_origin\": 1, \"default_max_idle_connections_per_origin\": 1, \"max_connections_per_origin\": 8, \"max_idle_connections_per_origin\": 8, \"default_idle_timeout_seconds\": 30, \"standalone_connection_reservation_bytes\": 262144, \"profile_idle_connection_reservation_bytes\": 32768, \"profile_active_tls_connection_ceiling_bytes\": 98304, \"profile_contract\": \"runtime_buffers.json#profile_resources\", \"native_handle_gated\": true, \"shared_process_handle_budget\": true, \"shared_global_resident_budget\": true, \"proxy_capacity_wiring\": \"implemented_shared_socket_budget\", \"file_handle_capacity_wiring\": \"implemented_two_descriptors_per_selected_file\", \"discard_guard\": {\"implemented\": true, \"hierarchy\": [\"process\", \"host\", \"task\", \"attempt\"], \"atomic_charge\": true, \"no_refund\": true, \"host_scope_cap\": 4096, \"task_scope_cap\": 100000, \"host_scope_overflow\": \"shared_fail_closed_bucket\", \"task_scope_overflow\": \"shared_fail_closed_bucket\", \"scope_multiplier\": 64, \"stats\": [\"discarded_bytes\", \"discard_budget_consumed\", \"discard_budget_remaining\"]}, \"fresh_destination_admission_per_physical_connection\": true, \"incomplete_or_failed_response_reusable\": false},\n",
             "  \"destination_policy\": {\"registry_contract\": \"http_destination_policy.json\", \"admission_points\": [\"initial_resolution\", \"redirect_hop\", \"proxy_endpoint\", \"physical_connection\"], \"dns\": {\"default_backend\": \"hickory\", \"system_backend_available\": true, \"positive_cache_capacity\": 4096, \"negative_cache_capacity\": 512, \"max_positive_ttl_seconds\": 86400, \"max_negative_ttl_seconds\": 30, \"max_in_flight\": 128, \"max_total_waiters\": 4096, \"max_waiters_per_name\": 1024, \"max_addresses\": 32, \"singleflight\": true}, \"happy_eyeballs\": {\"max_addresses\": 32, \"fallback_delay_ms\": 250, \"simultaneous_racers\": 2}},\n",
             "  \"redirects\": {\"statuses\": [301, 302, 303, 307, 308], \"default_max_hops\": 20, \"max_hops\": 100, \"max_location_bytes\": 8192, \"https_downgrade_default\": false, \"cross_origin_authorization_dropped\": true, \"cross_origin_if_range_dropped\": true, \"open_lease_aborted\": true, \"durable_prefix_requires_restart_without_shared_digest\": true},\n",
             "  \"proxies\": {\"routes\": [\"direct\", \"http_forward\", \"http_connect\", \"socks5\"], \"name_resolution\": [\"local_pinned\", \"trusted_proxy_enforced_with_startup_evidence\"], \"proxy_userinfo_forbidden\": true, \"max_no_proxy_rules\": 256, \"max_no_proxy_rule_bytes\": 253},\n",
@@ -167,7 +167,7 @@ fn render_transport_json(public_suffix: &PublicSuffixPin) -> String {
             "  \"retry\": {\"default_total_attempts\": 5, \"default_attempts_per_mirror\": 3, \"default_max_elapsed_seconds\": 3600, \"default_base_wait_seconds\": 1, \"default_max_wait_seconds\": 300, \"retry_after_bounded\": true, \"jitter\": \"equal\", \"rate_limiting\": \"hierarchical_task_origin_stream\"},\n",
             "  \"supervision\": {\"default_max_active_workers\": 64, \"max_active_workers\": 1024, \"default_pending_events\": 256, \"max_pending_events\": 4096, \"default_poll_interval_ms\": 1, \"shutdown_timeout_seconds\": 5, \"scheduler_lifecycle_authority_owned\": true},\n",
             "  \"rpc\": {\"methods\": [\"aria2.addUri\", \"aria2.tellStatus\", \"aria2.pause\", \"aria2.remove\", \"aria2.getGlobalStat\"], \"transports\": [\"loopback_http1_post_jsonrpc\", \"stdio_content_length\"], \"request_bytes\": 2097152, \"response_bytes\": 8388608, \"stdio_header_bytes\": 16384, \"http_connections\": 64, \"shutdown_timeout_seconds\": 5, \"notifications\": false, \"batch\": false, \"non_loopback\": false},\n",
-            "  \"diagnostics\": [\"connections_opened\", \"connections_reused\", \"connections_expired\", \"connections_poisoned\", \"pool_exhausted\", \"tls_handshakes\", \"tls_failures\", \"durable_bytes\", \"active_connections\", \"retry_count\"],\n",
+            "  \"diagnostics\": [\"connections_opened\", \"connections_reused\", \"connections_expired\", \"connections_poisoned\", \"pool_exhausted\", \"tls_handshakes\", \"tls_failures\", \"durable_bytes\", \"active_connections\", \"retry_count\", \"discarded_bytes\", \"discard_budget_consumed\", \"discard_budget_remaining\", \"discard_budget_exhausted\"],\n",
             "  \"deferred\": [\"cross_mirror_endgame_digest_identity\", \"http2\", \"growing_or_chunked_transfers\", \"websocket_rpc\", \"ndjson_rpc\", \"non_loopback_rpc\", \"broader_phase_4_control_plane\", \"client_certificates\", \"insecure_verification\", \"native_tls\"]\n",
             "}\n"
         ),
@@ -792,6 +792,14 @@ mod tests {
         assert!(contract.contains(
             "\"file_handle_capacity_wiring\": \"implemented_two_descriptors_per_selected_file\""
         ));
+        assert!(contract.contains("\"hierarchy\": [\"process\", \"host\", \"task\", \"attempt\"]"));
+        assert!(contract.contains("\"atomic_charge\": true"));
+        assert!(contract.contains("\"no_refund\": true"));
+        assert!(contract.contains("\"host_scope_cap\": 4096"));
+        assert!(contract.contains("\"task_scope_cap\": 100000"));
+        assert!(contract.contains("\"host_scope_overflow\": \"shared_fail_closed_bucket\""));
+        assert!(contract.contains("\"task_scope_overflow\": \"shared_fail_closed_bucket\""));
+        assert!(contract.contains("\"scope_multiplier\": 64"));
         assert!(contract.contains("\"fresh_destination_admission_per_physical_connection\": true"));
         assert!(contract.contains("\"incomplete_or_failed_response_reusable\": false"));
         assert!(contract.contains("\"snapshot_id\": \"test-psl\""));
@@ -802,6 +810,7 @@ mod tests {
         );
         assert!(contract.contains("\"aria2.addUri\""));
         assert!(contract.contains("\"rate_limiting\""));
+        assert!(contract.contains("\"discard_budget_exhausted\""));
     }
 
     #[test]

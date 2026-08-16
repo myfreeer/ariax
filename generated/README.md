@@ -43,8 +43,10 @@ emits the Rust longest-prefix classifier consumed by the HTTP connector.
 `http_transport_policy.json` freezes the Phase-3B HTTP(S) backend, TLS/trust and
 bounded pool choices, DNS/Happy-Eyeballs/redirect/proxy/auth policy, the exact
 bundled Mozilla Public Suffix List provenance and cookie limits, range/retry and
-worker-supervision caps, the five-method RPC boundary, diagnostics, and
-explicitly deferred features. Generation hashes
+worker-supervision caps, the process/host/task/attempt discard hierarchy and
+bounded host/task scope tables (with fail-closed overflow buckets), the
+five-method RPC boundary, diagnostics, and explicitly deferred features.
+Generation hashes
 `assets/public-suffix-list.dat` against its strict manifest and fails on byte,
 line-ending, metadata, or digest drift.
 `error_codes.json` includes the stable journal numeric value for each closed

@@ -1045,6 +1045,14 @@ fn status_value(
             Value::String(stats.discarded_bytes.to_string()),
         );
         object.insert(
+            "discardBudgetConsumed".to_owned(),
+            Value::String(stats.discard_budget_consumed.to_string()),
+        );
+        object.insert(
+            "discardBudgetRemaining".to_owned(),
+            Value::String(stats.discard_budget_remaining.to_string()),
+        );
+        object.insert(
             "receivedPayloadLength".to_owned(),
             Value::String(stats.raw_body_bytes.to_string()),
         );
@@ -1786,6 +1794,8 @@ mod tests {
         assert_eq!(status["downloadSpeed"], "0");
         assert_eq!(status["verifiedLength"], "0");
         assert_eq!(status["retryCount"], "0");
+        assert_eq!(status["discardBudgetConsumed"], "0");
+        assert_eq!(status["discardBudgetRemaining"], "0");
 
         let global = plane
             .call("aria2.getGlobalStat", json!([]))

@@ -41,6 +41,13 @@ native capacity explicitly. Adaptive tuning, non-HTTP domain wiring, the
 broader evictable file-handle LRU, and native release baselines remain phase
 gates.
 
+The HTTP discard-bound slice is executable: a process-owned ledger atomically
+charges process, canonical final-origin host, task, and attempt scopes without
+refund; body polling stops when no credit remains; probe, retry/cancel,
+checksum, stale queued-chunk, and endgame settlement paths reconcile the same
+counter; and RPC status exposes consumed/remaining task credit. FTP/SFTP and
+libtorrent discard producers remain later adapter work.
+
 This is a staged plan for building the design without repeating the incomplete
 rewrite pattern. The native-startup orchestration boundary, central-journal
 filesystem backends, runtime-effect boundary, product bootstrap, and the public
@@ -265,6 +272,11 @@ Exit criteria:
 - Fault tests for ignored Range, short/oversized body, lease abort, generated-
   header conflict, redirect/proxy SSRF, disk full, process kill, and poweroff
   simulation.
+- Discard fault coverage proves bounded oversized/short-body overrun, atomic
+  process/host/task/attempt exhaustion, no refund after abort/rollback, prompt
+  source/retry-cycle stop, and separate consumed/remaining diagnostics. The
+  HTTP guard and short-body exhaustion path are executable; the remaining
+  protocol/fault matrix still gates Phase 3 completion.
 - 1,000 active HTTP range benchmark with bounded memory. The checked-in harness
   now drives 1,000 real loopback `206` range responses under the shared ingress,
   socket, and resident permits; native release evidence remains required.
