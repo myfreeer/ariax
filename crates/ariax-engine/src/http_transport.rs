@@ -156,6 +156,15 @@ impl HttpTransportBudgets {
         self.resident_memory.used()
     }
 
+    /// Returns the process-owned handle domains shared by every transport
+    /// consumer constructed from this budget. Proxy sockets and storage file
+    /// descriptors use this same object so the process cap cannot be bypassed
+    /// by an adapter-specific path.
+    #[must_use]
+    pub fn handle_budgets(&self) -> HandleBudgets {
+        self.handles.clone()
+    }
+
     pub fn try_acquire_connection(
         &self,
     ) -> Result<HttpTransportCapacityPermit, HttpTransportError> {

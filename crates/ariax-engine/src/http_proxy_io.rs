@@ -3,6 +3,7 @@
 use crate::{
     HttpHappyEyeballsConfig, HttpProxyRoute, HttpSocksTarget, connect_http_happy_eyeballs,
 };
+use crate::{HttpTransportBudgets, HttpTransportCapacityPermit};
 use std::error::Error;
 use std::fmt;
 use std::io;
@@ -54,6 +55,11 @@ pub struct HttpProxyConnectConfig {
     pub happy_eyeballs_delay: Duration,
     pub handshake_timeout: Duration,
     pub authorization: Option<HttpProxyAuthorization>,
+    /// Process-owned transport budget. The permit is held for the complete
+    /// proxy socket lifetime, including CONNECT/SOCKS negotiation and the
+    /// response driver. Profile startup replaces the bounded standalone
+    /// default with the shared process budget.
+    pub budgets: HttpTransportBudgets,
 }
 
 impl Default for HttpProxyConnectConfig {
@@ -63,6 +69,7 @@ impl Default for HttpProxyConnectConfig {
             happy_eyeballs_delay: crate::DEFAULT_HTTP_HAPPY_EYEBALLS_DELAY,
             handshake_timeout: Duration::from_secs(30),
             authorization: None,
+            budgets: HttpTransportBudgets::default(),
         }
     }
 }
@@ -72,6 +79,7 @@ pub struct HttpProxyConnection {
     pub stream: TcpStream,
     pub proxy_peer: SocketAddr,
     pub forwarded_http: bool,
+    pub(crate) capacity: HttpTransportCapacityPermit,
 }
 
 #[derive(Debug)]
@@ -88,6 +96,7 @@ pub enum HttpProxyConnectError {
     SocksMethodRejected,
     SocksReply(u8),
     SocksTarget,
+    CapacityExhausted,
 }
 
 impl HttpProxyConnectError {
@@ -106,6 +115,7 @@ impl HttpProxyConnectError {
             Self::SocksMethodRejected => "socks5_method_rejected",
             Self::SocksReply(_) => "socks5_connect_rejected",
             Self::SocksTarget => "invalid_socks5_target",
+            Self::CapacityExhausted => "proxy_transport_capacity_exhausted",
         }
     }
 
@@ -118,6 +128,7 @@ impl HttpProxyConnectError {
                 | Self::HandshakeTimeout
                 | Self::ConnectRejected(408 | 425 | 429 | 500 | 502 | 503 | 504)
                 | Self::SocksReply(1 | 3 | 4 | 5 | 6)
+                | Self::CapacityExhausted
         )
     }
 }
@@ -158,6 +169,10 @@ pub async fn connect_http_proxy_route(
     if matches!(route, HttpProxyRoute::Direct { .. }) {
         return Err(HttpProxyConnectError::InvalidRoute);
     }
+    let capacity = config
+        .budgets
+        .try_acquire_connection()
+        .map_err(|_| HttpProxyConnectError::CapacityExhausted)?;
     let connected = connect_http_happy_eyeballs(
         proxy_addresses,
         HttpHappyEyeballsConfig {
@@ -203,6 +218,7 @@ pub async fn connect_http_proxy_route(
         stream,
         proxy_peer: connected.peer,
         forwarded_http,
+        capacity,
     })
 }
 
@@ -525,5 +541,38 @@ mod tests {
         assert!(matches!(error, HttpProxyConnectError::ConnectRejected(407)));
         assert!(!error.retriable());
         server.await.expect("server");
+    }
+
+    #[tokio::test]
+    async fn proxy_socket_capacity_is_process_owned_and_released_on_drop() {
+        let (listener, address) = proxy_address().await;
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let _request = read_response_head(&mut stream).await.expect("request");
+            stream
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .expect("reply");
+            // Keep the first connection alive while the caller probes the
+            // shared capacity rejection path.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+        let budgets = HttpTransportBudgets::new(1, crate::HTTP_CONNECTION_RESERVATION_BYTES)
+            .expect("budgets");
+        let config = HttpProxyConnectConfig {
+            budgets: budgets.clone(),
+            ..HttpProxyConnectConfig::default()
+        };
+        let connection = connect_http_proxy_route(&http_route(), &[address], config.clone())
+            .await
+            .expect("first proxy connection");
+        assert_eq!(budgets.available_sockets(), 0);
+        let error = connect_http_proxy_route(&http_route(), &[address], config)
+            .await
+            .expect_err("second proxy socket must be rejected before connect");
+        assert!(matches!(error, HttpProxyConnectError::CapacityExhausted));
+        drop(connection);
+        assert_eq!(budgets.available_sockets(), 1);
+        server.await.expect("proxy server");
     }
 }

@@ -88,11 +88,13 @@ Acceptance:
 - C10k means concurrent low-activity sockets, not 10,000 retained HTTP
   keep-alive entries or per-connection transfer buffers.
 
-The executable HTTP profile resolver and local C10k harness now provide direct
-acceptance evidence: 10,000 real loopback sockets plus 1,000 active 64 KiB
-reservations fit the concurrency accounted envelope, while a low native handle
-limit produces an explicit C10k rejection. Native release-platform benchmark
-evidence, file-handle accounting, and non-HTTP profile consumers remain open.
+The executable HTTP profile resolver and capacity harness now provide direct
+acceptance evidence: 10,000 real loopback sockets plus 1,000 simultaneous 64 KiB
+HTTP `206` range responses fit the concurrency accounted envelope, while a low
+native handle limit produces an explicit C10k rejection. Selected HTTP storage
+files and proxy sockets consume the shared file/socket domains. Native
+release-platform benchmark evidence, the broader evictable file-handle LRU, and
+non-HTTP profile consumers remain open.
 
 Boundary:
 

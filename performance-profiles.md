@@ -272,7 +272,7 @@ outside these charges.
 
 The `concurrency` C10k gate is 10,000 concurrently open low-activity sockets,
 not 10,000 retained HTTP keep-alive pool entries (that pool remains capped at
-512). The modeled idle-connection reserve is at most 320 MiB, leaving the rest
+512). The profile idle-connection reserve is at most 320 MiB, leaving the rest
 of the 896 MiB accounted limit for buffers, active ingress, task state, queues,
 caches, and fixed reserves. Admission reduces those active domains as the
 socket count rises. Exceeding any domain or the global limit is backpressure or
@@ -283,13 +283,22 @@ admission refusal, never silent growth.
 The checked-in `ariax-engine` benchmark harness uses the same process-owned
 transport and ingress permits as the RPC worker. With an isolated Linux soft
 handle limit of 20,000, the concurrency profile opened 10,000 real loopback
-sockets and reserved 1,000 active 64 KiB ranges:
+sockets and then drove 1,000 simultaneous real loopback HTTP `206` range
+responses, each 64 KiB:
 
 ```text
 profile=concurrency sockets=10000 active_ranges=1000
 resident_reserved_bytes=393216000
 accounted_limit_bytes=939524096 resident_target_bytes=1073741824
-rss_kib=Some(47340)
+rss_kib=Some(47828)
+```
+
+The same run's active transfer phase reported:
+
+```text
+profile=concurrency http_ranges=1000 http_bytes=65536000 http_ms=446
+active_http_resident_bytes=98304000 active_http_sockets=1000
+accounted_limit_bytes=939524096 rss_kib=Some(156636)
 ```
 
 With the ordinary 1,024-handle WSL limit, the same C10k-specific admission

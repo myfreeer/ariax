@@ -56,6 +56,7 @@ pub struct HttpBufferedResponse {
 pub(crate) struct HttpProxyStreamingResponse {
     response: Option<Response<Incoming>>,
     driver: Option<tokio::task::JoinHandle<Result<(), hyper::Error>>>,
+    _capacity: crate::HttpTransportCapacityPermit,
 }
 
 impl HttpProxyStreamingResponse {
@@ -203,6 +204,9 @@ pub(crate) async fn open_http_proxy_request(
     let connection = connect_http_proxy_route(route, proxy_addresses, config.connect.clone())
         .await
         .map_err(HttpProxyRequestError::Proxy)?;
+    let crate::HttpProxyConnection {
+        stream, capacity, ..
+    } = connection;
     if target_is_https {
         let server_name = route_server_name(route)?;
         let server_name = ServerName::try_from(server_name.to_owned())
@@ -210,19 +214,20 @@ pub(crate) async fn open_http_proxy_request(
         let tls = build_tls_config(&config.tls).map_err(HttpProxyRequestError::Tls)?;
         let stream = timeout(
             config.tls_handshake_timeout,
-            TlsConnector::from(Arc::new(tls)).connect(server_name, connection.stream),
+            TlsConnector::from(Arc::new(tls)).connect(server_name, stream),
         )
         .await
         .map_err(|_| HttpProxyRequestError::TlsHandshakeTimeout)?
         .map_err(|error| HttpProxyRequestError::TlsHandshake(error.to_string()))?;
-        open_over_stream(stream, request, &config).await
+        open_over_stream(stream, capacity, request, &config).await
     } else {
-        open_over_stream(connection.stream, request, &config).await
+        open_over_stream(stream, capacity, request, &config).await
     }
 }
 
 async fn open_over_stream<S>(
     stream: S,
+    capacity: crate::HttpTransportCapacityPermit,
     request: HttpPolicyRequest,
     config: &HttpProxyRequestConfig,
 ) -> Result<HttpProxyStreamingResponse, HttpProxyRequestError>
@@ -248,6 +253,7 @@ where
     Ok(HttpProxyStreamingResponse {
         response: Some(response),
         driver: Some(driver),
+        _capacity: capacity,
     })
 }
 

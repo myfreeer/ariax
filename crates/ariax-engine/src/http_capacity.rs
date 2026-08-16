@@ -1,6 +1,7 @@
 use crate::{
     HttpDirectTransportConfig, HttpIngressBudgets, HttpMultiRangeWorkerConfig,
-    HttpPolicyClientConfig, HttpTransportBudgets, HttpTransportError, StorageEngineConfig,
+    HttpPolicyClientConfig, HttpProxyConnectConfig, HttpProxyRequestConfig, HttpTransportBudgets,
+    HttpTransportError, StorageEngineConfig,
 };
 use ariax_runtime::{
     ByteBudget, HTTP_IDLE_CONNECTION_RESERVATION_BYTES, HandleBudgetError, HandleBudgetLimits,
@@ -13,9 +14,8 @@ use std::path::PathBuf;
 
 /// One resolved process-wide direct-HTTP resource set. Direct client/worker
 /// clones made from this object share socket-handle, connection-overhead,
-/// ingress, buffer, and global resident admission. Proxy transports and file
-/// handles remain outside this slice until their adapters consume the shared
-/// process domains.
+/// ingress, buffer, and global resident admission. Proxy sockets and storage
+/// file descriptors consume the same process-owned handle domains.
 #[derive(Clone, Debug)]
 pub struct HttpProcessResources {
     profile: ResolvedRuntimeProfile,
@@ -97,6 +97,13 @@ impl HttpProcessResources {
     pub fn policy_client_config(&self) -> HttpPolicyClientConfig {
         let limits = self.profile.limits();
         let per_origin = limits.max_connections_per_origin();
+        let proxy_request = HttpProxyRequestConfig {
+            connect: HttpProxyConnectConfig {
+                budgets: self.transport.clone(),
+                ..HttpProxyConnectConfig::default()
+            },
+            ..HttpProxyRequestConfig::default()
+        };
         HttpPolicyClientConfig {
             direct: HttpDirectTransportConfig {
                 max_connections_per_origin: per_origin,
@@ -109,6 +116,7 @@ impl HttpProcessResources {
                 .http_idle_connections_global
                 .checked_div(per_origin)
                 .unwrap_or(0),
+            proxy_request,
             ..HttpPolicyClientConfig::default()
         }
     }
@@ -122,6 +130,7 @@ impl HttpProcessResources {
             max_in_flight_bytes: limits.disk_queue_bytes,
             buffer_pool_bytes: limits.buffer_budget_bytes,
             resident_budget: self.resident.clone(),
+            handle_budgets: Some(self.transport.handle_budgets()),
             ..StorageEngineConfig::default()
         };
         HttpMultiRangeWorkerConfig {
@@ -192,6 +201,7 @@ mod tests {
             client.direct.budgets.connection_reservation_bytes(),
             HTTP_IDLE_CONNECTION_RESERVATION_BYTES
         );
+        assert_eq!(client.proxy_request.connect.budgets.socket_limit(), 12_288);
 
         let worker = resources.worker_config(PathBuf::from("/tmp/ariax-profile-journals"));
         assert_eq!(worker.ingress_budget.limit(), 64 * 1024 * 1024);
@@ -199,6 +209,7 @@ mod tests {
         assert_eq!(worker.storage.disk_completion_capacity, 128);
         assert_eq!(worker.storage.max_in_flight_bytes, 64 * 1024 * 1024);
         assert_eq!(worker.storage.buffer_pool_bytes, 256 * 1024 * 1024);
+        assert!(worker.storage.handle_budgets.is_some());
     }
 
     #[test]

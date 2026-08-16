@@ -43,14 +43,16 @@ control plane remain outside this checkpoint.
 The process-capacity boundary is executable for this HTTP slice. A resolved
 runtime profile creates one process-owned handle budget, one global resident-byte
 budget, a bounded per-connection reservation, and a bounded HTTP-ingress budget.
-Transport sockets consume the shared process/socket permits; the transport
-pool, policy-client clones, worker ingress, and storage buffer pool share the
-resident permit. Idle origin-cache entries remain capped independently by the
-selected profile. File-handle consumers remain outside this slice. The RPC
+Transport sockets (direct and proxy) consume the shared process/socket permits;
+selected storage files consume two shared file permits for their capability and
+blocking-lane descriptors; the transport pool, policy-client clones, worker
+ingress, and storage buffer pool share the resident permit. Idle origin-cache
+entries remain capped independently by the selected profile. The broader
+evictable file-handle LRU remains outside this slice. The RPC
 binary selects the profile with `--profile=...` and uses `auto`'s concurrency
-baseline by default. A deterministic benchmark opens
-10,000 real low-activity loopback sockets plus 1,000 active range reservations
-under the same permits; native release-platform runs remain a gate.
+baseline by default. A deterministic benchmark opens 10,000 real low-activity
+loopback sockets and drives 1,000 simultaneous 64 KiB loopback `206` range
+responses under the same permits; native release-platform runs remain a gate.
 
 This document defines HTTP(S) sequential download, resume, strict range
 validation, storage integration, retry integration, and stats behavior.

@@ -6,7 +6,8 @@ use ariax_runtime::{
     BlockingDiskLaneConfig, BlockingDiskLaneStartError, BlockingDiskOperation,
     BlockingDiskOperationId, BlockingDiskSubmission, BlockingDiskSubmitErrorKind,
     BlockingFileHandle, BlockingFileRegistry, BlockingFileRegistryError, BufferLease, BufferPool,
-    BufferPoolConfig, BufferState, BufferTransitionError, ByteBudget, OwnerTag, PoolError,
+    BufferPoolConfig, BufferState, BufferTransitionError, ByteBudget, HandleBudgetError,
+    HandleBudgets, HandlePermit, OwnerTag, PoolError,
 };
 use ariax_storage::{
     ControlJournalAppender, DataBarrierKind, FileLayout, GlobalOffsetMapper, GlobalSpan,
@@ -32,6 +33,10 @@ pub struct StorageEngineConfig {
     /// Global resident-byte domain shared with process HTTP ingress and
     /// connection overhead when constructed from a runtime profile.
     pub resident_budget: ByteBudget,
+    /// Optional process-owned file-handle domains. One selected output file
+    /// consumes two permits: its capability descriptor and the descriptor
+    /// registered with the blocking disk lane.
+    pub handle_budgets: Option<HandleBudgets>,
     pub shutdown_timeout: Duration,
 }
 
@@ -45,6 +50,7 @@ impl Default for StorageEngineConfig {
             max_in_flight_bytes: 2 * 1024 * 1024,
             buffer_pool_bytes,
             resident_budget: ByteBudget::new(buffer_pool_bytes),
+            handle_budgets: None,
             shutdown_timeout: Duration::from_secs(5),
         }
     }
@@ -189,6 +195,7 @@ enum StorageEngineErrorDetail {
     Native(NativeCapabilityError),
     DiskStart(BlockingDiskLaneStartError),
     DiskRegistry(BlockingFileRegistryError),
+    Handle(HandleBudgetError),
     Disk(BlockingDiskError),
     DiskAdmission(BlockingDiskSubmitErrorKind),
     Buffer(PoolError),
@@ -231,6 +238,7 @@ impl fmt::Display for StorageEngineError {
             StorageEngineErrorDetail::Native(error) => write!(formatter, ": {error}"),
             StorageEngineErrorDetail::DiskStart(error) => write!(formatter, ": {error}"),
             StorageEngineErrorDetail::DiskRegistry(error) => write!(formatter, ": {error}"),
+            StorageEngineErrorDetail::Handle(error) => write!(formatter, ": {error}"),
             StorageEngineErrorDetail::Disk(error) => write!(formatter, ": {error}"),
             StorageEngineErrorDetail::DiskAdmission(error) => write!(formatter, ": {error}"),
             StorageEngineErrorDetail::Buffer(error) => write!(formatter, ": {error}"),
@@ -246,6 +254,8 @@ impl Error for StorageEngineError {}
 struct StorageFile {
     capability: RootFileCapability,
     handle: BlockingFileHandle,
+    _capability_permit: Option<HandlePermit>,
+    _registered_permit: Option<HandlePermit>,
 }
 
 struct ActiveLease {
@@ -319,6 +329,26 @@ impl StorageEngine {
             if capability.identity().encode().as_ref() != expected.bytes() {
                 return Err(StorageEngineError::bare(WriteReject::NativeFile));
             }
+            // Reserve both descriptors before cloning/opening the second one;
+            // this keeps the native handle boundary closed even on failure.
+            let (capability_permit, registered_permit) =
+                if let Some(budgets) = config.handle_budgets.as_ref() {
+                    let capability_permit = budgets.try_acquire_file().map_err(|error| {
+                        StorageEngineError::with(
+                            WriteReject::NativeFile,
+                            StorageEngineErrorDetail::Handle(error),
+                        )
+                    })?;
+                    let registered_permit = budgets.try_acquire_file().map_err(|error| {
+                        StorageEngineError::with(
+                            WriteReject::NativeFile,
+                            StorageEngineErrorDetail::Handle(error),
+                        )
+                    })?;
+                    (Some(capability_permit), Some(registered_permit))
+                } else {
+                    (None, None)
+                };
             let registered = capability.try_clone_file().map_err(|error| {
                 StorageEngineError::with(
                     WriteReject::NativeFile,
@@ -334,7 +364,15 @@ impl StorageEngine {
                     )
                 })?;
             if files
-                .insert(id, StorageFile { capability, handle })
+                .insert(
+                    id,
+                    StorageFile {
+                        capability,
+                        handle,
+                        _capability_permit: capability_permit,
+                        _registered_permit: registered_permit,
+                    },
+                )
                 .is_some()
             {
                 return Err(StorageEngineError::bare(WriteReject::NativeFile));
@@ -1403,5 +1441,63 @@ mod tests {
             fs::read(output_root.join("output.bin")).expect("output bytes"),
             [9, 9, 9, 9]
         );
+    }
+
+    #[test]
+    fn profile_file_budget_rejects_before_opening_the_registered_descriptor() {
+        let directory = TestDirectory::new();
+        let output_root = directory.0.join("output");
+        let journal_root = directory.0.join("journal");
+        fs::create_dir_all(&output_root).expect("output root");
+        let root = RootDirectoryCapability::open_trusted(&output_root).expect("root capability");
+        let output =
+            SafePathBuilder::from_user_path("output.bin", PathPlatform::current()).expect("path");
+        let output_file = root.create_new_file(&output).expect("output file");
+        output_file.set_len(4).expect("preallocate output");
+        let layout = build_single_file_layout(
+            TaskId::new(1).expect("task"),
+            Generation::INITIAL,
+            &root,
+            &output,
+            &output_file,
+            4,
+            4,
+        )
+        .expect("layout");
+        let mut journal = ControlJournalAppender::create(
+            &journal_root,
+            Gid::new(1).expect("gid"),
+            JournalId::new([2; 16]).expect("journal id"),
+            Generation::INITIAL,
+            1,
+        )
+        .expect("journal");
+        append_initial_admission(&mut journal, Generation::INITIAL).expect("admission");
+        append_layout(&mut journal, &layout).expect("layout journal");
+
+        // A selected output needs one permit for the capability descriptor and
+        // another for the blocking-lane clone. One file-domain permit must
+        // therefore reject without opening/registering the clone.
+        let budgets = HandleBudgets::new(ariax_runtime::HandleBudgetLimits {
+            process: 2,
+            sockets: 2,
+            files: 1,
+        })
+        .expect("handle budgets");
+        let config = StorageEngineConfig {
+            handle_budgets: Some(budgets.clone()),
+            ..StorageEngineConfig::default()
+        };
+        let result =
+            StorageEngine::open_layout(layout, [(FileId::new(0), output_file)], journal, config);
+        assert!(matches!(
+            result,
+            Err(StorageEngineError {
+                reject: WriteReject::NativeFile,
+                ..
+            })
+        ));
+        assert_eq!(budgets.available_files(), 1);
+        assert_eq!(budgets.available_process(), 2);
     }
 }

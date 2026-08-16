@@ -32,12 +32,14 @@ crash-residue reconciliation, the broader Phase-4 control plane, and the full
 release-platform matrix remain phase/tag gates.
 
 The profile-capacity slice is now executable: profile-derived process/socket/file
-and resident limits are resolved, HTTP transport sockets consume the shared
-process/socket permits, and transport, ingress, and storage buffers share the
-resident budget. The local C10k/active-range harness passes under an isolated
-raised Linux handle limit and rejects insufficient native capacity explicitly.
-File-handle consumers, adaptive tuning, non-HTTP domain wiring, and native
-release baselines remain phase gates.
+and resident limits are resolved, HTTP direct and proxy sockets consume the
+shared process/socket permits, selected storage files consume two permits for
+their capability and blocking-lane descriptors, and transport, ingress, and
+storage buffers share the resident budget. The local C10k/active-range harness
+passes under an isolated raised Linux handle limit and rejects insufficient
+native capacity explicitly. Adaptive tuning, non-HTTP domain wiring, the
+broader evictable file-handle LRU, and native release baselines remain phase
+gates.
 
 This is a staged plan for building the design without repeating the incomplete
 rewrite pattern. The native-startup orchestration boundary, central-journal
@@ -263,9 +265,9 @@ Exit criteria:
 - Fault tests for ignored Range, short/oversized body, lease abort, generated-
   header conflict, redirect/proxy SSRF, disk full, process kill, and poweroff
   simulation.
-- 1,000 active HTTP range benchmark with bounded memory (the local capacity
-  harness models 1,000 active range reservations; a real HTTP-transfer
-  benchmark and native release evidence remain required).
+- 1,000 active HTTP range benchmark with bounded memory. The checked-in harness
+  now drives 1,000 real loopback `206` range responses under the shared ingress,
+  socket, and resident permits; native release evidence remains required.
 - 10,000 concurrent low-activity socket benchmark with the reusable idle HTTP
   pool still capped at its profile limit; measured accounted reservations and
   process RSS must fit the profile target/permit envelope and documented native
