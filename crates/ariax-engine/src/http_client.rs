@@ -17,6 +17,7 @@ use http_body_util::BodyExt as _;
 use hyper::body::Incoming;
 use hyper::header::{LOCATION, SET_COOKIE};
 use hyper::{HeaderMap, Method, Response, StatusCode, Uri};
+use std::collections::VecDeque;
 use std::error::Error;
 use std::fmt;
 use std::net::{Ipv6Addr, SocketAddr};
@@ -25,7 +26,17 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 
-#[derive(Clone, Default)]
+/// Default number of admitted direct-origin transports retained by one policy
+/// client. With the direct transport's default one idle connection per origin,
+/// this is also the default process-local idle connection cap.
+pub const DEFAULT_HTTP_DIRECT_TRANSPORT_CACHE_CAPACITY: usize = 32;
+
+/// Hard cap on retained direct-origin transports. This is deliberately aligned
+/// with the concurrency profile's global HTTP idle-pool ceiling; profile
+/// resolution can select a lower value but must never make the cache unbounded.
+pub const MAX_HTTP_DIRECT_TRANSPORT_CACHE_CAPACITY: usize = 512;
+
+#[derive(Clone)]
 pub struct HttpPolicyClientConfig {
     pub destination: HttpDestinationPolicy,
     pub proxy_destination: HttpDestinationPolicy,
@@ -36,6 +47,28 @@ pub struct HttpPolicyClientConfig {
     pub auth: HttpAuthPolicy,
     pub cookies: Option<Arc<Mutex<HttpCookieJar>>>,
     pub custom_headers: HttpCustomHeaders,
+    /// Number of direct-origin transport entries retained for keep-alive reuse.
+    /// A value of zero disables client-level retention. The effective value is
+    /// clamped to the documented hard global cap and, when each origin can hold
+    /// more than one idle connection, to a count that cannot exceed that cap.
+    pub direct_transport_cache_capacity: usize,
+}
+
+impl Default for HttpPolicyClientConfig {
+    fn default() -> Self {
+        Self {
+            destination: HttpDestinationPolicy::default(),
+            proxy_destination: HttpDestinationPolicy::default(),
+            proxy: HttpProxyPolicy::default(),
+            redirects: HttpRedirectPolicy::default(),
+            direct: HttpDirectTransportConfig::default(),
+            proxy_request: HttpProxyRequestConfig::default(),
+            auth: HttpAuthPolicy::default(),
+            cookies: None,
+            custom_headers: HttpCustomHeaders::default(),
+            direct_transport_cache_capacity: DEFAULT_HTTP_DIRECT_TRANSPORT_CACHE_CAPACITY,
+        }
+    }
 }
 
 impl fmt::Debug for HttpPolicyClientConfig {
@@ -51,6 +84,10 @@ impl fmt::Debug for HttpPolicyClientConfig {
             .field("auth", &self.auth)
             .field("cookies", &self.cookies.as_ref().map(|_| "<cookie-jar>"))
             .field("custom_headers", &self.custom_headers)
+            .field(
+                "direct_transport_cache_capacity",
+                &self.direct_transport_cache_capacity,
+            )
             .finish()
     }
 }
@@ -85,6 +122,7 @@ impl HttpClientRequest {
 pub struct HttpPolicyClient {
     resolver: HttpResolver,
     config: Arc<HttpPolicyClientConfig>,
+    direct_transports: Arc<Mutex<DirectTransportCache>>,
 }
 
 impl fmt::Debug for HttpPolicyClient {
@@ -93,6 +131,7 @@ impl fmt::Debug for HttpPolicyClient {
             .debug_struct("HttpPolicyClient")
             .field("resolver", &self.resolver)
             .field("config", &self.config)
+            .field("direct_transport_cache", &"<bounded>")
             .finish()
     }
 }
@@ -100,9 +139,13 @@ impl fmt::Debug for HttpPolicyClient {
 impl HttpPolicyClient {
     #[must_use]
     pub fn new(resolver: HttpResolver, config: HttpPolicyClientConfig) -> Self {
+        let direct_transport_cache_capacity = effective_direct_transport_cache_capacity(&config);
         Self {
             resolver,
             config: Arc::new(config),
+            direct_transports: Arc::new(Mutex::new(DirectTransportCache::new(
+                direct_transport_cache_capacity,
+            ))),
         }
     }
 
@@ -221,14 +264,13 @@ impl HttpPolicyClient {
     ) -> Result<(Response<Incoming>, HttpClientLease), HttpPolicyClientError> {
         match route {
             HttpProxyRoute::Direct { .. } => {
-                let mut config = self.config.direct.clone();
-                config.destination = self.config.destination;
-                let transport = HttpDirectTransport::admitted(
-                    uri,
-                    Arc::from(target_addresses.to_vec()),
-                    config,
-                )
-                .map_err(HttpPolicyClientError::Transport)?;
+                // `execute` re-resolves and applies destination policy before
+                // every route admission. The cache key includes that admitted
+                // answer set, so a changed answer cannot cause a newly opened
+                // connection to reuse an older address decision. A retained
+                // connection itself remains bound to the peer that was already
+                // admitted when it was opened.
+                let transport = self.direct_transport(uri, target_addresses).await?;
                 let HttpTransportResponse { response, lease } = transport
                     .send(request)
                     .await
@@ -263,6 +305,26 @@ impl HttpPolicyClient {
         }
     }
 
+    async fn direct_transport(
+        &self,
+        uri: &str,
+        target_addresses: &[SocketAddr],
+    ) -> Result<HttpDirectTransport, HttpPolicyClientError> {
+        let key = DirectTransportCacheKey::new(uri, target_addresses)?;
+        let mut cache = self.direct_transports.lock().await;
+        if let Some(transport) = cache.take(&key) {
+            return Ok(transport);
+        }
+
+        let mut config = self.config.direct.clone();
+        config.destination = self.config.destination;
+        let transport =
+            HttpDirectTransport::admitted(uri, Arc::from(target_addresses.to_vec()), config)
+                .map_err(HttpPolicyClientError::Transport)?;
+        cache.insert(key, transport.clone());
+        Ok(transport)
+    }
+
     async fn store_response_cookies(
         &self,
         uri: &str,
@@ -281,6 +343,71 @@ impl HttpPolicyClient {
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DirectTransportCacheKey {
+    origin: Arc<str>,
+    addresses: Arc<[SocketAddr]>,
+}
+
+impl DirectTransportCacheKey {
+    fn new(uri: &str, addresses: &[SocketAddr]) -> Result<Self, HttpPolicyClientError> {
+        let uri: Uri = uri
+            .parse()
+            .map_err(|_| HttpPolicyClientError::InvalidRequest)?;
+        let scheme = uri
+            .scheme_str()
+            .ok_or(HttpPolicyClientError::InvalidRequest)?;
+        let authority = uri
+            .authority()
+            .ok_or(HttpPolicyClientError::InvalidRequest)?;
+        Ok(Self {
+            origin: format!("{scheme}://{authority}").into(),
+            addresses: Arc::from(addresses.to_vec()),
+        })
+    }
+}
+
+#[derive(Debug)]
+struct DirectTransportCache {
+    capacity: usize,
+    entries: VecDeque<(DirectTransportCacheKey, HttpDirectTransport)>,
+}
+
+impl DirectTransportCache {
+    const fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            entries: VecDeque::new(),
+        }
+    }
+
+    fn take(&mut self, key: &DirectTransportCacheKey) -> Option<HttpDirectTransport> {
+        let index = self.entries.iter().position(|(entry, _)| entry == key)?;
+        let entry = self.entries.remove(index)?;
+        let transport = entry.1.clone();
+        self.entries.push_back(entry);
+        Some(transport)
+    }
+
+    fn insert(&mut self, key: DirectTransportCacheKey, transport: HttpDirectTransport) {
+        if self.capacity == 0 {
+            return;
+        }
+        while self.entries.len() >= self.capacity {
+            let _evicted = self.entries.pop_front();
+        }
+        self.entries.push_back((key, transport));
+    }
+}
+
+fn effective_direct_transport_cache_capacity(config: &HttpPolicyClientConfig) -> usize {
+    let per_origin_idle = config.direct.max_idle_connections_per_origin;
+    let global_cap = MAX_HTTP_DIRECT_TRANSPORT_CACHE_CAPACITY
+        .checked_div(per_origin_idle)
+        .unwrap_or(MAX_HTTP_DIRECT_TRANSPORT_CACHE_CAPACITY);
+    config.direct_transport_cache_capacity.min(global_cap)
 }
 
 enum HttpClientLease {
@@ -576,6 +703,62 @@ mod tests {
         );
         response.finish().await;
         server.await.expect("server");
+    }
+
+    #[tokio::test]
+    async fn retained_direct_transport_reuses_connection_across_client_requests() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("connection");
+            for _ in 0..2 {
+                let head = read_head(&mut stream).await;
+                assert!(head.starts_with("GET /file HTTP/1.1\r\n"));
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                    .await
+                    .expect("response");
+            }
+        });
+        let client = test_client();
+        let uri = format!("http://{address}/file");
+
+        for _ in 0..2 {
+            let mut response = client
+                .execute(HttpClientRequest::get(uri.clone()))
+                .await
+                .expect("response");
+            assert_eq!(
+                response
+                    .next_data(Duration::from_secs(1))
+                    .await
+                    .expect("body frame"),
+                Some(Bytes::from_static(b"ok"))
+            );
+            assert_eq!(
+                response
+                    .next_data(Duration::from_secs(1))
+                    .await
+                    .expect("body end"),
+                None
+            );
+            response.finish().await;
+        }
+
+        server.await.expect("server");
+    }
+
+    #[test]
+    fn direct_transport_cache_cap_accounts_for_per_origin_idle_cap() {
+        let config = HttpPolicyClientConfig {
+            direct: HttpDirectTransportConfig {
+                max_idle_connections_per_origin: 2,
+                ..HttpDirectTransportConfig::default()
+            },
+            direct_transport_cache_capacity: MAX_HTTP_DIRECT_TRANSPORT_CACHE_CAPACITY,
+            ..HttpPolicyClientConfig::default()
+        };
+        assert_eq!(effective_direct_transport_cache_capacity(&config), 256);
     }
 
     #[tokio::test]

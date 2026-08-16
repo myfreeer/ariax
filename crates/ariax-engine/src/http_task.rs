@@ -1,5 +1,9 @@
 //! Immutable public HTTP task specifications and their bounded process catalog.
 
+use crate::http_retry::{
+    HttpRetryAfterPolicy, HttpRetryBackoff, HttpRetryPolicy, HttpRetryProfile, HttpRetryStatusSet,
+    HttpRetryTriggerSet, HttpStaleValidatorPolicy,
+};
 use ariax_core::{Gid, TaskId, UriId};
 use ariax_storage::{
     SafePathBuilder, SafeRelativePath, SanitizedOptionMap, SessionTaskSourceRecord,
@@ -9,7 +13,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -49,7 +53,16 @@ pub struct HttpTaskOptions {
     pub connect_timeout: Duration,
     pub response_head_timeout: Duration,
     pub response_body_timeout: Duration,
+    /// Per-task accepted download-payload ceiling in bytes/second. Zero keeps
+    /// the task bucket unlimited, matching aria2's rate-limit convention.
+    pub max_download_limit: u64,
+    /// Useful protocol progress threshold in bytes/second. Zero disables the
+    /// lowest-speed retry trigger.
+    pub lowest_speed_limit: u64,
     pub mirror_identity: HttpMirrorIdentityPolicy,
+    /// An explicitly resolved per-task retry policy. Tasks without one inherit
+    /// the process worker policy at admission.
+    pub retry: Option<HttpRetryPolicy>,
 }
 
 impl Default for HttpTaskOptions {
@@ -63,7 +76,10 @@ impl Default for HttpTaskOptions {
             connect_timeout: Duration::from_secs(60),
             response_head_timeout: Duration::from_secs(60),
             response_body_timeout: Duration::from_secs(60),
+            max_download_limit: 0,
+            lowest_speed_limit: 0,
             mirror_identity: HttpMirrorIdentityPolicy::TrustSubmittedMirrors,
+            retry: None,
         }
     }
 }
@@ -82,6 +98,10 @@ impl HttpTaskOptions {
             || self.connect_timeout.as_secs() > MAX_HTTP_TIMEOUT_SECS
             || self.response_head_timeout.as_secs() > MAX_HTTP_TIMEOUT_SECS
             || self.response_body_timeout.as_secs() > MAX_HTTP_TIMEOUT_SECS
+            || self
+                .retry
+                .as_ref()
+                .is_some_and(|retry| retry.validate().is_err())
         {
             return Err(HttpTaskSpecError::InvalidOptions);
         }
@@ -89,7 +109,7 @@ impl HttpTaskOptions {
     }
 
     pub fn sanitized(&self) -> Result<SanitizedOptionMap, HttpTaskSpecError> {
-        SanitizedOptionMap::new([
+        let mut entries = vec![
             (
                 "connect-timeout".to_owned(),
                 self.connect_timeout.as_secs().to_string(),
@@ -104,20 +124,36 @@ impl HttpTaskOptions {
                 "timeout".to_owned(),
                 self.response_body_timeout.as_secs().to_string(),
             ),
+            (
+                "max-download-limit".to_owned(),
+                self.max_download_limit.to_string(),
+            ),
+            (
+                "lowest-speed-limit".to_owned(),
+                self.lowest_speed_limit.to_string(),
+            ),
             ("split".to_owned(), self.split.get().to_string()),
             (
                 "verify-mirror-identity".to_owned(),
                 self.mirror_identity.code().to_owned(),
             ),
-        ])
-        .map_err(|_| HttpTaskSpecError::InvalidOptions)
+        ];
+        if let Some(retry) = &self.retry {
+            entries.extend(retry_sanitized_entries(retry));
+        }
+        SanitizedOptionMap::new(entries).map_err(|_| HttpTaskSpecError::InvalidOptions)
     }
 
     /// Reconstructs the bounded HTTP options from the redacted persisted
     /// option snapshot used during startup recovery.
     pub fn from_sanitized(options: &SanitizedOptionMap) -> Result<Self, HttpTaskSpecError> {
         let mut value = Self::default();
+        let mut retry_options = BTreeMap::new();
         for (name, setting) in options.entries() {
+            if is_retry_option(name) {
+                retry_options.insert(name, setting);
+                continue;
+            }
             match name {
                 "connect-timeout" => {
                     value.connect_timeout = Duration::from_secs(
@@ -151,6 +187,16 @@ impl HttpTaskOptions {
                             .map_err(|_| HttpTaskSpecError::InvalidOptions)?,
                     )
                 }
+                "max-download-limit" => {
+                    value.max_download_limit = setting
+                        .parse()
+                        .map_err(|_| HttpTaskSpecError::InvalidOptions)?;
+                }
+                "lowest-speed-limit" => {
+                    value.lowest_speed_limit = setting
+                        .parse()
+                        .map_err(|_| HttpTaskSpecError::InvalidOptions)?;
+                }
                 "split" => {
                     value.split = NonZeroUsize::new(
                         setting
@@ -173,9 +219,201 @@ impl HttpTaskOptions {
                 _ => return Err(HttpTaskSpecError::InvalidOptions),
             }
         }
+        if !retry_options.is_empty() {
+            value.retry = Some(retry_from_sanitized(&retry_options)?);
+        }
         value.validate()?;
         Ok(value)
     }
+}
+
+fn is_retry_option(name: &str) -> bool {
+    matches!(
+        name,
+        "max-tries"
+            | "retry-wait"
+            | "retry-profile"
+            | "retry-on"
+            | "retry-on-http-status"
+            | "retry-on-http-status-add"
+            | "retry-on-http-status-remove"
+            | "retry-after"
+            | "retry-after-max"
+            | "retry-after-min"
+            | "retry-backoff"
+            | "retry-max-wait"
+            | "retry-max-attempts"
+            | "retry-max-attempts-per-mirror"
+            | "retry-max-elapsed"
+            | "stale-validator-policy"
+    )
+}
+
+fn retry_sanitized_entries(policy: &HttpRetryPolicy) -> Vec<(String, String)> {
+    vec![
+        (
+            "max-tries".to_owned(),
+            policy.max_attempts.get().to_string(),
+        ),
+        (
+            "retry-wait".to_owned(),
+            policy.base_wait.as_secs().to_string(),
+        ),
+        ("retry-profile".to_owned(), policy.profile.code().to_owned()),
+        ("retry-on".to_owned(), policy.retry_on.canonical()),
+        (
+            "retry-on-http-status".to_owned(),
+            policy.retryable_statuses.canonical(),
+        ),
+        (
+            "retry-after".to_owned(),
+            policy.retry_after_policy().code().to_owned(),
+        ),
+        (
+            "retry-after-max".to_owned(),
+            policy.retry_after_max.as_secs().to_string(),
+        ),
+        (
+            "retry-after-min".to_owned(),
+            policy.retry_after_min.as_secs().to_string(),
+        ),
+        ("retry-backoff".to_owned(), policy.backoff.code().to_owned()),
+        (
+            "retry-max-wait".to_owned(),
+            policy.max_wait.as_secs().to_string(),
+        ),
+        (
+            "retry-max-attempts".to_owned(),
+            policy.max_attempts.get().to_string(),
+        ),
+        (
+            "retry-max-attempts-per-mirror".to_owned(),
+            policy.max_attempts_per_mirror.get().to_string(),
+        ),
+        (
+            "retry-max-elapsed".to_owned(),
+            policy.max_elapsed.as_secs().to_string(),
+        ),
+        (
+            "stale-validator-policy".to_owned(),
+            policy.stale_validator_policy.code().to_owned(),
+        ),
+    ]
+}
+
+fn retry_from_sanitized(
+    options: &BTreeMap<&str, &str>,
+) -> Result<HttpRetryPolicy, HttpTaskSpecError> {
+    let profile = retry_value(options, "retry-profile")
+        .map(HttpRetryProfile::parse)
+        .transpose()
+        .map_err(|_| HttpTaskSpecError::InvalidOptions)?
+        .unwrap_or_default();
+    let mut policy = HttpRetryPolicy::from_profile(profile);
+
+    if let Some(value) = retry_value(options, "retry-on") {
+        policy.retry_on =
+            HttpRetryTriggerSet::parse(value).map_err(|_| HttpTaskSpecError::InvalidOptions)?;
+    }
+    if let Some(value) = retry_value(options, "retry-on-http-status") {
+        policy.retryable_statuses =
+            HttpRetryStatusSet::parse(value).map_err(|_| HttpTaskSpecError::InvalidOptions)?;
+    }
+    if let Some(value) = retry_value(options, "retry-on-http-status-add") {
+        for code in HttpRetryStatusSet::parse(value)
+            .map_err(|_| HttpTaskSpecError::InvalidOptions)?
+            .iter()
+        {
+            policy
+                .retryable_statuses
+                .insert(code)
+                .map_err(|_| HttpTaskSpecError::InvalidOptions)?;
+        }
+    }
+    if let Some(value) = retry_value(options, "retry-on-http-status-remove") {
+        for code in HttpRetryStatusSet::parse(value)
+            .map_err(|_| HttpTaskSpecError::InvalidOptions)?
+            .iter()
+        {
+            policy.retryable_statuses.remove(code);
+        }
+    }
+
+    let max_tries = retry_value(options, "max-tries")
+        .map(parse_retry_attempt_cap)
+        .transpose()?;
+    let max_attempts = retry_value(options, "retry-max-attempts")
+        .map(parse_retry_attempt_cap)
+        .transpose()?;
+    if let Some(value) = stricter_attempt_cap(max_tries, max_attempts) {
+        policy.max_attempts = value;
+    }
+    if let Some(value) = retry_value(options, "retry-max-attempts-per-mirror") {
+        policy.max_attempts_per_mirror = parse_retry_attempt_cap(value)?;
+    }
+    if let Some(value) = retry_value(options, "retry-wait") {
+        policy.base_wait = parse_retry_duration(value)?;
+    }
+    if let Some(value) = retry_value(options, "retry-max-wait") {
+        policy.max_wait = parse_retry_duration(value)?;
+    }
+    if let Some(value) = retry_value(options, "retry-max-elapsed") {
+        policy.max_elapsed = parse_retry_duration(value)?;
+    }
+    if let Some(value) = retry_value(options, "retry-after-min") {
+        policy.retry_after_min = parse_retry_duration(value)?;
+    }
+    if let Some(value) = retry_value(options, "retry-after-max") {
+        policy.retry_after_max = parse_retry_duration(value)?;
+    }
+    if let Some(value) = retry_value(options, "retry-after") {
+        policy.respect_retry_after = matches!(
+            HttpRetryAfterPolicy::parse(value).map_err(|_| HttpTaskSpecError::InvalidOptions)?,
+            HttpRetryAfterPolicy::Respect
+        );
+    }
+    if let Some(value) = retry_value(options, "retry-backoff") {
+        policy.backoff =
+            HttpRetryBackoff::parse(value).map_err(|_| HttpTaskSpecError::InvalidOptions)?;
+    }
+    if let Some(value) = retry_value(options, "stale-validator-policy") {
+        policy.stale_validator_policy = HttpStaleValidatorPolicy::parse(value)
+            .map_err(|_| HttpTaskSpecError::InvalidOptions)?;
+    }
+    policy
+        .validate()
+        .map_err(|_| HttpTaskSpecError::InvalidOptions)?;
+    Ok(policy)
+}
+
+fn retry_value<'a>(options: &'a BTreeMap<&str, &str>, name: &str) -> Option<&'a str> {
+    options.get(name).copied()
+}
+
+fn parse_retry_attempt_cap(value: &str) -> Result<NonZeroU32, HttpTaskSpecError> {
+    value
+        .parse()
+        .ok()
+        .and_then(NonZeroU32::new)
+        .ok_or(HttpTaskSpecError::InvalidOptions)
+}
+
+fn stricter_attempt_cap(
+    max_tries: Option<NonZeroU32>,
+    max_attempts: Option<NonZeroU32>,
+) -> Option<NonZeroU32> {
+    match (max_tries, max_attempts) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    }
+}
+
+fn parse_retry_duration(value: &str) -> Result<Duration, HttpTaskSpecError> {
+    value
+        .parse::<u64>()
+        .map(Duration::from_secs)
+        .map_err(|_| HttpTaskSpecError::InvalidOptions)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -544,6 +782,10 @@ mod tests {
 
     #[test]
     fn task_spec_canonicalizes_multiple_sources_and_builds_restart_rows() {
+        let options = HttpTaskOptions {
+            max_download_limit: 64 * 1024,
+            ..HttpTaskOptions::default()
+        };
         let spec = HttpTaskSpec::new(
             task(1),
             gid(1),
@@ -553,7 +795,7 @@ mod tests {
             ],
             std::env::temp_dir(),
             output(),
-            HttpTaskOptions::default(),
+            options,
             true,
         )
         .expect("task spec");
@@ -575,6 +817,49 @@ mod tests {
                 .map(|(_, value)| value),
             Some("5")
         );
+        assert_eq!(
+            spec.options()
+                .sanitized()
+                .expect("sanitized")
+                .entries()
+                .find(|(name, _)| *name == "max-download-limit")
+                .map(|(_, value)| value),
+            Some("65536")
+        );
+        assert_eq!(
+            HttpTaskOptions::from_sanitized(&spec.options().sanitized().expect("sanitized"))
+                .expect("recover options")
+                .max_download_limit,
+            64 * 1024
+        );
+    }
+
+    #[test]
+    fn resolved_retry_policy_survives_sanitized_option_round_trip() {
+        let mut retry = HttpRetryPolicy::custom(
+            HttpRetryTriggerSet::parse("timeout,lowest-speed").expect("triggers"),
+            HttpRetryStatusSet::parse("418,429").expect("statuses"),
+        )
+        .expect("custom retry");
+        retry.backoff = HttpRetryBackoff::Fixed;
+        retry.base_wait = Duration::ZERO;
+        retry.max_attempts = NonZeroU32::new(4).expect("attempt cap");
+        retry.max_attempts_per_mirror = NonZeroU32::new(2).expect("mirror cap");
+        retry.respect_retry_after = false;
+        let options = HttpTaskOptions {
+            retry: Some(retry.clone()),
+            ..HttpTaskOptions::default()
+        };
+        let snapshot = options.sanitized().expect("sanitized");
+        assert_eq!(
+            snapshot
+                .entries()
+                .find(|(name, _)| *name == "retry-profile")
+                .map(|(_, value)| value),
+            Some("custom")
+        );
+        let restored = HttpTaskOptions::from_sanitized(&snapshot).expect("restored");
+        assert_eq!(restored.retry, Some(retry));
     }
 
     #[test]

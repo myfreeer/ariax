@@ -6,6 +6,7 @@ mod blocking_disk;
 mod budget;
 mod buffer;
 mod queue;
+mod rate;
 mod scheduler_driver;
 mod shutdown;
 mod stats;
@@ -32,6 +33,12 @@ pub use buffer::{
 pub use queue::{
     BoundedQueue, CloseReason, CompletionDrain, CompletionDrainMetrics, CompletionPermit,
     QueueMetrics, QueuePermit, QueueReserveError, QueueSendError,
+};
+pub use rate::{
+    DEFAULT_RATE_MAX_WAITERS, DEFAULT_RATE_QUANTUM_BYTES, MAX_RATE_BURST_BYTES,
+    MAX_RATE_QUANTUM_BYTES, MAX_RATE_TRACKED_SCOPES, MAX_RATE_WAITERS, RateArbiter,
+    RateArbiterConfig, RateArbiterError, RateArbiterStats, RateCharge, RateDirection, RateLimit,
+    RatePath, RatePermit, RateScope,
 };
 pub use scheduler_driver::{
     DispatchedEffect, EffectCompletion, EffectDispatchId, EffectSinkError, SchedulerDriver,

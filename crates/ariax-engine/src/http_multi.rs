@@ -10,17 +10,18 @@ use crate::{
     HttpRangeCoordinatorError, HttpRangeFailure, HttpRangePoll, HttpRangeResponseError,
     HttpRangeResponseValidator, HttpRangeSource, HttpRetryBudget, HttpRetryCause,
     HttpRetryDecision, HttpRetryError, HttpRetryPolicy, HttpRetryStopReason,
-    HttpRetryTransportFailure, HttpTaskSpec, HttpTaskWorker, HttpWorkerFuture, HttpWorkerSuccess,
-    LeaseCommit, LeaseWritePlan, StorageEngine, StorageEngineConfig, StorageEngineError,
-    WriteBlock,
+    HttpRetryTransportFailure, HttpTaskSpec, HttpTaskWorker, HttpTransportError, HttpWorkerFuture,
+    HttpWorkerSuccess, LeaseCommit, LeaseWritePlan, StorageEngine, StorageEngineConfig,
+    StorageEngineError, WriteBlock,
 };
 use ariax_core::{
     ErrorKind, FileId, Generation, Gid, LeaseId, PieceId, PublicError, RetryClass, TaskId,
     TransferAttemptId, UriId,
 };
 use ariax_runtime::{
-    OwnerTag, SizeClass, StatsCounters, StatsDiagnostic, StatsProfile, StatsSampler,
-    StatsSamplerConfig,
+    BufferLease, ByteBudget, BytePermit, ConnectionCondition, ConnectionConditionReason, OwnerTag,
+    RateArbiter, RateArbiterConfig, RateDirection, RateLimit, RatePath, RatePermit, RateScope,
+    SizeClass, StatsCounters, StatsDiagnostic, StatsProfile, StatsSampler, StatsSamplerConfig,
 };
 use ariax_storage::{
     ControlJournalAppender, FileLayout, GlobalSpan, JournalDirectoryCapability, JournalId,
@@ -28,7 +29,6 @@ use ariax_storage::{
     RootDirectoryCapability, SessionCommand, SessionHandle, SessionOwnerError,
     SessionPersistenceError, recover_journal_state,
 };
-use bytes::Bytes;
 use hyper::header::RETRY_AFTER;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
@@ -44,6 +44,8 @@ use tokio::task::JoinSet;
 
 pub const MAX_HTTP_RANGE_EVENT_CAPACITY: usize = 4096;
 pub const DEFAULT_HTTP_RANGE_EVENT_CAPACITY: usize = 64;
+pub const DEFAULT_HTTP_INGRESS_BUDGET_BYTES: usize = 64 * 1024 * 1024;
+pub const DEFAULT_HTTP_INGRESS_FRAME_BYTES: usize = SizeClass::MiB1.capacity();
 const HTTP_JOURNAL_ID_DOMAIN: &str = "ariax/http-journal-id/v1\0";
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -57,7 +59,14 @@ pub struct HttpTransferStatsSnapshot {
     pub retry_count: u64,
     pub active_connections: u64,
     pub current_speed: u64,
+    pub wire_speed: u64,
+    pub useful_speed: u64,
     pub durable_speed: u64,
+    pub smoothed_speed: u64,
+    pub sample_age: Duration,
+    pub connection_condition: ConnectionCondition,
+    pub condition_reason: Option<ConnectionConditionReason>,
+    pub rate_debt_bytes: u64,
 }
 
 /// Durable completion evidence written by the worker before the scheduler
@@ -80,6 +89,8 @@ struct HttpTransferStatsInner {
     discarded_bytes: AtomicU64,
     retry_count: AtomicU64,
     active_connections: AtomicU64,
+    rate_debt_bytes: AtomicU64,
+    diagnostic: Mutex<StatsDiagnostic>,
     speed: Mutex<HttpSpeedState>,
 }
 
@@ -94,6 +105,8 @@ impl Default for HttpTransferStatsInner {
             discarded_bytes: AtomicU64::new(0),
             retry_count: AtomicU64::new(0),
             active_connections: AtomicU64::new(0),
+            rate_debt_bytes: AtomicU64::new(0),
+            diagnostic: Mutex::new(StatsDiagnostic::default()),
             speed: Mutex::new(HttpSpeedState::new(ariax_core::MonotonicInstant::now())),
         }
     }
@@ -103,7 +116,11 @@ impl Default for HttpTransferStatsInner {
 struct HttpSpeedState {
     sampler: StatsSampler<()>,
     current_speed: u64,
+    wire_speed: u64,
+    useful_speed: u64,
     durable_speed: u64,
+    smoothed_speed: u64,
+    sampled_at: ariax_core::MonotonicInstant,
 }
 
 impl HttpSpeedState {
@@ -119,16 +136,21 @@ impl HttpSpeedState {
         Self {
             sampler,
             current_speed: 0,
+            wire_speed: 0,
+            useful_speed: 0,
             durable_speed: 0,
+            smoothed_speed: 0,
+            sampled_at: at,
         }
     }
 
-    fn sample(&mut self, counters: StatsCounters, at: ariax_core::MonotonicInstant) {
-        if self
-            .sampler
-            .update(&(), counters, StatsDiagnostic::default())
-            .is_err()
-        {
+    fn sample(
+        &mut self,
+        counters: StatsCounters,
+        diagnostic: StatsDiagnostic,
+        at: ariax_core::MonotonicInstant,
+    ) {
+        if self.sampler.update(&(), counters, diagnostic).is_err() {
             *self = Self::new(at);
             return;
         }
@@ -136,7 +158,11 @@ impl HttpSpeedState {
             && let Some(sample) = samples.into_iter().next()
         {
             self.current_speed = sample.current_speed;
+            self.wire_speed = sample.wire_speed;
+            self.useful_speed = sample.useful_speed;
             self.durable_speed = sample.durable_speed;
+            self.smoothed_speed = sample.smoothed_speed;
+            self.sampled_at = sample.sampled_at;
         }
     }
 }
@@ -157,9 +183,15 @@ impl HttpTransferStats {
             &self.inner.discarded_bytes,
             &self.inner.retry_count,
             &self.inner.active_connections,
+            &self.inner.rate_debt_bytes,
         ] {
             value.store(0, Ordering::Relaxed);
         }
+        *self
+            .inner
+            .diagnostic
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = StatsDiagnostic::default();
         self.reset_sampling_at(ariax_core::MonotonicInstant::now());
     }
 
@@ -190,6 +222,15 @@ impl HttpTransferStats {
             .fetch_add(u64::try_from(value).unwrap_or(u64::MAX), Ordering::Relaxed);
     }
 
+    fn remove_provisional(&self, value: usize) {
+        let value = u64::try_from(value).unwrap_or(u64::MAX);
+        let _updated = self.inner.provisional_bytes.fetch_update(
+            Ordering::AcqRel,
+            Ordering::Acquire,
+            |current| Some(current.saturating_sub(value)),
+        );
+    }
+
     fn add_durable(&self, value: usize) {
         self.inner
             .durable_bytes
@@ -209,6 +250,22 @@ impl HttpTransferStats {
 
     fn add_retry(&self) {
         self.inner.retry_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn set_rate_debt(&self, value: u64) {
+        self.inner.rate_debt_bytes.store(value, Ordering::Relaxed);
+    }
+
+    fn set_diagnostic(&self, diagnostic: StatsDiagnostic) {
+        *self
+            .inner
+            .diagnostic
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = diagnostic;
+    }
+
+    fn clear_diagnostic(&self) {
+        self.set_diagnostic(StatsDiagnostic::default());
     }
 
     fn set_active(&self, value: usize) {
@@ -234,6 +291,12 @@ impl HttpTransferStats {
         let discarded_bytes = self.inner.discarded_bytes.load(Ordering::Relaxed);
         let retry_count = self.inner.retry_count.load(Ordering::Relaxed);
         let active_connections = self.inner.active_connections.load(Ordering::Relaxed);
+        let rate_debt_bytes = self.inner.rate_debt_bytes.load(Ordering::Relaxed);
+        let diagnostic = *self
+            .inner
+            .diagnostic
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let accepted_for_sample = accepted_bytes.max(durable_bytes);
         let received_for_sample = raw_body_bytes.max(accepted_for_sample).max(discarded_bytes);
         let counters = StatsCounters {
@@ -246,14 +309,21 @@ impl HttpTransferStats {
             discarded_bytes,
             ..StatsCounters::default()
         };
-        let (current_speed, durable_speed) = {
+        let (current_speed, wire_speed, useful_speed, durable_speed, smoothed_speed, sample_age) = {
             let mut speed = self
                 .inner
                 .speed
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            speed.sample(counters, at);
-            (speed.current_speed, speed.durable_speed)
+            speed.sample(counters, diagnostic, at);
+            (
+                speed.current_speed,
+                speed.wire_speed,
+                speed.useful_speed,
+                speed.durable_speed,
+                speed.smoothed_speed,
+                at.duration_since(speed.sampled_at),
+            )
         };
         HttpTransferStatsSnapshot {
             total_length,
@@ -265,7 +335,14 @@ impl HttpTransferStats {
             retry_count,
             active_connections,
             current_speed,
+            wire_speed,
+            useful_speed,
             durable_speed,
+            smoothed_speed,
+            sample_age,
+            connection_condition: diagnostic.condition,
+            condition_reason: diagnostic.reason,
+            rate_debt_bytes,
         }
     }
 }
@@ -345,6 +422,13 @@ pub struct HttpMultiRangeWorkerConfig {
     pub journal_root: PathBuf,
     pub storage: StorageEngineConfig,
     pub retry: HttpRetryPolicy,
+    /// Process-owned download limiter shared by all workers constructed from
+    /// this config. Per-task limits are installed at task admission.
+    pub download_rate: RateArbiter,
+    /// Bounds body frames retained between Hyper and storage. The permit moves
+    /// with the frame until positional disk submission has consumed it.
+    pub ingress_budget: ByteBudget,
+    pub ingress_frame_bytes: NonZeroUsize,
     pub event_capacity: NonZeroUsize,
 }
 
@@ -353,7 +437,9 @@ impl HttpMultiRangeWorkerConfig {
         if self.journal_root.as_os_str().is_empty()
             || !self.journal_root.is_absolute()
             || self.event_capacity.get() > MAX_HTTP_RANGE_EVENT_CAPACITY
-            || HttpRetryBudget::new(self.retry).is_err()
+            || self.ingress_frame_bytes.get() > SizeClass::MiB1.capacity()
+            || self.ingress_budget.limit() < self.ingress_frame_bytes.get()
+            || HttpRetryBudget::new(self.retry.clone()).is_err()
         {
             return Err(HttpMultiRangeError::InvalidConfig);
         }
@@ -367,6 +453,11 @@ impl Default for HttpMultiRangeWorkerConfig {
             journal_root: PathBuf::new(),
             storage: StorageEngineConfig::default(),
             retry: HttpRetryPolicy::default(),
+            download_rate: RateArbiter::new(RateDirection::Download, RateArbiterConfig::default())
+                .expect("default download rate arbiter is valid"),
+            ingress_budget: ByteBudget::new(DEFAULT_HTTP_INGRESS_BUDGET_BYTES),
+            ingress_frame_bytes: NonZeroUsize::new(DEFAULT_HTTP_INGRESS_FRAME_BYTES)
+                .expect("default ingress frame is nonzero"),
             event_capacity: NonZeroUsize::new(DEFAULT_HTTP_RANGE_EVENT_CAPACITY)
                 .expect("default range event capacity is nonzero"),
         }
@@ -422,6 +513,13 @@ impl HttpMultiRangeWorker {
             .get_or_create(task.task())
             .map_err(|_| HttpMultiRangeError::StatsCatalogFull)?;
         stats.begin();
+        self.config
+            .download_rate
+            .set_scoped_limit(
+                RateScope::Task(task.task().get()),
+                RateLimit::per_second(task.options().max_download_limit),
+            )
+            .map_err(|_| HttpMultiRangeError::InvalidConfig)?;
         self.stats.clear_completion(task.task());
         self.close_owned_journal(task.gid()).await?;
         let sources = match self.probe_sources(&task, &cancellation, &stats).await {
@@ -769,6 +867,7 @@ impl HttpMultiRangeWorker {
         storage: &mut StorageEngine,
     ) -> Result<(), HttpMultiRangeError> {
         let total_length = sources[0].validator.total_length();
+        let retry_policy = task.options().retry.as_ref().unwrap_or(&self.config.retry);
         let split = if total_length <= task.options().min_split_size {
             NonZeroUsize::new(1).expect("one is nonzero")
         } else {
@@ -786,8 +885,8 @@ impl HttpMultiRangeWorker {
                 piece_length: task.options().piece_length,
                 split,
                 max_connections_per_origin: task.options().max_connections_per_server,
-                max_total_attempts: self.config.retry.max_attempts.get(),
-                max_attempts_per_source: self.config.retry.max_attempts_per_mirror.get(),
+                max_total_attempts: retry_policy.max_attempts.get(),
+                max_attempts_per_source: retry_policy.max_attempts_per_mirror.get(),
             },
             range_sources,
         )?;
@@ -796,6 +895,7 @@ impl HttpMultiRangeWorker {
             .iter()
             .map(|source| (source.validator.source(), Arc::clone(&source.validator)))
             .collect::<BTreeMap<_, _>>();
+        let source_hosts = source_host_keys(sources)?;
         let (events, mut receiver) = mpsc::channel(self.config.event_capacity.get());
         let mut joins = JoinSet::new();
         let mut by_join = HashMap::new();
@@ -815,7 +915,7 @@ impl HttpMultiRangeWorker {
                             .cloned()
                             .ok_or(HttpMultiRangeError::Protocol)?;
                         let budget = budgets.entry(assignment.piece).or_insert(
-                            HttpRetryBudget::new(self.config.retry)
+                            HttpRetryBudget::new(retry_policy.clone())
                                 .map_err(HttpMultiRangeError::Retry)?,
                         );
                         if budget.begin_attempt(assignment.source).is_err() {
@@ -844,6 +944,17 @@ impl HttpMultiRangeWorker {
                         let attempt_stats = stats.clone();
                         let mirror_identity = task.options().mirror_identity;
                         let body_timeout = task.options().response_body_timeout;
+                        let lowest_speed_limit = task.options().lowest_speed_limit;
+                        let rate_path = RatePath {
+                            host: *source_hosts
+                                .get(&assignment.source)
+                                .ok_or(HttpMultiRangeError::Protocol)?,
+                            task: task.task().get(),
+                            stream: assignment.lease.get(),
+                        };
+                        let rate = self.config.download_rate.clone();
+                        let ingress_budget = self.config.ingress_budget.clone();
+                        let ingress_frame_bytes = self.config.ingress_frame_bytes;
                         let abort = joins.spawn(async move {
                             range_attempt(
                                 client,
@@ -851,6 +962,11 @@ impl HttpMultiRangeWorker {
                                 validator,
                                 mirror_identity,
                                 body_timeout,
+                                lowest_speed_limit,
+                                rate,
+                                rate_path,
+                                ingress_budget,
+                                ingress_frame_bytes,
                                 cancellation,
                                 sender,
                                 attempt_stats,
@@ -979,6 +1095,32 @@ struct PreparedSource {
     validator: Arc<HttpRangeResponseValidator>,
 }
 
+/// Assigns compact process-local host keys without hashing. Sources sharing an
+/// HTTP origin share the host bucket, while distinct origins cannot collide.
+fn source_host_keys(
+    sources: &[PreparedSource],
+) -> Result<BTreeMap<UriId, u64>, HttpMultiRangeError> {
+    let mut origin_ids = BTreeMap::<String, u64>::new();
+    let mut source_ids = BTreeMap::new();
+    for source in sources {
+        let uri: hyper::Uri = source
+            .validator
+            .final_uri()
+            .parse()
+            .map_err(|_| HttpMultiRangeError::Protocol)?;
+        let scheme = uri.scheme_str().ok_or(HttpMultiRangeError::Protocol)?;
+        let authority = uri.authority().ok_or(HttpMultiRangeError::Protocol)?;
+        let origin = format!("{scheme}://{authority}");
+        let next = u64::try_from(origin_ids.len())
+            .ok()
+            .and_then(|value| value.checked_add(1))
+            .ok_or(HttpMultiRangeError::IdentifierExhausted)?;
+        let host = *origin_ids.entry(origin).or_insert(next);
+        source_ids.insert(source.validator.source(), host);
+    }
+    Ok(source_ids)
+}
+
 struct OpenedTaskJournal {
     appender: ControlJournalAppender,
     state: Option<RecoveredJournalState>,
@@ -998,10 +1140,16 @@ enum AttemptEvent {
         lease: LeaseId,
         start: oneshot::Sender<bool>,
     },
+    PrepareRead {
+        lease: LeaseId,
+        minimum_capacity: usize,
+        response: oneshot::Sender<Option<BufferLease>>,
+    },
     Chunk {
         lease: LeaseId,
         offset: u64,
-        data: Bytes,
+        buffer: BufferLease,
+        _ingress: BytePermit,
     },
     Terminal {
         lease: LeaseId,
@@ -1018,6 +1166,9 @@ enum RangeAttemptFailure {
     },
     ShortBody,
     OversizedBody,
+    Timeout,
+    Hang,
+    LowestSpeed,
     Cancelled,
 }
 
@@ -1190,6 +1341,11 @@ async fn range_attempt(
     validator: Arc<HttpRangeResponseValidator>,
     mirror_identity: HttpMirrorIdentityPolicy,
     body_timeout: Duration,
+    lowest_speed_limit: u64,
+    rate: RateArbiter,
+    rate_path: RatePath,
+    ingress_budget: ByteBudget,
+    ingress_frame_bytes: NonZeroUsize,
     cancellation: HttpCancellation,
     events: mpsc::Sender<AttemptEvent>,
     stats: HttpTransferStats,
@@ -1200,6 +1356,11 @@ async fn range_attempt(
         &validator,
         mirror_identity,
         body_timeout,
+        lowest_speed_limit,
+        &rate,
+        rate_path,
+        &ingress_budget,
+        ingress_frame_bytes,
         &cancellation,
         &events,
         &stats,
@@ -1220,6 +1381,11 @@ async fn range_attempt_inner(
     validator: &HttpRangeResponseValidator,
     mirror_identity: HttpMirrorIdentityPolicy,
     body_timeout: Duration,
+    lowest_speed_limit: u64,
+    rate: &RateArbiter,
+    rate_path: RatePath,
+    ingress_budget: &ByteBudget,
+    ingress_frame_bytes: NonZeroUsize,
     cancellation: &HttpCancellation,
     events: &mpsc::Sender<AttemptEvent>,
     stats: &HttpTransferStats,
@@ -1262,33 +1428,100 @@ async fn range_attempt_inner(
     }
     let expected = assignment.span.len;
     let mut received = 0_usize;
+    let mut speed_window_bytes = 0_usize;
+    let mut speed_window_elapsed = Duration::ZERO;
     loop {
+        let remaining = expected
+            .checked_sub(received)
+            .ok_or(RangeAttemptFailure::OversizedBody)?;
+        if remaining == 0 {
+            break;
+        }
+        let (mut buffer, ingress, permit) = acquire_read_slot(
+            events,
+            assignment.lease,
+            remaining.min(ingress_frame_bytes.get()),
+            rate,
+            rate_path,
+            ingress_budget,
+            cancellation,
+            stats,
+        )
+        .await?;
+        let read_started = Instant::now();
         let data = tokio::select! {
             biased;
             _ = cancellation.cancelled() => return Err(RangeAttemptFailure::Cancelled),
-            data = response.next_data(body_timeout) => data.map_err(RangeAttemptFailure::Client)?,
+            data = response.next_data(body_timeout) => data,
         };
+        let data = match data {
+            Ok(data) => data,
+            Err(error) => {
+                if matches!(error, HttpPolicyClientError::BodyTimeout) {
+                    stats.set_diagnostic(StatsDiagnostic {
+                        condition: ConnectionCondition::Stalled,
+                        reason: Some(if received == 0 {
+                            ConnectionConditionReason::FirstByteTimeout
+                        } else {
+                            ConnectionConditionReason::BetweenBytesTimeout
+                        }),
+                    });
+                }
+                return Err(if received == 0 {
+                    RangeAttemptFailure::Timeout
+                } else {
+                    RangeAttemptFailure::Hang
+                });
+            }
+        };
+        speed_window_elapsed = speed_window_elapsed.saturating_add(read_started.elapsed());
         let Some(data) = data else {
             break;
         };
         stats.add_raw(data.len());
+        let charge = permit.settle(data.len());
+        stats.set_rate_debt(charge.debt_bytes);
         let next = received
             .checked_add(data.len())
             .ok_or(RangeAttemptFailure::OversizedBody)?;
-        if next > expected {
+        if next > expected || data.len() > buffer.capacity() {
             stats.add_discarded(data.len());
             return Err(RangeAttemptFailure::OversizedBody);
+        }
+        speed_window_bytes = speed_window_bytes.saturating_add(data.len());
+        if lowest_speed_limit != 0
+            && speed_window_elapsed >= body_timeout
+            && below_lowest_speed(speed_window_bytes, speed_window_elapsed, lowest_speed_limit)
+        {
+            stats.set_diagnostic(StatsDiagnostic {
+                condition: ConnectionCondition::Stalled,
+                reason: Some(ConnectionConditionReason::LowestSpeed),
+            });
+            stats.add_discarded(data.len());
+            return Err(RangeAttemptFailure::LowestSpeed);
+        }
+        if speed_window_elapsed >= body_timeout {
+            speed_window_elapsed = Duration::ZERO;
+            speed_window_bytes = 0;
         }
         let offset = assignment
             .span
             .offset
             .checked_add(u64::try_from(received).map_err(|_| RangeAttemptFailure::OversizedBody)?)
             .ok_or(RangeAttemptFailure::OversizedBody)?;
+        buffer
+            .writable()
+            .map_err(|_| RangeAttemptFailure::Cancelled)?[..data.len()]
+            .copy_from_slice(&data);
+        buffer
+            .mark_filled(data.len(), OwnerTag::Storage)
+            .map_err(|_| RangeAttemptFailure::Cancelled)?;
         events
             .send(AttemptEvent::Chunk {
                 lease: assignment.lease,
                 offset,
-                data,
+                buffer,
+                _ingress: ingress,
             })
             .await
             .map_err(|_| RangeAttemptFailure::Cancelled)?;
@@ -1299,6 +1532,100 @@ async fn range_attempt_inner(
     }
     response.finish().await;
     Ok(())
+}
+
+fn below_lowest_speed(bytes: usize, elapsed: Duration, limit: u64) -> bool {
+    if elapsed.is_zero() {
+        return false;
+    }
+    u128::try_from(bytes)
+        .unwrap_or(u128::MAX)
+        .saturating_mul(1_000_000_000)
+        < u128::from(limit).saturating_mul(elapsed.as_nanos())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn acquire_read_slot(
+    events: &mpsc::Sender<AttemptEvent>,
+    lease: LeaseId,
+    minimum_capacity: usize,
+    rate: &RateArbiter,
+    rate_path: RatePath,
+    ingress_budget: &ByteBudget,
+    cancellation: &HttpCancellation,
+    stats: &HttpTransferStats,
+) -> Result<(BufferLease, BytePermit, RatePermit), RangeAttemptFailure> {
+    let requested = NonZeroUsize::new(minimum_capacity).ok_or(RangeAttemptFailure::Cancelled)?;
+    loop {
+        let (response, receiver) = oneshot::channel();
+        events
+            .send(AttemptEvent::PrepareRead {
+                lease,
+                minimum_capacity,
+                response,
+            })
+            .await
+            .map_err(|_| RangeAttemptFailure::Cancelled)?;
+        let buffer = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(RangeAttemptFailure::Cancelled),
+            buffer = receiver => buffer.ok().flatten(),
+        };
+        let Some(buffer) = buffer else {
+            stats.set_diagnostic(StatsDiagnostic {
+                condition: ConnectionCondition::Backpressured,
+                reason: Some(ConnectionConditionReason::BufferBackpressure),
+            });
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return Err(RangeAttemptFailure::Cancelled),
+                () = tokio::time::sleep(Duration::from_millis(1)) => {}
+            }
+            continue;
+        };
+        let rate_request = NonZeroUsize::new(buffer.capacity())
+            .expect("a pooled HTTP ingress buffer has nonzero capacity");
+        let permit = match rate
+            .try_acquire(rate_path, rate_request)
+            .map_err(|_| RangeAttemptFailure::Cancelled)?
+        {
+            Some(permit) => permit,
+            None => {
+                stats.set_diagnostic(StatsDiagnostic {
+                    condition: ConnectionCondition::RateLimited,
+                    reason: Some(ConnectionConditionReason::IngressRateLimit),
+                });
+                drop(buffer);
+                let permit = tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => return Err(RangeAttemptFailure::Cancelled),
+                    permit = rate.acquire(rate_path, requested) => permit
+                        .map_err(|_| RangeAttemptFailure::Cancelled)?,
+                };
+                drop(permit);
+                continue;
+            }
+        };
+        let ingress = match ingress_budget.try_acquire(buffer.capacity()) {
+            Ok(permit) => permit,
+            Err(_) => {
+                stats.set_diagnostic(StatsDiagnostic {
+                    condition: ConnectionCondition::Backpressured,
+                    reason: Some(ConnectionConditionReason::BufferBackpressure),
+                });
+                drop(permit);
+                drop(buffer);
+                tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => return Err(RangeAttemptFailure::Cancelled),
+                    () = tokio::time::sleep(Duration::from_millis(1)) => {}
+                }
+                continue;
+            }
+        };
+        stats.clear_diagnostic();
+        return Ok((buffer, ingress, permit));
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1339,13 +1666,26 @@ async fn process_attempt_event(
                 .send(true)
                 .map_err(|_| HttpMultiRangeError::Protocol)?;
         }
+        AttemptEvent::PrepareRead {
+            lease,
+            minimum_capacity,
+            response,
+        } => {
+            let buffer = active
+                .get(&lease)
+                .filter(|attempt| attempt.opened)
+                .and_then(|_| storage.reserve_network_buffer(minimum_capacity).ok());
+            let _sent = response.send(buffer);
+        }
         AttemptEvent::Chunk {
             lease,
             offset,
-            data,
+            buffer,
+            _ingress: _,
         } => {
+            let data_len = buffer.len();
             let Some(attempt) = active.get(&lease).copied() else {
-                stats.add_discarded(data.len());
+                stats.add_discarded(data_len);
                 return Ok(());
             };
             if !attempt.opened
@@ -1353,17 +1693,27 @@ async fn process_attempt_event(
                     != attempt.assignment.span.offset
                         + u64::try_from(attempt.received)
                             .map_err(|_| HttpMultiRangeError::Protocol)?
-                || attempt.received.saturating_add(data.len()) > attempt.assignment.span.len
+                || attempt.received.saturating_add(data_len) > attempt.assignment.span.len
             {
                 return Err(HttpMultiRangeError::Protocol);
             }
-            write_range_chunk(storage, task, generation, attempt, offset, &data).await?;
+            storage
+                .write_block(WriteBlock {
+                    task,
+                    generation,
+                    lease,
+                    global_offset: offset,
+                    expected_len: data_len,
+                    buffer,
+                    piece: attempt.assignment.piece,
+                })
+                .await?;
             active
                 .get_mut(&lease)
                 .ok_or(HttpMultiRangeError::Protocol)?
-                .received += data.len();
-            stats.add_accepted(data.len());
-            stats.add_provisional(data.len());
+                .received += data_len;
+            stats.add_accepted(data_len);
+            stats.add_provisional(data_len);
         }
         AttemptEvent::Terminal { lease, result } => {
             let Some(attempt) = active.remove(&lease) else {
@@ -1385,11 +1735,14 @@ async fn process_attempt_event(
                     })?;
                     coordinator.complete(lease)?;
                     stats.add_durable(attempt.received);
+                    stats.remove_provisional(attempt.received);
                 }
                 Err(failure) => {
                     if attempt.opened {
                         storage.abort_lease(task, generation, lease, abort_reason(&failure))?;
                     }
+                    stats.remove_provisional(attempt.received);
+                    stats.add_discarded(attempt.received);
                     apply_attempt_failure(
                         failure,
                         attempt,
@@ -1402,45 +1755,6 @@ async fn process_attempt_event(
             }
             stats.set_active(active.len());
         }
-    }
-    Ok(())
-}
-
-async fn write_range_chunk(
-    storage: &mut StorageEngine,
-    task: TaskId,
-    generation: Generation,
-    attempt: ActiveAttempt,
-    offset: u64,
-    data: &Bytes,
-) -> Result<(), HttpMultiRangeError> {
-    let mut consumed = 0_usize;
-    while consumed < data.len() {
-        let take = (data.len() - consumed).min(SizeClass::MiB1.capacity());
-        let mut buffer = storage.reserve_network_buffer(take)?;
-        buffer
-            .writable()
-            .map_err(StorageEngineError::from_buffer_transition)?[..take]
-            .copy_from_slice(&data[consumed..consumed + take]);
-        buffer
-            .mark_filled(take, OwnerTag::Storage)
-            .map_err(StorageEngineError::from_buffer_transition)?;
-        storage
-            .write_block(WriteBlock {
-                task,
-                generation,
-                lease: attempt.assignment.lease,
-                global_offset: offset
-                    .checked_add(
-                        u64::try_from(consumed).map_err(|_| HttpMultiRangeError::Protocol)?,
-                    )
-                    .ok_or(HttpMultiRangeError::Protocol)?,
-                expected_len: take,
-                buffer,
-                piece: attempt.assignment.piece,
-            })
-            .await?;
-        consumed += take;
     }
     Ok(())
 }
@@ -1507,6 +1821,8 @@ fn fail_panicked_attempt(
     if attempt.opened {
         storage.abort_lease(task, generation, lease, LeaseAbortReason::Retry)?;
     }
+    stats.remove_provisional(attempt.received);
+    stats.add_discarded(attempt.received);
     coordinator.fail(lease, HttpRangeFailure::RetryAt(now_ms))?;
     stats.add_retry();
     stats.set_active(active.len());
@@ -1516,7 +1832,7 @@ fn fail_panicked_attempt(
 fn retry_cause(failure: &RangeAttemptFailure) -> HttpRetryCause {
     match failure {
         RangeAttemptFailure::Client(error) if error.retriable() => {
-            HttpRetryCause::Transport(HttpRetryTransportFailure::Reset)
+            HttpRetryCause::Transport(retry_transport_failure(error))
         }
         RangeAttemptFailure::Client(_) => HttpRetryCause::Policy,
         RangeAttemptFailure::Response {
@@ -1534,7 +1850,31 @@ fn retry_cause(failure: &RangeAttemptFailure) -> HttpRetryCause {
         RangeAttemptFailure::ShortBody => {
             HttpRetryCause::Transport(HttpRetryTransportFailure::UnexpectedEof)
         }
+        RangeAttemptFailure::LowestSpeed => {
+            HttpRetryCause::Transport(HttpRetryTransportFailure::LowestSpeed)
+        }
+        RangeAttemptFailure::Timeout => {
+            HttpRetryCause::Transport(HttpRetryTransportFailure::Timeout)
+        }
+        RangeAttemptFailure::Hang => HttpRetryCause::Transport(HttpRetryTransportFailure::Hang),
         RangeAttemptFailure::Cancelled => HttpRetryCause::Cancelled,
+    }
+}
+
+fn retry_transport_failure(error: &HttpPolicyClientError) -> HttpRetryTransportFailure {
+    match error {
+        HttpPolicyClientError::BodyTimeout => HttpRetryTransportFailure::Timeout,
+        HttpPolicyClientError::Destination(_) => HttpRetryTransportFailure::DnsTransient,
+        HttpPolicyClientError::ProxyRequest(_) => HttpRetryTransportFailure::ProxyConnect,
+        HttpPolicyClientError::Transport(
+            HttpTransportError::ConnectTimeout
+            | HttpTransportError::TlsHandshakeTimeout
+            | HttpTransportError::HandshakeTimeout,
+        ) => HttpRetryTransportFailure::Timeout,
+        HttpPolicyClientError::Transport(HttpTransportError::Hyper(_)) => {
+            HttpRetryTransportFailure::StaleConnection
+        }
+        _ => HttpRetryTransportFailure::Reset,
     }
 }
 
@@ -1543,9 +1883,11 @@ fn abort_reason(failure: &RangeAttemptFailure) -> LeaseAbortReason {
         RangeAttemptFailure::ShortBody => LeaseAbortReason::ShortBody,
         RangeAttemptFailure::OversizedBody => LeaseAbortReason::OversizedBody,
         RangeAttemptFailure::Cancelled => LeaseAbortReason::Cancelled,
-        RangeAttemptFailure::Client(_) | RangeAttemptFailure::Response { .. } => {
-            LeaseAbortReason::Retry
-        }
+        RangeAttemptFailure::Timeout
+        | RangeAttemptFailure::Hang
+        | RangeAttemptFailure::LowestSpeed
+        | RangeAttemptFailure::Client(_)
+        | RangeAttemptFailure::Response { .. } => LeaseAbortReason::Retry,
     }
 }
 
@@ -1595,6 +1937,7 @@ mod tests {
     use ariax_storage::{JournalStateLimits, PathPlatform, ReplayLimits, SafePathBuilder};
     use std::fs;
     use std::net::SocketAddr;
+    use std::num::NonZeroU32;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -1786,6 +2129,15 @@ mod tests {
         sources: impl IntoIterator<Item = SocketAddr>,
         total_length: usize,
     ) -> HttpTaskSpec {
+        task_with_retry(root, sources, total_length, None)
+    }
+
+    fn task_with_retry(
+        root: &TestDirectory,
+        sources: impl IntoIterator<Item = SocketAddr>,
+        total_length: usize,
+        retry: Option<HttpRetryPolicy>,
+    ) -> HttpTaskSpec {
         let options = HttpTaskOptions {
             split: NonZeroUsize::new(2).expect("split"),
             max_connections_per_server: NonZeroUsize::new(1).expect("per server"),
@@ -1794,7 +2146,10 @@ mod tests {
             connect_timeout: Duration::from_secs(5),
             response_head_timeout: Duration::from_secs(5),
             response_body_timeout: Duration::from_secs(5),
+            max_download_limit: 0,
+            lowest_speed_limit: 0,
             mirror_identity: HttpMirrorIdentityPolicy::TrustSubmittedMirrors,
+            retry,
         };
         assert!(total_length >= MIB);
         HttpTaskSpec::new(
@@ -1824,6 +2179,7 @@ mod tests {
                 storage: StorageEngineConfig::default(),
                 retry: HttpRetryPolicy::default(),
                 event_capacity: NonZeroUsize::new(16).expect("events"),
+                ..HttpMultiRangeWorkerConfig::default()
             },
             stats,
         )
@@ -1854,6 +2210,55 @@ mod tests {
         );
         assert_eq!(idle.current_speed, 0);
         assert_eq!(idle.durable_speed, 0);
+    }
+
+    #[test]
+    fn stats_keep_rate_and_backpressure_conditions_outside_task_state() {
+        let stats = HttpTransferStats::default();
+        let started = ariax_core::MonotonicInstant::now();
+        stats.reset_sampling_at(started);
+        stats.set_diagnostic(StatsDiagnostic {
+            condition: ConnectionCondition::RateLimited,
+            reason: Some(ConnectionConditionReason::IngressRateLimit),
+        });
+        stats.set_rate_debt(17);
+        let snapshot = stats.snapshot_at(
+            started
+                .checked_add(Duration::from_secs(1))
+                .expect("sample instant"),
+        );
+        assert_eq!(
+            snapshot.connection_condition,
+            ConnectionCondition::RateLimited
+        );
+        assert_eq!(
+            snapshot.condition_reason,
+            Some(ConnectionConditionReason::IngressRateLimit)
+        );
+        assert_eq!(snapshot.rate_debt_bytes, 17);
+    }
+
+    #[test]
+    fn lowest_speed_check_uses_elapsed_useful_bytes() {
+        assert!(below_lowest_speed(100, Duration::from_secs(2), 100,));
+        assert!(!below_lowest_speed(200, Duration::from_secs(2), 100,));
+        assert!(!below_lowest_speed(0, Duration::ZERO, 1));
+    }
+
+    #[test]
+    fn retry_causes_keep_timeout_hang_and_lowest_speed_separate() {
+        assert_eq!(
+            retry_cause(&RangeAttemptFailure::Timeout),
+            HttpRetryCause::Transport(HttpRetryTransportFailure::Timeout)
+        );
+        assert_eq!(
+            retry_cause(&RangeAttemptFailure::Hang),
+            HttpRetryCause::Transport(HttpRetryTransportFailure::Hang)
+        );
+        assert_eq!(
+            retry_cause(&RangeAttemptFailure::LowestSpeed),
+            HttpRetryCause::Transport(HttpRetryTransportFailure::LowestSpeed)
+        );
     }
 
     #[tokio::test]
@@ -1960,6 +2365,37 @@ mod tests {
             expected.as_ref()
         );
         assert_eq!(stats.get(spec.task()).unwrap().snapshot().retry_count, 1);
+    }
+
+    #[tokio::test]
+    async fn task_retry_policy_overrides_the_worker_attempt_cap() {
+        let root = TestDirectory::new("task-retry-cap-root");
+        let journal = TestDirectory::new("task-retry-cap-journal");
+        let expected = data(MIB);
+        let (first, first_server) =
+            serve_mirror(Arc::clone(&expected), MirrorMode::ShortRange, 2).await;
+        let (second, second_server) =
+            serve_mirror(Arc::clone(&expected), MirrorMode::Valid, 1).await;
+        let retry = HttpRetryPolicy {
+            max_attempts: NonZeroU32::new(1).expect("one attempt"),
+            max_attempts_per_mirror: NonZeroU32::new(1).expect("one mirror attempt"),
+            ..HttpRetryPolicy::default()
+        };
+        let spec = task_with_retry(&root, [first, second], expected.len(), Some(retry));
+        let stats = SharedHttpTransferStats::new(NonZeroUsize::new(2).expect("stats"));
+        assert!(matches!(
+            worker(&journal, stats.clone(), 3)
+                .run_task(
+                    Arc::new(spec.clone()),
+                    Generation::INITIAL,
+                    HttpCancellation::new(),
+                )
+                .await,
+            Err(HttpMultiRangeError::Exhausted)
+        ));
+        first_server.await.expect("first server");
+        second_server.await.expect("second probe");
+        assert_eq!(stats.get(spec.task()).unwrap().snapshot().retry_count, 0);
     }
 
     #[tokio::test]

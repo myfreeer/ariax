@@ -43,8 +43,9 @@ pub use http_auth::{
     MAX_HTTP_NETRC_ENTRIES, MAX_HTTP_NETRC_TOKEN_BYTES,
 };
 pub use http_client::{
-    HttpClientRequest, HttpPolicyClient, HttpPolicyClientConfig, HttpPolicyClientError,
-    HttpStreamingResponse,
+    DEFAULT_HTTP_DIRECT_TRANSPORT_CACHE_CAPACITY, HttpClientRequest, HttpPolicyClient,
+    HttpPolicyClientConfig, HttpPolicyClientError, HttpStreamingResponse,
+    MAX_HTTP_DIRECT_TRANSPORT_CACHE_CAPACITY,
 };
 pub use http_connector::{
     DEFAULT_HTTP_RESOLUTION_TIMEOUT, HttpAddressClass, HttpDestinationError, HttpDestinationPolicy,
@@ -77,6 +78,7 @@ pub use http_happy_eyeballs::{
     HttpHappyEyeballsError, MAX_HTTP_HAPPY_EYEBALLS_ADDRESSES, connect_http_happy_eyeballs,
 };
 pub use http_multi::{
+    DEFAULT_HTTP_INGRESS_BUDGET_BYTES, DEFAULT_HTTP_INGRESS_FRAME_BYTES,
     DEFAULT_HTTP_RANGE_EVENT_CAPACITY, HttpCompletedEvidence, HttpMultiRangeError,
     HttpMultiRangeWorker, HttpMultiRangeWorkerConfig, HttpStatsCatalogError, HttpTransferStats,
     HttpTransferStatsSnapshot, MAX_HTTP_RANGE_EVENT_CAPACITY, SharedHttpTransferStats,
@@ -121,9 +123,12 @@ pub use http_response::{HttpRangeResponseError, HttpRangeResponseValidator};
 pub use http_retry::{
     DEFAULT_HTTP_RETRY_BASE_WAIT, DEFAULT_HTTP_RETRY_MAX_ATTEMPTS,
     DEFAULT_HTTP_RETRY_MAX_ATTEMPTS_PER_MIRROR, DEFAULT_HTTP_RETRY_MAX_ELAPSED,
-    DEFAULT_HTTP_RETRY_MAX_WAIT, HttpRetryBudget, HttpRetryCause, HttpRetryDecision,
-    HttpRetryDelaySource, HttpRetryError, HttpRetryPolicy, HttpRetryStats, HttpRetryStopReason,
-    HttpRetryTransportFailure,
+    DEFAULT_HTTP_RETRY_MAX_WAIT, HttpRetryAfterPolicy, HttpRetryBackoff, HttpRetryBudget,
+    HttpRetryCause, HttpRetryDecision, HttpRetryDelaySource, HttpRetryError, HttpRetryPolicy,
+    HttpRetryProfile, HttpRetryStats, HttpRetryStatusSet, HttpRetryStopReason,
+    HttpRetryTransportFailure, HttpRetryTrigger, HttpRetryTriggerSet, HttpStaleValidatorPolicy,
+    MAX_HTTP_RETRY_STATUS_CODES, MAX_HTTP_RETRY_STATUS_SPEC_BYTES,
+    MAX_HTTP_RETRY_TRIGGER_SPEC_BYTES,
 };
 pub use http_rpc::{
     DEFAULT_HTTP_RPC_SHUTDOWN_TIMEOUT, HttpRpcBackend, HttpRpcBackendError, HttpRpcTransportError,

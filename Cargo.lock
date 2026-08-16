@@ -64,6 +64,7 @@ name = "ariax-runtime"
 version = "0.1.0"
 dependencies = [
  "ariax-core",
+ "tokio",
 ]
 
 [[package]]

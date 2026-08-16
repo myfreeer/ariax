@@ -6,10 +6,11 @@
 
 use crate::http_first_slice::append_initial_admission_with_options;
 use crate::{
-    HttpRpcBackend, HttpRpcBackendError, HttpTaskCatalogError, HttpTaskOptions, HttpTaskSpec,
-    HttpTaskSpecError, HttpTaskWorker, HttpTransferStatsSnapshot, HttpWorkerSupervisor,
-    HttpWorkerSupervisorConfig, PersistenceEffectPlan, PersistencePlanStep, SharedHttpTaskCatalog,
-    SharedHttpTransferStats, derive_http_journal_id, http_journal_directory,
+    HttpRetryAfterPolicy, HttpRetryBackoff, HttpRetryPolicy, HttpRetryProfile, HttpRetryStatusSet,
+    HttpRetryTriggerSet, HttpRpcBackend, HttpRpcBackendError, HttpTaskCatalogError,
+    HttpTaskOptions, HttpTaskSpec, HttpTaskSpecError, HttpTaskWorker, HttpTransferStatsSnapshot,
+    HttpWorkerSupervisor, HttpWorkerSupervisorConfig, PersistenceEffectPlan, PersistencePlanStep,
+    SharedHttpTaskCatalog, SharedHttpTransferStats, derive_http_journal_id, http_journal_directory,
 };
 use ariax_core::{
     Aria2Status, Generation, Gid, MonotonicInstant, PublicError, QueueClass, QueueOrder,
@@ -27,7 +28,7 @@ use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, VecDeque};
 use std::error::Error;
 use std::fmt;
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -35,6 +36,9 @@ use tokio::sync::Mutex;
 
 const CONTROL_PROGRESS_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTROL_PROGRESS_POLL: Duration = Duration::from_micros(50);
+const MAX_HTTP_RETRY_ATTEMPTS: u32 = 1024;
+const MAX_HTTP_RETRY_WAIT_SECS: u64 = 600;
+const MAX_HTTP_RETRY_ELAPSED_SECS: u64 = 7200;
 
 /// Bounded process configuration needed by public HTTP task admission.
 #[derive(Clone, Debug)]
@@ -1013,6 +1017,47 @@ fn status_value(
             "discardedLength".to_owned(),
             Value::String(stats.discarded_bytes.to_string()),
         );
+        object.insert(
+            "receivedPayloadLength".to_owned(),
+            Value::String(stats.raw_body_bytes.to_string()),
+        );
+        object.insert(
+            "acceptedLength".to_owned(),
+            Value::String(stats.accepted_bytes.to_string()),
+        );
+        object.insert(
+            "wireSpeed".to_owned(),
+            Value::String(stats.wire_speed.to_string()),
+        );
+        object.insert(
+            "usefulSpeed".to_owned(),
+            Value::String(stats.useful_speed.to_string()),
+        );
+        object.insert(
+            "smoothedSpeed".to_owned(),
+            Value::String(stats.smoothed_speed.to_string()),
+        );
+        object.insert(
+            "sampleAge".to_owned(),
+            Value::String(stats.sample_age.as_millis().to_string()),
+        );
+        object.insert(
+            "connectionCondition".to_owned(),
+            Value::String(stats.connection_condition.code().to_owned()),
+        );
+        object.insert(
+            "conditionReason".to_owned(),
+            Value::String(
+                stats
+                    .condition_reason
+                    .map_or("", |reason| reason.code())
+                    .to_owned(),
+            ),
+        );
+        object.insert(
+            "rateDebt".to_owned(),
+            Value::String(stats.rate_debt_bytes.to_string()),
+        );
     }
     value
 }
@@ -1038,6 +1083,9 @@ fn parse_add_options(
     let mut out = None;
     let mut paused = false;
     for (name, value) in object {
+        if is_retry_option(name) {
+            continue;
+        }
         match name.as_str() {
             "dir" => {
                 let requested = PathBuf::from(
@@ -1082,6 +1130,8 @@ fn parse_add_options(
                 parsed.connect_timeout = Duration::from_secs(parse_timeout(value)?)
             }
             "timeout" => parsed.response_body_timeout = Duration::from_secs(parse_timeout(value)?),
+            "max-download-limit" => parsed.max_download_limit = parse_size(value)?,
+            "lowest-speed-limit" => parsed.lowest_speed_limit = parse_size(value)?,
             "verify-mirror-identity" => {
                 parsed.mirror_identity = match value.as_str() {
                     Some("strict") => crate::HttpMirrorIdentityPolicy::RequireSharedDigest,
@@ -1096,6 +1146,9 @@ fn parse_add_options(
             _ => return Err(HttpControlError::InvalidParams("unsupported addUri option")),
         }
     }
+    if object.keys().any(|name| is_retry_option(name)) {
+        parsed.retry = Some(parse_retry_options(object)?);
+    }
     if !root.is_absolute() {
         return Err(HttpControlError::InvalidParams("dir must be absolute"));
     }
@@ -1103,6 +1156,177 @@ fn parse_add_options(
     let output = SafePathBuilder::from_user_path(&output, PathPlatform::current())
         .map_err(|_| HttpControlError::InvalidParams("out is not a safe relative path"))?;
     Ok((parsed, root, output, paused))
+}
+
+fn is_retry_option(name: &str) -> bool {
+    matches!(
+        name,
+        "max-tries"
+            | "retry-wait"
+            | "retry-profile"
+            | "retry-on"
+            | "retry-on-http-status"
+            | "retry-on-http-status-add"
+            | "retry-on-http-status-remove"
+            | "retry-after"
+            | "retry-after-max"
+            | "retry-after-min"
+            | "retry-backoff"
+            | "retry-max-wait"
+            | "retry-max-attempts"
+            | "retry-max-attempts-per-mirror"
+            | "retry-max-elapsed"
+    )
+}
+
+fn parse_retry_options(
+    object: &serde_json::Map<String, Value>,
+) -> Result<HttpRetryPolicy, HttpControlError> {
+    let profile = match object.get("retry-profile") {
+        Some(value) => HttpRetryProfile::parse(retry_text(value, "retry-profile")?)
+            .map_err(|_| HttpControlError::InvalidParams("invalid retry profile"))?,
+        None => HttpRetryProfile::Conservative,
+    };
+    let mut policy = HttpRetryPolicy::from_profile(profile);
+
+    if let Some(value) = object.get("retry-on") {
+        policy.retry_on = HttpRetryTriggerSet::parse(retry_text(value, "retry-on")?)
+            .map_err(|_| HttpControlError::InvalidParams("invalid retry trigger set"))?;
+    }
+    if let Some(value) = object.get("retry-on-http-status") {
+        policy.retryable_statuses =
+            HttpRetryStatusSet::parse(retry_text(value, "retry-on-http-status")?)
+                .map_err(|_| HttpControlError::InvalidParams("invalid retry status set"))?;
+    }
+    if let Some(value) = object.get("retry-on-http-status-add") {
+        for code in HttpRetryStatusSet::parse(retry_text(value, "retry-on-http-status-add")?)
+            .map_err(|_| HttpControlError::InvalidParams("invalid retry status set"))?
+            .iter()
+        {
+            policy
+                .retryable_statuses
+                .insert(code)
+                .map_err(|_| HttpControlError::InvalidParams("invalid retry status set"))?;
+        }
+    }
+    if let Some(value) = object.get("retry-on-http-status-remove") {
+        for code in HttpRetryStatusSet::parse(retry_text(value, "retry-on-http-status-remove")?)
+            .map_err(|_| HttpControlError::InvalidParams("invalid retry status set"))?
+            .iter()
+        {
+            policy.retryable_statuses.remove(code);
+        }
+    }
+
+    let max_tries = object
+        .get("max-tries")
+        .map(|value| parse_retry_attempt_cap(value, "max-tries"))
+        .transpose()?;
+    let max_attempts = object
+        .get("retry-max-attempts")
+        .map(|value| parse_retry_attempt_cap(value, "retry-max-attempts"))
+        .transpose()?;
+    if let Some(value) = stricter_retry_cap(max_tries, max_attempts) {
+        policy.max_attempts = value;
+    }
+    if let Some(value) = object.get("retry-max-attempts-per-mirror") {
+        policy.max_attempts_per_mirror =
+            parse_retry_attempt_cap(value, "retry-max-attempts-per-mirror")?;
+    }
+    if let Some(value) = object.get("retry-wait") {
+        policy.base_wait =
+            parse_retry_duration(value, "retry-wait", MAX_HTTP_RETRY_WAIT_SECS, true)?;
+    }
+    if let Some(value) = object.get("retry-max-wait") {
+        policy.max_wait =
+            parse_retry_duration(value, "retry-max-wait", MAX_HTTP_RETRY_WAIT_SECS, false)?;
+    }
+    if let Some(value) = object.get("retry-max-elapsed") {
+        policy.max_elapsed = parse_retry_duration(
+            value,
+            "retry-max-elapsed",
+            MAX_HTTP_RETRY_ELAPSED_SECS,
+            false,
+        )?;
+    }
+    if let Some(value) = object.get("retry-after-min") {
+        policy.retry_after_min =
+            parse_retry_duration(value, "retry-after-min", MAX_HTTP_RETRY_WAIT_SECS, true)?;
+    }
+    if let Some(value) = object.get("retry-after-max") {
+        policy.retry_after_max =
+            parse_retry_duration(value, "retry-after-max", MAX_HTTP_RETRY_WAIT_SECS, true)?;
+    }
+    if let Some(value) = object.get("retry-after") {
+        policy.respect_retry_after = matches!(
+            HttpRetryAfterPolicy::parse(retry_text(value, "retry-after")?)
+                .map_err(|_| HttpControlError::InvalidParams("invalid retry-after policy"))?,
+            HttpRetryAfterPolicy::Respect
+        );
+    }
+    if let Some(value) = object.get("retry-backoff") {
+        policy.backoff = HttpRetryBackoff::parse(retry_text(value, "retry-backoff")?)
+            .map_err(|_| HttpControlError::InvalidParams("invalid retry backoff"))?;
+    }
+    policy
+        .validate()
+        .map_err(|_| HttpControlError::InvalidParams("invalid retry policy"))?;
+    Ok(policy)
+}
+
+fn retry_text<'a>(value: &'a Value, name: &str) -> Result<&'a str, HttpControlError> {
+    value
+        .as_str()
+        .ok_or(HttpControlError::InvalidParams(match name {
+            "retry-profile" => "retry-profile must be a string",
+            "retry-on" => "retry-on must be a string",
+            "retry-on-http-status" | "retry-on-http-status-add" | "retry-on-http-status-remove" => {
+                "retry status set must be a string"
+            }
+            "retry-after" => "retry-after must be a string",
+            "retry-backoff" => "retry-backoff must be a string",
+            _ => "retry option must be a string",
+        }))
+}
+
+fn parse_retry_attempt_cap(value: &Value, name: &str) -> Result<NonZeroU32, HttpControlError> {
+    let value = parse_u64(value, name)?;
+    let value = u32::try_from(value)
+        .map_err(|_| HttpControlError::InvalidParams("retry attempt cap is too large"))?;
+    if value > MAX_HTTP_RETRY_ATTEMPTS {
+        return Err(HttpControlError::InvalidParams(
+            "retry attempt cap is too large",
+        ));
+    }
+    NonZeroU32::new(value).ok_or(HttpControlError::InvalidParams(
+        "retry attempt cap must be nonzero",
+    ))
+}
+
+fn stricter_retry_cap(
+    max_tries: Option<NonZeroU32>,
+    max_attempts: Option<NonZeroU32>,
+) -> Option<NonZeroU32> {
+    match (max_tries, max_attempts) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    }
+}
+
+fn parse_retry_duration(
+    value: &Value,
+    name: &str,
+    maximum: u64,
+    allow_zero: bool,
+) -> Result<Duration, HttpControlError> {
+    let seconds = parse_u64(value, name)?;
+    if seconds > maximum || (!allow_zero && seconds == 0) {
+        return Err(HttpControlError::InvalidParams(
+            "retry duration is out of range",
+        ));
+    }
+    Ok(Duration::from_secs(seconds))
 }
 
 fn parse_nonzero(
@@ -1609,6 +1833,22 @@ mod tests {
                 "max-connection-per-server": 2,
                 "connect-timeout": "1",
                 "timeout": 600,
+                "max-download-limit": "64K",
+                "retry-profile": "custom",
+                "retry-on": "timeout,lowest-speed",
+                "retry-on-http-status": "418,429",
+                "retry-on-http-status-add": "500-501",
+                "retry-on-http-status-remove": "429",
+                "max-tries": 5,
+                "retry-max-attempts": 4,
+                "retry-max-attempts-per-mirror": 2,
+                "retry-wait": 0,
+                "retry-backoff": "fixed",
+                "retry-after": "ignore",
+                "retry-after-min": 0,
+                "retry-after-max": 60,
+                "retry-max-wait": 60,
+                "retry-max-elapsed": 600,
                 "pause": "true",
             }),
             &directory.output,
@@ -1621,6 +1861,15 @@ mod tests {
         assert_eq!(options.max_connections_per_server.get(), 2);
         assert_eq!(options.connect_timeout, Duration::from_secs(1));
         assert_eq!(options.response_body_timeout, Duration::from_secs(600));
+        assert_eq!(options.max_download_limit, 64 * 1024);
+        let retry = options.retry.expect("resolved retry policy");
+        assert_eq!(retry.profile, HttpRetryProfile::Custom);
+        assert_eq!(retry.max_attempts.get(), 4);
+        assert_eq!(retry.max_attempts_per_mirror.get(), 2);
+        assert_eq!(retry.retry_on.canonical(), "timeout,lowest-speed");
+        assert_eq!(retry.retryable_statuses.canonical(), "418,500,501");
+        assert_eq!(retry.backoff, HttpRetryBackoff::Fixed);
+        assert!(!retry.respect_retry_after);
         assert_eq!(root, directory.output);
         assert_eq!(output.canonical_string(), "file");
         assert!(paused);
@@ -1630,6 +1879,10 @@ mod tests {
             json!({"max-connection-per-server": 0}),
             json!({"connect-timeout": 0}),
             json!({"timeout": 601}),
+            json!({"retry-profile": "custom"}),
+            json!({"retry-max-attempts": 0}),
+            json!({"retry-max-wait": 0}),
+            json!({"retry-on-http-status": "99"}),
             json!({"piece-length": "18446744073709551615T"}),
         ] {
             assert!(matches!(

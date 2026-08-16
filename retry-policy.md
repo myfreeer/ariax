@@ -2,9 +2,13 @@
 
 Status: implementation in progress. The shared bounded persisted-delay recovery
 and retry-budget accounting helper, cross-store retry/slow/no-space mapping,
-and scheduler-owned correlated automatic no-space probes are executable. Live
-protocol retry classification, backoff policy, and transfer integration remain
-pending.
+and scheduler-owned correlated automatic no-space probes are executable. The
+known-length HTTP worker now executes bounded per-range aria2, conservative,
+aggressive, and validated custom retry profiles; task admission persists the
+resolved trigger/status sets, caps, and delay policy; and timeout, hang, and
+lowest-speed failures remain distinct at policy selection. Persisted live
+per-lease retry waits/recovery, stale-validator restart or revalidation, and
+full retry status diagnostics remain pending.
 
 Retry behavior must be configurable, bounded, observable, and safe. A retry
 policy may decide whether to retry a failed transfer span, but it must not
