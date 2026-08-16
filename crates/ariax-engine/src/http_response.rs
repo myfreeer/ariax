@@ -6,13 +6,14 @@ use hyper::header::{
     CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE, ETAG, HeaderValue, LAST_MODIFIED,
     TRANSFER_ENCODING,
 };
-use hyper::{HeaderMap, StatusCode};
+use hyper::{HeaderMap, StatusCode, Uri};
 use sha2::{Digest, Sha256};
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 
 const HTTP_RANGE_VALIDATOR_HASH_DOMAIN: &str = "ariax/http-range-validator/v1\0";
+const HTTP_RESOURCE_HASH_DOMAIN: &str = "ariax/http-resource/v1\0";
 const MAX_HTTP_LAST_MODIFIED_BYTES: usize = 128;
 type ParsedEtag = (Option<Box<[u8]>>, bool);
 
@@ -25,6 +26,8 @@ pub struct HttpRangeResponseValidator {
     strong_etag: bool,
     last_modified: Option<Box<[u8]>>,
     fingerprint: JournalHash,
+    resource_fingerprint: JournalHash,
+    strong_validator_fingerprint: Option<JournalHash>,
 }
 
 impl HttpRangeResponseValidator {
@@ -45,6 +48,20 @@ impl HttpRangeResponseValidator {
             etag.as_deref(),
             last_modified.as_deref(),
         );
+        let resource_fingerprint = http_resource_fingerprint(
+            &final_uri
+                .parse()
+                .map_err(|_| HttpRangeResponseError::ResourceChanged)?,
+        );
+        let strong_validator_fingerprint = strong_etag
+            .then(|| {
+                calculate_http_strong_validator_fingerprint(
+                    etag.as_deref().expect("strong ETag has bytes"),
+                    total_length,
+                )
+            })
+            .transpose()
+            .map_err(|_| HttpRangeResponseError::InvalidValidator)?;
         Ok(Self {
             source,
             final_uri: final_uri.to_owned().into(),
@@ -53,6 +70,8 @@ impl HttpRangeResponseValidator {
             strong_etag,
             last_modified,
             fingerprint,
+            resource_fingerprint,
+            strong_validator_fingerprint,
         })
     }
 
@@ -104,6 +123,16 @@ impl HttpRangeResponseValidator {
     #[must_use]
     pub const fn fingerprint(&self) -> JournalHash {
         self.fingerprint
+    }
+
+    #[must_use]
+    pub const fn resource_fingerprint(&self) -> JournalHash {
+        self.resource_fingerprint
+    }
+
+    #[must_use]
+    pub const fn strong_validator_fingerprint(&self) -> Option<JournalHash> {
+        self.strong_validator_fingerprint
     }
 }
 
@@ -347,6 +376,26 @@ fn validator_fingerprint(
     JournalHash::new(digest.finalize().into()).expect("SHA-256 output is nonzero")
 }
 
+pub(crate) fn http_resource_fingerprint(uri: &Uri) -> JournalHash {
+    let mut digest = Sha256::new();
+    digest.update(HTTP_RESOURCE_HASH_DOMAIN.as_bytes());
+    for component in [
+        uri.scheme_str().unwrap_or_default().as_bytes(),
+        uri.authority()
+            .map_or(&[][..], |value| value.as_str().as_bytes()),
+        uri.path_and_query()
+            .map_or(b"/".as_slice(), |value| value.as_str().as_bytes()),
+    ] {
+        digest.update(
+            u32::try_from(component.len())
+                .expect("URI component length fits u32")
+                .to_le_bytes(),
+        );
+        digest.update(component);
+    }
+    JournalHash::new(digest.finalize().into()).expect("SHA-256 output is nonzero")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,6 +420,17 @@ mod tests {
         .expect("probe");
         assert_eq!(validator.total_length(), 10);
         assert_eq!(validator.if_range(), Some(b"\"v1\"".as_slice()));
+        assert_eq!(
+            validator.strong_validator_fingerprint(),
+            Some(
+                calculate_http_strong_validator_fingerprint(b"\"v1\"", 10)
+                    .expect("strong validator")
+            )
+        );
+        assert_eq!(
+            validator.resource_fingerprint(),
+            http_resource_fingerprint(&"https://example.test/file".parse().expect("resource URI"))
+        );
         validator
             .validate_range(
                 "https://example.test/file",

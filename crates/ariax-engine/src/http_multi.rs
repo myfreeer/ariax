@@ -1,8 +1,8 @@
 //! Journal-backed non-overlapping multi-mirror HTTP range worker.
 
 use crate::http_first_slice::{
-    KnownLengthHttpError, append_initial_admission_with_options, append_layout,
-    build_single_file_layout, now_unix_ms,
+    KnownLengthHttpError, append_http_strong_validator, append_initial_admission_with_options,
+    append_layout, build_single_file_layout, now_unix_ms,
 };
 use crate::{
     HttpCancellation, HttpClientRequest, HttpMirrorIdentityPolicy, HttpPolicyClient,
@@ -24,11 +24,12 @@ use ariax_runtime::{
     SizeClass, StatsCounters, StatsDiagnostic, StatsProfile, StatsSampler, StatsSamplerConfig,
 };
 use ariax_storage::{
-    ControlJournalAppender, FileLayout, GlobalSpan, JournalDirectoryCapability, JournalId,
-    JournalStateLimits, LeaseAbortReason, PersistedId, PlatformPath, RecoveredJournalState,
-    RecoveredRetryState, ReplayLimits, RetryReason, RetryScope, RootDirectoryCapability,
-    SessionCommand, SessionHandle, SessionOwnerError, SessionPersistenceError,
-    recover_journal_state,
+    ControlJournalAppender, FileLayout, GlobalSpan, JournalContributor, JournalDigestAlgorithm,
+    JournalDirectoryCapability, JournalId, JournalStateLimits, LeaseAbortReason, PersistedId,
+    PersistedSpan, PlatformPath, RecoveredDurablePiece, RecoveredHttpStrongValidator,
+    RecoveredJournalState, RecoveredRetryState, ReplayLimits, RetryReason, RetryScope,
+    RootDirectoryCapability, RootFileCapability, SessionCommand, SessionHandle, SessionOwnerError,
+    SessionPersistenceError, calculate_validator_set_fingerprint, recover_journal_state,
 };
 use hyper::header::RETRY_AFTER;
 use sha2::{Digest, Sha256};
@@ -48,6 +49,7 @@ pub const DEFAULT_HTTP_RANGE_EVENT_CAPACITY: usize = 64;
 pub const DEFAULT_HTTP_INGRESS_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 pub const DEFAULT_HTTP_INGRESS_FRAME_BYTES: usize = SizeClass::MiB1.capacity();
 const HTTP_JOURNAL_ID_DOMAIN: &str = "ariax/http-journal-id/v1\0";
+const HTTP_RECOVERY_READ_BUFFER_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct HttpTransferStatsSnapshot {
@@ -527,10 +529,18 @@ impl HttpMultiRangeWorker {
             .map_err(|_| HttpMultiRangeError::InvalidConfig)?;
         self.stats.clear_completion(task.task());
         self.close_owned_journal(task.gid()).await?;
-        let sources = match self.probe_sources(&task, &cancellation, &stats).await {
-            Ok(sources) => sources,
+        let prepared_storage = match self.prepare_storage(&task, generation) {
+            Ok(storage) => storage,
             Err(error) => {
                 self.handoff_new_or_recovered_journal(&task, generation)
+                    .await?;
+                return Err(error);
+            }
+        };
+        let mut sources = match self.probe_sources(&task, &cancellation, &stats).await {
+            Ok(sources) => sources,
+            Err(error) => {
+                self.handoff_journal(task.gid(), prepared_storage.into_appender())
                     .await?;
                 return Err(error);
             }
@@ -546,7 +556,13 @@ impl HttpMultiRangeWorker {
             durable_pieces,
             durable_bytes,
             recovered_retry_states,
-        } = match self.open_storage(&task, generation, total_length) {
+        } = match self.finish_storage(
+            prepared_storage,
+            &task,
+            generation,
+            total_length,
+            &mut sources,
+        ) {
             Ok(storage) => storage,
             Err(error) => {
                 self.handoff_new_or_recovered_journal(&task, generation)
@@ -631,6 +647,7 @@ impl HttpMultiRangeWorker {
                     }
                     if settled_total == Some(validator.total_length()) {
                         prepared.push(PreparedSource {
+                            lease_fingerprint: validator.fingerprint(),
                             validator: Arc::new(validator),
                         });
                     } else {
@@ -647,101 +664,178 @@ impl HttpMultiRangeWorker {
         Ok(prepared)
     }
 
-    fn open_storage(
+    fn prepare_storage(
         &self,
         task: &HttpTaskSpec,
         generation: Generation,
-        total_length: u64,
-    ) -> Result<OpenedHttpStorage, HttpMultiRangeError> {
+    ) -> Result<PreparedHttpStorage, HttpMultiRangeError> {
         let root = RootDirectoryCapability::open_trusted(task.output_root())
             .map_err(KnownLengthHttpError::from)?;
-        let OpenedTaskJournal {
-            mut appender,
-            state,
-        } = self.open_task_journal(task, generation)?;
-        let (layout, output, durable_pieces, durable_bytes, retry_states) = if let Some(state) =
-            state
-            && let Some(recovered) = state.layout()
+        let OpenedTaskJournal { appender, state } = self.open_task_journal(task, generation)?;
+        let Some(state) = state else {
+            return Ok(PreparedHttpStorage::Fresh(Box::new(
+                FreshPreparedHttpStorage { root, appender },
+            )));
+        };
+        if state.terminal().is_some() {
+            return Err(HttpMultiRangeError::Setup(
+                KnownLengthHttpError::AlreadyComplete,
+            ));
+        }
+        let Some(recovered) = state.layout() else {
+            return Ok(PreparedHttpStorage::Fresh(Box::new(
+                FreshPreparedHttpStorage { root, appender },
+            )));
+        };
+        let total_length = recovered
+            .layout()
+            .total_length()
+            .ok_or(HttpMultiRangeError::Setup(
+                KnownLengthHttpError::RecoveryState,
+            ))?;
+        if state.generation() != generation
+            || recovered.layout().piece_length() != task.options().piece_length
+            || PlatformPath::from_current(root.display()).map_err(KnownLengthHttpError::from)?
+                != *recovered.layout().root_binding().path()
+            || root.identity().encode().as_ref()
+                != recovered.layout().root_binding().root_identity().bytes()
         {
-            if state.generation() != generation
-                || recovered.layout().total_length() != Some(total_length)
-                || recovered.layout().piece_length() != task.options().piece_length
-                || PlatformPath::from_current(root.display()).map_err(KnownLengthHttpError::from)?
-                    != *recovered.layout().root_binding().path()
-                || root.identity().encode().as_ref()
-                    != recovered.layout().root_binding().root_identity().bytes()
-            {
-                return Err(HttpMultiRangeError::Setup(
+            return Err(HttpMultiRangeError::Setup(
+                KnownLengthHttpError::RecoveryState,
+            ));
+        }
+        let mut selected = recovered
+            .layout()
+            .files()
+            .iter()
+            .filter(|entry| entry.selected());
+        let entry = selected
+            .next()
+            .filter(|entry| entry.id() == FileId::new(0))
+            .ok_or(HttpMultiRangeError::Setup(
+                KnownLengthHttpError::RecoveryState,
+            ))?;
+        if selected.next().is_some() || entry.safe_path() != task.output() {
+            return Err(HttpMultiRangeError::Setup(
+                KnownLengthHttpError::RecoveryState,
+            ));
+        }
+        let output = root
+            .open_existing_file(
+                entry.safe_path(),
+                entry.identity().ok_or(HttpMultiRangeError::Setup(
                     KnownLengthHttpError::RecoveryState,
-                ));
-            }
-            let mut selected = recovered
-                .layout()
-                .files()
-                .iter()
-                .filter(|entry| entry.selected());
-            let entry = selected
-                .next()
-                .filter(|entry| entry.id() == FileId::new(0))
-                .ok_or(HttpMultiRangeError::Setup(
-                    KnownLengthHttpError::RecoveryState,
-                ))?;
-            if selected.next().is_some() || entry.safe_path() != task.output() {
-                return Err(HttpMultiRangeError::Setup(
-                    KnownLengthHttpError::RecoveryState,
-                ));
-            }
-            let output = root
-                .open_existing_file(
-                    entry.safe_path(),
-                    entry.identity().ok_or(HttpMultiRangeError::Setup(
-                        KnownLengthHttpError::RecoveryState,
-                    ))?,
-                )
-                .map_err(KnownLengthHttpError::from)?;
-            if output.len().map_err(KnownLengthHttpError::from)? != total_length {
-                return Err(HttpMultiRangeError::Setup(
-                    KnownLengthHttpError::ExistingLengthMismatch {
-                        expected: total_length,
-                        actual: output.len().map_err(KnownLengthHttpError::from)?,
-                    },
-                ));
-            }
-            let layout = FileLayout::new(
-                task.task(),
-                generation,
-                recovered.layout().root_binding().clone(),
-                recovered.layout().files().to_vec(),
-                Some(total_length),
-                task.options().piece_length,
+                ))?,
             )
             .map_err(KnownLengthHttpError::from)?;
-            let durable_pieces = state.durable_pieces().keys().copied().collect::<Vec<_>>();
-            let durable_bytes = state
-                .durable_pieces()
-                .values()
-                .map(|piece| piece.piece_span().len())
-                .sum();
-            let retry_states = state.retry_states().values().cloned().collect();
-            (layout, output, durable_pieces, durable_bytes, retry_states)
-        } else {
-            let output = root
-                .create_new_file(task.output())
-                .map_err(KnownLengthHttpError::from)?;
-            output
-                .set_len(total_length)
-                .map_err(KnownLengthHttpError::from)?;
-            let layout = build_single_file_layout(
-                task.task(),
-                generation,
-                &root,
-                task.output(),
-                &output,
-                total_length,
-                task.options().piece_length,
-            )?;
-            append_layout(&mut appender, &layout)?;
-            (layout, output, Vec::new(), 0, Vec::new())
+        let actual_length = output.len().map_err(KnownLengthHttpError::from)?;
+        if actual_length != total_length {
+            return Err(HttpMultiRangeError::Setup(
+                KnownLengthHttpError::ExistingLengthMismatch {
+                    expected: total_length,
+                    actual: actual_length,
+                },
+            ));
+        }
+        let layout = FileLayout::new(
+            task.task(),
+            generation,
+            recovered.layout().root_binding().clone(),
+            recovered.layout().files().to_vec(),
+            Some(total_length),
+            task.options().piece_length,
+        )
+        .map_err(KnownLengthHttpError::from)?;
+        let durable_evidence = state.durable_pieces().clone();
+        let (durable_pieces, durable_bytes) =
+            verify_recovered_piece_digests(&output, &durable_evidence)?;
+        Ok(PreparedHttpStorage::Recovered(Box::new(
+            RecoveredPreparedHttpStorage {
+                appender,
+                layout,
+                output,
+                durable_evidence,
+                durable_pieces,
+                durable_bytes,
+                retry_states: state.retry_states().values().cloned().collect(),
+                strong_validator: state.http_strong_validator().cloned(),
+            },
+        )))
+    }
+
+    fn finish_storage(
+        &self,
+        prepared: PreparedHttpStorage,
+        task: &HttpTaskSpec,
+        generation: Generation,
+        total_length: u64,
+        sources: &mut Vec<PreparedSource>,
+    ) -> Result<OpenedHttpStorage, HttpMultiRangeError> {
+        let (appender, layout, output, durable_pieces, durable_bytes, retry_states) = match prepared
+        {
+            PreparedHttpStorage::Fresh(fresh) => {
+                let FreshPreparedHttpStorage { root, mut appender } = *fresh;
+                let output = root
+                    .create_new_file(task.output())
+                    .map_err(KnownLengthHttpError::from)?;
+                output
+                    .set_len(total_length)
+                    .map_err(KnownLengthHttpError::from)?;
+                let layout = build_single_file_layout(
+                    task.task(),
+                    generation,
+                    &root,
+                    task.output(),
+                    &output,
+                    total_length,
+                    task.options().piece_length,
+                )?;
+                append_layout(&mut appender, &layout)?;
+                if let [source] = sources.as_mut_slice()
+                    && let (Some(etag), Some(validator_fingerprint)) = (
+                        source.validator.if_range(),
+                        source.validator.strong_validator_fingerprint(),
+                    )
+                {
+                    append_http_strong_validator(
+                        &mut appender,
+                        generation,
+                        source.validator.resource_fingerprint(),
+                        validator_fingerprint,
+                        total_length,
+                        etag,
+                    )?;
+                    source.lease_fingerprint = validator_fingerprint;
+                }
+                (appender, layout, output, Vec::new(), 0, Vec::new())
+            }
+            PreparedHttpStorage::Recovered(recovered) => {
+                let RecoveredPreparedHttpStorage {
+                    appender,
+                    layout,
+                    output,
+                    durable_evidence,
+                    durable_pieces,
+                    durable_bytes,
+                    retry_states,
+                    strong_validator,
+                } = *recovered;
+                if layout.total_length() != Some(total_length) {
+                    return Err(HttpMultiRangeError::Setup(
+                        KnownLengthHttpError::RecoveryState,
+                    ));
+                }
+                bind_recovered_strong_validator(sources, strong_validator.as_ref(), total_length)?;
+                verify_recovered_piece_validators(&durable_evidence, sources)?;
+                (
+                    appender,
+                    layout,
+                    output,
+                    durable_pieces,
+                    durable_bytes,
+                    retry_states,
+                )
+            }
         };
         let layout_hash = ariax_storage::JournalHash::new(*layout.layout_hash().as_bytes())
             .expect("layout SHA-256 is nonzero");
@@ -928,7 +1022,7 @@ impl HttpMultiRangeWorker {
         let retry_elapsed_offset_ms = recovered_retries.elapsed_ms;
         let validators = sources
             .iter()
-            .map(|source| (source.validator.source(), Arc::clone(&source.validator)))
+            .map(|source| (source.validator.source(), source.clone()))
             .collect::<BTreeMap<_, _>>();
         let source_hosts = source_host_keys(sources)?;
         let (events, mut receiver) = mpsc::channel(self.config.event_capacity.get());
@@ -944,10 +1038,11 @@ impl HttpMultiRangeWorker {
             loop {
                 match coordinator.poll(now_ms)? {
                     HttpRangePoll::Assignment(assignment) => {
-                        let validator = validators
+                        let source = validators
                             .get(&assignment.source)
                             .cloned()
                             .ok_or(HttpMultiRangeError::Protocol)?;
+                        let validator = Arc::clone(&source.validator);
                         let budget = budgets.entry(assignment.piece).or_insert(
                             HttpRetryBudget::new(retry_policy.clone())
                                 .map_err(HttpMultiRangeError::Retry)?,
@@ -967,7 +1062,7 @@ impl HttpMultiRangeWorker {
                             ActiveAttempt {
                                 assignment,
                                 transfer_attempt,
-                                validator: validator.fingerprint(),
+                                validator: source.lease_fingerprint,
                                 opened: false,
                                 received: 0,
                             },
@@ -1128,6 +1223,134 @@ impl HttpTaskWorker for HttpMultiRangeWorker {
 #[derive(Clone, Debug)]
 struct PreparedSource {
     validator: Arc<HttpRangeResponseValidator>,
+    lease_fingerprint: ariax_storage::JournalHash,
+}
+
+fn bind_recovered_strong_validator(
+    sources: &mut Vec<PreparedSource>,
+    recovered: Option<&RecoveredHttpStrongValidator>,
+    total_length: u64,
+) -> Result<(), HttpMultiRangeError> {
+    let Some(recovered) = recovered else {
+        return Ok(());
+    };
+    if recovered.total_length() != total_length {
+        return Err(HttpMultiRangeError::Setup(
+            KnownLengthHttpError::StaleValidator,
+        ));
+    }
+    sources.retain_mut(|source| {
+        let matches = source.validator.resource_fingerprint() == recovered.resource_fingerprint()
+            && source.validator.strong_validator_fingerprint()
+                == Some(recovered.validator_fingerprint())
+            && source.validator.if_range() == Some(recovered.etag());
+        if matches {
+            source.lease_fingerprint = recovered.validator_fingerprint();
+        }
+        matches
+    });
+    if sources.is_empty() {
+        return Err(HttpMultiRangeError::Setup(
+            KnownLengthHttpError::StaleValidator,
+        ));
+    }
+    Ok(())
+}
+
+fn verify_recovered_piece_validators(
+    pieces: &BTreeMap<PieceId, RecoveredDurablePiece>,
+    sources: &[PreparedSource],
+) -> Result<(), HttpMultiRangeError> {
+    if pieces.is_empty() {
+        return Ok(());
+    }
+    let placeholder_span = PersistedSpan::new(0, 1).expect("placeholder span is valid");
+    let placeholder_lease = LeaseId::new(1).expect("placeholder lease is nonzero");
+    let mut accepted_validator_sets = BTreeSet::new();
+    for source in sources
+        .iter()
+        .filter(|source| source.validator.if_range().is_some())
+    {
+        let contributor = JournalContributor::new(
+            placeholder_lease,
+            placeholder_span,
+            source.lease_fingerprint,
+        );
+        accepted_validator_sets.insert(
+            calculate_validator_set_fingerprint(&[contributor])
+                .map_err(|_| KnownLengthHttpError::RecoveryState)?,
+        );
+    }
+    if accepted_validator_sets.is_empty() {
+        return Err(HttpMultiRangeError::Setup(
+            KnownLengthHttpError::MissingStrongValidator,
+        ));
+    }
+    for (&piece, evidence) in pieces {
+        if evidence.piece_id() != piece
+            || !accepted_validator_sets.contains(&evidence.validator_set_fingerprint())
+        {
+            return Err(HttpMultiRangeError::Setup(
+                KnownLengthHttpError::StaleValidator,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn verify_recovered_piece_digests(
+    output: &RootFileCapability,
+    pieces: &BTreeMap<PieceId, RecoveredDurablePiece>,
+) -> Result<(Vec<PieceId>, u64), HttpMultiRangeError> {
+    let mut durable_pieces = Vec::new();
+    durable_pieces
+        .try_reserve(pieces.len())
+        .map_err(|_| HttpMultiRangeError::Setup(KnownLengthHttpError::RecoveryState))?;
+    let mut durable_bytes = 0_u64;
+    let mut buffer = vec![0_u8; HTTP_RECOVERY_READ_BUFFER_BYTES];
+    for (&piece, evidence) in pieces {
+        if evidence.piece_id() != piece {
+            return Err(HttpMultiRangeError::Setup(
+                KnownLengthHttpError::RecoveryState,
+            ));
+        }
+        let digest = evidence
+            .digest()
+            .filter(|digest| digest.algorithm() == JournalDigestAlgorithm::Sha256)
+            .ok_or(HttpMultiRangeError::Setup(
+                KnownLengthHttpError::DurablePieceDigestMismatch { piece },
+            ))?;
+        let span = evidence.piece_span();
+        let mut piece_digest = Sha256::new();
+        let mut offset = span.offset();
+        let mut remaining = span.len();
+        while remaining != 0 {
+            let take = usize::try_from(remaining.min(HTTP_RECOVERY_READ_BUFFER_BYTES as u64))
+                .expect("bounded recovery read fits usize");
+            output
+                .read_exact_at(offset, &mut buffer[..take])
+                .map_err(KnownLengthHttpError::from)?;
+            piece_digest.update(&buffer[..take]);
+            let taken = u64::try_from(take).expect("recovery read fits u64");
+            offset = offset.checked_add(taken).ok_or(HttpMultiRangeError::Setup(
+                KnownLengthHttpError::RecoveryState,
+            ))?;
+            remaining -= taken;
+        }
+        let actual: [u8; 32] = piece_digest.finalize().into();
+        if actual.as_slice() != digest.value() {
+            return Err(HttpMultiRangeError::Setup(
+                KnownLengthHttpError::DurablePieceDigestMismatch { piece },
+            ));
+        }
+        durable_bytes = durable_bytes
+            .checked_add(span.len())
+            .ok_or(HttpMultiRangeError::Setup(
+                KnownLengthHttpError::RecoveryState,
+            ))?;
+        durable_pieces.push(piece);
+    }
+    Ok((durable_pieces, durable_bytes))
 }
 
 /// Assigns compact process-local host keys without hashing. Sources sharing an
@@ -1159,6 +1382,36 @@ fn source_host_keys(
 struct OpenedTaskJournal {
     appender: ControlJournalAppender,
     state: Option<RecoveredJournalState>,
+}
+
+enum PreparedHttpStorage {
+    Fresh(Box<FreshPreparedHttpStorage>),
+    Recovered(Box<RecoveredPreparedHttpStorage>),
+}
+
+struct FreshPreparedHttpStorage {
+    root: RootDirectoryCapability,
+    appender: ControlJournalAppender,
+}
+
+struct RecoveredPreparedHttpStorage {
+    appender: ControlJournalAppender,
+    layout: FileLayout,
+    output: RootFileCapability,
+    durable_evidence: BTreeMap<PieceId, RecoveredDurablePiece>,
+    durable_pieces: Vec<PieceId>,
+    durable_bytes: u64,
+    retry_states: Vec<RecoveredRetryState>,
+    strong_validator: Option<RecoveredHttpStrongValidator>,
+}
+
+impl PreparedHttpStorage {
+    fn into_appender(self) -> ControlJournalAppender {
+        match self {
+            Self::Fresh(fresh) => fresh.appender,
+            Self::Recovered(recovered) => recovered.appender,
+        }
+    }
 }
 
 struct OpenedHttpStorage {
@@ -1429,6 +1682,14 @@ impl HttpMultiRangeError {
             }
             Self::Response(_) | Self::ShortBody | Self::OversizedBody => {
                 (ErrorKind::InvalidRange, RetryClass::AnotherSource)
+            }
+            Self::Setup(
+                KnownLengthHttpError::MissingStrongValidator
+                | KnownLengthHttpError::ResumeResourceMismatch
+                | KnownLengthHttpError::StaleValidator,
+            ) => (ErrorKind::StaleValidator, RetryClass::RestartGeneration),
+            Self::Setup(KnownLengthHttpError::DurablePieceDigestMismatch { .. }) => {
+                (ErrorKind::ChecksumMismatch, RetryClass::RestartGeneration)
             }
             Self::Storage(_) | Self::Setup(_) => (ErrorKind::Disk, RetryClass::Never),
             Self::StatsCatalogFull => (ErrorKind::ResourceLimit, RetryClass::Never),
@@ -2248,6 +2509,7 @@ mod tests {
     };
     use ariax_storage::{JournalStateLimits, PathPlatform, ReplayLimits, SafePathBuilder};
     use std::fs;
+    use std::io::{Seek as _, SeekFrom, Write as _};
     use std::net::SocketAddr;
     use std::num::NonZeroU32;
     use std::sync::Mutex;
@@ -2419,6 +2681,68 @@ mod tests {
         (address, requests, task)
     }
 
+    async fn serve_recovery_validator_mirror(
+        data: Arc<[u8]>,
+        initial_etag: &str,
+    ) -> (
+        SocketAddr,
+        Arc<Mutex<Vec<(usize, usize)>>>,
+        Arc<Mutex<String>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let ranges = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&ranges);
+        let etag = Arc::new(Mutex::new(initial_etag.to_owned()));
+        let current_etag = Arc::clone(&etag);
+        let hold_second_piece = Arc::new(AtomicBool::new(true));
+        let task = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                let Some(request) = try_read_request_head(&mut stream).await else {
+                    continue;
+                };
+                let (start, end) = request_range(&request).expect("range request");
+                recorded
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push((start, end));
+                let body = &data[start..=end];
+                let etag = current_etag
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
+                let response = format!(
+                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\nETag: {etag}\r\nConnection: close\r\n\r\n",
+                    body.len(),
+                    data.len()
+                );
+                stream.write_all(response.as_bytes()).await.expect("head");
+                if start >= MIB && hold_second_piece.swap(false, Ordering::AcqRel) {
+                    let mut closed = [0_u8; 1];
+                    let _closed = stream.read(&mut closed).await;
+                } else {
+                    stream.write_all(body).await.expect("body");
+                }
+            }
+        });
+        (address, ranges, etag, task)
+    }
+
+    async fn observe_mirror_connection()
+    -> (SocketAddr, Arc<AtomicBool>, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let connected = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&connected);
+        let task = tokio::spawn(async move {
+            let _accepted = listener.accept().await;
+            observed.store(true, Ordering::Release);
+        });
+        (address, connected, task)
+    }
+
     async fn read_request_head(stream: &mut TcpStream) -> String {
         let mut bytes = Vec::new();
         let mut byte = [0_u8; 1];
@@ -2502,6 +2826,22 @@ mod tests {
         total_length: usize,
         retry: Option<HttpRetryPolicy>,
     ) -> HttpTaskSpec {
+        task_with_identity(
+            root,
+            sources,
+            total_length,
+            retry,
+            HttpMirrorIdentityPolicy::TrustSubmittedMirrors,
+        )
+    }
+
+    fn task_with_identity(
+        root: &TestDirectory,
+        sources: impl IntoIterator<Item = SocketAddr>,
+        total_length: usize,
+        retry: Option<HttpRetryPolicy>,
+        mirror_identity: HttpMirrorIdentityPolicy,
+    ) -> HttpTaskSpec {
         let options = HttpTaskOptions {
             split: NonZeroUsize::new(2).expect("split"),
             max_connections_per_server: NonZeroUsize::new(1).expect("per server"),
@@ -2512,7 +2852,7 @@ mod tests {
             response_body_timeout: Duration::from_secs(5),
             max_download_limit: 0,
             lowest_speed_limit: 0,
-            mirror_identity: HttpMirrorIdentityPolicy::TrustSubmittedMirrors,
+            mirror_identity,
             retry,
         };
         assert!(total_length >= MIB);
@@ -2548,6 +2888,39 @@ mod tests {
             stats,
         )
         .expect("worker")
+    }
+
+    async fn interrupt_after_first_durable_piece(
+        worker: HttpMultiRangeWorker,
+        spec: &HttpTaskSpec,
+        stats: &SharedHttpTransferStats,
+    ) {
+        let cancellation = HttpCancellation::new();
+        let worker_cancellation = cancellation.clone();
+        let worker_spec = Arc::new(spec.clone());
+        let running = tokio::spawn(async move {
+            worker
+                .run_task(worker_spec, Generation::INITIAL, worker_cancellation)
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if stats
+                    .get(spec.task())
+                    .is_some_and(|stats| stats.snapshot().durable_bytes == MIB as u64)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first piece became durable");
+        cancellation.cancel();
+        assert!(matches!(
+            running.await.expect("worker join"),
+            Err(HttpMultiRangeError::Cancelled)
+        ));
     }
 
     #[test]
@@ -2815,6 +3188,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn strict_identity_without_shared_digest_uses_one_origin_and_persists_validator() {
+        let root = TestDirectory::new("strict-root");
+        let journal = TestDirectory::new("strict-journal");
+        let expected = data(MIB);
+        let (primary, primary_server) =
+            serve_mirror(Arc::clone(&expected), MirrorMode::Valid, 2).await;
+        let (secondary, secondary_connected, secondary_server) = observe_mirror_connection().await;
+        let spec = task_with_identity(
+            &root,
+            [primary, secondary],
+            expected.len(),
+            None,
+            HttpMirrorIdentityPolicy::RequireSharedDigest,
+        );
+        let stats = SharedHttpTransferStats::new(NonZeroUsize::new(2).expect("stats"));
+        worker(&journal, stats, 2)
+            .run_task(
+                Arc::new(spec.clone()),
+                Generation::INITIAL,
+                HttpCancellation::new(),
+            )
+            .await
+            .expect("strict single-origin transfer");
+        primary_server.await.expect("primary server");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !secondary_connected.load(Ordering::Acquire),
+            "strict mode must not probe or lease the unproven mirror"
+        );
+        secondary_server.abort();
+        assert!(
+            secondary_server
+                .await
+                .expect_err("secondary observer was cancelled")
+                .is_cancelled()
+        );
+        assert_eq!(
+            fs::read(root.0.join("output.bin")).expect("output"),
+            expected.as_ref()
+        );
+        let recovered = recover_known_length_http(&KnownLengthHttpRecoveryRequest {
+            task: spec.task(),
+            gid: spec.gid(),
+            journal_id: derive_http_journal_id(spec.task(), spec.gid()),
+            generation: Generation::INITIAL,
+            journal_directory: http_journal_directory(&journal.0, spec.gid()),
+            output_root: root.0.clone(),
+            replay_limits: ReplayLimits::default(),
+            state_limits: JournalStateLimits::default(),
+        })
+        .expect("recover strict journal");
+        assert!(recovered.strong_validator.is_some());
+        assert_eq!(recovered.durable_prefix, MIB as u64);
+    }
+
+    #[tokio::test]
     async fn invalid_range_response_never_opens_or_commits_a_piece() {
         let root = TestDirectory::new("invalid-root");
         let journal = TestDirectory::new("invalid-journal");
@@ -3037,6 +3466,145 @@ mod tests {
                 .expect_err("server was cancelled")
                 .is_cancelled()
         );
+    }
+
+    #[tokio::test]
+    async fn restart_rejects_corrupt_durable_piece_before_releasing_pending_range() {
+        let root = TestDirectory::new("corrupt-resume-root");
+        let journal = TestDirectory::new("corrupt-resume-journal");
+        let expected = data(2 * MIB);
+        let (mirror, ranges, _etag, server) =
+            serve_recovery_validator_mirror(Arc::clone(&expected), "\"v1\"").await;
+        let spec = task(&root, [mirror], expected.len());
+        let stats = SharedHttpTransferStats::new(NonZeroUsize::new(2).expect("stats"));
+        interrupt_after_first_durable_piece(worker(&journal, stats.clone(), 2), &spec, &stats)
+            .await;
+
+        let recovered = recover_known_length_http(&KnownLengthHttpRecoveryRequest {
+            task: spec.task(),
+            gid: spec.gid(),
+            journal_id: derive_http_journal_id(spec.task(), spec.gid()),
+            generation: Generation::INITIAL,
+            journal_directory: http_journal_directory(&journal.0, spec.gid()),
+            output_root: root.0.clone(),
+            replay_limits: ReplayLimits::default(),
+            state_limits: JournalStateLimits::default(),
+        })
+        .expect("recover interrupted journal");
+        assert!(recovered.strong_validator.is_some());
+        let mut output = fs::OpenOptions::new()
+            .write(true)
+            .open(root.0.join("output.bin"))
+            .expect("open output for corruption");
+        output.seek(SeekFrom::Start(0)).expect("seek output");
+        output.write_all(&[255]).expect("corrupt output");
+        output.sync_all().expect("sync corruption");
+        let requests_before_restart = ranges
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len();
+        let pending_attempts_before_restart = ranges
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|range| **range == (MIB, 2 * MIB - 1))
+            .count();
+
+        assert!(matches!(
+            worker(&journal, stats.clone(), 2)
+                .run_task(
+                    Arc::new(spec.clone()),
+                    Generation::INITIAL,
+                    HttpCancellation::new(),
+                )
+                .await,
+            Err(HttpMultiRangeError::Setup(
+                KnownLengthHttpError::DurablePieceDigestMismatch { piece }
+            )) if piece == PieceId::new(0)
+        ));
+        let (requests_after_restart, pending_attempts_after_restart) = {
+            let ranges = ranges
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (
+                ranges.len(),
+                ranges
+                    .iter()
+                    .filter(|range| **range == (MIB, 2 * MIB - 1))
+                    .count(),
+            )
+        };
+        assert_eq!(
+            requests_after_restart, requests_before_restart,
+            "descriptor-bound readback must reject corruption before probing"
+        );
+        assert_eq!(
+            pending_attempts_after_restart, pending_attempts_before_restart,
+            "corrupt recovery must not release the pending span"
+        );
+        server.abort();
+        assert!(
+            server
+                .await
+                .expect_err("server was cancelled")
+                .is_cancelled()
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_rejects_changed_or_weak_validator_before_releasing_pending_range() {
+        for (label, initial_etag, replacement, expected_code) in [
+            ("changed", "\"v1\"", Some("\"v2\""), "stale_validator"),
+            ("weak", "W/\"v1\"", None, "missing_strong_validator"),
+        ] {
+            let root = TestDirectory::new(&format!("{label}-validator-root"));
+            let journal = TestDirectory::new(&format!("{label}-validator-journal"));
+            let expected = data(2 * MIB);
+            let (mirror, ranges, etag, server) =
+                serve_recovery_validator_mirror(Arc::clone(&expected), initial_etag).await;
+            let spec = task(&root, [mirror], expected.len());
+            let stats = SharedHttpTransferStats::new(NonZeroUsize::new(2).expect("stats"));
+            interrupt_after_first_durable_piece(worker(&journal, stats.clone(), 2), &spec, &stats)
+                .await;
+            if let Some(replacement) = replacement {
+                *etag
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = replacement.to_owned();
+            }
+            let pending_attempts_before_restart = ranges
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .filter(|range| **range == (MIB, 2 * MIB - 1))
+                .count();
+
+            let error = worker(&journal, stats.clone(), 2)
+                .run_task(
+                    Arc::new(spec.clone()),
+                    Generation::INITIAL,
+                    HttpCancellation::new(),
+                )
+                .await
+                .expect_err("unsafe resume is rejected");
+            assert_eq!(error.code(), expected_code);
+            let pending_attempts_after_restart = ranges
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .filter(|range| **range == (MIB, 2 * MIB - 1))
+                .count();
+            assert_eq!(
+                pending_attempts_after_restart, pending_attempts_before_restart,
+                "validator rejection must not release the pending span"
+            );
+            server.abort();
+            assert!(
+                server
+                    .await
+                    .expect_err("server was cancelled")
+                    .is_cancelled()
+            );
+        }
     }
 
     #[tokio::test]

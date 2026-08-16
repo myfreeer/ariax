@@ -6,7 +6,11 @@ packet-independent stats, process bootstrap, and the first public Phase-3B
 multi-mirror HTTP(S) slice have executable checkpoints. The latter includes
 atomic source-aware admission/recovery, DNS/SSRF/Happy-Eyeballs,
 redirect/proxy/auth/cookie policy, supervised range/retry workers, and five real
-scheduler RPC methods. Rate limiting/endgame, broader protocols/control APIs,
+scheduler RPC methods. It also includes process-owned pooling, bounded ingress,
+hierarchical rate limiting and stall diagnostics, persisted retry waits, and
+strong-ETag-bound single-source/strict-fallback recovery with pre-network
+durable-piece digest verification. Endgame, shared whole-representation
+digests and remaining validator policies, broader protocols/control APIs,
 benchmarks, and the complete release matrix remain incomplete.
 
 This maps the requested properties to design documents.
@@ -213,9 +217,12 @@ Design coverage:
   contract plus executable fresh/strong-ETag resume and the public Phase-3B
   known-length multi-mirror path: verified TLS, generated destination policy,
   bounded DNS cache/singleflight/Happy Eyeballs, redirect/proxy/auth/cookies,
-  segmented range/retry recovery, live stats, worker supervision, and five real
-  scheduler RPC methods. Broader validators, rate limiting/endgame, HTTP/2,
-  growing bodies, and the rest of Phase 4 remain pending.
+  segmented range/retry recovery, process-owned bounded ingress/rate control,
+  live stats, worker supervision, pre-network durable-piece digest readback,
+  strong-ETag-bound single-source/strict-fallback recovery, and five real
+  scheduler RPC methods. Shared whole-representation digests, remaining
+  validator policies, endgame, HTTP/2, growing bodies, and the rest of Phase 4
+  remain pending.
 
 Acceptance:
 

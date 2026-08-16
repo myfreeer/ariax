@@ -1,6 +1,7 @@
 use crate::http_connector::{
     HttpDestinationError, HttpDestinationPolicy, resolve_http_destination,
 };
+use crate::http_response::http_resource_fingerprint;
 use crate::http_transport::{
     HttpDirectTransport, HttpDirectTransportConfig, HttpResponseLease, HttpTransportError,
 };
@@ -47,7 +48,6 @@ use tokio::time::timeout;
 pub(crate) const MAX_RESPONSE_HEADERS: usize = 128;
 pub(crate) const MAX_RESPONSE_HEAD_BYTES: usize = 64 * 1024;
 const HTTP_METADATA_VALIDATOR_HASH_DOMAIN: &str = "ariax/http-metadata-validator/v1\0";
-const HTTP_RESOURCE_HASH_DOMAIN: &str = "ariax/http-resource/v1\0";
 const RECOVERY_READ_BUFFER_BYTES: usize = 1024 * 1024;
 
 /// Explicit cancellation authority shared with one HTTP response worker.
@@ -1810,26 +1810,6 @@ fn response_strong_etag(headers: &HeaderMap) -> Result<Option<Box<[u8]>>, KnownL
     Ok(Some(bytes.to_vec().into_boxed_slice()))
 }
 
-fn http_resource_fingerprint(uri: &Uri) -> JournalHash {
-    let mut digest = Sha256::new();
-    digest.update(HTTP_RESOURCE_HASH_DOMAIN.as_bytes());
-    for component in [
-        uri.scheme_str().unwrap_or_default().as_bytes(),
-        uri.authority()
-            .map_or(&[][..], |value| value.as_str().as_bytes()),
-        uri.path_and_query()
-            .map_or(b"/".as_slice(), |value| value.as_str().as_bytes()),
-    ] {
-        digest.update(
-            u32::try_from(component.len())
-                .expect("URI component length fits u32")
-                .to_le_bytes(),
-        );
-        digest.update(component);
-    }
-    JournalHash::new(digest.finalize().into()).expect("SHA-256 output is nonzero")
-}
-
 pub(crate) fn append_initial_admission(
     journal: &mut ControlJournalAppender,
     generation: Generation,
@@ -1939,7 +1919,7 @@ pub(crate) fn append_layout(
     Ok(())
 }
 
-fn append_http_strong_validator(
+pub(crate) fn append_http_strong_validator(
     journal: &mut ControlJournalAppender,
     generation: Generation,
     resource_fingerprint: JournalHash,

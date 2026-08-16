@@ -11,15 +11,18 @@ Happy Eyeballs; redirect/proxy/auth/cookie policy; non-overlapping range leases
 with bounded persisted retry and durable-piece restart; process-owned transport
 pooling, bounded body ingress, hierarchical download-rate arbitration,
 lowest-speed/stall diagnostics, packet-independent live stats, real worker
-supervision; and `addUri`, `tellStatus`, `pause`, `remove`, and `getGlobalStat`
-over loopback HTTP and Content-Length stdio. The bundled Mozilla Public Suffix
-List is version/hash/license pinned and verified by generated contracts.
+supervision; pre-network descriptor-bound SHA-256 validation of recovered
+pieces; exact strong-ETag/resource/length recovery binding for single-source and
+strict-fallback range tasks; and `addUri`, `tellStatus`, `pause`, `remove`, and
+`getGlobalStat` over loopback HTTP and Content-Length stdio. The bundled Mozilla
+Public Suffix List is version/hash/license pinned and verified by generated
+contracts.
 
 The checkpoint intentionally does not complete all of Phase 3 or the project
-definition of done. Endgame duplicate ranges, broader validators and digests,
-HTTP/2, growing/chunked transfers, benchmarks, hot-backup crash-residue
-reconciliation, the broader Phase-4 control plane, and the full release-platform
-matrix remain phase/tag gates.
+definition of done. Endgame duplicate ranges, shared whole-representation
+digests and the remaining validator policies, HTTP/2, growing/chunked transfers,
+benchmarks, hot-backup crash-residue reconciliation, the broader Phase-4 control
+plane, and the full release-platform matrix remain phase/tag gates.
 
 This is a staged plan for building the design without repeating the incomplete
 rewrite pattern. The native-startup orchestration boundary, central-journal
@@ -220,8 +223,12 @@ Exit criteria:
 Phase-3B checkpoint boundary: the items above are executable for known-length
 HTTP(S) with ordinary multi-mirror URI admission, including bounded ingress,
 hierarchical rate limiting, lowest-speed diagnostics, and persisted range retry
-waits. Endgame duplicate ranges, stronger resume identity/digests, and the full
-Phase-3 exit criteria below still gate a later phase completion claim.
+waits. Single-source and strict-fallback recovery additionally verifies
+journaled durable-piece SHA-256 evidence before network access and requires the
+exact persisted strong ETag, resource fingerprint, and length before releasing
+pending ranges. Endgame duplicate ranges, shared whole-representation digests,
+the remaining validator policies, and the full Phase-3 exit criteria below
+still gate a later phase completion claim.
 
 Detailed design input:
 

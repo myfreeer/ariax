@@ -12,12 +12,15 @@ Happy Eyeballs, redirect rebuilding, HTTP forward/CONNECT and SOCKS5 routing,
 Basic/private-netrc credentials, and a bounded cookie jar backed by a verified
 bundled Mozilla Public Suffix List. Non-overlapping range leases run across
 submitted mirrors with per-range/per-source retry budgets, durable-piece
-restart recovery, packet-independent live speed sampling, and scheduler-owned
-worker supervision. Five methods (`addUri`, `tellStatus`, `pause`, `remove`,
-and `getGlobalStat`) are executable over loopback HTTP/1.1 and bounded
-Content-Length stdio framing. The older pinned-peer CLI remains as a diagnostic
-harness. Rate limiting, endgame duplicate leases, HTTP/2, unknown-length or
-chunked layouts, WebSocket/NDJSON and non-loopback RPC, broader validators, and
+restart recovery, pre-network descriptor-bound SHA-256 readback of every
+durable piece, exact strong-ETag/resource/length binding for single-source and
+strict-fallback resume, packet-independent live speed sampling, and
+scheduler-owned worker supervision. Five methods (`addUri`, `tellStatus`,
+`pause`, `remove`, and `getGlobalStat`) are executable over loopback HTTP/1.1
+and bounded Content-Length stdio framing. The older pinned-peer CLI remains as
+a diagnostic harness. Endgame duplicate leases, shared whole-representation
+digests, Last-Modified/digest-only/unsafe-override resume, HTTP/2,
+unknown-length or chunked layouts, WebSocket/NDJSON and non-loopback RPC, and
 the rest of the Phase-4 control plane remain outside this checkpoint.
 
 This document defines HTTP(S) sequential download, resume, strict range
@@ -278,11 +281,15 @@ durable-length plus Last-Modified comparison, with any change classified as
 If validator changes, classify as `StaleValidator`, not transient network
 failure.
 
-The current executable checkpoint implements only the first item: a strong ETag
-whose raw quoted value, exact resource fingerprint, and settled total length are
-persisted in `HttpStrongValidator`. Last-Modified, weak-ETag, digest-only, and
-unsafe-override resume remain design-level policy and are not accepted by the
-checkpoint runner.
+The current executable checkpoint implements only the first item for sequential
+downloads and for range tasks that settle on one source: a strong ETag whose
+raw quoted value, exact resource fingerprint, and settled total length are
+persisted in `HttpStrongValidator`. Recovery first verifies every durable piece
+against its journaled SHA-256 digest without opening a network connection, then
+requires the newly probed source to reproduce that exact strong-validator
+binding before pending ranges can run. Last-Modified, weak-ETag, digest-only,
+and unsafe-override resume remain design-level policy and are not accepted by
+the checkpoint runner.
 
 ## Cross-Mirror Entity Identity
 
@@ -327,6 +334,10 @@ The behavior is selected by `--verify-mirror-identity`:
   (whose own `ETag`/`Last-Modified` via `If-Range` keeps it self-consistent across
   its own range responses — a valid per-origin guarantee); the other URIs remain
   sequential-download or restart fallbacks.
+
+The executable strict-mode checkpoint implements the single-mirror fallback and
+persists its exact strong-ETag binding. Admission of concurrent strict mirrors
+under a shared whole-representation digest remains pending.
 
 A redirect target never joins the mirror pool merely because a redirect was
 followed. Its admission and per-lease exclusivity follow `redirect-policy.md`.
