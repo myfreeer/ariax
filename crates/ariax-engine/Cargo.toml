@@ -38,3 +38,7 @@ ariax-windows-security.workspace = true
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "http_capacity_profile"
+harness = false

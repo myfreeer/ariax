@@ -7,7 +7,7 @@ use crate::http_happy_eyeballs::{
     DEFAULT_HTTP_HAPPY_EYEBALLS_DELAY, HttpHappyEyeballsConfig, HttpHappyEyeballsError,
     connect_http_happy_eyeballs,
 };
-use ariax_runtime::{ByteBudget, BytePermit};
+use ariax_runtime::{ByteBudget, BytePermit, HandleBudgetLimits, HandleBudgets, HandlePermit};
 use bytes::Bytes;
 use http_body_util::Empty;
 use hyper::body::Incoming;
@@ -83,8 +83,10 @@ impl Default for HttpTlsPolicy {
 
 #[derive(Clone, Debug)]
 pub struct HttpTransportBudgets {
-    sockets: Arc<Semaphore>,
+    handles: HandleBudgets,
     connection_memory: ByteBudget,
+    resident_memory: ByteBudget,
+    connection_reservation_bytes: usize,
 }
 
 impl HttpTransportBudgets {
@@ -95,10 +97,100 @@ impl HttpTransportBudgets {
         if max_sockets == 0 || connection_memory_bytes < HTTP_CONNECTION_RESERVATION_BYTES {
             return Err(HttpTransportError::InvalidPolicy);
         }
-        Ok(Self {
-            sockets: Arc::new(Semaphore::new(max_sockets)),
-            connection_memory: ByteBudget::new(connection_memory_bytes),
+        let handles = HandleBudgets::new(HandleBudgetLimits {
+            process: max_sockets,
+            sockets: max_sockets,
+            files: max_sockets,
         })
+        .map_err(|_| HttpTransportError::InvalidPolicy)?;
+        Ok(Self {
+            handles,
+            connection_memory: ByteBudget::new(connection_memory_bytes),
+            resident_memory: ByteBudget::new(connection_memory_bytes),
+            connection_reservation_bytes: HTTP_CONNECTION_RESERVATION_BYTES,
+        })
+    }
+
+    pub(crate) fn with_shared_resident(
+        handles: HandleBudgets,
+        connection_memory_bytes: usize,
+        resident_memory: ByteBudget,
+        connection_reservation_bytes: usize,
+    ) -> Result<Self, HttpTransportError> {
+        if connection_reservation_bytes == 0
+            || connection_memory_bytes < connection_reservation_bytes
+            || resident_memory.limit() < connection_reservation_bytes
+        {
+            return Err(HttpTransportError::InvalidPolicy);
+        }
+        Ok(Self {
+            handles,
+            connection_memory: ByteBudget::new(connection_memory_bytes),
+            resident_memory,
+            connection_reservation_bytes,
+        })
+    }
+
+    #[must_use]
+    pub fn socket_limit(&self) -> usize {
+        self.handles.limits().sockets
+    }
+
+    #[must_use]
+    pub fn available_sockets(&self) -> usize {
+        self.handles.available_sockets()
+    }
+
+    #[must_use]
+    pub fn connection_reservation_bytes(&self) -> usize {
+        self.connection_reservation_bytes
+    }
+
+    #[must_use]
+    pub fn connection_memory_used(&self) -> usize {
+        self.connection_memory.used()
+    }
+
+    #[must_use]
+    pub fn resident_memory_used(&self) -> usize {
+        self.resident_memory.used()
+    }
+
+    pub fn try_acquire_connection(
+        &self,
+    ) -> Result<HttpTransportCapacityPermit, HttpTransportError> {
+        let handle = self
+            .handles
+            .try_acquire_socket()
+            .map_err(|_| HttpTransportError::PoolExhausted)?;
+        let connection_memory = self
+            .connection_memory
+            .try_acquire(self.connection_reservation_bytes)
+            .map_err(|_| HttpTransportError::PoolExhausted)?;
+        let resident_memory = self
+            .resident_memory
+            .try_acquire(self.connection_reservation_bytes)
+            .map_err(|_| HttpTransportError::PoolExhausted)?;
+        Ok(HttpTransportCapacityPermit {
+            _handle: handle,
+            _connection_memory: connection_memory,
+            _resident_memory: resident_memory,
+        })
+    }
+}
+
+/// Capacity retained for the full lifetime of one physical HTTP socket.
+pub struct HttpTransportCapacityPermit {
+    _handle: HandlePermit,
+    _connection_memory: BytePermit,
+    _resident_memory: BytePermit,
+}
+
+impl fmt::Debug for HttpTransportCapacityPermit {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HttpTransportCapacityPermit")
+            .finish_non_exhaustive()
     }
 }
 
@@ -775,22 +867,13 @@ impl Service<Uri> for PolicyConnector {
                 .addresses()
                 .to_vec(),
             };
-            let global_socket_permit =
-                budgets.sockets.clone().try_acquire_owned().map_err(|_| {
-                    stats.pool_exhausted.fetch_add(1, Ordering::Relaxed);
-                    HttpTransportError::PoolExhausted
-                })?;
+            let capacity = budgets.try_acquire_connection().inspect_err(|_error| {
+                stats.pool_exhausted.fetch_add(1, Ordering::Relaxed);
+            })?;
             let origin_socket_permit = active_permits.try_acquire_owned().map_err(|_| {
                 stats.pool_exhausted.fetch_add(1, Ordering::Relaxed);
                 HttpTransportError::PoolExhausted
             })?;
-            let memory_permit = budgets
-                .connection_memory
-                .try_acquire(HTTP_CONNECTION_RESERVATION_BYTES)
-                .map_err(|_| {
-                    stats.pool_exhausted.fetch_add(1, Ordering::Relaxed);
-                    HttpTransportError::PoolExhausted
-                })?;
             let stream = connect_http_happy_eyeballs(
                 &addresses,
                 HttpHappyEyeballsConfig {
@@ -803,9 +886,8 @@ impl Service<Uri> for PolicyConnector {
             .stream;
             Ok(TokioIo::new(BudgetedTcpStream {
                 stream,
-                _global_socket_permit: Some(global_socket_permit),
+                _capacity: Some(capacity),
                 _origin_socket_permit: Some(origin_socket_permit),
-                _memory_permit: Some(memory_permit),
             }))
         })
     }
@@ -813,9 +895,8 @@ impl Service<Uri> for PolicyConnector {
 
 struct BudgetedTcpStream {
     stream: TcpStream,
-    _global_socket_permit: Option<OwnedSemaphorePermit>,
+    _capacity: Option<HttpTransportCapacityPermit>,
     _origin_socket_permit: Option<OwnedSemaphorePermit>,
-    _memory_permit: Option<BytePermit>,
 }
 
 impl AsyncRead for BudgetedTcpStream {
@@ -1099,7 +1180,7 @@ e31pxMIvRBTw+dGS6spzZo+W4ft31it0tEUmShjy5iE5lqwPpp9GaF3UadN+fWJy
         assert!(config.keep_alive);
         assert_eq!(config.max_connections_per_origin, 1);
         assert_eq!(config.max_idle_connections_per_origin, 1);
-        assert_eq!(config.budgets.sockets.available_permits(), 1);
+        assert_eq!(config.budgets.available_sockets(), 1);
     }
 
     #[test]
@@ -1288,22 +1369,22 @@ e31pxMIvRBTw+dGS6spzZo+W4ft31it0tEUmShjy5iE5lqwPpp9GaF3UadN+fWJy
             .to_bytes();
         assert_eq!(body, Bytes::from_static(b"ok"));
         lease.recycle().await;
-        assert_eq!(budgets.sockets.available_permits(), 0);
-        assert_eq!(budgets.connection_memory.available(), 0);
+        assert_eq!(budgets.available_sockets(), 0);
+        assert_eq!(
+            budgets.connection_memory_used(),
+            super::HTTP_CONNECTION_RESERVATION_BYTES
+        );
 
         drop(transport);
         tokio::time::timeout(Duration::from_secs(1), async {
-            while budgets.sockets.available_permits() == 0 {
+            while budgets.available_sockets() == 0 {
                 tokio::task::yield_now().await;
             }
         })
         .await
         .expect("idle connection permit release");
-        assert_eq!(budgets.sockets.available_permits(), 1);
-        assert_eq!(
-            budgets.connection_memory.available(),
-            super::HTTP_CONNECTION_RESERVATION_BYTES
-        );
+        assert_eq!(budgets.available_sockets(), 1);
+        assert_eq!(budgets.connection_memory_used(), 0);
         release.send(()).expect("release plaintext server");
         server.join().expect("plaintext server");
     }

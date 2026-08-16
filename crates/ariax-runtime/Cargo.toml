@@ -9,5 +9,8 @@ publish.workspace = true
 ariax-core.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }
+
 [lints]
 workspace = true

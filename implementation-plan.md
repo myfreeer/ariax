@@ -27,9 +27,17 @@ definition of done. Same-origin endgame duplicate ranges with a strong ETag are
 now executable under the bounded overlap-fence contract. Cross-mirror endgame
 still requires an exact range-verifiable RFC 9530/Metalink digest identity;
 additional checksum algorithms, Last-Modified/unsafe-override resume, HTTP/2,
-growing/chunked transfers, benchmarks, hot-backup crash-residue reconciliation,
-the broader Phase-4 control plane, and the full release-platform matrix remain
-phase/tag gates.
+growing/chunked transfers, native release benchmark evidence, hot-backup
+crash-residue reconciliation, the broader Phase-4 control plane, and the full
+release-platform matrix remain phase/tag gates.
+
+The profile-capacity slice is now executable: profile-derived process/socket/file
+and resident limits are resolved, HTTP transport sockets consume the shared
+process/socket permits, and transport, ingress, and storage buffers share the
+resident budget. The local C10k/active-range harness passes under an isolated
+raised Linux handle limit and rejects insufficient native capacity explicitly.
+File-handle consumers, adaptive tuning, non-HTTP domain wiring, and native
+release baselines remain phase gates.
 
 This is a staged plan for building the design without repeating the incomplete
 rewrite pattern. The native-startup orchestration boundary, central-journal
@@ -242,8 +250,9 @@ new generation that invalidates all old durable pieces before descriptor-bound
 rewrite. Same-origin strong-ETag endgame duplicate fencing, candidate settlement,
 dirty-overlap rollback, and crash-safe replay are executable. Cross-mirror
 endgame still requires RFC 9530/Metalink range-verifiable digest identity;
-additional checksum algorithms, Last-Modified/unsafe-override resume, and the
-full Phase-3 exit criteria below still gate a later phase completion claim.
+additional checksum algorithms, Last-Modified/unsafe-override resume, adaptive
+profile tuning, and the native portion of the full Phase-3 exit criteria below
+still gate a later phase completion claim.
 
 Detailed design input:
 
@@ -254,11 +263,14 @@ Exit criteria:
 - Fault tests for ignored Range, short/oversized body, lease abort, generated-
   header conflict, redirect/proxy SSRF, disk full, process kill, and poweroff
   simulation.
-- 1,000 active HTTP range benchmark with bounded memory.
+- 1,000 active HTTP range benchmark with bounded memory (the local capacity
+  harness models 1,000 active range reservations; a real HTTP-transfer
+  benchmark and native release evidence remain required).
 - 10,000 concurrent low-activity socket benchmark with the reusable idle HTTP
   pool still capped at its profile limit; measured accounted reservations and
   process RSS must fit the profile target/permit envelope and documented native
-  stack/headroom allowance.
+  stack/headroom allowance (local isolated Linux evidence is recorded in
+  `performance-profiles.md`; native release evidence still required).
 - DNS tests cover positive/negative TTL clamps, TTL=0, answer-count limits,
   bounded singleflight/waiters, cancellation, two-racer Happy Eyeballs timing,
   reconnect revalidation, and special-use-address filtering.

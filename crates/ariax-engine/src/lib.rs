@@ -4,6 +4,7 @@
 
 mod effect_sink;
 mod http_auth;
+mod http_capacity;
 mod http_client;
 mod http_connector;
 mod http_control;
@@ -42,6 +43,7 @@ pub use http_auth::{
     MAX_HTTP_BASIC_PASSWORD_BYTES, MAX_HTTP_BASIC_USERNAME_BYTES, MAX_HTTP_NETRC_BYTES,
     MAX_HTTP_NETRC_ENTRIES, MAX_HTTP_NETRC_TOKEN_BYTES,
 };
+pub use http_capacity::{HttpCapacityError, HttpProcessResources};
 pub use http_client::{
     DEFAULT_HTTP_DIRECT_TRANSPORT_CACHE_CAPACITY, HttpClientRequest, HttpPolicyClient,
     HttpPolicyClientConfig, HttpPolicyClientError, HttpStreamingResponse,
@@ -80,10 +82,10 @@ pub use http_happy_eyeballs::{
 pub use http_multi::{
     DEFAULT_HTTP_DIGEST_WORKERS, DEFAULT_HTTP_INGRESS_BUDGET_BYTES,
     DEFAULT_HTTP_INGRESS_FRAME_BYTES, DEFAULT_HTTP_RANGE_EVENT_CAPACITY, HttpCompletedEvidence,
-    HttpMultiRangeError, HttpMultiRangeWorker, HttpMultiRangeWorkerConfig, HttpStatsCatalogError,
-    HttpTransferStats, HttpTransferStatsSnapshot, MAX_HTTP_DIGEST_WORKERS,
-    MAX_HTTP_RANGE_EVENT_CAPACITY, SharedHttpTransferStats, derive_http_journal_id,
-    http_journal_directory,
+    HttpIngressBudgets, HttpIngressPermit, HttpMultiRangeError, HttpMultiRangeWorker,
+    HttpMultiRangeWorkerConfig, HttpStatsCatalogError, HttpTransferStats,
+    HttpTransferStatsSnapshot, MAX_HTTP_DIGEST_WORKERS, MAX_HTTP_RANGE_EVENT_CAPACITY,
+    SharedHttpTransferStats, derive_http_journal_id, http_journal_directory,
 };
 pub use http_proxy::{
     HttpProxyEndpoint, HttpProxyKind, HttpProxyNameResolution, HttpProxyPolicy,
@@ -159,8 +161,8 @@ pub use http_transport::{
     DEFAULT_HTTP_IDLE_TIMEOUT, DEFAULT_HTTP_MAX_CONNECTIONS_PER_ORIGIN,
     DEFAULT_HTTP_MAX_IDLE_CONNECTIONS_PER_ORIGIN, HTTP_CONNECTION_RESERVATION_BYTES,
     HttpDirectTransport, HttpDirectTransportConfig, HttpMinimumTlsVersion, HttpTlsPolicy,
-    HttpTransportBudgets, HttpTransportError, HttpTransportStats, HttpTrustSource,
-    MAX_HTTP_CONNECTIONS_PER_ORIGIN, MAX_HTTP_IDLE_CONNECTIONS_PER_ORIGIN,
+    HttpTransportBudgets, HttpTransportCapacityPermit, HttpTransportError, HttpTransportStats,
+    HttpTrustSource, MAX_HTTP_CONNECTIONS_PER_ORIGIN, MAX_HTTP_IDLE_CONNECTIONS_PER_ORIGIN,
     MAX_HTTP_TLS_BUNDLE_BYTES, MAX_HTTP_TLS_BUNDLE_CERTIFICATES,
 };
 pub use process_bootstrap::{

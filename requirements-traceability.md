@@ -18,7 +18,8 @@ boundaries without retaining old durable bytes. Same-origin strong-ETag endgame
 fencing, candidate settlement, dirty-overlap rollback, and crash-safe replay are
 implemented. Cross-mirror RFC 9530/Metalink digest identity, additional checksum
 algorithms, Last-Modified/unsafe-override resume, broader protocols/control APIs,
-benchmarks, and the complete release matrix remain incomplete.
+adaptive profile tuning, native release benchmark evidence, and the complete
+release matrix remain incomplete.
 
 This maps the requested properties to design documents.
 
@@ -86,6 +87,12 @@ Acceptance:
   resident-byte permit; aggregate reservations remain below the profile limit,
 - C10k means concurrent low-activity sockets, not 10,000 retained HTTP
   keep-alive entries or per-connection transfer buffers.
+
+The executable HTTP profile resolver and local C10k harness now provide direct
+acceptance evidence: 10,000 real loopback sockets plus 1,000 active 64 KiB
+reservations fit the concurrency accounted envelope, while a low native handle
+limit produces an explicit C10k rejection. Native release-platform benchmark
+evidence, file-handle accounting, and non-HTTP profile consumers remain open.
 
 Boundary:
 

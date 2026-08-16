@@ -20,6 +20,7 @@
     {"name": "on-download-complete", "runtime_update": "unsafe_compat_only", "scopes": ["startup", "global", "per_download", "input_file", "rpc_change", "rpc_global"]},
     {"name": "out", "runtime_update": "new_generation", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
     {"name": "piece-length", "runtime_update": "new_generation", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
+    {"name": "profile", "runtime_update": "startup_only", "scopes": ["startup"]},
     {"name": "retry-on-http-status", "runtime_update": "live", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
     {"name": "rpc-secret", "runtime_update": "startup_only", "scopes": ["startup"]},
     {"name": "session-store", "runtime_update": "startup_only", "scopes": ["startup"]},

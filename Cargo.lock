@@ -9,6 +9,7 @@ dependencies = [
  "ariax-config",
  "ariax-core",
  "ariax-engine",
+ "ariax-runtime",
  "ariax-storage",
  "serde_json",
  "tokio",
@@ -64,6 +65,7 @@ name = "ariax-runtime"
 version = "0.1.0"
 dependencies = [
  "ariax-core",
+ "rustix",
  "tokio",
 ]
 

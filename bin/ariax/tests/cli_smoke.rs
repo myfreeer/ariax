@@ -43,6 +43,7 @@ fn help_succeeds() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Usage: ariax"));
+    assert!(stdout.contains("--profile=auto|concurrency|throughput|latency|compact"));
     assert!(stdout.contains("--download-http-pinned"));
     assert!(stdout.contains("--resume-http-pinned"));
 }
@@ -69,6 +70,22 @@ fn multiple_arguments_are_rejected() {
         .expect("run ariax");
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&output.stderr).contains("only one"));
+}
+
+#[test]
+fn invalid_runtime_profile_is_rejected_before_startup_work() {
+    let output = ariax()
+        .args([
+            "--profile=unbounded",
+            "--rpc-stdio",
+            "unused-session.db",
+            "unused-control",
+            "unused-output",
+        ])
+        .output()
+        .expect("run ariax");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("invalid runtime profile"));
 }
 
 #[test]
@@ -283,6 +300,7 @@ fn stdio_rpc_admits_paused_http_task_persists_metadata_and_shuts_down_on_eof() {
     let control = root.join("control");
     let output_root = root.join("output");
     let mut child = ariax()
+        .arg("--profile=compact")
         .arg("--rpc-stdio")
         .arg(&database)
         .arg(&control)

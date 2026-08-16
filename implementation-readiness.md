@@ -20,10 +20,15 @@ non-overlapping leases. Durable-piece restart and terminal evidence are
 persisted before public completion. Five bounded JSON-RPC methods run over
 loopback HTTP/1.1 and Content-Length stdio and expose packet-independent live
 stats. Same-origin strong-ETag endgame duplicate fencing, candidate settlement,
-dirty-overlap rollback, and crash-safe replay are now executable. This remains a
-phase checkpoint, not a release/tag: cross-mirror digest-backed endgame,
-broader validators, growing/chunked transfers, HTTP/2, broader RPC, benchmarks,
-and the complete release matrix remain gates. Each remaining
+dirty-overlap rollback, and crash-safe replay are now executable. The
+process-owned profile-capacity boundary is also executable for HTTP: profile
+resolution, native handle subtraction, shared resident and transport-socket
+permits, profile selection in RPC startup, and the local C10k/active-range
+harness are covered. File-handle consumers remain pending.
+This remains a phase checkpoint, not a release/tag: cross-mirror digest-backed
+endgame, broader validators, growing/chunked transfers, HTTP/2, broader RPC,
+native release benchmark evidence, adaptive profile tuning, and the complete
+release matrix remain gates. Each remaining
 adapter, transfer module, and integration still follows its Definition Of Ready
 checklist below.
 

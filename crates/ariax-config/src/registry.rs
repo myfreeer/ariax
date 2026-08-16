@@ -684,6 +684,26 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         behavior_tests: NONE,
     },
     OptionDef {
+        name: "profile",
+        short: None,
+        value_type: ValueType::Enum {
+            values: &["auto", "concurrency", "throughput", "latency", "compact"],
+        },
+        default: Some("auto"),
+        category: "runtime",
+        scopes: STARTUP_ONLY,
+        runtime_update: RuntimeUpdate::StartupOnly,
+        owner: "runtime_profile",
+        build_features: MINIMAL,
+        security: SecurityClass::Normal,
+        compat: PARTIAL,
+        aria2_available: false,
+        aria2_runtime_update: RuntimeUpdate::None,
+        compatibility_difference: CompatibilityDifference::Intentional,
+        docs: "performance-profiles.md#unified-user-profile",
+        behavior_tests: NONE,
+    },
+    OptionDef {
         name: "event-backend",
         short: None,
         value_type: ValueType::Enum {

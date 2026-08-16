@@ -39,6 +39,21 @@
     "integer_ewma_instant_weight": 1,
     "sample_age_is_query_derived": true
   },
+  "profile_resources": {
+    "control_handle_reserve": 64,
+    "c10k_low_activity_socket_target": 10000,
+    "idle_connection_reservation_bytes": 32768,
+    "active_tls_connection_ceiling_bytes": 98304,
+    "auto_baseline": "concurrency",
+    "profiles": [
+      {"code": "auto", "baseline": "concurrency", "resident_target_bytes": 1073741824, "accounted_resident_limit_bytes": 939524096, "process_handle_target": 16384, "logical_socket_cap": 12288, "logical_file_cap": 4096, "http_ingress_budget_bytes": 67108864, "buffer_budget_bytes": 268435456, "disk_queue_ops": 128, "disk_queue_bytes": 67108864, "http_idle_connections_global": 512, "http_idle_connections_per_origin": 2, "http_idle_pool_budget_bytes": 33554432, "http_idle_timeout_seconds": 60, "event_queue_events_per_client": 256, "event_queue_bytes_per_client": 4194304},
+      {"code": "concurrency", "baseline": "concurrency", "resident_target_bytes": 1073741824, "accounted_resident_limit_bytes": 939524096, "process_handle_target": 16384, "logical_socket_cap": 12288, "logical_file_cap": 4096, "http_ingress_budget_bytes": 67108864, "buffer_budget_bytes": 268435456, "disk_queue_ops": 128, "disk_queue_bytes": 67108864, "http_idle_connections_global": 512, "http_idle_connections_per_origin": 2, "http_idle_pool_budget_bytes": 33554432, "http_idle_timeout_seconds": 60, "event_queue_events_per_client": 256, "event_queue_bytes_per_client": 4194304},
+      {"code": "throughput", "baseline": "throughput", "resident_target_bytes": 2147483648, "accounted_resident_limit_bytes": 1879048192, "process_handle_target": 8192, "logical_socket_cap": 4096, "logical_file_cap": 4096, "http_ingress_budget_bytes": 268435456, "buffer_budget_bytes": 1073741824, "disk_queue_ops": 256, "disk_queue_bytes": 268435456, "http_idle_connections_global": 256, "http_idle_connections_per_origin": 8, "http_idle_pool_budget_bytes": 33554432, "http_idle_timeout_seconds": 60, "event_queue_events_per_client": 256, "event_queue_bytes_per_client": 4194304},
+      {"code": "latency", "baseline": "latency", "resident_target_bytes": 805306368, "accounted_resident_limit_bytes": 704643072, "process_handle_target": 8192, "logical_socket_cap": 4096, "logical_file_cap": 2048, "http_ingress_budget_bytes": 33554432, "buffer_budget_bytes": 134217728, "disk_queue_ops": 64, "disk_queue_bytes": 33554432, "http_idle_connections_global": 128, "http_idle_connections_per_origin": 2, "http_idle_pool_budget_bytes": 16777216, "http_idle_timeout_seconds": 30, "event_queue_events_per_client": 512, "event_queue_bytes_per_client": 8388608},
+      {"code": "compact", "baseline": "compact", "resident_target_bytes": 134217728, "accounted_resident_limit_bytes": 117440512, "process_handle_target": 1024, "logical_socket_cap": 512, "logical_file_cap": 512, "http_ingress_budget_bytes": 8388608, "buffer_budget_bytes": 33554432, "disk_queue_ops": 32, "disk_queue_bytes": 8388608, "http_idle_connections_global": 32, "http_idle_connections_per_origin": 1, "http_idle_pool_budget_bytes": 4194304, "http_idle_timeout_seconds": 30, "event_queue_events_per_client": 64, "event_queue_bytes_per_client": 1048576}
+    ],
+    "native_handle_resolution": "min(profile_process_target, native_soft_limit - control_handle_reserve); socket/file subcaps share the process cap"
+  },
   "budget_contract": {"domain_and_resident_permits_required": true, "zero_byte_reservation_allowed": false},
   "pool_contract": {"free_list": "lifo_per_size_class", "stable_capacity": true, "drop_destination": "quarantine", "quarantine_exhaustion": "fault_backend", "timeout_reclamation": "retire_without_releasing_pool_budget"},
   "queue_contract": {"item_bounded": true, "byte_bounded": true, "credit_before_read": true, "close_returns_queued_ownership": true},

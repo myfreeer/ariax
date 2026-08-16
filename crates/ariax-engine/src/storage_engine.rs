@@ -6,7 +6,7 @@ use ariax_runtime::{
     BlockingDiskLaneConfig, BlockingDiskLaneStartError, BlockingDiskOperation,
     BlockingDiskOperationId, BlockingDiskSubmission, BlockingDiskSubmitErrorKind,
     BlockingFileHandle, BlockingFileRegistry, BlockingFileRegistryError, BufferLease, BufferPool,
-    BufferPoolConfig, BufferState, BufferTransitionError, OwnerTag, PoolError,
+    BufferPoolConfig, BufferState, BufferTransitionError, ByteBudget, OwnerTag, PoolError,
 };
 use ariax_storage::{
     ControlJournalAppender, DataBarrierKind, FileLayout, GlobalOffsetMapper, GlobalSpan,
@@ -22,24 +22,29 @@ use std::fmt;
 use std::time::Duration;
 
 /// Bounded resources for one first-slice storage engine.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct StorageEngineConfig {
     pub disk_workers: usize,
     pub disk_queue_capacity: usize,
     pub disk_completion_capacity: usize,
     pub max_in_flight_bytes: usize,
     pub buffer_pool_bytes: usize,
+    /// Global resident-byte domain shared with process HTTP ingress and
+    /// connection overhead when constructed from a runtime profile.
+    pub resident_budget: ByteBudget,
     pub shutdown_timeout: Duration,
 }
 
 impl Default for StorageEngineConfig {
     fn default() -> Self {
+        let buffer_pool_bytes = 4 * 1024 * 1024;
         Self {
             disk_workers: 1,
             disk_queue_capacity: 8,
             disk_completion_capacity: 8,
             max_in_flight_bytes: 2 * 1024 * 1024,
-            buffer_pool_bytes: 4 * 1024 * 1024,
+            buffer_pool_bytes,
+            resident_budget: ByteBudget::new(buffer_pool_bytes),
             shutdown_timeout: Duration::from_secs(5),
         }
     }
@@ -289,11 +294,10 @@ impl StorageEngine {
         let mapper = GlobalOffsetMapper::new(&layout).map_err(|error| {
             StorageEngineError::with(WriteReject::Mapping, StorageEngineErrorDetail::Map(error))
         })?;
-        let pool = BufferPool::new(BufferPoolConfig::new(
-            config.buffer_pool_bytes,
-            config.buffer_pool_bytes,
-        ))
-        .map_err(|error| {
+        let mut pool_config =
+            BufferPoolConfig::new(config.buffer_pool_bytes, config.buffer_pool_bytes);
+        pool_config.resident_budget = config.resident_budget.clone();
+        let pool = BufferPool::new(pool_config).map_err(|error| {
             StorageEngineError::with(
                 WriteReject::BufferState,
                 StorageEngineErrorDetail::Buffer(error),

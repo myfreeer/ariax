@@ -5,6 +5,8 @@
 mod blocking_disk;
 mod budget;
 mod buffer;
+mod handle;
+mod profile;
 mod queue;
 mod rate;
 mod scheduler_driver;
@@ -29,6 +31,14 @@ pub use buffer::{
     ALL_BUFFER_STATES, ALL_OWNER_TAGS, BufferLease, BufferPool, BufferPoolConfig,
     BufferPoolMetrics, BufferState, BufferTransitionError, OwnerTag, PoolError, ReleaseError,
     SizeClass, SizeClassConfig,
+};
+pub use handle::{
+    HandleBudgetError, HandleBudgetLimits, HandleBudgets, HandleDomain, HandlePermit,
+};
+pub use profile::{
+    C10K_LOW_ACTIVITY_SOCKET_TARGET, HTTP_ACTIVE_TLS_CONNECTION_CEILING_BYTES,
+    HTTP_IDLE_CONNECTION_RESERVATION_BYTES, PROFILE_CONTROL_HANDLE_RESERVE, ProfileCapacityError,
+    ProfileLimits, ResolvedRuntimeProfile, RuntimeProfile, native_process_handle_limit,
 };
 pub use queue::{
     BoundedQueue, CloseReason, CompletionDrain, CompletionDrainMetrics, CompletionPermit,

@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "source": {"repository": "https://github.com/aria2/aria2", "commit": "9e7273583f83e881e3ec067b523ba88724088d2f"},
-  "counts": {"pinned_aria2_handlers": 207, "reviewed_registry_entries": 24, "reviewed_upstream_entries": 17, "extensions": 7, "upstream_without_registry": 190, "registry_claims_missing_upstream": 0},
+  "counts": {"pinned_aria2_handlers": 207, "reviewed_registry_entries": 25, "reviewed_upstream_entries": 17, "extensions": 8, "upstream_without_registry": 190, "registry_claims_missing_upstream": 0},
   "reviewed": [
     {"name": "allow-overwrite", "status": "partial", "aria2_available": true, "security": "normal", "features": ["minimal"], "docs": "configuration.md#compatibility-matrix-categories"},
     {"name": "checksum", "status": "partial", "aria2_available": true, "security": "normal", "features": ["minimal"], "docs": "detailed-http-first-slice.md#cross-mirror-entity-identity"},
@@ -21,6 +21,7 @@
     {"name": "on-download-complete", "status": "unsafe_compat", "aria2_available": true, "security": "unsafe_exec", "features": ["compat"], "docs": "security-recovery.md#no-rce-policy"},
     {"name": "out", "status": "partial", "aria2_available": true, "security": "normal", "features": ["minimal"], "docs": "detailed-storage.md#safepathbuilder"},
     {"name": "piece-length", "status": "partial", "aria2_available": true, "security": "normal", "features": ["minimal"], "docs": "detailed-storage.md#piece-model"},
+    {"name": "profile", "status": "partial", "aria2_available": false, "security": "normal", "features": ["minimal"], "docs": "performance-profiles.md#unified-user-profile"},
     {"name": "retry-on-http-status", "status": "partial", "aria2_available": false, "security": "normal", "features": ["minimal"], "docs": "retry-policy.md"},
     {"name": "rpc-secret", "status": "partial", "aria2_available": true, "security": "sensitive", "features": ["minimal"], "docs": "apis-and-embedding.md#rpc-authentication"},
     {"name": "session-store", "status": "partial", "aria2_available": false, "security": "normal", "features": ["minimal"], "docs": "configuration.md#new-options"},

@@ -12,6 +12,11 @@ come only from immutable blobs at the pinned commit. `storage_layout.json`
 comes from executable path, root-binding, layout, and offset-mapper contracts.
 `runtime_buffers.json` records the closed buffer lifecycle, size classes,
 budget, quarantine, queue-credit, and completion-permit rules.
+Its `profile_resources` object also freezes the executable runtime-profile
+matrix, native handle-resolution rule, C10k target, connection reservations,
+and shared direct-HTTP/process resident-budget inputs used by the capacity
+resolver. Proxy transport and file-handle consumers are explicitly deferred in
+the contract rather than implied by this artifact.
 `journal_v1.json` freezes the executable segment/record framing, CRC and commit
 coverage, record numbers, persisted enum tags, replay caps, and valid-prefix
 rules. It also reports exact typed-payload coverage, scalar, collection, path,

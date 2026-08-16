@@ -14,19 +14,20 @@ use ariax_config::{SecurityClass, builtin_registry};
 use ariax_core::{Generation, Gid, MonotonicInstant, SchedulerConfig, TaskId};
 use ariax_engine::{
     HttpCancellation, HttpControlBackend, HttpControlPlane, HttpControlPlaneConfig, HttpCookieJar,
-    HttpCookieLimits, HttpDestinationPolicy, HttpMultiRangeWorker, HttpMultiRangeWorkerConfig,
-    HttpPolicyClient, HttpPolicyClientConfig, HttpResolver, HttpResolverConfig,
-    KnownLengthHttpRecoveryRequest, KnownLengthHttpRequest, KnownLengthHttpResumeRequest,
-    ProcessBootstrapConfig, RuntimeEffectConfig, StartupRecoveryConfig, StorageEngineConfig,
+    HttpCookieLimits, HttpDestinationPolicy, HttpMultiRangeWorker, HttpPolicyClient,
+    HttpProcessResources, HttpResolver, HttpResolverConfig, KnownLengthHttpRecoveryRequest,
+    KnownLengthHttpRequest, KnownLengthHttpResumeRequest, ProcessBootstrapConfig,
+    RuntimeEffectConfig, StartupRecoveryConfig, StorageEngineConfig,
     download_known_length_http_blocking, resume_known_length_http_blocking,
     run_content_length_stdio, serve_loopback_http_until,
 };
+use ariax_runtime::RuntimeProfile;
 use ariax_storage::{
     JournalId, JournalStateLimits, PathPlatform, ReplayLimits, SafePathBuilder, SessionOwnerConfig,
 };
 
 const DEFAULT_HTTP_PIECE_LENGTH: u64 = 1024 * 1024;
-const HELP: &str = "ariax — experimental bounded downloader\n\nUsage: ariax [--help|--version]\n       ariax --check-bootstrap SESSION_DB CONTROL_DIR [OUTPUT_ROOT ...]\n       ariax --rpc-http SESSION_DB CONTROL_DIR OUTPUT_ROOT LOOPBACK_ADDR\n       ariax --rpc-stdio SESSION_DB CONTROL_DIR OUTPUT_ROOT\n       ariax --download-http-pinned GID JOURNAL_ID URI PEER OUTPUT_ROOT OUTPUT_PATH JOURNAL_DIR [PIECE_LENGTH]\n       ariax --resume-http-pinned GID JOURNAL_ID URI PEER OUTPUT_ROOT JOURNAL_DIR\n\nRPC is JSON-RPC 2.0 over loopback HTTP/1.1 or Content-Length-framed stdio. The pinned HTTP commands accept an already policy-approved numeric PEER (IP:port); they do not perform DNS or SSRF-policy resolution.\n";
+const HELP: &str = "ariax — experimental bounded downloader\n\nUsage: ariax [--help|--version]\n       ariax --check-bootstrap SESSION_DB CONTROL_DIR [OUTPUT_ROOT ...]\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --rpc-http SESSION_DB CONTROL_DIR OUTPUT_ROOT LOOPBACK_ADDR\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --rpc-stdio SESSION_DB CONTROL_DIR OUTPUT_ROOT\n       ariax --download-http-pinned GID JOURNAL_ID URI PEER OUTPUT_ROOT OUTPUT_PATH JOURNAL_DIR [PIECE_LENGTH]\n       ariax --resume-http-pinned GID JOURNAL_ID URI PEER OUTPUT_ROOT JOURNAL_DIR\n\nRPC is JSON-RPC 2.0 over loopback HTTP/1.1 or Content-Length-framed stdio. The pinned HTTP commands accept an already policy-approved numeric PEER (IP:port); they do not perform DNS or SSRF-policy resolution.\n";
 
 fn main() -> ExitCode {
     run(env::args_os().skip(1))
@@ -34,7 +35,23 @@ fn main() -> ExitCode {
 
 fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
     let arguments: Vec<_> = arguments.into_iter().collect();
-    match arguments.as_slice() {
+    let (profile, arguments) = match split_runtime_profile_argument(&arguments) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("ariax: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    if profile.is_some()
+        && !matches!(
+            arguments.first(),
+            Some(command) if command == "--rpc-http" || command == "--rpc-stdio"
+        )
+    {
+        eprintln!("ariax: --profile is accepted only with --rpc-http or --rpc-stdio");
+        return ExitCode::from(2);
+    }
+    match arguments {
         [] => {
             print!("{HELP}");
             ExitCode::SUCCESS
@@ -67,6 +84,7 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
                 PathBuf::from(control),
                 PathBuf::from(output_root),
                 Some(bind),
+                profile.unwrap_or_default(),
             )
         }
         [command, database, control, output_root] if command == "--rpc-stdio" => run_rpc(
@@ -74,6 +92,7 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
             PathBuf::from(control),
             PathBuf::from(output_root),
             None,
+            profile.unwrap_or_default(),
         ),
         [
             command,
@@ -136,6 +155,31 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+fn split_runtime_profile_argument(
+    arguments: &[OsString],
+) -> Result<(Option<RuntimeProfile>, &[OsString]), String> {
+    let Some(first) = arguments.first() else {
+        return Ok((None, arguments));
+    };
+    let Some(first) = first.to_str() else {
+        return Ok((None, arguments));
+    };
+    let Some(value) = first.strip_prefix("--profile=") else {
+        if first == "--profile" {
+            return Err(
+                "--profile requires =auto|concurrency|throughput|latency|compact".to_owned(),
+            );
+        }
+        return Ok((None, arguments));
+    };
+    let profile = RuntimeProfile::parse(value).map_err(|_| {
+        format!(
+            "invalid runtime profile {value:?}; expected auto, concurrency, throughput, latency, or compact"
+        )
+    })?;
+    Ok((Some(profile), &arguments[1..]))
 }
 
 fn resume_http_pinned(
@@ -373,6 +417,7 @@ fn run_rpc(
     control_directory: PathBuf,
     output_root: PathBuf,
     bind: Option<SocketAddr>,
+    profile: RuntimeProfile,
 ) -> ExitCode {
     if let Err(error) = std::fs::create_dir_all(&control_directory) {
         eprintln!("ariax: cannot create control directory: {error}");
@@ -400,6 +445,13 @@ fn run_rpc(
         Ok(engine) => engine,
         Err(error) => {
             eprintln!("ariax: bootstrap failed: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let resources = match HttpProcessResources::for_profile(profile) {
+        Ok(resources) => resources,
+        Err(error) => {
+            eprintln!("ariax: HTTP profile capacity resolution failed: {error}");
             return ExitCode::FAILURE;
         }
     };
@@ -433,22 +485,12 @@ fn run_rpc(
             return ExitCode::FAILURE;
         }
     };
-    let client = HttpPolicyClient::new(
-        resolver,
-        HttpPolicyClientConfig {
-            destination: HttpDestinationPolicy::default(),
-            cookies: Some(cookies),
-            ..HttpPolicyClientConfig::default()
-        },
-    );
-    let worker = match HttpMultiRangeWorker::new(
-        client,
-        HttpMultiRangeWorkerConfig {
-            journal_root,
-            ..HttpMultiRangeWorkerConfig::default()
-        },
-        plane.stats_catalog(),
-    ) {
+    let mut client_config = resources.policy_client_config();
+    client_config.destination = HttpDestinationPolicy::default();
+    client_config.cookies = Some(cookies);
+    let client = HttpPolicyClient::new(resolver, client_config);
+    let worker_config = resources.worker_config(journal_root);
+    let worker = match HttpMultiRangeWorker::new(client, worker_config, plane.stats_catalog()) {
         Ok(worker) => worker.with_session_owner(plane.session_handle()),
         Err(error) => {
             eprintln!("ariax: HTTP worker initialization failed: {error}");

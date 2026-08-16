@@ -1,6 +1,17 @@
 # Performance Profiles
 
-Status: reviewed pre-implementation contract. Implementation pending.
+Status: executable profile and HTTP-capacity slice implemented; adaptive tuning,
+non-HTTP resource wiring, and native release baselines remain pending.
+
+The runtime resolver now owns the exact preset matrix below, subtracts the
+64-handle control reserve from the native soft handle limit, and derives shared
+process/socket/file and resident-byte budgets. The RPC binary accepts
+`--profile=auto|concurrency|throughput|latency|compact`; its HTTP transport,
+HTTP ingress, and storage buffer pool share the resolved resident budget, while
+transport sockets consume the process/socket handle permits. File-handle and
+non-HTTP consumers are not wired yet. `auto` currently resolves to the
+concurrency baseline; adaptive movement inside the guardrails is a later
+milestone.
 
 C10k and maximum throughput are related but not identical goals.
 
@@ -266,6 +277,26 @@ of the 896 MiB accounted limit for buffers, active ingress, task state, queues,
 caches, and fixed reserves. Admission reduces those active domains as the
 socket count rises. Exceeding any domain or the global limit is backpressure or
 admission refusal, never silent growth.
+
+### Executable Capacity Evidence
+
+The checked-in `ariax-engine` benchmark harness uses the same process-owned
+transport and ingress permits as the RPC worker. With an isolated Linux soft
+handle limit of 20,000, the concurrency profile opened 10,000 real loopback
+sockets and reserved 1,000 active 64 KiB ranges:
+
+```text
+profile=concurrency sockets=10000 active_ranges=1000
+resident_reserved_bytes=393216000
+accounted_limit_bytes=939524096 resident_target_bytes=1073741824
+rss_kib=Some(47340)
+```
+
+With the ordinary 1,024-handle WSL limit, the same C10k-specific admission
+returns an explicit rejection (`resolved 960` after the control reserve). The
+service may still run at its scaled profile caps; a C10k claim requires the
+explicit capacity gate and a native platform benchmark. The local WSL result is
+diagnostic evidence, not a release-platform baseline.
 
 ## Tunables By Profile
 

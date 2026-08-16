@@ -1,8 +1,10 @@
 use crate::inventory::{GenerationMode, apply_outputs, comma, json_string};
 use ariax_runtime::{
-    ALL_BUFFER_STATES, ALL_OWNER_TAGS, ConnectionCondition, ConnectionConditionReason,
-    MAX_STATS_ACTIVE_ENTRIES, MAX_STATS_SAMPLE_INTERVAL, MIN_STATS_SAMPLE_INTERVAL, SizeClass,
-    StatsProfile,
+    ALL_BUFFER_STATES, ALL_OWNER_TAGS, C10K_LOW_ACTIVITY_SOCKET_TARGET, ConnectionCondition,
+    ConnectionConditionReason, HTTP_ACTIVE_TLS_CONNECTION_CEILING_BYTES,
+    HTTP_IDLE_CONNECTION_RESERVATION_BYTES, MAX_STATS_ACTIVE_ENTRIES, MAX_STATS_SAMPLE_INTERVAL,
+    MIN_STATS_SAMPLE_INTERVAL, PROFILE_CONTROL_HANDLE_RESERVE, ProfileLimits, RuntimeProfile,
+    SizeClass, StatsProfile,
 };
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -111,6 +113,43 @@ fn render_runtime_contracts() -> String {
         MAX_STATS_ACTIVE_ENTRIES,
     )
     .expect("write to string");
+    output.push_str("  \"profile_resources\": {\n");
+    writeln!(
+        output,
+        "    \"control_handle_reserve\": {},\n    \"c10k_low_activity_socket_target\": {},\n    \"idle_connection_reservation_bytes\": {},\n    \"active_tls_connection_ceiling_bytes\": {},\n    \"auto_baseline\": \"concurrency\",\n    \"profiles\": [",
+        PROFILE_CONTROL_HANDLE_RESERVE,
+        C10K_LOW_ACTIVITY_SOCKET_TARGET,
+        HTTP_IDLE_CONNECTION_RESERVATION_BYTES,
+        HTTP_ACTIVE_TLS_CONNECTION_CEILING_BYTES,
+    )
+    .expect("write to string");
+    for (index, profile) in RuntimeProfile::ALL.iter().copied().enumerate() {
+        let limits = ProfileLimits::for_profile(profile);
+        writeln!(
+            output,
+            "      {{\"code\": {}, \"baseline\": {}, \"resident_target_bytes\": {}, \"accounted_resident_limit_bytes\": {}, \"process_handle_target\": {}, \"logical_socket_cap\": {}, \"logical_file_cap\": {}, \"http_ingress_budget_bytes\": {}, \"buffer_budget_bytes\": {}, \"disk_queue_ops\": {}, \"disk_queue_bytes\": {}, \"http_idle_connections_global\": {}, \"http_idle_connections_per_origin\": {}, \"http_idle_pool_budget_bytes\": {}, \"http_idle_timeout_seconds\": {}, \"event_queue_events_per_client\": {}, \"event_queue_bytes_per_client\": {}}}{}",
+            json_string(profile.code()),
+            json_string(profile.baseline().code()),
+            limits.resident_target_bytes,
+            limits.accounted_resident_limit_bytes,
+            limits.process_handle_target,
+            limits.logical_socket_cap,
+            limits.logical_file_cap,
+            limits.http_ingress_budget_bytes,
+            limits.buffer_budget_bytes,
+            limits.disk_queue_ops,
+            limits.disk_queue_bytes,
+            limits.http_idle_connections_global,
+            limits.http_idle_connections_per_origin,
+            limits.http_idle_pool_budget_bytes,
+            limits.http_idle_timeout.as_secs(),
+            limits.event_queue_events_per_client,
+            limits.event_queue_bytes_per_client,
+            comma(index, RuntimeProfile::ALL.len()),
+        )
+        .expect("write to string");
+    }
+    output.push_str("    ],\n    \"native_handle_resolution\": \"min(profile_process_target, native_soft_limit - control_handle_reserve); socket/file subcaps share the process cap\"\n  },\n");
     output.push_str(
         "  \"budget_contract\": {\"domain_and_resident_permits_required\": true, \"zero_byte_reservation_allowed\": false},\n  \"pool_contract\": {\"free_list\": \"lifo_per_size_class\", \"stable_capacity\": true, \"drop_destination\": \"quarantine\", \"quarantine_exhaustion\": \"fault_backend\", \"timeout_reclamation\": \"retire_without_releasing_pool_budget\"},\n  \"queue_contract\": {\"item_bounded\": true, \"byte_bounded\": true, \"credit_before_read\": true, \"close_returns_queued_ownership\": true},\n  \"completion_contract\": {\"reserve_before_backend_acceptance\": true, \"send_after_admission_close\": true, \"capacity_failure_after_acceptance\": false}\n}\n",
     );
@@ -132,6 +171,9 @@ mod tests {
         assert!(contract.contains("\"minimum_override_ms\": 100"));
         assert!(contract.contains("\"maximum_override_ms\": 10000"));
         assert!(contract.contains("\"maximum_active_entries\": 100000"));
+        assert!(contract.contains("\"c10k_low_activity_socket_target\": 10000"));
+        assert!(contract.contains("\"idle_connection_reservation_bytes\": 32768"));
+        assert!(contract.contains("\"code\": \"auto\", \"baseline\": \"concurrency\""));
         assert!(contract.contains("\"packet_independent\": true"));
         assert!(contract.contains("\"sample_age_is_query_derived\": true"));
         assert!(contract.contains("\"journal_backpressure\""));

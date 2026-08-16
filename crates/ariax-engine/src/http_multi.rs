@@ -20,9 +20,10 @@ use ariax_core::{
     PublicError, RetryClass, TaskId, TransferAttemptId, UriId,
 };
 use ariax_runtime::{
-    BufferLease, ByteBudget, BytePermit, ConnectionCondition, ConnectionConditionReason, OwnerTag,
-    RateArbiter, RateArbiterConfig, RateDirection, RateLimit, RatePath, RatePermit, RateScope,
-    SizeClass, StatsCounters, StatsDiagnostic, StatsProfile, StatsSampler, StatsSamplerConfig,
+    BudgetError, BufferLease, ByteBudget, BytePermit, ConnectionCondition,
+    ConnectionConditionReason, OwnerTag, RateArbiter, RateArbiterConfig, RateDirection, RateLimit,
+    RatePath, RatePermit, RateScope, SizeClass, StatsCounters, StatsDiagnostic, StatsProfile,
+    StatsSampler, StatsSamplerConfig,
 };
 use ariax_storage::{
     ControlJournalAppender, FileLayout, GlobalSpan, JournalContributor, JournalDigest,
@@ -55,6 +56,68 @@ pub const MAX_HTTP_DIGEST_WORKERS: usize = 64;
 const HTTP_JOURNAL_ID_DOMAIN: &str = "ariax/http-journal-id/v1\0";
 const HTTP_RECOVERY_READ_BUFFER_BYTES: usize = 64 * 1024;
 const HTTP_FINAL_DIGEST_READ_BUFFER_BYTES: usize = 1024 * 1024;
+
+/// Process-owned HTTP ingress domain paired with the global resident budget.
+#[derive(Clone, Debug)]
+pub struct HttpIngressBudgets {
+    ingress: ByteBudget,
+    resident: ByteBudget,
+}
+
+impl HttpIngressBudgets {
+    #[must_use]
+    pub fn new(limit: usize) -> Self {
+        Self {
+            ingress: ByteBudget::new(limit),
+            resident: ByteBudget::new(limit),
+        }
+    }
+
+    pub(crate) fn with_shared_resident(limit: usize, resident: ByteBudget) -> Self {
+        Self {
+            ingress: ByteBudget::new(limit),
+            resident,
+        }
+    }
+
+    #[must_use]
+    pub fn limit(&self) -> usize {
+        self.ingress.limit()
+    }
+
+    #[must_use]
+    pub fn used(&self) -> usize {
+        self.ingress.used()
+    }
+
+    #[must_use]
+    pub fn resident_used(&self) -> usize {
+        self.resident.used()
+    }
+
+    pub fn try_acquire(&self, bytes: usize) -> Result<HttpIngressPermit, BudgetError> {
+        let ingress = self.ingress.try_acquire(bytes)?;
+        let resident = self.resident.try_acquire(bytes)?;
+        Ok(HttpIngressPermit {
+            _ingress: ingress,
+            _resident: resident,
+        })
+    }
+}
+
+/// Dual domain/global charge retained until one response frame leaves ingress.
+pub struct HttpIngressPermit {
+    _ingress: BytePermit,
+    _resident: BytePermit,
+}
+
+impl fmt::Debug for HttpIngressPermit {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HttpIngressPermit")
+            .finish_non_exhaustive()
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct HttpTransferStatsSnapshot {
@@ -439,7 +502,7 @@ pub struct HttpMultiRangeWorkerConfig {
     pub download_rate: RateArbiter,
     /// Bounds body frames retained between Hyper and storage. The permit moves
     /// with the frame until positional disk submission has consumed it.
-    pub ingress_budget: ByteBudget,
+    pub ingress_budget: HttpIngressBudgets,
     pub ingress_frame_bytes: NonZeroUsize,
     pub event_capacity: NonZeroUsize,
     /// Process-local cap for CPU-heavy whole-file digest verification. Worker
@@ -471,7 +534,7 @@ impl Default for HttpMultiRangeWorkerConfig {
             retry: HttpRetryPolicy::default(),
             download_rate: RateArbiter::new(RateDirection::Download, RateArbiterConfig::default())
                 .expect("default download rate arbiter is valid"),
-            ingress_budget: ByteBudget::new(DEFAULT_HTTP_INGRESS_BUDGET_BYTES),
+            ingress_budget: HttpIngressBudgets::new(DEFAULT_HTTP_INGRESS_BUDGET_BYTES),
             ingress_frame_bytes: NonZeroUsize::new(DEFAULT_HTTP_INGRESS_FRAME_BYTES)
                 .expect("default ingress frame is nonzero"),
             event_capacity: NonZeroUsize::new(DEFAULT_HTTP_RANGE_EVENT_CAPACITY)
@@ -1021,7 +1084,7 @@ impl HttpMultiRangeWorker {
             layout,
             [(ariax_core::FileId::new(0), output)],
             appender,
-            self.config.storage,
+            self.config.storage.clone(),
         )
         .map_err(HttpMultiRangeError::Storage)?;
         Ok(OpenedHttpStorage {
@@ -2086,7 +2149,7 @@ enum AttemptEvent {
         lease: LeaseId,
         offset: u64,
         buffer: BufferLease,
-        _ingress: BytePermit,
+        _ingress: HttpIngressPermit,
     },
     Terminal {
         lease: LeaseId,
@@ -2329,7 +2392,7 @@ async fn range_attempt(
     lowest_speed_limit: u64,
     rate: RateArbiter,
     rate_path: RatePath,
-    ingress_budget: ByteBudget,
+    ingress_budget: HttpIngressBudgets,
     ingress_frame_bytes: NonZeroUsize,
     cancellation: HttpCancellation,
     events: mpsc::Sender<AttemptEvent>,
@@ -2369,7 +2432,7 @@ async fn range_attempt_inner(
     lowest_speed_limit: u64,
     rate: &RateArbiter,
     rate_path: RatePath,
-    ingress_budget: &ByteBudget,
+    ingress_budget: &HttpIngressBudgets,
     ingress_frame_bytes: NonZeroUsize,
     cancellation: &HttpCancellation,
     events: &mpsc::Sender<AttemptEvent>,
@@ -2537,10 +2600,10 @@ async fn acquire_read_slot(
     minimum_capacity: usize,
     rate: &RateArbiter,
     rate_path: RatePath,
-    ingress_budget: &ByteBudget,
+    ingress_budget: &HttpIngressBudgets,
     cancellation: &HttpCancellation,
     stats: &HttpTransferStats,
-) -> Result<(BufferLease, BytePermit, RatePermit), RangeAttemptFailure> {
+) -> Result<(BufferLease, HttpIngressPermit, RatePermit), RangeAttemptFailure> {
     let requested = NonZeroUsize::new(minimum_capacity).ok_or(RangeAttemptFailure::Cancelled)?;
     loop {
         let (response, receiver) = oneshot::channel();
