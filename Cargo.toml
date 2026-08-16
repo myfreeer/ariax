@@ -9,6 +9,7 @@ members = [
     "crates/ariax-windows-security",
     "tools/ariax-xtask",
 ]
+exclude = ["fuzz"]
 resolver = "3"
 
 [workspace.package]

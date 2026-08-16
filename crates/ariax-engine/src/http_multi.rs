@@ -5048,6 +5048,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn short_body_exhausts_process_discard_budget_before_another_retry() {
+        let root = TestDirectory::new("discard-process-cap-root");
+        let journal = TestDirectory::new("discard-process-cap-journal");
+        let expected = data(MIB);
+        let (mirror, server) = serve_mirror(Arc::clone(&expected), MirrorMode::ShortRange, 2).await;
+        let spec = task(&root, [mirror], expected.len());
+        let stats = SharedHttpTransferStats::new(NonZeroUsize::new(2).expect("stats"));
+        let discard_budget = HttpDiscardBudget::new(HttpDiscardBudgetLimits {
+            process_bytes: (128 * 1024) as u64,
+            host_bytes: MIB as u64,
+            task_bytes: MIB as u64,
+            attempt_bytes: MIB as u64,
+        })
+        .expect("discard budget");
+        let worker = HttpMultiRangeWorker::new(
+            policy_client(2),
+            HttpMultiRangeWorkerConfig {
+                journal_root: journal.0.clone(),
+                storage: StorageEngineConfig::default(),
+                discard_budget,
+                event_capacity: NonZeroUsize::new(16).expect("events"),
+                ..HttpMultiRangeWorkerConfig::default()
+            },
+            stats.clone(),
+        )
+        .expect("worker");
+        let error = worker
+            .run_task(
+                Arc::new(spec.clone()),
+                Generation::INITIAL,
+                HttpCancellation::new(),
+            )
+            .await
+            .expect_err("process discard cap must stop the retry cycle");
+        assert!(matches!(
+            error,
+            HttpMultiRangeError::DiscardBudgetExhausted(HttpDiscardScope::Process)
+        ));
+        server.await.expect("server");
+        let snapshot = stats.get(spec.task()).expect("stats").snapshot();
+        assert_eq!(snapshot.retry_count, 0);
+        assert_eq!(snapshot.discard_budget_consumed, 128 * 1024);
+        assert_eq!(
+            snapshot.discard_budget_remaining,
+            MIB as u64 - (128 * 1024) as u64
+        );
+        assert!(snapshot.discarded_bytes >= (128 * 1024) as u64);
+        assert_eq!(snapshot.durable_bytes, 0);
+    }
+
+    #[tokio::test]
     async fn task_retry_policy_overrides_the_worker_attempt_cap() {
         let root = TestDirectory::new("task-retry-cap-root");
         let journal = TestDirectory::new("task-retry-cap-journal");

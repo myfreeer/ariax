@@ -28,7 +28,10 @@ profile selection in RPC startup, and the local C10k/active-range harness are
 covered. HTTP discarded payload is also bounded by a process-owned atomic
 process/host/task/attempt guard, including probe, retry/cancel, checksum, and
 endgame cleanup paths, with separate RPC diagnostics. The broader evictable
-file-handle LRU and non-HTTP consumers remain pending.
+file-handle LRU and non-HTTP consumers remain pending. A standalone,
+workspace-excluded cargo-fuzz package now covers HTTP response/request headers,
+retry specifications, discard-budget invariants, and journal replay; the
+remaining protocol/crash fault matrix is still pending.
 This remains a phase checkpoint, not a release/tag: cross-mirror digest-backed
 endgame, broader validators, growing/chunked transfers, HTTP/2, broader RPC,
 native release benchmark evidence, adaptive profile tuning, and the complete

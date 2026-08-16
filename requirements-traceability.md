@@ -21,6 +21,11 @@ algorithms, Last-Modified/unsafe-override resume, broader protocols/control APIs
 adaptive profile tuning, native release benchmark evidence, and the complete
 release matrix remain incomplete.
 
+The implemented HTTP discard hierarchy now has deterministic process/task/host
+fault coverage and a standalone bounded fuzz package (`fuzz/`) for HTTP
+headers, retry specifications, discard accounting, and journal replay. The
+broader crash/power-loss and native release evidence remains incomplete.
+
 This maps the requested properties to design documents.
 
 ## Coverage Index
@@ -245,7 +250,8 @@ Design coverage:
 
 Acceptance:
 
-- parser and journal fuzz targets exist,
+- parser and journal fuzz targets exist; the implemented HTTP/journal targets
+  are checked in under `fuzz/` and are workspace-excluded from production builds,
 - every untrusted parser and variable-length metadata path rejects its hard
   byte/item/depth cap before proportional allocation or work,
 - unsupported options fail explicitly,

@@ -17,11 +17,13 @@ progress counters. The experimental CLI exposes ordinary HTTP(S) URIs through
 five real-scheduler JSON-RPC methods over loopback HTTP/1.1 and Content-Length
 stdio, with atomic rejection and orderly worker/journal/session shutdown.
 
-This is still not a complete downloader or release/tag-ready. Rate limiting,
-stall policy, endgame duplicate ranges, HTTP/2, unknown-length/chunked layouts,
-broader validator/digest modes, WebSocket/NDJSON and non-loopback RPC, the rest
-of Phase 4, hot-backup crash-residue reconciliation, benchmarks, and the full
-native release matrix remain gated by `implementation-readiness.md` and
+This is still not a complete downloader or release/tag-ready. The first
+hierarchical rate limiter, stall policy, process-owned discard guard, same-origin
+endgame fencing, and local capacity benchmarks are executable; HTTP/2,
+unknown-length/chunked layouts, broader validator/digest modes, WebSocket/NDJSON
+and non-loopback RPC, the remaining crash/power-loss fault matrix, the rest of
+Phase 4, hot-backup crash-residue reconciliation, and the full native release
+matrix remain gated by `implementation-readiness.md` and
 `implementation-plan.md`.
 
 This design is for a new downloader that keeps the mature aria2 user model
@@ -614,6 +616,9 @@ Required before production claims:
   Content-Range parsing, bencode, Metalink, and input-file parsing.
 - Fuzz targets for HTTP headers, bencode, Metalink XML, RPC JSON/XML, control
   file recovery, and path components.
+  The implemented HTTP/journal subset is maintained in `fuzz/` with bounded
+  targets for response/request headers, retry specifications, discard budgets,
+  and journal replay; deferred protocol targets remain tracked here.
 - Fault injection for short reads, oversized responses, server ignores Range,
   disk full, permission denied, lease abort, hash failure after write, partial
   fsync, torn/rotated control journals, and process kill during every recovery

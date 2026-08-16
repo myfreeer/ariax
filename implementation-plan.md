@@ -46,7 +46,11 @@ charges process, canonical final-origin host, task, and attempt scopes without
 refund; body polling stops when no credit remains; probe, retry/cancel,
 checksum, stale queued-chunk, and endgame settlement paths reconcile the same
 counter; and RPC status exposes consumed/remaining task credit. FTP/SFTP and
-libtorrent discard producers remain later adapter work.
+libtorrent discard producers remain later adapter work. The standalone
+workspace-excluded `fuzz/` package now provides bounded cargo-fuzz targets for
+HTTP response/request headers, retry specifications, discard accounting, and
+journal replay; the remaining process-kill, power-loss, and disk-fault matrix
+still gates a full Phase-3 completion claim.
 
 This is a staged plan for building the design without repeating the incomplete
 rewrite pattern. The native-startup orchestration boundary, central-journal
@@ -275,8 +279,9 @@ Exit criteria:
 - Discard fault coverage proves bounded oversized/short-body overrun, atomic
   process/host/task/attempt exhaustion, no refund after abort/rollback, prompt
   source/retry-cycle stop, and separate consumed/remaining diagnostics. The
-  HTTP guard and short-body exhaustion path are executable; the remaining
-  protocol/fault matrix still gates Phase 3 completion.
+  HTTP guard and short-body exhaustion path are executable, with deterministic
+  process/task/host tests and standalone fuzz targets in `fuzz/`; the remaining
+  protocol/crash fault matrix still gates Phase 3 completion.
 - 1,000 active HTTP range benchmark with bounded memory. The checked-in harness
   now drives 1,000 real loopback `206` range responses under the shared ingress,
   socket, and resident permits; native release evidence remains required.

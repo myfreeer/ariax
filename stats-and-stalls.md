@@ -69,6 +69,9 @@ Counter meanings are intentionally independent:
 - `durableBytes` also passed the configured storage/journal durability barrier.
 - `discardedBytes` is diagnostic waste that already consumed user-rate tokens
   when read and is additionally charged to the separate finite discard guard.
+- `discardBudgetRemaining` is the current task-scope remainder. A host or
+  process scope can terminate the worker while task credit still remains; the
+  terminal discard error carries the exhausted hierarchy scope.
 
 Cumulative received/accepted/submitted counters are monotonic; the in-flight
 provisional gauge decreases when an attempt commits or aborts. Current committed

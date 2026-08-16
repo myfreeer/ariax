@@ -658,4 +658,81 @@ mod tests {
         assert_eq!(charge.charged, 0);
         assert_eq!(charge.exhausted, Some(HttpDiscardScope::Host));
     }
+
+    #[test]
+    fn task_and_process_limits_stop_without_refund() {
+        let budget = HttpDiscardBudget::new(HttpDiscardBudgetLimits {
+            process_bytes: 5,
+            host_bytes: 10,
+            task_bytes: 4,
+            attempt_bytes: 10,
+        })
+        .expect("limits");
+        let limits = HttpDiscardScopeLimits {
+            host_bytes: 10,
+            task_bytes: 4,
+            attempt_bytes: 10,
+        };
+        let first_task = budget
+            .begin_task(TaskId::new(1).expect("task"), limits)
+            .expect("task");
+        let first_attempt = first_task
+            .begin_attempt("https://first.example")
+            .expect("attempt");
+        assert_eq!(first_attempt.charge(3).charged, 3);
+        drop(first_attempt);
+        let second_attempt = first_task
+            .begin_attempt("https://second.example")
+            .expect("attempt");
+        let task_charge = second_attempt.charge(3);
+        assert_eq!(task_charge.charged, 1);
+        assert_eq!(task_charge.exhausted, Some(HttpDiscardScope::Task));
+
+        let second_task = budget
+            .begin_task(TaskId::new(2).expect("task"), limits)
+            .expect("task");
+        let process_attempt = second_task
+            .begin_attempt("https://third.example")
+            .expect("attempt");
+        let process_charge = process_attempt.charge(2);
+        assert_eq!(process_charge.charged, 1);
+        assert_eq!(process_charge.exhausted, Some(HttpDiscardScope::Process));
+        assert_eq!(process_attempt.charge(1).charged, 0);
+    }
+
+    #[test]
+    fn host_overflow_bucket_is_bounded_and_shared() {
+        let budget = HttpDiscardBudget::new(HttpDiscardBudgetLimits {
+            process_bytes: 16,
+            host_bytes: 2,
+            task_bytes: 16,
+            attempt_bytes: 2,
+        })
+        .expect("limits");
+        let task = budget
+            .begin_task(
+                TaskId::new(1).expect("task"),
+                HttpDiscardScopeLimits {
+                    host_bytes: 2,
+                    task_bytes: 16,
+                    attempt_bytes: 2,
+                },
+            )
+            .expect("task");
+        for index in 0..MAX_HTTP_DISCARD_HOST_SCOPES {
+            let _attempt = task
+                .begin_attempt(format!("https://host-{index}.example"))
+                .expect("bounded host scope");
+        }
+        let first_overflow = task
+            .begin_attempt("https://overflow-one.example")
+            .expect("overflow scope");
+        assert_eq!(first_overflow.charge(2).charged, 2);
+        let second_overflow = task
+            .begin_attempt("https://overflow-two.example")
+            .expect("shared overflow scope");
+        let charge = second_overflow.charge(1);
+        assert_eq!(charge.charged, 0);
+        assert_eq!(charge.exhausted, Some(HttpDiscardScope::Host));
+    }
 }

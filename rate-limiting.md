@@ -203,7 +203,9 @@ that credit remains before another body poll, charges the bounded frame already
 accepted if a limit is crossed, closes the attempt, and returns the terminal
 `http_discard_budget_exhausted` resource-limit error instead of admitting
 another retry. `tellStatus` exposes `discardBudgetConsumed` and
-`discardBudgetRemaining` separately from `discardedLength`.
+`discardBudgetRemaining` separately from `discardedLength`; the remaining value
+is the current task-scope credit, while a process/host exhaustion is identified
+by the terminal error scope and does not get hidden by that task-level number.
 
 A user-facing override requires a normal option-registry addition; the current
 limits remain internal executable policy.
