@@ -807,6 +807,11 @@ impl ControlJournalAppender {
     }
 
     #[cfg(test)]
+    pub(crate) fn fail_next_flush_for_test(&mut self) {
+        self.inject_test_fault(JournalTestFault::NextSyncSegment);
+    }
+
+    #[cfg(test)]
     fn take_test_fault(&mut self, fault: JournalTestFault) -> bool {
         if self.test_fault == Some(fault) {
             self.test_fault = None;

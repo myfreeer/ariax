@@ -36,8 +36,11 @@ header/linkage replay succeeds. Child-process exit/kill tests cover the
 data/journal barriers, and a Linux durable-prefix power-loss cut model is
 executable. Hot-backup publication residue now has descriptor-bound
 same-file/link-count recovery, no-clobber raced-destination preservation, and
-crash/unlink fault coverage. Native release and real poweroff evidence remain
-incomplete until supporting CI runs.
+crash/unlink fault coverage. Minimal real-process shutdown now closes admission,
+boundedly drains HTTP workers, flushes/closes every installed journal, joins the
+session owner, and writes a clean marker only after those barriers; failure or
+timeout persists dirty recovery evidence. Native release and real poweroff
+evidence remain incomplete until supporting CI runs.
 
 This maps the requested properties to design documents.
 

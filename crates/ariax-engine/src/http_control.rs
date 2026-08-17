@@ -10,8 +10,9 @@ use crate::{
     HttpRetryStatusSet, HttpRetryTriggerSet, HttpRpcBackend, HttpRpcBackendError,
     HttpTaskCatalogError, HttpTaskOptions, HttpTaskSpec, HttpTaskSpecError, HttpTaskWorker,
     HttpTransferStatsSnapshot, HttpWorkerSupervisor, HttpWorkerSupervisorConfig,
-    MAX_HTTP_ENDGAME_MAX_DUPLICATES, PersistenceEffectPlan, PersistencePlanStep,
-    SharedHttpTaskCatalog, SharedHttpTransferStats, derive_http_journal_id, http_journal_directory,
+    HttpWorkerSupervisorShutdown, MAX_HTTP_ENDGAME_MAX_DUPLICATES, PersistenceEffectPlan,
+    PersistencePlanStep, ProcessDrainOutcome, SharedHttpTaskCatalog, SharedHttpTransferStats,
+    derive_http_journal_id, http_journal_directory,
 };
 use ariax_core::{
     Aria2Status, Generation, Gid, MonotonicInstant, PublicError, QueueClass, QueueOrder,
@@ -175,21 +176,46 @@ impl HttpControlPlane {
         Ok(())
     }
 
-    pub fn shutdown(mut self) -> Result<crate::ProcessShutdownReport, crate::ProcessShutdownError> {
-        if let Some(supervisor) = self.supervisor.as_mut() {
+    pub fn shutdown(self) -> Result<crate::ProcessShutdownReport, crate::ProcessShutdownError> {
+        let Self {
+            engine,
+            mut supervisor,
+            ..
+        } = self;
+        let mut shutdown = engine.begin_shutdown()?;
+        let drain = if let Some(supervisor) = supervisor.as_mut() {
+            let active_workers = supervisor.active_workers();
             supervisor.cancel_all();
-        }
-        self.engine.shutdown()
+            if active_workers == 0 {
+                ProcessDrainOutcome::Drained
+            } else {
+                ProcessDrainOutcome::Failed
+            }
+        } else {
+            ProcessDrainOutcome::Drained
+        };
+        shutdown.complete_drain(drain)?;
+        shutdown.finish()
     }
 
     /// Drains live HTTP workers before closing journals and the session owner.
     pub async fn shutdown_async(
-        mut self,
+        self,
     ) -> Result<crate::ProcessShutdownReport, crate::ProcessShutdownError> {
-        if let Some(supervisor) = self.supervisor.take() {
-            supervisor.shutdown().await;
-        }
-        self.engine.shutdown()
+        let Self {
+            engine, supervisor, ..
+        } = self;
+        let mut shutdown = engine.begin_shutdown()?;
+        let drain_timeout = shutdown.drain_timeout();
+        let drain = match supervisor {
+            Some(supervisor) => match supervisor.shutdown_with_timeout(drain_timeout).await {
+                HttpWorkerSupervisorShutdown::Drained => ProcessDrainOutcome::Drained,
+                HttpWorkerSupervisorShutdown::TimedOut { .. } => ProcessDrainOutcome::TimedOut,
+            },
+            None => ProcessDrainOutcome::Drained,
+        };
+        shutdown.complete_drain(drain)?;
+        shutdown.finish()
     }
 
     fn restore_catalog(&mut self) -> Result<(), HttpControlError> {
@@ -1536,14 +1562,17 @@ mod tests {
         RuntimeEffectConfig, StartupRecoveryConfig, StorageEngineConfig, bootstrap_process,
     };
     use ariax_core::SchedulerConfig;
+    use ariax_runtime::ShutdownStep;
     use ariax_storage::{
-        JournalStateLimits, ReplayLimits, SessionOwnerConfig, SessionTerminalStatus,
+        JournalStateLimits, ReplayLimits, SessionOwnerConfig, SessionStore, SessionStoreConfig,
+        SessionTerminalStatus,
     };
     use std::fs;
     use std::num::NonZeroU64;
     use std::sync::atomic::{AtomicU64, Ordering};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::TcpListener;
+    use tokio::sync::Notify;
 
     static TEST_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -1601,12 +1630,20 @@ mod tests {
                     option_plan_capacity: capacity,
                 },
                 persistence_plan_capacity: capacity,
+                shutdown_step_timeout_ms: crate::DEFAULT_PROCESS_SHUTDOWN_STEP_TIMEOUT_MS,
                 updated_ms: 1_000,
                 recovery_created_at_unix_ms: 1_000,
             }
         }
 
         fn control_plane(&self) -> HttpControlPlane {
+            self.control_plane_with_supervisor(HttpWorkerSupervisorConfig::default())
+        }
+
+        fn control_plane_with_supervisor(
+            &self,
+            supervisor: HttpWorkerSupervisorConfig,
+        ) -> HttpControlPlane {
             let engine = bootstrap_process(self.process_config(), allow_all_options)
                 .expect("bootstrap process");
             HttpControlPlane::new(
@@ -1615,7 +1652,7 @@ mod tests {
                     output_root: self.output.clone(),
                     journal_root: self.journals.clone(),
                     task_capacity: NonZeroUsize::new(16).expect("task capacity"),
-                    supervisor: HttpWorkerSupervisorConfig::default(),
+                    supervisor,
                 },
             )
             .expect("control plane")
@@ -1778,6 +1815,25 @@ mod tests {
         plane
             .attach_worker(Arc::new(worker))
             .expect("attach worker");
+    }
+
+    struct UncooperativeShutdownWorker {
+        started: Arc<Notify>,
+    }
+
+    impl HttpTaskWorker for UncooperativeShutdownWorker {
+        fn start(
+            &self,
+            _task: Arc<HttpTaskSpec>,
+            _generation: Generation,
+            _cancellation: crate::HttpCancellation,
+        ) -> crate::HttpWorkerFuture {
+            let started = Arc::clone(&self.started);
+            Box::pin(async move {
+                started.notify_one();
+                std::future::pending::<Result<crate::HttpWorkerSuccess, PublicError>>().await
+            })
+        }
     }
 
     #[test]
@@ -2063,6 +2119,102 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn live_shutdown_timeout_aborts_worker_and_persists_dirty_checkpoint() {
+        let directory = TestDirectory::new();
+        let started = Arc::new(Notify::new());
+        let supervisor = HttpWorkerSupervisorConfig {
+            shutdown_timeout: Duration::from_millis(10),
+            ..HttpWorkerSupervisorConfig::default()
+        };
+        let mut plane = directory.control_plane_with_supervisor(supervisor);
+        plane
+            .attach_worker(Arc::new(UncooperativeShutdownWorker {
+                started: Arc::clone(&started),
+            }))
+            .expect("attach uncooperative worker");
+        plane
+            .call(
+                "aria2.addUri",
+                json!([["http://example.test/hung.bin"], {"pause": false}]),
+            )
+            .expect("add live task");
+        plane.poll_once().expect("start live worker");
+        tokio::time::timeout(Duration::from_secs(1), started.notified())
+            .await
+            .expect("worker started");
+
+        let report = plane.shutdown_async().await.expect("bounded shutdown");
+        assert!(!report.is_clean());
+        assert!(report.shutdown().step_timed_out(ShutdownStep::DrainDiskCpu));
+        assert_eq!(report.journals_flushed, 1);
+        assert_eq!(report.journals_closed, 1);
+
+        let store = SessionStore::open(
+            directory.root.join("session.db"),
+            SessionStoreConfig::default(),
+        )
+        .expect("reopen dirty session");
+        assert!(
+            !store
+                .session()
+                .expect("session")
+                .expect("record")
+                .clean_shutdown
+        );
+    }
+
+    #[test]
+    fn synchronous_shutdown_with_an_idle_supervisor_remains_clean() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        attach_loopback_worker(&mut plane, &directory);
+
+        let report = plane.shutdown().expect("shutdown idle supervisor");
+        assert!(report.is_clean());
+        assert_eq!(report.journals_flushed, 0);
+        assert_eq!(report.journals_closed, 0);
+    }
+
+    #[tokio::test]
+    async fn synchronous_shutdown_with_an_active_worker_persists_dirty_checkpoint() {
+        let directory = TestDirectory::new();
+        let started = Arc::new(Notify::new());
+        let mut plane = directory.control_plane();
+        plane
+            .attach_worker(Arc::new(UncooperativeShutdownWorker {
+                started: Arc::clone(&started),
+            }))
+            .expect("attach uncooperative worker");
+        plane
+            .call(
+                "aria2.addUri",
+                json!([["http://example.test/sync-hung.bin"], {"pause": false}]),
+            )
+            .expect("add live task");
+        plane.poll_once().expect("start live worker");
+        tokio::time::timeout(Duration::from_secs(1), started.notified())
+            .await
+            .expect("worker started");
+
+        let report = plane.shutdown().expect("synchronous shutdown");
+        assert!(!report.is_clean());
+        assert!(report.shutdown().step_failed(ShutdownStep::DrainDiskCpu));
+        assert!(!report.shutdown().step_timed_out(ShutdownStep::DrainDiskCpu));
+        let store = SessionStore::open(
+            directory.root.join("session.db"),
+            SessionStoreConfig::default(),
+        )
+        .expect("reopen dirty session");
+        assert!(
+            !store
+                .session()
+                .expect("session")
+                .expect("record")
+                .clean_shutdown
+        );
+    }
+
+    #[tokio::test]
     async fn live_supervisor_completes_http_task_and_persists_terminal_evidence() {
         let directory = TestDirectory::new();
         let data: Arc<[u8]> = vec![0x5a; 1024 * 1024].into();
@@ -2114,7 +2266,9 @@ mod tests {
         assert_eq!(stopped[0].gid, gid);
         assert_eq!(stopped[0].status, SessionTerminalStatus::Complete);
         assert_eq!(stopped[0].total_length, Some(data.len() as u64));
-        assert_eq!(plane.shutdown().expect("shutdown").journals_closed, 1);
+        let report = plane.shutdown_async().await.expect("shutdown");
+        assert!(report.is_clean());
+        assert_eq!(report.journals_closed, 1);
     }
 
     #[tokio::test]
@@ -2173,6 +2327,8 @@ mod tests {
         assert_eq!(stopped[0].gid, gid);
         assert_eq!(stopped[0].status, SessionTerminalStatus::Complete);
         assert_eq!(stopped[0].total_length, Some(data.len() as u64));
-        assert_eq!(plane.shutdown().expect("shutdown").journals_closed, 1);
+        let report = plane.shutdown_async().await.expect("shutdown");
+        assert!(report.is_clean());
+        assert_eq!(report.journals_closed, 1);
     }
 }

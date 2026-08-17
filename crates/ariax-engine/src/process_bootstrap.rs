@@ -8,15 +8,21 @@ use crate::{
     StartupSessionRepairExecutor, StartupSessionRepairFinishError, StartupSessionRepairPoll,
     complete_native_startup, reconcile_startup_derived,
 };
-use ariax_core::{MonotonicInstant, RequestScheduler, SchedulerCommand, TaskEventEnvelope, TaskId};
+use ariax_core::{
+    MAX_PERSISTED_MILLISECONDS, MonotonicInstant, RequestScheduler, SchedulerCommand,
+    TaskEventEnvelope, TaskId,
+};
 use ariax_runtime::{
     SchedulerDriver, SchedulerDriverFault, SchedulerDriverInputError, SchedulerDriverPoll,
-    SchedulerDriverPrepareError, StatusSnapshotReader,
+    SchedulerDriverPrepareError, ShutdownCoordinator, ShutdownCoordinatorError, ShutdownProfile,
+    ShutdownProgress, ShutdownReport, ShutdownStep, ShutdownStepResult, ShutdownTicket,
+    StatusSnapshotReader,
 };
 use ariax_storage::{
     JournalStateLimits, PersistedOptionPolicy, ReplayLimits, RootDirectoryCapability,
-    SessionCommand, SessionCommandResult, SessionHandle, SessionId, SessionOwner,
-    SessionOwnerConfig, SessionOwnerError, SessionRecord,
+    SessionCommand, SessionCommandResult, SessionCompletion, SessionHandle, SessionId,
+    SessionOwner, SessionOwnerConfig, SessionOwnerError, SessionOwnerShutdown, SessionRecord,
+    SessionStore, SessionStoreConfig,
 };
 use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -24,6 +30,9 @@ use std::error::Error;
 use std::fmt;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+pub const DEFAULT_PROCESS_SHUTDOWN_STEP_TIMEOUT_MS: u64 = 5_000;
 
 pub type ProcessSchedulerSink = PersistenceSchedulerEffectSink<RuntimeSchedulerEffectSink>;
 pub type ProcessSchedulerDriver = SchedulerDriver<ProcessSchedulerSink>;
@@ -40,6 +49,7 @@ pub struct ProcessBootstrapConfig {
     pub recovery: StartupRecoveryConfig,
     pub runtime: RuntimeEffectConfig,
     pub persistence_plan_capacity: NonZeroUsize,
+    pub shutdown_step_timeout_ms: u64,
     pub updated_ms: u64,
     pub recovery_created_at_unix_ms: u64,
 }
@@ -50,8 +60,12 @@ pub struct ProcessBootstrapConfig {
 pub struct BootstrappedEngine {
     session: SessionHandle,
     session_id: SessionId,
+    session_record: SessionRecord,
+    session_database_path: PathBuf,
+    session_store_config: SessionStoreConfig,
     driver: ProcessSchedulerDriver,
     runtime: RuntimeEffectHandle,
+    shutdown: Option<ShutdownCoordinator>,
     control_directory: PathBuf,
     replay_limits: ReplayLimits,
     journal_state_limits: JournalStateLimits,
@@ -90,6 +104,11 @@ impl BootstrappedEngine {
     #[must_use]
     pub const fn session_id(&self) -> SessionId {
         self.session_id
+    }
+
+    #[must_use]
+    pub const fn session_record(&self) -> &SessionRecord {
+        &self.session_record
     }
 
     #[must_use]
@@ -199,75 +218,358 @@ impl BootstrappedEngine {
         self.driver.is_idle()
     }
 
-    /// Stops runtime admission, closes every flushed journal on the owner
-    /// thread, and then performs the owner's bounded join.
-    pub fn shutdown(self) -> Result<ProcessShutdownReport, ProcessShutdownError> {
-        self.runtime.close();
-        let close = self
-            .session
-            .execute(SessionCommand::CloseAllFlushedJournals);
-        let shutdown = self.session.shutdown();
-        match (close, shutdown) {
-            (Ok(SessionCommandResult::JournalsClosed(count)), Ok(())) => {
-                Ok(ProcessShutdownReport {
-                    journals_closed: count,
-                })
-            }
-            (Ok(result), Ok(())) => Err(ProcessShutdownError::UnexpectedCloseResult(
-                session_result_code(&result),
-            )),
-            (Err(close), Ok(())) => Err(ProcessShutdownError::Close(Box::new(close))),
-            (Ok(SessionCommandResult::JournalsClosed(_)), Err(shutdown)) => {
-                Err(ProcessShutdownError::Owner(Box::new(shutdown)))
-            }
-            (Ok(result), Err(shutdown)) => Err(ProcessShutdownError::UnexpectedAndOwner {
-                result: session_result_code(&result),
-                shutdown: Box::new(shutdown),
-            }),
-            (Err(close), Err(shutdown)) => Err(ProcessShutdownError::CloseAndOwner {
-                close: Box::new(close),
-                shutdown: Box::new(shutdown),
-            }),
+    /// Starts the fixed minimal shutdown sequence and completes the process-
+    /// owned admission barrier before any external lane is drained.
+    pub(crate) fn begin_shutdown(mut self) -> Result<ProcessShutdown, ProcessShutdownError> {
+        let mut coordinator = self
+            .shutdown
+            .take()
+            .ok_or(ProcessShutdownError::CoordinatorAlreadyTaken)?;
+        let stop = coordinator
+            .begin(MonotonicInstant::now())
+            .map_err(ProcessShutdownError::Coordinator)?;
+        if stop.step() != ShutdownStep::StopAdmission {
+            return Err(ProcessShutdownError::UnexpectedStep {
+                expected: ShutdownStep::StopAdmission,
+                actual: Some(stop.step()),
+            });
         }
+        self.runtime.close();
+        let progress = coordinator
+            .complete(stop, ShutdownStepResult::Succeeded, MonotonicInstant::now())
+            .map_err(ProcessShutdownError::Coordinator)?;
+        let ticket = next_shutdown_ticket(progress, ShutdownStep::DrainDiskCpu)?;
+        Ok(ProcessShutdown {
+            engine: self,
+            coordinator,
+            ticket,
+            journals_flushed: 0,
+            journals_closed: 0,
+            journal_failure: None,
+            session_failure: None,
+        })
+    }
+
+    /// Runs the real minimal shutdown path for a process without an external
+    /// HTTP worker lane.
+    pub fn shutdown(self) -> Result<ProcessShutdownReport, ProcessShutdownError> {
+        let mut shutdown = self.begin_shutdown()?;
+        shutdown.complete_drain(ProcessDrainOutcome::Drained)?;
+        shutdown.finish()
+    }
+}
+
+#[derive(Debug)]
+pub struct ProcessShutdownReport {
+    pub journals_closed: usize,
+    pub journals_flushed: usize,
+    shutdown: ShutdownReport,
+    journal_failure: Option<&'static str>,
+    session_failure: Option<&'static str>,
+}
+
+impl ProcessShutdownReport {
+    #[must_use]
+    pub const fn is_clean(&self) -> bool {
+        self.shutdown.is_clean()
+    }
+
+    #[must_use]
+    pub const fn shutdown(&self) -> ShutdownReport {
+        self.shutdown
+    }
+
+    #[must_use]
+    pub const fn journal_failure(&self) -> Option<&'static str> {
+        self.journal_failure
+    }
+
+    #[must_use]
+    pub const fn session_failure(&self) -> Option<&'static str> {
+        self.session_failure
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ProcessShutdownReport {
-    pub journals_closed: usize,
+pub(crate) enum ProcessDrainOutcome {
+    Drained,
+    Failed,
+    TimedOut,
+}
+
+pub(crate) struct ProcessShutdown {
+    engine: BootstrappedEngine,
+    coordinator: ShutdownCoordinator,
+    ticket: ShutdownTicket,
+    journals_flushed: usize,
+    journals_closed: usize,
+    journal_failure: Option<&'static str>,
+    session_failure: Option<&'static str>,
+}
+
+impl ProcessShutdown {
+    pub(crate) fn drain_timeout(&self) -> Duration {
+        self.ticket
+            .deadline()
+            .duration_since(MonotonicInstant::now())
+            .max(Duration::from_millis(1))
+    }
+
+    pub(crate) fn complete_drain(
+        &mut self,
+        outcome: ProcessDrainOutcome,
+    ) -> Result<(), ProcessShutdownError> {
+        if self.ticket.step() != ShutdownStep::DrainDiskCpu {
+            return Err(ProcessShutdownError::UnexpectedStep {
+                expected: ShutdownStep::DrainDiskCpu,
+                actual: Some(self.ticket.step()),
+            });
+        }
+        let progress = match outcome {
+            ProcessDrainOutcome::Drained => self.coordinator.complete(
+                self.ticket,
+                ShutdownStepResult::Succeeded,
+                MonotonicInstant::now(),
+            ),
+            ProcessDrainOutcome::Failed => self.coordinator.complete(
+                self.ticket,
+                ShutdownStepResult::Failed,
+                MonotonicInstant::now(),
+            ),
+            ProcessDrainOutcome::TimedOut => self.coordinator.poll(self.ticket.deadline()),
+        }
+        .map_err(ProcessShutdownError::Coordinator)?;
+        self.ticket = next_shutdown_ticket(progress, ShutdownStep::FlushJournal)?;
+        Ok(())
+    }
+
+    pub(crate) fn finish(mut self) -> Result<ProcessShutdownReport, ProcessShutdownError> {
+        self.flush_and_close_journals()?;
+        self.persist_session_and_stop_owner()
+    }
+
+    fn flush_and_close_journals(&mut self) -> Result<(), ProcessShutdownError> {
+        if self.ticket.step() != ShutdownStep::FlushJournal {
+            return Err(ProcessShutdownError::UnexpectedStep {
+                expected: ShutdownStep::FlushJournal,
+                actual: Some(self.ticket.step()),
+            });
+        }
+        let mut succeeded = true;
+        let mut timed_out = false;
+        match submit_session_command(
+            &self.engine.session,
+            SessionCommand::FlushAllJournals,
+            self.ticket.deadline(),
+        ) {
+            SessionCommandWait::Completed(SessionCommandResult::JournalsFlushed(count)) => {
+                self.journals_flushed = count;
+            }
+            SessionCommandWait::Completed(result) => {
+                succeeded = false;
+                self.journal_failure = Some(session_result_code(&result));
+            }
+            SessionCommandWait::Failed(error) => {
+                succeeded = false;
+                self.journal_failure = Some(error.code());
+            }
+            SessionCommandWait::TimedOut => {
+                succeeded = false;
+                timed_out = true;
+                self.journal_failure = Some("timed_out");
+            }
+        }
+        if succeeded {
+            match submit_session_command(
+                &self.engine.session,
+                SessionCommand::CloseAllFlushedJournals,
+                self.ticket.deadline(),
+            ) {
+                SessionCommandWait::Completed(SessionCommandResult::JournalsClosed(count)) => {
+                    self.journals_closed = count;
+                }
+                SessionCommandWait::Completed(result) => {
+                    succeeded = false;
+                    self.journal_failure = Some(session_result_code(&result));
+                }
+                SessionCommandWait::Failed(error) => {
+                    succeeded = false;
+                    self.journal_failure = Some(error.code());
+                }
+                SessionCommandWait::TimedOut => {
+                    succeeded = false;
+                    timed_out = true;
+                    self.journal_failure = Some("timed_out");
+                }
+            }
+        }
+        let progress = if timed_out {
+            self.coordinator.poll(self.ticket.deadline())
+        } else {
+            self.coordinator.complete(
+                self.ticket,
+                if succeeded {
+                    ShutdownStepResult::Succeeded
+                } else {
+                    ShutdownStepResult::Failed
+                },
+                MonotonicInstant::now(),
+            )
+        }
+        .map_err(ProcessShutdownError::Coordinator)?;
+        self.ticket = next_shutdown_ticket(progress, ShutdownStep::PersistSession)?;
+        Ok(())
+    }
+
+    fn persist_session_and_stop_owner(
+        mut self,
+    ) -> Result<ProcessShutdownReport, ProcessShutdownError> {
+        if self.ticket.step() != ShutdownStep::PersistSession {
+            return Err(ProcessShutdownError::UnexpectedStep {
+                expected: ShutdownStep::PersistSession,
+                actual: Some(self.ticket.step()),
+            });
+        }
+        let attempted_clean = !self.ticket.checkpoint_dirty();
+        self.engine.session_record.updated_ms = current_unix_ms()
+            .max(self.engine.session_record.created_ms)
+            .max(self.engine.session_record.updated_ms);
+        self.engine.session_record.clean_shutdown = attempted_clean;
+
+        let owner_timeout = self
+            .ticket
+            .deadline()
+            .duration_since(MonotonicInstant::now())
+            .max(Duration::from_millis(1));
+        let owner_shutdown = match self.engine.session.shutdown_with_timeout(owner_timeout) {
+            Ok(SessionOwnerShutdown::Joined) => Ok(()),
+            Ok(SessionOwnerShutdown::DetachedUncertain { timeout }) => {
+                Err(SessionOwnerError::ShutdownTimedOut { timeout })
+            }
+            Err(error) => Err(error),
+        };
+        if let Err(error) = owner_shutdown {
+            self.session_failure = Some(error.code());
+            let timed_out = matches!(error, SessionOwnerError::ShutdownTimedOut { .. });
+            let progress = if timed_out {
+                self.coordinator.poll(self.ticket.deadline())
+            } else {
+                self.coordinator.complete(
+                    self.ticket,
+                    ShutdownStepResult::Failed,
+                    MonotonicInstant::now(),
+                )
+            }
+            .map_err(ProcessShutdownError::Coordinator)?;
+            let report = completed_shutdown_report(progress)?;
+            return Err(ProcessShutdownError::Owner {
+                report: Box::new(ProcessShutdownReport {
+                    journals_closed: self.journals_closed,
+                    journals_flushed: self.journals_flushed,
+                    shutdown: report,
+                    journal_failure: self.journal_failure,
+                    session_failure: self.session_failure,
+                }),
+                error: Box::new(error),
+            });
+        }
+
+        let mut store = match SessionStore::open(
+            self.engine.session_database_path.clone(),
+            self.engine.session_store_config,
+        ) {
+            Ok(store) => Some(store),
+            Err(error) => {
+                self.session_failure = Some(error.code());
+                None
+            }
+        };
+        let succeeded = if let Some(store) = store.as_mut() {
+            match store.put_session(&self.engine.session_record) {
+                Ok(()) => true,
+                Err(error) => {
+                    self.session_failure = Some(error.code());
+                    false
+                }
+            }
+        } else {
+            false
+        };
+        let progress = self
+            .coordinator
+            .complete(
+                self.ticket,
+                if succeeded {
+                    ShutdownStepResult::Succeeded
+                } else {
+                    ShutdownStepResult::Failed
+                },
+                MonotonicInstant::now(),
+            )
+            .map_err(ProcessShutdownError::Coordinator)?;
+        let report = completed_shutdown_report(progress)?;
+        if attempted_clean && !report.is_clean() {
+            self.engine.session_record.clean_shutdown = false;
+            if let Some(store) = store.as_mut() {
+                if let Err(error) = store.put_session(&self.engine.session_record) {
+                    self.session_failure = Some(error.code());
+                }
+            } else {
+                self.session_failure.get_or_insert("store");
+            }
+        }
+        Ok(ProcessShutdownReport {
+            journals_closed: self.journals_closed,
+            journals_flushed: self.journals_flushed,
+            shutdown: report,
+            journal_failure: self.journal_failure,
+            session_failure: self.session_failure,
+        })
+    }
 }
 
 #[derive(Debug)]
 pub enum ProcessShutdownError {
-    Close(Box<SessionOwnerError>),
-    Owner(Box<SessionOwnerError>),
-    UnexpectedCloseResult(&'static str),
-    UnexpectedAndOwner {
-        result: &'static str,
-        shutdown: Box<SessionOwnerError>,
+    Coordinator(ShutdownCoordinatorError),
+    CoordinatorAlreadyTaken,
+    UnexpectedStep {
+        expected: ShutdownStep,
+        actual: Option<ShutdownStep>,
     },
-    CloseAndOwner {
-        close: Box<SessionOwnerError>,
-        shutdown: Box<SessionOwnerError>,
+    Owner {
+        report: Box<ProcessShutdownReport>,
+        error: Box<SessionOwnerError>,
     },
+}
+
+impl ProcessShutdownError {
+    #[must_use]
+    pub fn report(&self) -> Option<&ProcessShutdownReport> {
+        match self {
+            Self::Owner { report, .. } => Some(report),
+            Self::Coordinator(_) | Self::CoordinatorAlreadyTaken | Self::UnexpectedStep { .. } => {
+                None
+            }
+        }
+    }
 }
 
 impl fmt::Display for ProcessShutdownError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Close(error) => write!(formatter, "failed to close process journals: {error}"),
-            Self::Owner(error) => write!(formatter, "session owner shutdown failed: {error}"),
-            Self::UnexpectedCloseResult(result) => {
-                write!(formatter, "journal close returned unexpected {result}")
+            Self::Coordinator(error) => write!(formatter, "shutdown coordinator failed: {error}"),
+            Self::CoordinatorAlreadyTaken => {
+                formatter.write_str("shutdown coordinator authority is unavailable")
             }
-            Self::UnexpectedAndOwner { result, shutdown } => write!(
+            Self::UnexpectedStep { expected, actual } => write!(
                 formatter,
-                "journal close returned unexpected {result}; owner shutdown failed: {shutdown}"
+                "shutdown expected {} but reached {}",
+                expected.code(),
+                actual.map_or("complete", ShutdownStep::code)
             ),
-            Self::CloseAndOwner { close, shutdown } => write!(
-                formatter,
-                "journal close failed: {close}; owner shutdown failed: {shutdown}"
-            ),
+            Self::Owner { error, .. } => {
+                write!(formatter, "session owner shutdown failed: {error}")
+            }
         }
     }
 }
@@ -283,6 +585,7 @@ pub enum ProcessBootstrapFailure {
     Repairs(StartupSessionRepairFinishError),
     Native(NativeStartupError<NativeFilesystemError>),
     RuntimeConfig(RuntimeEffectConfigError),
+    ShutdownCoordinator(ShutdownCoordinatorError),
     PersistenceCatalog(PersistenceCatalogError),
     RuntimeRequestCapacity { required: usize, configured: usize },
     RuntimeTimerCapacity { required: usize, configured: usize },
@@ -312,6 +615,12 @@ impl fmt::Display for ProcessBootstrapFailure {
             Self::Repairs(error) => write!(formatter, "startup SQLite repair failed: {error}"),
             Self::Native(error) => write!(formatter, "native startup failed: {error}"),
             Self::RuntimeConfig(error) => error.fmt(formatter),
+            Self::ShutdownCoordinator(error) => {
+                write!(
+                    formatter,
+                    "shutdown coordinator configuration failed: {error}"
+                )
+            }
             Self::PersistenceCatalog(error) => {
                 write!(
                     formatter,
@@ -399,13 +708,23 @@ where
                 shutdown: None,
             },
         )?;
-    if snapshot.session.is_none() {
-        let record = SessionRecord {
+    let record = match snapshot.session.clone() {
+        Some(mut record) => {
+            record.updated_ms = record
+                .updated_ms
+                .max(record.created_ms)
+                .max(config.updated_ms);
+            record.clean_shutdown = false;
+            record
+        }
+        None => SessionRecord {
             session_id: derive_process_session_id(&config),
             created_ms: config.recovery_created_at_unix_ms,
             updated_ms: config.updated_ms,
             clean_shutdown: false,
-        };
+        },
+    };
+    if snapshot.session.as_ref() != Some(&record) {
         match session.execute(SessionCommand::PutSession(record.clone())) {
             Ok(SessionCommandResult::Unit) => snapshot.session = Some(record),
             Ok(result) => {
@@ -445,11 +764,12 @@ fn bootstrap_after_owner<P>(
 where
     P: PersistedOptionPolicy + Send + Sync + 'static,
 {
-    let session_id = snapshot
+    let session_record = snapshot
         .session
         .as_ref()
         .expect("bootstrap installs a session before reconciliation")
-        .session_id;
+        .clone();
+    let session_id = session_record.session_id;
     let native_policy = NativeFilesystemPolicy::new(
         &config.control_directory,
         config.allowed_output_roots.iter().cloned(),
@@ -573,11 +893,18 @@ where
             ProcessBootstrapFailure::StartupProbeAuthorityRemaining(remaining_targets),
         ));
     }
+    let shutdown =
+        ShutdownCoordinator::new(ShutdownProfile::Minimal, config.shutdown_step_timeout_ms)
+            .map_err(|error| Box::new(ProcessBootstrapFailure::ShutdownCoordinator(error)))?;
     Ok(BootstrappedEngine {
         session,
         session_id,
+        session_record,
+        session_database_path: config.session_owner.database_path.clone(),
+        session_store_config: config.session_owner.store,
         driver,
         runtime,
+        shutdown: Some(shutdown),
         control_directory: config.control_directory.clone(),
         replay_limits: config.replay_limits,
         journal_state_limits: config.journal_state_limits,
@@ -607,6 +934,89 @@ fn derive_process_session_id(config: &ProcessBootstrapConfig) -> SessionId {
     SessionId::new(bytes)
 }
 
+fn next_shutdown_ticket(
+    progress: ShutdownProgress,
+    expected: ShutdownStep,
+) -> Result<ShutdownTicket, ProcessShutdownError> {
+    match progress {
+        ShutdownProgress::Advanced { next, .. } if next.step() == expected => Ok(next),
+        ShutdownProgress::Advanced { next, .. } | ShutdownProgress::Waiting(next) => {
+            Err(ProcessShutdownError::UnexpectedStep {
+                expected,
+                actual: Some(next.step()),
+            })
+        }
+        ShutdownProgress::Idle | ShutdownProgress::Complete(_) => {
+            Err(ProcessShutdownError::UnexpectedStep {
+                expected,
+                actual: None,
+            })
+        }
+    }
+}
+
+fn completed_shutdown_report(
+    progress: ShutdownProgress,
+) -> Result<ShutdownReport, ProcessShutdownError> {
+    match progress {
+        ShutdownProgress::Complete(report) => Ok(report),
+        ShutdownProgress::Advanced { next, .. } | ShutdownProgress::Waiting(next) => {
+            Err(ProcessShutdownError::UnexpectedStep {
+                expected: ShutdownStep::PersistSession,
+                actual: Some(next.step()),
+            })
+        }
+        ShutdownProgress::Idle => Err(ProcessShutdownError::UnexpectedStep {
+            expected: ShutdownStep::PersistSession,
+            actual: None,
+        }),
+    }
+}
+
+enum SessionCommandWait {
+    Completed(SessionCommandResult),
+    Failed(SessionOwnerError),
+    TimedOut,
+}
+
+fn wait_for_session_command(
+    completion: SessionCompletion,
+    deadline: MonotonicInstant,
+) -> SessionCommandWait {
+    loop {
+        match completion.try_wait() {
+            Ok(Some(result)) => return SessionCommandWait::Completed(result),
+            Ok(None) => {}
+            Err(error) => return SessionCommandWait::Failed(error),
+        }
+        let now = MonotonicInstant::now();
+        if now >= deadline {
+            return SessionCommandWait::TimedOut;
+        }
+        std::thread::park_timeout(deadline.duration_since(now).min(Duration::from_millis(1)));
+    }
+}
+
+fn submit_session_command(
+    session: &SessionHandle,
+    command: SessionCommand,
+    deadline: MonotonicInstant,
+) -> SessionCommandWait {
+    match session.try_submit(command) {
+        Ok(completion) => wait_for_session_command(completion, deadline),
+        Err(error) => SessionCommandWait::Failed(error),
+    }
+}
+
+fn current_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+        .unwrap_or(0)
+        .min(MAX_PERSISTED_MILLISECONDS)
+}
+
 fn session_result_code(result: &SessionCommandResult) -> &'static str {
     match result {
         SessionCommandResult::Unit => "unit",
@@ -619,16 +1029,24 @@ fn session_result_code(result: &SessionCommandResult) -> &'static str {
         SessionCommandResult::QueueOrder(_) => "queue_order",
         SessionCommandResult::JournalAppended(_) => "journal_appended",
         SessionCommandResult::JournalFlushed(_) => "journal_flushed",
+        SessionCommandResult::JournalsFlushed(_) => "journals_flushed",
         SessionCommandResult::JournalsClosed(_) => "journals_closed",
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ProcessBootstrapConfig, RuntimeEffectConfig, bootstrap_process};
+    use super::{
+        DEFAULT_PROCESS_SHUTDOWN_STEP_TIMEOUT_MS, ProcessBootstrapConfig, ProcessDrainOutcome,
+        RuntimeEffectConfig, bootstrap_process,
+    };
     use crate::StartupRecoveryConfig;
     use ariax_core::{MonotonicInstant, SchedulerConfig};
-    use ariax_storage::{JournalStateLimits, ReplayLimits, SessionOwner, SessionOwnerConfig};
+    use ariax_runtime::{ShutdownCoordinatorError, ShutdownStep};
+    use ariax_storage::{
+        JournalStateLimits, ReplayLimits, SessionOwner, SessionOwnerConfig, SessionStore,
+        SessionStoreConfig,
+    };
     use std::fs;
     use std::num::{NonZeroU64, NonZeroUsize};
     use std::path::PathBuf;
@@ -660,6 +1078,9 @@ mod tests {
 
         fn private_subdirectory(&self, name: &str) -> PathBuf {
             let path = self.0.join(name);
+            if path.is_dir() {
+                return path;
+            }
             #[cfg(unix)]
             {
                 use std::os::unix::fs::DirBuilderExt;
@@ -709,6 +1130,7 @@ mod tests {
                 option_plan_capacity: capacity,
             },
             persistence_plan_capacity: capacity,
+            shutdown_step_timeout_ms: DEFAULT_PROCESS_SHUTDOWN_STEP_TIMEOUT_MS,
             updated_ms: 1_000,
             recovery_created_at_unix_ms: 1_000,
         }
@@ -722,10 +1144,78 @@ mod tests {
         assert_eq!(engine.task_count(), 0);
         assert!(engine.is_idle());
         assert!(engine.snapshot_reader().load().is_empty());
-        assert_eq!(
-            engine.shutdown().expect("shutdown process").journals_closed,
-            0
+        assert!(!engine.session_record().clean_shutdown);
+        let report = engine.shutdown().expect("shutdown process");
+        assert!(report.is_clean());
+        assert_eq!(report.journals_flushed, 0);
+        assert_eq!(report.journals_closed, 0);
+
+        let store = SessionStore::open(
+            directory.0.join("session.db"),
+            SessionStoreConfig::default(),
+        )
+        .expect("reopen clean session");
+        assert!(
+            store
+                .session()
+                .expect("session")
+                .expect("record")
+                .clean_shutdown
         );
+        drop(store);
+
+        let restarted = bootstrap_process(config(&directory), allow_all_options)
+            .expect("restart clean process");
+        assert!(!restarted.session_record().clean_shutdown);
+        assert!(
+            restarted
+                .shutdown()
+                .expect("shutdown restarted process")
+                .is_clean()
+        );
+    }
+
+    #[test]
+    fn failed_and_timed_out_drain_persist_a_dirty_checkpoint() {
+        for (label, outcome) in [
+            ("failed", ProcessDrainOutcome::Failed),
+            ("timed-out", ProcessDrainOutcome::TimedOut),
+        ] {
+            let directory = TestDirectory::new();
+            let engine = bootstrap_process(config(&directory), allow_all_options)
+                .expect("bootstrap process");
+            let mut shutdown = engine.begin_shutdown().expect("begin shutdown");
+            shutdown
+                .complete_drain(outcome)
+                .expect("record drain result");
+            let report = shutdown.finish().expect("finish dirty shutdown");
+            assert!(!report.is_clean(), "{label}");
+            assert!(
+                report.shutdown().step_failed(ShutdownStep::DrainDiskCpu),
+                "{label}"
+            );
+            assert_eq!(
+                report.shutdown().step_timed_out(ShutdownStep::DrainDiskCpu),
+                outcome == ProcessDrainOutcome::TimedOut,
+                "{label}"
+            );
+            assert_eq!(report.journal_failure(), None, "{label}");
+            assert_eq!(report.session_failure(), None, "{label}");
+
+            let store = SessionStore::open(
+                directory.0.join("session.db"),
+                SessionStoreConfig::default(),
+            )
+            .expect("reopen dirty session");
+            assert!(
+                !store
+                    .session()
+                    .expect("session")
+                    .expect("record")
+                    .clean_shutdown,
+                "{label}"
+            );
+        }
     }
 
     #[test]
@@ -741,6 +1231,28 @@ mod tests {
 
         let (owner, _) = SessionOwner::spawn(owner_config, allow_all_options)
             .expect("failed bootstrap released the owner lock");
+        owner.shutdown().expect("shutdown replacement owner");
+    }
+
+    #[test]
+    fn invalid_shutdown_timeout_fails_before_process_publication() {
+        let directory = TestDirectory::new();
+        let mut bootstrap = config(&directory);
+        let owner_config = bootstrap.session_owner.clone();
+        bootstrap.shutdown_step_timeout_ms = 0;
+        let error = bootstrap_process(bootstrap, allow_all_options)
+            .err()
+            .expect("zero shutdown timeout must fail");
+        assert!(matches!(
+            error.failure(),
+            super::ProcessBootstrapFailure::ShutdownCoordinator(
+                ShutdownCoordinatorError::InvalidStepTimeout
+            )
+        ));
+        assert!(error.shutdown_error().is_none());
+
+        let (owner, _) = SessionOwner::spawn(owner_config, allow_all_options)
+            .expect("failed shutdown configuration released owner lock");
         owner.shutdown().expect("shutdown replacement owner");
     }
 }

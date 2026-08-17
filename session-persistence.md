@@ -274,6 +274,16 @@ ids, and platform paths have exact length/codec checks before binding.
 | `journal_install` | `gid TEXT PRIMARY KEY`, `checkpoint_id BLOB(16)`, `old_journal_id BLOB(16)`, `old_path BLOB`, `new_journal_id BLOB(16)`, `new_path BLOB`, `source_last_sequence BLOB(8)`, `phase INTEGER`, `created_ms INTEGER` |
 | `bt_resume` | `gid TEXT PRIMARY KEY`, `resume_blob BLOB`, `dirty INTEGER`, `saved_ms INTEGER`; baseline default maximum 16 MiB, hard maximum 64 MiB |
 
+`session.clean_shutdown` is a publication marker, not an optimistic process
+state. Every startup transaction sets it to false before scheduler/runtime
+publication, including a restart of a previously clean database. Minimal
+graceful shutdown stops admission, drains workers, flushes and closes all task
+journals, and joins the session owner before reopening the database under a new
+owner lock to write the final marker. It writes true only when every ordered
+barrier succeeded; a failed/timed-out worker, journal, or owner barrier leaves
+false. Recovery therefore never interprets a marker left true by a currently
+running process or a timed-out graceful shutdown.
+
 A canonical `Complete` stopped result has no error payload and carries both
 `total_length` and `layout_hash`. A canonical `Error` carries its required
 public error kind/message and no completion fields. A canonical `Removed`

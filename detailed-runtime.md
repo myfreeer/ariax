@@ -545,6 +545,19 @@ a clean checkpoint after an earlier failure. The final report is clean only if
 every selected step completed successfully; it retains bounded bitsets and the
 first failure rather than allocating an unbounded error list.
 
+The executable minimal process path binds these tickets to real owners.
+`StopAdmission` closes the process runtime out of band; `DrainDiskCpu` awaits
+the HTTP supervisor, whose worker futures retain their network and storage
+completion authority and whose bounded abort result is reported as a timeout;
+`FlushJournal` submits descriptor-owner `FlushAllJournals` followed by
+`CloseAllFlushedJournals` under the same deadline; and `PersistSession` applies
+the bounded session-owner join before reopening SQLite under a fresh owner lock.
+Startup writes `clean_shutdown=false` before publishing the process. Shutdown
+sets it true only after every earlier step and the owner join succeeded; any
+failed or timed-out step leaves or restores it false. Synchronous embedding may
+report an attached active worker lane dirty rather than claiming that an
+immediate abort was a graceful drain.
+
 ## Disk Backend Contract
 
 This is the normative runtime dispatch definition. `event-backends.md` and

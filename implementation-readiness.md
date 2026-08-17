@@ -36,6 +36,10 @@ preservation, crash-point, and temporary-unlink fault coverage. A standalone,
 workspace-excluded cargo-fuzz package now covers HTTP response/request headers,
 retry specifications, discard-budget invariants, and journal replay; the
 remaining protocol/crash fault matrix is still pending.
+The minimal process shutdown path now drives the fixed coordinator through real
+runtime admission, bounded HTTP-worker drain, all-journal flush/close, bounded
+session-owner join, and clean/dirty session-marker persistence. Cooperative
+drain is clean; active synchronous abort and asynchronous timeout are dirty.
 This remains a phase checkpoint, not a release/tag: broader RFC 9530/Metalink
 identity, `Content-Digest`, alternate digest algorithms, broader validators,
 growing/chunked transfers, HTTP/2, broader RPC, native release benchmark
@@ -250,8 +254,9 @@ this vertical slice.
 - Expand the five-method request-only dispatcher into the authenticated,
   batch/list/event-capable Phase-4 control plane without widening the default
   loopback boundary.
-- Drive the bounded orderly-shutdown coordinator across every real lane,
-  including dirty-checkpoint persistence when an adapter times out or detaches.
+- Keep the executable minimal shutdown path green and carry the same typed
+  timeout/dirty outcome into future native disk/CPU and BitTorrent lanes rather
+  than bypassing the coordinator.
 - Keep the hot-backup publication recovery matrix green across native
   platforms; native release and real poweroff evidence remain separate gates.
 - Run real io_uring and native Windows I/O coverage in supporting CI.

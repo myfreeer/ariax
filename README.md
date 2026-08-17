@@ -38,8 +38,11 @@ executable; publication residue is removed only after full header/linkage
 replay succeeds. Child-process exit/kill barriers and the Linux durable-prefix
 power-loss cut model are executable too. Hot-backup publication residue now
 recovers through exact same-file/link-count proof and preserves raced
-destinations. Native release and real poweroff evidence remain required before
-a completion or tag claim.
+destinations. The minimal real-process shutdown path now stops admission,
+boundedly drains HTTP workers, flushes and closes every installed journal, and
+publishes a clean session marker only after the session owner joins; worker or
+lane timeout leaves an explicit dirty marker. Native release and real poweroff
+evidence remain required before a completion or tag claim.
 
 This design is for a new downloader that keeps the mature aria2 user model
 while fixing the major safety, scalability, and completeness problems found in

@@ -645,6 +645,7 @@ fn command_result_code(result: &SessionCommandResult) -> &'static str {
         SessionCommandResult::QueueOrder(_) => "queue_order",
         SessionCommandResult::JournalAppended(_) => "journal_appended",
         SessionCommandResult::JournalFlushed(_) => "journal_flushed",
+        SessionCommandResult::JournalsFlushed(_) => "journals_flushed",
         SessionCommandResult::JournalsClosed(_) => "journals_closed",
     }
 }

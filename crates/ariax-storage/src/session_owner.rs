@@ -159,6 +159,7 @@ pub enum SessionCommand {
         gid: Gid,
         through_sequence: u64,
     },
+    FlushAllJournals,
     CloseJournal {
         gid: Gid,
     },
@@ -193,6 +194,7 @@ pub enum SessionCommandResult {
     QueueOrder(Vec<Gid>),
     JournalAppended(Appended),
     JournalFlushed(Flushed),
+    JournalsFlushed(usize),
     JournalsClosed(usize),
 }
 
@@ -985,6 +987,7 @@ fn execute_command(
                 .map(SessionCommandResult::JournalFlushed)
                 .map_err(|error| journal_error(gid, error))
         }
+        SessionCommand::FlushAllJournals => flush_all_journals(journals),
         SessionCommand::CloseJournal { gid } => {
             let journal = journal_mut(journals, gid)?;
             journal
@@ -1095,6 +1098,27 @@ fn close_all_flushed_journals(
     let count = journals.len();
     journals.clear();
     Ok(SessionCommandResult::JournalsClosed(count))
+}
+
+fn flush_all_journals(
+    journals: &mut BTreeMap<Gid, OwnedJournalAppender>,
+) -> Result<SessionCommandResult, SessionPersistenceError> {
+    let mut first_error = None;
+    let mut flushed = 0_usize;
+    for (gid, journal) in journals.iter_mut() {
+        let through_sequence = journal.appender.appended_sequence();
+        match journal.appender.flush(through_sequence) {
+            Ok(_) => flushed += 1,
+            Err(error) if first_error.is_none() => {
+                first_error = Some(journal_error(*gid, error));
+            }
+            Err(_) => {}
+        }
+    }
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(SessionCommandResult::JournalsFlushed(flushed)),
+    }
 }
 
 fn validate_wait_timeout(
@@ -2280,6 +2304,85 @@ mod tests {
         handle
             .execute(SessionCommand::CloseJournal { gid: task_gid })
             .expect("close after flush");
+        handle.shutdown().expect("shutdown owner");
+    }
+
+    #[test]
+    fn flush_all_flushes_every_installed_journal() {
+        let directory = TestDirectory::new();
+        let (handle, _) =
+            SessionOwner::spawn(owner_config(&directory, 8), |_: &str| true).expect("spawn owner");
+        for (task_gid, marker) in [(gid(1), 1), (gid(2), 2)] {
+            handle
+                .execute(SessionCommand::InstallJournalAppender {
+                    gid: task_gid,
+                    appender: appender(&directory, task_gid, marker),
+                })
+                .expect("install journal");
+            handle
+                .execute(SessionCommand::AppendJournal {
+                    gid: task_gid,
+                    generation: Generation::INITIAL,
+                    payload: paused_payload(),
+                })
+                .expect("append payload");
+        }
+
+        assert_eq!(
+            handle
+                .execute(SessionCommand::FlushAllJournals)
+                .expect("flush every journal"),
+            SessionCommandResult::JournalsFlushed(2)
+        );
+        assert_eq!(
+            handle
+                .execute(SessionCommand::CloseAllFlushedJournals)
+                .expect("close every flushed journal"),
+            SessionCommandResult::JournalsClosed(2)
+        );
+        handle.shutdown().expect("shutdown owner");
+    }
+
+    #[test]
+    fn flush_all_reports_the_first_fault_but_attempts_later_journals() {
+        let directory = TestDirectory::new();
+        let first_gid = gid(1);
+        let second_gid = gid(2);
+        let (handle, _) =
+            SessionOwner::spawn(owner_config(&directory, 8), |_: &str| true).expect("spawn owner");
+        let mut first = appender(&directory, first_gid, 1);
+        first.fail_next_flush_for_test();
+        for (task_gid, appender) in [
+            (first_gid, first),
+            (second_gid, appender(&directory, second_gid, 2)),
+        ] {
+            handle
+                .execute(SessionCommand::InstallJournalAppender {
+                    gid: task_gid,
+                    appender,
+                })
+                .expect("install journal");
+            handle
+                .execute(SessionCommand::AppendJournal {
+                    gid: task_gid,
+                    generation: Generation::INITIAL,
+                    payload: paused_payload(),
+                })
+                .expect("append payload");
+        }
+
+        assert!(matches!(
+            handle.execute(SessionCommand::FlushAllJournals),
+            Err(SessionOwnerError::Persistence(
+                SessionPersistenceError::Journal {
+                    gid,
+                    error: JournalAppenderError::Io { .. },
+                }
+            )) if gid == first_gid
+        ));
+        handle
+            .execute(SessionCommand::CloseJournal { gid: second_gid })
+            .expect("later journal was still flushed");
         handle.shutdown().expect("shutdown owner");
     }
 

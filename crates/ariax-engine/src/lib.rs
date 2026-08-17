@@ -157,8 +157,8 @@ pub use http_supervisor::{
     DEFAULT_HTTP_SUPERVISOR_POLL_INTERVAL, DEFAULT_HTTP_SUPERVISOR_SHUTDOWN_TIMEOUT,
     HttpTaskWorker, HttpWorkerFuture, HttpWorkerSuccess, HttpWorkerSupervisor,
     HttpWorkerSupervisorConfig, HttpWorkerSupervisorConfigError, HttpWorkerSupervisorError,
-    HttpWorkerSupervisorPoll, MAX_HTTP_SUPERVISOR_ACTIVE_WORKERS,
-    MAX_HTTP_SUPERVISOR_PENDING_EVENTS,
+    HttpWorkerSupervisorPoll, HttpWorkerSupervisorShutdown, MAX_HTTP_SUPERVISOR_ACTIVE_WORKERS,
+    MAX_HTTP_SUPERVISOR_PENDING_EVENTS, MAX_HTTP_SUPERVISOR_SHUTDOWN_TIMEOUT,
 };
 pub use http_task::{
     DEFAULT_HTTP_ENDGAME_MAX_DUPLICATES, DEFAULT_HTTP_MAX_CONNECTIONS_PER_SERVER,
@@ -177,10 +177,12 @@ pub use http_transport::{
     HttpTrustSource, MAX_HTTP_CONNECTIONS_PER_ORIGIN, MAX_HTTP_IDLE_CONNECTIONS_PER_ORIGIN,
     MAX_HTTP_TLS_BUNDLE_BYTES, MAX_HTTP_TLS_BUNDLE_CERTIFICATES,
 };
+pub(crate) use process_bootstrap::ProcessDrainOutcome;
 pub use process_bootstrap::{
-    BootstrappedEngine, ProcessBootstrapConfig, ProcessBootstrapError, ProcessBootstrapFailure,
-    ProcessSchedulerDriver, ProcessSchedulerPreparation, ProcessSchedulerPrepareError,
-    ProcessSchedulerSink, ProcessShutdownError, ProcessShutdownReport, bootstrap_process,
+    BootstrappedEngine, DEFAULT_PROCESS_SHUTDOWN_STEP_TIMEOUT_MS, ProcessBootstrapConfig,
+    ProcessBootstrapError, ProcessBootstrapFailure, ProcessSchedulerDriver,
+    ProcessSchedulerPreparation, ProcessSchedulerPrepareError, ProcessSchedulerSink,
+    ProcessShutdownError, ProcessShutdownReport, bootstrap_process,
 };
 pub use runtime_effects::{
     ActiveTransferRequest, AllocationRequest, CancellationRequest, MAX_RUNTIME_EFFECT_CAPACITY,

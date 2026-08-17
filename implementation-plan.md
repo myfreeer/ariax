@@ -321,6 +321,11 @@ Exit criteria:
 - Stuck socket speed drops to zero without waiting for another packet.
 - The minimal RPC methods drive the real scheduler and expose only aria2's closed
   status/GID/error shapes.
+- Minimal process shutdown executes stop-admission, bounded HTTP worker drain,
+  all-journal flush/close, bounded session-owner join, and final clean/dirty
+  SQLite publication in coordinator order. Active synchronous abort and
+  asynchronous worker timeout persist a dirty checkpoint; future native
+  disk/CPU and BitTorrent lanes must surface the same typed outcome.
 
 ## Phase 4: Control Plane And RPC
 

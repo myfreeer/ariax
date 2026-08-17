@@ -18,6 +18,7 @@ use tokio::task::{Id as JoinId, JoinSet};
 
 pub const MAX_HTTP_SUPERVISOR_ACTIVE_WORKERS: usize = 1024;
 pub const MAX_HTTP_SUPERVISOR_PENDING_EVENTS: usize = 4096;
+pub const MAX_HTTP_SUPERVISOR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(300);
 pub const DEFAULT_HTTP_SUPERVISOR_POLL_INTERVAL: Duration = Duration::from_millis(1);
 pub const DEFAULT_HTTP_SUPERVISOR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -46,6 +47,7 @@ pub struct HttpWorkerSupervisorConfig {
     pub max_active_workers: NonZeroUsize,
     pub pending_event_capacity: NonZeroUsize,
     pub poll_interval: Duration,
+    pub shutdown_timeout: Duration,
 }
 
 impl Default for HttpWorkerSupervisorConfig {
@@ -55,6 +57,7 @@ impl Default for HttpWorkerSupervisorConfig {
             pending_event_capacity: NonZeroUsize::new(256)
                 .expect("default pending event count is nonzero"),
             poll_interval: DEFAULT_HTTP_SUPERVISOR_POLL_INTERVAL,
+            shutdown_timeout: DEFAULT_HTTP_SUPERVISOR_SHUTDOWN_TIMEOUT,
         }
     }
 }
@@ -79,6 +82,11 @@ impl HttpWorkerSupervisorConfig {
         if self.poll_interval.is_zero() || self.poll_interval > Duration::from_secs(1) {
             return Err(HttpWorkerSupervisorConfigError::InvalidPollInterval);
         }
+        if self.shutdown_timeout.is_zero()
+            || self.shutdown_timeout > MAX_HTTP_SUPERVISOR_SHUTDOWN_TIMEOUT
+        {
+            return Err(HttpWorkerSupervisorConfigError::InvalidShutdownTimeout);
+        }
         Ok(self)
     }
 }
@@ -89,6 +97,7 @@ pub enum HttpWorkerSupervisorConfigError {
     TooManyPendingEvents,
     PendingCapacityTooSmall,
     InvalidPollInterval,
+    InvalidShutdownTimeout,
 }
 
 impl fmt::Display for HttpWorkerSupervisorConfigError {
@@ -100,6 +109,7 @@ impl fmt::Display for HttpWorkerSupervisorConfigError {
                 "HTTP supervisor pending-event capacity cannot retain worker completions"
             }
             Self::InvalidPollInterval => "HTTP supervisor poll interval is invalid",
+            Self::InvalidShutdownTimeout => "HTTP supervisor shutdown timeout is invalid",
         })
     }
 }
@@ -111,6 +121,13 @@ pub enum HttpWorkerSupervisorPoll {
     Progressed,
     Idle,
     Backpressured,
+}
+
+/// Bounded result of cancelling and joining every live HTTP worker.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HttpWorkerSupervisorShutdown {
+    Drained,
+    TimedOut { aborted_workers: usize },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -209,18 +226,33 @@ impl HttpWorkerSupervisor {
     /// Cancels every live worker and waits for their futures to release file,
     /// network, and session-owner references. A bounded fallback aborts any
     /// worker that does not cooperate with cancellation.
-    pub async fn shutdown(mut self) {
+    pub async fn shutdown(self) -> HttpWorkerSupervisorShutdown {
+        let timeout = self.config.shutdown_timeout;
+        self.shutdown_with_timeout(timeout).await
+    }
+
+    /// Applies the tighter of the supervisor policy and an outer process-step
+    /// deadline so this lane cannot outlive its coordinator ticket.
+    pub async fn shutdown_with_timeout(
+        mut self,
+        outer_timeout: Duration,
+    ) -> HttpWorkerSupervisorShutdown {
         for worker in self.active.values() {
             worker.cancellation.cancel();
         }
-        if tokio::time::timeout(DEFAULT_HTTP_SUPERVISOR_SHUTDOWN_TIMEOUT, async {
+        let timeout = self.config.shutdown_timeout.min(outer_timeout);
+        if tokio::time::timeout(timeout, async {
             while self.joins.join_next().await.is_some() {}
         })
         .await
         .is_err()
         {
+            let aborted_workers = self.joins.len();
             self.joins.abort_all();
             while self.joins.join_next().await.is_some() {}
+            HttpWorkerSupervisorShutdown::TimedOut { aborted_workers }
+        } else {
+            HttpWorkerSupervisorShutdown::Drained
         }
     }
 
@@ -535,6 +567,7 @@ mod tests {
             max_active_workers: NonZeroUsize::new(max_active).expect("active"),
             pending_event_capacity: NonZeroUsize::new(max_active * 2 + 1).expect("pending"),
             poll_interval: Duration::from_millis(1),
+            shutdown_timeout: DEFAULT_HTTP_SUPERVISOR_SHUTDOWN_TIMEOUT,
         }
     }
 
@@ -788,9 +821,55 @@ mod tests {
             .expect("allocate");
         started.notified().await;
 
-        supervisor.shutdown().await;
+        assert_eq!(
+            supervisor.shutdown().await,
+            HttpWorkerSupervisorShutdown::Drained
+        );
 
         assert!(stopped.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn shutdown_timeout_aborts_an_uncooperative_worker() {
+        let runtime = runtime(4);
+        let tasks = SharedHttpTaskCatalog::new(NonZeroUsize::new(1).expect("tasks"));
+        tasks.insert(task(task_id(1), gid(7))).expect("insert");
+        let started = Arc::new(Notify::new());
+        let worker = Arc::new(CancelWorker {
+            started: Arc::clone(&started),
+            stopped: Arc::new(Notify::new()),
+        });
+        let mut supervisor = HttpWorkerSupervisor::new(runtime.clone(), tasks, worker, config(1))
+            .expect("supervisor");
+        runtime.enqueue_allocation_for_test(task_id(1), gid(7), Generation::INITIAL);
+        supervisor
+            .poll_once(MonotonicInstant::now())
+            .expect("allocate");
+        started.notified().await;
+
+        assert_eq!(
+            supervisor
+                .shutdown_with_timeout(Duration::from_millis(10))
+                .await,
+            HttpWorkerSupervisorShutdown::TimedOut { aborted_workers: 1 }
+        );
+    }
+
+    #[test]
+    fn shutdown_timeout_bounds_are_rejected() {
+        let mut invalid = config(1);
+        invalid.shutdown_timeout = Duration::ZERO;
+        assert_eq!(
+            invalid.validate(),
+            Err(HttpWorkerSupervisorConfigError::InvalidShutdownTimeout)
+        );
+        invalid.shutdown_timeout = MAX_HTTP_SUPERVISOR_SHUTDOWN_TIMEOUT
+            .checked_add(Duration::from_millis(1))
+            .expect("timeout overflow");
+        assert_eq!(
+            invalid.validate(),
+            Err(HttpWorkerSupervisorConfigError::InvalidShutdownTimeout)
+        );
     }
 
     #[tokio::test]

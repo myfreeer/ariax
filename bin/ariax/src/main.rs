@@ -407,6 +407,7 @@ fn process_bootstrap_config(
             option_plan_capacity: plan_capacity,
         },
         persistence_plan_capacity: plan_capacity,
+        shutdown_step_timeout_ms: ariax_engine::DEFAULT_PROCESS_SHUTDOWN_STEP_TIMEOUT_MS,
         updated_ms: now_wall_unix_ms,
         recovery_created_at_unix_ms: now_wall_unix_ms,
     })
@@ -558,8 +559,20 @@ async fn shutdown_rpc_backend(backend: Arc<HttpControlBackend>) -> Result<(), St
     plane
         .shutdown_async()
         .await
-        .map(|_| ())
         .map_err(|error| error.to_string())
+        .and_then(|report| {
+            if report.is_clean() {
+                Ok(())
+            } else {
+                let failure = report
+                    .shutdown()
+                    .first_failure()
+                    .map_or("unknown", |failure| failure.step.code());
+                Err(format!(
+                    "shutdown completed with dirty checkpoint at {failure}"
+                ))
+            }
+        })
 }
 
 fn check_bootstrap(
@@ -581,6 +594,16 @@ fn check_bootstrap(
             let retirement_failures = engine.retirement_failures().len();
             match engine.shutdown() {
                 Ok(report) => {
+                    if !report.is_clean() {
+                        let failure = report
+                            .shutdown()
+                            .first_failure()
+                            .map_or("unknown", |failure| failure.step.code());
+                        eprintln!(
+                            "ariax: bootstrap shutdown completed with dirty checkpoint at {failure}"
+                        );
+                        return ExitCode::FAILURE;
+                    }
                     println!(
                         "bootstrap ok: {tasks} tasks, {} journals closed, {retirement_failures} deferred retirements",
                         report.journals_closed
