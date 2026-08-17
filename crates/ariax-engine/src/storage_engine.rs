@@ -44,6 +44,8 @@ pub struct StorageEngineConfig {
     pub shutdown_timeout: Duration,
     #[cfg(test)]
     pub disk_fault: Option<StorageEngineDiskFault>,
+    #[cfg(test)]
+    pub crash_point: Option<StorageEngineCrashPoint>,
 }
 
 /// Deterministic disk boundary faults used by the HTTP/storage integration
@@ -55,6 +57,15 @@ pub enum StorageEngineDiskFault {
     OutOfSpace,
     PermissionDenied,
     ShortWrite,
+}
+
+/// Exact crash barriers used only by child-process recovery tests.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StorageEngineCrashPoint {
+    LeaseCommitted,
+    DataSyncBeforePieceDurable,
+    PieceDurableBeforeJournalSync,
 }
 
 impl Default for StorageEngineConfig {
@@ -71,6 +82,8 @@ impl Default for StorageEngineConfig {
             shutdown_timeout: Duration::from_secs(5),
             #[cfg(test)]
             disk_fault: None,
+            #[cfg(test)]
+            crash_point: None,
         }
     }
 }
@@ -311,6 +324,8 @@ pub struct StorageEngine {
     next_operation_id: u64,
     journal: ControlJournalAppender,
     shutdown_timeout: Duration,
+    #[cfg(test)]
+    crash_point: Option<StorageEngineCrashPoint>,
 }
 
 impl StorageEngine {
@@ -447,6 +462,8 @@ impl StorageEngine {
             next_operation_id: 1,
             journal,
             shutdown_timeout: config.shutdown_timeout,
+            #[cfg(test)]
+            crash_point: config.crash_point,
         })
     }
 
@@ -874,6 +891,8 @@ impl StorageEngine {
                 },
             )
             .map_err(journal_error)?;
+        #[cfg(test)]
+        self.crash_at(StorageEngineCrashPoint::LeaseCommitted);
         let contributor = JournalContributor::new(commit.lease, span, commit.validator);
         let contributors_hash = calculate_contributors_hash(&[contributor]).map_err(|error| {
             StorageEngineError::with(
@@ -900,6 +919,8 @@ impl StorageEngine {
             )
             .map_err(journal_error)?;
         self.sync_piece_files(span)?;
+        #[cfg(test)]
+        self.crash_at(StorageEngineCrashPoint::DataSyncBeforePieceDurable);
         let durable = self
             .journal
             .append_payload(
@@ -914,6 +935,8 @@ impl StorageEngine {
                 },
             )
             .map_err(journal_error)?;
+        #[cfg(test)]
+        self.crash_at(StorageEngineCrashPoint::PieceDurableBeforeJournalSync);
         let flushed = self
             .journal
             .flush(durable.sequence())
@@ -1296,6 +1319,17 @@ impl StorageEngine {
         }
         Ok(())
     }
+
+    #[cfg(test)]
+    fn crash_at(&self, point: StorageEngineCrashPoint) {
+        if self.crash_point == Some(point) {
+            std::process::exit(match point {
+                StorageEngineCrashPoint::LeaseCommitted => 97,
+                StorageEngineCrashPoint::DataSyncBeforePieceDurable => 98,
+                StorageEngineCrashPoint::PieceDurableBeforeJournalSync => 99,
+            });
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1341,9 +1375,13 @@ mod tests {
     };
     use crate::{KnownLengthHttpRecoveryRequest, recover_known_length_http};
     use ariax_core::Gid;
-    use ariax_storage::{JournalId, PathPlatform, RootDirectoryCapability, SafePathBuilder};
-    use std::fs;
-    use std::path::PathBuf;
+    use ariax_storage::{
+        JournalId, JournalStateStop, PathPlatform, RECORD_OVERHEAD, ReplayLimits,
+        RootDirectoryCapability, SafePathBuilder, journal_segment_path, replay_ordered_segments,
+    };
+    use std::fs::{self, OpenOptions};
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(1);
@@ -1406,6 +1444,68 @@ mod tests {
             })
             .await
             .expect("piece write");
+    }
+
+    fn crash_journal_id() -> JournalId {
+        JournalId::new([44; 16]).expect("crash journal id")
+    }
+
+    fn crash_recovery_request(directory: &Path) -> KnownLengthHttpRecoveryRequest {
+        KnownLengthHttpRecoveryRequest {
+            task: TaskId::new(1).expect("task"),
+            gid: Gid::new(1).expect("gid"),
+            journal_id: crash_journal_id(),
+            generation: Generation::INITIAL,
+            journal_directory: directory.join("journal"),
+            output_root: directory.join("output"),
+            replay_limits: Default::default(),
+            state_limits: Default::default(),
+        }
+    }
+
+    fn crash_engine(
+        directory: &Path,
+        crash_point: Option<StorageEngineCrashPoint>,
+    ) -> StorageEngine {
+        let output_root = directory.join("output");
+        let journal_root = directory.join("journal");
+        fs::create_dir_all(&output_root).expect("crash output root");
+        let root =
+            RootDirectoryCapability::open_trusted(&output_root).expect("crash output capability");
+        let output = SafePathBuilder::from_user_path("output.bin", PathPlatform::current())
+            .expect("crash output path");
+        let output_file = root.create_new_file(&output).expect("crash output file");
+        output_file.set_len(4).expect("preallocate crash output");
+        let layout = build_single_file_layout(
+            TaskId::new(1).expect("task"),
+            Generation::INITIAL,
+            &root,
+            &output,
+            &output_file,
+            4,
+            4,
+        )
+        .expect("crash layout");
+        let mut journal = ControlJournalAppender::create(
+            &journal_root,
+            Gid::new(1).expect("gid"),
+            crash_journal_id(),
+            Generation::INITIAL,
+            1,
+        )
+        .expect("crash journal");
+        append_initial_admission(&mut journal, Generation::INITIAL).expect("crash admission");
+        append_layout(&mut journal, &layout).expect("crash layout journal");
+        StorageEngine::open_layout(
+            layout,
+            [(FileId::new(0), output_file)],
+            journal,
+            StorageEngineConfig {
+                crash_point,
+                ..StorageEngineConfig::default()
+            },
+        )
+        .expect("crash storage engine")
     }
 
     #[tokio::test]
@@ -1660,6 +1760,125 @@ mod tests {
             assert_eq!(recovered.durable_prefix, 0);
             assert!(recovered.replay.state.is_some());
         }
+    }
+
+    #[test]
+    fn forced_process_crashes_preserve_only_the_piece_durable_prefix() {
+        for (phase, exit_code, expected_prefix) in [
+            ("after_write", 96, 0),
+            ("after_lease_committed", 97, 0),
+            ("after_data_sync", 98, 0),
+            ("after_piece_durable_append", 99, 0),
+            ("after_commit", 100, 4),
+        ] {
+            let directory = TestDirectory::new();
+            let status = Command::new(std::env::current_exe().expect("current test executable"))
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "storage_engine::tests::forced_process_crash_child",
+                    "--nocapture",
+                ])
+                .env("ARIAX_STORAGE_CRASH_CHILD", &directory.0)
+                .env("ARIAX_STORAGE_CRASH_PHASE", phase)
+                .status()
+                .expect("spawn storage crash child");
+            assert_eq!(status.code(), Some(exit_code), "{phase}");
+            assert_eq!(
+                fs::read(directory.0.join("output/output.bin")).expect("read child output bytes"),
+                [1, 2, 3, 4],
+                "{phase}"
+            );
+
+            if phase == "after_piece_durable_append" {
+                let journal_path = journal_segment_path(directory.0.join("journal"), 0);
+                let bytes = fs::read(&journal_path).expect("read unflushed durable record");
+                let replay = replay_ordered_segments(&[&bytes], ReplayLimits::default());
+                let last = replay.records.last().expect("piece durable record");
+                assert!(matches!(
+                    last.decode_payload(),
+                    Ok(JournalPayload::PieceDurable { .. })
+                ));
+                let lost_tail = RECORD_OVERHEAD
+                    .checked_add(last.payload.len())
+                    .and_then(|length| bytes.len().checked_sub(length))
+                    .expect("piece durable record length");
+                let file = OpenOptions::new()
+                    .write(true)
+                    .open(&journal_path)
+                    .expect("open journal for power-loss cut");
+                file.set_len(u64::try_from(lost_tail).expect("journal length fits u64"))
+                    .expect("drop unflushed journal tail");
+                file.sync_all().expect("persist simulated power-loss cut");
+            }
+
+            let recovered = recover_known_length_http(&crash_recovery_request(&directory.0))
+                .expect("recover storage crash child");
+            assert_eq!(recovered.replay.stop, JournalStateStop::CleanEnd, "{phase}");
+            assert_eq!(recovered.durable_prefix, expected_prefix, "{phase}");
+            assert_eq!(
+                recovered
+                    .replay
+                    .state
+                    .as_ref()
+                    .expect("recovered crash state")
+                    .durable_pieces()
+                    .len(),
+                usize::from(expected_prefix != 0),
+                "{phase}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "spawned by forced_process_crashes_preserve_only_the_piece_durable_prefix"]
+    async fn forced_process_crash_child() {
+        let Some(directory) = std::env::var_os("ARIAX_STORAGE_CRASH_CHILD") else {
+            return;
+        };
+        let phase = std::env::var("ARIAX_STORAGE_CRASH_PHASE").expect("storage crash phase");
+        let crash_point = match phase.as_str() {
+            "after_lease_committed" => Some(StorageEngineCrashPoint::LeaseCommitted),
+            "after_data_sync" => Some(StorageEngineCrashPoint::DataSyncBeforePieceDurable),
+            "after_piece_durable_append" => {
+                Some(StorageEngineCrashPoint::PieceDurableBeforeJournalSync)
+            }
+            "after_write" | "after_commit" => None,
+            other => panic!("unknown storage crash phase: {other}"),
+        };
+        let mut engine = crash_engine(&PathBuf::from(directory), crash_point);
+        let lease = LeaseId::new(1).expect("lease");
+        let validator = JournalHash::new([7; 32]).expect("validator");
+        engine
+            .begin_lease(lease_plan(
+                lease,
+                1,
+                GlobalSpan { offset: 0, len: 4 },
+                validator,
+                None,
+            ))
+            .expect("child begin lease");
+        write_piece(&mut engine, lease, &[1, 2, 3, 4]).await;
+        if phase == "after_write" {
+            std::process::exit(96);
+        }
+        let acknowledgements = engine
+            .commit_lease(LeaseCommit {
+                task: TaskId::new(1).expect("task"),
+                generation: Generation::INITIAL,
+                lease,
+                received_len: 4,
+                validator,
+                response_digest: None,
+            })
+            .expect("child commit lease");
+        assert_eq!(phase, "after_commit", "crash hook failed to exit");
+        assert!(
+            acknowledgements
+                .iter()
+                .any(|ack| matches!(ack, WriteAck::PieceDurable { .. }))
+        );
+        std::process::exit(100);
     }
 
     #[test]

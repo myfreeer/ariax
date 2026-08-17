@@ -215,6 +215,8 @@ impl RootFileCapability {
 #[derive(Clone, Copy)]
 enum FileAccess {
     Read,
+    /// Read native identity while allowing a transient publication alias.
+    Identity,
     Append,
     RandomWrite,
 }
@@ -373,6 +375,20 @@ impl JournalDirectoryCapability {
         )
     }
 
+    /// Opens a regular file read-only while permitting the transient extra
+    /// hard link created by journal segment publication. Callers must first
+    /// prove that the private candidate and installed name identify the same
+    /// file, validate the bytes through this descriptor, remove the alias,
+    /// and reopen with ordinary authority before mutating the file.
+    pub(crate) fn open_regular_file_for_publication_validation(
+        &self,
+        name: &OsStr,
+    ) -> Result<File, NativeCapabilityError> {
+        validate_single_name(name)?;
+        self.0
+            .open_regular_file(Path::new(name), FileAccess::Identity)
+    }
+
     pub(crate) fn create_new_file(&self, name: &OsStr) -> Result<File, NativeCapabilityError> {
         validate_single_name(name)?;
         self.0.create_new_file(name)
@@ -391,6 +407,20 @@ impl JournalDirectoryCapability {
     pub(crate) fn remove_file(&self, name: &OsStr) -> Result<(), NativeCapabilityError> {
         validate_single_name(name)?;
         self.0.remove_file(name)
+    }
+
+    /// Returns whether two names below this trusted directory identify the
+    /// same regular file. This narrow identity-only operation permits a
+    /// transient hard-link count greater than one; callers must remove the
+    /// alias before opening the file for ordinary authority.
+    pub(crate) fn same_regular_file(
+        &self,
+        left: &OsStr,
+        right: &OsStr,
+    ) -> Result<bool, NativeCapabilityError> {
+        validate_single_name(left)?;
+        validate_single_name(right)?;
+        self.0.same_regular_file(left, right)
     }
 
     pub(crate) fn sync(&self) -> Result<(), NativeCapabilityError> {
@@ -428,6 +458,20 @@ impl DirectoryCapability {
     ) -> Result<File, NativeCapabilityError> {
         validate_relative_path(relative)?;
         platform::open_relative_regular_file(&self.native, relative, access)
+    }
+
+    fn same_regular_file(
+        &self,
+        left: &OsStr,
+        right: &OsStr,
+    ) -> Result<bool, NativeCapabilityError> {
+        let left_file = self.open_regular_file(Path::new(left), FileAccess::Identity)?;
+        let right_file = self.open_regular_file(Path::new(right), FileAccess::Identity)?;
+        let left_identity =
+            platform::file_identity_allow_alias(&left_file, NativeObjectKind::RegularFile)?;
+        let right_identity =
+            platform::file_identity_allow_alias(&right_file, NativeObjectKind::RegularFile)?;
+        Ok(left_identity == right_identity)
     }
 
     fn create_new_file(&self, name: &OsStr) -> Result<File, NativeCapabilityError> {
@@ -610,6 +654,7 @@ mod platform {
         {
             let flags = match access {
                 FileAccess::Read => OFlags::RDONLY,
+                FileAccess::Identity => OFlags::RDONLY,
                 FileAccess::Append => OFlags::RDWR | OFlags::APPEND,
                 FileAccess::RandomWrite => OFlags::RDWR,
             };
@@ -621,7 +666,11 @@ mod platform {
                 ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
             ) {
                 Ok(fd) => {
-                    validate_fd_kind(&fd, NativeObjectKind::RegularFile)?;
+                    validate_fd_kind_with_alias(
+                        &fd,
+                        NativeObjectKind::RegularFile,
+                        matches!(access, FileAccess::Identity),
+                    )?;
                     return Ok(File::from(fd));
                 }
                 Err(
@@ -678,6 +727,7 @@ mod platform {
             let flags = if last {
                 match access {
                     FileAccess::Read => OFlags::RDONLY,
+                    FileAccess::Identity => OFlags::RDONLY,
                     FileAccess::Append => OFlags::RDWR | OFlags::APPEND,
                     FileAccess::RandomWrite => OFlags::RDWR,
                 }
@@ -696,7 +746,11 @@ mod platform {
                 Mode::empty(),
             )
             .map_err(std::io::Error::from)?;
-            validate_fd_kind(&current, kind)?;
+            validate_fd_kind_with_alias(
+                &current,
+                kind,
+                last && matches!(access, FileAccess::Identity),
+            )?;
         }
         Ok(match final_kind {
             NativeObjectKind::Directory => Opened::Directory(current),
@@ -717,9 +771,24 @@ mod platform {
         validate_fd_kind(file, expected)
     }
 
+    pub(super) fn file_identity_allow_alias(
+        file: &File,
+        expected: NativeObjectKind,
+    ) -> Result<NativeIdentityV1, NativeCapabilityError> {
+        validate_fd_kind_with_alias(file, expected, true)
+    }
+
     fn validate_fd_kind(
         fd: impl rustix::fd::AsFd,
         expected: NativeObjectKind,
+    ) -> Result<NativeIdentityV1, NativeCapabilityError> {
+        validate_fd_kind_with_alias(fd, expected, false)
+    }
+
+    fn validate_fd_kind_with_alias(
+        fd: impl rustix::fd::AsFd,
+        expected: NativeObjectKind,
+        allow_hard_link: bool,
     ) -> Result<NativeIdentityV1, NativeCapabilityError> {
         let stat = fstat(fd).map_err(std::io::Error::from)?;
         let actual = FileType::from_raw_mode(stat.st_mode);
@@ -730,7 +799,7 @@ mod platform {
         if !matches {
             return Err(NativeCapabilityError::ObjectKindMismatch { expected });
         }
-        if expected == NativeObjectKind::RegularFile && stat.st_nlink != 1 {
+        if expected == NativeObjectKind::RegularFile && !allow_hard_link && stat.st_nlink != 1 {
             return Err(NativeCapabilityError::HardLinkAlias);
         }
         Ok(NativeIdentityV1::Unix {
@@ -848,9 +917,13 @@ mod platform {
         let file = open_relative_regular_file_no_reparse(
             root,
             relative,
-            !matches!(access, FileAccess::Read),
+            matches!(access, FileAccess::Append | FileAccess::RandomWrite),
         )?;
-        validate_file_kind(&file, NativeObjectKind::RegularFile)?;
+        validate_file_kind_with_alias(
+            &file,
+            NativeObjectKind::RegularFile,
+            matches!(access, FileAccess::Identity),
+        )?;
         Ok(file)
     }
 
@@ -865,6 +938,13 @@ mod platform {
         expected: NativeObjectKind,
     ) -> Result<NativeIdentityV1, NativeCapabilityError> {
         validate_file_kind(file, expected)
+    }
+
+    pub(super) fn file_identity_allow_alias(
+        file: &File,
+        expected: NativeObjectKind,
+    ) -> Result<NativeIdentityV1, NativeCapabilityError> {
+        validate_file_kind_with_alias(file, expected, true)
     }
 
     pub(super) fn directory_entries(
@@ -918,6 +998,14 @@ mod platform {
         file: &File,
         expected: NativeObjectKind,
     ) -> Result<NativeIdentityV1, NativeCapabilityError> {
+        validate_file_kind_with_alias(file, expected, false)
+    }
+
+    fn validate_file_kind_with_alias(
+        file: &File,
+        expected: NativeObjectKind,
+        allow_hard_link: bool,
+    ) -> Result<NativeIdentityV1, NativeCapabilityError> {
         let information = query_native_file_information(file)?;
         let matches = match expected {
             NativeObjectKind::Directory => information.is_directory,
@@ -926,7 +1014,10 @@ mod platform {
         if !matches {
             return Err(NativeCapabilityError::ObjectKindMismatch { expected });
         }
-        if expected == NativeObjectKind::RegularFile && information.number_of_links != 1 {
+        if expected == NativeObjectKind::RegularFile
+            && !allow_hard_link
+            && information.number_of_links != 1
+        {
             return Err(NativeCapabilityError::HardLinkAlias);
         }
         Ok(NativeIdentityV1::Windows {
@@ -961,6 +1052,7 @@ mod platform {
     unavailable!(read_at(file: &File, offset: u64, output: &mut [u8]) -> usize);
     unavailable!(directory_identity(handle: &DirectoryHandle) -> NativeIdentityV1);
     unavailable!(file_identity(file: &File, expected: NativeObjectKind) -> NativeIdentityV1);
+    unavailable!(file_identity_allow_alias(file: &File, expected: NativeObjectKind) -> NativeIdentityV1);
     unavailable!(directory_entries(handle: &DirectoryHandle) -> Vec<OsString>);
     unavailable!(create_new_file(directory: &DirectoryHandle, name: &OsStr) -> File);
     unavailable!(link_no_replace(directory: &DirectoryHandle, source: &OsStr, destination: &OsStr) -> ());

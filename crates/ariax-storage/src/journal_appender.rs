@@ -402,6 +402,15 @@ pub struct ControlJournalAppender {
     flushed_sequence: u64,
     tail_record: Option<TailRecord>,
     fault: Option<JournalAppenderFault>,
+    #[cfg(test)]
+    test_fault: Option<JournalTestFault>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum JournalTestFault {
+    NextSyncSegment,
+    NextWritePrefix(usize),
 }
 
 impl ControlJournalAppender {
@@ -444,21 +453,36 @@ impl ControlJournalAppender {
         let entries = directory
             .entries()
             .map_err(|error| capability_error(JournalIoOperation::InspectRecoverySegment, error))?;
+        let mut final_names = Vec::new();
+        final_names
+            .try_reserve_exact(entries.len())
+            .map_err(|_| JournalAppenderError::Journal(JournalEncodeError::AllocationFailed))?;
+        for name in &entries {
+            let Some(name_text) = name.to_str() else {
+                return Err(JournalAppenderError::RecoverySegmentPath {
+                    input_index: final_names.len(),
+                });
+            };
+            if parse_segment_file_name(name_text).is_some() {
+                final_names.push(name.clone());
+            } else if parse_temporary_segment_file_name(name_text).is_none() {
+                return Err(JournalAppenderError::RecoverySegmentPath {
+                    input_index: final_names.len(),
+                });
+            }
+        }
+        validate_published_candidates(directory, &final_names, &entries)?;
+
         let mut indexed = Vec::new();
         indexed
-            .try_reserve_exact(entries.len().min(max_segments))
+            .try_reserve_exact(final_names.len().min(max_segments))
             .map_err(|_| JournalAppenderError::Journal(JournalEncodeError::AllocationFailed))?;
-        for name in entries {
+        for name in final_names {
             let Some(name_text) = name.to_str() else {
                 return Err(JournalAppenderError::RecoverySegmentPath {
                     input_index: indexed.len(),
                 });
             };
-            if name_text.starts_with(JOURNAL_SEGMENT_FILE_PREFIX)
-                && name_text.ends_with(JOURNAL_TEMP_FILE_SUFFIX)
-            {
-                return Err(JournalAppenderError::SegmentPathExists { temporary: true });
-            }
             let Some(index) = parse_segment_file_name(name_text) else {
                 return Err(JournalAppenderError::RecoverySegmentPath {
                     input_index: indexed.len(),
@@ -519,10 +543,13 @@ impl ControlJournalAppender {
             flushed_sequence: header.first_sequence() - 1,
             tail_record: None,
             fault: None,
+            #[cfg(test)]
+            test_fault: None,
         })
     }
 
-    /// Opens and validates an installed segment set without mutating it.
+    /// Opens and validates an installed segment set. A fully validated
+    /// same-file publication candidate is adopted only after replay succeeds.
     pub fn prepare_recovered(
         directory: impl AsRef<Path>,
         installed_segment_paths: &[PathBuf],
@@ -543,7 +570,8 @@ impl ControlJournalAppender {
     }
 
     /// Validates an installed segment set through an already-opened directory
-    /// capability, without reopening its display path or mutating the set.
+    /// capability, without reopening its display path. A fully validated
+    /// same-file publication candidate is adopted only after replay succeeds.
     pub fn prepare_recovered_in(
         directory_capability: JournalDirectoryCapability,
         installed_segment_paths: &[PathBuf],
@@ -569,14 +597,6 @@ impl ControlJournalAppender {
         segment_names
             .try_reserve_exact(installed_segment_paths.len())
             .map_err(|_| JournalAppenderError::Journal(JournalEncodeError::AllocationFailed))?;
-        let mut segment_files = Vec::new();
-        segment_files
-            .try_reserve_exact(installed_segment_paths.len())
-            .map_err(|_| JournalAppenderError::Journal(JournalEncodeError::AllocationFailed))?;
-        let mut segment_bytes = Vec::new();
-        segment_bytes
-            .try_reserve_exact(installed_segment_paths.len())
-            .map_err(|_| JournalAppenderError::Journal(JournalEncodeError::AllocationFailed))?;
         for (input_index, path) in installed_segment_paths.iter().enumerate() {
             let segment_index = u32::try_from(input_index).map_err(|_| {
                 JournalAppenderError::RecoveryStopped(ReplayStop::ResourceLimit(
@@ -587,18 +607,43 @@ impl ControlJournalAppender {
             if *path != directory.join(&name) {
                 return Err(JournalAppenderError::RecoverySegmentPath { input_index });
             }
-            let mut file = directory_capability
-                .open_regular_file(&name, true)
-                .map_err(|_| JournalAppenderError::RecoverySegmentPath { input_index })?;
+            segment_names.push(name);
+        }
+        let recovery_entries = directory_capability
+            .entries()
+            .map_err(|error| capability_error(JournalIoOperation::InspectRecoverySegment, error))?;
+        let publication_candidates = validate_published_candidates(
+            &directory_capability,
+            &segment_names,
+            &recovery_entries,
+        )?;
+
+        let mut segment_bytes = Vec::new();
+        segment_bytes
+            .try_reserve_exact(installed_segment_paths.len())
+            .map_err(|_| JournalAppenderError::Journal(JournalEncodeError::AllocationFailed))?;
+        for (input_index, _path) in installed_segment_paths.iter().enumerate() {
+            let name = &segment_names[input_index];
+            let has_publication_candidate = publication_candidates
+                .iter()
+                .any(|candidate| candidate.final_name == *name);
+            let mut file = if has_publication_candidate {
+                directory_capability.open_regular_file_for_publication_validation(name)
+            } else {
+                directory_capability.open_regular_file(name, true)
+            }
+            .map_err(|_| JournalAppenderError::RecoverySegmentPath { input_index })?;
             segment_bytes.push(read_recovery_segment(
                 &mut file,
                 encoded_byte_budget,
                 &mut remaining_byte_budget,
             )?);
-            segment_names.push(name);
-            segment_files.push(file);
         }
-        validate_recovery_directory(&directory_capability, &segment_names)?;
+        validate_recovery_directory(
+            &directory_capability,
+            &segment_names,
+            &publication_candidates,
+        )?;
 
         let first_header = SegmentHeader::decode(&segment_bytes[0]).map_err(|error| {
             JournalAppenderError::RecoveryStopped(ReplayStop::Header {
@@ -636,6 +681,19 @@ impl ControlJournalAppender {
                 && replay.valid_segment_prefixes.len() == installed_segment_paths.len()
                 && repairable_recovery_tail(reason) => {}
             stop => return Err(JournalAppenderError::RecoveryStopped(stop)),
+        }
+        remove_validated_published_candidates(&directory_capability, &publication_candidates)?;
+
+        let mut segment_files = Vec::new();
+        segment_files
+            .try_reserve_exact(installed_segment_paths.len())
+            .map_err(|_| JournalAppenderError::Journal(JournalEncodeError::AllocationFailed))?;
+        for (input_index, name) in segment_names.iter().enumerate() {
+            let mut file = directory_capability
+                .open_regular_file(name, true)
+                .map_err(|_| JournalAppenderError::RecoverySegmentPath { input_index })?;
+            validate_recovery_file_bytes(&mut file, &segment_bytes[input_index])?;
+            segment_files.push(file);
         }
         Ok(PreparedJournalSet {
             directory,
@@ -743,6 +801,32 @@ impl ControlJournalAppender {
         self.active_file.is_some()
     }
 
+    #[cfg(test)]
+    fn inject_test_fault(&mut self, fault: JournalTestFault) {
+        self.test_fault = Some(fault);
+    }
+
+    #[cfg(test)]
+    fn take_test_fault(&mut self, fault: JournalTestFault) -> bool {
+        if self.test_fault == Some(fault) {
+            self.test_fault = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    #[cfg(test)]
+    fn take_test_write_prefix(&mut self) -> Option<usize> {
+        match self.test_fault {
+            Some(JournalTestFault::NextWritePrefix(prefix)) => {
+                self.test_fault = None;
+                Some(prefix)
+            }
+            _ => None,
+        }
+    }
+
     pub fn append_payload(
         &mut self,
         generation: Generation,
@@ -783,6 +867,10 @@ impl ControlJournalAppender {
                 ))?;
         let fingerprint = tail_record_fingerprint(&record);
         self.ensure_open()?;
+        #[cfg(test)]
+        let injected_write_prefix = self.take_test_write_prefix();
+        #[cfg(not(test))]
+        let injected_write_prefix: Option<usize> = None;
         let active_file = self
             .active_file
             .as_mut()
@@ -790,6 +878,18 @@ impl ControlJournalAppender {
         if let Err(error) = active_file.seek(SeekFrom::Start(self.valid_length)) {
             self.fault = Some(JournalAppenderFault::WriteRecord);
             return Err(io_error(JournalIoOperation::WriteRecord, error));
+        }
+        if let Some(prefix) = injected_write_prefix {
+            let prefix = prefix.min(record.len().saturating_sub(1));
+            if let Err(error) = active_file.write_all(&record[..prefix]) {
+                self.fault = Some(JournalAppenderFault::WriteRecord);
+                return Err(io_error(JournalIoOperation::WriteRecord, error));
+            }
+            self.fault = Some(JournalAppenderFault::WriteRecord);
+            return Err(io_error(
+                JournalIoOperation::WriteRecord,
+                io::Error::other("injected partial journal write"),
+            ));
         }
         let write_result = active_file.write_all(&record);
         if let Err(error) = write_result {
@@ -821,11 +921,18 @@ impl ControlJournalAppender {
             });
         }
         self.ensure_open()?;
-        let sync_result = self
-            .active_file
-            .as_ref()
-            .expect("ensure_open installs a file")
-            .sync_all();
+        #[cfg(test)]
+        let inject_sync_failure = self.take_test_fault(JournalTestFault::NextSyncSegment);
+        #[cfg(not(test))]
+        let inject_sync_failure = false;
+        let sync_result = if inject_sync_failure {
+            Err(io::Error::other("injected journal sync failure"))
+        } else {
+            self.active_file
+                .as_ref()
+                .expect("ensure_open installs a file")
+                .sync_all()
+        };
         if let Err(error) = sync_result {
             self.fault = Some(JournalAppenderFault::Flush);
             return Err(io_error(JournalIoOperation::SyncSegment, error));
@@ -999,15 +1106,34 @@ fn recovery_encoded_byte_budget(limits: ReplayLimits) -> Result<usize, JournalAp
 fn validate_recovery_directory(
     directory: &JournalDirectoryCapability,
     installed_segment_names: &[OsString],
+    publication_candidates: &[PublishedCandidate],
 ) -> Result<(), JournalAppenderError> {
-    let immediate_successor = u32::try_from(installed_segment_names.len())
-        .ok()
-        .map(journal_segment_file_name);
     let entries = directory
         .entries()
         .map_err(|error| capability_error(JournalIoOperation::InspectRecoverySegment, error))?;
+    for installed_name in installed_segment_names {
+        if !entries.contains(installed_name) {
+            return Err(JournalAppenderError::RecoverySegmentPath {
+                input_index: installed_segment_names.len(),
+            });
+        }
+    }
+    for candidate in publication_candidates {
+        if !entries.contains(&candidate.temporary_name) {
+            return Err(JournalAppenderError::SegmentPathExists { temporary: true });
+        }
+    }
+    let immediate_successor = u32::try_from(installed_segment_names.len())
+        .ok()
+        .map(journal_segment_file_name);
     for file_name in entries {
         if installed_segment_names.contains(&file_name) {
+            continue;
+        }
+        if publication_candidates
+            .iter()
+            .any(|candidate| candidate.temporary_name == file_name)
+        {
             continue;
         }
         let Some(file_name) = file_name.to_str() else {
@@ -1033,6 +1159,87 @@ fn validate_recovery_directory(
         return Err(JournalAppenderError::RecoverySegmentPath {
             input_index: installed_segment_names.len(),
         });
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct PublishedCandidate {
+    temporary_name: OsString,
+    final_name: OsString,
+}
+
+/// Validates the only crash residue that may later be adopted: a private
+/// publication candidate whose final name already exists and resolves to the
+/// same native regular file. This step deliberately does not unlink anything;
+/// recovery must first validate the installed bytes and complete replay.
+fn validate_published_candidates(
+    directory: &JournalDirectoryCapability,
+    installed_segment_names: &[OsString],
+    entries: &[OsString],
+) -> Result<Vec<PublishedCandidate>, JournalAppenderError> {
+    let mut candidates = Vec::new();
+    candidates
+        .try_reserve_exact(entries.len().min(installed_segment_names.len()))
+        .map_err(|_| JournalAppenderError::Journal(JournalEncodeError::AllocationFailed))?;
+    for name in entries {
+        let Some(name_text) = name.to_str() else {
+            return Err(JournalAppenderError::RecoverySegmentPath {
+                input_index: installed_segment_names.len(),
+            });
+        };
+        let Some(segment_index) = parse_temporary_segment_file_name(name_text) else {
+            if name_text.starts_with(JOURNAL_SEGMENT_FILE_PREFIX)
+                && name_text.ends_with(JOURNAL_TEMP_FILE_SUFFIX)
+            {
+                return Err(JournalAppenderError::SegmentPathExists { temporary: true });
+            }
+            continue;
+        };
+        let final_name = OsString::from(journal_segment_file_name(segment_index));
+        if !installed_segment_names.contains(&final_name) {
+            return Err(JournalAppenderError::SegmentPathExists { temporary: true });
+        }
+        let same_file = directory
+            .same_regular_file(name, &final_name)
+            .map_err(|error| capability_error(JournalIoOperation::InspectRecoverySegment, error))?;
+        if !same_file {
+            return Err(JournalAppenderError::SegmentPathExists { temporary: true });
+        }
+        candidates.push(PublishedCandidate {
+            temporary_name: name.clone(),
+            final_name,
+        });
+    }
+    Ok(candidates)
+}
+
+/// Removes candidates only after their installed segments have passed full
+/// header/linkage replay validation. Recheck every identity before removing
+/// any name so one foreign candidate cannot cause partial adoption.
+fn remove_validated_published_candidates(
+    directory: &JournalDirectoryCapability,
+    candidates: &[PublishedCandidate],
+) -> Result<(), JournalAppenderError> {
+    for candidate in candidates {
+        let same_file = directory
+            .same_regular_file(&candidate.temporary_name, &candidate.final_name)
+            .map_err(|error| capability_error(JournalIoOperation::InspectRecoverySegment, error))?;
+        if !same_file {
+            return Err(JournalAppenderError::SegmentPathExists { temporary: true });
+        }
+    }
+    for candidate in candidates {
+        directory
+            .remove_file(&candidate.temporary_name)
+            .map_err(|error| capability_error(JournalIoOperation::InstallSegment, error))?;
+    }
+    // The directory barrier is required even on platforms where it is a
+    // documented no-op; the capability owns the platform-specific decision.
+    if !candidates.is_empty() {
+        directory
+            .sync()
+            .map_err(|error| capability_error(JournalIoOperation::SyncDirectory, error))?;
     }
     Ok(())
 }
@@ -1156,6 +1363,8 @@ fn open_clean_recovered_appender(
             flushed_sequence: last_sequence,
             tail_record,
             fault: None,
+            #[cfg(test)]
+            test_fault: None,
         },
         prepared.replay,
     ))
@@ -1251,6 +1460,8 @@ fn open_repaired_recovered_appender(
             flushed_sequence: last_sequence,
             tail_record: None,
             fault: None,
+            #[cfg(test)]
+            test_fault: None,
         },
         prepared.replay,
     ))
@@ -1377,6 +1588,11 @@ fn parse_segment_file_name(file_name: &str) -> Option<u32> {
     }
     let index = digits.parse().ok()?;
     (journal_segment_file_name(index) == file_name).then_some(index)
+}
+
+fn parse_temporary_segment_file_name(file_name: &str) -> Option<u32> {
+    let final_name = file_name.strip_suffix(JOURNAL_TEMP_FILE_SUFFIX)?;
+    parse_segment_file_name(final_name)
 }
 
 #[must_use]
@@ -1639,8 +1855,9 @@ mod tests {
     use super::{
         ALL_JOURNAL_APPENDER_ERROR_CODES, ALL_JOURNAL_APPENDER_FAULTS, ALL_JOURNAL_IO_OPERATIONS,
         ALL_JOURNAL_TAIL_MISMATCHES, ControlJournalAppender, JournalAppenderError,
-        JournalAppenderFault, JournalTailMismatch, journal_segment_file_name, journal_segment_path,
-        journal_temporary_segment_path, link_segment_no_clobber,
+        JournalAppenderFault, JournalIoOperation, JournalTailMismatch, JournalTestFault,
+        journal_segment_file_name, journal_segment_path, journal_temporary_segment_path,
+        link_segment_no_clobber,
     };
     use crate::{
         DurabilityMode, JournalId, JournalPayload, JournalReplay, RecordStopReason, ReplayLimits,
@@ -1651,9 +1868,11 @@ mod tests {
     use std::fs::{self, OpenOptions};
     use std::io::Write;
     use std::path::{Path, PathBuf};
+    use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Barrier};
     use std::thread;
+    use std::time::{Duration, Instant};
 
     static TEST_DIRECTORY_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -1822,6 +2041,286 @@ mod tests {
         assert_eq!(replay.last_sequence, 2);
         assert_eq!(replay.records[0].decode_payload(), Ok(task_created()));
         assert_eq!(replay.records[1].decode_payload(), Ok(paused));
+    }
+
+    #[test]
+    fn injected_sync_failure_never_advances_the_durable_prefix() {
+        let directory = TestDirectory::new();
+        let mut appender = ControlJournalAppender::create(
+            directory.path(),
+            gid(),
+            journal_id(),
+            Generation::INITIAL,
+            100,
+        )
+        .expect("create appender");
+        let durable_length = appender.active_length();
+        appender
+            .append_payload(Generation::INITIAL, &task_created())
+            .expect("append unflushed record");
+        appender.inject_test_fault(JournalTestFault::NextSyncSegment);
+
+        assert_eq!(
+            appender.flush(1),
+            Err(JournalAppenderError::Io {
+                operation: JournalIoOperation::SyncSegment,
+                kind: std::io::ErrorKind::Other,
+            })
+        );
+        assert_eq!(appender.appended_sequence(), 1);
+        assert_eq!(appender.flushed_sequence(), 0);
+        assert_eq!(appender.fault(), Some(JournalAppenderFault::Flush));
+        assert_eq!(
+            appender.append_payload(Generation::INITIAL, &task_paused()),
+            Err(JournalAppenderError::Faulted(JournalAppenderFault::Flush))
+        );
+
+        let path = appender.active_path().to_path_buf();
+        drop(appender);
+        let bytes_at_failed_barrier = fs::read(&path).expect("read failed-barrier bytes");
+        let replay = replay_ordered_segments(&[&bytes_at_failed_barrier], ReplayLimits::default());
+        assert_eq!(replay.stop, ReplayStop::CleanEnd);
+        assert_eq!(replay.last_sequence, 1);
+
+        // A failed fsync gives no durability acknowledgement. Model power loss
+        // restoring the previous durable prefix even though the write was
+        // visible in the page cache before the crash.
+        let file = OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open for lost-tail simulation");
+        file.set_len(durable_length)
+            .expect("restore previous durable prefix");
+        file.sync_all().expect("persist simulated durable prefix");
+        drop(file);
+
+        let (mut recovered, replay) = recover(
+            directory.path(),
+            std::slice::from_ref(&path),
+            gid(),
+            journal_id(),
+        )
+        .expect("recover previous durable prefix");
+        assert_eq!(replay.stop, ReplayStop::CleanEnd);
+        assert_eq!(replay.last_sequence, 0);
+        assert_eq!(recovered.next_sequence(), 1);
+        recovered
+            .append_payload(Generation::INITIAL, &task_created())
+            .expect("reappend lost record");
+        recovered.flush(1).expect("flush replacement");
+    }
+
+    #[test]
+    fn forced_process_exit_recovery_covers_torn_write_flush_and_rotation_alias() {
+        let partial_directory = TestDirectory::new();
+        let status = Command::new(std::env::current_exe().expect("current test executable"))
+            .args([
+                "--ignored",
+                "--exact",
+                "journal_appender::tests::forced_process_exit_child",
+                "--nocapture",
+            ])
+            .env("ARIAX_JOURNAL_CRASH_CHILD", partial_directory.path())
+            .env("ARIAX_JOURNAL_CRASH_PHASE", "partial_write")
+            .status()
+            .expect("spawn torn-write child");
+        assert_eq!(status.code(), Some(94));
+        let partial_path = journal_segment_path(partial_directory.path(), 0);
+        let (mut recovered, replay) = recover(
+            partial_directory.path(),
+            std::slice::from_ref(&partial_path),
+            gid(),
+            journal_id(),
+        )
+        .expect("recover child torn write");
+        assert!(matches!(
+            replay.stop,
+            ReplayStop::Record {
+                reason: RecordStopReason::MissingCommit
+                    | RecordStopReason::TruncatedFraming
+                    | RecordStopReason::InvalidMagic,
+                ..
+            }
+        ));
+        assert_eq!(replay.last_sequence, 1);
+        assert_eq!(recovered.next_sequence(), 2);
+        recovered
+            .append_payload(Generation::INITIAL, &task_paused())
+            .expect("append after child-tail repair");
+        recovered.flush(2).expect("flush after child-tail repair");
+
+        let flushed_directory = TestDirectory::new();
+        let status = Command::new(std::env::current_exe().expect("current test executable"))
+            .args([
+                "--ignored",
+                "--exact",
+                "journal_appender::tests::forced_process_exit_child",
+                "--nocapture",
+            ])
+            .env("ARIAX_JOURNAL_CRASH_CHILD", flushed_directory.path())
+            .env("ARIAX_JOURNAL_CRASH_PHASE", "flushed")
+            .status()
+            .expect("spawn flushed child");
+        assert_eq!(status.code(), Some(95));
+        let flushed_path = journal_segment_path(flushed_directory.path(), 0);
+        let (recovered, replay) = recover(
+            flushed_directory.path(),
+            std::slice::from_ref(&flushed_path),
+            gid(),
+            journal_id(),
+        )
+        .expect("recover child flushed record");
+        assert_eq!(replay.stop, ReplayStop::CleanEnd);
+        assert_eq!(replay.last_sequence, 1);
+        assert_eq!(recovered.flushed_sequence(), 1);
+
+        let rotation_directory = TestDirectory::new();
+        let status = Command::new(std::env::current_exe().expect("current test executable"))
+            .args([
+                "--ignored",
+                "--exact",
+                "journal_appender::tests::forced_process_exit_child",
+                "--nocapture",
+            ])
+            .env("ARIAX_JOURNAL_CRASH_CHILD", rotation_directory.path())
+            .env("ARIAX_JOURNAL_CRASH_PHASE", "rotation_alias")
+            .status()
+            .expect("spawn rotation child");
+        assert_eq!(status.code(), Some(96));
+        let capability = crate::JournalDirectoryCapability::open_trusted(rotation_directory.path())
+            .expect("open rotation directory capability");
+        let candidate = journal_temporary_segment_path(rotation_directory.path(), 1);
+        let paths = ControlJournalAppender::discover_segment_paths(&capability, 8)
+            .expect("discover rotation segments");
+        assert_eq!(paths.len(), 2);
+        assert!(
+            candidate.exists(),
+            "discovery validates but does not consume publication residue"
+        );
+        let (recovered, replay) = recover(rotation_directory.path(), &paths, gid(), journal_id())
+            .expect("recover child rotation alias");
+        assert!(
+            !candidate.exists(),
+            "successful replay adopts the publication residue"
+        );
+        assert_eq!(replay.stop, ReplayStop::CleanEnd);
+        assert_eq!(recovered.active_header().segment_index(), 1);
+        assert_eq!(replay.last_sequence, 1);
+    }
+
+    #[test]
+    fn forced_process_kill_recovers_the_last_durable_prefix() {
+        let directory = TestDirectory::new();
+        let ready = directory
+            .path()
+            .parent()
+            .expect("test directory parent")
+            .join(format!(
+                "ariax-journal-appender-ready-{}",
+                std::process::id()
+            ));
+        let mut child = Command::new(std::env::current_exe().expect("current test executable"))
+            .args([
+                "--ignored",
+                "--exact",
+                "journal_appender::tests::forced_process_exit_child",
+                "--nocapture",
+            ])
+            .env("ARIAX_JOURNAL_CRASH_CHILD", directory.path())
+            .env("ARIAX_JOURNAL_CRASH_PHASE", "partial_write_kill")
+            .env("ARIAX_JOURNAL_CRASH_READY", &ready)
+            .spawn()
+            .expect("spawn kill child");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "kill child did not reach barrier"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        child.kill().expect("kill child process");
+        let status = child.wait().expect("wait for killed child");
+        assert!(!status.success());
+        let _ = fs::remove_file(&ready);
+
+        let path = journal_segment_path(directory.path(), 0);
+        let (mut recovered, replay) = recover(
+            directory.path(),
+            std::slice::from_ref(&path),
+            gid(),
+            journal_id(),
+        )
+        .expect("recover killed child journal");
+        assert_eq!(replay.last_sequence, 1);
+        assert_eq!(recovered.next_sequence(), 2);
+        recovered
+            .append_payload(Generation::INITIAL, &task_paused())
+            .expect("append after killed child recovery");
+        recovered
+            .flush(2)
+            .expect("flush after killed child recovery");
+    }
+
+    #[test]
+    #[ignore = "spawned by forced_process_exit_recovery_covers_torn_write_flush_and_rotation_alias"]
+    fn forced_process_exit_child() {
+        let Some(directory) = std::env::var_os("ARIAX_JOURNAL_CRASH_CHILD") else {
+            return;
+        };
+        let phase = std::env::var("ARIAX_JOURNAL_CRASH_PHASE").expect("journal crash phase");
+        let directory = PathBuf::from(directory);
+        let mut appender = ControlJournalAppender::create(
+            &directory,
+            gid(),
+            journal_id(),
+            Generation::INITIAL,
+            100,
+        )
+        .expect("child create appender");
+        appender
+            .append_payload(Generation::INITIAL, &task_created())
+            .expect("child append first record");
+        appender.flush(1).expect("child flush first record");
+        match phase.as_str() {
+            "partial_write" => {
+                appender.inject_test_fault(JournalTestFault::NextWritePrefix(7));
+                assert!(matches!(
+                    appender.append_payload(Generation::INITIAL, &task_paused()),
+                    Err(JournalAppenderError::Io {
+                        operation: JournalIoOperation::WriteRecord,
+                        ..
+                    })
+                ));
+                std::process::exit(94);
+            }
+            "partial_write_kill" => {
+                appender.inject_test_fault(JournalTestFault::NextWritePrefix(7));
+                assert!(matches!(
+                    appender.append_payload(Generation::INITIAL, &task_paused()),
+                    Err(JournalAppenderError::Io {
+                        operation: JournalIoOperation::WriteRecord,
+                        ..
+                    })
+                ));
+                let ready = std::env::var_os("ARIAX_JOURNAL_CRASH_READY").expect("kill-ready path");
+                fs::write(ready, b"ready").expect("publish kill-ready marker");
+                loop {
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
+            "flushed" => std::process::exit(95),
+            "rotation_alias" => {
+                appender
+                    .rotate(Generation::INITIAL, 200)
+                    .expect("child rotate segment");
+                let candidate = journal_temporary_segment_path(&directory, 1);
+                fs::hard_link(appender.active_path(), &candidate)
+                    .expect("child leave same-inode candidate");
+                std::process::exit(96);
+            }
+            other => panic!("unknown journal crash phase: {other}"),
+        }
     }
 
     #[test]
@@ -2015,6 +2514,130 @@ mod tests {
         assert_eq!(
             fs::read(unrelated).expect("read preserved unrelated file"),
             b"unrelated"
+        );
+    }
+
+    #[test]
+    fn recovered_open_adopts_only_a_same_inode_publication_candidate() {
+        let directory = TestDirectory::new();
+        let mut original = ControlJournalAppender::create(
+            directory.path(),
+            gid(),
+            journal_id(),
+            Generation::INITIAL,
+            100,
+        )
+        .expect("create appender");
+        original
+            .append_payload(Generation::INITIAL, &task_created())
+            .expect("append task");
+        original.flush(1).expect("flush task");
+        let path = original.active_path().to_path_buf();
+        drop(original);
+
+        let candidate = journal_temporary_segment_path(directory.path(), 0);
+        fs::hard_link(&path, &candidate).expect("leave same-inode publication residue");
+        let before = fs::read(&path).expect("read installed segment");
+
+        let (recovered, replay) = recover(
+            directory.path(),
+            std::slice::from_ref(&path),
+            gid(),
+            journal_id(),
+        )
+        .expect("adopt same-inode candidate");
+        assert_eq!(replay.stop, ReplayStop::CleanEnd);
+        assert_eq!(fs::read(&path).expect("preserved installed bytes"), before);
+        assert!(!candidate.exists(), "private candidate alias was removed");
+        assert_eq!(recovered.segment_paths(), std::slice::from_ref(&path));
+    }
+
+    #[test]
+    fn segment_discovery_rejects_unrelated_entries_without_mutating_them() {
+        let directory = TestDirectory::new();
+        let original = ControlJournalAppender::create(
+            directory.path(),
+            gid(),
+            journal_id(),
+            Generation::INITIAL,
+            100,
+        )
+        .expect("create appender");
+        let unrelated = directory.path().join("unrelated.txt");
+        fs::write(&unrelated, b"foreign directory entry").expect("seed unrelated entry");
+        drop(original);
+
+        let capability = crate::JournalDirectoryCapability::open_trusted(directory.path())
+            .expect("open journal directory capability");
+        assert!(matches!(
+            ControlJournalAppender::discover_segment_paths(&capability, 8),
+            Err(JournalAppenderError::RecoverySegmentPath { .. })
+        ));
+        assert_eq!(
+            fs::read(&unrelated).expect("preserved unrelated entry"),
+            b"foreign directory entry"
+        );
+    }
+
+    #[test]
+    fn recovered_open_preserves_a_same_inode_candidate_until_linkage_validates() {
+        let directory = TestDirectory::new();
+        let paths = create_rotated_journal(directory.path(), gid(), journal_id());
+        let candidate = journal_temporary_segment_path(directory.path(), 1);
+        fs::hard_link(&paths[1], &candidate).expect("leave same-inode publication residue");
+        replace_header_previous_hash(&paths[1], [5; 32]);
+        let changed = fs::read(&paths[1]).expect("read link-mismatched segment");
+
+        assert!(matches!(
+            recover(directory.path(), &paths, gid(), journal_id()),
+            Err(JournalAppenderError::RecoveryStopped(
+                ReplayStop::PreviousHashMismatch
+            ))
+        ));
+        assert_eq!(
+            fs::read(&candidate).expect("preserved same-inode candidate"),
+            changed
+        );
+        assert_eq!(
+            fs::read(&paths[1]).expect("preserved installed segment"),
+            changed
+        );
+    }
+
+    #[test]
+    fn recovered_open_rejects_a_foreign_candidate_for_an_installed_segment() {
+        let directory = TestDirectory::new();
+        let mut original = ControlJournalAppender::create(
+            directory.path(),
+            gid(),
+            journal_id(),
+            Generation::INITIAL,
+            100,
+        )
+        .expect("create appender");
+        original
+            .append_payload(Generation::INITIAL, &task_created())
+            .expect("append task");
+        original.flush(1).expect("flush task");
+        let path = original.active_path().to_path_buf();
+        drop(original);
+
+        let candidate = journal_temporary_segment_path(directory.path(), 0);
+        fs::write(&candidate, b"foreign candidate").expect("seed foreign candidate");
+        let candidate_before = fs::read(&candidate).expect("read foreign candidate");
+
+        assert!(matches!(
+            recover(
+                directory.path(),
+                std::slice::from_ref(&path),
+                gid(),
+                journal_id()
+            ),
+            Err(JournalAppenderError::SegmentPathExists { temporary: true })
+        ));
+        assert_eq!(
+            fs::read(&candidate).expect("preserved foreign candidate"),
+            candidate_before
         );
     }
 

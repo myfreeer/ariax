@@ -53,9 +53,12 @@ libtorrent discard producers remain later adapter work. The standalone
 workspace-excluded `fuzz/` package now provides bounded cargo-fuzz targets for
 HTTP response/request headers, retry specifications, discard accounting, and
 journal replay. Deterministic storage-boundary ENOSPC, permission-denied, and
-short-write faults now leave no durable piece and replay cleanly; the remaining
-partial-fsync, forced-process-kill, and power-loss matrix still gates a full
-Phase-3 completion claim.
+  short-write, partial-fsync, torn-tail, and same-inode publication faults now
+  leave no false durable piece and replay cleanly; publication residue is
+  removed only after installed header/linkage replay succeeds. Child-process
+  exit/kill coverage exercises the data/journal barriers, and a deterministic
+  Linux power-loss cut model verifies the durable prefix. Native release and
+  real poweroff evidence remain final Phase-3 gates.
 
 This is a staged plan for building the design without repeating the incomplete
 rewrite pattern. The native-startup orchestration boundary, central-journal
@@ -287,9 +290,11 @@ Exit criteria:
 - Fault tests for ignored Range, short/oversized body, lease abort, generated-
   header conflict, redirect/proxy SSRF, disk full, process kill, and poweroff
   simulation. Ignored/short/oversized responses, lease aborts, generated-header
-  conflicts, redirect/proxy SSRF, and deterministic ENOSPC, permission-denied,
-  and short-write storage failures are executable; partial-fsync,
-  forced-process-kill, and poweroff simulation remain open.
+  conflicts, redirect/proxy SSRF, deterministic ENOSPC/permission-denied/
+  short-write/partial-fsync faults, torn-tail and same-inode rotation recovery,
+  child-process exit/kill barriers, and the Linux power-loss cut model are
+  executable. Native Windows I/O and real poweroff evidence remain platform
+  gates rather than being inferred from the local model.
 - Discard fault coverage proves bounded oversized/short-body overrun, atomic
   process/host/task/attempt exhaustion, no refund after abort/rollback, prompt
   source/retry-cycle stop, and separate consumed/remaining diagnostics. The

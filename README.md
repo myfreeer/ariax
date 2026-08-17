@@ -30,12 +30,14 @@ hierarchical rate limiter, stall policy, process-owned discard guard, same-origi
 endgame fencing, bounded exact-range cross-origin digest fencing, and local
 capacity benchmarks are executable; HTTP/2, unknown-length/chunked layouts,
 broader RFC 9530/Metalink and `Content-Digest` modes, WebSocket/NDJSON and
-non-loopback RPC, the remaining crash/power-loss fault matrix, the rest of Phase
-4, hot-backup crash-residue reconciliation, and the full native release matrix
-remain gated by `implementation-readiness.md` and `implementation-plan.md`.
-Deterministic ENOSPC, permission-denied, and short-write injection is already
-executable; partial-fsync, forced-process-kill, and power-loss coverage remains
-open.
+non-loopback RPC, the rest of Phase 4, hot-backup crash-residue reconciliation,
+and the full native release matrix remain gated by `implementation-readiness.md`
+and `implementation-plan.md`. Deterministic ENOSPC, permission-denied,
+short-write, partial-fsync, torn-tail, and same-inode publication faults are
+executable; publication residue is removed only after full header/linkage
+replay succeeds. Child-process exit/kill barriers and the Linux durable-prefix
+power-loss cut model are executable too. Native release and real poweroff
+evidence remain required before a completion or tag claim.
 
 This design is for a new downloader that keeps the mature aria2 user model
 while fixing the major safety, scalability, and completeness problems found in

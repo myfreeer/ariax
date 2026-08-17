@@ -1294,11 +1294,20 @@ Required tests:
 - resume open does not truncate,
 - `200 OK` restart path cannot write at nonzero offset,
 - torn journal tail replay,
+- deterministic partial-fsync failure leaves `Flushed` unchanged and a
+  simulated durable-prefix loss replays only the prior barrier,
+- forced child-process exit/kill after provisional write, `LeaseCommitted`,
+  data sync, and journal publication recovers exactly the expected pending or
+  durable prefix,
 - corrupted journal CRC replay,
 - duplicate/gapped sequence rejection and out-of-order disk completions through
   the single sequence-assigning appender,
 - segment rotation, missing/reordered segment, and previous-segment hash-link
   rejection,
+- a crash after successor publication that leaves both final and `.tmp` names
+  adopts the candidate only after descriptor-bound same-file identity proof
+  and complete installed header/linkage replay; foreign or invalid candidates
+  remain untouched and fail closed,
 - crash after disk write before journal,
 - crash after balanced data sync but before journal sync,
 - crash after journal bytes but before the required data barrier is never

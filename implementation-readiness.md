@@ -217,20 +217,24 @@ All ten items now have an executable Phase-3B checkpoint candidate. The local
 rate-limit, stall-diagnostic, same-origin endgame, bounded exact-range
 cross-origin endgame, digest-only durable-range restart revalidation, and
 C10k/active-range harnesses are executable. Deterministic storage-boundary
-ENOSPC, permission-denied, and short-write injection also proves that failed
-writes publish no durable piece and leave a replayable journal; the remaining
-partial-fsync, forced-process-kill, power-loss, and native release evidence still
-gate Phase 3 completion.
+ENOSPC, permission-denied, short-write, partial-fsync, torn-tail, and
+same-inode publication faults now prove that failed writes publish no false
+durable piece and leave a replayable journal; same-file residue is removed only
+after installed header/linkage replay succeeds. Child-process exit/kill tests
+cover the data/journal barriers, and a deterministic Linux power-loss cut model
+asserts the durable prefix at every boundary. Native release and real hardware
+poweroff evidence still gate the final Phase-3 claim.
 
 The detailed first-slice docs above are the intended module design input for
 this vertical slice.
 
 ## Current Integration Gates
 
-- Complete deterministic partial-fsync, forced-process-kill, and power-loss
-  recovery coverage for the executable HTTP/storage boundary. Disk-full,
-  permission-denied, and short-write injection now preserves a replayable
-  zero-durable prefix.
+- Keep the executable crash matrix green: deterministic partial-fsync,
+  torn-tail, same-inode rotation residue, child-process exit/kill, and the
+  Linux durable-prefix power-loss model cover the HTTP/storage boundary.
+  Native Windows I/O and real poweroff runs remain required CI evidence; the
+  local model never substitutes for those platform gates.
 - Keep the new persisted `HttpRangeIdentity` restart path fail-closed: replay
   validates its SHA-256/length fingerprint before network history, matching
   mirrors are reprobed, and every locally verified durable range is fetched,

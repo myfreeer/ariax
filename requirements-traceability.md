@@ -29,10 +29,13 @@ matrix remain incomplete.
 The implemented HTTP discard hierarchy now has deterministic process/task/host
 fault coverage and a standalone bounded fuzz package (`fuzz/`) for HTTP
 headers, retry specifications, discard accounting, and journal replay. The
-storage boundary also has deterministic ENOSPC, permission-denied, and
-short-write rejection coverage that leaves no false durable progress. The
-partial-fsync, forced-process-kill, power-loss, and native release evidence
-remains incomplete.
+storage boundary also has deterministic ENOSPC, permission-denied, short-write,
+partial-fsync, torn-tail, and same-inode publication coverage that leaves no
+false durable progress and removes same-file residue only after installed
+header/linkage replay succeeds. Child-process exit/kill tests cover the
+data/journal barriers, and a Linux durable-prefix power-loss cut model is
+executable. Native release and real poweroff evidence remain incomplete until
+supporting CI runs.
 
 This maps the requested properties to design documents.
 
