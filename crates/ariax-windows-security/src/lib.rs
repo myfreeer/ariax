@@ -16,5 +16,5 @@ pub use windows::{
     open_absolute_directory_no_reparse, open_relative_directory_no_reparse,
     open_relative_regular_file_no_reparse, query_native_file_information,
     remove_relative_file_no_reparse, verify_private_directory, verify_private_file,
-    verify_single_link_regular_file,
+    verify_private_file_allow_alias, verify_single_link_regular_file,
 };

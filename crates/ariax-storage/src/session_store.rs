@@ -1,14 +1,17 @@
 use crate::{
-    CheckpointId, JournalHash, JournalId, MAX_OPTION_MAP_BYTES, MAX_OPTION_MAP_ENTRIES,
-    MAX_PLATFORM_PATH_BYTES, OptionsSnapshotScope, PathPlatform, PersistedOptionPolicy,
-    PlatformPath, SanitizedOptionMap,
+    CheckpointId, JournalDirectoryCapability, JournalHash, JournalId, MAX_OPTION_MAP_BYTES,
+    MAX_OPTION_MAP_ENTRIES, MAX_PLATFORM_PATH_BYTES, NativeCapabilityError, OptionsSnapshotScope,
+    PathPlatform, PersistedOptionPolicy, PlatformPath, SanitizedOptionMap,
 };
 use ariax_core::{ErrorKind, Gid, HostKeyChallengeId, HostKeyFingerprint};
 use fs2::FileExt as _;
 use rusqlite::limits::Limit;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::{BTreeMap, HashSet};
 use std::error::Error;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom};
@@ -47,6 +50,14 @@ const MAX_ENCODED_PLATFORM_PATH_BYTES: usize =
     MAX_PLATFORM_PATH_BYTES + PLATFORM_PATH_ENCODING_OVERHEAD;
 static BACKUP_TEMP_ID: AtomicU64 = AtomicU64::new(1);
 const MIGRATION_BACKUP_ATTEMPTS: u32 = 32;
+const MAX_BACKUP_PUBLICATION_CANDIDATES: usize = 64;
+const BACKUP_TEMP_MARKER: &str = ".ariax-backup-";
+const BACKUP_TEMP_SUFFIX: &str = ".tmp";
+
+#[cfg(test)]
+thread_local! {
+    static BACKUP_FAIL_NEXT_UNLINK: Cell<bool> = const { Cell::new(false) };
+}
 
 const SESSION_TABLE_SQL: &str = r#"CREATE TABLE session (
     session_id BLOB PRIMARY KEY NOT NULL CHECK(typeof(session_id) = 'blob' AND length(session_id) = 16),
@@ -3243,6 +3254,331 @@ enum SessionBackupSchema {
     Current,
 }
 
+#[derive(Debug)]
+struct BackupPublicationCandidate {
+    name: OsString,
+    path: PathBuf,
+}
+
+fn discover_backup_publication_candidates(
+    parent: &JournalDirectoryCapability,
+    destination: &Path,
+) -> Result<Vec<BackupPublicationCandidate>, SessionStoreError> {
+    let destination_name = destination
+        .file_name()
+        .ok_or(SessionStoreError::InvalidConfig("backup.destination"))?;
+    let entries = parent
+        .entries()
+        .map_err(|error| session_capability_error(SessionIoOperation::InspectPath, error))?;
+    let mut candidates = Vec::new();
+    candidates
+        .try_reserve_exact(entries.len().min(MAX_BACKUP_PUBLICATION_CANDIDATES))
+        .map_err(|_| SessionStoreError::InvalidPersistedValue("backup.publication_candidates"))?;
+    for name in entries {
+        if !is_backup_publication_candidate_name(destination_name, &name) {
+            continue;
+        }
+        if candidates.len() == MAX_BACKUP_PUBLICATION_CANDIDATES {
+            return Err(SessionStoreError::InvalidPersistedValue(
+                "backup.publication_candidates",
+            ));
+        }
+        candidates.push(BackupPublicationCandidate {
+            path: parent.display().join(&name),
+            name,
+        });
+    }
+    Ok(candidates)
+}
+
+#[cfg(unix)]
+fn is_backup_publication_candidate_name(destination: &OsStr, candidate: &OsStr) -> bool {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let Some(suffix) = candidate.as_bytes().strip_prefix(destination.as_bytes()) else {
+        return false;
+    };
+    let Some(suffix) = suffix.strip_prefix(BACKUP_TEMP_MARKER.as_bytes()) else {
+        return false;
+    };
+    let Some(token) = suffix.strip_suffix(BACKUP_TEMP_SUFFIX.as_bytes()) else {
+        return false;
+    };
+    valid_backup_publication_token_bytes(token)
+}
+
+#[cfg(unix)]
+fn valid_backup_publication_token_bytes(token: &[u8]) -> bool {
+    let mut parts = token.split(|byte| *byte == b'-');
+    matches!(
+        (parts.next(), parts.next(), parts.next()),
+        (Some(process), Some(identifier), None)
+            if !process.is_empty()
+                && !identifier.is_empty()
+                && process.iter().all(u8::is_ascii_digit)
+                && identifier.iter().all(u8::is_ascii_digit)
+    )
+}
+
+#[cfg(windows)]
+fn is_backup_publication_candidate_name(destination: &OsStr, candidate: &OsStr) -> bool {
+    use std::os::windows::ffi::OsStrExt as _;
+
+    let destination = destination.encode_wide().collect::<Vec<_>>();
+    let candidate = candidate.encode_wide().collect::<Vec<_>>();
+    let marker = BACKUP_TEMP_MARKER.encode_utf16().collect::<Vec<_>>();
+    let suffix = BACKUP_TEMP_SUFFIX.encode_utf16().collect::<Vec<_>>();
+    let Some(token) = candidate
+        .strip_prefix(destination.as_slice())
+        .and_then(|rest| rest.strip_prefix(marker.as_slice()))
+        .and_then(|rest| rest.strip_suffix(suffix.as_slice()))
+    else {
+        return false;
+    };
+    let mut parts = token.split(|unit| *unit == u16::from(b'-'));
+    matches!(
+        (parts.next(), parts.next(), parts.next()),
+        (Some(process), Some(identifier), None)
+            if !process.is_empty()
+                && !identifier.is_empty()
+                && process
+                    .iter()
+                    .all(|unit| (u16::from(b'0')..=u16::from(b'9')).contains(unit))
+                && identifier
+                    .iter()
+                    .all(|unit| (u16::from(b'0')..=u16::from(b'9')).contains(unit))
+    )
+}
+
+#[cfg(not(any(unix, windows)))]
+fn is_backup_publication_candidate_name(destination: &OsStr, candidate: &OsStr) -> bool {
+    let destination = destination.to_string_lossy();
+    let candidate = candidate.to_string_lossy();
+    let Some(token) = candidate
+        .strip_prefix(destination.as_ref())
+        .and_then(|rest| rest.strip_prefix(BACKUP_TEMP_MARKER))
+        .and_then(|rest| rest.strip_suffix(BACKUP_TEMP_SUFFIX))
+    else {
+        return false;
+    };
+    let mut parts = token.split('-');
+    matches!(
+        (parts.next(), parts.next(), parts.next()),
+        (Some(process), Some(identifier), None)
+            if !process.is_empty()
+                && !identifier.is_empty()
+                && process.bytes().all(|byte| byte.is_ascii_digit())
+                && identifier.bytes().all(|byte| byte.is_ascii_digit())
+    )
+}
+
+fn validate_backup_database(
+    path: &Path,
+    schema: SessionBackupSchema,
+) -> Result<(), SessionStoreError> {
+    let backup = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    apply_limits(&backup)?;
+    let journal_mode: String =
+        backup.query_row("PRAGMA journal_mode=DELETE", [], |row| row.get(0))?;
+    if !journal_mode.eq_ignore_ascii_case("delete") {
+        return Err(SessionStoreError::InvalidPersistedValue(
+            "backup.journal_mode",
+        ));
+    }
+    validate_integrity(&backup)?;
+    match schema {
+        SessionBackupSchema::V1 => {
+            validate_schema_version(&backup, 1, SESSION_V1_SCHEMA_OBJECTS)?;
+            validate_persisted_semantics_v1(&backup)?;
+        }
+        SessionBackupSchema::Current => {
+            validate_schema(&backup)?;
+            validate_persisted_semantics(&backup)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_recovered_backup_database(
+    path: &Path,
+    schema: SessionBackupSchema,
+) -> Result<(), SessionStoreError> {
+    if validate_existing_sqlite_sidecars(path)? {
+        return Err(SessionStoreError::InvalidPersistedValue(
+            "backup.publication_candidate",
+        ));
+    }
+    let result = validate_backup_database(path, schema);
+    let cleanup = remove_owned_sqlite_sidecars(path);
+    match (result, cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), _) => Err(error),
+        (Ok(()), Err(error)) => Err(error),
+    }
+}
+
+fn reconcile_backup_publication(
+    parent: &JournalDirectoryCapability,
+    destination: &Path,
+    schema: SessionBackupSchema,
+) -> Result<(), SessionStoreError> {
+    let candidates = discover_backup_publication_candidates(parent, destination)?;
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    let destination_name = destination
+        .file_name()
+        .ok_or(SessionStoreError::InvalidConfig("backup.destination"))?;
+    let destination_exists = path_entry_exists(destination)?;
+
+    if destination_exists {
+        for candidate in &candidates {
+            if !parent
+                .same_regular_file(&candidate.name, destination_name)
+                .map_err(|error| session_capability_error(SessionIoOperation::InspectPath, error))?
+            {
+                return Err(SessionStoreError::InvalidPersistedValue(
+                    "backup.publication_candidate",
+                ));
+            }
+        }
+        let expected_links = u64::try_from(candidates.len())
+            .ok()
+            .and_then(|count| count.checked_add(1))
+            .ok_or(SessionStoreError::InvalidPersistedValue(
+                "backup.publication_candidate",
+            ))?;
+        if parent
+            .regular_file_link_count(destination_name)
+            .map_err(|error| session_capability_error(SessionIoOperation::InspectPath, error))?
+            != expected_links
+        {
+            return Err(SessionStoreError::InvalidPersistedValue(
+                "backup.publication_candidate",
+            ));
+        }
+        verify_private_backup_publication_permissions(destination)?;
+        validate_recovered_backup_database(destination, schema)?;
+        remove_backup_publication_candidates(parent, destination_name, &candidates)?;
+        parent
+            .sync()
+            .map_err(|error| session_capability_error(SessionIoOperation::CreateBackup, error))?;
+        validate_regular_artifact(destination)?;
+        verify_private_file_permissions(destination)?;
+        return Ok(());
+    }
+
+    if candidates.len() != 1 {
+        return Err(SessionStoreError::InvalidPersistedValue(
+            "backup.publication_candidate",
+        ));
+    }
+    let candidate = &candidates[0];
+    validate_regular_artifact(&candidate.path)?;
+    verify_private_file_permissions(&candidate.path)?;
+    if parent
+        .regular_file_link_count(&candidate.name)
+        .map_err(|error| session_capability_error(SessionIoOperation::InspectPath, error))?
+        != 1
+    {
+        return Err(SessionStoreError::InvalidPersistedValue(
+            "backup.publication_candidate",
+        ));
+    }
+    validate_recovered_backup_database(&candidate.path, schema)?;
+    match parent.link_no_replace(&candidate.name, destination_name) {
+        Ok(()) => {
+            backup_test_crash("after_link");
+            parent.sync().map_err(|error| {
+                session_capability_error(SessionIoOperation::CreateBackup, error)
+            })?;
+            backup_test_crash("after_link_sync");
+        }
+        Err(error) if native_error_kind(&error) == io::ErrorKind::AlreadyExists => {
+            if !parent
+                .same_regular_file(&candidate.name, destination_name)
+                .map_err(|error| session_capability_error(SessionIoOperation::InspectPath, error))?
+            {
+                return Err(SessionStoreError::BackupPathExists);
+            }
+        }
+        Err(error) => {
+            return Err(session_capability_error(
+                SessionIoOperation::CreateBackup,
+                error,
+            ));
+        }
+    }
+    if !parent
+        .same_regular_file(&candidate.name, destination_name)
+        .map_err(|error| session_capability_error(SessionIoOperation::InspectPath, error))?
+        || parent
+            .regular_file_link_count(destination_name)
+            .map_err(|error| session_capability_error(SessionIoOperation::InspectPath, error))?
+            != 2
+    {
+        return Err(SessionStoreError::InvalidPersistedValue(
+            "backup.publication_candidate",
+        ));
+    }
+    remove_backup_publication_candidates(parent, destination_name, &candidates)?;
+    backup_test_crash("after_unlink");
+    parent
+        .sync()
+        .map_err(|error| session_capability_error(SessionIoOperation::CreateBackup, error))?;
+    validate_regular_artifact(destination)?;
+    verify_private_file_permissions(destination)?;
+    Ok(())
+}
+
+fn remove_backup_publication_candidates(
+    parent: &JournalDirectoryCapability,
+    destination_name: &OsStr,
+    candidates: &[BackupPublicationCandidate],
+) -> Result<(), SessionStoreError> {
+    for candidate in candidates {
+        if !parent
+            .same_regular_file(&candidate.name, destination_name)
+            .map_err(|error| session_capability_error(SessionIoOperation::InspectPath, error))?
+        {
+            return Err(SessionStoreError::InvalidPersistedValue(
+                "backup.publication_candidate",
+            ));
+        }
+    }
+    let expected_links = u64::try_from(candidates.len())
+        .ok()
+        .and_then(|count| count.checked_add(1))
+        .ok_or(SessionStoreError::InvalidPersistedValue(
+            "backup.publication_candidate",
+        ))?;
+    if parent
+        .regular_file_link_count(destination_name)
+        .map_err(|error| session_capability_error(SessionIoOperation::InspectPath, error))?
+        != expected_links
+    {
+        return Err(SessionStoreError::InvalidPersistedValue(
+            "backup.publication_candidate",
+        ));
+    }
+    for candidate in candidates {
+        #[cfg(test)]
+        if BACKUP_FAIL_NEXT_UNLINK.with(|fault| fault.replace(false)) {
+            return Err(session_io_error(
+                SessionIoOperation::RemoveFailedBackup,
+                io::Error::other("injected backup temporary unlink failure"),
+            ));
+        }
+        parent.remove_file(&candidate.name).map_err(|error| {
+            session_capability_error(SessionIoOperation::RemoveFailedBackup, error)
+        })?;
+    }
+    Ok(())
+}
+
 fn backup_connection_to(
     connection: &Connection,
     destination: &Path,
@@ -3257,6 +3593,10 @@ fn backup_connection_to(
     }
     prepare_private_directory(required_private_parent(&destination)?)?;
     let destination = canonicalize_persistence_parent(destination)?;
+    let parent =
+        JournalDirectoryCapability::open_trusted(required_private_parent(&destination)?)
+            .map_err(|error| session_capability_error(SessionIoOperation::InspectPath, error))?;
+    reconcile_backup_publication(&parent, &destination, schema)?;
     if path_entry_exists(&destination)? {
         return Err(SessionStoreError::BackupPathExists);
     }
@@ -3266,6 +3606,13 @@ fn backup_connection_to(
         ));
     }
     let temporary = backup_temporary_path(&destination);
+    let temporary_name = temporary
+        .file_name()
+        .ok_or(SessionStoreError::InvalidConfig("backup.temporary"))?
+        .to_os_string();
+    let destination_name = destination
+        .file_name()
+        .ok_or(SessionStoreError::InvalidConfig("backup.destination"))?;
     if validate_existing_sqlite_sidecars(&temporary)? {
         return Err(SessionStoreError::InvalidPersistedValue(
             "backup.orphan_sqlite_sidecar",
@@ -3277,31 +3624,7 @@ fn backup_connection_to(
         tighten_database_permissions(&temporary)?;
         connection.backup(rusqlite::MAIN_DB, &temporary, None)?;
         tighten_database_permissions(&temporary)?;
-        {
-            let backup = Connection::open_with_flags(
-                &temporary,
-                OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-            )?;
-            apply_limits(&backup)?;
-            let journal_mode: String =
-                backup.query_row("PRAGMA journal_mode=DELETE", [], |row| row.get(0))?;
-            if !journal_mode.eq_ignore_ascii_case("delete") {
-                return Err(SessionStoreError::InvalidPersistedValue(
-                    "backup.journal_mode",
-                ));
-            }
-            validate_integrity(&backup)?;
-            match schema {
-                SessionBackupSchema::V1 => {
-                    validate_schema_version(&backup, 1, SESSION_V1_SCHEMA_OBJECTS)?;
-                    validate_persisted_semantics_v1(&backup)?;
-                }
-                SessionBackupSchema::Current => {
-                    validate_schema(&backup)?;
-                    validate_persisted_semantics(&backup)?;
-                }
-            }
-        }
+        validate_backup_database(&temporary, schema)?;
         remove_owned_sqlite_sidecars(&temporary)?;
         OpenOptions::new()
             .read(true)
@@ -3309,20 +3632,37 @@ fn backup_connection_to(
             .open(&temporary)
             .and_then(|file| file.sync_all())
             .map_err(|error| session_io_error(SessionIoOperation::CreateBackup, error))?;
-        fs::hard_link(&temporary, &destination).map_err(|error| {
-            if error.kind() == io::ErrorKind::AlreadyExists {
-                SessionStoreError::BackupPathExists
-            } else {
-                session_io_error(SessionIoOperation::CreateBackup, error)
-            }
-        })?;
+        parent
+            .link_no_replace(&temporary_name, destination_name)
+            .map_err(|error| {
+                if native_error_kind(&error) == io::ErrorKind::AlreadyExists {
+                    SessionStoreError::BackupPathExists
+                } else {
+                    session_capability_error(SessionIoOperation::CreateBackup, error)
+                }
+            })?;
         installed = true;
-        sync_parent_directory(&destination, SessionIoOperation::CreateBackup)?;
+        backup_test_crash("after_link");
+        parent
+            .sync()
+            .map_err(|error| session_capability_error(SessionIoOperation::CreateBackup, error))?;
+        backup_test_crash("after_link_sync");
         Ok(())
     })();
     let sidecar_cleanup = remove_owned_sqlite_sidecars(&temporary);
-    let temporary_cleanup = fs::remove_file(&temporary)
-        .map_err(|error| session_io_error(SessionIoOperation::RemoveFailedBackup, error));
+    let publication_candidate = BackupPublicationCandidate {
+        name: temporary_name.clone(),
+        path: temporary.clone(),
+    };
+    let temporary_cleanup = if installed {
+        remove_backup_publication_candidates(
+            &parent,
+            destination_name,
+            std::slice::from_ref(&publication_candidate),
+        )
+    } else {
+        remove_backup_temporary(&parent, &temporary_name)
+    };
     if let Some(cleanup_error) = sidecar_cleanup.err().or_else(|| temporary_cleanup.err()) {
         if installed {
             // Never risk deleting a raced destination replacement. A failed
@@ -3336,9 +3676,28 @@ fn backup_connection_to(
         return result.and(Err(cleanup_error));
     }
     if installed {
-        sync_parent_directory(&destination, SessionIoOperation::CreateBackup)?;
+        backup_test_crash("after_unlink");
+        parent
+            .sync()
+            .map_err(|error| session_capability_error(SessionIoOperation::CreateBackup, error))?;
     }
     result
+}
+
+fn remove_backup_temporary(
+    parent: &JournalDirectoryCapability,
+    temporary_name: &OsStr,
+) -> Result<(), SessionStoreError> {
+    #[cfg(test)]
+    if BACKUP_FAIL_NEXT_UNLINK.with(|fault| fault.replace(false)) {
+        return Err(session_io_error(
+            SessionIoOperation::RemoveFailedBackup,
+            io::Error::other("injected backup temporary unlink failure"),
+        ));
+    }
+    parent
+        .remove_file(temporary_name)
+        .map_err(|error| session_capability_error(SessionIoOperation::RemoveFailedBackup, error))
 }
 
 fn remove_owned_sqlite_sidecars(database: &Path) -> Result<(), SessionStoreError> {
@@ -3411,25 +3770,6 @@ fn migration_backup_path(
         ".ariax-v1-to-v2-{timestamp_ms:020}-{attempt:04}.backup"
     ));
     Ok(database.with_file_name(name))
-}
-
-#[cfg(unix)]
-fn sync_parent_directory(
-    path: &Path,
-    operation: SessionIoOperation,
-) -> Result<(), SessionStoreError> {
-    File::open(required_private_parent(path)?)
-        .map_err(|error| session_io_error(operation, error))?
-        .sync_all()
-        .map_err(|error| session_io_error(operation, error))
-}
-
-#[cfg(not(unix))]
-fn sync_parent_directory(
-    _path: &Path,
-    _operation: SessionIoOperation,
-) -> Result<(), SessionStoreError> {
-    Ok(())
 }
 
 fn backup_temporary_path(destination: &Path) -> PathBuf {
@@ -4094,7 +4434,13 @@ fn canonicalize_database_path(path: PathBuf) -> Result<PathBuf, SessionStoreErro
 
 #[cfg(not(windows))]
 fn canonicalize_persistence_parent(path: PathBuf) -> Result<PathBuf, SessionStoreError> {
-    Ok(path)
+    let file_name = path
+        .file_name()
+        .ok_or(SessionStoreError::InvalidConfig("persistence_path"))?
+        .to_os_string();
+    let parent = fs::canonicalize(required_private_parent(&path)?)
+        .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))?;
+    Ok(parent.join(file_name))
 }
 
 #[cfg(windows)]
@@ -4382,6 +4728,11 @@ fn verify_private_directory(path: &Path) -> Result<(), SessionStoreError> {
     }
 }
 
+#[cfg(unix)]
+fn verify_private_backup_publication_permissions(path: &Path) -> Result<(), SessionStoreError> {
+    verify_private_file_permissions(path)
+}
+
 #[cfg(windows)]
 fn tighten_database_permissions(path: &Path) -> Result<(), SessionStoreError> {
     ariax_windows_security::apply_private_file_acl(path)
@@ -4403,6 +4754,12 @@ fn verify_private_directory(path: &Path) -> Result<(), SessionStoreError> {
 #[cfg(windows)]
 fn verify_private_file_permissions(path: &Path) -> Result<(), SessionStoreError> {
     ariax_windows_security::verify_private_file(path)
+        .map_err(|error| session_io_error(SessionIoOperation::TightenPermissions, error))
+}
+
+#[cfg(windows)]
+fn verify_private_backup_publication_permissions(path: &Path) -> Result<(), SessionStoreError> {
+    ariax_windows_security::verify_private_file_allow_alias(path)
         .map_err(|error| session_io_error(SessionIoOperation::TightenPermissions, error))
 }
 
@@ -5655,6 +6012,53 @@ fn session_io_error(operation: SessionIoOperation, error: io::Error) -> SessionS
         kind: error.kind(),
     }
 }
+
+fn native_error_kind(error: &NativeCapabilityError) -> io::ErrorKind {
+    match error {
+        NativeCapabilityError::Io(error) => error.kind(),
+        NativeCapabilityError::UnsupportedPlatform | NativeCapabilityError::SafeOpenUnavailable => {
+            io::ErrorKind::Unsupported
+        }
+        NativeCapabilityError::InvalidAbsolutePath
+        | NativeCapabilityError::UnsafePathComponent
+        | NativeCapabilityError::PlatformPathMismatch
+        | NativeCapabilityError::TooManyAllowedRoots => io::ErrorKind::InvalidInput,
+        NativeCapabilityError::OutsideAllowedRoot
+        | NativeCapabilityError::ObjectKindMismatch { .. }
+        | NativeCapabilityError::HardLinkAlias
+        | NativeCapabilityError::Identity(_)
+        | NativeCapabilityError::IdentityMismatch => io::ErrorKind::PermissionDenied,
+    }
+}
+
+fn session_capability_error(
+    operation: SessionIoOperation,
+    error: NativeCapabilityError,
+) -> SessionStoreError {
+    session_io_error(
+        operation,
+        io::Error::new(native_error_kind(&error), error.to_string()),
+    )
+}
+
+#[cfg(test)]
+fn backup_test_crash(phase: &str) {
+    let Some(configured) = std::env::var_os("ARIAX_BACKUP_CRASH_PHASE") else {
+        return;
+    };
+    if configured == phase {
+        let code = match phase {
+            "after_link" => 121,
+            "after_link_sync" => 122,
+            "after_unlink" => 123,
+            _ => 124,
+        };
+        std::process::exit(code);
+    }
+}
+
+#[cfg(not(test))]
+fn backup_test_crash(_phase: &str) {}
 
 #[cfg(test)]
 mod tests {
@@ -9821,6 +10225,246 @@ mod tests {
             .expect("open backup");
             assert_eq!(backup_store.tasks().expect("backup tasks").len(), 1);
         }
+    }
+
+    #[test]
+    fn hot_backup_unlink_failure_is_verified_and_reconciled_on_retry() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        store.put_session(&session_record()).expect("put session");
+        store.put_task(&task_record(gid(1), 0)).expect("put task");
+        let destination = directory.path().join("unlink-failure.backup.db");
+
+        super::BACKUP_FAIL_NEXT_UNLINK.with(|fault| fault.set(true));
+        assert!(matches!(
+            store.backup_to(&destination),
+            Err(SessionStoreError::Io {
+                operation: super::SessionIoOperation::RemoveFailedBackup,
+                ..
+            })
+        ));
+        let capability = crate::JournalDirectoryCapability::open_trusted(directory.path())
+            .expect("open backup directory capability");
+        let candidates = super::discover_backup_publication_candidates(&capability, &destination)
+            .expect("discover failed-unlink candidate");
+        assert_eq!(candidates.len(), 1);
+        assert!(destination.exists());
+
+        assert!(matches!(
+            store.backup_to(&destination),
+            Err(SessionStoreError::BackupPathExists)
+        ));
+        assert!(
+            super::discover_backup_publication_candidates(&capability, &destination)
+                .expect("discover reconciled candidates")
+                .is_empty()
+        );
+        let backup = SessionStore::open(
+            &destination,
+            SessionStoreConfig {
+                prefer_wal: false,
+                ..SessionStoreConfig::default()
+            },
+        )
+        .expect("open reconciled backup");
+        assert_eq!(backup.tasks().expect("backup tasks").len(), 1);
+    }
+
+    #[test]
+    fn hot_backup_temp_only_residue_is_published_without_rebuilding() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        store.put_session(&session_record()).expect("put session");
+        store.put_task(&task_record(gid(1), 0)).expect("put task");
+        let destination = directory.path().join("temp-only.backup.db");
+
+        super::BACKUP_FAIL_NEXT_UNLINK.with(|fault| fault.set(true));
+        assert!(store.backup_to(&destination).is_err());
+        fs::remove_file(&destination).expect("remove published name to model pre-link crash");
+        let capability = crate::JournalDirectoryCapability::open_trusted(directory.path())
+            .expect("open backup directory capability");
+        assert_eq!(
+            super::discover_backup_publication_candidates(&capability, &destination)
+                .expect("discover temp-only candidate")
+                .len(),
+            1
+        );
+
+        assert!(matches!(
+            store.backup_to(&destination),
+            Err(SessionStoreError::BackupPathExists)
+        ));
+        assert!(destination.exists());
+        assert!(
+            super::discover_backup_publication_candidates(&capability, &destination)
+                .expect("discover after temp-only recovery")
+                .is_empty()
+        );
+        let backup = SessionStore::open(
+            &destination,
+            SessionStoreConfig {
+                prefer_wal: false,
+                ..SessionStoreConfig::default()
+            },
+        )
+        .expect("open recovered temp-only backup");
+        assert_eq!(backup.tasks().expect("backup tasks").len(), 1);
+    }
+
+    #[test]
+    fn hot_backup_recovery_preserves_a_raced_destination_replacement() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        store.put_session(&session_record()).expect("put session");
+        let destination = directory.path().join("raced.backup.db");
+
+        super::BACKUP_FAIL_NEXT_UNLINK.with(|fault| fault.set(true));
+        assert!(store.backup_to(&destination).is_err());
+        let capability = crate::JournalDirectoryCapability::open_trusted(directory.path())
+            .expect("open backup directory capability");
+        let candidates = super::discover_backup_publication_candidates(&capability, &destination)
+            .expect("discover publication candidate");
+        assert_eq!(candidates.len(), 1);
+        let candidate_before = fs::read(&candidates[0].path).expect("read candidate before race");
+        fs::remove_file(&destination).expect("remove published destination");
+        fs::write(&destination, b"raced replacement").expect("install raced replacement");
+
+        assert!(matches!(
+            store.backup_to(&destination),
+            Err(SessionStoreError::InvalidPersistedValue(
+                "backup.publication_candidate"
+            ))
+        ));
+        assert_eq!(
+            fs::read(&destination).expect("preserved raced destination"),
+            b"raced replacement"
+        );
+        assert_eq!(
+            fs::read(&candidates[0].path).expect("preserved publication candidate"),
+            candidate_before
+        );
+    }
+
+    #[test]
+    fn hot_backup_recovery_rejects_unaccounted_hard_links_without_cleanup() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        store.put_session(&session_record()).expect("put session");
+        let destination = directory.path().join("extra-link.backup.db");
+
+        super::BACKUP_FAIL_NEXT_UNLINK.with(|fault| fault.set(true));
+        assert!(store.backup_to(&destination).is_err());
+        let capability = crate::JournalDirectoryCapability::open_trusted(directory.path())
+            .expect("open backup directory capability");
+        let candidates = super::discover_backup_publication_candidates(&capability, &destination)
+            .expect("discover publication candidate");
+        assert_eq!(candidates.len(), 1);
+        let unexpected = directory.path().join("unexpected-backup-alias.db");
+        fs::hard_link(&destination, &unexpected).expect("add unaccounted hard link");
+
+        assert!(matches!(
+            store.backup_to(&destination),
+            Err(SessionStoreError::InvalidPersistedValue(
+                "backup.publication_candidate"
+            ))
+        ));
+        assert!(destination.exists());
+        assert!(candidates[0].path.exists());
+        assert!(unexpected.exists());
+    }
+
+    #[test]
+    fn hot_backup_recovery_preserves_invalid_same_file_residue() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        store.put_session(&session_record()).expect("put session");
+        let destination = directory.path().join("invalid-residue.backup.db");
+
+        super::BACKUP_FAIL_NEXT_UNLINK.with(|fault| fault.set(true));
+        assert!(store.backup_to(&destination).is_err());
+        let capability = crate::JournalDirectoryCapability::open_trusted(directory.path())
+            .expect("open backup directory capability");
+        let candidates = super::discover_backup_publication_candidates(&capability, &destination)
+            .expect("discover publication candidate");
+        assert_eq!(candidates.len(), 1);
+        fs::write(&destination, b"not a SQLite database").expect("corrupt published backup");
+        let invalid = fs::read(&destination).expect("read invalid residue");
+
+        assert!(store.backup_to(&destination).is_err());
+        assert_eq!(
+            fs::read(&destination).expect("preserved invalid destination"),
+            invalid
+        );
+        assert_eq!(
+            fs::read(&candidates[0].path).expect("preserved invalid candidate"),
+            invalid
+        );
+    }
+
+    #[test]
+    fn hot_backup_publication_crash_matrix_recovers_a_usable_destination() {
+        for (phase, exit_code) in [
+            ("after_link", 121),
+            ("after_link_sync", 122),
+            ("after_unlink", 123),
+        ] {
+            let directory = TestDirectory::new();
+            let mut store = open_store(&directory);
+            store.put_session(&session_record()).expect("put session");
+            store.put_task(&task_record(gid(1), 0)).expect("put task");
+            drop(store);
+            let destination = directory.path().join(format!("{phase}.backup.db"));
+            let status = Command::new(std::env::current_exe().expect("current test executable"))
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "session_store::tests::hot_backup_publication_child",
+                    "--nocapture",
+                ])
+                .env("ARIAX_BACKUP_CRASH_DATABASE", directory.database())
+                .env("ARIAX_BACKUP_CRASH_DESTINATION", &destination)
+                .env("ARIAX_BACKUP_CRASH_PHASE", phase)
+                .status()
+                .expect("spawn backup crash child");
+            assert_eq!(status.code(), Some(exit_code), "{phase}");
+
+            let source = open_store(&directory);
+            assert!(matches!(
+                source.backup_to(&destination),
+                Err(SessionStoreError::BackupPathExists)
+            ));
+            let capability = crate::JournalDirectoryCapability::open_trusted(directory.path())
+                .expect("open backup directory capability");
+            assert!(
+                super::discover_backup_publication_candidates(&capability, &destination)
+                    .expect("discover post-crash candidates")
+                    .is_empty(),
+                "{phase}"
+            );
+            let recovered = SessionStore::open(
+                &destination,
+                SessionStoreConfig {
+                    prefer_wal: false,
+                    ..SessionStoreConfig::default()
+                },
+            )
+            .expect("open crash-recovered backup");
+            assert_eq!(recovered.tasks().expect("backup tasks").len(), 1, "{phase}");
+        }
+    }
+
+    #[test]
+    #[ignore = "spawned by hot_backup_publication_crash_matrix_recovers_a_usable_destination"]
+    fn hot_backup_publication_child() {
+        let Some(database) = std::env::var_os("ARIAX_BACKUP_CRASH_DATABASE") else {
+            return;
+        };
+        let destination =
+            std::env::var_os("ARIAX_BACKUP_CRASH_DESTINATION").expect("backup crash destination");
+        let store = SessionStore::open(PathBuf::from(database), SessionStoreConfig::default())
+            .expect("child open source store");
+        let result = store.backup_to(PathBuf::from(destination));
+        panic!("backup crash hook failed to exit: {result:?}");
     }
 
     #[test]

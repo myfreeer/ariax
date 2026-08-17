@@ -423,6 +423,18 @@ impl JournalDirectoryCapability {
         self.0.same_regular_file(left, right)
     }
 
+    /// Returns the native hard-link count for a regular file below this
+    /// trusted directory. Identity-only opening permits a transient
+    /// publication alias; callers use the count to prove that they know every
+    /// name before unlinking any residue.
+    pub(crate) fn regular_file_link_count(
+        &self,
+        name: &OsStr,
+    ) -> Result<u64, NativeCapabilityError> {
+        validate_single_name(name)?;
+        self.0.regular_file_link_count(name)
+    }
+
     pub(crate) fn sync(&self) -> Result<(), NativeCapabilityError> {
         self.0.sync()
     }
@@ -472,6 +484,11 @@ impl DirectoryCapability {
         let right_identity =
             platform::file_identity_allow_alias(&right_file, NativeObjectKind::RegularFile)?;
         Ok(left_identity == right_identity)
+    }
+
+    fn regular_file_link_count(&self, name: &OsStr) -> Result<u64, NativeCapabilityError> {
+        let file = self.open_regular_file(Path::new(name), FileAccess::Identity)?;
+        platform::regular_file_link_count(&file)
     }
 
     fn create_new_file(&self, name: &OsStr) -> Result<File, NativeCapabilityError> {
@@ -778,6 +795,17 @@ mod platform {
         validate_fd_kind_with_alias(file, expected, true)
     }
 
+    pub(super) fn regular_file_link_count(file: &File) -> Result<u64, NativeCapabilityError> {
+        let stat = fstat(file).map_err(std::io::Error::from)?;
+        let actual = FileType::from_raw_mode(stat.st_mode);
+        if actual != FileType::RegularFile {
+            return Err(NativeCapabilityError::ObjectKindMismatch {
+                expected: NativeObjectKind::RegularFile,
+            });
+        }
+        Ok(stat.st_nlink)
+    }
+
     fn validate_fd_kind(
         fd: impl rustix::fd::AsFd,
         expected: NativeObjectKind,
@@ -947,6 +975,16 @@ mod platform {
         validate_file_kind_with_alias(file, expected, true)
     }
 
+    pub(super) fn regular_file_link_count(file: &File) -> Result<u64, NativeCapabilityError> {
+        let information = query_native_file_information(file)?;
+        if information.is_directory {
+            return Err(NativeCapabilityError::ObjectKindMismatch {
+                expected: NativeObjectKind::RegularFile,
+            });
+        }
+        Ok(u64::from(information.number_of_links))
+    }
+
     pub(super) fn directory_entries(
         handle: &DirectoryHandle,
     ) -> Result<Vec<OsString>, NativeCapabilityError> {
@@ -1053,6 +1091,7 @@ mod platform {
     unavailable!(directory_identity(handle: &DirectoryHandle) -> NativeIdentityV1);
     unavailable!(file_identity(file: &File, expected: NativeObjectKind) -> NativeIdentityV1);
     unavailable!(file_identity_allow_alias(file: &File, expected: NativeObjectKind) -> NativeIdentityV1);
+    unavailable!(regular_file_link_count(file: &File) -> u64);
     unavailable!(directory_entries(handle: &DirectoryHandle) -> Vec<OsString>);
     unavailable!(create_new_file(directory: &DirectoryHandle, name: &OsStr) -> File);
     unavailable!(link_no_replace(directory: &DirectoryHandle, source: &OsStr, destination: &OsStr) -> ());
@@ -1264,6 +1303,17 @@ mod tests {
             FileIdentity::new(native_file_identity(&replacement).encode()).expect("identity");
         drop(replacement);
         fs::hard_link(&path, directory.0.join("alias.bin")).expect("hard link alias");
+        assert_eq!(
+            journal
+                .regular_file_link_count("selected.bin".as_ref())
+                .expect("publication link count"),
+            2
+        );
+        assert!(
+            journal
+                .same_regular_file("selected.bin".as_ref(), "alias.bin".as_ref())
+                .expect("same-file identity")
+        );
         assert!(matches!(
             root.verify_file(&safe, &replacement_identity),
             Err(NativeCapabilityError::HardLinkAlias)

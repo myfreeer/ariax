@@ -28,7 +28,9 @@ revalidation, and startup pointer/phase validation. Its executable boundary
 also includes private path/artifact enforcement, cooperative Ariax-only
 single-writer locking, hot rollback page-one plus committed-WAL version
 preflight, journal-mode write probes, and validated file-synced no-clobber
-backups. Session schema v2 adds the demoted queue, independent slow-demotion
+backups with descriptor-bound publication-residue recovery, no-clobber race
+preservation, and crash/unlink fault coverage. Session schema v2 adds the
+demoted queue, independent slow-demotion
 count, and bounded slow retry decision; exact v1 stores migrate transactionally
 after semantic preflight and a private no-clobber backup. Retained stopped
 results now use a one-to-one stopped-task/result transaction, and deletion

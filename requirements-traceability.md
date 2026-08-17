@@ -34,8 +34,10 @@ partial-fsync, torn-tail, and same-inode publication coverage that leaves no
 false durable progress and removes same-file residue only after installed
 header/linkage replay succeeds. Child-process exit/kill tests cover the
 data/journal barriers, and a Linux durable-prefix power-loss cut model is
-executable. Native release and real poweroff evidence remain incomplete until
-supporting CI runs.
+executable. Hot-backup publication residue now has descriptor-bound
+same-file/link-count recovery, no-clobber raced-destination preservation, and
+crash/unlink fault coverage. Native release and real poweroff evidence remain
+incomplete until supporting CI runs.
 
 This maps the requested properties to design documents.
 

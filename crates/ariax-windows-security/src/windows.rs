@@ -421,6 +421,13 @@ pub fn verify_private_file(path: &Path) -> io::Result<()> {
     verify_private_path(path, ObjectKind::File)
 }
 
+/// Verifies a private regular file while permitting transient publication
+/// aliases. This is limited to crash recovery that separately proves the
+/// complete expected hard-link set before removing any name.
+pub fn verify_private_file_allow_alias(path: &Path) -> io::Result<()> {
+    verify_private_path_with_alias(path, ObjectKind::File, true)
+}
+
 /// Verifies a uniquely linked regular file through a no-follow handle.
 ///
 /// This operation reads only file attributes. It neither requires a private
@@ -445,7 +452,15 @@ impl ObjectKind {
 }
 
 fn verify_private_path(path: &Path, kind: ObjectKind) -> io::Result<()> {
-    let opened = open_path(path, kind, READ_CONTROL)?;
+    verify_private_path_with_alias(path, kind, false)
+}
+
+fn verify_private_path_with_alias(
+    path: &Path,
+    kind: ObjectKind,
+    allow_hard_link: bool,
+) -> io::Result<()> {
+    let opened = open_path_with_alias(path, kind, READ_CONTROL, allow_hard_link)?;
     let actual = handle_security_descriptor(opened.handle.as_raw_handle())?;
     let expected = PrivateSecurityDescriptor::new(kind)?;
     verify_security_descriptor(actual.as_ptr(), expected.as_ptr())
@@ -456,6 +471,15 @@ struct OpenedPath {
 }
 
 fn open_path(path: &Path, kind: ObjectKind, additional_access: u32) -> io::Result<OpenedPath> {
+    open_path_with_alias(path, kind, additional_access, false)
+}
+
+fn open_path_with_alias(
+    path: &Path,
+    kind: ObjectKind,
+    additional_access: u32,
+    allow_hard_link: bool,
+) -> io::Result<OpenedPath> {
     let path = wide_path(path)?;
     // SAFETY: `path` is NUL-terminated. OPEN_EXISTING plus
     // FILE_FLAG_OPEN_REPARSE_POINT opens the final object itself without
@@ -489,7 +513,7 @@ fn open_path(path: &Path, kind: ObjectKind, additional_access: u32) -> io::Resul
     if is_directory != matches!(kind, ObjectKind::Directory) {
         return Err(permission_denied(kind.label()));
     }
-    if matches!(kind, ObjectKind::File) && information.nNumberOfLinks != 1 {
+    if matches!(kind, ObjectKind::File) && !allow_hard_link && information.nNumberOfLinks != 1 {
         return Err(permission_denied(
             "private files must have exactly one hard link",
         ));
@@ -1245,6 +1269,8 @@ mod tests {
         fs::hard_link(&file_path, &alias).expect("create hard-link alias");
 
         for path in [&file_path, &alias] {
+            verify_private_file_allow_alias(path)
+                .expect("publication recovery may inspect the exact private alias set");
             assert_eq!(
                 verify_single_link_regular_file(path)
                     .expect_err("hard-linked file identity must be rejected")

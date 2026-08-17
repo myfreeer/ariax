@@ -2082,19 +2082,21 @@ mod tests {
             .parse::<Gid>()
             .expect("valid GID");
 
-        let mut complete = false;
-        for _ in 0..2_000 {
+        let deadline = Instant::now() + CONTROL_PROGRESS_TIMEOUT;
+        loop {
             plane.poll_once().expect("control progress");
             let status = plane
                 .call("aria2.tellStatus", json!([gid.to_string()]))
                 .expect("status");
             if status["status"] == "complete" {
-                complete = true;
                 break;
             }
+            assert!(
+                Instant::now() < deadline,
+                "live worker did not reach complete status"
+            );
             tokio::task::yield_now().await;
         }
-        assert!(complete, "live worker did not reach complete status");
         server.await.expect("server");
         assert_eq!(
             fs::read(directory.output.join("file.bin")).expect("output"),
@@ -2139,19 +2141,21 @@ mod tests {
             .parse::<Gid>()
             .expect("valid GID");
 
-        let mut complete = false;
-        for _ in 0..4_000 {
+        let deadline = Instant::now() + CONTROL_PROGRESS_TIMEOUT;
+        loop {
             plane.poll_once().expect("restart control progress");
             let status = plane
                 .call("aria2.tellStatus", json!([gid.to_string()]))
                 .expect("status");
             if status["status"] == "complete" {
-                complete = true;
                 break;
             }
+            assert!(
+                Instant::now() < deadline,
+                "restarted worker did not reach complete status"
+            );
             tokio::task::yield_now().await;
         }
-        assert!(complete, "restarted worker did not reach complete status");
         server.await.expect("server");
         assert_eq!(
             fs::read(directory.output.join("restart.bin")).expect("output"),

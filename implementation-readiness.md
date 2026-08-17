@@ -30,7 +30,9 @@ profile selection in RPC startup, and the local C10k/active-range harness are
 covered. HTTP discarded payload is also bounded by a process-owned atomic
 process/host/task/attempt guard, including probe, retry/cancel, checksum, and
 endgame cleanup paths, with separate RPC diagnostics. The broader evictable
-file-handle LRU and non-HTTP consumers remain pending. A standalone,
+file-handle LRU and non-HTTP consumers remain pending. Hot-backup publication
+residue now has descriptor-bound same-file/link-count recovery, no-clobber race
+preservation, crash-point, and temporary-unlink fault coverage. A standalone,
 workspace-excluded cargo-fuzz package now covers HTTP response/request headers,
 retry specifications, discard-budget invariants, and journal replay; the
 remaining protocol/crash fault matrix is still pending.
@@ -250,9 +252,8 @@ this vertical slice.
   loopback boundary.
 - Drive the bounded orderly-shutdown coordinator across every real lane,
   including dirty-checkpoint persistence when an adapter times out or detaches.
-- Close the hot-backup publication residue window with verified same-file
-  cleanup or a native atomic no-replace primitive and the required crash/unlink
-  fault matrix.
+- Keep the hot-backup publication recovery matrix green across native
+  platforms; native release and real poweroff evidence remain separate gates.
 - Run real io_uring and native Windows I/O coverage in supporting CI.
 - Pass MSRV 1.88 and the full native Linux, Windows, and macOS release matrix
   before any tag; configured workflow jobs alone are not completion evidence.

@@ -31,8 +31,10 @@ concurrent pieces or replace the persisted whole-file checksum. `Content-Digest`
 digest parameters/coverage metadata, alternate algorithms, server-advertised
 whole-entity admission, Metalink chunk hashes, Last-Modified/unsafe-override
 resume, HTTP/2, growing/chunked transfers, native release benchmark evidence,
-hot-backup crash-residue reconciliation, the broader Phase-4 control plane, and
-the full release-platform matrix remain phase/tag gates.
+the broader Phase-4 control plane, and the full release-platform matrix remain
+phase/tag gates. Hot-backup publication residue is now recovered through
+descriptor-bound same-file/link-count validation with no-clobber collision and
+crash/unlink fault coverage.
 
 The profile-capacity slice is now executable: profile-derived process/socket/file
 and resident limits are resolved, HTTP direct and proxy sockets consume the
@@ -201,7 +203,9 @@ Exit criteria:
   destination-link publication until temporary-link removal is durably synced
   either leaves a directly usable destination or performs verified recovery
   without deleting a raced destination replacement. The same matrix must inject
-  temporary unlink failures after publication.
+  temporary unlink failures after publication. That matrix is now executable
+  on the file-backed session store, including exact-link-count rejection of
+  unknown aliases and preservation of invalid same-file residue.
 - Finalize intent/redo recovery passes every crash-point and collision test.
 - Scheduler matrix tests cover every state × semantic action and aria2 wire
   projection. Executor tests cover the implemented command/event subset,
@@ -293,8 +297,10 @@ Exit criteria:
   conflicts, redirect/proxy SSRF, deterministic ENOSPC/permission-denied/
   short-write/partial-fsync faults, torn-tail and same-inode rotation recovery,
   child-process exit/kill barriers, and the Linux power-loss cut model are
-  executable. Native Windows I/O and real poweroff evidence remain platform
-  gates rather than being inferred from the local model.
+  executable. Hot-backup publication/link cleanup, raced-destination
+  preservation, and unlink-failure recovery are executable too. Native Windows
+  I/O and real poweroff evidence remain platform gates rather than being
+  inferred from the local model.
 - Discard fault coverage proves bounded oversized/short-body overrun, atomic
   process/host/task/attempt exhaustion, no refund after abort/rollback, prompt
   source/retry-cycle stop, and separate consumed/remaining diagnostics. The
