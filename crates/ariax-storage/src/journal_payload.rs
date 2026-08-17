@@ -25,9 +25,14 @@ pub const MAX_PIECE_STATE_COVERED_PIECES: usize = 131_072;
 pub const MAX_PIECE_STATE_BITMAP_BYTES: usize = MAX_PIECE_STATE_COVERED_PIECES.div_ceil(8);
 pub const OPTIONS_SNAPSHOT_HASH_DOMAIN: &str = "ariax/options-snapshot/v1\0";
 pub const HTTP_STRONG_VALIDATOR_HASH_DOMAIN: &str = "ariax/http-strong-validator/v1\0";
+/// Domain used by the persisted HTTP multi-source range identity.  The
+/// value is intentionally the same domain used by the original bounded
+/// in-memory identity fingerprint so a restart does not silently change the
+/// lease authority for an already-created journal.
+pub const HTTP_RANGE_IDENTITY_HASH_DOMAIN: &str = "ariax/http-shared-range-digest/v1\0";
 
 /// Every record payload with a complete version-1 typed codec.
-pub const PAYLOAD_CODEC_RECORD_TYPES: [RecordType; 25] = crate::ALL_RECORD_TYPES;
+pub const PAYLOAD_CODEC_RECORD_TYPES: [RecordType; 26] = crate::ALL_RECORD_TYPES;
 
 /// Hashes the exact strong ETag and settled representation length used by
 /// HTTP resume leases. The raw ETag remains separately persisted so `If-Range`
@@ -46,6 +51,24 @@ pub fn calculate_http_strong_validator_fingerprint(
             .to_le_bytes(),
     );
     digest.update(etag);
+    Ok(JournalHash::new(digest.finalize().into()).expect("SHA-256 output is nonzero"))
+}
+
+/// Hashes the settled representation digest and length used to authorize
+/// digest-only HTTP range leases after a restart.
+pub fn calculate_http_range_identity_fingerprint(
+    representation_digest: &JournalDigest,
+    total_length: u64,
+) -> Result<JournalHash, PayloadCodecError> {
+    if representation_digest.algorithm() != JournalDigestAlgorithm::Sha256
+        || representation_digest.value().len() != JournalDigestAlgorithm::Sha256.value_len()
+    {
+        return Err(PayloadCodecError::InvalidHttpRangeIdentity);
+    }
+    let mut digest = Sha256::new();
+    digest.update(HTTP_RANGE_IDENTITY_HASH_DOMAIN.as_bytes());
+    digest.update(total_length.to_le_bytes());
+    digest.update(representation_digest.value());
     Ok(JournalHash::new(digest.finalize().into()).expect("SHA-256 output is nonzero"))
 }
 
@@ -643,6 +666,11 @@ pub enum JournalPayload {
         total_length: u64,
         etag: Box<[u8]>,
     },
+    HttpRangeIdentity {
+        identity_fingerprint: JournalHash,
+        total_length: u64,
+        representation_digest: JournalDigest,
+    },
 }
 
 impl JournalPayload {
@@ -674,6 +702,7 @@ impl JournalPayload {
             Self::FinalizeDone { .. } => RecordType::FinalizeDone,
             Self::PieceStateChunk { .. } => RecordType::PieceStateChunk,
             Self::HttpStrongValidator { .. } => RecordType::HttpStrongValidator,
+            Self::HttpRangeIdentity { .. } => RecordType::HttpRangeIdentity,
         }
     }
 
@@ -967,6 +996,15 @@ impl JournalPayload {
                 encoder.u64(*total_length)?;
                 encoder.bytes(etag)?;
             }
+            Self::HttpRangeIdentity {
+                identity_fingerprint,
+                total_length,
+                representation_digest,
+            } => {
+                encoder.hash(*identity_fingerprint)?;
+                encoder.u64(*total_length)?;
+                encoder.digest(representation_digest)?;
+            }
         }
         encoder.finish()
     }
@@ -1181,6 +1219,11 @@ impl JournalPayload {
                 total_length: decoder.u64()?,
                 etag: decoder.bytes(MAX_HTTP_STRONG_ETAG_BYTES)?,
             },
+            RecordType::HttpRangeIdentity => Self::HttpRangeIdentity {
+                identity_fingerprint: decoder.hash()?,
+                total_length: decoder.u64()?,
+                representation_digest: decoder.digest()?,
+            },
         };
         decoder.finish()?;
         validate_payload(&payload)?;
@@ -1277,6 +1320,19 @@ fn validate_payload(payload: &JournalPayload) -> Result<(), PayloadCodecError> {
             let calculated = calculate_http_strong_validator_fingerprint(etag, *total_length)?;
             if calculated != *validator_fingerprint {
                 Err(PayloadCodecError::InvalidHttpStrongValidator)
+            } else {
+                Ok(())
+            }
+        }
+        JournalPayload::HttpRangeIdentity {
+            identity_fingerprint,
+            total_length,
+            representation_digest,
+        } => {
+            let calculated =
+                calculate_http_range_identity_fingerprint(representation_digest, *total_length)?;
+            if calculated != *identity_fingerprint {
+                Err(PayloadCodecError::InvalidHttpRangeIdentity)
             } else {
                 Ok(())
             }
@@ -1542,6 +1598,7 @@ pub enum PayloadCodecError {
     ZeroSourceSequence,
     ZeroStateRecordCount,
     InvalidHttpStrongValidator,
+    InvalidHttpRangeIdentity,
     AllocationFailed,
 }
 
@@ -1594,12 +1651,13 @@ impl PayloadCodecError {
             Self::ZeroSourceSequence => "zero_source_sequence",
             Self::ZeroStateRecordCount => "zero_state_record_count",
             Self::InvalidHttpStrongValidator => "invalid_http_strong_validator",
+            Self::InvalidHttpRangeIdentity => "invalid_http_range_identity",
             Self::AllocationFailed => "allocation_failed",
         }
     }
 }
 
-pub const ALL_PAYLOAD_CODEC_ERROR_CLASSES: [PayloadCodecError; 46] = [
+pub const ALL_PAYLOAD_CODEC_ERROR_CLASSES: [PayloadCodecError; 47] = [
     PayloadCodecError::PayloadTooLarge,
     PayloadCodecError::Truncated,
     PayloadCodecError::TrailingBytes,
@@ -1645,6 +1703,7 @@ pub const ALL_PAYLOAD_CODEC_ERROR_CLASSES: [PayloadCodecError; 46] = [
     PayloadCodecError::ZeroSourceSequence,
     PayloadCodecError::ZeroStateRecordCount,
     PayloadCodecError::InvalidHttpStrongValidator,
+    PayloadCodecError::InvalidHttpRangeIdentity,
     PayloadCodecError::AllocationFailed,
 ];
 
@@ -2202,7 +2261,8 @@ mod tests {
         JournalDigest, JournalDigestAlgorithm, JournalFileLayoutEntry, JournalHash, JournalPayload,
         JournalRelativePath, MAX_PIECE_STATE_COVERED_PIECES, PAYLOAD_CODEC_RECORD_TYPES,
         PayloadCodecError, PayloadDecoder, PayloadEncoder, PersistedId, PersistedSpan,
-        SanitizedOptionMap, calculate_http_strong_validator_fingerprint,
+        SanitizedOptionMap, calculate_http_range_identity_fingerprint,
+        calculate_http_strong_validator_fingerprint,
     };
     use crate::{
         DataBarrierKind, DurabilityMode, GenerationStartReason, LeaseAbortReason,
@@ -2447,6 +2507,12 @@ mod tests {
                     .expect("validator fingerprint"),
                 total_length: 2048,
                 etag: b"\"v1\"".to_vec().into_boxed_slice(),
+            },
+            JournalPayload::HttpRangeIdentity {
+                representation_digest: digest(),
+                identity_fingerprint: calculate_http_range_identity_fingerprint(&digest(), 2048)
+                    .expect("range identity fingerprint"),
+                total_length: 2048,
             },
         ]
     }

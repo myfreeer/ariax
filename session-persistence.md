@@ -1,9 +1,9 @@
 # Session Persistence
 
 Status: first-slice implementation in progress. The control-journal v1 framing,
-segment linkage, bounded replay, torn-tail valid-prefix rules, and 18 scalar
+segment linkage, bounded replay, torn-tail valid-prefix rules, and 19 scalar
 record payload codecs are executable, as are the seven bounded
-collection/metadata/path payloads that complete all 25 v1 record types.
+collection/metadata/path payloads that complete all 26 v1 record types.
 Policy-gated typed state
 reconstruction, exact generation/layout/lease/finalization validation, and
 whole-checkpoint hash validation are also executable. File-backed typed append,

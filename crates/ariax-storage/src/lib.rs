@@ -32,24 +32,26 @@ pub use journal_appender::{
 };
 pub use journal_payload::{
     ALL_JOURNAL_DIGEST_ALGORITHMS, ALL_PAYLOAD_CODEC_ERROR_CLASSES, AppendPayloadError,
-    CheckpointId, DurableEvidenceRun, HTTP_STRONG_VALIDATOR_HASH_DOMAIN, JournalDigest,
-    JournalDigestAlgorithm, JournalFileLayoutEntry, JournalHash, JournalPayload,
-    JournalRelativePath, MAX_DIGEST_ALGORITHM_BYTES, MAX_DIGEST_VALUE_BYTES,
-    MAX_HTTP_STRONG_ETAG_BYTES, MAX_OPTION_KEY_BYTES, MAX_OPTION_MAP_BYTES, MAX_OPTION_MAP_ENTRIES,
-    MAX_OPTION_VALUE_BYTES, MAX_PIECE_STATE_BITMAP_BYTES, MAX_PIECE_STATE_COVERED_PIECES,
-    OPTIONS_SNAPSHOT_HASH_DOMAIN, PAYLOAD_CODEC_RECORD_TYPES, PayloadCodecError, PersistedId,
-    PersistedSpan, SanitizedOptionMap, calculate_http_strong_validator_fingerprint,
+    CheckpointId, DurableEvidenceRun, HTTP_RANGE_IDENTITY_HASH_DOMAIN,
+    HTTP_STRONG_VALIDATOR_HASH_DOMAIN, JournalDigest, JournalDigestAlgorithm,
+    JournalFileLayoutEntry, JournalHash, JournalPayload, JournalRelativePath,
+    MAX_DIGEST_ALGORITHM_BYTES, MAX_DIGEST_VALUE_BYTES, MAX_HTTP_STRONG_ETAG_BYTES,
+    MAX_OPTION_KEY_BYTES, MAX_OPTION_MAP_BYTES, MAX_OPTION_MAP_ENTRIES, MAX_OPTION_VALUE_BYTES,
+    MAX_PIECE_STATE_BITMAP_BYTES, MAX_PIECE_STATE_COVERED_PIECES, OPTIONS_SNAPSHOT_HASH_DOMAIN,
+    PAYLOAD_CODEC_RECORD_TYPES, PayloadCodecError, PersistedId, PersistedSpan, SanitizedOptionMap,
+    calculate_http_range_identity_fingerprint, calculate_http_strong_validator_fingerprint,
 };
 pub use journal_state::{
     ALL_JOURNAL_STATE_ERROR_CODES, CHECKPOINT_STATE_HASH_DOMAIN, CONTRIBUTORS_HASH_DOMAIN,
     DurablePieceOrigin, JournalContributor, JournalStateError, JournalStateLimits,
     JournalStateReplay, JournalStateResource, JournalStateStop, PersistedOptionPolicy,
     REBIND_VALIDATOR_SET_HASH_DOMAIN, RecoveredCheckpoint, RecoveredCleanShutdown,
-    RecoveredDurablePiece, RecoveredFinalization, RecoveredHttpStrongValidator,
-    RecoveredJournalState, RecoveredLayout, RecoveredOptionSnapshot, RecoveredRetryState,
-    RecoveredTerminal, VALIDATOR_SET_HASH_DOMAIN, calculate_checkpoint_state_hash,
-    calculate_contributors_hash, calculate_rebind_validator_set_fingerprint,
-    calculate_validator_set_fingerprint, recover_journal_state,
+    RecoveredDurablePiece, RecoveredFinalization, RecoveredHttpRangeIdentity,
+    RecoveredHttpStrongValidator, RecoveredJournalState, RecoveredLayout, RecoveredOptionSnapshot,
+    RecoveredRetryState, RecoveredTerminal, VALIDATOR_SET_HASH_DOMAIN,
+    calculate_checkpoint_state_hash, calculate_contributors_hash,
+    calculate_rebind_validator_set_fingerprint, calculate_validator_set_fingerprint,
+    recover_journal_state,
 };
 pub use journal_tags::{
     ALL_DATA_BARRIER_KINDS, ALL_DURABILITY_MODES, ALL_GENERATION_START_REASONS,

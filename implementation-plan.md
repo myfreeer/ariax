@@ -52,8 +52,10 @@ counter; and RPC status exposes consumed/remaining task credit. FTP/SFTP and
 libtorrent discard producers remain later adapter work. The standalone
 workspace-excluded `fuzz/` package now provides bounded cargo-fuzz targets for
 HTTP response/request headers, retry specifications, discard accounting, and
-journal replay; the remaining process-kill, power-loss, and disk-fault matrix
-still gates a full Phase-3 completion claim.
+journal replay. Deterministic storage-boundary ENOSPC, permission-denied, and
+short-write faults now leave no durable piece and replay cleanly; the remaining
+partial-fsync, forced-process-kill, and power-loss matrix still gates a full
+Phase-3 completion claim.
 
 This is a staged plan for building the design without repeating the incomplete
 rewrite pattern. The native-startup orchestration boundary, central-journal
@@ -267,7 +269,11 @@ rewrite. Same-origin strong-ETag endgame duplicate fencing, candidate settlement
 dirty-overlap rollback, and crash-safe replay are executable. Strict mode also
 negotiates and bounds SHA-256 `Repr-Digest`, verifies probe and range bodies,
 journals accepted response digests, and permits a secondary origin only for an
-exact-span endgame race whose head digest matches the original. Broader RFC
+exact-span endgame race whose head digest matches the original. A flushed
+`HttpRangeIdentity` now binds the settled probe digest and representation length
+before leases; restart reprobes matching mirrors and re-fetches every locally
+verified durable range for body/digest comparison before pending ranges can be
+released. Missing or mismatched identity evidence fails closed. Broader RFC
 9530/Metalink identity, additional checksum algorithms, Last-Modified/unsafe-
 override resume, adaptive profile tuning, and the native portion of the full
 Phase-3 exit criteria below still gate a later phase completion claim.
@@ -280,7 +286,10 @@ Exit criteria:
 
 - Fault tests for ignored Range, short/oversized body, lease abort, generated-
   header conflict, redirect/proxy SSRF, disk full, process kill, and poweroff
-  simulation.
+  simulation. Ignored/short/oversized responses, lease aborts, generated-header
+  conflicts, redirect/proxy SSRF, and deterministic ENOSPC, permission-denied,
+  and short-write storage failures are executable; partial-fsync,
+  forced-process-kill, and poweroff simulation remain open.
 - Discard fault coverage proves bounded oversized/short-body overrun, atomic
   process/host/task/attempt exhaustion, no refund after abort/rollback, prompt
   source/retry-cycle stop, and separate consumed/remaining diagnostics. The

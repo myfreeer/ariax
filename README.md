@@ -20,7 +20,10 @@ stdio, with atomic rejection and orderly worker/journal/session shutdown.
 Strict HTTP identity now distinguishes whole-file and exact-range evidence. A
 persisted user SHA-256 admits ordinary concurrent mirrors and final verification;
 the bounded SHA-256 `Repr-Digest` profile verifies probe/range bodies and keeps
-secondary origins only for fenced exact-range endgame races.
+secondary origins only for fenced exact-range endgame races. Its persisted
+digest/length identity also makes restart fail closed: matching mirrors are
+reprobed and each locally verified durable range is fetched and compared again
+before pending work resumes.
 
 This is still not a complete downloader or release/tag-ready. The first
 hierarchical rate limiter, stall policy, process-owned discard guard, same-origin
@@ -30,6 +33,9 @@ broader RFC 9530/Metalink and `Content-Digest` modes, WebSocket/NDJSON and
 non-loopback RPC, the remaining crash/power-loss fault matrix, the rest of Phase
 4, hot-backup crash-residue reconciliation, and the full native release matrix
 remain gated by `implementation-readiness.md` and `implementation-plan.md`.
+Deterministic ENOSPC, permission-denied, and short-write injection is already
+executable; partial-fsync, forced-process-kill, and power-loss coverage remains
+open.
 
 This design is for a new downloader that keeps the mature aria2 user model
 while fixing the major safety, scalability, and completeness problems found in

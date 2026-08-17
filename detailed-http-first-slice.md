@@ -408,11 +408,22 @@ parameterized members, and fails closed before proportional allocation.
 server-advertised whole-entity admission, Metalink chunk hashes, and additional
 user checksum algorithms remain pending.
 
-The per-range digest is journaled as lease evidence, but this bounded profile is
-not yet a restart validator. If a digest-only multi-source task has durable
-pieces when the process stops, recovery fails closed until a persistent
-range-identity record is added; strong-ETag or user-checksum recovery remains
-the executable restart path.
+The bounded profile now persists one `HttpRangeIdentity` before the first range
+lease. Its fingerprint binds the settled probe-range SHA-256 value and exact
+representation length; semantic replay accepts it only after the matching
+layout, before network history, and never alongside a strong HTTP validator.
+Every digest-only lease uses that fingerprint.
+
+On restart, submitted mirrors are reprobed and only exact length/digest matches
+remain eligible. Descriptor-bound local readback first verifies every durable
+piece against its journaled SHA-256, then one matching ordinary source serves
+each exact durable range again. Recovery hashes and discards those bodies,
+requires a truthful bounded `Repr-Digest`, and compares the body to the durable
+piece digest before the coordinator can release pending work. Missing,
+mismatched, malformed, short, or oversized evidence fails closed. This admits
+the executable digest-only multi-source restart path without claiming that the
+one-byte probe proves whole-entity identity; the broader digest profiles listed
+above remain pending.
 
 A redirect target never joins the mirror pool merely because a redirect was
 followed. Its admission and per-lease exclusivity follow `redirect-policy.md`.

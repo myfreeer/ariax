@@ -487,6 +487,13 @@ SHA-256 evidence before a network request is sent. A recovered strong ETag is
 usable only when its resource fingerprint and settled total length match the
 replayed layout. The validator record is ordered after layout and before any
 network lease, and a duplicate or mismatched lease fingerprint fails replay.
+When strict HTTP admission instead relies on the bounded shared-range SHA-256
+profile, one `HttpRangeIdentity` binds the settled probe digest and exact total
+length before any lease. Replay recomputes its domain-separated fingerprint,
+rejects coexistence with `HttpStrongValidator`, and requires each recovered
+lease to use that fingerprint. Network recovery then reprobes matching sources
+and re-fetches every locally verified durable range before releasing pending
+work, as specified by `detailed-http-first-slice.md`.
 
 ## Control Journal Format
 
@@ -652,6 +659,7 @@ Record types (first slice; the number is the version-1 `record_type` value):
 23  FinalizeDone        (rename observed complete)
 24  PieceStateChunk     (checkpoint-only compact durable-piece state)
 25  HttpStrongValidator (strong ETag/resource binding for HTTP resume)
+26  HttpRangeIdentity   (bounded digest/length binding for HTTP resume)
 ```
 
 The payload of every first-version record is normative:
@@ -683,6 +691,7 @@ The payload of every first-version record is normative:
 | `FinalizeDone` | `layout_hash:Hash32`, `root_binding_hash:Hash32`, `file_id:Id`, `final_relative_path:Bytes` |
 | `PieceStateChunk` | `layout_hash:Hash32`, `root_binding_hash:Hash32`, `chunk_index:u32`, `chunk_count:u32`, `first_piece_id:Id`, `covered_piece_count:u32`, `durable_bitmap:Bytes`, `evidence_run_count:u32`, repeated `DurableEvidenceRun` |
 | `HttpStrongValidator` | `resource_fingerprint:Hash32`, `validator_fingerprint:Hash32`, `total_length:u64`, `etag:Bytes` (bounded strong ETag; exact bytes are retained for `If-Range`) |
+| `HttpRangeIdentity` | `identity_fingerprint:Hash32`, `total_length:u64`, `representation_digest:Digest` (SHA-256 only; the fingerprint is domain-separated over the digest and exact length) |
 
 `validator_fingerprint` is a fixed hash of the canonical validator tuple, not a
 raw cookie, credential, or header block. `contributors_hash` covers the sorted
@@ -945,7 +954,8 @@ control actors continue.
    `segment_index = 0`, `first_sequence = 1`, and the frozen generation.
 3. Append `CheckpointStart`, the state records encoded with the ordinary
    version-1 record types (`TaskCreated`, `OptionsSnapshot`,
-   `LayoutCommitted`/`LayoutChunk`, `RetryState`, the checkpoint-only compact
+   `LayoutCommitted`/`LayoutChunk`, `HttpStrongValidator` or
+   `HttpRangeIdentity`, `RetryState`, the checkpoint-only compact
    `PieceStateChunk` set, and
    `TaskPaused`/`FinalizeIntent`/`FinalizeDone`/terminal markers as applicable),
    then `CheckpointEnd` whose `state_hash` covers the canonical encoded state

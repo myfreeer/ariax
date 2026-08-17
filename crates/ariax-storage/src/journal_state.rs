@@ -4,7 +4,7 @@ use crate::{
     JournalRecord, LayoutError, MAX_LAYOUT_ENTRIES, OptionsSnapshotScope, PathValidationError,
     PayloadCodecError, PersistedId, PersistedSpan, PlatformPath, RecordType, RetryReason,
     RetryScope, RootBinding, RootBindingError, RootIdentity, SafePathBuilder, SanitizedOptionMap,
-    TaskPauseReason, TaskRemoveReason,
+    TaskPauseReason, TaskRemoveReason, calculate_http_range_identity_fingerprint,
 };
 use ariax_core::{
     ErrorKind, FileId, Generation, LeaseId, OptionPatchId, PieceId, TaskId, TransferAttemptId,
@@ -257,6 +257,33 @@ impl RecoveredHttpStrongValidator {
     }
 }
 
+/// Bounded digest-only HTTP identity retained across restart.  Unlike a
+/// strong validator it never becomes an `If-Range` value; it only authorizes
+/// exact-range body revalidation before recovered durable pieces are released.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoveredHttpRangeIdentity {
+    identity_fingerprint: JournalHash,
+    total_length: u64,
+    representation_digest: JournalDigest,
+}
+
+impl RecoveredHttpRangeIdentity {
+    #[must_use]
+    pub const fn identity_fingerprint(&self) -> JournalHash {
+        self.identity_fingerprint
+    }
+
+    #[must_use]
+    pub const fn total_length(&self) -> u64 {
+        self.total_length
+    }
+
+    #[must_use]
+    pub const fn representation_digest(&self) -> &JournalDigest {
+        &self.representation_digest
+    }
+}
+
 /// One final rename and whether its matching `FinalizeDone` was observed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecoveredFinalization {
@@ -319,6 +346,7 @@ pub struct RecoveredJournalState {
     pending_options: Option<RecoveredOptionSnapshot>,
     layout: Option<RecoveredLayout>,
     http_strong_validator: Option<RecoveredHttpStrongValidator>,
+    http_range_identity: Option<RecoveredHttpRangeIdentity>,
     durable_pieces: BTreeMap<PieceId, RecoveredDurablePiece>,
     retry_states: BTreeMap<(u8, u64), RecoveredRetryState>,
     paused: Option<TaskPauseReason>,
@@ -369,6 +397,11 @@ impl RecoveredJournalState {
     #[must_use]
     pub const fn http_strong_validator(&self) -> Option<&RecoveredHttpStrongValidator> {
         self.http_strong_validator.as_ref()
+    }
+
+    #[must_use]
+    pub const fn http_range_identity(&self) -> Option<&RecoveredHttpRangeIdentity> {
+        self.http_range_identity.as_ref()
     }
 
     #[must_use]
@@ -489,6 +522,7 @@ pub enum JournalStateError {
     LayoutHashMismatch,
     RootBindingHashMismatch,
     InvalidHttpStrongValidator,
+    InvalidHttpRangeIdentity,
     SpanOutsideLayout,
     PieceSpanMismatch,
     DuplicateLease,
@@ -550,6 +584,7 @@ impl JournalStateError {
             Self::LayoutHashMismatch => "layout_hash_mismatch",
             Self::RootBindingHashMismatch => "root_binding_hash_mismatch",
             Self::InvalidHttpStrongValidator => "invalid_http_strong_validator",
+            Self::InvalidHttpRangeIdentity => "invalid_http_range_identity",
             Self::SpanOutsideLayout => "span_outside_layout",
             Self::PieceSpanMismatch => "piece_span_mismatch",
             Self::DuplicateLease => "duplicate_lease",
@@ -610,6 +645,7 @@ pub const ALL_JOURNAL_STATE_ERROR_CODES: &[&str] = &[
     "layout_hash_mismatch",
     "root_binding_hash_mismatch",
     "invalid_http_strong_validator",
+    "invalid_http_range_identity",
     "span_outside_layout",
     "piece_span_mismatch",
     "duplicate_lease",
@@ -1516,6 +1552,18 @@ where
                     etag,
                 },
             ),
+            JournalPayload::HttpRangeIdentity {
+                identity_fingerprint,
+                total_length,
+                representation_digest,
+            } => self.apply_http_range_identity(
+                record,
+                RecoveredHttpRangeIdentity {
+                    identity_fingerprint,
+                    total_length,
+                    representation_digest,
+                },
+            ),
             JournalPayload::CheckpointStart { .. } | JournalPayload::CheckpointEnd { .. } => {
                 Err(JournalStateError::CheckpointRecordForbidden)
             }
@@ -1540,7 +1588,8 @@ where
                 ..
             } => 2,
             JournalPayload::LayoutCommitted { .. } | JournalPayload::LayoutChunk { .. } => 3,
-            JournalPayload::HttpStrongValidator { .. } => 4,
+            JournalPayload::HttpStrongValidator { .. }
+            | JournalPayload::HttpRangeIdentity { .. } => 4,
             JournalPayload::RetryState {
                 scope, scope_id, ..
             } => {
@@ -1600,6 +1649,7 @@ where
             pending_options: None,
             layout: None,
             http_strong_validator: None,
+            http_range_identity: None,
             durable_pieces: BTreeMap::new(),
             retry_states: BTreeMap::new(),
             paused: None,
@@ -1706,6 +1756,7 @@ where
         state.retry_states.clear();
         state.paused = None;
         state.http_strong_validator = None;
+        state.http_range_identity = None;
         if reason == GenerationStartReason::RepresentationRestart {
             // The old layout remains only as descriptor-bound authority for
             // reopening the task-owned file. No byte from the prior
@@ -1866,6 +1917,7 @@ where
         };
         state.finalizations.clear();
         state.http_strong_validator = None;
+        state.http_range_identity = None;
         state.rebind_source_root_binding_hash = rebind_source_root_binding_hash;
         state.layout = Some(layout);
         self.layout_record_generation = Some(state.generation);
@@ -1890,10 +1942,49 @@ where
             .as_ref()
             .and_then(|layout| layout.layout().total_length())
             .ok_or(JournalStateError::InvalidHttpStrongValidator)?;
-        if state.http_strong_validator.is_some() || total_length != validator.total_length {
+        if state.http_strong_validator.is_some()
+            || state.http_range_identity.is_some()
+            || total_length != validator.total_length
+        {
             return Err(JournalStateError::InvalidHttpStrongValidator);
         }
         state.http_strong_validator = Some(validator);
+        Ok(())
+    }
+
+    fn apply_http_range_identity(
+        &mut self,
+        record: &JournalRecord,
+        identity: RecoveredHttpRangeIdentity,
+    ) -> Result<(), JournalStateError> {
+        self.require_ready_nonterminal(record)?;
+        if self.network_started {
+            return Err(JournalStateError::InvalidHttpRangeIdentity);
+        }
+        let state = self
+            .state
+            .as_mut()
+            .ok_or(JournalStateError::TaskCreatedMissing)?;
+        let total_length = state
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.layout().total_length())
+            .ok_or(JournalStateError::InvalidHttpRangeIdentity)?;
+        if state.http_range_identity.is_some()
+            || state.http_strong_validator.is_some()
+            || total_length != identity.total_length
+        {
+            return Err(JournalStateError::InvalidHttpRangeIdentity);
+        }
+        let calculated = calculate_http_range_identity_fingerprint(
+            &identity.representation_digest,
+            identity.total_length,
+        )
+        .map_err(|_| JournalStateError::InvalidHttpRangeIdentity)?;
+        if calculated != identity.identity_fingerprint {
+            return Err(JournalStateError::InvalidHttpRangeIdentity);
+        }
+        state.http_range_identity = Some(identity);
         Ok(())
     }
 
@@ -1914,6 +2005,14 @@ where
             .is_some_and(|validator| validator.validator_fingerprint != validator_fingerprint)
         {
             return Err(JournalStateError::InvalidHttpStrongValidator);
+        }
+        if self
+            .state
+            .as_ref()
+            .and_then(|state| state.http_range_identity.as_ref())
+            .is_some_and(|identity| identity.identity_fingerprint != validator_fingerprint)
+        {
+            return Err(JournalStateError::InvalidHttpRangeIdentity);
         }
         if self.seen_leases.contains(&lease_id) {
             return Err(JournalStateError::DuplicateLease);
@@ -2702,9 +2801,9 @@ mod tests {
         CheckpointId, DataBarrierKind, DurabilityMode, DurableEvidenceRun, FileEntry, FileIdentity,
         FileLayout, GenerationStartReason, JournalDigest, JournalDigestAlgorithm,
         JournalFileLayoutEntry, JournalHash, JournalPayload, JournalRecord, JournalRelativePath,
-        OptionsSnapshotScope, PathPlatform, PersistedSpan, PlatformPath, RootBinding, RootIdentity,
-        SafePathBuilder, SanitizedOptionMap, TaskPauseReason,
-        calculate_http_strong_validator_fingerprint,
+        OptionsSnapshotScope, PathPlatform, PayloadCodecError, PersistedSpan, PlatformPath,
+        RootBinding, RootIdentity, SafePathBuilder, SanitizedOptionMap, TaskPauseReason,
+        calculate_http_range_identity_fingerprint, calculate_http_strong_validator_fingerprint,
     };
     use ariax_config::{SecurityClass, builtin_registry};
     use ariax_core::{
@@ -3136,6 +3235,73 @@ mod tests {
             replay.stop,
             JournalStateStop::InvalidRecord {
                 error: JournalStateError::InvalidHttpStrongValidator,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn digest_only_range_identity_replays_before_network_and_rejects_mismatch() {
+        let fixture = layout_fixture(Generation::INITIAL, false);
+        let representation_digest = digest(73);
+        let identity_fingerprint =
+            calculate_http_range_identity_fingerprint(&representation_digest, 2048)
+                .expect("identity fingerprint");
+        let identity = JournalPayload::HttpRangeIdentity {
+            identity_fingerprint,
+            total_length: 2048,
+            representation_digest: representation_digest.clone(),
+        };
+        let mut records = base_records(fixture);
+        records.push(record(4, 0, identity.clone()));
+        records.push(record(
+            5,
+            0,
+            JournalPayload::LeaseStarted {
+                transfer_attempt_id: TransferAttemptId::new(10).expect("attempt"),
+                lease_id: LeaseId::new(11).expect("lease"),
+                span: span(0, 1024),
+                validator_fingerprint: identity_fingerprint,
+            },
+        ));
+        let replay = recover_journal_state(&records, task(), &allow_all, Default::default());
+        assert_eq!(replay.stop, JournalStateStop::CleanEnd);
+        let state = replay.state.expect("state");
+        let recovered = state.http_range_identity().expect("range identity");
+        assert_eq!(recovered.identity_fingerprint(), identity_fingerprint);
+        assert_eq!(recovered.total_length(), 2048);
+        assert_eq!(recovered.representation_digest(), &representation_digest);
+
+        let mut mismatched = base_records(layout_fixture(Generation::INITIAL, false));
+        let valid_identity = JournalPayload::HttpRangeIdentity {
+            identity_fingerprint,
+            total_length: 2048,
+            representation_digest,
+        };
+        let mut invalid_payload = valid_identity.encode().expect("encode identity").into_vec();
+        invalid_payload[..32].copy_from_slice(hash(74).as_bytes());
+        mismatched.push(JournalRecord {
+            record_type: valid_identity.record_type(),
+            generation: Generation::INITIAL,
+            sequence: 4,
+            payload: invalid_payload.into_boxed_slice(),
+        });
+        let replay = recover_journal_state(&mismatched, task(), &allow_all, Default::default());
+        assert!(matches!(
+            replay.stop,
+            JournalStateStop::InvalidRecord {
+                error: JournalStateError::Payload(PayloadCodecError::InvalidHttpRangeIdentity),
+                ..
+            }
+        ));
+
+        let mut duplicate = records;
+        duplicate.push(record(6, 0, identity));
+        let replay = recover_journal_state(&duplicate, task(), &allow_all, Default::default());
+        assert!(matches!(
+            replay.stop,
+            JournalStateStop::InvalidRecord {
+                error: JournalStateError::InvalidHttpRangeIdentity,
                 ..
             }
         ));

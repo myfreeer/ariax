@@ -14,13 +14,17 @@ use ariax_storage::{
     JournalAppenderError, JournalContributor, JournalDigest, JournalDigestAlgorithm, JournalHash,
     JournalPayload, JournalStateError, LeaseAbortReason, MapSpanError, NativeCapabilityError,
     PersistedId, PersistedSpan, RetryReason, RetryScope, RootFileCapability,
-    calculate_contributors_hash, calculate_validator_set_fingerprint,
+    calculate_contributors_hash, calculate_http_range_identity_fingerprint,
+    calculate_validator_set_fingerprint,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 use std::time::Duration;
+
+#[cfg(test)]
+use ariax_runtime::{BlockingDiskExecutor, BlockingDiskIoError, BlockingDiskIoErrorKind};
 
 /// Bounded resources for one first-slice storage engine.
 #[derive(Clone, Debug)]
@@ -38,6 +42,19 @@ pub struct StorageEngineConfig {
     /// registered with the blocking disk lane.
     pub handle_budgets: Option<HandleBudgets>,
     pub shutdown_timeout: Duration,
+    #[cfg(test)]
+    pub disk_fault: Option<StorageEngineDiskFault>,
+}
+
+/// Deterministic disk boundary faults used by the HTTP/storage integration
+/// tests.  These never exist in non-test builds and cannot alter production
+/// backend selection.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StorageEngineDiskFault {
+    OutOfSpace,
+    PermissionDenied,
+    ShortWrite,
 }
 
 impl Default for StorageEngineConfig {
@@ -52,6 +69,8 @@ impl Default for StorageEngineConfig {
             resident_budget: ByteBudget::new(buffer_pool_bytes),
             handle_budgets: None,
             shutdown_timeout: Duration::from_secs(5),
+            #[cfg(test)]
+            disk_fault: None,
         }
     }
 }
@@ -386,17 +405,28 @@ impl StorageEngine {
         if files.len() != selected_count {
             return Err(StorageEngineError::bare(WriteReject::NativeFile));
         }
-        let lane = BlockingDiskLane::new(
-            BlockingDiskLaneConfig {
+        let lane_result = {
+            let lane_config = BlockingDiskLaneConfig {
                 worker_count: config.disk_workers,
                 queue_capacity: config.disk_queue_capacity,
                 completion_capacity: config.disk_completion_capacity,
                 max_accepted_bytes: config.max_in_flight_bytes,
-            },
-            epoch,
-            registry.clone(),
-        )
-        .map_err(|error| {
+            };
+            #[cfg(test)]
+            {
+                match config.disk_fault {
+                    Some(fault) => {
+                        BlockingDiskLane::new(lane_config, epoch, FaultInjectingExecutor { fault })
+                    }
+                    None => BlockingDiskLane::new(lane_config, epoch, registry.clone()),
+                }
+            }
+            #[cfg(not(test))]
+            {
+                BlockingDiskLane::new(lane_config, epoch, registry.clone())
+            }
+        };
+        let lane = lane_result.map_err(|error| {
             StorageEngineError::with(
                 WriteReject::DiskAdmission,
                 StorageEngineErrorDetail::DiskStart(error),
@@ -1032,6 +1062,35 @@ impl StorageEngine {
         Ok(())
     }
 
+    /// Persists the settled digest-only mirror identity before any range lease
+    /// can be admitted.  The record is flushed independently so a process
+    /// crash cannot leave durable bytes without the identity that authorizes
+    /// their restart validation.
+    pub fn record_http_range_identity(
+        &mut self,
+        total_length: u64,
+        representation_digest: JournalDigest,
+    ) -> Result<(), StorageEngineError> {
+        let identity_fingerprint =
+            calculate_http_range_identity_fingerprint(&representation_digest, total_length)
+                .map_err(|_| StorageEngineError::bare(WriteReject::Journal))?;
+        let appended = self
+            .journal
+            .append_payload(
+                self.generation,
+                &JournalPayload::HttpRangeIdentity {
+                    identity_fingerprint,
+                    total_length,
+                    representation_digest,
+                },
+            )
+            .map_err(journal_error)?;
+        self.journal
+            .flush(appended.sequence())
+            .map_err(journal_error)?;
+        Ok(())
+    }
+
     pub fn complete(
         &mut self,
         final_digest: Option<JournalDigest>,
@@ -1239,6 +1298,34 @@ impl StorageEngine {
     }
 }
 
+#[cfg(test)]
+#[derive(Clone)]
+struct FaultInjectingExecutor {
+    fault: StorageEngineDiskFault,
+}
+
+#[cfg(test)]
+impl BlockingDiskExecutor for FaultInjectingExecutor {
+    fn write_at(
+        &self,
+        _handle: BlockingFileHandle,
+        _offset: u64,
+        bytes: &[u8],
+    ) -> Result<usize, BlockingDiskIoError> {
+        match self.fault {
+            StorageEngineDiskFault::OutOfSpace => Err(BlockingDiskIoError {
+                kind: BlockingDiskIoErrorKind::OutOfSpace,
+                raw_os_error: None,
+            }),
+            StorageEngineDiskFault::PermissionDenied => Err(BlockingDiskIoError {
+                kind: BlockingDiskIoErrorKind::PermissionDenied,
+                raw_os_error: None,
+            }),
+            StorageEngineDiskFault::ShortWrite => Ok(bytes.len().saturating_sub(1)),
+        }
+    }
+}
+
 fn journal_error(error: JournalAppenderError) -> StorageEngineError {
     StorageEngineError::with(
         WriteReject::Journal,
@@ -1252,6 +1339,7 @@ mod tests {
     use crate::http_first_slice::{
         append_initial_admission, append_layout, build_single_file_layout,
     };
+    use crate::{KnownLengthHttpRecoveryRequest, recover_known_length_http};
     use ariax_core::Gid;
     use ariax_storage::{JournalId, PathPlatform, RootDirectoryCapability, SafePathBuilder};
     use std::fs;
@@ -1441,6 +1529,137 @@ mod tests {
             fs::read(output_root.join("output.bin")).expect("output bytes"),
             [9, 9, 9, 9]
         );
+    }
+
+    #[tokio::test]
+    async fn injected_disk_faults_leave_no_durable_piece_and_replay_cleanly() {
+        for (ordinal, fault) in [
+            StorageEngineDiskFault::OutOfSpace,
+            StorageEngineDiskFault::PermissionDenied,
+            StorageEngineDiskFault::ShortWrite,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let directory = TestDirectory::new();
+            let output_root = directory.0.join("output");
+            let journal_root = directory.0.join("journal");
+            fs::create_dir_all(&output_root).expect("output root");
+            let root =
+                RootDirectoryCapability::open_trusted(&output_root).expect("root capability");
+            let output = SafePathBuilder::from_user_path("output.bin", PathPlatform::current())
+                .expect("path");
+            let output_file = root.create_new_file(&output).expect("output file");
+            output_file.set_len(4).expect("preallocate output");
+            let layout = build_single_file_layout(
+                TaskId::new(1).expect("task"),
+                Generation::INITIAL,
+                &root,
+                &output,
+                &output_file,
+                4,
+                4,
+            )
+            .expect("layout");
+            let journal_id = JournalId::new([u8::try_from(ordinal + 3).expect("journal id"); 16])
+                .expect("journal id");
+            let mut journal = ControlJournalAppender::create(
+                &journal_root,
+                Gid::new(1).expect("gid"),
+                journal_id,
+                Generation::INITIAL,
+                1,
+            )
+            .expect("journal");
+            append_initial_admission(&mut journal, Generation::INITIAL).expect("admission");
+            append_layout(&mut journal, &layout).expect("layout journal");
+            let config = StorageEngineConfig {
+                disk_fault: Some(fault),
+                ..StorageEngineConfig::default()
+            };
+            let mut engine = StorageEngine::open_layout(
+                layout,
+                [(FileId::new(0), output_file)],
+                journal,
+                config,
+            )
+            .expect("storage engine");
+            let lease = LeaseId::new(1).expect("lease");
+            let validator = JournalHash::new([7; 32]).expect("validator");
+            engine
+                .begin_lease(lease_plan(
+                    lease,
+                    1,
+                    GlobalSpan { offset: 0, len: 4 },
+                    validator,
+                    None,
+                ))
+                .expect("lease");
+            let mut buffer = engine.reserve_network_buffer(4).expect("buffer");
+            buffer.writable().expect("writable")[..4].copy_from_slice(&[1, 2, 3, 4]);
+            buffer.mark_filled(4, OwnerTag::Storage).expect("filled");
+            let error = engine
+                .write_block(WriteBlock {
+                    task: TaskId::new(1).expect("task"),
+                    generation: Generation::INITIAL,
+                    lease,
+                    global_offset: 0,
+                    expected_len: 4,
+                    buffer,
+                    piece: PieceId::new(0),
+                })
+                .await
+                .expect_err("injected disk fault");
+            assert_eq!(error.reject(), WriteReject::DiskCompletion);
+            match (fault, &error.detail) {
+                (
+                    StorageEngineDiskFault::OutOfSpace,
+                    StorageEngineErrorDetail::Disk(BlockingDiskError::Backend(error)),
+                ) => assert_eq!(error.kind, BlockingDiskIoErrorKind::OutOfSpace),
+                (
+                    StorageEngineDiskFault::PermissionDenied,
+                    StorageEngineErrorDetail::Disk(BlockingDiskError::Backend(error)),
+                ) => assert_eq!(error.kind, BlockingDiskIoErrorKind::PermissionDenied),
+                (
+                    StorageEngineDiskFault::ShortWrite,
+                    StorageEngineErrorDetail::Disk(BlockingDiskError::ShortWrite {
+                        expected: 4,
+                        actual: 3,
+                    }),
+                ) => {}
+                _ => panic!("unexpected injected disk result: {error:?}"),
+            }
+            engine
+                .abort_lease(
+                    TaskId::new(1).expect("task"),
+                    Generation::INITIAL,
+                    lease,
+                    LeaseAbortReason::Retry,
+                )
+                .expect("abort failed write");
+            drop(
+                engine
+                    .into_flushed_journal()
+                    .expect("close flushed journal"),
+            );
+            assert_eq!(
+                fs::read(output_root.join("output.bin")).expect("output bytes"),
+                [0, 0, 0, 0]
+            );
+            let recovered = recover_known_length_http(&KnownLengthHttpRecoveryRequest {
+                task: TaskId::new(1).expect("task"),
+                gid: Gid::new(1).expect("gid"),
+                journal_id,
+                generation: Generation::INITIAL,
+                journal_directory: journal_root,
+                output_root,
+                replay_limits: Default::default(),
+                state_limits: Default::default(),
+            })
+            .expect("recover faulted journal");
+            assert_eq!(recovered.durable_prefix, 0);
+            assert!(recovered.replay.state.is_some());
+        }
     }
 
     #[test]

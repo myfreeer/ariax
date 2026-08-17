@@ -31,10 +31,10 @@ use ariax_storage::{
     ControlJournalAppender, FileLayout, GlobalSpan, JournalContributor, JournalDigest,
     JournalDigestAlgorithm, JournalDirectoryCapability, JournalId, JournalStateLimits,
     LeaseAbortReason, PersistedId, PersistedSpan, PlatformPath, RecoveredDurablePiece,
-    RecoveredHttpStrongValidator, RecoveredJournalState, RecoveredRetryState, ReplayLimits,
-    RetryReason, RetryScope, RootDirectoryCapability, RootFileCapability, SessionCommand,
-    SessionHandle, SessionOwnerError, SessionPersistenceError, calculate_validator_set_fingerprint,
-    recover_journal_state,
+    RecoveredHttpRangeIdentity, RecoveredHttpStrongValidator, RecoveredJournalState,
+    RecoveredRetryState, ReplayLimits, RetryReason, RetryScope, RootDirectoryCapability,
+    RootFileCapability, SessionCommand, SessionHandle, SessionOwnerError, SessionPersistenceError,
+    calculate_validator_set_fingerprint, recover_journal_state,
 };
 use hyper::header::RETRY_AFTER;
 use sha2::{Digest, Sha256};
@@ -56,7 +56,6 @@ pub const DEFAULT_HTTP_INGRESS_FRAME_BYTES: usize = SizeClass::MiB1.capacity();
 pub const DEFAULT_HTTP_DIGEST_WORKERS: usize = 1;
 pub const MAX_HTTP_DIGEST_WORKERS: usize = 64;
 const HTTP_JOURNAL_ID_DOMAIN: &str = "ariax/http-journal-id/v1\0";
-const HTTP_SHARED_RANGE_DIGEST_DOMAIN: &str = "ariax/http-shared-range-digest/v1\0";
 const HTTP_RECOVERY_READ_BUFFER_BYTES: usize = 64 * 1024;
 const HTTP_FINAL_DIGEST_READ_BUFFER_BYTES: usize = 1024 * 1024;
 
@@ -711,8 +710,15 @@ impl HttpMultiRangeWorker {
                 .complete_storage_outcome(&task, storage, layout_hash, total_length, outcome)
                 .await;
         }
+        let recovered_range_identity = prepared_storage.range_identity().cloned();
         let mut sources = match self
-            .probe_sources(&task, &cancellation, &stats, &discard_task)
+            .probe_sources(
+                &task,
+                &cancellation,
+                &stats,
+                &discard_task,
+                recovered_range_identity.as_ref(),
+            )
             .await
         {
             Ok(sources) => sources,
@@ -726,6 +732,24 @@ impl HttpMultiRangeWorker {
             .first()
             .map(|source| source.validator.total_length())
             .ok_or(HttpMultiRangeError::NoUsableSources)?;
+        if let Some(identity) = recovered_range_identity.as_ref() {
+            let verification = self
+                .verify_recovered_range_digests(RecoveredRangeDigestVerification {
+                    task: &task,
+                    cancellation: &cancellation,
+                    stats: &stats,
+                    discard_task: &discard_task,
+                    identity,
+                    evidence: prepared_storage.durable_evidence(),
+                    sources: &sources,
+                })
+                .await;
+            if let Err(error) = verification {
+                self.handoff_journal(task.gid(), prepared_storage.into_appender())
+                    .await?;
+                return Err(error);
+            }
+        }
         let mirror_identity = mirror_identity_context(&task, &sources);
         stats.set_total_length(total_length);
         let OpenedHttpStorage {
@@ -749,6 +773,16 @@ impl HttpMultiRangeWorker {
                 return Err(error);
             }
         };
+        if recovered_range_identity.is_none()
+            && let Some(shared) = mirror_identity.shared_range_digest
+            && let Err(error) =
+                storage.record_http_range_identity(total_length, shared.journal_digest())
+        {
+            drop(storage);
+            self.handoff_new_or_recovered_journal(&task, generation)
+                .await?;
+            return Err(HttpMultiRangeError::Storage(error));
+        }
         stats.set_durable(durable_bytes);
         let range_outcome = self
             .run_ranges(
@@ -833,6 +867,7 @@ impl HttpMultiRangeWorker {
         cancellation: &HttpCancellation,
         stats: &HttpTransferStats,
         discard_task: &HttpDiscardTaskGuard,
+        recovered_identity: Option<&RecoveredHttpRangeIdentity>,
     ) -> Result<Vec<PreparedSource>, HttpMultiRangeError> {
         // Strict identity inspects every submitted mirror so matching
         // range-digest responders can remain available for exact-span
@@ -845,7 +880,7 @@ impl HttpMultiRangeWorker {
         let mirror_identity = HttpMirrorIdentityContext {
             policy: task.options().mirror_identity,
             shared_whole_entity_digest: task.options().checksum.is_some(),
-            shared_range_digest: false,
+            shared_range_digest: None,
         };
         for source in &task.sources()[..source_limit] {
             match probe_source(
@@ -882,7 +917,29 @@ impl HttpMultiRangeWorker {
         if prepared.is_empty() {
             return Err(last_error.unwrap_or(HttpMultiRangeError::NoUsableSources));
         }
-        if task.options().mirror_identity == HttpMirrorIdentityPolicy::RequireSharedDigest
+        if let Some(identity) = recovered_identity
+            && task.options().mirror_identity == HttpMirrorIdentityPolicy::RequireSharedDigest
+            && task.options().checksum.is_none()
+        {
+            let expected = identity.representation_digest();
+            prepared.retain(|source| {
+                source.validator.total_length() == identity.total_length()
+                    && source.validator.representation_digest()
+                        == Some(HttpRepresentationDigest::sha256(
+                            expected.value().try_into().expect("SHA-256 digest length"),
+                        ))
+            });
+            if prepared.is_empty() {
+                return Err(HttpMultiRangeError::Setup(
+                    KnownLengthHttpError::StaleValidator,
+                ));
+            }
+            for (index, source) in prepared.iter_mut().enumerate() {
+                source.lease_fingerprint = identity.identity_fingerprint();
+                source.ordinary_assignments = index == 0;
+                source.range_digest_endgame = true;
+            }
+        } else if task.options().mirror_identity == HttpMirrorIdentityPolicy::RequireSharedDigest
             && task.options().checksum.is_none()
             && prepared.len() > 1
         {
@@ -904,6 +961,126 @@ impl HttpMultiRangeWorker {
             }
         }
         Ok(prepared)
+    }
+
+    /// Revalidates every durable piece against the persisted representation
+    /// digest before the scheduler can release any new range lease.  Local
+    /// readback proves the bytes survived the previous process; this second
+    /// proof binds those bytes to the currently selected digest-only mirrors.
+    async fn verify_recovered_range_digests(
+        &self,
+        verification: RecoveredRangeDigestVerification<'_>,
+    ) -> Result<(), HttpMultiRangeError> {
+        let RecoveredRangeDigestVerification {
+            task,
+            cancellation,
+            stats,
+            discard_task,
+            identity,
+            evidence,
+            sources,
+        } = verification;
+        if evidence.is_empty() {
+            return Ok(());
+        }
+        let source = sources
+            .iter()
+            .find(|source| source.ordinary_assignments)
+            .or_else(|| sources.first())
+            .ok_or(HttpMultiRangeError::NoUsableSources)?;
+        if source
+            .validator
+            .representation_digest()
+            .is_none_or(|digest| {
+                digest.value().as_slice() != identity.representation_digest().value()
+            })
+        {
+            return Err(HttpMultiRangeError::Setup(
+                KnownLengthHttpError::StaleValidator,
+            ));
+        }
+        for evidence in evidence.values() {
+            let digest = evidence
+                .digest()
+                .filter(|digest| digest.algorithm() == JournalDigestAlgorithm::Sha256)
+                .ok_or(HttpMultiRangeError::Setup(
+                    KnownLengthHttpError::DurablePieceDigestMismatch {
+                        piece: evidence.piece_id(),
+                    },
+                ))?;
+            let span = GlobalSpan {
+                offset: evidence.piece_span().offset(),
+                len: usize::try_from(evidence.piece_span().len())
+                    .map_err(|_| HttpMultiRangeError::Protocol)?,
+            };
+            let mut request = HttpClientRequest::get(source.validator.final_uri().to_owned());
+            request.range = Some(span);
+            request.mirror_identity = task.options().mirror_identity;
+            request.want_repr_digest = true;
+            let response = tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return Err(HttpMultiRangeError::Cancelled),
+                response = self.client.execute(request) => {
+                    response.map_err(HttpMultiRangeError::Client)?
+                }
+            };
+            let mut response = response;
+            let response_digest = source
+                .validator
+                .validate_range(
+                    response.final_uri(),
+                    response.status(),
+                    response.headers(),
+                    span,
+                )
+                .map_err(|error| match error {
+                    HttpRangeResponseError::RepresentationDigestChanged
+                    | HttpRangeResponseError::RepresentationDigestMismatch => {
+                        HttpMultiRangeError::ChecksumMismatch
+                    }
+                    _ => HttpMultiRangeError::StaleValidator,
+                })?;
+            let discard = discard_task
+                .begin_attempt(discard_host_key(source.validator.final_uri())?)
+                .map_err(discard_setup_error)?;
+            let mut body_digest = Sha256::new();
+            let mut received = 0_u64;
+            loop {
+                let data = tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => return Err(HttpMultiRangeError::Cancelled),
+                    data = response.next_data(task.options().response_body_timeout) => {
+                        data.map_err(HttpMultiRangeError::Client)?
+                    }
+                };
+                let Some(data) = data else {
+                    break;
+                };
+                body_digest.update(&data);
+                stats.add_raw(data.len());
+                record_discarded(&discard, stats, data.len())?;
+                received = received
+                    .checked_add(
+                        u64::try_from(data.len()).map_err(|_| HttpMultiRangeError::Protocol)?,
+                    )
+                    .ok_or(HttpMultiRangeError::Protocol)?;
+                if received > evidence.piece_span().len() {
+                    return Err(HttpMultiRangeError::OversizedBody);
+                }
+            }
+            if received != evidence.piece_span().len() {
+                return Err(HttpMultiRangeError::ShortBody);
+            }
+            let actual: [u8; 32] = body_digest.finalize().into();
+            if actual.as_slice() != digest.value() {
+                return Err(HttpMultiRangeError::ChecksumMismatch);
+            }
+            if response_digest.is_some_and(|value| value.value().as_slice() != actual) {
+                return Err(HttpMultiRangeError::ChecksumMismatch);
+            }
+            response.finish().await;
+        }
+        Ok(())
     }
 
     fn prepare_storage(
@@ -1002,6 +1179,7 @@ impl HttpMultiRangeWorker {
                     durable_pieces,
                     durable_bytes,
                     retry_states: state.retry_states().values().cloned().collect(),
+                    range_identity: state.http_range_identity().cloned(),
                 },
             )));
         }
@@ -1015,6 +1193,7 @@ impl HttpMultiRangeWorker {
                 durable_bytes,
                 retry_states: state.retry_states().values().cloned().collect(),
                 strong_validator: state.http_strong_validator().cloned(),
+                range_identity: state.http_range_identity().cloned(),
             },
         )))
     }
@@ -1076,6 +1255,7 @@ impl HttpMultiRangeWorker {
                     durable_bytes,
                     retry_states,
                     strong_validator,
+                    range_identity,
                 } = *recovered;
                 if layout.total_length() != Some(total_length) {
                     return Err(HttpMultiRangeError::Setup(
@@ -1088,6 +1268,7 @@ impl HttpMultiRangeWorker {
                         strong_validator.as_ref(),
                         total_length,
                     )?;
+                    bind_recovered_range_identity(sources, range_identity.as_ref(), total_length)?;
                     verify_recovered_piece_validators(&durable_evidence, sources)?;
                 }
                 (
@@ -1109,6 +1290,7 @@ impl HttpMultiRangeWorker {
                     mut durable_pieces,
                     mut durable_bytes,
                     retry_states,
+                    range_identity,
                 } = *readmission;
                 output
                     .set_len(total_length)
@@ -1130,6 +1312,11 @@ impl HttpMultiRangeWorker {
                 }
                 if task.options().checksum.is_none() {
                     if retains_layout_identity {
+                        bind_recovered_range_identity(
+                            sources,
+                            range_identity.as_ref(),
+                            total_length,
+                        )?;
                         verify_recovered_piece_validators(&durable_evidence, sources)?;
                     }
                     if let [source] = sources.as_mut_slice()
@@ -1367,7 +1554,8 @@ impl HttpMultiRangeWorker {
                             .with_ordinary_assignments(source.ordinary_assignments)
                             .with_same_source_endgame(source.validator.if_range().is_some())
                             .with_shared_identity_endgame(
-                                mirror_identity.shared_range_digest && source.range_digest_endgame,
+                                mirror_identity.shared_range_digest.is_some()
+                                    && source.range_digest_endgame,
                             )
                     })
             })
@@ -1744,7 +1932,10 @@ impl HttpMultiRangeWorker {
         let mirror_identity = HttpMirrorIdentityContext {
             policy: task.options().mirror_identity,
             shared_whole_entity_digest: task.options().checksum.is_some(),
-            shared_range_digest: current.range_digest_endgame,
+            shared_range_digest: current
+                .range_digest_endgame
+                .then(|| current.validator.representation_digest())
+                .flatten(),
         };
         let fresh = probe_source(
             &self.client,
@@ -1815,7 +2006,7 @@ struct PreparedSource {
 struct HttpMirrorIdentityContext {
     policy: HttpMirrorIdentityPolicy,
     shared_whole_entity_digest: bool,
-    shared_range_digest: bool,
+    shared_range_digest: Option<HttpRepresentationDigest>,
 }
 
 fn mirror_identity_context(
@@ -1825,8 +2016,14 @@ fn mirror_identity_context(
     HttpMirrorIdentityContext {
         policy: task.options().mirror_identity,
         shared_whole_entity_digest: task.options().checksum.is_some(),
-        shared_range_digest: sources.len() > 1
-            && sources.iter().all(|source| source.range_digest_endgame),
+        shared_range_digest: (sources.len() > 1
+            && sources.iter().all(|source| source.range_digest_endgame))
+        .then(|| {
+            sources
+                .first()
+                .and_then(|source| source.validator.representation_digest())
+        })
+        .flatten(),
     }
 }
 
@@ -1834,12 +2031,8 @@ fn shared_range_identity_fingerprint(
     digest: HttpRepresentationDigest,
     total_length: u64,
 ) -> ariax_storage::JournalHash {
-    let mut fingerprint = Sha256::new();
-    fingerprint.update(HTTP_SHARED_RANGE_DIGEST_DOMAIN.as_bytes());
-    fingerprint.update(total_length.to_le_bytes());
-    fingerprint.update(digest.value());
-    ariax_storage::JournalHash::new(fingerprint.finalize().into())
-        .expect("SHA-256 shared representation identity is nonzero")
+    ariax_storage::calculate_http_range_identity_fingerprint(&digest.journal_digest(), total_length)
+        .expect("SHA-256 shared representation identity is canonical")
 }
 
 fn bind_recovered_strong_validator(
@@ -1873,6 +2066,42 @@ fn bind_recovered_strong_validator(
     Ok(())
 }
 
+fn bind_recovered_range_identity(
+    sources: &mut Vec<PreparedSource>,
+    recovered: Option<&RecoveredHttpRangeIdentity>,
+    total_length: u64,
+) -> Result<(), HttpMultiRangeError> {
+    let Some(recovered) = recovered else {
+        return Ok(());
+    };
+    if recovered.total_length() != total_length
+        || recovered.representation_digest().algorithm() != JournalDigestAlgorithm::Sha256
+    {
+        return Err(HttpMultiRangeError::Setup(
+            KnownLengthHttpError::StaleValidator,
+        ));
+    }
+    let expected = recovered.representation_digest();
+    sources.retain_mut(|source| {
+        let matches = source.validator.total_length() == total_length
+            && source.range_digest_endgame
+            && source
+                .validator
+                .representation_digest()
+                .is_some_and(|digest| digest.value().as_slice() == expected.value());
+        if matches {
+            source.lease_fingerprint = recovered.identity_fingerprint();
+        }
+        matches
+    });
+    if sources.is_empty() {
+        return Err(HttpMultiRangeError::Setup(
+            KnownLengthHttpError::StaleValidator,
+        ));
+    }
+    Ok(())
+}
+
 fn verify_recovered_piece_validators(
     pieces: &BTreeMap<PieceId, RecoveredDurablePiece>,
     sources: &[PreparedSource],
@@ -1885,7 +2114,7 @@ fn verify_recovered_piece_validators(
     let mut accepted_validator_sets = BTreeSet::new();
     for source in sources
         .iter()
-        .filter(|source| source.validator.if_range().is_some())
+        .filter(|source| source.validator.if_range().is_some() || source.range_digest_endgame)
     {
         let contributor = JournalContributor::new(
             placeholder_lease,
@@ -2045,6 +2274,16 @@ fn discard_host_key(uri: &str) -> Result<String, HttpMultiRangeError> {
     Ok(format!("{scheme}://{authority}"))
 }
 
+struct RecoveredRangeDigestVerification<'a> {
+    task: &'a HttpTaskSpec,
+    cancellation: &'a HttpCancellation,
+    stats: &'a HttpTransferStats,
+    discard_task: &'a HttpDiscardTaskGuard,
+    identity: &'a RecoveredHttpRangeIdentity,
+    evidence: &'a BTreeMap<PieceId, RecoveredDurablePiece>,
+    sources: &'a [PreparedSource],
+}
+
 struct OpenedTaskJournal {
     appender: ControlJournalAppender,
     state: Option<RecoveredJournalState>,
@@ -2070,6 +2309,7 @@ struct RecoveredPreparedHttpStorage {
     durable_bytes: u64,
     retry_states: Vec<RecoveredRetryState>,
     strong_validator: Option<RecoveredHttpStrongValidator>,
+    range_identity: Option<RecoveredHttpRangeIdentity>,
 }
 
 struct ReadmissionPreparedHttpStorage {
@@ -2081,6 +2321,7 @@ struct ReadmissionPreparedHttpStorage {
     durable_pieces: Vec<PieceId>,
     durable_bytes: u64,
     retry_states: Vec<RecoveredRetryState>,
+    range_identity: Option<RecoveredHttpRangeIdentity>,
 }
 
 impl PreparedHttpStorage {
@@ -2090,6 +2331,26 @@ impl PreparedHttpStorage {
         };
         let total_length = recovered.layout.total_length()?;
         (recovered.durable_bytes == total_length).then_some(total_length)
+    }
+
+    fn range_identity(&self) -> Option<&RecoveredHttpRangeIdentity> {
+        match self {
+            Self::Fresh(_) => None,
+            Self::Recovered(value) => value.range_identity.as_ref(),
+            Self::Readmission(value) => value.range_identity.as_ref(),
+        }
+    }
+
+    fn durable_evidence(&self) -> &BTreeMap<PieceId, RecoveredDurablePiece> {
+        match self {
+            Self::Fresh(_) => {
+                static EMPTY: std::sync::OnceLock<BTreeMap<PieceId, RecoveredDurablePiece>> =
+                    std::sync::OnceLock::new();
+                EMPTY.get_or_init(BTreeMap::new)
+            }
+            Self::Recovered(value) => &value.durable_evidence,
+            Self::Readmission(value) => &value.durable_evidence,
+        }
     }
 
     fn into_appender(self) -> ControlJournalAppender {
@@ -3892,6 +4153,58 @@ mod tests {
         (address, ranges, etag, task)
     }
 
+    async fn serve_recovery_shared_digest_mirror(
+        data: Arc<[u8]>,
+        hold_second_piece: Arc<AtomicBool>,
+    ) -> (
+        SocketAddr,
+        Arc<Mutex<Vec<(usize, usize)>>>,
+        Arc<Mutex<Arc<[u8]>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let ranges = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&ranges);
+        let data = Arc::new(Mutex::new(data));
+        let served_data = Arc::clone(&data);
+        let task = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                let Some(request) = try_read_request_head(&mut stream).await else {
+                    continue;
+                };
+                let (start, end) = request_range(&request).expect("range request");
+                recorded
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push((start, end));
+                let data = served_data
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
+                let body = &data[start..=end];
+                let digest_header = format!(
+                    "Repr-Digest: sha-256=:{}:\r\n",
+                    base64_encode(&Sha256::digest(body))
+                );
+                let response = format!(
+                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\nETag: \"v1\"\r\n{digest_header}Connection: close\r\n\r\n",
+                    body.len(),
+                    data.len()
+                );
+                stream.write_all(response.as_bytes()).await.expect("head");
+                if start >= MIB && hold_second_piece.swap(false, Ordering::AcqRel) {
+                    let mut closed = [0_u8; 1];
+                    let _closed = stream.read(&mut closed).await;
+                } else {
+                    stream.write_all(body).await.expect("body");
+                }
+            }
+        });
+        (address, ranges, data, task)
+    }
+
     async fn serve_validator_sequence(
         data: Arc<[u8]>,
         etags: Vec<&'static str>,
@@ -5076,6 +5389,23 @@ mod tests {
         assert!(committed_digests.into_iter().all(|digest| {
             digest.is_some_and(|digest| digest.algorithm() == JournalDigestAlgorithm::Sha256)
         }));
+        let range_identities = replay_payloads(&journal, &spec, Generation::INITIAL)
+            .into_iter()
+            .filter_map(|payload| match payload {
+                JournalPayload::HttpRangeIdentity {
+                    total_length,
+                    representation_digest,
+                    ..
+                } => Some((total_length, representation_digest)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(range_identities.len(), 1);
+        assert_eq!(range_identities[0].0, expected.len() as u64);
+        assert_eq!(
+            range_identities[0].1.algorithm(),
+            JournalDigestAlgorithm::Sha256
+        );
         let recovered = recover_known_length_http(&KnownLengthHttpRecoveryRequest {
             task: spec.task(),
             gid: spec.gid(),
@@ -5099,6 +5429,220 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[tokio::test]
+    async fn digest_only_restart_revalidates_durable_ranges_before_releasing_pending_work() {
+        let root = TestDirectory::new("digest-range-restart-root");
+        let journal = TestDirectory::new("digest-range-restart-journal");
+        let expected = data(2 * MIB);
+        let hold_second_piece = Arc::new(AtomicBool::new(true));
+        let (first, first_ranges, _first_data, first_server) = serve_recovery_shared_digest_mirror(
+            Arc::clone(&expected),
+            Arc::clone(&hold_second_piece),
+        )
+        .await;
+        let (second, second_ranges, _second_data, second_server) =
+            serve_recovery_shared_digest_mirror(Arc::clone(&expected), hold_second_piece).await;
+        let spec = task_with_identity(
+            &root,
+            [first, second],
+            expected.len(),
+            None,
+            HttpMirrorIdentityPolicy::RequireSharedDigest,
+        );
+        let stats = SharedHttpTransferStats::new(NonZeroUsize::new(4).expect("stats"));
+        interrupt_after_first_durable_piece(worker(&journal, stats.clone(), 4), &spec, &stats)
+            .await;
+
+        let recovered = recover_known_length_http(&KnownLengthHttpRecoveryRequest {
+            task: spec.task(),
+            gid: spec.gid(),
+            journal_id: derive_http_journal_id(spec.task(), spec.gid()),
+            generation: Generation::INITIAL,
+            journal_directory: http_journal_directory(&journal.0, spec.gid()),
+            output_root: root.0.clone(),
+            replay_limits: ReplayLimits::default(),
+            state_limits: JournalStateLimits::default(),
+        })
+        .expect("recover digest-only interrupted journal");
+        assert!(recovered.strong_validator.is_none());
+        assert_eq!(recovered.durable_prefix, MIB as u64);
+        assert!(
+            recovered
+                .replay
+                .state
+                .as_ref()
+                .and_then(RecoveredJournalState::http_range_identity)
+                .is_some(),
+            "the flushed range identity must survive the interrupted process"
+        );
+        let durable_requests_before_restart = [&first_ranges, &second_ranges]
+            .into_iter()
+            .map(|ranges| {
+                ranges
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .iter()
+                    .filter(|range| **range == (0, MIB - 1))
+                    .count()
+            })
+            .sum::<usize>();
+
+        worker(&journal, stats, 4)
+            .run_task(
+                Arc::new(spec.clone()),
+                Generation::INITIAL,
+                HttpCancellation::new(),
+            )
+            .await
+            .expect("digest-only restart completes");
+        assert_eq!(
+            fs::read(root.0.join("output.bin")).expect("output"),
+            expected.as_ref()
+        );
+        let durable_requests_after_restart = [&first_ranges, &second_ranges]
+            .into_iter()
+            .map(|ranges| {
+                ranges
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .iter()
+                    .filter(|range| **range == (0, MIB - 1))
+                    .count()
+            })
+            .sum::<usize>();
+        assert_eq!(
+            durable_requests_after_restart,
+            durable_requests_before_restart + 1,
+            "restart must read back the durable range from one matching mirror exactly once"
+        );
+        assert_eq!(
+            replay_payloads(&journal, &spec, Generation::INITIAL)
+                .into_iter()
+                .filter(|payload| matches!(payload, JournalPayload::HttpRangeIdentity { .. }))
+                .count(),
+            1,
+            "recovery must not append a duplicate range identity"
+        );
+        first_server.abort();
+        second_server.abort();
+        assert!(
+            first_server
+                .await
+                .expect_err("first server was cancelled")
+                .is_cancelled()
+        );
+        assert!(
+            second_server
+                .await
+                .expect_err("second server was cancelled")
+                .is_cancelled()
+        );
+    }
+
+    #[tokio::test]
+    async fn digest_only_restart_rejects_changed_durable_range_before_pending_work() {
+        let root = TestDirectory::new("digest-range-restart-mismatch-root");
+        let journal = TestDirectory::new("digest-range-restart-mismatch-journal");
+        let expected = data(2 * MIB);
+        let hold_second_piece = Arc::new(AtomicBool::new(true));
+        let (first, first_ranges, first_data, first_server) = serve_recovery_shared_digest_mirror(
+            Arc::clone(&expected),
+            Arc::clone(&hold_second_piece),
+        )
+        .await;
+        let (second, second_ranges, second_data, second_server) =
+            serve_recovery_shared_digest_mirror(Arc::clone(&expected), hold_second_piece).await;
+        let spec = task_with_identity(
+            &root,
+            [first, second],
+            expected.len(),
+            None,
+            HttpMirrorIdentityPolicy::RequireSharedDigest,
+        );
+        let stats = SharedHttpTransferStats::new(NonZeroUsize::new(4).expect("stats"));
+        interrupt_after_first_durable_piece(worker(&journal, stats.clone(), 4), &spec, &stats)
+            .await;
+
+        let pending_span = (MIB, 2 * MIB - 1);
+        let pending_requests_before_restart = [&first_ranges, &second_ranges]
+            .into_iter()
+            .map(|ranges| {
+                ranges
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .iter()
+                    .filter(|range| **range == pending_span)
+                    .count()
+            })
+            .sum::<usize>();
+        let mut changed = expected.as_ref().to_vec();
+        changed[1] ^= 0xff;
+        let changed: Arc<[u8]> = changed.into();
+        for mirror_data in [&first_data, &second_data] {
+            *mirror_data
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::clone(&changed);
+        }
+
+        assert!(matches!(
+            worker(&journal, stats, 4)
+                .run_task(
+                    Arc::new(spec.clone()),
+                    Generation::INITIAL,
+                    HttpCancellation::new(),
+                )
+                .await,
+            Err(HttpMultiRangeError::ChecksumMismatch)
+        ));
+        let pending_requests_after_restart = [&first_ranges, &second_ranges]
+            .into_iter()
+            .map(|ranges| {
+                ranges
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .iter()
+                    .filter(|range| **range == pending_span)
+                    .count()
+            })
+            .sum::<usize>();
+        assert_eq!(
+            pending_requests_after_restart, pending_requests_before_restart,
+            "changed durable-range evidence must fail before pending work is released"
+        );
+        let recovered = recover_known_length_http(&KnownLengthHttpRecoveryRequest {
+            task: spec.task(),
+            gid: spec.gid(),
+            journal_id: derive_http_journal_id(spec.task(), spec.gid()),
+            generation: Generation::INITIAL,
+            journal_directory: http_journal_directory(&journal.0, spec.gid()),
+            output_root: root.0.clone(),
+            replay_limits: ReplayLimits::default(),
+            state_limits: JournalStateLimits::default(),
+        })
+        .expect("reopen journal after digest-only recovery rejection");
+        assert_eq!(recovered.durable_prefix, MIB as u64);
+        assert_eq!(
+            &fs::read(root.0.join("output.bin")).expect("durable output")[..MIB],
+            &expected[..MIB],
+            "network revalidation must not overwrite the durable local range"
+        );
+
+        first_server.abort();
+        second_server.abort();
+        assert!(
+            first_server
+                .await
+                .expect_err("first server was cancelled")
+                .is_cancelled()
+        );
+        assert!(
+            second_server
+                .await
+                .expect_err("second server was cancelled")
+                .is_cancelled()
+        );
     }
 
     #[tokio::test]

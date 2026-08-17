@@ -215,8 +215,11 @@ or HTTP/3.
 
 All ten items now have an executable Phase-3B checkpoint candidate. The local
 rate-limit, stall-diagnostic, same-origin endgame, bounded exact-range
-cross-origin endgame, and C10k/active-range harnesses are executable; the
-remaining crash/power-loss/disk-fault matrix and native release evidence still
+cross-origin endgame, digest-only durable-range restart revalidation, and
+C10k/active-range harnesses are executable. Deterministic storage-boundary
+ENOSPC, permission-denied, and short-write injection also proves that failed
+writes publish no durable piece and leave a replayable journal; the remaining
+partial-fsync, forced-process-kill, power-loss, and native release evidence still
 gate Phase 3 completion.
 
 The detailed first-slice docs above are the intended module design input for
@@ -224,11 +227,15 @@ this vertical slice.
 
 ## Current Integration Gates
 
-- Complete deterministic disk-full, permission, partial-fsync, process-kill,
-  and power-loss recovery coverage for the executable HTTP/storage boundary.
-- Add a persistent range-identity record before allowing durable-piece restart
-  for a digest-only multi-source task; the current bounded `Repr-Digest`
-  profile is fresh-transfer/endgame evidence and fails closed on such recovery.
+- Complete deterministic partial-fsync, forced-process-kill, and power-loss
+  recovery coverage for the executable HTTP/storage boundary. Disk-full,
+  permission-denied, and short-write injection now preserves a replayable
+  zero-durable prefix.
+- Keep the new persisted `HttpRangeIdentity` restart path fail-closed: replay
+  validates its SHA-256/length fingerprint before network history, matching
+  mirrors are reprobed, and every locally verified durable range is fetched,
+  hashed, and discarded from one matching source before pending work is
+  released.
 - Expand the bounded SHA-256 `Repr-Digest` exact-range profile only after
   `Content-Digest`, coverage metadata/parameters, alternate algorithms, and
   server-advertised whole-entity admission have explicit bounded contracts.
