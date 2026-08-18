@@ -32,9 +32,9 @@ secondary mirrors as endgame-only peers; they do not authorize ordinary
 concurrent pieces or replace the persisted whole-file checksum. `Content-Digest`,
 digest parameters/coverage metadata, alternate algorithms, server-advertised
 whole-entity admission, Metalink chunk hashes, Last-Modified/unsafe-override
-resume, HTTP/2, growing/chunked transfers, native release benchmark evidence,
-the broader Phase-4 control plane, and the full release-platform matrix remain
-phase/tag gates. Hot-backup publication residue is now recovered through
+resume, HTTP/2, growing/chunked transfers, the broader Phase-4 control plane,
+and the full release-platform matrix remain phase/tag gates. Hot-backup
+publication residue is now recovered through
 descriptor-bound same-file/link-count validation with no-clobber collision and
 crash/unlink fault coverage.
 
@@ -44,9 +44,10 @@ shared process/socket permits, selected storage files consume two permits for
 their capability and blocking-lane descriptors, and transport, ingress, and
 storage buffers share the resident budget. The local C10k/active-range harness
 passes under an isolated raised Linux handle limit and rejects insufficient
-native capacity explicitly. Adaptive tuning, non-HTTP domain wiring, the
-broader evictable file-handle LRU, and native release baselines remain phase
-gates.
+native capacity explicitly; optimized Linux and native Windows-GNU runs also
+exercise the complete socket and active-range phases. Adaptive tuning,
+non-HTTP domain wiring, the broader evictable file-handle LRU, Windows RSS
+instrumentation, and the remaining release-platform matrix remain phase gates.
 
 The HTTP discard-bound slice is executable: a process-owned ledger atomically
 charges process, canonical final-origin host, task, and attempt scopes without
@@ -61,8 +62,8 @@ journal replay. Deterministic storage-boundary ENOSPC, permission-denied, and
   leave no false durable piece and replay cleanly; publication residue is
   removed only after installed header/linkage replay succeeds. Child-process
   exit/kill coverage exercises the data/journal barriers, and a deterministic
-  Linux power-loss cut model verifies the durable prefix. Native release and
-  real poweroff evidence remain final Phase-3 gates.
+  Linux power-loss cut model verifies the durable prefix. Real poweroff and the
+  remaining release-platform matrix remain final Phase-3 gates.
 
 This is a staged plan for building the design without repeating the incomplete
 rewrite pattern. The native-startup orchestration boundary, central-journal
@@ -311,12 +312,15 @@ Exit criteria:
   protocol/crash fault matrix still gates Phase 3 completion.
 - 1,000 active HTTP range benchmark with bounded memory. The checked-in harness
   now drives 1,000 real loopback `206` range responses under the shared ingress,
-  socket, and resident permits; native release evidence remains required.
+  socket, and resident permits. Optimized Linux and native Windows-GNU runs are
+  recorded in `performance-profiles.md`; Windows RSS is not inferred from the
+  permit envelope.
 - 10,000 concurrent low-activity socket benchmark with the reusable idle HTTP
   pool still capped at its profile limit; measured accounted reservations and
   process RSS must fit the profile target/permit envelope and documented native
-  stack/headroom allowance (local isolated Linux evidence is recorded in
-  `performance-profiles.md`; native release evidence still required).
+  stack/headroom allowance. The Linux run includes RSS; the native Windows-GNU
+  run includes the permit and transfer evidence but reports no RSS; the
+  remaining release-platform matrix still gates completion.
 - DNS tests cover positive/negative TTL clamps, TTL=0, answer-count limits,
   bounded singleflight/waiters, cancellation, two-racer Happy Eyeballs timing,
   reconnect revalidation, and special-use-address filtering.

@@ -1,7 +1,9 @@
 # Performance Profiles
 
-Status: executable profile and HTTP-capacity slice implemented; adaptive tuning,
-non-HTTP resource wiring, and native release baselines remain pending.
+Status: executable profile and HTTP-capacity slice implemented; optimized Linux
+and native Windows-GNU HTTP-capacity runs are recorded below. Adaptive tuning,
+non-HTTP resource wiring, and the remaining release-platform matrix remain
+pending.
 
 The runtime resolver now owns the exact preset matrix below, subtracts the
 64-handle control reserve from the native soft handle limit, and derives shared
@@ -301,11 +303,33 @@ active_http_resident_bytes=98304000 active_http_sockets=1000
 accounted_limit_bytes=939524096 rss_kib=Some(156636)
 ```
 
+The optimized Rust 1.97.1 harness was rerun on August 18, 2026 with the
+repository-local Linux toolchain and an isolated 20,000-handle soft limit. It
+reported:
+
+```text
+profile=concurrency sockets=10000 active_ranges=1000 connect_ms=2894 active_reservation_ms=48 resident_reserved_bytes=393216000 accounted_limit_bytes=939524096 resident_target_bytes=1073741824 rss_kib=Some(47812)
+profile=concurrency http_ranges=1000 http_bytes=65536000 http_ms=549 active_http_resident_bytes=98304000 active_http_sockets=1000 accounted_limit_bytes=939524096 rss_kib=Some(156468)
+```
+
+The same optimized harness was run natively with the repository's Windows-GNU
+Rust 1.97.1 distribution through MSYS2 `MINGW64` on August 18, 2026:
+
+```text
+profile=concurrency sockets=10000 active_ranges=1000 connect_ms=920 active_reservation_ms=21 resident_reserved_bytes=393216000 accounted_limit_bytes=939524096 resident_target_bytes=1073741824 rss_kib=None
+profile=concurrency http_ranges=1000 http_bytes=65536000 http_ms=455 active_http_resident_bytes=98304000 active_http_sockets=1000 accounted_limit_bytes=939524096 rss_kib=None
+```
+
+The Windows-GNU run proves native socket/ingress/resident-permit admission and
+the full active-range transfer, but this harness currently has no Windows RSS
+reader and therefore reports `None`; it is not treated as RSS evidence.
+
 With the ordinary 1,024-handle WSL limit, the same C10k-specific admission
 returns an explicit rejection (`resolved 960` after the control reserve). The
 service may still run at its scaled profile caps; a C10k claim requires the
-explicit capacity gate and a native platform benchmark. The local WSL result is
-diagnostic evidence, not a release-platform baseline.
+explicit capacity gate and a native platform benchmark. The Linux and
+Windows-GNU runs above are release-mode platform evidence; macOS and the
+complete release matrix remain separate gates.
 
 ## Tunables By Profile
 

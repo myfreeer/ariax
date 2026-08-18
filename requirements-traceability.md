@@ -24,11 +24,12 @@ implemented. The bounded SHA-256 `Repr-Digest` profile now negotiates strict
 probe/range evidence, verifies response bodies, journals accepted digests, and
 admits secondary origins only for exact-range endgame. Its persisted
 digest/length identity now drives fail-closed restart reprobe and durable-range
-network revalidation before pending work is released. Broader RFC
-9530/Metalink identity, `Content-Digest`, alternate checksum algorithms,
+network revalidation before pending work is released. Broader RFC 9530/Metalink
+identity, `Content-Digest`, alternate checksum algorithms,
 Last-Modified/unsafe-override resume, broader protocols/control APIs, adaptive
-profile tuning, native release benchmark evidence, and the complete release
-matrix remain incomplete.
+profile tuning, Windows RSS instrumentation, and the complete release matrix
+remain incomplete. Optimized Linux and native Windows-GNU capacity evidence is
+recorded in `performance-profiles.md`.
 
 The implemented HTTP discard hierarchy now has deterministic process/task/host
 fault coverage and a standalone bounded fuzz package (`fuzz/`) for HTTP
@@ -116,10 +117,12 @@ Acceptance:
 The executable HTTP profile resolver and capacity harness now provide direct
 acceptance evidence: 10,000 real loopback sockets plus 1,000 simultaneous 64 KiB
 HTTP `206` range responses fit the concurrency accounted envelope, while a low
-native handle limit produces an explicit C10k rejection. Selected HTTP storage
-files and proxy sockets consume the shared file/socket domains. Native
-release-platform benchmark evidence, the broader evictable file-handle LRU, and
-non-HTTP profile consumers remain open.
+native handle limit produces an explicit C10k rejection. Optimized Linux and
+native Windows-GNU runs are recorded; the latter has no RSS reader and is not
+treated as RSS evidence. Selected HTTP storage files and proxy sockets consume
+the shared file/socket domains. The broader evictable file-handle LRU,
+non-HTTP profile consumers, and the remaining release-platform matrix remain
+open.
 
 Boundary:
 

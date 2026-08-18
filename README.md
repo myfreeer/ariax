@@ -41,11 +41,13 @@ recovers through exact same-file/link-count proof and preserves raced
 destinations. The minimal real-process shutdown path now stops admission,
 boundedly drains HTTP workers, flushes and closes every installed journal, and
 publishes a clean session marker only after the session owner joins; worker or
-lane timeout leaves an explicit dirty marker. Retry waits now expose one
+lane timeout leaves an explicit dirty marker. Optimized Linux and native
+Windows-GNU capacity runs now exercise 10,000 low-activity sockets and 1,000
+active ranges under the shared permits. Retry waits now expose one
 bounded, non-secret, lease-correlated decision through `tellStatus`, with exact
 live cause/status/caps/action and explicitly coarser recovered journal evidence.
-Native release and real poweroff
-evidence remain required before a completion or tag claim.
+Real poweroff and the complete release matrix remain required before a
+completion or tag claim.
 
 This design is for a new downloader that keeps the mature aria2 user model
 while fixing the major safety, scalability, and completeness problems found in
