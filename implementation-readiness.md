@@ -15,7 +15,9 @@ bootstrap have executable checkpoints. The Phase-3B checkpoint candidate now
 connects that foundation to ordinary HTTP(S) URI admission and the real
 scheduler: task/source/options persist atomically, recovery rebuilds the source
 catalog, the policy client owns DNS/SSRF/Happy-Eyeballs/redirect/proxy/auth/cookie
-decisions, and supervised multi-mirror range workers commit only validated
+decisions. DNS cache-miss leaders and followers share the configured total
+waiter cap, and dropping all receivers cancels the backend lookup and releases
+its capacity. Supervised multi-mirror range workers commit only validated
 non-overlapping leases. Durable-piece restart and terminal evidence are
 persisted before public completion. Five bounded JSON-RPC methods run over
 loopback HTTP/1.1 and Content-Length stdio and expose packet-independent live

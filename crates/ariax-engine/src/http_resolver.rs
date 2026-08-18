@@ -295,11 +295,11 @@ impl HttpResolver {
             };
         }
 
+        if total_waiters(&state) >= self.config.max_total_waiters {
+            return Err(HttpResolverError::TooManyWaiters);
+        }
         let receiver = if let Some(sender) = state.in_flight.get(&host) {
             if sender.receiver_count() >= self.config.max_waiters_per_name {
-                return Err(HttpResolverError::TooManyWaiters);
-            }
-            if total_waiters(&state) >= self.config.max_total_waiters {
                 return Err(HttpResolverError::TooManyWaiters);
             }
             sender.subscribe()
@@ -535,13 +535,47 @@ mod tests {
         result: Result<BackendLookup, HttpResolverError>,
         delay: Duration,
     ) -> (HttpResolver, Arc<FakeLookup>) {
+        resolver_with_config(HttpResolverConfig::default(), result, delay)
+    }
+
+    fn resolver_with_config(
+        config: HttpResolverConfig,
+        result: Result<BackendLookup, HttpResolverError>,
+        delay: Duration,
+    ) -> (HttpResolver, Arc<FakeLookup>) {
         let backend = Arc::new(FakeLookup {
             calls: AtomicUsize::new(0),
             result,
             delay,
         });
-        let resolver = HttpResolver::with_backend(HttpResolverConfig::default(), backend.clone());
+        let resolver = HttpResolver::with_backend(config, backend.clone());
         (resolver, backend)
+    }
+
+    async fn wait_for_calls(backend: &FakeLookup, expected: usize) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if backend.calls.load(Ordering::SeqCst) >= expected {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("lookup call observed");
+    }
+
+    async fn wait_for_no_in_flight(resolver: &HttpResolver) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if resolver.state.lock().await.in_flight.is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("in-flight lookup released");
     }
 
     #[tokio::test]
@@ -596,6 +630,153 @@ mod tests {
                 .from_cache()
         );
         assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn positive_and_negative_ttl_clamps_expire_cache_entries() {
+        let positive_config = HttpResolverConfig {
+            max_positive_ttl: Duration::from_millis(20),
+            ..HttpResolverConfig::default()
+        };
+        let (positive, positive_backend) = resolver_with_config(
+            positive_config,
+            Ok(BackendLookup {
+                addresses: vec!["203.0.113.1".parse().expect("IP")],
+                ttl: Duration::from_secs(60),
+            }),
+            Duration::ZERO,
+        );
+        assert!(
+            !positive
+                .resolve("positive.example")
+                .await
+                .expect("first positive lookup")
+                .from_cache()
+        );
+        assert!(
+            positive
+                .resolve("positive.example")
+                .await
+                .expect("cached positive lookup")
+                .from_cache()
+        );
+        assert_eq!(positive_backend.calls.load(Ordering::SeqCst), 1);
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert!(
+            !positive
+                .resolve("positive.example")
+                .await
+                .expect("expired positive lookup")
+                .from_cache()
+        );
+        assert_eq!(positive_backend.calls.load(Ordering::SeqCst), 2);
+
+        let negative_config = HttpResolverConfig {
+            max_negative_ttl: Duration::from_millis(20),
+            ..HttpResolverConfig::default()
+        };
+        let (negative, negative_backend) = resolver_with_config(
+            negative_config,
+            Err(HttpResolverError::ResolutionFailed),
+            Duration::ZERO,
+        );
+        assert_eq!(
+            negative.resolve("negative.example").await,
+            Err(HttpResolverError::ResolutionFailed)
+        );
+        assert_eq!(
+            negative.resolve("negative.example").await,
+            Err(HttpResolverError::ResolutionFailed)
+        );
+        assert_eq!(negative_backend.calls.load(Ordering::SeqCst), 1);
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert_eq!(
+            negative.resolve("negative.example").await,
+            Err(HttpResolverError::ResolutionFailed)
+        );
+        assert_eq!(negative_backend.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn waiter_limits_bound_same_name_followers_and_new_lookup_leaders() {
+        let config = HttpResolverConfig {
+            timeout: Duration::from_secs(5),
+            max_in_flight: 2,
+            max_total_waiters: 1,
+            max_waiters_per_name: 1,
+            ..HttpResolverConfig::default()
+        };
+        let (resolver, backend) = resolver_with_config(
+            config,
+            Ok(BackendLookup {
+                addresses: vec!["203.0.113.1".parse().expect("IP")],
+                ttl: Duration::from_secs(60),
+            }),
+            Duration::from_secs(5),
+        );
+        let first_resolver = resolver.clone();
+        let first = tokio::spawn(async move { first_resolver.resolve("one.example").await });
+        wait_for_calls(&backend, 1).await;
+
+        assert_eq!(
+            resolver.resolve("one.example").await,
+            Err(HttpResolverError::TooManyWaiters)
+        );
+        assert_eq!(
+            resolver.resolve("two.example").await,
+            Err(HttpResolverError::TooManyWaiters)
+        );
+
+        first.abort();
+        assert!(
+            first
+                .await
+                .expect_err("first lookup was aborted")
+                .is_cancelled()
+        );
+        wait_for_no_in_flight(&resolver).await;
+    }
+
+    #[tokio::test]
+    async fn dropping_all_waiters_cancels_lookup_and_releases_total_capacity() {
+        let config = HttpResolverConfig {
+            timeout: Duration::from_secs(5),
+            max_in_flight: 2,
+            max_total_waiters: 1,
+            max_waiters_per_name: 1,
+            ..HttpResolverConfig::default()
+        };
+        let (resolver, backend) = resolver_with_config(
+            config,
+            Ok(BackendLookup {
+                addresses: vec!["203.0.113.1".parse().expect("IP")],
+                ttl: Duration::from_secs(60),
+            }),
+            Duration::from_secs(5),
+        );
+        let first_resolver = resolver.clone();
+        let first = tokio::spawn(async move { first_resolver.resolve("one.example").await });
+        wait_for_calls(&backend, 1).await;
+        first.abort();
+        assert!(
+            first
+                .await
+                .expect_err("first lookup was aborted")
+                .is_cancelled()
+        );
+        wait_for_no_in_flight(&resolver).await;
+
+        let second_resolver = resolver.clone();
+        let second = tokio::spawn(async move { second_resolver.resolve("two.example").await });
+        wait_for_calls(&backend, 2).await;
+        second.abort();
+        assert!(
+            second
+                .await
+                .expect_err("second lookup was aborted")
+                .is_cancelled()
+        );
+        wait_for_no_in_flight(&resolver).await;
     }
 
     #[tokio::test]

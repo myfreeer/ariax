@@ -309,8 +309,11 @@ Executable Phase-3B gate: the default Hickory resolver and selectable system
 adapter feed one project-owned cache/singleflight layer. Positive and negative
 cache cardinality, TTL clamps, in-flight work, per-name/total waiters, host
 length, timeout, and returned-address count are all bounded. TTL-zero answers
-are not retained. Excess answers and mixed allowed/denied sets fail closed
-rather than being truncated into an authorization decision. Up to 32 admitted
+are not retained. The total waiter cap includes both a new cache-miss leader and
+followers of existing singleflight work; if all receivers disappear, the
+backend lookup is cancelled and its capacity is released. Excess answers and
+mixed allowed/denied sets fail closed rather than being truncated into an
+authorization decision. Up to 32 admitted
 addresses advance through a two-racer Happy Eyeballs connector with a 250 ms
 default fallback delay. Every reconnect and redirect/proxy hop repeats
 admission; the public loopback/stdio RPC surface now uses this path for ordinary

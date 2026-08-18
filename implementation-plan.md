@@ -321,9 +321,11 @@ Exit criteria:
   stack/headroom allowance. The Linux run includes RSS; the native Windows-GNU
   run includes the permit and transfer evidence but reports no RSS; the
   remaining release-platform matrix still gates completion.
-- DNS tests cover positive/negative TTL clamps, TTL=0, answer-count limits,
-  bounded singleflight/waiters, cancellation, two-racer Happy Eyeballs timing,
-  reconnect revalidation, and special-use-address filtering.
+- DNS tests now cover positive/negative TTL clamps, TTL=0, answer-count limits,
+  bounded singleflight plus per-name/total leader-and-follower admission,
+  all-waiter cancellation cleanup, and special-use-address filtering. Precise
+  two-racer Happy Eyeballs timing and reconnect revalidation remain to close
+  this exit gate.
 - Stuck socket speed drops to zero without waiting for another packet.
 - Retry waits expose a bounded non-secret diagnostic without waiting for
   another packet: exact live trigger/status, attempt credit, wait policy,

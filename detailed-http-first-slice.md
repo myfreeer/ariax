@@ -114,7 +114,10 @@ The public connector gate is closed and executable:
 - registered names are resolved through the project-owned resolver. Hickory is
   the default backend and the system adapter remains selectable. Resolution is
   bounded by a ten-second default timeout, 128 in-flight names, 4,096 total
-  waiters, 1,024 waiters per name, and 32 distinct answers,
+  waiters, 1,024 waiters per name, and 32 distinct answers. Every cache-miss
+  leader and same-name follower consumes total waiter credit before work is
+  admitted; dropping all receivers cancels the backend lookup and releases its
+  in-flight and waiter capacity,
 - positive and negative caches are separately bounded (4,096 and 512 entries),
   clamp positive TTLs to one day and negative TTLs to 30 seconds, and preserve
   TTL-zero no-cache behavior. Concurrent requests for the same normalized name

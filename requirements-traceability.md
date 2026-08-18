@@ -260,7 +260,8 @@ Design coverage:
 - `detailed-http-first-slice.md`: reviewed first-slice HTTP state-machine
   contract plus executable fresh/strong-ETag resume and the public Phase-3B
   known-length multi-mirror path: verified TLS, generated destination policy,
-  bounded DNS cache/singleflight/Happy Eyeballs, redirect/proxy/auth/cookies,
+  bounded DNS cache/singleflight with leader/follower waiter admission and
+  cancellation cleanup, Happy Eyeballs, redirect/proxy/auth/cookies,
   segmented range/retry recovery, process-owned bounded ingress/rate control,
   live stats, worker supervision, pre-network durable-piece digest readback,
   strong-ETag-bound single-source/strict-fallback recovery, user SHA-256-bound
