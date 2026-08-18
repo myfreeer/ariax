@@ -25,6 +25,12 @@ use std::time::Duration;
 
 #[cfg(test)]
 use ariax_runtime::{BlockingDiskExecutor, BlockingDiskIoError, BlockingDiskIoErrorKind};
+#[cfg(test)]
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(test)]
+use tokio::sync::Notify;
 
 /// Bounded resources for one first-slice storage engine.
 #[derive(Clone, Debug)]
@@ -48,6 +54,8 @@ pub struct StorageEngineConfig {
     pub crash_point: Option<StorageEngineCrashPoint>,
     #[cfg(test)]
     pub piece_durable_notifier: Option<std::sync::mpsc::Sender<PieceId>>,
+    #[cfg(test)]
+    pub(crate) write_completion_gate: Option<StorageEngineWriteCompletionGate>,
 }
 
 /// Deterministic disk boundary faults used by the HTTP/storage integration
@@ -70,6 +78,50 @@ pub enum StorageEngineCrashPoint {
     PieceDurableBeforeJournalSync,
 }
 
+/// Test-only two-party gate placed after one successful disk completion and
+/// before storage publishes the provisional write acknowledgement. This makes
+/// cancellation races deterministic without changing production scheduling.
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct StorageEngineWriteCompletionGate {
+    reached: Arc<AtomicBool>,
+    released: Arc<AtomicBool>,
+    release: Arc<Notify>,
+}
+
+#[cfg(test)]
+impl StorageEngineWriteCompletionGate {
+    pub(crate) fn new() -> Self {
+        Self {
+            reached: Arc::new(AtomicBool::new(false)),
+            released: Arc::new(AtomicBool::new(false)),
+            release: Arc::new(Notify::new()),
+        }
+    }
+
+    async fn pause_storage(&self) {
+        self.reached.store(true, Ordering::Release);
+        loop {
+            let released = self.release.notified();
+            if self.released.load(Ordering::Acquire) {
+                return;
+            }
+            released.await;
+        }
+    }
+
+    pub(crate) fn wait_until_reached(&self) {
+        while !self.reached.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+    }
+
+    pub(crate) fn release_storage(&self) {
+        self.released.store(true, Ordering::Release);
+        self.release.notify_waiters();
+    }
+}
+
 impl Default for StorageEngineConfig {
     fn default() -> Self {
         let buffer_pool_bytes = 4 * 1024 * 1024;
@@ -88,6 +140,8 @@ impl Default for StorageEngineConfig {
             crash_point: None,
             #[cfg(test)]
             piece_durable_notifier: None,
+            #[cfg(test)]
+            write_completion_gate: None,
         }
     }
 }
@@ -332,6 +386,8 @@ pub struct StorageEngine {
     crash_point: Option<StorageEngineCrashPoint>,
     #[cfg(test)]
     piece_durable_notifier: Option<std::sync::mpsc::Sender<PieceId>>,
+    #[cfg(test)]
+    write_completion_gate: Option<StorageEngineWriteCompletionGate>,
 }
 
 impl StorageEngine {
@@ -472,6 +528,8 @@ impl StorageEngine {
             crash_point: config.crash_point,
             #[cfg(test)]
             piece_durable_notifier: config.piece_durable_notifier,
+            #[cfg(test)]
+            write_completion_gate: config.write_completion_gate,
         })
     }
 
@@ -778,6 +836,10 @@ impl StorageEngine {
                 WriteReject::DiskCompletion,
                 StorageEngineErrorDetail::Disk(error),
             ));
+        }
+        #[cfg(test)]
+        if let Some(gate) = &self.write_completion_gate {
+            gate.pause_storage().await;
         }
         {
             let bytes = match lease.bytes() {

@@ -1334,6 +1334,16 @@ async fn stream_known_length_body(
                 );
                 return Err(KnownLengthHttpError::Storage(error));
             }
+            if plan.cancellation.is_cancelled() {
+                abort_current(
+                    &mut storage,
+                    plan.task,
+                    plan.generation,
+                    current,
+                    LeaseAbortReason::Cancelled,
+                )?;
+                return Err(KnownLengthHttpError::Cancelled);
+            }
             let taken = u64::try_from(take).expect("buffer take fits u64");
             offset += taken;
             consumed += take;
@@ -1968,6 +1978,7 @@ fn body_frame_end(offset: u64, frame_len: u64, content_length: u64) -> Option<u6
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage_engine::{StorageEngineDiskFault, StorageEngineWriteCompletionGate};
     use crate::{NoSpaceProbeTargetCatalog, RuntimeEffectConfig, RuntimeSchedulerEffectSink};
     use ariax_core::{ErrorKind, RetryClass, TaskEvent};
     use ariax_storage::{JournalPayload, JournalStateStop, PathPlatform, SafePathBuilder};
@@ -2178,6 +2189,63 @@ mod tests {
         handle
     }
 
+    struct LeaseJournalRecords {
+        started: Vec<LeaseId>,
+        committed: Vec<LeaseId>,
+        aborted: Vec<(LeaseId, LeaseAbortReason)>,
+        payloads: Vec<JournalPayload>,
+    }
+
+    fn lease_journal_records(journal: &TestDirectory, id: JournalId) -> LeaseJournalRecords {
+        let directory = journal.0.join("task");
+        let capability = JournalDirectoryCapability::open_trusted(&directory)
+            .expect("journal directory capability");
+        let paths = ControlJournalAppender::discover_segment_paths(
+            &capability,
+            ReplayLimits::default().max_segments,
+        )
+        .expect("journal paths");
+        let (mut appender, replay) = ControlJournalAppender::open_recovered(
+            &directory,
+            &paths,
+            Gid::new(7).expect("gid"),
+            id,
+            ReplayLimits::default(),
+            Generation::INITIAL,
+            now_unix_ms().unwrap_or(0),
+        )
+        .expect("reopen journal");
+        let payloads = replay
+            .records
+            .iter()
+            .map(|record| record.decode_payload().expect("decode journal payload"))
+            .collect::<Vec<_>>();
+        appender.close_flushed().expect("close journal");
+
+        let mut started = Vec::new();
+        let mut committed = Vec::new();
+        let mut aborted = Vec::new();
+        for payload in &payloads {
+            match payload {
+                JournalPayload::LeaseStarted { lease_id, .. } => started.push(*lease_id),
+                JournalPayload::LeaseCommitted { lease_id, .. } => committed.push(*lease_id),
+                JournalPayload::LeaseAborted {
+                    lease_id, reason, ..
+                } => aborted.push((*lease_id, *reason)),
+                _ => {}
+            }
+        }
+        started.sort_unstable();
+        committed.sort_unstable();
+        aborted.sort_unstable_by_key(|(lease, _)| *lease);
+        LeaseJournalRecords {
+            started,
+            committed,
+            aborted,
+            payloads,
+        }
+    }
+
     #[test]
     fn known_length_response_commits_each_piece_and_recovers_complete_state() {
         let root = TestDirectory::new("complete-root");
@@ -2240,6 +2308,22 @@ mod tests {
         let state = recovered.replay.state.as_ref().expect("state");
         assert_eq!(state.durable_pieces().len(), 1);
         assert!(state.terminal().is_none());
+        let records = lease_journal_records(&journal, id);
+        assert_eq!(
+            records.started,
+            [
+                LeaseId::new(1).expect("first lease"),
+                LeaseId::new(2).expect("second lease")
+            ]
+        );
+        assert_eq!(records.committed, [LeaseId::new(1).expect("first lease")]);
+        assert_eq!(
+            records.aborted,
+            [(
+                LeaseId::new(2).expect("second lease"),
+                LeaseAbortReason::ShortBody
+            )]
+        );
     }
 
     #[test]
@@ -2762,6 +2846,120 @@ mod tests {
     }
 
     #[test]
+    fn runtime_cancellation_after_disk_completion_aborts_before_piece_commit() {
+        let root = TestDirectory::new("disk-completion-cancel-root");
+        let journal = TestDirectory::new("disk-completion-cancel-journal");
+        let peer = serve(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nabcd");
+        let id = journal_id(23);
+        let runtime = runtime_handle(8);
+        let task = TaskId::new(1).expect("task");
+        let gid = Gid::new(7).expect("gid");
+        runtime.enqueue_allocation_for_test(task, gid, Generation::INITIAL);
+        let gate = StorageEngineWriteCompletionGate::new();
+        let cancellation_gate = gate.clone();
+        let mut input = request(&root, &journal, peer, id);
+        input.storage.write_completion_gate = Some(gate);
+        let transfer_cancellation = input.cancellation.clone();
+        let cancellation_runtime = runtime.clone();
+        let cancellation_thread = thread::spawn(move || {
+            cancellation_gate.wait_until_reached();
+            cancellation_runtime.enqueue_cancellation_for_test(
+                task,
+                gid,
+                Generation::INITIAL,
+                false,
+            );
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while !transfer_cancellation.is_cancelled() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "runtime cancellation was not delivered"
+                );
+                thread::yield_now();
+            }
+            cancellation_gate.release_storage();
+        });
+
+        let error = run_known_length_http_runtime_blocking(
+            runtime.clone(),
+            runtime.take_allocation().expect("allocation request"),
+            KnownLengthHttpTransfer::Fresh(input),
+            MonotonicInstant::now(),
+        )
+        .expect_err("disk-completion cancellation stops before commit");
+        cancellation_thread.join().expect("cancellation thread");
+        assert!(matches!(
+            error,
+            KnownLengthHttpRuntimeError::Transfer(KnownLengthHttpError::Cancelled)
+        ));
+        let now = MonotonicInstant::now();
+        assert!(matches!(
+            runtime
+                .poll_event_at(now)
+                .expect("allocation event")
+                .into_event(),
+            TaskEvent::AllocationSucceeded { .. }
+        ));
+        assert!(matches!(
+            runtime
+                .poll_event_at(now)
+                .expect("cancellation event")
+                .into_event(),
+            TaskEvent::CancellationDrained { .. }
+        ));
+
+        let recovered = recover_known_length_http(&recovery_request(&root, &journal, id))
+            .expect("recover disk-completion cancellation");
+        assert_eq!(recovered.durable_prefix, 0);
+        let records = lease_journal_records(&journal, id);
+        assert_eq!(records.started, [LeaseId::new(1).expect("lease")]);
+        assert!(records.committed.is_empty());
+        assert_eq!(
+            records.aborted,
+            [(LeaseId::new(1).expect("lease"), LeaseAbortReason::Cancelled)]
+        );
+        assert!(!records.payloads.iter().any(|payload| matches!(
+            payload,
+            JournalPayload::PieceDurable { .. } | JournalPayload::TaskComplete { .. }
+        )));
+    }
+
+    #[test]
+    fn storage_rejection_aborts_the_sequential_lease_once_with_storage_reason() {
+        let root = TestDirectory::new("storage-rejection-root");
+        let journal = TestDirectory::new("storage-rejection-journal");
+        let peer = serve(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nabcd");
+        let id = journal_id(24);
+        let mut input = request(&root, &journal, peer, id);
+        input.storage.disk_fault = Some(StorageEngineDiskFault::OutOfSpace);
+
+        let error = download_known_length_http_blocking(input)
+            .expect_err("sequential storage rejection stops the transfer");
+        assert!(matches!(
+            error,
+            KnownLengthHttpError::Storage(ref storage)
+                if storage.reject() == crate::WriteReject::DiskCompletion
+        ));
+        let recovered = recover_known_length_http(&recovery_request(&root, &journal, id))
+            .expect("recover sequential storage rejection");
+        assert_eq!(recovered.durable_prefix, 0);
+        let records = lease_journal_records(&journal, id);
+        assert_eq!(records.started, [LeaseId::new(1).expect("lease")]);
+        assert!(records.committed.is_empty());
+        assert_eq!(
+            records.aborted,
+            [(
+                LeaseId::new(1).expect("lease"),
+                LeaseAbortReason::StorageRejected
+            )]
+        );
+        assert!(!records.payloads.iter().any(|payload| matches!(
+            payload,
+            JournalPayload::PieceDurable { .. } | JournalPayload::TaskComplete { .. }
+        )));
+    }
+
+    #[test]
     fn interruption_at_piece_boundaries_preserves_exact_durable_prefix_and_one_terminal_lease() {
         let cases = [
             (
@@ -2818,39 +3016,12 @@ mod tests {
                 .expect("recover interrupted boundary transfer");
             assert_eq!(recovered.durable_prefix, expected_prefix, "{label}");
 
-            let directory = journal.0.join("task");
-            let capability = JournalDirectoryCapability::open_trusted(&directory)
-                .expect("boundary journal capability");
-            let paths = ControlJournalAppender::discover_segment_paths(
-                &capability,
-                ReplayLimits::default().max_segments,
-            )
-            .expect("boundary journal paths");
-            let (mut appender, replay) = ControlJournalAppender::open_recovered(
-                &directory,
-                &paths,
-                Gid::new(7).expect("boundary gid"),
-                id,
-                ReplayLimits::default(),
-                Generation::INITIAL,
-                now_unix_ms().unwrap_or(0),
-            )
-            .expect("reopen boundary journal");
-            let mut started = Vec::new();
-            let mut terminal = Vec::new();
-            for record in &replay.records {
-                match record.decode_payload().expect("decode boundary payload") {
-                    JournalPayload::LeaseStarted { lease_id, .. } => started.push(lease_id),
-                    JournalPayload::LeaseCommitted { lease_id, .. }
-                    | JournalPayload::LeaseAborted { lease_id, .. } => terminal.push(lease_id),
-                    _ => {}
-                }
-            }
-            appender.close_flushed().expect("close boundary journal");
-            started.sort_unstable();
+            let records = lease_journal_records(&journal, id);
+            let mut terminal = records.committed;
+            terminal.extend(records.aborted.into_iter().map(|(lease, _)| lease));
             terminal.sort_unstable();
             assert_eq!(
-                started, terminal,
+                records.started, terminal,
                 "each lease has exactly one terminal disposition: {label}"
             );
         }

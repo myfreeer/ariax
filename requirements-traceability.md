@@ -37,7 +37,10 @@ headers, retry specifications, discard accounting, and journal replay. The
 storage boundary also has deterministic ENOSPC, permission-denied, short-write,
 partial-fsync, torn-tail, and same-inode publication coverage that leaves no
 false durable progress and removes same-file residue only after installed
-header/linkage replay succeeds. Child-process exit/kill tests cover the
+header/linkage replay succeeds. Scheduler cancellation after disk completion is
+fenced before lease commit and drains with exactly one cancelled journal
+disposition; multi-range disk rejection terminates its opened lease once with
+the `storage_rejected` reason. Child-process exit/kill tests cover the
 data/journal barriers, and a Linux durable-prefix power-loss cut model is
 executable. Hot-backup publication residue now has descriptor-bound
 same-file/link-count recovery, no-clobber raced-destination preservation, and

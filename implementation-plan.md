@@ -339,6 +339,11 @@ Exit criteria:
 - Storage/buffer backpressure withholds the next `PrepareRead` admission before
   another HTTP body poll, publishes the bounded backpressure diagnostic, and
   remains cancellation-responsive while capacity is unavailable.
+- A scheduler cancellation delivered after disk completion but before the
+  provisional write acknowledgement aborts the current lease before commit,
+  publishes `CancellationDrained`, and recovers with no false durable piece.
+  Multi-range disk rejection likewise gives every opened lease exactly one
+  `storage_rejected` abort instead of a generic retry disposition.
 - Stuck socket speed drops to zero without waiting for another packet.
 - Retry waits expose a bounded non-secret diagnostic without waiting for
   another packet: exact live trigger/status, attempt credit, wait policy,

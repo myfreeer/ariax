@@ -2061,10 +2061,10 @@ impl HttpMultiRangeWorker {
                 AttemptEvent::Terminal { .. } => {}
             }
         }
-        let reason = if matches!(outcome, Err(HttpMultiRangeError::Cancelled)) {
-            LeaseAbortReason::Cancelled
-        } else {
-            LeaseAbortReason::Retry
+        let reason = match &outcome {
+            Err(HttpMultiRangeError::Cancelled) => LeaseAbortReason::Cancelled,
+            Err(HttpMultiRangeError::Storage(_)) => LeaseAbortReason::StorageRejected,
+            _ => LeaseAbortReason::Retry,
         };
         let pending_candidates = pending_endgame
             .values()
@@ -4249,6 +4249,7 @@ fn write_unpoisoned<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage_engine::StorageEngineDiskFault;
     use crate::{
         DEFAULT_HTTP_DISCARD_ATTEMPT_BYTES, DEFAULT_HTTP_DISCARD_HOST_BYTES,
         DEFAULT_HTTP_DISCARD_TASK_BYTES, HTTP_CONNECTION_RESERVATION_BYTES, HttpDestinationPolicy,
@@ -6503,6 +6504,78 @@ mod tests {
         })
         .expect("recover rejected range");
         assert_eq!(recovered.durable_prefix, 0);
+        assert_eq!(stats.get(spec.task()).unwrap().snapshot().durable_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn storage_rejection_aborts_the_opened_lease_once_with_storage_reason() {
+        let root = TestDirectory::new("storage-rejection-root");
+        let journal = TestDirectory::new("storage-rejection-journal");
+        let expected = data(MIB);
+        let (mirror, server) = serve_mirror(Arc::clone(&expected), MirrorMode::Valid, 2).await;
+        let spec = task(&root, [mirror], expected.len());
+        let stats = SharedHttpTransferStats::new(NonZeroUsize::new(2).expect("stats"));
+        let worker = HttpMultiRangeWorker::new(
+            policy_client(2),
+            HttpMultiRangeWorkerConfig {
+                journal_root: journal.0.clone(),
+                storage: StorageEngineConfig {
+                    disk_fault: Some(StorageEngineDiskFault::OutOfSpace),
+                    ..StorageEngineConfig::default()
+                },
+                event_capacity: NonZeroUsize::new(16).expect("events"),
+                ..HttpMultiRangeWorkerConfig::default()
+            },
+            stats.clone(),
+        )
+        .expect("worker");
+
+        let error = worker
+            .run_task(
+                Arc::new(spec.clone()),
+                Generation::INITIAL,
+                HttpCancellation::new(),
+            )
+            .await
+            .expect_err("storage rejection stops the range worker");
+        assert!(matches!(
+            error,
+            HttpMultiRangeError::Storage(ref storage)
+                if storage.reject() == WriteReject::DiskCompletion
+        ));
+        server.await.expect("server");
+
+        let payloads = replay_payloads(&journal, &spec, Generation::INITIAL);
+        let started = payloads
+            .iter()
+            .filter_map(|payload| match payload {
+                JournalPayload::LeaseStarted { lease_id, .. } => Some(*lease_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let committed = payloads
+            .iter()
+            .filter_map(|payload| match payload {
+                JournalPayload::LeaseCommitted { lease_id, .. } => Some(*lease_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let aborted = payloads
+            .iter()
+            .filter_map(|payload| match payload {
+                JournalPayload::LeaseAborted {
+                    lease_id, reason, ..
+                } => Some((*lease_id, *reason)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(started.len(), 1);
+        assert!(committed.is_empty());
+        assert_eq!(aborted, [(started[0], LeaseAbortReason::StorageRejected)]);
+        assert!(!payloads.iter().any(|payload| matches!(
+            payload,
+            JournalPayload::PieceDurable { .. } | JournalPayload::TaskComplete { .. }
+        )));
         assert_eq!(stats.get(spec.task()).unwrap().snapshot().durable_bytes, 0);
     }
 
