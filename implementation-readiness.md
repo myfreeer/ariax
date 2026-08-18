@@ -47,6 +47,8 @@ retry specifications, discard-budget invariants, and journal replay; the
 first-slice interruption matrix now covers one byte before a piece boundary,
 the exact boundary, and one byte into the next lease while checking that every
 begun lease receives exactly one commit or abort disposition. The remaining
+read-admission evidence proves storage/buffer backpressure withholds the next
+HTTP body poll while remaining cancellation-responsive. The remaining
 protocol/crash fault matrix is still pending.
 The minimal process shutdown path now drives the fixed coordinator through real
 runtime admission, bounded HTTP-worker drain, all-journal flush/close, bounded

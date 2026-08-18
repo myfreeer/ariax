@@ -4250,10 +4250,11 @@ fn write_unpoisoned<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
 mod tests {
     use super::*;
     use crate::{
-        HTTP_CONNECTION_RESERVATION_BYTES, HttpDestinationPolicy, HttpDirectTransportConfig,
-        HttpPolicyClientConfig, HttpResolver, HttpResolverBackend, HttpResolverConfig,
-        HttpRetryBackoff, HttpTaskOptions, HttpTransportBudgets, KnownLengthHttpRecoveryRequest,
-        recover_known_length_http,
+        DEFAULT_HTTP_DISCARD_ATTEMPT_BYTES, DEFAULT_HTTP_DISCARD_HOST_BYTES,
+        DEFAULT_HTTP_DISCARD_TASK_BYTES, HTTP_CONNECTION_RESERVATION_BYTES, HttpDestinationPolicy,
+        HttpDirectTransportConfig, HttpDiscardScopeLimits, HttpPolicyClientConfig, HttpResolver,
+        HttpResolverBackend, HttpResolverConfig, HttpRetryBackoff, HttpTaskOptions,
+        HttpTransportBudgets, KnownLengthHttpRecoveryRequest, recover_known_length_http,
     };
     use ariax_storage::{
         GenerationStartReason, JournalPayload, JournalStateLimits, OptionsSnapshotScope,
@@ -5209,6 +5210,71 @@ mod tests {
             Some(ConnectionConditionReason::IngressRateLimit)
         );
         assert_eq!(snapshot.rate_debt_bytes, 17);
+    }
+
+    #[tokio::test]
+    async fn storage_backpressure_withholds_the_next_read_slot_until_cancellation() {
+        let stats = HttpTransferStats::default();
+        let cancellation = HttpCancellation::new();
+        let rate = RateArbiter::new(RateDirection::Download, RateArbiterConfig::default())
+            .expect("rate arbiter");
+        let ingress = HttpIngressBudgets::new(DEFAULT_HTTP_INGRESS_BUDGET_BYTES);
+        let discard_budget =
+            HttpDiscardBudget::new(HttpDiscardBudgetLimits::default()).expect("discard budget");
+        let task_guard = discard_budget
+            .begin_task(
+                TaskId::new(1).expect("task"),
+                HttpDiscardScopeLimits {
+                    host_bytes: DEFAULT_HTTP_DISCARD_HOST_BYTES,
+                    task_bytes: DEFAULT_HTTP_DISCARD_TASK_BYTES,
+                    attempt_bytes: DEFAULT_HTTP_DISCARD_ATTEMPT_BYTES,
+                },
+            )
+            .expect("task discard guard");
+        let attempt = task_guard
+            .begin_attempt("https://backpressure.test")
+            .expect("attempt discard guard");
+        let (events, mut received) = mpsc::channel(4);
+        let worker = acquire_read_slot(
+            &events,
+            LeaseId::new(1).expect("lease"),
+            DEFAULT_HTTP_INGRESS_FRAME_BYTES,
+            &rate,
+            RatePath {
+                host: 1,
+                task: 1,
+                stream: 1,
+            },
+            &ingress,
+            &attempt,
+            &cancellation,
+            &stats,
+        );
+        tokio::pin!(worker);
+
+        let Some(AttemptEvent::PrepareRead { response, .. }) = (tokio::select! {
+            event = received.recv() => event,
+            result = &mut worker => panic!("read-slot worker stopped early: {result:?}"),
+        }) else {
+            panic!("read-slot request was not published");
+        };
+        response.send(None).expect("reject read-slot admission");
+        tokio::select! {
+            () = tokio::time::sleep(Duration::from_millis(5)) => {}
+            result = &mut worker => panic!("read-slot worker stopped while backpressured: {result:?}"),
+        }
+        let snapshot = stats.snapshot();
+        assert_eq!(
+            snapshot.connection_condition,
+            ConnectionCondition::Backpressured
+        );
+        assert_eq!(
+            snapshot.condition_reason,
+            Some(ConnectionConditionReason::BufferBackpressure)
+        );
+
+        cancellation.cancel();
+        assert!(matches!(worker.await, Err(RangeAttemptFailure::Cancelled)));
     }
 
     #[test]

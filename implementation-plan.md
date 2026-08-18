@@ -336,6 +336,9 @@ Exit criteria:
   diagnostics, FIFO refill fairness, explicit scoped limits across default
   reconfiguration, cancellation cleanup, and 1,000 active stream-scope
   tracking. The rate-limit evidence is deterministic under virtual time.
+- Storage/buffer backpressure withholds the next `PrepareRead` admission before
+  another HTTP body poll, publishes the bounded backpressure diagnostic, and
+  remains cancellation-responsive while capacity is unavailable.
 - Stuck socket speed drops to zero without waiting for another packet.
 - Retry waits expose a bounded non-secret diagnostic without waiting for
   another packet: exact live trigger/status, attempt credit, wait policy,

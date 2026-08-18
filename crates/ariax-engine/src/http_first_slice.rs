@@ -2613,12 +2613,18 @@ mod tests {
         let task = TaskId::new(1).expect("task");
         let gid = Gid::new(7).expect("gid");
         runtime.enqueue_allocation_for_test(task, gid, Generation::INITIAL);
+        let (durable_sent, durable_received) = mpsc::channel();
         let cancellation_runtime = runtime.clone();
         let cancellation_thread = thread::spawn(move || {
             prefix_sent
                 .recv_timeout(Duration::from_secs(5))
                 .expect("server sent cancellation prefix");
-            thread::sleep(Duration::from_millis(50));
+            assert_eq!(
+                durable_received
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("first piece became durable"),
+                PieceId::new(0)
+            );
             cancellation_runtime.enqueue_cancellation_for_test(
                 task,
                 gid,
@@ -2626,10 +2632,12 @@ mod tests {
                 false,
             );
         });
+        let mut transfer = request(&root, &journal, peer, journal_id(13));
+        transfer.storage.piece_durable_notifier = Some(durable_sent);
         let error = run_known_length_http_runtime_blocking(
             runtime.clone(),
             runtime.take_allocation().expect("allocation request"),
-            KnownLengthHttpTransfer::Fresh(request(&root, &journal, peer, journal_id(13))),
+            KnownLengthHttpTransfer::Fresh(transfer),
             MonotonicInstant::now(),
         )
         .expect_err("scheduler cancellation stops transfer");
@@ -2719,17 +2727,25 @@ mod tests {
             Duration::from_secs(1),
         );
         let id = journal_id(5);
-        let input = request(&root, &journal, peer, id);
+        let (durable_sent, durable_received) = mpsc::channel();
+        let mut input = request(&root, &journal, peer, id);
+        input.storage.piece_durable_notifier = Some(durable_sent);
         let cancellation = input.cancellation.clone();
-        thread::spawn(move || {
+        let cancellation_thread = thread::spawn(move || {
             prefix_sent
                 .recv_timeout(Duration::from_secs(5))
                 .expect("server sent cancellation prefix");
-            thread::sleep(Duration::from_millis(50));
+            assert_eq!(
+                durable_received
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("first piece became durable"),
+                PieceId::new(0)
+            );
             cancellation.cancel();
         });
         let error =
             download_known_length_http_blocking(input).expect_err("cancelled download is rejected");
+        cancellation_thread.join().expect("cancellation thread");
         assert!(matches!(error, KnownLengthHttpError::Cancelled));
         let recovered = recover_known_length_http(&recovery_request(&root, &journal, id))
             .expect("recover cancelled download");
@@ -2775,15 +2791,22 @@ mod tests {
             let journal = TestDirectory::new(&format!("boundary-{label}-journal"));
             let (peer, prefix_sent) = serve_stalled(response, Duration::from_secs(1));
             let id = journal_id(id_value);
-            let input = request(&root, &journal, peer, id);
+            let (durable_sent, durable_received) = mpsc::channel();
+            let mut input = request(&root, &journal, peer, id);
+            input.storage.piece_durable_notifier = Some(durable_sent);
             let cancellation = input.cancellation.clone();
             let cancellation_thread = thread::spawn(move || {
                 prefix_sent
                     .recv_timeout(Duration::from_secs(5))
                     .expect("server sent boundary prefix");
-                // Give storage time to flush a complete piece at the exact
-                // boundary before cancelling the next read.
-                thread::sleep(Duration::from_millis(50));
+                if expected_prefix != 0 {
+                    assert_eq!(
+                        durable_received
+                            .recv_timeout(Duration::from_secs(5))
+                            .expect("boundary piece became durable"),
+                        PieceId::new(0)
+                    );
+                }
                 cancellation.cancel();
             });
             let error = download_known_length_http_blocking(input)

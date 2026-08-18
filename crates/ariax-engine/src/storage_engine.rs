@@ -46,6 +46,8 @@ pub struct StorageEngineConfig {
     pub disk_fault: Option<StorageEngineDiskFault>,
     #[cfg(test)]
     pub crash_point: Option<StorageEngineCrashPoint>,
+    #[cfg(test)]
+    pub piece_durable_notifier: Option<std::sync::mpsc::Sender<PieceId>>,
 }
 
 /// Deterministic disk boundary faults used by the HTTP/storage integration
@@ -84,6 +86,8 @@ impl Default for StorageEngineConfig {
             disk_fault: None,
             #[cfg(test)]
             crash_point: None,
+            #[cfg(test)]
+            piece_durable_notifier: None,
         }
     }
 }
@@ -326,6 +330,8 @@ pub struct StorageEngine {
     shutdown_timeout: Duration,
     #[cfg(test)]
     crash_point: Option<StorageEngineCrashPoint>,
+    #[cfg(test)]
+    piece_durable_notifier: Option<std::sync::mpsc::Sender<PieceId>>,
 }
 
 impl StorageEngine {
@@ -464,6 +470,8 @@ impl StorageEngine {
             shutdown_timeout: config.shutdown_timeout,
             #[cfg(test)]
             crash_point: config.crash_point,
+            #[cfg(test)]
+            piece_durable_notifier: config.piece_durable_notifier,
         })
     }
 
@@ -941,6 +949,10 @@ impl StorageEngine {
             .journal
             .flush(durable.sequence())
             .map_err(journal_error)?;
+        #[cfg(test)]
+        if let Some(notifier) = &self.piece_durable_notifier {
+            let _notified = notifier.send(active.piece);
+        }
         Ok(vec![
             WriteAck::LeaseCommitted {
                 lease: commit.lease,
