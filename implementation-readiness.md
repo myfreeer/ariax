@@ -52,8 +52,14 @@ HTTP body poll while remaining cancellation-responsive. A deterministic
 scheduler/storage race now also delivers cancellation after disk completion but
 before provisional acknowledgement, proves `CancellationDrained`, and audits a
 single cancelled lease with no false durable progress. Multi-range injected
-disk rejection records one exact `storage_rejected` abort. The remaining
-protocol/crash fault matrix is still pending.
+disk rejection records one exact `storage_rejected` abort. A URI-scoped
+oversized transport-frame fault now exercises the full range pipeline, charges
+the bounded discard hierarchy, records one `oversized_body` abort, publishes an
+`InvalidRange`/`DisableSource` diagnostic, and admits no retry or durable byte.
+Implemented redirects settle before `BeginLease`; the redirect-policy contract
+still proves that an adapter with an open lease must abort it. Scheduler
+cancellation covers both a blocked body read and the disk-completion boundary.
+The remaining protocol/crash fault matrix is still pending.
 The minimal process shutdown path now drives the fixed coordinator through real
 runtime admission, bounded HTTP-worker drain, all-journal flush/close, bounded
 session-owner join, and clean/dirty session-marker persistence. Cooperative

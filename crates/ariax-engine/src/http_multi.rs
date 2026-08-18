@@ -59,6 +59,61 @@ const HTTP_JOURNAL_ID_DOMAIN: &str = "ariax/http-journal-id/v1\0";
 const HTTP_RECOVERY_READ_BUFFER_BYTES: usize = 64 * 1024;
 const HTTP_FINAL_DIGEST_READ_BUFFER_BYTES: usize = 1024 * 1024;
 
+#[cfg(test)]
+fn oversized_range_body_faults() -> &'static Mutex<BTreeSet<String>> {
+    static FAULTS: std::sync::OnceLock<Mutex<BTreeSet<String>>> = std::sync::OnceLock::new();
+    FAULTS.get_or_init(|| Mutex::new(BTreeSet::new()))
+}
+
+#[cfg(test)]
+struct OversizedRangeBodyFaultGuard {
+    uri: String,
+}
+
+#[cfg(test)]
+impl Drop for OversizedRangeBodyFaultGuard {
+    fn drop(&mut self) {
+        oversized_range_body_faults()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.uri);
+    }
+}
+
+#[cfg(test)]
+fn arm_oversized_range_body_fault(uri: String) -> OversizedRangeBodyFaultGuard {
+    assert!(
+        oversized_range_body_faults()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(uri.clone()),
+        "oversized range-body fault was already armed for {uri}"
+    );
+    OversizedRangeBodyFaultGuard { uri }
+}
+
+#[cfg(test)]
+fn inject_oversized_range_body_fault(
+    uri: &str,
+    data: bytes::Bytes,
+    buffer_capacity: usize,
+) -> bytes::Bytes {
+    let armed = oversized_range_body_faults()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(uri);
+    if !armed || data.len() > buffer_capacity {
+        return data;
+    }
+    let oversized_len = buffer_capacity
+        .checked_add(1)
+        .expect("HTTP ingress capacity is bounded below usize::MAX");
+    let mut oversized = Vec::with_capacity(oversized_len);
+    oversized.extend_from_slice(&data);
+    oversized.resize(oversized_len, 0xa5);
+    bytes::Bytes::from(oversized)
+}
+
 /// Process-owned HTTP ingress domain paired with the global resident budget.
 #[derive(Clone, Debug)]
 pub struct HttpIngressBudgets {
@@ -3296,6 +3351,9 @@ async fn range_attempt_inner(
         let Some(data) = data else {
             break;
         };
+        #[cfg(test)]
+        let data =
+            inject_oversized_range_body_fault(validator.final_uri(), data, buffer.capacity());
         stats.add_raw(data.len());
         let charge = permit.settle(data.len());
         stats.set_rate_debt(charge.debt_bytes);
@@ -6505,6 +6563,84 @@ mod tests {
         .expect("recover rejected range");
         assert_eq!(recovered.durable_prefix, 0);
         assert_eq!(stats.get(spec.task()).unwrap().snapshot().durable_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn oversized_body_is_cut_off_charged_and_disables_the_source() {
+        let root = TestDirectory::new("oversized-root");
+        let journal = TestDirectory::new("oversized-journal");
+        let expected = data(MIB);
+        let (mirror, server) = serve_mirror(Arc::clone(&expected), MirrorMode::Valid, 2).await;
+        let source_uri = format!("http://{mirror}/file");
+        let _fault = arm_oversized_range_body_fault(source_uri);
+        let spec = task(&root, [mirror], expected.len());
+        let stats = SharedHttpTransferStats::new(NonZeroUsize::new(2).expect("stats"));
+        let worker = worker(&journal, stats.clone(), 2);
+
+        assert!(matches!(
+            worker
+                .run_task(
+                    Arc::new(spec.clone()),
+                    Generation::INITIAL,
+                    HttpCancellation::new(),
+                )
+                .await,
+            Err(HttpMultiRangeError::Exhausted)
+        ));
+        server.await.expect("server");
+
+        let snapshot = stats.get(spec.task()).expect("stats").snapshot();
+        assert_eq!(snapshot.accepted_bytes, 0);
+        assert_eq!(snapshot.provisional_bytes, 0);
+        assert_eq!(snapshot.durable_bytes, 0);
+        assert_eq!(snapshot.retry_count, 0);
+        assert!(snapshot.discarded_bytes >= (MIB + 1) as u64);
+        let diagnostic = snapshot.retry_diagnostic.expect("oversized diagnostic");
+        assert!(matches!(
+            diagnostic.cause,
+            HttpRetryDiagnosticCause::Live(HttpRetryCause::InvalidRange)
+        ));
+        assert_eq!(diagnostic.next_action, HttpRetryNextAction::DisableSource);
+        assert_eq!(
+            diagnostic.stop_reason,
+            Some(HttpRetryStopReason::NonRetriable)
+        );
+        assert_eq!(
+            diagnostic.lease_disposition,
+            HttpRetryLeaseDisposition::Aborted
+        );
+
+        let payloads = replay_payloads(&journal, &spec, Generation::INITIAL);
+        let started = payloads
+            .iter()
+            .filter_map(|payload| match payload {
+                JournalPayload::LeaseStarted { lease_id, .. } => Some(*lease_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let committed = payloads
+            .iter()
+            .filter_map(|payload| match payload {
+                JournalPayload::LeaseCommitted { lease_id, .. } => Some(*lease_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let aborted = payloads
+            .iter()
+            .filter_map(|payload| match payload {
+                JournalPayload::LeaseAborted {
+                    lease_id, reason, ..
+                } => Some((*lease_id, *reason)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(started.len(), 1);
+        assert!(committed.is_empty());
+        assert_eq!(aborted, [(started[0], LeaseAbortReason::OversizedBody)]);
+        assert!(!payloads.iter().any(|payload| matches!(
+            payload,
+            JournalPayload::PieceDurable { .. } | JournalPayload::TaskComplete { .. }
+        )));
     }
 
     #[tokio::test]

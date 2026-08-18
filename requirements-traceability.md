@@ -40,7 +40,12 @@ false durable progress and removes same-file residue only after installed
 header/linkage replay succeeds. Scheduler cancellation after disk completion is
 fenced before lease commit and drains with exactly one cancelled journal
 disposition; multi-range disk rejection terminates its opened lease once with
-the `storage_rejected` reason. Child-process exit/kill tests cover the
+the `storage_rejected` reason. A bounded URI-scoped oversized frame is discarded
+before storage, aborts the opened lease once as `oversized_body`, and disables
+the offending source as a non-retriable invalid range. Redirects in the
+implemented client settle before lease admission, while the redirect-policy
+contract retains the mandatory open-lease abort for future adapters.
+Child-process exit/kill tests cover the
 data/journal barriers, and a Linux durable-prefix power-loss cut model is
 executable. Hot-backup publication residue now has descriptor-bound
 same-file/link-count recovery, no-clobber raced-destination preservation, and

@@ -311,9 +311,13 @@ Exit criteria:
 - Discard fault coverage proves bounded oversized/short-body overrun, atomic
   process/host/task/attempt exhaustion, no refund after abort/rollback, prompt
   source/retry-cycle stop, and separate consumed/remaining diagnostics. The
-  HTTP guard and short-body exhaustion path are executable, with deterministic
-  process/task/host tests and standalone fuzz targets in `fuzz/`; the remaining
-  protocol/crash fault matrix still gates Phase 3 completion.
+  HTTP guard, short-body exhaustion path, and URI-scoped oversized-frame fault
+  are executable: the latter crosses the real range worker, ingress/rate/discard
+  accounting, storage lease, retry policy, stats, and journal; it writes no
+  provisional bytes, aborts once as `oversized_body`, and disables the source
+  without another attempt. Deterministic process/task/host tests and standalone
+  fuzz targets remain in `fuzz/`; the remaining protocol/crash fault matrix
+  still gates Phase 3 completion.
 - 1,000 active HTTP range benchmark with bounded memory. The checked-in harness
   now drives 1,000 real loopback `206` range responses under the shared ingress,
   socket, and resident permits. Optimized Linux and native Windows-GNU runs are
