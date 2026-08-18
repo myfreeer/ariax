@@ -44,7 +44,10 @@ residue now has descriptor-bound same-file/link-count recovery, no-clobber race
 preservation, crash-point, and temporary-unlink fault coverage. A standalone,
 workspace-excluded cargo-fuzz package now covers HTTP response/request headers,
 retry specifications, discard-budget invariants, and journal replay; the
-remaining protocol/crash fault matrix is still pending.
+first-slice interruption matrix now covers one byte before a piece boundary,
+the exact boundary, and one byte into the next lease while checking that every
+begun lease receives exactly one commit or abort disposition. The remaining
+protocol/crash fault matrix is still pending.
 The minimal process shutdown path now drives the fixed coordinator through real
 runtime admission, bounded HTTP-worker drain, all-journal flush/close, bounded
 session-owner join, and clean/dirty session-marker persistence. Cooperative

@@ -1970,7 +1970,7 @@ mod tests {
     use super::*;
     use crate::{NoSpaceProbeTargetCatalog, RuntimeEffectConfig, RuntimeSchedulerEffectSink};
     use ariax_core::{ErrorKind, RetryClass, TaskEvent};
-    use ariax_storage::{JournalStateStop, PathPlatform, SafePathBuilder};
+    use ariax_storage::{JournalPayload, JournalStateStop, PathPlatform, SafePathBuilder};
     use std::fs;
     use std::io::{Read, Write};
     use std::net::{Shutdown, TcpListener};
@@ -2471,6 +2471,7 @@ mod tests {
         let request = String::from_utf8_lossy(&request).to_ascii_lowercase();
         assert!(request.starts_with("get /file http/1.1\r\n"));
         assert!(request.contains(&format!("host: 2130706433:{}\r\n", peer.port())));
+        assert!(request.contains("accept-encoding: identity\r\n"));
 
         let now = MonotonicInstant::now();
         assert!(matches!(
@@ -2697,6 +2698,19 @@ mod tests {
     }
 
     #[test]
+    fn content_coded_response_is_rejected_before_body_polling() {
+        let root = TestDirectory::new("content-coded-root");
+        let journal = TestDirectory::new("content-coded-journal");
+        let peer = serve(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nContent-Encoding: gzip\r\nConnection: close\r\n\r\nbody",
+        );
+        let error =
+            download_known_length_http_blocking(request(&root, &journal, peer, journal_id(15)))
+                .expect_err("content-coded response rejected");
+        assert!(matches!(error, KnownLengthHttpError::ContentEncoding));
+    }
+
+    #[test]
     fn cancellation_aborts_partial_piece_and_preserves_prior_checkpoint() {
         let root = TestDirectory::new("cancel-root");
         let journal = TestDirectory::new("cancel-journal");
@@ -2729,6 +2743,94 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn interruption_at_piece_boundaries_preserves_exact_durable_prefix_and_one_terminal_lease() {
+        let cases = [
+            (
+                "before-boundary",
+                b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nabc".as_slice(),
+                0_u64,
+                20_u8,
+            ),
+            (
+                "at-boundary",
+                b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nabcd"
+                    .as_slice(),
+                4_u64,
+                21_u8,
+            ),
+            (
+                "inside-next-lease",
+                b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nabcde"
+                    .as_slice(),
+                4_u64,
+                22_u8,
+            ),
+        ];
+
+        for (label, response, expected_prefix, id_value) in cases {
+            let root = TestDirectory::new(&format!("boundary-{label}-root"));
+            let journal = TestDirectory::new(&format!("boundary-{label}-journal"));
+            let (peer, prefix_sent) = serve_stalled(response, Duration::from_secs(1));
+            let id = journal_id(id_value);
+            let input = request(&root, &journal, peer, id);
+            let cancellation = input.cancellation.clone();
+            let cancellation_thread = thread::spawn(move || {
+                prefix_sent
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("server sent boundary prefix");
+                // Give storage time to flush a complete piece at the exact
+                // boundary before cancelling the next read.
+                thread::sleep(Duration::from_millis(50));
+                cancellation.cancel();
+            });
+            let error = download_known_length_http_blocking(input)
+                .expect_err("boundary interruption is cancelled");
+            cancellation_thread.join().expect("cancellation thread");
+            assert!(matches!(error, KnownLengthHttpError::Cancelled));
+
+            let recovered = recover_known_length_http(&recovery_request(&root, &journal, id))
+                .expect("recover interrupted boundary transfer");
+            assert_eq!(recovered.durable_prefix, expected_prefix, "{label}");
+
+            let directory = journal.0.join("task");
+            let capability = JournalDirectoryCapability::open_trusted(&directory)
+                .expect("boundary journal capability");
+            let paths = ControlJournalAppender::discover_segment_paths(
+                &capability,
+                ReplayLimits::default().max_segments,
+            )
+            .expect("boundary journal paths");
+            let (mut appender, replay) = ControlJournalAppender::open_recovered(
+                &directory,
+                &paths,
+                Gid::new(7).expect("boundary gid"),
+                id,
+                ReplayLimits::default(),
+                Generation::INITIAL,
+                now_unix_ms().unwrap_or(0),
+            )
+            .expect("reopen boundary journal");
+            let mut started = Vec::new();
+            let mut terminal = Vec::new();
+            for record in &replay.records {
+                match record.decode_payload().expect("decode boundary payload") {
+                    JournalPayload::LeaseStarted { lease_id, .. } => started.push(lease_id),
+                    JournalPayload::LeaseCommitted { lease_id, .. }
+                    | JournalPayload::LeaseAborted { lease_id, .. } => terminal.push(lease_id),
+                    _ => {}
+                }
+            }
+            appender.close_flushed().expect("close boundary journal");
+            started.sort_unstable();
+            terminal.sort_unstable();
+            assert_eq!(
+                started, terminal,
+                "each lease has exactly one terminal disposition: {label}"
+            );
+        }
     }
 
     #[test]

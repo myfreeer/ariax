@@ -304,6 +304,10 @@ Exit criteria:
   preservation, and unlink-failure recovery are executable too. Native Windows
   I/O and real poweroff evidence remain platform gates rather than being
   inferred from the local model.
+- The first-slice interruption matrix cancels one byte before a piece boundary,
+  exactly at the boundary, and one byte into the next lease. Recovery proves the
+  exact durable prefix and audits the journal so every begun lease has exactly
+  one terminal commit or abort disposition.
 - Discard fault coverage proves bounded oversized/short-body overrun, atomic
   process/host/task/attempt exhaustion, no refund after abort/rollback, prompt
   source/retry-cycle stop, and separate consumed/remaining diagnostics. The

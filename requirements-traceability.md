@@ -272,7 +272,9 @@ Design coverage:
   endgame fencing/rollback, bounded SHA-256 `Repr-Digest` parsing and body
   verification, exact-range cross-origin endgame fencing, journaled response
   digest evidence, persisted digest-only restart identity with local and network
-  durable-range revalidation, and five real scheduler RPC methods. Broader RFC
+  durable-range revalidation, first-slice checkpoint-boundary interruption
+  recovery with exactly-once lease dispositions, and five real scheduler RPC
+  methods. Broader RFC
   9530/Metalink identity, `Content-Digest`, additional checksum algorithms,
   Last-Modified/unsafe-override resume, HTTP/2, growing bodies, and the rest of
   Phase 4 remain pending.
