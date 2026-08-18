@@ -121,6 +121,130 @@ impl fmt::Debug for HttpIngressPermit {
     }
 }
 
+/// Stable, non-secret trigger retained for the latest task-local retry
+/// decision. Recovered journal state preserves the durable error class even
+/// when the original protocol-specific trigger was not persisted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HttpRetryDiagnosticCause {
+    Live(HttpRetryCause),
+    Recovered(ErrorKind),
+    WorkerPanic,
+}
+
+impl HttpRetryDiagnosticCause {
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Live(cause) => cause.code(),
+            Self::Recovered(_) => "recovered",
+            Self::WorkerPanic => "worker-panic",
+        }
+    }
+
+    #[must_use]
+    pub const fn http_status(self) -> Option<u16> {
+        match self {
+            Self::Live(cause) => cause.http_status(),
+            Self::Recovered(_) | Self::WorkerPanic => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn recovered_error_class(self) -> Option<ErrorKind> {
+        match self {
+            Self::Recovered(error) => Some(error),
+            Self::Live(_) | Self::WorkerPanic => None,
+        }
+    }
+}
+
+/// Live policy source or the coarser durable reason reconstructed at restart.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HttpRetryDelayDiagnostic {
+    Live(HttpRetryDelaySource),
+    Recovered(RetryReason),
+}
+
+impl HttpRetryDelayDiagnostic {
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Live(source) => source.code(),
+            Self::Recovered(reason) => reason.code(),
+        }
+    }
+}
+
+/// Scheduler action selected by the latest retry decision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HttpRetryNextAction {
+    RetryRange,
+    SameSource,
+    DifferentSource,
+    DisableSource,
+    RevalidateSource,
+    RestartGeneration,
+    TerminalFailure,
+}
+
+impl HttpRetryNextAction {
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::RetryRange => "retry-range",
+            Self::SameSource => "same-source",
+            Self::DifferentSource => "different-source",
+            Self::DisableSource => "disable-source",
+            Self::RevalidateSource => "revalidate-source",
+            Self::RestartGeneration => "restart-generation",
+            Self::TerminalFailure => "terminal-failure",
+        }
+    }
+}
+
+/// Storage disposition of the failed provisional lease.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HttpRetryLeaseDisposition {
+    Unopened,
+    Aborted,
+    RolledBack,
+    UnknownRecovered,
+}
+
+impl HttpRetryLeaseDisposition {
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Unopened => "unopened",
+            Self::Aborted => "aborted",
+            Self::RolledBack => "rolled-back",
+            Self::UnknownRecovered => "unknown-recovered",
+        }
+    }
+}
+
+/// One bounded task-local retry decision. Numeric source, piece, and lease
+/// identities avoid publishing credential-bearing URI text through RPC.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HttpRetryDiagnosticSnapshot {
+    pub cause: HttpRetryDiagnosticCause,
+    pub source: UriId,
+    pub piece: PieceId,
+    pub prior_lease: Option<LeaseId>,
+    pub next_lease: Option<LeaseId>,
+    pub total_attempt: u32,
+    pub total_remaining: u32,
+    pub source_attempt: u32,
+    pub source_remaining: u32,
+    pub scheduled_at_unix_ms: u64,
+    pub delay_ms: u64,
+    pub retry_at_unix_ms: u64,
+    pub delay: Option<HttpRetryDelayDiagnostic>,
+    pub stop_reason: Option<HttpRetryStopReason>,
+    pub next_action: HttpRetryNextAction,
+    pub lease_disposition: HttpRetryLeaseDisposition,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct HttpTransferStatsSnapshot {
     pub total_length: u64,
@@ -142,6 +266,7 @@ pub struct HttpTransferStatsSnapshot {
     pub connection_condition: ConnectionCondition,
     pub condition_reason: Option<ConnectionConditionReason>,
     pub rate_debt_bytes: u64,
+    pub retry_diagnostic: Option<HttpRetryDiagnosticSnapshot>,
 }
 
 /// Durable completion evidence written by the worker before the scheduler
@@ -168,6 +293,7 @@ struct HttpTransferStatsInner {
     active_connections: AtomicU64,
     rate_debt_bytes: AtomicU64,
     diagnostic: Mutex<StatsDiagnostic>,
+    retry_diagnostic: Mutex<Option<HttpRetryDiagnosticSnapshot>>,
     speed: Mutex<HttpSpeedState>,
 }
 
@@ -186,6 +312,7 @@ impl Default for HttpTransferStatsInner {
             active_connections: AtomicU64::new(0),
             rate_debt_bytes: AtomicU64::new(0),
             diagnostic: Mutex::new(StatsDiagnostic::default()),
+            retry_diagnostic: Mutex::new(None),
             speed: Mutex::new(HttpSpeedState::new(ariax_core::MonotonicInstant::now())),
         }
     }
@@ -273,6 +400,11 @@ impl HttpTransferStats {
             .diagnostic
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = StatsDiagnostic::default();
+        *self
+            .inner
+            .retry_diagnostic
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         self.reset_sampling_at(ariax_core::MonotonicInstant::now());
     }
 
@@ -366,6 +498,34 @@ impl HttpTransferStats {
         self.set_diagnostic(StatsDiagnostic::default());
     }
 
+    fn set_retry_diagnostic(&self, diagnostic: HttpRetryDiagnosticSnapshot) {
+        *self
+            .inner
+            .retry_diagnostic
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(diagnostic);
+    }
+
+    fn bind_retry_lease(&self, piece: PieceId, source: UriId, lease: LeaseId) {
+        let mut diagnostic = self
+            .inner
+            .retry_diagnostic
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(current) = diagnostic.as_mut() else {
+            return;
+        };
+        if current.piece != piece || current.next_lease.is_some() {
+            return;
+        }
+        current.next_lease = Some(lease);
+        current.next_action = if current.source == source {
+            HttpRetryNextAction::SameSource
+        } else {
+            HttpRetryNextAction::DifferentSource
+        };
+    }
+
     fn set_active(&self, value: usize) {
         self.inner
             .active_connections
@@ -392,6 +552,11 @@ impl HttpTransferStats {
         let retry_count = self.inner.retry_count.load(Ordering::Relaxed);
         let active_connections = self.inner.active_connections.load(Ordering::Relaxed);
         let rate_debt_bytes = self.inner.rate_debt_bytes.load(Ordering::Relaxed);
+        let retry_diagnostic = *self
+            .inner
+            .retry_diagnostic
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let diagnostic = *self
             .inner
             .diagnostic
@@ -447,6 +612,7 @@ impl HttpTransferStats {
             connection_condition: diagnostic.condition,
             condition_reason: diagnostic.reason,
             rate_debt_bytes,
+            retry_diagnostic,
         }
     }
 }
@@ -1533,6 +1699,11 @@ impl HttpMultiRangeWorker {
         let total_length = sources[0].validator.total_length();
         let retry_policy = task.options().retry.as_ref().unwrap_or(&self.config.retry);
         let recovered_retries = recover_range_retries(recovered_retry_states, retry_policy)?;
+        if let Some(diagnostic) =
+            recovered_retries.latest_diagnostic(retry_policy, now_unix_ms().unwrap_or(0))
+        {
+            stats.set_retry_diagnostic(diagnostic);
+        }
         stats.set_retry_count(
             recovered_retries
                 .pieces
@@ -1630,6 +1801,11 @@ impl HttpMultiRangeWorker {
                                 .fail(assignment.lease, HttpRangeFailure::RetryAt(now_ms))?;
                             continue;
                         }
+                        stats.bind_retry_lease(
+                            assignment.piece,
+                            assignment.source,
+                            assignment.lease,
+                        );
                         if let Some(original) = original {
                             let group = assignment
                                 .overlap_group
@@ -1850,6 +2026,7 @@ impl HttpMultiRangeWorker {
                                 elapsed_ms(started),
                                 storage,
                                 &mut coordinator,
+                                &budgets,
                                 &mut active,
                                 stats,
                             ) {
@@ -2382,6 +2559,59 @@ struct RecoveredPieceRetry {
     attempts: u32,
     attempts_by_mirror: BTreeMap<UriId, u32>,
     retry_at_by_mirror: BTreeMap<UriId, u64>,
+    diagnostics_by_mirror: BTreeMap<UriId, RecoveredRetryDiagnostic>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RecoveredRetryDiagnostic {
+    scheduled_at_unix_ms: u64,
+    delay_ms: u64,
+    remaining_ms: u64,
+    error_class: ErrorKind,
+    retry_reason: RetryReason,
+}
+
+impl RecoveredRangeRetries {
+    fn latest_diagnostic(
+        &self,
+        policy: &HttpRetryPolicy,
+        now_unix_ms: u64,
+    ) -> Option<HttpRetryDiagnosticSnapshot> {
+        let (piece, source, retry, diagnostic) = self
+            .pieces
+            .iter()
+            .flat_map(|(piece, retry)| {
+                retry
+                    .diagnostics_by_mirror
+                    .iter()
+                    .map(move |(source, diagnostic)| (*piece, *source, retry, *diagnostic))
+            })
+            .max_by_key(|(piece, source, _, diagnostic)| {
+                (diagnostic.scheduled_at_unix_ms, piece.get(), source.get())
+            })?;
+        let source_attempt = retry.attempts_by_mirror.get(&source).copied().unwrap_or(0);
+        Some(HttpRetryDiagnosticSnapshot {
+            cause: HttpRetryDiagnosticCause::Recovered(diagnostic.error_class),
+            source,
+            piece,
+            prior_lease: None,
+            next_lease: None,
+            total_attempt: retry.attempts,
+            total_remaining: policy.max_attempts.get().saturating_sub(retry.attempts),
+            source_attempt,
+            source_remaining: policy
+                .max_attempts_per_mirror
+                .get()
+                .saturating_sub(source_attempt),
+            scheduled_at_unix_ms: diagnostic.scheduled_at_unix_ms,
+            delay_ms: diagnostic.delay_ms,
+            retry_at_unix_ms: now_unix_ms.saturating_add(diagnostic.remaining_ms),
+            delay: Some(HttpRetryDelayDiagnostic::Recovered(diagnostic.retry_reason)),
+            stop_reason: None,
+            next_action: HttpRetryNextAction::RetryRange,
+            lease_disposition: HttpRetryLeaseDisposition::UnknownRecovered,
+        })
+    }
 }
 
 fn piece_retry_scope_id(piece: PieceId) -> Option<PersistedId> {
@@ -2470,6 +2700,19 @@ fn recover_range_retries_at(
                     || entry
                         .retry_at_by_mirror
                         .insert(source, decision.remaining_ms())
+                        .is_some()
+                    || entry
+                        .diagnostics_by_mirror
+                        .insert(
+                            source,
+                            RecoveredRetryDiagnostic {
+                                scheduled_at_unix_ms: state.scheduled_at_unix_ms,
+                                delay_ms: state.delay_ms,
+                                remaining_ms: decision.remaining_ms(),
+                                error_class: state.error_class,
+                                retry_reason: state.retry_reason,
+                            },
+                        )
                         .is_some()
                 {
                     return Err(HttpMultiRangeError::Retry(
@@ -3609,6 +3852,20 @@ fn apply_attempt_failure(
         .get(&attempt.assignment.piece)
         .ok_or(HttpMultiRangeError::Protocol)?;
     if cause == HttpRetryCause::StaleValidator {
+        let next_action = match budget.policy().stale_validator_policy {
+            HttpStaleValidatorPolicy::Fail => HttpRetryNextAction::TerminalFailure,
+            HttpStaleValidatorPolicy::RestartIfSafe => HttpRetryNextAction::RestartGeneration,
+            HttpStaleValidatorPolicy::Revalidate => HttpRetryNextAction::RevalidateSource,
+        };
+        stats.set_retry_diagnostic(live_retry_diagnostic(
+            &attempt,
+            budget,
+            HttpRetryDiagnosticCause::Live(cause),
+            None,
+            None,
+            next_action,
+            released,
+        ));
         record_coordinator_failure(
             coordinator,
             &attempt,
@@ -3638,6 +3895,33 @@ fn apply_attempt_failure(
             attempt.assignment.lease.get() ^ u64::from(attempt.assignment.source.get()),
         )
         .map_err(HttpMultiRangeError::Retry)?;
+    let (delay, stop_reason, next_action) = match decision {
+        HttpRetryDecision::Retry { delay, source } => {
+            (Some((delay, source)), None, HttpRetryNextAction::RetryRange)
+        }
+        HttpRetryDecision::Stop(HttpRetryStopReason::NonRetriable) => (
+            None,
+            Some(HttpRetryStopReason::NonRetriable),
+            HttpRetryNextAction::DisableSource,
+        ),
+        HttpRetryDecision::Stop(HttpRetryStopReason::MirrorAttemptCap) => (
+            None,
+            Some(HttpRetryStopReason::MirrorAttemptCap),
+            HttpRetryNextAction::DifferentSource,
+        ),
+        HttpRetryDecision::Stop(
+            reason @ (HttpRetryStopReason::TotalAttemptCap | HttpRetryStopReason::ElapsedCap),
+        ) => (None, Some(reason), HttpRetryNextAction::TerminalFailure),
+    };
+    stats.set_retry_diagnostic(live_retry_diagnostic(
+        &attempt,
+        budget,
+        HttpRetryDiagnosticCause::Live(cause),
+        delay,
+        stop_reason,
+        next_action,
+        released,
+    ));
     let range_failure = match decision {
         HttpRetryDecision::Retry { delay, source } => {
             persist_range_retry_state(
@@ -3674,6 +3958,59 @@ fn apply_attempt_failure(
     };
     record_coordinator_failure(coordinator, &attempt, range_failure, released)?;
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn live_retry_diagnostic(
+    attempt: &ActiveAttempt,
+    budget: &HttpRetryBudget,
+    cause: HttpRetryDiagnosticCause,
+    delay: Option<(Duration, HttpRetryDelaySource)>,
+    stop_reason: Option<HttpRetryStopReason>,
+    next_action: HttpRetryNextAction,
+    released: bool,
+) -> HttpRetryDiagnosticSnapshot {
+    let totals = budget.stats();
+    let source_attempt = budget.attempts_for_mirror(attempt.assignment.source);
+    let scheduled_at_unix_ms = now_unix_ms().unwrap_or(0);
+    let (delay_ms, delay) = delay.map_or((0, None), |(delay, source)| {
+        (
+            u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+            Some(HttpRetryDelayDiagnostic::Live(source)),
+        )
+    });
+    HttpRetryDiagnosticSnapshot {
+        cause,
+        source: attempt.assignment.source,
+        piece: attempt.assignment.piece,
+        prior_lease: Some(attempt.assignment.lease),
+        next_lease: None,
+        total_attempt: totals.attempts,
+        total_remaining: budget
+            .policy()
+            .max_attempts
+            .get()
+            .saturating_sub(totals.attempts),
+        source_attempt,
+        source_remaining: budget
+            .policy()
+            .max_attempts_per_mirror
+            .get()
+            .saturating_sub(source_attempt),
+        scheduled_at_unix_ms,
+        delay_ms,
+        retry_at_unix_ms: scheduled_at_unix_ms.saturating_add(delay_ms),
+        delay,
+        stop_reason,
+        next_action,
+        lease_disposition: if released {
+            HttpRetryLeaseDisposition::RolledBack
+        } else if attempt.opened {
+            HttpRetryLeaseDisposition::Aborted
+        } else {
+            HttpRetryLeaseDisposition::Unopened
+        },
+    }
 }
 
 fn record_coordinator_failure(
@@ -3775,6 +4112,7 @@ fn fail_panicked_attempt(
     now_ms: u64,
     storage: &mut StorageEngine,
     coordinator: &mut HttpRangeCoordinator,
+    budgets: &BTreeMap<PieceId, HttpRetryBudget>,
     active: &mut BTreeMap<LeaseId, ActiveAttempt>,
     stats: &HttpTransferStats,
 ) -> Result<(), HttpMultiRangeError> {
@@ -3786,6 +4124,18 @@ fn fail_panicked_attempt(
     }
     stats.remove_provisional(attempt.received);
     record_discarded(&attempt.discard, stats, attempt.received)?;
+    let budget = budgets
+        .get(&attempt.assignment.piece)
+        .ok_or(HttpMultiRangeError::Protocol)?;
+    stats.set_retry_diagnostic(live_retry_diagnostic(
+        &attempt,
+        budget,
+        HttpRetryDiagnosticCause::WorkerPanic,
+        None,
+        None,
+        HttpRetryNextAction::RetryRange,
+        false,
+    ));
     coordinator.fail(lease, HttpRangeFailure::RetryAt(now_ms))?;
     stats.add_retry();
     stats.set_active(active.len());
@@ -4997,6 +5347,27 @@ mod tests {
         assert_eq!(retry.attempts, 2);
         assert_eq!(retry.attempts_by_mirror.get(&source), Some(&2));
         assert_eq!(retry.retry_at_by_mirror.get(&source), Some(&3_000));
+        assert_eq!(
+            recovered.latest_diagnostic(&HttpRetryPolicy::default(), 3_000),
+            Some(HttpRetryDiagnosticSnapshot {
+                cause: HttpRetryDiagnosticCause::Recovered(ErrorKind::Network),
+                source,
+                piece,
+                prior_lease: None,
+                next_lease: None,
+                total_attempt: 2,
+                total_remaining: 3,
+                source_attempt: 2,
+                source_remaining: 1,
+                scheduled_at_unix_ms: 1_000,
+                delay_ms: 5_000,
+                retry_at_unix_ms: 6_000,
+                delay: Some(HttpRetryDelayDiagnostic::Recovered(RetryReason::Backoff)),
+                stop_reason: None,
+                next_action: HttpRetryNextAction::RetryRange,
+                lease_disposition: HttpRetryLeaseDisposition::UnknownRecovered,
+            })
+        );
 
         assert!(matches!(
             recover_range_retries_at(
@@ -5009,6 +5380,45 @@ mod tests {
                 HttpRetryError::InvalidRecoveredState
             ))
         ));
+    }
+
+    #[test]
+    fn retry_diagnostic_binds_the_actual_next_source_and_lease_once() {
+        let stats = HttpTransferStats::default();
+        let piece = PieceId::new(4);
+        let original = UriId::new(1);
+        stats.set_retry_diagnostic(HttpRetryDiagnosticSnapshot {
+            cause: HttpRetryDiagnosticCause::Live(HttpRetryCause::Transport(
+                HttpRetryTransportFailure::Timeout,
+            )),
+            source: original,
+            piece,
+            prior_lease: LeaseId::new(7),
+            next_lease: None,
+            total_attempt: 1,
+            total_remaining: 4,
+            source_attempt: 1,
+            source_remaining: 2,
+            scheduled_at_unix_ms: 1_000,
+            delay_ms: 100,
+            retry_at_unix_ms: 1_100,
+            delay: Some(HttpRetryDelayDiagnostic::Live(
+                HttpRetryDelaySource::FixedBackoff,
+            )),
+            stop_reason: None,
+            next_action: HttpRetryNextAction::RetryRange,
+            lease_disposition: HttpRetryLeaseDisposition::Aborted,
+        });
+
+        stats.bind_retry_lease(piece, UriId::new(2), LeaseId::new(8).expect("lease"));
+        stats.bind_retry_lease(piece, original, LeaseId::new(9).expect("later lease"));
+
+        let diagnostic = stats.snapshot().retry_diagnostic.expect("retry diagnostic");
+        assert_eq!(diagnostic.next_lease, LeaseId::new(8));
+        assert_eq!(diagnostic.next_action, HttpRetryNextAction::DifferentSource);
+
+        stats.begin();
+        assert!(stats.snapshot().retry_diagnostic.is_none());
     }
 
     #[test]
@@ -5040,6 +5450,7 @@ mod tests {
                     attempts: 1,
                     attempts_by_mirror: BTreeMap::from([(source, 1)]),
                     retry_at_by_mirror: BTreeMap::from([(source, 999)]),
+                    diagnostics_by_mirror: BTreeMap::new(),
                 },
             ),
             (
@@ -5048,6 +5459,7 @@ mod tests {
                     attempts: 1,
                     attempts_by_mirror: BTreeMap::from([(source, 1)]),
                     retry_at_by_mirror: BTreeMap::from([(source, 100)]),
+                    diagnostics_by_mirror: BTreeMap::new(),
                 },
             ),
         ]);
@@ -6182,7 +6594,29 @@ mod tests {
         ));
         first_server.await.expect("first server");
         second_server.await.expect("second probe");
-        assert_eq!(stats.get(spec.task()).unwrap().snapshot().retry_count, 0);
+        let snapshot = stats.get(spec.task()).unwrap().snapshot();
+        assert_eq!(snapshot.retry_count, 0);
+        let diagnostic = snapshot
+            .retry_diagnostic
+            .expect("terminal retry diagnostic");
+        assert!(matches!(
+            diagnostic.cause,
+            HttpRetryDiagnosticCause::Live(HttpRetryCause::Transport(
+                HttpRetryTransportFailure::UnexpectedEof | HttpRetryTransportFailure::Hang
+            ))
+        ));
+        assert_eq!(diagnostic.total_attempt, 1);
+        assert_eq!(diagnostic.total_remaining, 0);
+        assert_eq!(
+            diagnostic.stop_reason,
+            Some(HttpRetryStopReason::TotalAttemptCap)
+        );
+        assert_eq!(diagnostic.next_action, HttpRetryNextAction::TerminalFailure);
+        assert_eq!(diagnostic.delay, None);
+        assert_eq!(
+            diagnostic.lease_disposition,
+            HttpRetryLeaseDisposition::Aborted
+        );
     }
 
     #[tokio::test]
@@ -6221,6 +6655,36 @@ mod tests {
         })
         .await
         .expect("retry wait was durably selected");
+        let live_diagnostic = stats
+            .get(spec.task())
+            .expect("live retry stats")
+            .snapshot()
+            .retry_diagnostic
+            .expect("live retry diagnostic");
+        assert_eq!(
+            live_diagnostic.cause,
+            HttpRetryDiagnosticCause::Live(HttpRetryCause::HttpStatus(503))
+        );
+        assert_eq!(live_diagnostic.source, UriId::new(0));
+        assert_eq!(live_diagnostic.piece, PieceId::new(0));
+        assert_eq!(live_diagnostic.total_attempt, 1);
+        assert_eq!(live_diagnostic.total_remaining, 4);
+        assert_eq!(live_diagnostic.source_attempt, 1);
+        assert_eq!(live_diagnostic.source_remaining, 2);
+        assert_eq!(live_diagnostic.delay_ms, 5_000);
+        assert_eq!(
+            live_diagnostic.delay,
+            Some(HttpRetryDelayDiagnostic::Live(
+                HttpRetryDelaySource::RetryAfter
+            ))
+        );
+        assert_eq!(live_diagnostic.next_action, HttpRetryNextAction::RetryRange);
+        assert_eq!(
+            live_diagnostic.lease_disposition,
+            HttpRetryLeaseDisposition::Unopened
+        );
+        assert!(live_diagnostic.prior_lease.is_some());
+        assert!(live_diagnostic.next_lease.is_none());
         first_cancellation.cancel();
         assert!(matches!(
             first.await.expect("first worker join"),
@@ -6292,6 +6756,26 @@ mod tests {
             1,
             "recovered retry accounting remains visible"
         );
+        let recovered_diagnostic = stats
+            .get(spec.task())
+            .expect("restart stats")
+            .snapshot()
+            .retry_diagnostic
+            .expect("recovered retry diagnostic");
+        assert_eq!(
+            recovered_diagnostic.cause,
+            HttpRetryDiagnosticCause::Recovered(ErrorKind::Network)
+        );
+        assert_eq!(
+            recovered_diagnostic.delay,
+            Some(HttpRetryDelayDiagnostic::Recovered(RetryReason::RetryAfter))
+        );
+        assert_eq!(
+            recovered_diagnostic.lease_disposition,
+            HttpRetryLeaseDisposition::UnknownRecovered
+        );
+        assert!(recovered_diagnostic.prior_lease.is_none());
+        assert!(recovered_diagnostic.next_lease.is_none());
         let range_attempts = requests
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

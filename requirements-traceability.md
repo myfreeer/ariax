@@ -9,7 +9,11 @@ redirect/proxy/auth/cookie policy, supervised range/retry workers, and five real
 scheduler RPC methods. It also includes process-owned pooling, bounded ingress,
 hierarchical rate limiting and stall diagnostics, persisted retry waits, and
 strong-ETag-bound single-source/strict-fallback recovery with pre-network
-durable-piece digest verification. Persisted user SHA-256 now also provides
+durable-piece digest verification. A bounded `tellStatus.retryDiagnostic`
+snapshot now exposes exact live trigger/status, remaining total/per-source
+attempt credit, wait selection, numeric source/piece/lease correlation,
+disposition, and next action without URI text; restart labels its coarser
+journaled error-class/reason reconstruction. Persisted user SHA-256 now also provides
 strict concurrent-mirror identity, digest-bound restart, bounded descriptor-
 based final verification, and terminal digest evidence. Persisted
 stale-validator `fail`, fresh `revalidate`, and descriptor-authorized bounded
@@ -419,6 +423,9 @@ Acceptance:
 - local disk/CPU/buffer/rate-limit backpressure never triggers remote-slow
   demotion,
 - retry waits do not hold transfer buffers.
+- retry waits update one bounded, non-secret, lease-correlated task diagnostic
+  without requiring another network packet; recovered diagnostics never invent
+  an unpersisted HTTP status or transport trigger.
 - discarded traffic is separately observable and bounded; HTTP now atomically
   charges finite process/final-origin-host/task/attempt scopes with no refund,
   stops polling/retrying on exhaustion, and exposes consumed/remaining credit;

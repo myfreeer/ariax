@@ -20,7 +20,9 @@ bounded stale-validator `fail`, fresh `revalidate`, and descriptor-authorized
 invalidation; and `addUri`, `tellStatus`, `pause`, `remove`, and
 `getGlobalStat` over loopback HTTP and Content-Length stdio. The bundled Mozilla
 Public Suffix List is version/hash/license pinned and verified by generated
-contracts.
+contracts. `tellStatus` now also carries one bounded, lease-correlated retry
+decision with exact live cause/status/caps/wait/action fields and a deliberately
+coarser recovered journal view.
 
 The checkpoint intentionally does not complete all of Phase 3 or the project
 definition of done. Same-origin endgame duplicate ranges with a strong ETag and
@@ -319,6 +321,10 @@ Exit criteria:
   bounded singleflight/waiters, cancellation, two-racer Happy Eyeballs timing,
   reconnect revalidation, and special-use-address filtering.
 - Stuck socket speed drops to zero without waiting for another packet.
+- Retry waits expose a bounded non-secret diagnostic without waiting for
+  another packet: exact live trigger/status, attempt credit, wait policy,
+  source/piece/lease correlation, disposition, and next action; restart marks
+  journal-reconstructed error-class/reason evidence as recovered.
 - The minimal RPC methods drive the real scheduler and expose only aria2's closed
   status/GID/error shapes.
 - Minimal process shutdown executes stop-admission, bounded HTTP worker drain,

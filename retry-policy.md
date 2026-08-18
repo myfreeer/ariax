@@ -10,8 +10,13 @@ lowest-speed failures remain distinct at policy selection. Nonzero span waits
 are flushed as paired piece/source retry decisions before scheduling; restart
 reconstructs bounded monotonic deadlines, generation elapsed budget, attempt
 caps, and visible retry counts while ignoring unrelated task/URI waits and
-fail-closing partial state. Stale-validator restart or revalidation and full
-retry status diagnostics remain pending.
+fail-closing partial state. Stale-validator fail/restart/revalidation is
+executable. The latest bounded task-local retry decision is now visible through
+RPC with its exact live trigger/status, attempt and remaining caps, delay
+selection, source/piece/lease identities, prior lease disposition, and selected
+next action. Restart reconstructs the durable subset from the journaled error
+class, delay reason, attempts, and remaining wait; it labels that view as
+recovered instead of inventing the original protocol-specific trigger.
 
 Retry behavior must be configurable, bounded, observable, and safe. A retry
 policy may decide whether to retry a failed transfer span, but it must not
@@ -427,11 +432,12 @@ waste even at the configured bandwidth cap.
 
 ## Observability
 
-Expose per task and per lease:
+Expose the latest bounded decision per task, correlated to its exact piece,
+source ID, failed lease, and eventual replacement lease:
 
 - retry trigger,
 - HTTP status code where applicable,
-- mirror/URI,
+- numeric mirror/URI ID (never credential-bearing URI text),
 - current attempt and remaining attempts,
 - retry wait deadline,
 - whether `Retry-After` was used, ignored, clamped, or invalid,
@@ -444,4 +450,9 @@ Expose per task and per lease:
   unsupported fixed-layout representation from transient proxy/network errors.
 
 RPC and CLI status must update during retry waits without waiting for another
-network packet.
+network packet. The executable `tellStatus.retryDiagnostic` object uses decimal
+strings for numeric values and reports a missing lease identity as zero. A
+recovered failed lease remains unknown, while `nextLease` may become nonzero
+once the resumed scheduler assigns the replacement. Exact live causes remain
+distinct from the coarser durable error class that the current journal retry
+record can reconstruct after restart.

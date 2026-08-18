@@ -1119,8 +1119,38 @@ fn status_value(
             "rateDebt".to_owned(),
             Value::String(stats.rate_debt_bytes.to_string()),
         );
+        if let Some(diagnostic) = stats.retry_diagnostic {
+            object.insert(
+                "retryDiagnostic".to_owned(),
+                retry_diagnostic_value(diagnostic),
+            );
+        }
     }
     value
+}
+
+fn retry_diagnostic_value(diagnostic: crate::HttpRetryDiagnosticSnapshot) -> Value {
+    json!({
+        "trigger": diagnostic.cause.code(),
+        "httpStatus": diagnostic.cause.http_status().unwrap_or(0).to_string(),
+        "recoveredErrorClass": diagnostic.cause.recovered_error_class().map_or("", ariax_core::ErrorKind::code),
+        "uriId": diagnostic.source.get().to_string(),
+        "pieceId": diagnostic.piece.get().to_string(),
+        "attempt": diagnostic.total_attempt.to_string(),
+        "remainingAttempts": diagnostic.total_remaining.to_string(),
+        "mirrorAttempt": diagnostic.source_attempt.to_string(),
+        "mirrorRemainingAttempts": diagnostic.source_remaining.to_string(),
+        "scheduledAt": diagnostic.scheduled_at_unix_ms.to_string(),
+        "retryDelay": diagnostic.delay_ms.to_string(),
+        "retryAt": diagnostic.retry_at_unix_ms.to_string(),
+        "retryAfterStatus": diagnostic.delay.map_or("", crate::HttpRetryDelayDiagnostic::code),
+        "stopReason": diagnostic.stop_reason.map_or("", crate::HttpRetryStopReason::code),
+        "nextAction": diagnostic.next_action.code(),
+        "leaseDisposition": diagnostic.lease_disposition.code(),
+        "previousLease": diagnostic.prior_lease.map_or(0, ariax_core::LeaseId::get).to_string(),
+        "nextLease": diagnostic.next_lease.map_or(0, ariax_core::LeaseId::get).to_string(),
+        "recovered": matches!(diagnostic.cause, crate::HttpRetryDiagnosticCause::Recovered(_)),
+    })
 }
 
 fn parse_add_options(
@@ -1561,7 +1591,7 @@ mod tests {
         HttpResolver, HttpResolverConfig, HttpTransportBudgets, ProcessBootstrapConfig,
         RuntimeEffectConfig, StartupRecoveryConfig, StorageEngineConfig, bootstrap_process,
     };
-    use ariax_core::SchedulerConfig;
+    use ariax_core::{ErrorKind, LeaseId, PieceId, SchedulerConfig, UriId};
     use ariax_runtime::ShutdownStep;
     use ariax_storage::{
         JournalStateLimits, ReplayLimits, SessionOwnerConfig, SessionStore, SessionStoreConfig,
@@ -1663,6 +1693,84 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn retry_diagnostic_rpc_shape_is_bounded_and_credential_free() {
+        let diagnostic = crate::HttpRetryDiagnosticSnapshot {
+            cause: crate::HttpRetryDiagnosticCause::Live(crate::HttpRetryCause::HttpStatus(503)),
+            source: UriId::new(3),
+            piece: PieceId::new(9),
+            prior_lease: LeaseId::new(11),
+            next_lease: LeaseId::new(12),
+            total_attempt: 2,
+            total_remaining: 3,
+            source_attempt: 1,
+            source_remaining: 2,
+            scheduled_at_unix_ms: 1_000,
+            delay_ms: 5_000,
+            retry_at_unix_ms: 6_000,
+            delay: Some(crate::HttpRetryDelayDiagnostic::Live(
+                crate::HttpRetryDelaySource::RetryAfterClamped,
+            )),
+            stop_reason: None,
+            next_action: crate::HttpRetryNextAction::DifferentSource,
+            lease_disposition: crate::HttpRetryLeaseDisposition::Aborted,
+        };
+
+        let value = retry_diagnostic_value(diagnostic);
+        assert_eq!(value["trigger"], "http-status");
+        assert_eq!(value["httpStatus"], "503");
+        assert_eq!(value["recoveredErrorClass"], "");
+        assert_eq!(value["uriId"], "3");
+        assert_eq!(value["pieceId"], "9");
+        assert_eq!(value["attempt"], "2");
+        assert_eq!(value["remainingAttempts"], "3");
+        assert_eq!(value["mirrorAttempt"], "1");
+        assert_eq!(value["mirrorRemainingAttempts"], "2");
+        assert_eq!(value["retryAfterStatus"], "retry-after-clamped");
+        assert_eq!(value["nextAction"], "different-source");
+        assert_eq!(value["leaseDisposition"], "aborted");
+        assert_eq!(value["previousLease"], "11");
+        assert_eq!(value["nextLease"], "12");
+        assert_eq!(value["recovered"], false);
+        assert!(!value.to_string().contains("secret"));
+
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let gid = add_paused(&mut plane);
+        let root = plane.engine.snapshot_reader().load();
+        let applied = root.task(gid).expect("paused task snapshot");
+        let status = applied.snapshot.wire_status().expect("public task status");
+        let rendered = status_value(
+            &applied.snapshot,
+            status,
+            HttpTransferStatsSnapshot {
+                retry_diagnostic: Some(diagnostic),
+                ..HttpTransferStatsSnapshot::default()
+            },
+        );
+        assert_eq!(rendered["retryDiagnostic"], value);
+        drop(root);
+        assert!(plane.shutdown().expect("shutdown control plane").is_clean());
+
+        let recovered = retry_diagnostic_value(crate::HttpRetryDiagnosticSnapshot {
+            cause: crate::HttpRetryDiagnosticCause::Recovered(ErrorKind::Network),
+            prior_lease: None,
+            next_lease: None,
+            delay: Some(crate::HttpRetryDelayDiagnostic::Recovered(
+                ariax_storage::RetryReason::Backoff,
+            )),
+            next_action: crate::HttpRetryNextAction::RetryRange,
+            lease_disposition: crate::HttpRetryLeaseDisposition::UnknownRecovered,
+            ..diagnostic
+        });
+        assert_eq!(recovered["trigger"], "recovered");
+        assert_eq!(recovered["recoveredErrorClass"], "Network");
+        assert_eq!(recovered["retryAfterStatus"], "backoff");
+        assert_eq!(recovered["previousLease"], "0");
+        assert_eq!(recovered["nextLease"], "0");
+        assert_eq!(recovered["recovered"], true);
     }
 
     #[cfg(unix)]

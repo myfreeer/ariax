@@ -544,6 +544,20 @@ pub enum HttpRetryTransportFailure {
 }
 
 impl HttpRetryTransportFailure {
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Reset => "reset",
+            Self::UnexpectedEof => "eof",
+            Self::Timeout => "timeout",
+            Self::Hang => "hang",
+            Self::LowestSpeed => "lowest-speed",
+            Self::StaleConnection => "stale-connection",
+            Self::DnsTransient => "dns-transient",
+            Self::ProxyConnect => "proxy-connect",
+        }
+    }
+
     const fn trigger(self) -> HttpRetryTrigger {
         match self {
             Self::Reset => HttpRetryTrigger::Reset,
@@ -573,6 +587,29 @@ pub enum HttpRetryCause {
 
 impl HttpRetryCause {
     #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Transport(failure) => failure.code(),
+            Self::HttpStatus(_) => "http-status",
+            Self::Authentication => "authentication",
+            Self::InvalidRange => "invalid-range",
+            Self::StaleValidator => "stale-validator",
+            Self::Checksum => "checksum",
+            Self::Storage => "storage",
+            Self::Cancelled => "cancelled",
+            Self::Policy => "policy",
+        }
+    }
+
+    #[must_use]
+    pub const fn http_status(self) -> Option<u16> {
+        match self {
+            Self::HttpStatus(status) => Some(status),
+            _ => None,
+        }
+    }
+
+    #[must_use]
     pub const fn retriable(self) -> bool {
         match self {
             Self::Transport(_) => true,
@@ -601,12 +638,39 @@ pub enum HttpRetryDelaySource {
     BackoffAfterInvalidRetryAfter,
 }
 
+impl HttpRetryDelaySource {
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::FixedBackoff => "fixed-backoff",
+            Self::ExponentialBackoff => "exponential-backoff",
+            Self::EqualJitterBackoff => "equal-jitter-backoff",
+            Self::RetryAfter => "retry-after",
+            Self::RetryAfterClamped => "retry-after-clamped",
+            Self::RetryAfterIgnored => "retry-after-ignored",
+            Self::BackoffAfterInvalidRetryAfter => "retry-after-invalid",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HttpRetryStopReason {
     NonRetriable,
     TotalAttemptCap,
     MirrorAttemptCap,
     ElapsedCap,
+}
+
+impl HttpRetryStopReason {
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::NonRetriable => "non-retriable",
+            Self::TotalAttemptCap => "total-attempt-cap",
+            Self::MirrorAttemptCap => "mirror-attempt-cap",
+            Self::ElapsedCap => "elapsed-cap",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

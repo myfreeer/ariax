@@ -61,6 +61,14 @@ below. Notifications, batches, WebSocket/NDJSON, method tokens/HTTP Basic RPC
 authentication, list methods, runtime mutation, and non-loopback serving are
 explicitly deferred to Phase 4.
 
+`tellStatus` retains aria2's closed status vocabulary and adds bounded HTTP
+extension fields. Its optional `retryDiagnostic` object carries decimal source,
+piece, attempt, deadline, and lease identities plus stable trigger, delay,
+disposition, and next-action codes. It never emits URI text. Live decisions are
+exact; a restart exposes only the journaled error class/reason/caps/wait and
+sets `recovered=true`. The failed lease remains unknown after recovery; the
+replacement lease is attached later if the resumed scheduler assigns one.
+
 Reasons:
 
 - existing dashboards, browser extensions, scripts, mobile clients, and

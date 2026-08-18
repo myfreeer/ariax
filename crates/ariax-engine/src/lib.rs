@@ -92,9 +92,11 @@ pub use http_multi::{
     DEFAULT_HTTP_DIGEST_WORKERS, DEFAULT_HTTP_INGRESS_BUDGET_BYTES,
     DEFAULT_HTTP_INGRESS_FRAME_BYTES, DEFAULT_HTTP_RANGE_EVENT_CAPACITY, HttpCompletedEvidence,
     HttpIngressBudgets, HttpIngressPermit, HttpMultiRangeError, HttpMultiRangeWorker,
-    HttpMultiRangeWorkerConfig, HttpStatsCatalogError, HttpTransferStats,
-    HttpTransferStatsSnapshot, MAX_HTTP_DIGEST_WORKERS, MAX_HTTP_RANGE_EVENT_CAPACITY,
-    SharedHttpTransferStats, derive_http_journal_id, http_journal_directory,
+    HttpMultiRangeWorkerConfig, HttpRetryDelayDiagnostic, HttpRetryDiagnosticCause,
+    HttpRetryDiagnosticSnapshot, HttpRetryLeaseDisposition, HttpRetryNextAction,
+    HttpStatsCatalogError, HttpTransferStats, HttpTransferStatsSnapshot, MAX_HTTP_DIGEST_WORKERS,
+    MAX_HTTP_RANGE_EVENT_CAPACITY, SharedHttpTransferStats, derive_http_journal_id,
+    http_journal_directory,
 };
 pub use http_proxy::{
     HttpProxyEndpoint, HttpProxyKind, HttpProxyNameResolution, HttpProxyPolicy,

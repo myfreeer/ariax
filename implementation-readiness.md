@@ -30,7 +30,11 @@ profile selection in RPC startup, and the local C10k/active-range harness are
 covered. HTTP discarded payload is also bounded by a process-owned atomic
 process/host/task/attempt guard, including probe, retry/cancel, checksum, and
 endgame cleanup paths, with separate RPC diagnostics. The broader evictable
-file-handle LRU and non-HTTP consumers remain pending. Hot-backup publication
+file-handle LRU and non-HTTP consumers remain pending. The latest retry
+decision is now a bounded `tellStatus` object with exact live cause/status,
+attempt credit, wait policy, numeric source/piece/lease correlation, prior
+lease disposition, and next action. Restart reconstructs only journaled
+error-class/reason/cap/wait evidence and labels it recovered. Hot-backup publication
 residue now has descriptor-bound same-file/link-count recovery, no-clobber race
 preservation, crash-point, and temporary-unlink fault coverage. A standalone,
 workspace-excluded cargo-fuzz package now covers HTTP response/request headers,

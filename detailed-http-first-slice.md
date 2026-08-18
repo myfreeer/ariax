@@ -211,7 +211,14 @@ The configured output root is the only accepted `dir`; `out` must pass
 task row, source row, option snapshot, journal, or scheduler-visible task is
 published. `tellStatus` reports durable and discarded lengths, discard-budget
 consumption and remaining credit, active connections, retry count, and
-packet-independent current/durable speed. Batch,
+packet-independent current/durable speed. When a retry decision exists, the
+single bounded `retryDiagnostic` object also reports exact live trigger/HTTP
+status, numeric source/piece/lease identities, total and per-source attempt
+credit, wait deadline and `Retry-After` disposition, prior lease outcome, and
+next action. It never returns URI text. Restart labels reconstructed journal
+error-class/reason evidence as recovered rather than claiming the original
+transport trigger survived; its failed lease stays unknown, while a replacement
+lease is attached if one is assigned after resumption. Batch,
 notifications, authentication, token handling, list methods, runtime option
 mutation, and non-loopback listeners remain Phase 4 work.
 
