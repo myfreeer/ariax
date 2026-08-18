@@ -315,9 +315,13 @@ backend lookup is cancelled and its capacity is released. Excess answers and
 mixed allowed/denied sets fail closed rather than being truncated into an
 authorization decision. Up to 32 admitted
 addresses advance through a two-racer Happy Eyeballs connector with a 250 ms
-default fallback delay. Every reconnect and redirect/proxy hop repeats
-admission; the public loopback/stdio RPC surface now uses this path for ordinary
-HTTP(S) URIs. Custom upstream servers, DoH, and DoT remain deferred.
+default fallback delay; deterministic virtual-time coverage pins the second
+racer to that exact deadline. Every reconnect and redirect/proxy hop repeats
+admission. The admitted answer set is part of direct-transport identity, so a
+changed set opens a new connection rather than reusing an idle connection
+created under an older decision. The public loopback/stdio RPC surface now uses
+this path for ordinary HTTP(S) URIs. Custom upstream servers, DoH, and DoT
+remain deferred.
 
 Baseline:
 
@@ -421,8 +425,8 @@ this additional policy:
 - DNS answer cardinality, positive/negative entry counts, and negative TTL use
   the exact profile/hard caps in `performance-profiles.md`; after destination
   policy filtering, at most 32 addresses are selected in resolver order while
-  preserving A/AAAA alternation, and excess addresses are ignored with a
-  diagnostic before Happy Eyeballs admission.
+  preserving A/AAAA alternation, and an over-cardinality answer set is rejected
+  before Happy Eyeballs admission rather than partially authorized.
 - The cookie wrapper enforces the exact total/per-domain entry and byte caps in
   `performance-profiles.md` independently of the selected crate. Expired entries
   are removed first, then least-recently-used non-pinned entries; a single
@@ -431,7 +435,9 @@ this additional policy:
   date/hash; updates are reviewed supply-chain changes with domain-boundary
   regression tests.
 - Happy Eyeballs cancels and closes the losing A/AAAA connection racer so it does
-  not leak against the file-descriptor budget.
+  not leak against the file-descriptor budget. Virtual-time tests prove that
+  the second racer is neither started early nor delayed past the configured
+  fallback boundary.
 
 ## Proxy Interaction
 

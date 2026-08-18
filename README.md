@@ -7,9 +7,10 @@ executable checkpoints. The Phase-3B checkpoint candidate adds the first public
 multi-mirror HTTP(S) vertical slice: atomic task/source/option admission,
 source-aware recovery, verified TLS 1.2/1.3, bounded HTTP/1.1 reuse,
 policy-owned Hickory/system DNS caching and singleflight, generated SSRF
-classification, two-racer Happy Eyeballs, redirects, HTTP CONNECT/forward and
-SOCKS5 proxies, Basic/private-netrc credentials, and a bounded cookie jar using
-a hash-pinned Mozilla Public Suffix List. Scheduler-owned workers coordinate
+classification, deterministically timed two-racer Happy Eyeballs, changed-answer
+reconnect revalidation, redirects, HTTP CONNECT/forward and SOCKS5 proxies,
+Basic/private-netrc credentials, and a bounded cookie jar using a hash-pinned
+Mozilla Public Suffix List. Scheduler-owned workers coordinate
 non-overlapping range leases across mirrors, enforce strict response placement,
 retry within total/per-source budgets, preserve durable pieces across restart,
 and publish packet-independent speed, connection, retry, discard, and durable

@@ -17,7 +17,10 @@ scheduler: task/source/options persist atomically, recovery rebuilds the source
 catalog, the policy client owns DNS/SSRF/Happy-Eyeballs/redirect/proxy/auth/cookie
 decisions. DNS cache-miss leaders and followers share the configured total
 waiter cap, and dropping all receivers cancels the backend lookup and releases
-its capacity. Supervised multi-mirror range workers commit only validated
+its capacity. Deterministic virtual-time coverage pins the second Happy
+Eyeballs racer to the configured fallback delay, and a changed zero-TTL answer
+set is part of direct-transport identity so it cannot reuse the old idle
+connection. Supervised multi-mirror range workers commit only validated
 non-overlapping leases. Durable-piece restart and terminal evidence are
 persisted before public completion. Five bounded JSON-RPC methods run over
 loopback HTTP/1.1 and Content-Length stdio and expose packet-independent live

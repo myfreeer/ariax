@@ -323,9 +323,11 @@ Exit criteria:
   remaining release-platform matrix still gates completion.
 - DNS tests now cover positive/negative TTL clamps, TTL=0, answer-count limits,
   bounded singleflight plus per-name/total leader-and-follower admission,
-  all-waiter cancellation cleanup, and special-use-address filtering. Precise
-  two-racer Happy Eyeballs timing and reconnect revalidation remain to close
-  this exit gate.
+  all-waiter cancellation cleanup, and special-use-address filtering. Virtual-
+  time coverage starts the second Happy Eyeballs racer at the exact configured
+  fallback delay, and a zero-TTL answer-set change opens a newly admitted direct
+  connection rather than reusing the prior idle connection. This exit gate is
+  executable.
 - Stuck socket speed drops to zero without waiting for another packet.
 - Retry waits expose a bounded non-secret diagnostic without waiting for
   another packet: exact live trigger/status, attempt credit, wait policy,

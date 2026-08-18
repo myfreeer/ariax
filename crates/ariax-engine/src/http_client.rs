@@ -624,7 +624,8 @@ fn single_location(headers: &HeaderMap) -> Result<Option<String>, HttpPolicyClie
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{HttpResolverBackend, HttpResolverConfig};
+    use crate::{HttpResolverBackend, HttpResolverConfig, HttpTransportBudgets};
+    use std::net::{IpAddr, Ipv4Addr};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::TcpListener;
 
@@ -748,6 +749,104 @@ mod tests {
             response.finish().await;
         }
 
+        server.await.expect("server");
+    }
+
+    #[tokio::test]
+    async fn changed_dns_answer_set_opens_a_revalidated_direct_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let server = tokio::spawn(async move {
+            let (mut first, _) = listener.accept().await.expect("first connection");
+            let first_head = read_head(&mut first).await;
+            assert!(first_head.starts_with("GET /file HTTP/1.1\r\n"));
+            first
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                .await
+                .expect("first response");
+
+            let accept = listener.accept();
+            tokio::pin!(accept);
+            let reused = read_head(&mut first);
+            tokio::pin!(reused);
+            tokio::select! {
+                accepted = &mut accept => {
+                    let (mut second, _) = accepted.expect("second connection");
+                    let second_head = read_head(&mut second).await;
+                    assert!(second_head.starts_with("GET /file HTTP/1.1\r\n"));
+                    second
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                        .await
+                        .expect("second response");
+                }
+                _ = &mut reused => panic!("changed DNS answer set reused the old connection"),
+            }
+        });
+        let resolver = HttpResolver::scripted_for_test(
+            HttpResolverConfig::default(),
+            vec![
+                Ok((vec![IpAddr::V4(Ipv4Addr::LOCALHOST)], Duration::ZERO)),
+                Ok((
+                    vec![
+                        IpAddr::V4(Ipv4Addr::LOCALHOST),
+                        IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
+                    ],
+                    Duration::ZERO,
+                )),
+            ],
+        )
+        .expect("scripted resolver");
+        let budgets = HttpTransportBudgets::new(
+            2,
+            crate::HTTP_CONNECTION_RESERVATION_BYTES
+                .checked_mul(2)
+                .expect("two-connection budget size"),
+        )
+        .expect("two-connection budgets");
+        let client = HttpPolicyClient::new(
+            resolver,
+            HttpPolicyClientConfig {
+                destination: HttpDestinationPolicy {
+                    allow_loopback: true,
+                    ..HttpDestinationPolicy::default()
+                },
+                direct: HttpDirectTransportConfig {
+                    max_connections_per_origin: 2,
+                    max_idle_connections_per_origin: 1,
+                    budgets,
+                    ..HttpDirectTransportConfig::default()
+                },
+                ..HttpPolicyClientConfig::default()
+            },
+        );
+        let uri = format!("http://revalidate.example:{}/file", address.port());
+
+        for _ in 0..2 {
+            let mut response = client
+                .execute(HttpClientRequest::get(uri.clone()))
+                .await
+                .expect("response");
+            assert_eq!(
+                response
+                    .next_data(Duration::from_secs(1))
+                    .await
+                    .expect("body frame"),
+                Some(Bytes::from_static(b"ok"))
+            );
+            assert_eq!(
+                response
+                    .next_data(Duration::from_secs(1))
+                    .await
+                    .expect("body end"),
+                None
+            );
+            response.finish().await;
+        }
+
+        let cache = client.direct_transports.lock().await;
+        assert_eq!(cache.entries.len(), 2);
+        assert_ne!(cache.entries[0].0.addresses, cache.entries[1].0.addresses);
+        drop(cache);
         server.await.expect("server");
     }
 

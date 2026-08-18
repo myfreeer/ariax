@@ -2,8 +2,10 @@
 
 use std::error::Error;
 use std::fmt;
+use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::time::{Instant, sleep_until, timeout_at};
@@ -76,6 +78,20 @@ pub async fn connect_http_happy_eyeballs(
     addresses: &[SocketAddr],
     config: HttpHappyEyeballsConfig,
 ) -> Result<HttpConnectedPeer, HttpHappyEyeballsError> {
+    let dial = |address| TcpStream::connect(address);
+    let (stream, peer) = connect_http_happy_eyeballs_with(addresses, config, &dial).await?;
+    Ok(HttpConnectedPeer { stream, peer })
+}
+
+async fn connect_http_happy_eyeballs_with<T, D, F>(
+    addresses: &[SocketAddr],
+    config: HttpHappyEyeballsConfig,
+    dial: &D,
+) -> Result<(T, SocketAddr), HttpHappyEyeballsError>
+where
+    D: Fn(SocketAddr) -> F,
+    F: Future<Output = io::Result<T>>,
+{
     if config.connect_timeout.is_zero() || config.fallback_delay.is_zero() {
         return Err(HttpHappyEyeballsError::InvalidConfig);
     }
@@ -88,7 +104,7 @@ pub async fn connect_http_happy_eyeballs(
     let deadline = Instant::now() + config.connect_timeout;
     let mut last_error = None;
     for pair in addresses.chunks(2) {
-        match connect_pair(pair, deadline, config.fallback_delay).await {
+        match connect_pair(pair, deadline, config.fallback_delay, dial).await {
             Ok(connected) => return Ok(connected),
             Err(PairError::Timeout) => return Err(HttpHappyEyeballsError::Timeout),
             Err(PairError::Connect(error)) => last_error = Some(error),
@@ -109,73 +125,82 @@ enum PairError {
     Connect(io::Error),
 }
 
-async fn connect_pair(
+async fn connect_pair<T, D, F>(
     pair: &[SocketAddr],
     deadline: Instant,
     fallback_delay: Duration,
-) -> Result<HttpConnectedPeer, PairError> {
+    dial: &D,
+) -> Result<(T, SocketAddr), PairError>
+where
+    D: Fn(SocketAddr) -> F,
+    F: Future<Output = io::Result<T>>,
+{
     let first_address = pair[0];
     if pair.len() == 1 {
-        return timeout_at(deadline, TcpStream::connect(first_address))
+        return timeout_at(deadline, dial(first_address))
             .await
             .map_err(|_| PairError::Timeout)?
-            .map(|stream| HttpConnectedPeer {
-                stream,
-                peer: first_address,
-            })
+            .map(|stream| (stream, first_address))
             .map_err(PairError::Connect);
     }
     let second_address = pair[1];
-    let first = TcpStream::connect(first_address);
+    let first = dial(first_address);
     tokio::pin!(first);
     let delay = sleep_until((Instant::now() + fallback_delay).min(deadline));
     tokio::pin!(delay);
     tokio::select! {
         result = &mut first => match result {
-            Ok(stream) => Ok(HttpConnectedPeer { stream, peer: first_address }),
-            Err(first_error) => connect_after_first_failure(second_address, deadline, first_error).await,
+            Ok(stream) => Ok((stream, first_address)),
+            Err(first_error) => connect_after_first_failure(second_address, deadline, first_error, dial).await,
         },
-        () = &mut delay => race_started_pair(first, first_address, second_address, deadline).await,
+        () = &mut delay => race_started_pair(first, first_address, second_address, deadline, dial).await,
     }
 }
 
-async fn connect_after_first_failure(
+async fn connect_after_first_failure<T, D, F>(
     second_address: SocketAddr,
     deadline: Instant,
     first_error: io::Error,
-) -> Result<HttpConnectedPeer, PairError> {
-    match timeout_at(deadline, TcpStream::connect(second_address)).await {
+    dial: &D,
+) -> Result<(T, SocketAddr), PairError>
+where
+    D: Fn(SocketAddr) -> F,
+    F: Future<Output = io::Result<T>>,
+{
+    match timeout_at(deadline, dial(second_address)).await {
         Err(_) => Err(PairError::Timeout),
-        Ok(Ok(stream)) => Ok(HttpConnectedPeer {
-            stream,
-            peer: second_address,
-        }),
+        Ok(Ok(stream)) => Ok((stream, second_address)),
         Ok(Err(_second_error)) => Err(PairError::Connect(first_error)),
     }
 }
 
-async fn race_started_pair(
-    mut first: std::pin::Pin<&mut impl std::future::Future<Output = io::Result<TcpStream>>>,
+async fn race_started_pair<T, D, F>(
+    mut first: Pin<&mut F>,
     first_address: SocketAddr,
     second_address: SocketAddr,
     deadline: Instant,
-) -> Result<HttpConnectedPeer, PairError> {
-    let second = TcpStream::connect(second_address);
+    dial: &D,
+) -> Result<(T, SocketAddr), PairError>
+where
+    D: Fn(SocketAddr) -> F,
+    F: Future<Output = io::Result<T>>,
+{
+    let second = dial(second_address);
     tokio::pin!(second);
     let first_result = tokio::select! {
         result = timeout_at(deadline, &mut first) => match result {
             Err(_) => return Err(PairError::Timeout),
-            Ok(Ok(stream)) => return Ok(HttpConnectedPeer { stream, peer: first_address }),
+            Ok(Ok(stream)) => return Ok((stream, first_address)),
             Ok(Err(error)) => error,
         },
         result = timeout_at(deadline, &mut second) => match result {
             Err(_) => return Err(PairError::Timeout),
-            Ok(Ok(stream)) => return Ok(HttpConnectedPeer { stream, peer: second_address }),
+            Ok(Ok(stream)) => return Ok((stream, second_address)),
             Ok(Err(_error)) => {
                 return timeout_at(deadline, &mut first)
                     .await
                     .map_err(|_| PairError::Timeout)?
-                    .map(|stream| HttpConnectedPeer { stream, peer: first_address })
+                    .map(|stream| (stream, first_address))
                     .map_err(PairError::Connect);
             }
         },
@@ -183,17 +208,76 @@ async fn race_started_pair(
     timeout_at(deadline, &mut second)
         .await
         .map_err(|_| PairError::Timeout)?
-        .map(|stream| HttpConnectedPeer {
-            stream,
-            peer: second_address,
-        })
+        .map(|stream| (stream, second_address))
         .map_err(|_| PairError::Connect(first_result))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex as StdMutex};
     use tokio::net::TcpListener;
+
+    #[tokio::test(start_paused = true)]
+    async fn starts_only_the_second_racer_at_the_exact_fallback_delay() {
+        let first_address = "192.0.2.1:80".parse().expect("first address");
+        let second_address = "192.0.2.2:80".parse().expect("second address");
+        let fallback_delay = Duration::from_millis(250);
+        let started_at = Instant::now();
+        let starts = Arc::new(StdMutex::new(Vec::new()));
+        let dial_starts = Arc::clone(&starts);
+        let dial = move |address| {
+            let starts = Arc::clone(&dial_starts);
+            Box::pin(async move {
+                starts
+                    .lock()
+                    .expect("dial starts lock")
+                    .push((address, Instant::now()));
+                if address == first_address {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    Err(io::Error::new(io::ErrorKind::TimedOut, "first stalled"))
+                } else {
+                    Ok(address)
+                }
+            }) as Pin<Box<dyn Future<Output = io::Result<SocketAddr>> + Send>>
+        };
+        let connection = tokio::spawn(async move {
+            connect_http_happy_eyeballs_with(
+                &[first_address, second_address],
+                HttpHappyEyeballsConfig {
+                    connect_timeout: Duration::from_secs(2),
+                    fallback_delay,
+                },
+                &dial,
+            )
+            .await
+        });
+
+        tokio::task::yield_now().await;
+        assert_eq!(
+            starts.lock().expect("dial starts lock").as_slice(),
+            &[(first_address, started_at)]
+        );
+
+        tokio::time::advance(fallback_delay - Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(starts.lock().expect("dial starts lock").len(), 1);
+
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let (connected, peer) = connection
+            .await
+            .expect("connection task")
+            .expect("second racer wins");
+        assert_eq!(connected, second_address);
+        assert_eq!(peer, second_address);
+        assert_eq!(
+            starts.lock().expect("dial starts lock").as_slice(),
+            &[
+                (first_address, started_at),
+                (second_address, started_at + fallback_delay),
+            ]
+        );
+    }
 
     #[tokio::test]
     async fn falls_through_a_refused_peer_to_the_second_racer() {

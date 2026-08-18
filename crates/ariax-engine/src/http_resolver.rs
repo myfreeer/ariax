@@ -167,6 +167,9 @@ struct BackendLookup {
 type BackendFuture<'a> =
     Pin<Box<dyn Future<Output = Result<BackendLookup, HttpResolverError>> + Send + 'a>>;
 
+#[cfg(test)]
+type ScriptedLookupResult = Result<(Vec<IpAddr>, Duration), HttpResolverError>;
+
 trait LookupBackend: Send + Sync {
     fn lookup<'a>(&'a self, host: &'a str) -> BackendFuture<'a>;
 }
@@ -275,6 +278,20 @@ impl HttpResolver {
             backend,
             state: Arc::new(Mutex::new(ResolverState::default())),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn scripted_for_test(
+        config: HttpResolverConfig,
+        results: Vec<ScriptedLookupResult>,
+    ) -> Result<Self, HttpResolverError> {
+        let config = config.validate()?;
+        Ok(Self::with_backend(
+            config,
+            Arc::new(ScriptedLookup {
+                results: std::sync::Mutex::new(results.into()),
+            }),
+        ))
     }
 
     pub async fn resolve(&self, host: &str) -> Result<HttpResolvedHost, HttpResolverError> {
@@ -389,6 +406,25 @@ impl HttpResolver {
         }
         drop(state);
         let _receivers_notified = sender.send(Some(result));
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct ScriptedLookup {
+    results: std::sync::Mutex<std::collections::VecDeque<ScriptedLookupResult>>,
+}
+
+#[cfg(test)]
+impl LookupBackend for ScriptedLookup {
+    fn lookup<'a>(&'a self, _host: &'a str) -> BackendFuture<'a> {
+        let result = self
+            .results
+            .lock()
+            .expect("scripted resolver lock")
+            .pop_front()
+            .unwrap_or(Err(HttpResolverError::ResolutionFailed));
+        Box::pin(async move { result.map(|(addresses, ttl)| BackendLookup { addresses, ttl }) })
     }
 }
 

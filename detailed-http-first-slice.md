@@ -134,11 +134,14 @@ The public connector gate is closed and executable:
   broadcast, and reserved/future-use space remain denied,
 - approved addresses enter a two-racer Happy Eyeballs connector with a 250 ms
   default fallback delay and at most 32 candidates. Losing racers are cancelled
-  and closed; the winning `SocketAddr` is retained with the connection,
+  and closed; the winning `SocketAddr` is retained with the connection.
+  Deterministic virtual-time coverage proves the second racer starts exactly at
+  the configured fallback boundary,
 - the original URI authority remains the HTTP `Host` and TLS identity. A new
   physical direct connection, redirect hop, or proxy endpoint resolution runs
-  the complete admission decision; approval is never transferred to an
-  unclassified answer.
+  the complete admission decision. The admitted answer set is part of the
+  retained direct-transport identity, so a changed set cannot reuse a prior
+  idle connection; approval is never transferred to an unclassified answer.
 
 The generated classifier is derived from the LF-normalized, SHA-256-pinned IANA
 IPv4 and IPv6 Special-Purpose Address Registry snapshots recorded in

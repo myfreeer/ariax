@@ -30,6 +30,9 @@ tokio-rustls.workspace = true
 tower-service.workspace = true
 url.workspace = true
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
 [target.'cfg(unix)'.dependencies]
 rustix.workspace = true
 
