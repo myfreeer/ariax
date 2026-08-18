@@ -230,7 +230,9 @@ contracts before adding growing/chunked layouts, Metalink, FTP/SFTP, BitTorrent,
 or HTTP/3.
 
 All ten items now have an executable Phase-3B checkpoint candidate. The local
-rate-limit, stall-diagnostic, same-origin endgame, bounded exact-range
+rate-limit arbiter now has deterministic debt, fairness, scoped-reconfiguration,
+cancellation, and 1,000-stream tracking evidence. The local stall-diagnostic,
+same-origin endgame, bounded exact-range
 cross-origin endgame, digest-only durable-range restart revalidation, and
 C10k/active-range harnesses are executable. Deterministic storage-boundary
 ENOSPC, permission-denied, short-write, partial-fsync, torn-tail, and

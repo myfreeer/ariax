@@ -11,8 +11,9 @@ use std::error::Error;
 use std::fmt;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::Notify;
+use tokio::time::Instant;
 
 /// Default maximum payload reservation for one protocol read/poll.
 pub const DEFAULT_RATE_QUANTUM_BYTES: usize = 64 * 1024;
@@ -321,7 +322,11 @@ impl Bucket {
     }
 
     fn debt(&self) -> u64 {
-        u64::try_from(self.tokens.saturating_neg()).unwrap_or(u64::MAX)
+        if self.tokens >= 0 {
+            0
+        } else {
+            u64::try_from(self.tokens.saturating_neg()).unwrap_or(u64::MAX)
+        }
     }
 
     fn delay_until_one(&self) -> Duration {
@@ -853,6 +858,7 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 mod tests {
     use super::*;
     use std::num::NonZeroUsize;
+    use std::sync::{Arc, Mutex as StdMutex};
 
     const PATH: RatePath = RatePath {
         host: 1,
@@ -1006,5 +1012,178 @@ mod tests {
         tokio::task::yield_now().await;
         assert_eq!(arbiter.stats().queued_waiters, 0);
         assert_eq!(arbiter.stats().pending_grants, 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn settled_overshoot_creates_bounded_debt_until_refill() {
+        let arbiter = RateArbiter::new(
+            RateDirection::Download,
+            RateArbiterConfig {
+                global: RateLimit {
+                    bytes_per_second: 100,
+                    burst_bytes: 16,
+                },
+                quantum_bytes: request(64),
+                ..RateArbiterConfig::default()
+            },
+        )
+        .expect("arbiter");
+        let permit = arbiter
+            .try_acquire(PATH, request(16))
+            .expect("admission")
+            .expect("permit");
+        let charge = permit.settle(32);
+        assert_eq!(charge.reserved_bytes, 16);
+        assert_eq!(charge.accepted_bytes, 32);
+        assert_eq!(charge.debt_bytes, 16);
+        assert_eq!(arbiter.stats().global_debt_bytes, 16);
+        assert!(
+            arbiter
+                .try_acquire(PATH, request(1))
+                .expect("debt admission")
+                .is_none()
+        );
+
+        tokio::time::advance(Duration::from_millis(169)).await;
+        assert_eq!(arbiter.stats().global_debt_bytes, 0);
+        assert!(
+            arbiter
+                .try_acquire(PATH, request(1))
+                .expect("pre-repayment admission")
+                .is_none()
+        );
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let permit = arbiter
+            .try_acquire(PATH, request(1))
+            .expect("repaid admission")
+            .expect("one byte is available after debt repayment");
+        let _charge = permit.settle(1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn queued_streams_are_served_in_fifo_order_at_refill_boundaries() {
+        let arbiter = RateArbiter::new(
+            RateDirection::Download,
+            RateArbiterConfig {
+                global: RateLimit {
+                    bytes_per_second: 10,
+                    burst_bytes: 1,
+                },
+                quantum_bytes: request(1),
+                max_waiters: request(8),
+                ..RateArbiterConfig::default()
+            },
+        )
+        .expect("arbiter");
+        let _ = arbiter
+            .try_acquire(PATH, request(1))
+            .expect("initial admission")
+            .expect("initial permit")
+            .settle(1);
+        let order = Arc::new(StdMutex::new(Vec::new()));
+        let mut workers = Vec::new();
+        for stream in 1..=4 {
+            let arbiter = arbiter.clone();
+            let order = Arc::clone(&order);
+            workers.push(tokio::spawn(async move {
+                let path = RatePath {
+                    host: PATH.host,
+                    task: PATH.task,
+                    stream,
+                };
+                let permit = arbiter.acquire(path, request(1)).await.expect("permit");
+                order.lock().expect("order lock").push(stream);
+                let _charge = permit.settle(1);
+            }));
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(arbiter.stats().queued_waiters, 4);
+
+        for expected in 1..=4 {
+            tokio::time::advance(Duration::from_millis(100)).await;
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(
+                order.lock().expect("order lock").as_slice(),
+                &(1..=expected).collect::<Vec<_>>()[..]
+            );
+        }
+        for worker in workers {
+            worker.await.expect("worker");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn explicit_scoped_limits_survive_default_reconfiguration() {
+        let arbiter = RateArbiter::new(
+            RateDirection::Download,
+            RateArbiterConfig {
+                global: RateLimit {
+                    bytes_per_second: 1_000,
+                    burst_bytes: 1_000,
+                },
+                quantum_bytes: request(64),
+                ..RateArbiterConfig::default()
+            },
+        )
+        .expect("arbiter");
+        arbiter
+            .set_scoped_limit(
+                RateScope::Task(PATH.task),
+                RateLimit {
+                    bytes_per_second: 10,
+                    burst_bytes: 10,
+                },
+            )
+            .expect("task limit");
+        let permit = arbiter
+            .try_acquire(PATH, request(64))
+            .expect("admission")
+            .expect("scoped permit");
+        assert_eq!(permit.reserved_bytes(), 10);
+        let _charge = permit.settle(10);
+        arbiter
+            .reconfigure(RateArbiterConfig {
+                global: RateLimit::unlimited(),
+                default_task: RateLimit::unlimited(),
+                ..RateArbiterConfig::default()
+            })
+            .expect("default reconfigure");
+        assert!(
+            arbiter
+                .try_acquire(PATH, request(1))
+                .expect("explicit scope admission")
+                .is_none()
+        );
+        tokio::time::advance(Duration::from_millis(100)).await;
+        let permit = arbiter
+            .try_acquire(PATH, request(1))
+            .expect("refilled explicit scope admission")
+            .expect("explicit scope refilled");
+        let _charge = permit.settle(1);
+    }
+
+    #[test]
+    fn one_thousand_active_streams_stay_within_scope_tracking_bound() {
+        let arbiter = RateArbiter::new(RateDirection::Download, RateArbiterConfig::default())
+            .expect("arbiter");
+        for stream in 0..1_000 {
+            let path = RatePath {
+                host: stream,
+                task: stream,
+                stream,
+            };
+            let permit = arbiter
+                .try_acquire(path, request(1))
+                .expect("admission")
+                .expect("unlimited permit");
+            let _charge = permit.settle(1);
+        }
+        let stats = arbiter.stats();
+        assert_eq!(stats.tracked_scopes, 3_000);
+        assert!(stats.tracked_scopes <= MAX_RATE_TRACKED_SCOPES);
+        assert_eq!(stats.queued_waiters, 0);
+        assert_eq!(stats.pending_grants, 0);
     }
 }

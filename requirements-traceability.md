@@ -155,8 +155,9 @@ Design coverage:
   concurrency limits, FTP data-endpoint validation, plus the SFTP
   host-key/authentication/algorithm policy resolved by
   `final-preimplementation-review.md`.
-- `rate-limiting.md`: ingress-debited payload rate accounting and bounded
-  discard budgets.
+- `rate-limiting.md`: ingress-debited payload rate accounting, deterministic
+  hierarchical arbiter fairness/debt evidence, live scoped reconfiguration, and
+  bounded discard budgets.
 - `session-persistence.md`: private file permissions and secrets-at-rest policy.
 - `disk-adapter.md`: offset-only writes, storage validation, fsync/rename
   policy.

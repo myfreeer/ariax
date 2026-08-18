@@ -1,8 +1,11 @@
 # Rate Limiting Design
 
 Status: reviewed streaming contract. The HTTP download limiter, ordered read
-gate, stall diagnostics, and finite hierarchical discard guard are executable;
-FTP/SFTP and libtorrent integration remain later adapter work.
+gate, stall diagnostics, and finite hierarchical discard guard are executable.
+The rate arbiter has deterministic virtual-time coverage for bounded overshoot
+debt repayment, FIFO refill fairness, explicit-scope persistence across default
+reconfiguration, cancellation cleanup, and 1,000 tracked streams; FTP/SFTP and
+libtorrent integration remain later adapter work.
 
 `max-overall-download-limit`, `max-download-limit`,
 `max-overall-upload-limit`, and `max-upload-limit` are live token-bucket
@@ -252,15 +255,18 @@ global cap. Do not run two independent full-size limiters.
 - an unavailable host/task bucket leaves the global bucket unchanged; cancel,
   timeout, and runtime reconfiguration cannot leak a partial hierarchy
   reservation,
-- ~1,000 active streams remain starvation-free and within tolerance,
+- queued streams are served FIFO at deterministic refill boundaries, and ~1,000
+  active stream scopes remain within the hard tracking bound,
 - short, oversized, checksum-failed, cancelled, retry, and endgame-loser bytes
   consume both rate tokens and the appropriate discard budget,
 - abort/rollback never refunds consumed tokens,
 - a low limit below one Hyper frame has a measured overshoot bounded by the
-  configured frame/window budget and then stops polling until debt is repaid,
+  configured frame/window budget; virtual-time tests prove the resulting debt
+  is reported accurately and no new permit is granted until it is repaid,
 - backpressure is reported instead of rate limiting when downstream credit is
   the first unavailable resource,
-- runtime limit changes take effect without task restart,
+- runtime limit changes take effect without task restart, while explicit scoped
+  limits survive default reconfiguration,
 - HTTP/FTP/SFTP plus BT allocated shares never exceed the global cap,
 - stats expose received/sent payload, committed, durable, discarded, rate debt,
   and discard-budget counters separately.

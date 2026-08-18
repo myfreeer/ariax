@@ -328,6 +328,10 @@ Exit criteria:
   fallback delay, and a zero-TTL answer-set change opens a newly admitted direct
   connection rather than reusing the prior idle connection. This exit gate is
   executable.
+- Rate-arbiter tests now cover bounded overshoot debt and accurate debt
+  diagnostics, FIFO refill fairness, explicit scoped limits across default
+  reconfiguration, cancellation cleanup, and 1,000 active stream-scope
+  tracking. The rate-limit evidence is deterministic under virtual time.
 - Stuck socket speed drops to zero without waiting for another packet.
 - Retry waits expose a bounded non-secret diagnostic without waiting for
   another packet: exact live trigger/status, attempt credit, wait policy,
