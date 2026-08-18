@@ -1306,9 +1306,11 @@ Required tests:
 - torn journal tail replay,
 - deterministic partial-fsync failure leaves `Flushed` unchanged and a
   simulated durable-prefix loss replays only the prior barrier,
-- forced child-process exit/kill after provisional write, `LeaseCommitted`,
-  data sync, and journal publication recovers exactly the expected pending or
-  durable prefix,
+- forced child-process exit and parent-driven kill after provisional write,
+  `LeaseCommitted`, data sync, unflushed `PieceDurable` publication, and flushed
+  commit recover exactly the expected pending or durable prefix on Linux and
+  native Windows-GNU; the OS-surviving kill and simulated power-loss cut have
+  intentionally different expectations for the unflushed journal record,
 - corrupted journal CRC replay,
 - duplicate/gapped sequence rejection and out-of-order disk completions through
   the single sequence-assigning appender,

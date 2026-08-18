@@ -1397,12 +1397,24 @@ impl StorageEngine {
     #[cfg(test)]
     fn crash_at(&self, point: StorageEngineCrashPoint) {
         if self.crash_point == Some(point) {
+            wait_for_forced_kill_if_requested();
             std::process::exit(match point {
                 StorageEngineCrashPoint::LeaseCommitted => 97,
                 StorageEngineCrashPoint::DataSyncBeforePieceDurable => 98,
                 StorageEngineCrashPoint::PieceDurableBeforeJournalSync => 99,
             });
         }
+    }
+}
+
+#[cfg(test)]
+fn wait_for_forced_kill_if_requested() {
+    let Some(ready) = std::env::var_os("ARIAX_STORAGE_CRASH_READY") else {
+        return;
+    };
+    std::fs::write(ready, b"ready").expect("publish storage kill-ready marker");
+    loop {
+        std::thread::park_timeout(Duration::from_secs(1));
     }
 }
 
@@ -1457,6 +1469,8 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::thread;
+    use std::time::Instant;
 
     static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(1);
 
@@ -1904,6 +1918,66 @@ mod tests {
         }
     }
 
+    #[test]
+    fn forced_process_kills_cover_every_storage_durability_barrier() {
+        for (phase, expected_prefix) in [
+            ("after_write", 0),
+            ("after_lease_committed", 0),
+            ("after_data_sync", 0),
+            ("after_piece_durable_append", 4),
+            ("after_commit", 4),
+        ] {
+            let directory = TestDirectory::new();
+            let ready = directory.0.join("kill-ready");
+            let mut child = Command::new(std::env::current_exe().expect("current test executable"))
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "storage_engine::tests::forced_process_crash_child",
+                    "--nocapture",
+                ])
+                .env("ARIAX_STORAGE_CRASH_CHILD", &directory.0)
+                .env("ARIAX_STORAGE_CRASH_PHASE", phase)
+                .env("ARIAX_STORAGE_CRASH_READY", &ready)
+                .spawn()
+                .expect("spawn storage kill child");
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !ready.exists() {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("storage kill child did not reach {phase} barrier");
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+            child.kill().expect("kill storage child process");
+            let status = child.wait().expect("wait for killed storage child");
+            assert!(!status.success(), "{phase}");
+
+            assert_eq!(
+                fs::read(directory.0.join("output/output.bin"))
+                    .expect("read killed child output bytes"),
+                [1, 2, 3, 4],
+                "{phase}"
+            );
+            let recovered = recover_known_length_http(&crash_recovery_request(&directory.0))
+                .expect("recover killed storage child");
+            assert_eq!(recovered.replay.stop, JournalStateStop::CleanEnd, "{phase}");
+            assert_eq!(recovered.durable_prefix, expected_prefix, "{phase}");
+            assert_eq!(
+                recovered
+                    .replay
+                    .state
+                    .as_ref()
+                    .expect("recovered killed-child state")
+                    .durable_pieces()
+                    .len(),
+                usize::from(expected_prefix != 0),
+                "{phase}"
+            );
+        }
+    }
+
     #[tokio::test]
     #[ignore = "spawned by forced_process_crashes_preserve_only_the_piece_durable_prefix"]
     async fn forced_process_crash_child() {
@@ -1934,6 +2008,7 @@ mod tests {
             .expect("child begin lease");
         write_piece(&mut engine, lease, &[1, 2, 3, 4]).await;
         if phase == "after_write" {
+            wait_for_forced_kill_if_requested();
             std::process::exit(96);
         }
         let acknowledgements = engine
@@ -1952,6 +2027,7 @@ mod tests {
                 .iter()
                 .any(|ack| matches!(ack, WriteAck::PieceDurable { .. }))
         );
+        wait_for_forced_kill_if_requested();
         std::process::exit(100);
     }
 

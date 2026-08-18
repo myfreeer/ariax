@@ -63,9 +63,11 @@ journal replay. Deterministic storage-boundary ENOSPC, permission-denied, and
   short-write, partial-fsync, torn-tail, and same-inode publication faults now
   leave no false durable piece and replay cleanly; publication residue is
   removed only after installed header/linkage replay succeeds. Child-process
-  exit/kill coverage exercises the data/journal barriers, and a deterministic
-  Linux power-loss cut model verifies the durable prefix. Real poweroff and the
-  remaining release-platform matrix remain final Phase-3 gates.
+  exit plus parent-driven kill coverage exercises every provisional-write,
+  data-sync, and journal-publication barrier on Linux and native Windows-GNU,
+  and a deterministic Linux power-loss cut model verifies the durable prefix.
+  Real poweroff and the remaining release-platform matrix remain final Phase-3
+  gates.
 
 This is a staged plan for building the design without repeating the incomplete
 rewrite pattern. The native-startup orchestration boundary, central-journal
@@ -303,11 +305,13 @@ Exit criteria:
   simulation. Ignored/short/oversized responses, lease aborts, generated-header
   conflicts, redirect/proxy SSRF, deterministic ENOSPC/permission-denied/
   short-write/partial-fsync faults, torn-tail and same-inode rotation recovery,
-  child-process exit/kill barriers, and the Linux power-loss cut model are
-  executable. Hot-backup publication/link cleanup, raced-destination
-  preservation, and unlink-failure recovery are executable too. Native Windows
-  I/O and real poweroff evidence remain platform gates rather than being
-  inferred from the local model.
+  child-process exit plus parent-driven kill barriers, and the Linux power-loss
+  cut model are executable. The five storage boundaries run on Linux and native
+  Windows-GNU and distinguish an OS-surviving process kill from a simulated
+  power-loss cut. Hot-backup publication/link cleanup, raced-destination
+  preservation, and unlink-failure recovery are executable too. The deferred
+  native overlapped backend, real hardware poweroff evidence, and remaining
+  release-platform matrix are not inferred from the blocking fallback model.
 - The first-slice interruption matrix cancels one byte before a piece boundary,
   exactly at the boundary, and one byte into the next lease. Recovery proves the
   exact durable prefix and audits the journal so every begun lease has exactly
@@ -320,8 +324,9 @@ Exit criteria:
   accounting, storage lease, retry policy, stats, and journal; it writes no
   provisional bytes, aborts once as `oversized_body`, and disables the source
   without another attempt. Deterministic process/task/host tests and standalone
-  fuzz targets remain in `fuzz/`; the remaining protocol/crash fault matrix
-  still gates Phase 3 completion.
+  fuzz targets remain in `fuzz/`. The required local protocol/crash fault matrix
+  is executable; real hardware poweroff and the remaining release-platform
+  matrix still gate the final Phase-3 completion claim.
 - 1,000 active HTTP range benchmark with bounded memory. The checked-in harness
   now drives 1,000 real loopback `206` range responses under the shared ingress,
   socket, and resident permits. Optimized Linux and native Windows-GNU runs are

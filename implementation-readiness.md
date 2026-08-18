@@ -63,8 +63,10 @@ Representation restart now flushes an explicit `restarting` journal marker
 before `NextAdmission`; staged-prefix recovery preserves that reason, accepts
 only the exact task snapshot, appends only the missing generation suffix, and
 the promoted prefix exposes no old durable piece. The live control path records
-the exact marker/snapshot/`representation_restart` sequence. The remaining
-protocol/crash fault matrix is still pending.
+the exact marker/snapshot/`representation_restart` sequence. The required local
+protocol/crash matrix is executable, including parent-driven storage-process
+kills at every provisional-write/data-sync/journal boundary on Linux and native
+Windows-GNU.
 The minimal process shutdown path now drives the fixed coordinator through real
 runtime admission, bounded HTTP-worker drain, all-journal flush/close, bounded
 session-owner join, and clean/dirty session-marker persistence. Cooperative
@@ -259,9 +261,11 @@ C10k/active-range harnesses are executable. Deterministic storage-boundary
 ENOSPC, permission-denied, short-write, partial-fsync, torn-tail, and
 same-inode publication faults now prove that failed writes publish no false
 durable piece and leave a replayable journal; same-file residue is removed only
-after installed header/linkage replay succeeds. Child-process exit/kill tests
-cover the data/journal barriers, and a deterministic Linux power-loss cut model
-asserts the durable prefix at every boundary. Native release and real hardware
+after installed header/linkage replay succeeds. Child-process exit and
+parent-driven kill tests cover every data/journal barrier on Linux and native
+Windows-GNU. They retain an OS-visible unflushed `PieceDurable` record after a
+process kill, while the deterministic Linux power-loss cut removes that tail
+and recovers only the prior flushed prefix. Native release and real hardware
 poweroff evidence still gate the final Phase-3 claim.
 
 The detailed first-slice docs above are the intended module design input for
@@ -271,9 +275,10 @@ this vertical slice.
 
 - Keep the executable crash matrix green: deterministic partial-fsync,
   torn-tail, same-inode rotation residue, child-process exit/kill, and the
-  Linux durable-prefix power-loss model cover the HTTP/storage boundary.
-  Native Windows I/O and real poweroff runs remain required CI evidence; the
-  local model never substitutes for those platform gates.
+  Linux durable-prefix power-loss model cover the HTTP/storage boundary. The
+  blocking fallback matrix runs natively on Windows-GNU; the deferred Windows
+  overlapped backend, real hardware poweroff, and remaining release-platform
+  runs remain separate evidence gates.
 - Keep the new persisted `HttpRangeIdentity` restart path fail-closed: replay
   validates its SHA-256/length fingerprint before network history, matching
   mirrors are reprobed, and every locally verified durable range is fetched,

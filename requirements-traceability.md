@@ -49,9 +49,11 @@ before storage, aborts the opened lease once as `oversized_body`, and disables
 the offending source as a non-retriable invalid range. Redirects in the
 implemented client settle before lease admission, while the redirect-policy
 contract retains the mandatory open-lease abort for future adapters.
-Child-process exit/kill tests cover the
-data/journal barriers, and a Linux durable-prefix power-loss cut model is
-executable. Hot-backup publication residue now has descriptor-bound
+Child-process exit and parent-driven kill tests cover every provisional-write,
+data-sync, and journal-publication barrier on Linux and native Windows-GNU. An
+OS-surviving kill retains a complete visible `PieceDurable` record, while the
+Linux durable-prefix power-loss cut removes its unflushed tail and recovers only
+the prior barrier. Hot-backup publication residue now has descriptor-bound
 same-file/link-count recovery, no-clobber raced-destination preservation, and
 crash/unlink fault coverage. Minimal real-process shutdown now closes admission,
 boundedly drains HTTP workers, flushes/closes every installed journal, joins the
