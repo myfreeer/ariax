@@ -274,8 +274,10 @@ concurrent mirrors, permits digest-bound recovery, and gates `TaskComplete` on a
 bounded descriptor-based whole-file hash. Stale-validator `fail`, fresh
 `revalidate`, and bounded `restart-if-safe` are wired through public option
 admission, worker supervision, exact next-admission snapshot persistence, and a
-new generation that invalidates all old durable pieces before descriptor-bound
-rewrite. Same-origin strong-ETag endgame duplicate fencing, candidate settlement,
+durable `restarting` intent marker whose recovered exact snapshot promotes with
+the original representation-restart reason. The new generation invalidates all
+old durable pieces before descriptor-bound rewrite. Same-origin strong-ETag
+endgame duplicate fencing, candidate settlement,
 dirty-overlap rollback, and crash-safe replay are executable. Strict mode also
 negotiates and bounds SHA-256 `Repr-Digest`, verifies probe and range bodies,
 journals accepted response digests, and permits a secondary origin only for an

@@ -18,7 +18,11 @@ strict concurrent-mirror identity, digest-bound restart, bounded descriptor-
 based final verification, and terminal digest evidence. Persisted
 stale-validator `fail`, fresh `revalidate`, and descriptor-authorized bounded
 `restart-if-safe` now cross the worker, scheduler, journal-v2, and public option
-boundaries without retaining old durable bytes. Same-origin strong-ETag endgame
+boundaries without retaining old durable bytes. A flushed `restarting` marker
+preserves representation-restart reason authority across the staged
+next-admission crash window; recovery reuses only an exact matching snapshot,
+and generation promotion invalidates old progress before new admission.
+Same-origin strong-ETag endgame
 fencing, candidate settlement, dirty-overlap rollback, and crash-safe replay are
 implemented. The bounded SHA-256 `Repr-Digest` profile now negotiates strict
 probe/range evidence, verifies response bodies, journals accepted digests, and

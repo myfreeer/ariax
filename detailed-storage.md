@@ -716,6 +716,10 @@ this form.
 Generation/patch crash rule:
 
 - Generation 0 begins with one `CurrentGeneration` snapshot.
+- A representation restart first appends and flushes
+  `TaskPaused(reason=restarting)` while the old generation is drained. This is
+  the durable restart-reason authority if the process exits before generation
+  promotion; it is not a user-visible pause.
 - Any restart first appends and flushes a `NextAdmission` snapshot while the old
   generation remains current. For an option patch it carries the accepted
   `OptionPatchId`; non-option restarts use no patch id. A newer staged snapshot
@@ -723,13 +727,17 @@ Generation/patch crash rule:
 - After the old generation drains, the sole admission rollover appends
   `GenerationStarted` with the staged snapshot hash/patch id. Replay accepts the
   advance only when that exact earlier staged snapshot exists, then promotes it
-  to current and clears the pending slot. The worker starts only after this
-  record is flushed.
-- A crash after staging but before `GenerationStarted` retains an accepted
-  pending restart. A crash after `GenerationStarted` recovers the promoted
-  generation. A missing/mismatched staged snapshot makes the generation record
-  invalid at that point; replay stops before the advance rather than combining
-  option versions.
+  to current and clears the pending slot and restart marker. A representation
+  restart promotion also invalidates every old durable piece before any new
+  layout or lease. The worker starts only after this record is flushed.
+- A crash after the restarting marker but before staging resumes with the marker
+  as reason authority. A crash after staging but before `GenerationStarted`
+  retains the exact accepted pending restart and appends only the missing
+  promotion suffix; a mismatched staged snapshot fails closed. A crash after
+  `GenerationStarted` recovers the promoted generation with old representation
+  progress already unpublishable. A missing/mismatched staged snapshot makes
+  the generation record invalid at that point; replay stops before the advance
+  rather than combining option versions.
 
 `layout_hash` covers the canonical relative file map, lengths, selection, and
 piece geometry but deliberately excludes the filesystem location.

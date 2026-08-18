@@ -3867,6 +3867,13 @@ mod tests {
             record(
                 9,
                 0,
+                JournalPayload::TaskPaused {
+                    reason: TaskPauseReason::Restarting,
+                },
+            ),
+            record(
+                10,
+                0,
                 JournalPayload::OptionsSnapshot {
                     scope: OptionsSnapshotScope::NextAdmission,
                     patch_id: None,
@@ -3875,7 +3882,7 @@ mod tests {
                 },
             ),
             record(
-                10,
+                11,
                 1,
                 JournalPayload::GenerationStarted {
                     previous_generation: Generation::INITIAL,
@@ -3884,15 +3891,25 @@ mod tests {
                     patch_id: None,
                 },
             ),
-            record(11, 1, replacement.committed),
+            record(12, 1, replacement.committed),
         ];
-        let restarted =
-            recover_journal_state(&records[..10], task(), &allow_all, Default::default());
-        assert_eq!(restarted.stop, JournalStateStop::CleanEnd);
-        let restarted = restarted.state.expect("restarted generation state");
-        assert_eq!(restarted.generation(), Generation::new(1));
+        let staged = recover_journal_state(&records[..10], task(), &allow_all, Default::default());
+        assert_eq!(staged.stop, JournalStateStop::CleanEnd);
+        let staged = staged.state.expect("staged restart state");
+        assert_eq!(staged.generation(), Generation::INITIAL);
+        assert_eq!(staged.paused(), Some(TaskPauseReason::Restarting));
+        assert!(staged.pending_options().is_some());
+        assert_eq!(staged.durable_pieces().len(), 1);
+
+        let promoted =
+            recover_journal_state(&records[..11], task(), &allow_all, Default::default());
+        assert_eq!(promoted.stop, JournalStateStop::CleanEnd);
+        let promoted = promoted.state.expect("promoted generation state");
+        assert_eq!(promoted.generation(), Generation::new(1));
+        assert_eq!(promoted.paused(), None);
+        assert!(promoted.pending_options().is_none());
         assert_eq!(
-            restarted
+            promoted
                 .layout()
                 .expect("old layout remains reopen authority")
                 .layout()
@@ -3900,7 +3917,7 @@ mod tests {
             Generation::INITIAL
         );
         assert!(
-            restarted.durable_pieces().is_empty(),
+            promoted.durable_pieces().is_empty(),
             "representation restart must invalidate old publishable progress before layout replacement"
         );
 

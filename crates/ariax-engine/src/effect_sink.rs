@@ -12,7 +12,7 @@ use ariax_storage::{
     SessionHostKeyResolution, SessionNoSpaceCondition, SessionOwnerError, SessionPersistenceError,
     SessionQueueOrder, SessionQueueState, SessionQueueTransition, SessionSlowSlotState,
     SessionStoppedResultRecord, SessionTaskRecord, SessionTaskSourceRecord, SessionTerminalStatus,
-    session_host_key_pin_value,
+    TaskPauseReason, session_host_key_pin_value,
 };
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
@@ -675,6 +675,65 @@ fn validate_plan(
             },
             [
                 PersistencePlanStep::AppendAndFlushJournal {
+                    gid: marker_gid,
+                    generation: marker_generation,
+                    payload:
+                        JournalPayload::TaskPaused {
+                            reason: pause_reason,
+                        },
+                },
+                PersistencePlanStep::AppendAndFlushJournal {
+                    gid: snapshot_gid,
+                    generation: snapshot_generation,
+                    payload:
+                        JournalPayload::OptionsSnapshot {
+                            scope,
+                            patch_id: snapshot_patch,
+                            snapshot_hash,
+                            options,
+                        },
+                },
+                PersistencePlanStep::AppendAndFlushJournal {
+                    gid: journal_gid,
+                    generation: journal_generation,
+                    payload:
+                        JournalPayload::GenerationStarted {
+                            previous_generation,
+                            reason,
+                            next_snapshot_hash,
+                            patch_id: generation_patch,
+                        },
+                },
+            ],
+        ) => {
+            if marker_gid != gid || snapshot_gid != gid || journal_gid != gid {
+                return Err(PersistencePlanError::IdentityMismatch);
+            }
+            if journal_generation != generation
+                || previous_generation.checked_next() != Some(*generation)
+                || marker_generation != previous_generation
+                || snapshot_generation != previous_generation
+            {
+                return Err(PersistencePlanError::GenerationMismatch);
+            }
+            if *pause_reason != TaskPauseReason::Restarting
+                || *scope != OptionsSnapshotScope::NextAdmission
+                || snapshot_patch.is_some()
+                || generation_patch.is_some()
+                || *reason != ariax_storage::GenerationStartReason::RepresentationRestart
+                || snapshot_hash != next_snapshot_hash
+                || *snapshot_hash != options.snapshot_hash()
+            {
+                return Err(PersistencePlanError::StateMismatch);
+            }
+            Ok(())
+        }
+        (
+            TransitionEffect::PersistGenerationStarted {
+                gid, generation, ..
+            },
+            [
+                PersistencePlanStep::AppendAndFlushJournal {
                     gid: snapshot_gid,
                     generation: snapshot_generation,
                     payload:
@@ -744,7 +803,12 @@ fn validate_plan(
             {
                 return Err(PersistencePlanError::GenerationMismatch);
             }
-            if *reason != ariax_storage::GenerationStartReason::OptionPatch || patch_id.is_none() {
+            let resumes_option_patch =
+                *reason == ariax_storage::GenerationStartReason::OptionPatch && patch_id.is_some();
+            let resumes_representation_restart = *reason
+                == ariax_storage::GenerationStartReason::RepresentationRestart
+                && patch_id.is_none();
+            if !resumes_option_patch && !resumes_representation_restart {
                 return Err(PersistencePlanError::StateMismatch);
             }
             Ok(())
@@ -1128,7 +1192,16 @@ fn validate_dispatched_plan(
                     }
                 ) if generation.checked_next() == Some(*next)
             );
-            if !stages_next_admission {
+            let stages_representation_restart = matches!(
+                (dispatched.effect(), payload),
+                (
+                    TransitionEffect::PersistGenerationStarted { generation: next, .. },
+                    JournalPayload::TaskPaused {
+                        reason: TaskPauseReason::Restarting,
+                    }
+                ) if generation.checked_next() == Some(*next)
+            );
+            if !stages_next_admission && !stages_representation_restart {
                 return Err(PersistencePlanError::GenerationMismatch);
             }
         }
@@ -2592,6 +2665,65 @@ mod tests {
                         },
                     },
                 ],
+            )
+            .is_ok()
+        );
+        assert!(
+            PersistenceEffectPlan::new(
+                TransitionEffect::PersistGenerationStarted {
+                    task_id: task_id(1),
+                    gid: task_gid,
+                    generation: next,
+                },
+                vec![
+                    PersistencePlanStep::AppendAndFlushJournal {
+                        gid: task_gid,
+                        generation: Generation::INITIAL,
+                        payload: JournalPayload::TaskPaused {
+                            reason: TaskPauseReason::Restarting,
+                        },
+                    },
+                    PersistencePlanStep::AppendAndFlushJournal {
+                        gid: task_gid,
+                        generation: Generation::INITIAL,
+                        payload: JournalPayload::OptionsSnapshot {
+                            scope: OptionsSnapshotScope::NextAdmission,
+                            patch_id: None,
+                            snapshot_hash,
+                            options: options.clone(),
+                        },
+                    },
+                    PersistencePlanStep::AppendAndFlushJournal {
+                        gid: task_gid,
+                        generation: next,
+                        payload: JournalPayload::GenerationStarted {
+                            previous_generation: Generation::INITIAL,
+                            reason: GenerationStartReason::RepresentationRestart,
+                            next_snapshot_hash: snapshot_hash,
+                            patch_id: None,
+                        },
+                    },
+                ],
+            )
+            .is_ok()
+        );
+        assert!(
+            PersistenceEffectPlan::new(
+                TransitionEffect::PersistGenerationStarted {
+                    task_id: task_id(1),
+                    gid: task_gid,
+                    generation: next,
+                },
+                vec![PersistencePlanStep::AppendAndFlushJournal {
+                    gid: task_gid,
+                    generation: next,
+                    payload: JournalPayload::GenerationStarted {
+                        previous_generation: Generation::INITIAL,
+                        reason: GenerationStartReason::RepresentationRestart,
+                        next_snapshot_hash: snapshot_hash,
+                        patch_id: None,
+                    },
+                }],
             )
             .is_ok()
         );

@@ -4531,33 +4531,40 @@ mod tests {
         let current_etag = Arc::clone(&etag);
         let hold_second_piece = Arc::new(AtomicBool::new(true));
         let task = tokio::spawn(async move {
+            let mut handlers = tokio::task::JoinSet::new();
             loop {
                 let (mut stream, _) = listener.accept().await.expect("accept");
-                let Some(request) = try_read_request_head(&mut stream).await else {
-                    continue;
-                };
-                let (start, end) = request_range(&request).expect("range request");
-                recorded
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push((start, end));
-                let body = &data[start..=end];
-                let etag = current_etag
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone();
-                let response = format!(
-                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\nETag: {etag}\r\nConnection: close\r\n\r\n",
-                    body.len(),
-                    data.len()
-                );
-                stream.write_all(response.as_bytes()).await.expect("head");
-                if start >= MIB && hold_second_piece.swap(false, Ordering::AcqRel) {
-                    let mut closed = [0_u8; 1];
-                    let _closed = stream.read(&mut closed).await;
-                } else {
-                    stream.write_all(body).await.expect("body");
-                }
+                let data = Arc::clone(&data);
+                let recorded = Arc::clone(&recorded);
+                let current_etag = Arc::clone(&current_etag);
+                let hold_second_piece = Arc::clone(&hold_second_piece);
+                handlers.spawn(async move {
+                    let Some(request) = try_read_request_head(&mut stream).await else {
+                        return;
+                    };
+                    let (start, end) = request_range(&request).expect("range request");
+                    recorded
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push((start, end));
+                    let body = &data[start..=end];
+                    let etag = current_etag
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone();
+                    let response = format!(
+                        "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\nETag: {etag}\r\nConnection: close\r\n\r\n",
+                        body.len(),
+                        data.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.expect("head");
+                    if start >= MIB && hold_second_piece.swap(false, Ordering::AcqRel) {
+                        let mut closed = [0_u8; 1];
+                        let _closed = stream.read(&mut closed).await;
+                    } else {
+                        stream.write_all(body).await.expect("body");
+                    }
+                });
             }
         });
         (address, ranges, etag, task)

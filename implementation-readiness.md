@@ -59,7 +59,12 @@ the bounded discard hierarchy, records one `oversized_body` abort, publishes an
 Implemented redirects settle before `BeginLease`; the redirect-policy contract
 still proves that an adapter with an open lease must abort it. Scheduler
 cancellation covers both a blocked body read and the disk-completion boundary.
-The remaining protocol/crash fault matrix is still pending.
+Representation restart now flushes an explicit `restarting` journal marker
+before `NextAdmission`; staged-prefix recovery preserves that reason, accepts
+only the exact task snapshot, appends only the missing generation suffix, and
+the promoted prefix exposes no old durable piece. The live control path records
+the exact marker/snapshot/`representation_restart` sequence. The remaining
+protocol/crash fault matrix is still pending.
 The minimal process shutdown path now drives the fixed coordinator through real
 runtime admission, bounded HTTP-worker drain, all-journal flush/close, bounded
 session-owner join, and clean/dirty session-marker persistence. Cooperative

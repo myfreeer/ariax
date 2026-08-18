@@ -362,11 +362,15 @@ A configured whole-file checksum may accept a changed validator at that same
 resource because terminal publication still requires the exact expected
 digest. `restart-if-safe` is bounded by the task attempt cap and is authorized
 only after descriptor-bound reopening proves that the partial file is the
-task-owned output. The new `GenerationStarted(reason=representation_restart)`
-record clears old durable evidence before any replacement layout or lease can
-be admitted; crashes before or after the replacement layout therefore cannot
-publish mixed bytes. Last-Modified and unsafe-override resume remain
-design-level policy and are not accepted by the checkpoint runner.
+task-owned output. The restart first flushes
+`TaskPaused(reason=restarting)` as crash-recovery reason authority, then stages
+the exact next-admission snapshot. Recovery reuses that snapshot only when its
+hash and options still match the task. The subsequent
+`GenerationStarted(reason=representation_restart)` clears the marker and old
+durable evidence before any replacement layout or lease can be admitted;
+crashes before or after the promotion or replacement layout therefore cannot
+publish mixed bytes. Last-Modified and unsafe-override resume remain design-
+level policy and are not accepted by the checkpoint runner.
 
 ## Cross-Mirror Entity Identity
 
@@ -792,7 +796,9 @@ Required tests:
   redownloads every piece, and leaves the final file with no mixed old bytes,
 - a crash after the staged next-admission snapshot or after
   `GenerationStarted(reason=representation_restart)` replays without admitting
-  old progress into the new generation,
+  old progress into the new generation; the staged-prefix case retains a
+  flushed `TaskPaused(reason=restarting)` marker, reuses only the exact matching
+  snapshot, and appends only the missing promotion suffix,
 - range/resume requests send `Accept-Encoding: identity`,
 - content-coded body to a range request is rejected, not written,
 - strict concurrent ordinary multi-mirror split requires a persisted user

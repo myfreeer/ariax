@@ -23,7 +23,8 @@ use ariax_storage::{
     ControlJournalAppender, GenerationStartReason, JournalPayload, OptionsSnapshotScope,
     PathPlatform, PlatformPath, SafePathBuilder, SessionCommand, SessionCommandResult,
     SessionHandle, SessionId, SessionQueueOrder, SessionQueueState, SessionSlowSlotState,
-    SessionStoppedResultRecord, SessionTaskRecord, SessionTerminalStatus, TaskRemoveReason,
+    SessionStoppedResultRecord, SessionTaskRecord, SessionTerminalStatus, TaskPauseReason,
+    TaskRemoveReason,
 };
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
@@ -619,8 +620,42 @@ impl HttpControlPlane {
                         .map_err(HttpControlError::TaskSpec)?;
                     let previous_generation = Generation::new(generation.get().saturating_sub(1));
                     let snapshot_hash = options.snapshot_hash();
-                    vec![
-                        PersistencePlanStep::AppendAndFlushJournal {
+                    let recovered = self.engine.recovered_tasks().iter().find(|task| {
+                        task.gid == *gid && task.journal.generation() == previous_generation
+                    });
+                    let recovered_representation_restart = recovered
+                        .filter(|task| task.journal.paused() == Some(TaskPauseReason::Restarting));
+                    let reason = if recovered_representation_restart.is_some() {
+                        GenerationStartReason::RepresentationRestart
+                    } else {
+                        generation_reason.unwrap_or(GenerationStartReason::RecoveryRepair)
+                    };
+                    let mut steps = Vec::with_capacity(3);
+                    if reason == GenerationStartReason::RepresentationRestart
+                        && recovered_representation_restart.is_none()
+                    {
+                        steps.push(PersistencePlanStep::AppendAndFlushJournal {
+                            gid: *gid,
+                            generation: previous_generation,
+                            payload: JournalPayload::TaskPaused {
+                                reason: TaskPauseReason::Restarting,
+                            },
+                        });
+                    }
+                    let staged_snapshot = recovered_representation_restart
+                        .and_then(|task| task.journal.pending_options());
+                    if let Some(staged) = staged_snapshot {
+                        if staged.patch_id().is_some()
+                            || staged.snapshot_hash() != snapshot_hash
+                            || staged.options() != &options
+                        {
+                            return Err(HttpControlError::Persistence(
+                                "recovered representation restart snapshot does not match the task"
+                                    .to_owned(),
+                            ));
+                        }
+                    } else {
+                        steps.push(PersistencePlanStep::AppendAndFlushJournal {
                             gid: *gid,
                             generation: previous_generation,
                             payload: JournalPayload::OptionsSnapshot {
@@ -629,19 +664,19 @@ impl HttpControlPlane {
                                 snapshot_hash,
                                 options: options.clone(),
                             },
+                        });
+                    }
+                    steps.push(PersistencePlanStep::AppendAndFlushJournal {
+                        gid: *gid,
+                        generation: *generation,
+                        payload: JournalPayload::GenerationStarted {
+                            previous_generation,
+                            reason,
+                            next_snapshot_hash: snapshot_hash,
+                            patch_id: None,
                         },
-                        PersistencePlanStep::AppendAndFlushJournal {
-                            gid: *gid,
-                            generation: *generation,
-                            payload: JournalPayload::GenerationStarted {
-                                previous_generation,
-                                reason: generation_reason
-                                    .unwrap_or(GenerationStartReason::RecoveryRepair),
-                                next_snapshot_hash: snapshot_hash,
-                                patch_id: None,
-                            },
-                        },
-                    ]
+                    });
+                    steps
                 };
                 PersistenceEffectPlan::new(effect.clone(), steps)
                     .map_err(|error| HttpControlError::Persistence(format!("{error:?}")))
@@ -1594,7 +1629,8 @@ mod tests {
     use ariax_core::{ErrorKind, LeaseId, PieceId, SchedulerConfig, UriId};
     use ariax_runtime::ShutdownStep;
     use ariax_storage::{
-        JournalStateLimits, ReplayLimits, SessionOwnerConfig, SessionStore, SessionStoreConfig,
+        JournalDirectoryCapability, JournalStateLimits, ReplayLimits, ReplayStop,
+        SanitizedOptionMap, SessionOwnerConfig, SessionStore, SessionStoreConfig,
         SessionTerminalStatus,
     };
     use std::fs;
@@ -1803,6 +1839,93 @@ mod tests {
             .expect("GID result")
             .parse()
             .expect("valid GID")
+    }
+
+    fn replay_journal_payloads(
+        directory: &TestDirectory,
+        task_id: TaskId,
+        gid: Gid,
+        generation: Generation,
+    ) -> Vec<JournalPayload> {
+        let journal_directory = http_journal_directory(&directory.journals, gid);
+        let capability = JournalDirectoryCapability::open_trusted(&journal_directory)
+            .expect("journal directory capability");
+        let paths = ControlJournalAppender::discover_segment_paths(
+            &capability,
+            ReplayLimits::default().max_segments,
+        )
+        .expect("journal segment paths");
+        let (mut appender, replay) = ControlJournalAppender::open_recovered(
+            &journal_directory,
+            &paths,
+            gid,
+            derive_http_journal_id(task_id, gid),
+            ReplayLimits::default(),
+            generation,
+            now_unix_ms(),
+        )
+        .expect("reopen journal");
+        assert_eq!(replay.stop, ReplayStop::CleanEnd);
+        let payloads = replay
+            .records
+            .iter()
+            .map(|record| record.decode_payload().expect("decode payload"))
+            .collect();
+        appender.close_flushed().expect("close replayed journal");
+        payloads
+    }
+
+    fn append_restarting_prefix(
+        directory: &TestDirectory,
+        task_id: TaskId,
+        gid: Gid,
+        options: Option<SanitizedOptionMap>,
+    ) -> Option<ariax_storage::JournalHash> {
+        let snapshot_hash = options.as_ref().map(SanitizedOptionMap::snapshot_hash);
+        let journal_directory = http_journal_directory(&directory.journals, gid);
+        let capability = JournalDirectoryCapability::open_trusted(&journal_directory)
+            .expect("journal directory capability");
+        let paths = ControlJournalAppender::discover_segment_paths(
+            &capability,
+            ReplayLimits::default().max_segments,
+        )
+        .expect("journal paths");
+        let (mut appender, replay) = ControlJournalAppender::open_recovered(
+            &journal_directory,
+            &paths,
+            gid,
+            derive_http_journal_id(task_id, gid),
+            ReplayLimits::default(),
+            Generation::INITIAL,
+            now_unix_ms(),
+        )
+        .expect("open journal for staged restart");
+        assert_eq!(replay.stop, ReplayStop::CleanEnd);
+        let marker = appender
+            .append_payload(
+                Generation::INITIAL,
+                &JournalPayload::TaskPaused {
+                    reason: TaskPauseReason::Restarting,
+                },
+            )
+            .expect("append restarting marker");
+        appender.flush(marker.sequence()).expect("flush marker");
+        if let (Some(snapshot_hash), Some(options)) = (snapshot_hash, options) {
+            let staged = appender
+                .append_payload(
+                    Generation::INITIAL,
+                    &JournalPayload::OptionsSnapshot {
+                        scope: OptionsSnapshotScope::NextAdmission,
+                        patch_id: None,
+                        snapshot_hash,
+                        options,
+                    },
+                )
+                .expect("append staged snapshot");
+            appender.flush(staged.sequence()).expect("flush snapshot");
+        }
+        appender.close_flushed().expect("close staged journal");
+        snapshot_hash
     }
 
     async fn serve_control_file(data: Arc<[u8]>) -> (String, tokio::task::JoinHandle<()>) {
@@ -2051,6 +2174,159 @@ mod tests {
         assert_eq!(stopped[0].gid, gid);
         assert_eq!(stopped[0].status, SessionTerminalStatus::Removed);
         drop(session);
+        assert_eq!(recovered.shutdown().expect("shutdown").journals_closed, 1);
+    }
+
+    #[test]
+    fn recovered_restarting_marker_stages_the_snapshot_before_promotion() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let gid = add_paused(&mut plane);
+        let task_id = TaskId::new(1).expect("task id");
+        let options = plane
+            .task_catalog()
+            .get(task_id)
+            .expect("HTTP task")
+            .persistence_options()
+            .expect("persistence options");
+        let snapshot_hash = options.snapshot_hash();
+        assert_eq!(plane.shutdown().expect("first shutdown").journals_closed, 1);
+        assert_eq!(
+            append_restarting_prefix(&directory, task_id, gid, None),
+            None
+        );
+
+        let recovered = directory.control_plane();
+        let next = Generation::new(1);
+        let plan = recovered
+            .plan_for_effect(
+                &TransitionEffect::PersistGenerationStarted {
+                    task_id,
+                    gid,
+                    generation: next,
+                },
+                None,
+            )
+            .expect("recover marker-only representation restart");
+        assert_eq!(
+            plan.steps(),
+            [
+                PersistencePlanStep::AppendAndFlushJournal {
+                    gid,
+                    generation: Generation::INITIAL,
+                    payload: JournalPayload::OptionsSnapshot {
+                        scope: OptionsSnapshotScope::NextAdmission,
+                        patch_id: None,
+                        snapshot_hash,
+                        options,
+                    },
+                },
+                PersistencePlanStep::AppendAndFlushJournal {
+                    gid,
+                    generation: next,
+                    payload: JournalPayload::GenerationStarted {
+                        previous_generation: Generation::INITIAL,
+                        reason: GenerationStartReason::RepresentationRestart,
+                        next_snapshot_hash: snapshot_hash,
+                        patch_id: None,
+                    },
+                },
+            ]
+        );
+        assert_eq!(recovered.shutdown().expect("shutdown").journals_closed, 1);
+    }
+
+    #[test]
+    fn recovered_restarting_prefix_promotes_the_exact_staged_snapshot() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let gid = add_paused(&mut plane);
+        let task_id = TaskId::new(1).expect("task id");
+        let options = plane
+            .task_catalog()
+            .get(task_id)
+            .expect("HTTP task")
+            .persistence_options()
+            .expect("persistence options");
+        assert_eq!(plane.shutdown().expect("first shutdown").journals_closed, 1);
+        let snapshot_hash = append_restarting_prefix(&directory, task_id, gid, Some(options))
+            .expect("staged snapshot hash");
+
+        let recovered = directory.control_plane();
+        let journal = recovered
+            .engine
+            .recovered_tasks()
+            .iter()
+            .find(|task| task.gid == gid)
+            .expect("recovered journal");
+        assert_eq!(journal.journal.generation(), Generation::INITIAL);
+        assert_eq!(journal.journal.paused(), Some(TaskPauseReason::Restarting));
+        assert_eq!(
+            journal
+                .journal
+                .pending_options()
+                .expect("pending snapshot")
+                .snapshot_hash(),
+            snapshot_hash
+        );
+
+        let next = Generation::new(1);
+        let plan = recovered
+            .plan_for_effect(
+                &TransitionEffect::PersistGenerationStarted {
+                    task_id,
+                    gid,
+                    generation: next,
+                },
+                None,
+            )
+            .expect("recover representation restart plan");
+        assert_eq!(
+            plan.steps(),
+            [PersistencePlanStep::AppendAndFlushJournal {
+                gid,
+                generation: next,
+                payload: JournalPayload::GenerationStarted {
+                    previous_generation: Generation::INITIAL,
+                    reason: GenerationStartReason::RepresentationRestart,
+                    next_snapshot_hash: snapshot_hash,
+                    patch_id: None,
+                },
+            }]
+        );
+        assert_eq!(recovered.shutdown().expect("shutdown").journals_closed, 1);
+    }
+
+    #[test]
+    fn recovered_restarting_prefix_rejects_a_different_staged_snapshot() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let gid = add_paused(&mut plane);
+        let task_id = TaskId::new(1).expect("task id");
+        assert_eq!(plane.shutdown().expect("first shutdown").journals_closed, 1);
+        append_restarting_prefix(
+            &directory,
+            task_id,
+            gid,
+            Some(
+                SanitizedOptionMap::new([("out".to_owned(), "different.bin".to_owned())])
+                    .expect("different staged options"),
+            ),
+        );
+
+        let recovered = directory.control_plane();
+        assert!(matches!(
+            recovered.plan_for_effect(
+                &TransitionEffect::PersistGenerationStarted {
+                    task_id,
+                    gid,
+                    generation: Generation::new(1),
+                },
+                None,
+            ),
+            Err(HttpControlError::Persistence(message))
+                if message == "recovered representation restart snapshot does not match the task"
+        ));
         assert_eq!(recovered.shutdown().expect("shutdown").journals_closed, 1);
     }
 
@@ -2438,5 +2714,30 @@ mod tests {
         let report = plane.shutdown_async().await.expect("shutdown");
         assert!(report.is_clean());
         assert_eq!(report.journals_closed, 1);
+        let payloads = replay_journal_payloads(
+            &directory,
+            TaskId::new(1).expect("task id"),
+            gid,
+            Generation::new(1),
+        );
+        assert!(payloads.windows(3).any(|window| matches!(
+            window,
+            [
+                JournalPayload::TaskPaused {
+                    reason: TaskPauseReason::Restarting,
+                },
+                JournalPayload::OptionsSnapshot {
+                    scope: OptionsSnapshotScope::NextAdmission,
+                    patch_id: None,
+                    ..
+                },
+                JournalPayload::GenerationStarted {
+                    previous_generation: Generation::INITIAL,
+                    reason: GenerationStartReason::RepresentationRestart,
+                    patch_id: None,
+                    ..
+                },
+            ]
+        )));
     }
 }
