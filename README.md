@@ -1,9 +1,11 @@
 # Downloader Design
 
-Status: implementation is underway. Phase 0 through the core Phase-1/2
+Status: overall implementation is underway. The scoped Phase-3B/3C HTTP(S)
+downloader milestone is implemented and checkpointed at `f97845d`; Phase 0
+through the core Phase-1/2
 scheduler, configuration, journal, SQLite session owner, bounded runtime,
 descriptor-safe storage, startup recovery, and platform capability work have
-executable checkpoints. The Phase-3B checkpoint candidate adds the first public
+executable checkpoints. The completed Phase-3B checkpoint adds the first public
 multi-mirror HTTP(S) vertical slice: atomic task/source/option admission,
 source-aware recovery, verified TLS 1.2/1.3, bounded HTTP/1.1 reuse,
 policy-owned Hickory/system DNS caching and singleflight, generated SSRF

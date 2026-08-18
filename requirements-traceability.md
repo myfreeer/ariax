@@ -1,6 +1,7 @@
 # Requirements Traceability
 
-Status: reviewed contract with implementation in progress. Core scheduling,
+Status: reviewed contract; the scoped Phase-3B/3C HTTP(S) downloader milestone
+is implemented and checkpointed at `f97845d`. Core scheduling,
 bounded persistence/recovery, native storage handoff, runtime ownership,
 packet-independent stats, process bootstrap, and the first public Phase-3B
 multi-mirror HTTP(S) slice have executable checkpoints. The latter includes
@@ -17,7 +18,8 @@ journaled error-class/reason reconstruction. Persisted user SHA-256 now also pro
 strict concurrent-mirror identity, digest-bound restart, bounded descriptor-
 based final verification, and terminal digest evidence. Persisted
 stale-validator `fail`, fresh `revalidate`, and descriptor-authorized bounded
-`restart-if-safe` now cross the worker, scheduler, journal-v2, and public option
+`restart-if-safe` now cross the worker, scheduler, session schema v2/control
+journal, and public option
 boundaries without retaining old durable bytes. A flushed `restarting` marker
 preserves representation-restart reason authority across the staged
 next-admission crash window; recovery reuses only an exact matching snapshot,

@@ -1,7 +1,8 @@
 # Performance Profiles
 
-Status: executable profile and HTTP-capacity slice implemented; optimized Linux
-and native Windows-GNU HTTP-capacity runs are recorded below. Adaptive tuning,
+Status: executable profile and HTTP-capacity slice implemented and recorded;
+optimized Linux and native Windows-GNU HTTP-capacity runs are recorded below.
+Adaptive tuning,
 non-HTTP resource wiring, and the remaining release-platform matrix remain
 pending.
 

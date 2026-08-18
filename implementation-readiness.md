@@ -1,9 +1,10 @@
 # Implementation Readiness
 
-Status: implementation underway. The P0 contract blockers recorded in
-`final-preimplementation-review.md` are resolved in their normative documents,
-and module work proceeds under the phase exit criteria below and in
-`implementation-plan.md`.
+Status: overall implementation is underway. The P0 contract blockers recorded
+in `final-preimplementation-review.md` are resolved in their normative
+documents, and the scoped Phase-3B/3C HTTP(S) downloader milestone is complete
+and checkpointed at `f97845d`; remaining module work proceeds under the later
+phase exit criteria below and in `implementation-plan.md`.
 
 This document is the handoff checklist from architecture design to detailed
 module design and implementation.
@@ -11,7 +12,7 @@ module design and implementation.
 Repository scaffolding, generated inventories, core/config types, the scheduler
 kernel and ordered driver, journal/SQLite persistence, bounded startup repair,
 native capability handoff, runtime adapters, stats sampling, and process
-bootstrap have executable checkpoints. The Phase-3B checkpoint candidate now
+bootstrap have executable checkpoints. The completed Phase-3B checkpoint now
 connects that foundation to ordinary HTTP(S) URI admission and the real
 scheduler: task/source/options persist atomically, recovery rebuilds the source
 catalog, the policy client owns DNS/SSRF/Happy-Eyeballs/redirect/proxy/auth/cookie
@@ -252,7 +253,7 @@ This removes the earlier circular Phase-0/Phase-4 gate. The slice proves the cor
 contracts before adding growing/chunked layouts, Metalink, FTP/SFTP, BitTorrent,
 or HTTP/3.
 
-All ten items now have an executable Phase-3B checkpoint candidate. The local
+All ten items now have an executable Phase-3B checkpoint. The local
 rate-limit arbiter now has deterministic debt, fairness, scoped-reconfiguration,
 cancellation, and 1,000-stream tracking evidence. The local stall-diagnostic,
 same-origin endgame, bounded exact-range

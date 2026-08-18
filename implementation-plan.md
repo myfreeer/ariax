@@ -1,8 +1,10 @@
 # Implementation Plan
 
-Status: implementation is underway. Phase 0 contracts and the gated Phase-1/2
-core, config, persistence, recovery, runtime, storage, and native capability
-work have executable checkpoints. The Phase-3B checkpoint candidate now covers
+Status: implementation remains underway for the overall roadmap, while the
+scoped Phase-3B/3C HTTP(S) downloader milestone is implemented and checkpointed
+at `f97845d`. Phase 0 contracts and the gated Phase-1/2 core, config,
+persistence, recovery, runtime, storage, and native capability work have
+executable checkpoints. The completed HTTP checkpoint covers
 the first public known-length multi-mirror HTTP(S) vertical slice: atomic
 task/source/current-option persistence before scheduler publication;
 source-aware restart recovery; verified TLS and bounded HTTP/1.1 reuse;
@@ -71,9 +73,11 @@ journal replay. Deterministic storage-boundary ENOSPC, permission-denied, and
 
 This is a staged plan for building the design without repeating the incomplete
 rewrite pattern. The native-startup orchestration boundary, central-journal
-filesystem backends, runtime-effect boundary, product bootstrap, and the public
-Phase-3B HTTP dispatch slice are now executable; the deferred capabilities and
-release evidence above remain phase gates.
+filesystem backends, runtime-effect boundary, product bootstrap, and the
+scoped Phase-3B/3C HTTP dispatch slice are now executable and checkpointed.
+The deferred capabilities, real hardware poweroff evidence, and remaining
+release-platform matrix above remain later roadmap gates; they are not part of
+this scoped milestone.
 
 ## Phase 0: Contracts, Compatibility Inventory, And Build Baseline
 
