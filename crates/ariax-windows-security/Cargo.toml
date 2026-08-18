@@ -12,13 +12,14 @@ windows-sys = { workspace = true, features = [
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
+    "Win32_System_ProcessStatus",
     "Win32_System_SystemServices",
     "Win32_System_Threading",
     "Wdk_Foundation",
     "Wdk_Storage_FileSystem",
 ] }
 
-# This crate is the reviewed unsafe boundary for native Windows security APIs.
+# This crate is the reviewed unsafe boundary for narrow native Windows APIs.
 # It intentionally does not inherit the workspace-wide `unsafe_code = "forbid"`.
 [lints.rust]
 unsafe_op_in_unsafe_fn = "forbid"

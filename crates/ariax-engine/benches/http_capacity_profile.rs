@@ -102,9 +102,15 @@ fn run_parent() -> Result<(), Box<dyn std::error::Error>> {
 
     let started = Instant::now();
     let mut connections = Vec::with_capacity(C10K_LOW_ACTIVITY_SOCKET_TARGET);
-    for _ in 0..C10K_LOW_ACTIVITY_SOCKET_TARGET {
+    for index in 0..C10K_LOW_ACTIVITY_SOCKET_TARGET {
         let permit = transport.try_acquire_connection()?;
-        let stream = TcpStream::connect_timeout(&address, Duration::from_secs(10))?;
+        let stream =
+            TcpStream::connect_timeout(&address, Duration::from_secs(10)).map_err(|error| {
+                std::io::Error::new(
+                    error.kind(),
+                    format!("low-activity socket {index} failed to connect: {error}"),
+                )
+            })?;
         connections.push((permit, stream));
     }
     let connect_elapsed = started.elapsed();
@@ -120,7 +126,7 @@ fn run_parent() -> Result<(), Box<dyn std::error::Error>> {
         active.push((permit, vec![0_u8; ACTIVE_FRAME_BYTES]));
     }
     let active_elapsed = active_started.elapsed();
-    let rss_kib = resident_set_kib();
+    let rss_kib = resident_set_kib()?;
     let limits = resources.profile().limits();
     let resident_reserved = resources.resident_budget().used();
     if resident_reserved > limits.accounted_resident_limit_bytes {
@@ -130,17 +136,17 @@ fn run_parent() -> Result<(), Box<dyn std::error::Error>> {
         )
         .into());
     }
-    if rss_kib.is_some_and(|rss| {
-        rss.saturating_mul(1024) > u64::try_from(limits.resident_target_bytes).unwrap_or(u64::MAX)
-    }) {
+    if rss_kib.saturating_mul(1024)
+        > u64::try_from(limits.resident_target_bytes).unwrap_or(u64::MAX)
+    {
         return Err(format!(
-            "measured RSS {rss_kib:?} KiB exceeds profile target {} bytes",
+            "measured RSS {rss_kib} KiB exceeds profile target {} bytes",
             limits.resident_target_bytes
         )
         .into());
     }
     println!(
-        "profile={} sockets={} active_ranges={} connect_ms={} active_reservation_ms={} resident_reserved_bytes={} accounted_limit_bytes={} resident_target_bytes={} rss_kib={rss_kib:?}",
+        "profile={} sockets={} active_ranges={} connect_ms={} active_reservation_ms={} resident_reserved_bytes={} accounted_limit_bytes={} resident_target_bytes={} rss_kib={rss_kib}",
         resources.profile().requested().code(),
         connections.len(),
         active.len(),
@@ -152,10 +158,6 @@ fn run_parent() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     drop(active);
-    drop(connections);
-    if resources.resident_budget().used() != 0 {
-        return Err("resident budget did not release after benchmark permits dropped".into());
-    }
     if let Some(stdin) = child.child.stdin.as_mut() {
         stdin.write_all(b"x")?;
         stdin.flush()?;
@@ -164,6 +166,28 @@ fn run_parent() -> Result<(), Box<dyn std::error::Error>> {
     child.disarmed = true;
     if !status.success() {
         return Err(format!("benchmark server exited with {status}").into());
+    }
+    for (index, (_, stream)) in connections.iter_mut().enumerate() {
+        let mut unexpected = [0_u8; 1];
+        let read = stream.read(&mut unexpected).map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!("low-activity socket {index} failed to observe server EOF: {error}"),
+            )
+        })?;
+        if read != 0 {
+            return Err(
+                format!("low-activity socket {index} received unexpected server payload").into(),
+            );
+        }
+    }
+    // Let the server actively close the sockets before the client permits are
+    // dropped, and consume each FIN before closing the client side. This avoids
+    // filling the client ephemeral-port range with `TIME_WAIT` entries when the
+    // capacity harness is rerun locally.
+    drop(connections);
+    if resources.resident_budget().used() != 0 {
+        return Err("resident budget did not release after benchmark permits dropped".into());
     }
     run_http_range_benchmark(&resources)
 }
@@ -297,7 +321,8 @@ fn run_http_range_benchmark(
         ..HttpPolicyClientConfig::default()
     };
     let uri = format!("http://{address}/range");
-    let barrier = Arc::new(Barrier::new(ACTIVE_RANGES + 1));
+    let ready_barrier = Arc::new(Barrier::new(ACTIVE_RANGES + 1));
+    let release_barrier = Arc::new(Barrier::new(ACTIVE_RANGES + 1));
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -309,7 +334,8 @@ fn run_http_range_benchmark(
             let config = client_config.clone();
             let uri = uri.clone();
             let ingress = ingress.clone();
-            let barrier = Arc::clone(&barrier);
+            let ready_barrier = Arc::clone(&ready_barrier);
+            let release_barrier = Arc::clone(&release_barrier);
             workers.push(tokio::spawn(async move {
                 let mut failure = None;
                 let permit = match ingress.try_acquire(ACTIVE_FRAME_BYTES) {
@@ -357,7 +383,8 @@ fn run_http_range_benchmark(
                         Err(error) => failure = Some(error.to_string()),
                     }
                 }
-                barrier.wait().await;
+                ready_barrier.wait().await;
+                release_barrier.wait().await;
                 let Some(mut response) = response else {
                     return Err(failure.unwrap_or_else(|| "range request failed".to_owned()));
                 };
@@ -384,22 +411,26 @@ fn run_http_range_benchmark(
                 Ok::<usize, String>(received)
             }));
         }
-        barrier.wait().await;
+        ready_barrier.wait().await;
         let resident_at_barrier = resources.resident_budget().used();
         let sockets_at_barrier = resources
             .transport_budgets()
             .socket_limit()
             .saturating_sub(transport.available_sockets());
+        let rss_at_barrier = resident_set_kib();
+        release_barrier.wait().await;
+        let rss_at_barrier = rss_at_barrier?;
         let mut transferred = 0_usize;
         for worker in workers {
             transferred = transferred
                 .checked_add(worker.await.map_err(|error| error.to_string())??)
                 .ok_or_else(|| "transferred length overflow".to_owned())?;
         }
-        Ok::<(usize, usize, usize), Box<dyn std::error::Error>>((
+        Ok::<(usize, usize, usize, u64), Box<dyn std::error::Error>>((
             transferred,
             resident_at_barrier,
             sockets_at_barrier,
+            rss_at_barrier,
         ))
     })?;
     let elapsed = started.elapsed();
@@ -423,8 +454,18 @@ fn run_http_range_benchmark(
         )
         .into());
     }
+    let rss_kib = result.3;
+    if rss_kib.saturating_mul(1024)
+        > u64::try_from(limits.resident_target_bytes).unwrap_or(u64::MAX)
+    {
+        return Err(format!(
+            "measured active-range RSS {rss_kib} KiB exceeds profile target {} bytes",
+            limits.resident_target_bytes
+        )
+        .into());
+    }
     println!(
-        "profile={} http_ranges={} http_bytes={} http_ms={} active_http_resident_bytes={} active_http_sockets={} accounted_limit_bytes={} rss_kib={:?}",
+        "profile={} http_ranges={} http_bytes={} http_ms={} active_http_resident_bytes={} active_http_sockets={} accounted_limit_bytes={} rss_kib={rss_kib}",
         resources.profile().requested().code(),
         ACTIVE_RANGES,
         result.0,
@@ -432,7 +473,6 @@ fn run_http_range_benchmark(
         result.1,
         result.2,
         limits.accounted_resident_limit_bytes,
-        resident_set_kib(),
     );
     if resources.resident_budget().used() != 0 {
         return Err("HTTP range benchmark leaked resident permits".into());
@@ -464,15 +504,35 @@ impl Drop for ChildGuard {
 }
 
 #[cfg(target_os = "linux")]
-fn resident_set_kib() -> Option<u64> {
-    let contents = std::fs::read_to_string("/proc/self/status").ok()?;
-    contents.lines().find_map(|line| {
-        let value = line.strip_prefix("VmRSS:")?.split_whitespace().next()?;
-        value.parse().ok()
-    })
+fn resident_set_kib() -> std::io::Result<u64> {
+    let contents = std::fs::read_to_string("/proc/self/status")?;
+    contents
+        .lines()
+        .find_map(|line| {
+            let value = line.strip_prefix("VmRSS:")?.split_whitespace().next()?;
+            value.parse().ok()
+        })
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "/proc/self/status did not contain a numeric VmRSS field",
+            )
+        })
 }
 
-#[cfg(not(target_os = "linux"))]
-fn resident_set_kib() -> Option<u64> {
-    None
+#[cfg(windows)]
+fn resident_set_kib() -> std::io::Result<u64> {
+    let bytes = ariax_windows_security::current_process_working_set_bytes()?;
+    Ok(u64::try_from(bytes)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1023)
+        / 1024)
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn resident_set_kib() -> std::io::Result<u64> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "capacity benchmark RSS sampling is implemented only for Linux and Windows",
+    ))
 }

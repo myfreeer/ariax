@@ -40,6 +40,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     SYNCHRONIZE, WRITE_DAC,
 };
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+use windows_sys::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -52,6 +53,37 @@ pub struct NativeFileInformation {
     pub file_id: [u8; 16],
     pub is_directory: bool,
     pub number_of_links: u32,
+}
+
+/// Returns the current process working-set size reported by Windows.
+pub fn current_process_working_set_bytes() -> io::Result<usize> {
+    query_current_process_working_set(|process, counters, length| {
+        // SAFETY: `query_current_process_working_set` supplies the documented
+        // current-process pseudo-handle and a live, correctly sized output
+        // structure for the duration of this call.
+        unsafe { K32GetProcessMemoryInfo(process, counters, length) }
+    })
+}
+
+fn query_current_process_working_set(
+    query: impl FnOnce(
+        windows_sys::Win32::Foundation::HANDLE,
+        *mut PROCESS_MEMORY_COUNTERS,
+        u32,
+    ) -> windows_sys::core::BOOL,
+) -> io::Result<usize> {
+    let mut counters = PROCESS_MEMORY_COUNTERS {
+        cb: u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS>())
+            .expect("PROCESS_MEMORY_COUNTERS size fits u32"),
+        ..PROCESS_MEMORY_COUNTERS::default()
+    };
+    // SAFETY: GetCurrentProcess takes no arguments and returns a borrowed
+    // pseudo-handle that must not be closed.
+    let process = unsafe { GetCurrentProcess() };
+    if query(process, &mut counters, counters.cb) == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(counters.WorkingSetSize)
 }
 
 /// Opens an absolute directory with object-manager reparse traversal disabled.
@@ -1118,6 +1150,20 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     struct TestDirectory(std::path::PathBuf);
+
+    #[test]
+    fn current_process_working_set_is_nonzero() {
+        assert!(
+            current_process_working_set_bytes().expect("query current process working set") > 0
+        );
+    }
+
+    #[test]
+    fn process_working_set_query_failure_is_reported() {
+        let error = query_current_process_working_set(|_, _, _| 0)
+            .expect_err("failed native query must be reported");
+        assert_ne!(error.kind(), io::ErrorKind::Unsupported);
+    }
 
     impl TestDirectory {
         fn new() -> Self {

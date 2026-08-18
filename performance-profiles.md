@@ -283,46 +283,37 @@ admission refusal, never silent growth.
 ### Executable Capacity Evidence
 
 The checked-in `ariax-engine` benchmark harness uses the same process-owned
-transport and ingress permits as the RPC worker. With an isolated Linux soft
-handle limit of 20,000, the concurrency profile opened 10,000 real loopback
-sockets and then drove 1,000 simultaneous real loopback HTTP `206` range
-responses, each 64 KiB:
+transport and ingress permits as the RPC worker. It requires an operating-system
+RSS/working-set sample, rejects a sample above the profile target, and holds a
+second barrier while all 1,000 HTTP responses, sockets, and ingress permits are
+simultaneously live. Missing platform instrumentation is a benchmark failure,
+not an optional `None` result.
 
-```text
-profile=concurrency sockets=10000 active_ranges=1000
-resident_reserved_bytes=393216000
-accounted_limit_bytes=939524096 resident_target_bytes=1073741824
-rss_kib=Some(47828)
-```
-
-The same run's active transfer phase reported:
-
-```text
-profile=concurrency http_ranges=1000 http_bytes=65536000 http_ms=446
-active_http_resident_bytes=98304000 active_http_sockets=1000
-accounted_limit_bytes=939524096 rss_kib=Some(156636)
-```
-
-The optimized Rust 1.97.1 harness was rerun on August 18, 2026 with the
+The optimized Rust 1.97.1 harness was run on August 18, 2026 with the
 repository-local Linux toolchain and an isolated 20,000-handle soft limit. It
-reported:
+opened 10,000 real loopback sockets and then drove 1,000 simultaneous real
+loopback HTTP `206` range responses, each 64 KiB:
 
 ```text
-profile=concurrency sockets=10000 active_ranges=1000 connect_ms=2894 active_reservation_ms=48 resident_reserved_bytes=393216000 accounted_limit_bytes=939524096 resident_target_bytes=1073741824 rss_kib=Some(47812)
-profile=concurrency http_ranges=1000 http_bytes=65536000 http_ms=549 active_http_resident_bytes=98304000 active_http_sockets=1000 accounted_limit_bytes=939524096 rss_kib=Some(156468)
+profile=concurrency sockets=10000 active_ranges=1000 connect_ms=1658 active_reservation_ms=37 resident_reserved_bytes=393216000 accounted_limit_bytes=939524096 resident_target_bytes=1073741824 rss_kib=47828
+profile=concurrency http_ranges=1000 http_bytes=65536000 http_ms=477 active_http_resident_bytes=98304000 active_http_sockets=1000 accounted_limit_bytes=939524096 rss_kib=43956
 ```
 
 The same optimized harness was run natively with the repository's Windows-GNU
-Rust 1.97.1 distribution through MSYS2 `MINGW64` on August 18, 2026:
+Rust 1.97.1 distribution through MSYS2 `MINGW64` on August 18, 2026. The safe
+Windows adapter reads the current process working set through
+`K32GetProcessMemoryInfo`:
 
 ```text
-profile=concurrency sockets=10000 active_ranges=1000 connect_ms=920 active_reservation_ms=21 resident_reserved_bytes=393216000 accounted_limit_bytes=939524096 resident_target_bytes=1073741824 rss_kib=None
-profile=concurrency http_ranges=1000 http_bytes=65536000 http_ms=455 active_http_resident_bytes=98304000 active_http_sockets=1000 accounted_limit_bytes=939524096 rss_kib=None
+profile=concurrency sockets=10000 active_ranges=1000 connect_ms=910 active_reservation_ms=21 resident_reserved_bytes=393216000 accounted_limit_bytes=939524096 resident_target_bytes=1073741824 rss_kib=74260
+profile=concurrency http_ranges=1000 http_bytes=65536000 http_ms=417 active_http_resident_bytes=98304000 active_http_sockets=1000 accounted_limit_bytes=939524096 rss_kib=56720
 ```
 
-The Windows-GNU run proves native socket/ingress/resident-permit admission and
-the full active-range transfer, but this harness currently has no Windows RSS
-reader and therefore reports `None`; it is not treated as RSS evidence.
+Both runs prove native socket/ingress/resident-permit admission, the full
+active-range transfer, and measured process residency below the 1 GiB
+concurrency-profile target. The socket fixture actively closes first and the
+client observes EOF before releasing its permits, so repeated harness runs do
+not exhaust client ephemeral ports with 10,000 `TIME_WAIT` entries.
 
 With the ordinary 1,024-handle WSL limit, the same C10k-specific admission
 returns an explicit rejection (`resolved 960` after the control reserve). The

@@ -46,8 +46,10 @@ storage buffers share the resident budget. The local C10k/active-range harness
 passes under an isolated raised Linux handle limit and rejects insufficient
 native capacity explicitly; optimized Linux and native Windows-GNU runs also
 exercise the complete socket and active-range phases. Adaptive tuning,
-non-HTTP domain wiring, the broader evictable file-handle LRU, Windows RSS
-instrumentation, and the remaining release-platform matrix remain phase gates.
+non-HTTP domain wiring, the broader evictable file-handle LRU, and the remaining
+release-platform matrix remain phase gates. Linux RSS and native Windows-GNU
+working-set sampling are mandatory benchmark checks rather than inferred from
+the permit envelope.
 
 The HTTP discard-bound slice is executable: a process-owned ledger atomically
 charges process, canonical final-origin host, task, and attempt scopes without
@@ -323,14 +325,14 @@ Exit criteria:
 - 1,000 active HTTP range benchmark with bounded memory. The checked-in harness
   now drives 1,000 real loopback `206` range responses under the shared ingress,
   socket, and resident permits. Optimized Linux and native Windows-GNU runs are
-  recorded in `performance-profiles.md`; Windows RSS is not inferred from the
-  permit envelope.
+  recorded in `performance-profiles.md`; both require measured process
+  residency below the profile target while all 1,000 responses remain live.
 - 10,000 concurrent low-activity socket benchmark with the reusable idle HTTP
   pool still capped at its profile limit; measured accounted reservations and
   process RSS must fit the profile target/permit envelope and documented native
-  stack/headroom allowance. The Linux run includes RSS; the native Windows-GNU
-  run includes the permit and transfer evidence but reports no RSS; the
-  remaining release-platform matrix still gates completion.
+  stack/headroom allowance. Linux `/proc` RSS and native Windows-GNU working-set
+  readings are executable; the remaining release-platform matrix still gates
+  completion.
 - DNS tests now cover positive/negative TTL clamps, TTL=0, answer-count limits,
   bounded singleflight plus per-name/total leader-and-follower admission,
   all-waiter cancellation cleanup, and special-use-address filtering. Virtual-

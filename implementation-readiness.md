@@ -71,9 +71,10 @@ session-owner join, and clean/dirty session-marker persistence. Cooperative
 drain is clean; active synchronous abort and asynchronous timeout are dirty.
 This remains a phase checkpoint, not a release/tag: broader RFC 9530/Metalink
 identity, `Content-Digest`, alternate digest algorithms, broader validators,
-growing/chunked transfers, HTTP/2, broader RPC, Windows RSS instrumentation,
-adaptive profile tuning, and the complete release matrix remain gates. Optimized
-Linux and native Windows-GNU capacity evidence is recorded in
+growing/chunked transfers, HTTP/2, broader RPC, adaptive profile tuning, and the
+complete release matrix remain gates. Optimized
+Linux and native Windows-GNU capacity evidence, including mandatory process
+residency samples, is recorded in
 `performance-profiles.md`; each remaining
 adapter, transfer module, and integration still follows its Definition Of Ready
 checklist below.
