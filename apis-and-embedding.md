@@ -1,8 +1,12 @@
 # APIs, Integrations, And Embedding
 
-Status: reviewed contract with a bounded Phase-3B RPC subset executable. The
-full aria2-compatible control plane, authentication, events, native embedding
-API, and C ABI remain pending.
+Status: reviewed contract with the bounded Phase-4 control-plane checkpoint
+executable. The shared dispatcher, method-token authentication, batches,
+multicall, query/control/option/source/config/session operations, bounded event
+broker, loopback WebSocket transport, direct CLI controls, and typed Rust
+embedding skeleton are implemented. Legacy HTTP Basic authentication, aria2
+text-session export, the full compatibility matrix, and the C ABI remain
+pending.
 
 Decision: expose aria2-compatible RPC for ecosystem compatibility, and expose a
 typed native library API for embedding. Add a stable C ABI only after the core
@@ -36,30 +40,49 @@ C ABI
 Yes, the downloader should provide aria2-compatible RPC as a first-class
 compatibility surface.
 
-### Executable Phase 3B Subset
+### Executable Phase 4 Checkpoint
 
-The experimental `ariax` binary currently exposes one dispatcher through:
+The experimental `ariax` binary exposes one dispatcher through:
 
 - HTTP/1.1 `POST /jsonrpc` on an explicitly IP-loopback listener, and
-- stdio frames with exactly one `Content-Length` header.
+- a dedicated IP-loopback WebSocket listener, and
+- stdio frames with exactly one `Content-Length` header. The engine library
+  also provides bounded NDJSON framing for supervisors that select it.
 
-Both transports cap requests at 2 MiB and responses at 8 MiB; stdio headers are
-capped at 16 KiB, HTTP connection tasks at 64, and graceful HTTP drain at five
-seconds. Missing, duplicate, invalid, oversized, or truncated stdio framing is
-rejected. The listener refuses non-loopback bind addresses. On EOF or Ctrl-C,
-the transport and progress handles are drained, live HTTP workers are cancelled
-and joined, and the process bootstrap closes its journals/session owner.
+All transports cap requests at 2 MiB and responses at 16 MiB. Batches and
+`system.multicall` are capped at 256 members, list pages at 1,000 tasks, stdio
+headers at 16 KiB, concurrent listener tasks at 64, and graceful network drain
+at five seconds. Missing, duplicate, invalid, oversized, or truncated stdio
+framing is rejected. Network listeners refuse non-loopback bind addresses. On
+EOF, Ctrl-C, or RPC shutdown, transport/progress handles drain, live HTTP
+workers are cancelled and joined, and process bootstrap closes journals and the
+session owner.
 
-Only `aria2.addUri`, `aria2.tellStatus`, `aria2.pause`, `aria2.remove`, and
-`aria2.getGlobalStat` (plus their unprefixed aliases) are implemented. They
-operate on the real scheduler and persisted session, not placeholder state.
-`addUri` supports a URI array plus the reviewed HTTP option subset documented in
-`detailed-http-first-slice.md`; task/source/options admission is atomic and
-recovery restores the source-aware catalog. The three GID methods currently
-require one full hexadecimal GID rather than the broader prefix lookup contract
-below. Notifications, batches, WebSocket/NDJSON, method tokens/HTTP Basic RPC
-authentication, list methods, runtime mutation, and non-loopback serving are
-explicitly deferred to Phase 4.
+Implemented aria2-compatible operations cover HTTP `addUri`; status, queue,
+URI/file/server, option/global-option, version/session/global-stat queries;
+pause/resume/remove/bulk controls; result removal/purge; position/source
+changes; shutdown; and `system.listMethods`, `system.listNotifications`, and
+bounded non-transactional `system.multicall`. Namespaced extensions provide
+subscriptions/polling, source replacement, config check/reload/dump, and bounded
+JSON session export/import. They operate on the real scheduler and persisted
+session rather than placeholder state. GID lookup accepts unique hexadecimal
+prefixes from one through sixteen digits.
+
+`ARIAX_RPC_SECRET` enables the aria2 `token:<secret>` first-parameter policy on
+HTTP, WebSocket, and stdio. Every multicall member authenticates independently.
+The dispatcher accepts JSON-RPC notifications without generating a response.
+The bounded broker publishes scheduler-observed aria2 start/pause/stop/
+complete/error notifications plus coalesced namespaced status updates.
+WebSocket and Content-Length stdio clients receive pushed events; HTTP and
+other request/response clients can use explicit `ariax.subscribe`/
+`ariax.pollEvents`. Legacy HTTP Basic remains a later transport gate and does
+not weaken method-token requirements.
+
+The typed Rust `Engine`/`EngineBuilder` skeleton provides typed add, status,
+pause, resume, remove, option query, bounded event subscription, and orderly
+shutdown over the same process control plane. The direct CLI add/status/pause/
+resume/remove commands use that same engine. The stable external-runtime API,
+broader typed option families, and C ABI remain later gates.
 
 `tellStatus` retains aria2's closed status vocabulary and adds bounded HTTP
 extension fields. Its optional `retryDiagnostic` object carries decimal source,

@@ -26,7 +26,9 @@ mod http_rpc;
 mod http_supervisor;
 mod http_task;
 mod http_transport;
+mod native_api;
 mod process_bootstrap;
+mod rpc_events;
 mod runtime_effects;
 mod startup_executor;
 mod startup_filesystem;
@@ -151,9 +153,12 @@ pub use http_retry::{
 pub use http_rpc::{
     DEFAULT_HTTP_RPC_SHUTDOWN_TIMEOUT, HttpRpcBackend, HttpRpcBackendError, HttpRpcTransportError,
     MAX_HTTP_RPC_CONNECTIONS, MAX_HTTP_RPC_HEADER_BYTES, MAX_HTTP_RPC_REQUEST_BYTES,
-    MAX_HTTP_RPC_RESPONSE_BYTES, RpcFuture, dispatch_json, run_content_length_stdio,
+    MAX_HTTP_RPC_RESPONSE_BYTES, MAX_RPC_BATCH_MEMBERS, MAX_RPC_MULTICALL_MEMBERS, RPC_METHODS,
+    RPC_NOTIFICATIONS, RpcAuthPolicy, RpcDispatcher, RpcFuture, RpcWebSocketBackend, dispatch_json,
+    run_content_length_stdio, run_content_length_stdio_with_events, run_ndjson_stdio,
     serve_loopback_http, serve_loopback_http_listener, serve_loopback_http_listener_until,
-    serve_loopback_http_until,
+    serve_loopback_http_until, serve_loopback_websocket_listener_until,
+    serve_loopback_websocket_until,
 };
 pub use http_supervisor::{
     DEFAULT_HTTP_SUPERVISOR_POLL_INTERVAL, DEFAULT_HTTP_SUPERVISOR_SHUTDOWN_TIMEOUT,
@@ -179,12 +184,22 @@ pub use http_transport::{
     HttpTrustSource, MAX_HTTP_CONNECTIONS_PER_ORIGIN, MAX_HTTP_IDLE_CONNECTIONS_PER_ORIGIN,
     MAX_HTTP_TLS_BUNDLE_BYTES, MAX_HTTP_TLS_BUNDLE_CERTIFICATES,
 };
+pub use native_api::{
+    AddUri, DownloadOptions, Engine, EngineBuilder, NativeApiError, NativeEventSubscription,
+    TaskStatus,
+};
 pub(crate) use process_bootstrap::ProcessDrainOutcome;
 pub use process_bootstrap::{
     BootstrappedEngine, DEFAULT_PROCESS_SHUTDOWN_STEP_TIMEOUT_MS, ProcessBootstrapConfig,
     ProcessBootstrapError, ProcessBootstrapFailure, ProcessSchedulerDriver,
     ProcessSchedulerPreparation, ProcessSchedulerPrepareError, ProcessSchedulerSink,
     ProcessShutdownError, ProcessShutdownReport, bootstrap_process,
+};
+pub use rpc_events::{
+    DEFAULT_RPC_EVENT_BYTE_CAPACITY, DEFAULT_RPC_EVENT_CAPACITY, MAX_RPC_EVENT_BYTE_CAPACITY,
+    MAX_RPC_EVENT_CAPACITY, MAX_RPC_EVENT_SUBSCRIBERS, RpcEvent, RpcEventBroker, RpcEventClass,
+    RpcEventDelivery, RpcEventDisconnect, RpcEventError, RpcEventKey, RpcEventLimits,
+    RpcEventSubscriber,
 };
 pub use runtime_effects::{
     ActiveTransferRequest, AllocationRequest, CancellationRequest, MAX_RUNTIME_EFFECT_CAPACITY,

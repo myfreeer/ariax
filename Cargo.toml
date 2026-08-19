@@ -30,6 +30,7 @@ cookie = { version = "=0.18.1", default-features = false, features = ["percent-e
 cookie_store = { version = "=0.22.1", default-features = false, features = ["public_suffix"] }
 crc32c = "=0.6.8"
 fs2 = "=0.4.3"
+futures-util = "=0.3.33"
 http-body-util = "=0.1.4"
 httpdate = "=1.0.3"
 hyper = { version = "=1.11.0", features = ["server"] }
@@ -46,6 +47,7 @@ serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.145"
 sha2 = { version = "=0.11.0", default-features = false }
 tokio = "=1.53.1"
+tokio-tungstenite = { version = "=0.30.0", default-features = false, features = ["connect", "handshake"] }
 tokio-rustls = { version = "=0.26.4", default-features = false, features = ["ring", "tls12"] }
 tower-service = "=0.3.3"
 unicode-normalization = "=0.1.25"

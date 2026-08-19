@@ -815,6 +815,19 @@ impl HttpTaskCatalog {
         Some(spec)
     }
 
+    pub fn replace(
+        &mut self,
+        spec: HttpTaskSpec,
+    ) -> Result<Arc<HttpTaskSpec>, HttpTaskCatalogError> {
+        if self.by_gid.get(&spec.gid) != Some(&spec.task) || !self.by_task.contains_key(&spec.task)
+        {
+            return Err(HttpTaskCatalogError::Collision);
+        }
+        let spec = Arc::new(spec);
+        self.by_task.insert(spec.task, Arc::clone(&spec));
+        Ok(spec)
+    }
+
     #[must_use]
     pub fn len(&self) -> usize {
         self.by_task.len()
@@ -866,6 +879,10 @@ impl SharedHttpTaskCatalog {
 
     pub fn remove(&self, task: TaskId) -> Option<Arc<HttpTaskSpec>> {
         write_unpoisoned(&self.inner).remove(task)
+    }
+
+    pub fn replace(&self, spec: HttpTaskSpec) -> Result<Arc<HttpTaskSpec>, HttpTaskCatalogError> {
+        write_unpoisoned(&self.inner).replace(spec)
     }
 
     #[must_use]

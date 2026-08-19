@@ -1,13 +1,17 @@
 # Requirements Traceability
 
 Status: reviewed contract; the scoped Phase-3B/3C HTTP(S) downloader milestone
-is implemented and checkpointed at `f97845d`. Core scheduling,
+is checkpointed at `30b70c5`, and the bounded Phase-4 control-plane checkpoint
+is executable in the working tree. Core scheduling,
 bounded persistence/recovery, native storage handoff, runtime ownership,
 packet-independent stats, process bootstrap, and the first public Phase-3B
 multi-mirror HTTP(S) slice have executable checkpoints. The latter includes
 atomic source-aware admission/recovery, DNS/SSRF/Happy-Eyeballs,
-redirect/proxy/auth/cookie policy, supervised range/retry workers, and five real
-scheduler RPC methods. It also includes process-owned pooling, bounded ingress,
+redirect/proxy/auth/cookie policy, supervised range/retry workers, and a shared
+real-scheduler JSON-RPC/CLI/library control surface. It also includes
+method-token authentication, bounded batch/multicall/list work, unique GID
+prefixes, typed option/source/config/session controls, loopback WebSocket,
+bounded scheduler-observed events, and process-owned pooling/bounded ingress,
 hierarchical rate limiting and stall diagnostics, persisted retry waits, and
 strong-ETag-bound single-source/strict-fallback recovery with pre-network
 durable-piece digest verification. A bounded `tellStatus.retryDiagnostic`
@@ -290,10 +294,12 @@ Design coverage:
   digest evidence, persisted digest-only restart identity with local and network
   durable-range revalidation, first-slice checkpoint-boundary interruption
   recovery with exactly-once lease dispositions, pre-read storage-backpressure
-  admission, and five real scheduler RPC methods. Broader RFC
+  admission, and the Phase-4 shared dispatcher/control/event checkpoint.
+  Broader RFC
   9530/Metalink identity, `Content-Digest`, additional checksum algorithms,
-  Last-Modified/unsafe-override resume, HTTP/2, growing bodies, and the rest of
-  Phase 4 remain pending.
+  Last-Modified/unsafe-override resume, HTTP/2, growing bodies, legacy HTTP
+  Basic RPC, aria2 text-session compatibility, and the remaining Phase-4 exit
+  matrix remain pending.
 
 Acceptance:
 

@@ -1,7 +1,8 @@
 # Downloader Design
 
 Status: overall implementation is underway. The scoped Phase-3B/3C HTTP(S)
-downloader milestone is implemented and checkpointed at `f97845d`; Phase 0
+downloader milestone is implemented and checkpointed at `f97845d`, and the
+Phase-4 control-plane checkpoint is now executable in the working tree. Phase 0
 through the core Phase-1/2
 scheduler, configuration, journal, SQLite session owner, bounded runtime,
 descriptor-safe storage, startup recovery, and platform capability work have
@@ -16,9 +17,14 @@ Mozilla Public Suffix List. Scheduler-owned workers coordinate
 non-overlapping range leases across mirrors, enforce strict response placement,
 retry within total/per-source budgets, preserve durable pieces across restart,
 and publish packet-independent speed, connection, retry, discard, and durable
-progress counters. The experimental CLI exposes ordinary HTTP(S) URIs through
-five real-scheduler JSON-RPC methods over loopback HTTP/1.1 and Content-Length
-stdio, with atomic rejection and orderly worker/journal/session shutdown.
+progress counters. The experimental CLI exposes the real scheduler through a
+shared bounded JSON-RPC dispatcher over loopback HTTP/1.1, loopback WebSocket,
+and Content-Length stdio, plus direct add/status/pause/resume/remove commands.
+The dispatcher enforces method tokens, batch/multicall/list/response bounds,
+unique GID prefixes, typed option/source mutation, config/session extensions,
+and orderly worker/journal/session shutdown. A bounded event broker supplies
+scheduler-observed aria2 notifications and coalesced status updates, and a
+typed Rust embedding skeleton uses the same control plane.
 
 Strict HTTP identity now distinguishes whole-file and exact-range evidence. A
 persisted user SHA-256 admits ordinary concurrent mirrors and final verification;
@@ -32,8 +38,9 @@ This is still not a complete downloader or release/tag-ready. The first
 hierarchical rate limiter, stall policy, process-owned discard guard, same-origin
 endgame fencing, bounded exact-range cross-origin digest fencing, and local
 capacity benchmarks are executable; HTTP/2, unknown-length/chunked layouts,
-broader RFC 9530/Metalink and `Content-Digest` modes, WebSocket/NDJSON and
-non-loopback RPC, the rest of Phase 4, and the full native release matrix remain
+broader RFC 9530/Metalink and `Content-Digest` modes, legacy HTTP Basic RPC,
+aria2 text-session export, the remaining Phase-4 exit matrix, non-loopback RPC,
+and the full native release matrix remain
 gated by `implementation-readiness.md`
 and `implementation-plan.md`. Deterministic ENOSPC, permission-denied,
 short-write, partial-fsync, torn-tail, and same-inode publication faults are

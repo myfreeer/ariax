@@ -46,6 +46,8 @@ fn help_succeeds() {
     assert!(stdout.contains("--profile=auto|concurrency|throughput|latency|compact"));
     assert!(stdout.contains("--download-http-pinned"));
     assert!(stdout.contains("--resume-http-pinned"));
+    assert!(stdout.contains("--add-uri"));
+    assert!(stdout.contains("--status"));
 }
 
 #[test]
@@ -103,6 +105,22 @@ fn pinned_http_control_rejects_invalid_identity_before_network_or_filesystem_wor
         ])
         .output()
         .expect("run pinned HTTP control");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("invalid GID"));
+}
+
+#[test]
+fn direct_control_rejects_invalid_gid_before_bootstrap_work() {
+    let output = ariax()
+        .args([
+            "--status",
+            "unused-session.db",
+            "unused-control",
+            "unused-output",
+            "bad-gid",
+        ])
+        .output()
+        .expect("run direct status control");
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&output.stderr).contains("invalid GID"));
 }
@@ -342,8 +360,10 @@ fn stdio_rpc_admits_paused_http_task_persists_metadata_and_shuts_down_on_eof() {
         .expect("Content-Length response header")
         .parse::<usize>()
         .expect("numeric response length");
-    let body = &process.stdout[separator + 4..];
-    assert_eq!(body.len(), declared);
+    let body_start = separator + 4;
+    let body_end = body_start + declared;
+    assert!(process.stdout.len() >= body_end);
+    let body = &process.stdout[body_start..body_end];
     let response: serde_json::Value = serde_json::from_slice(body).expect("JSON-RPC response");
     assert_eq!(response["jsonrpc"], "2.0");
     assert_eq!(response["id"], 1);

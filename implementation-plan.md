@@ -1,8 +1,9 @@
 # Implementation Plan
 
-Status: implementation remains underway for the overall roadmap, while the
-scoped Phase-3B/3C HTTP(S) downloader milestone is implemented and checkpointed
-at `f97845d`. Phase 0 contracts and the gated Phase-1/2 core, config,
+Status: implementation remains underway for the overall roadmap. The scoped
+Phase-3B/3C HTTP(S) downloader milestone is checkpointed at `30b70c5`, and the
+Phase-4 control-plane checkpoint is executable in the working tree. Phase 0
+contracts and the gated Phase-1/2 core, config,
 persistence, recovery, runtime, storage, and native capability work have
 executable checkpoints. The completed HTTP checkpoint covers
 the first public known-length multi-mirror HTTP(S) vertical slice: atomic
@@ -375,6 +376,19 @@ Exit criteria:
   disk/CPU and BitTorrent lanes must surface the same typed outcome.
 
 ## Phase 4: Control Plane And RPC
+
+Checkpoint status: the shared dispatcher, method-token authentication,
+notifications, bounded batches/multicall/list results, query and queue controls,
+unique GID prefixes, typed task/global option changes, source replacement,
+config check/reload/dump, bounded JSON session export/import, scheduler-observed
+event broker, loopback WebSocket, NDJSON engine framing, direct CLI controls,
+and typed Rust embedding skeleton are executable. Content-Length stdio also
+pushes bounded notifications through a single serialized writer. A standalone
+RPC JSON fuzz target and dispatch-latency harness are included. Legacy HTTP
+Basic, configured aria2 text-session export/import, full option-matrix runtime
+coverage, active-download p99 evidence, and the remaining release
+platform matrix stay open exit gates; this checkpoint therefore does not mark
+the whole phase complete.
 
 - Complete control-plane operations over the Phase-1 scheduler.
 - Request/response, batch, list-page, per-client pending-work, and serialized-byte

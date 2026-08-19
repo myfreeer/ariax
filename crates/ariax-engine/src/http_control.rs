@@ -11,20 +11,26 @@ use crate::{
     HttpTaskCatalogError, HttpTaskOptions, HttpTaskSpec, HttpTaskSpecError, HttpTaskWorker,
     HttpTransferStatsSnapshot, HttpWorkerSupervisor, HttpWorkerSupervisorConfig,
     HttpWorkerSupervisorShutdown, MAX_HTTP_ENDGAME_MAX_DUPLICATES, PersistenceEffectPlan,
-    PersistencePlanStep, ProcessDrainOutcome, SharedHttpTaskCatalog, SharedHttpTransferStats,
-    derive_http_journal_id, http_journal_directory,
+    PersistencePlanStep, ProcessDrainOutcome, RpcEvent, RpcEventBroker, RpcEventClass,
+    RpcEventError, RpcEventKey, RpcEventLimits, RpcEventSubscriber, SharedHttpTaskCatalog,
+    SharedHttpTransferStats, derive_http_journal_id, http_journal_directory,
+};
+use ariax_config::{
+    CompatStatus, FlatConfigLimits, OptionValue, RuntimeUpdate, Scope, SecurityClass,
+    UnknownOptionMode, builtin_registry, parse_flat_config, parse_option_value,
 };
 use ariax_core::{
-    Aria2Status, Generation, Gid, MonotonicInstant, PublicError, QueueClass, QueueOrder,
-    RequestScheduler, RetryClass, SchedulerCommand, TaskConditions, TaskEvent, TaskEventEnvelope,
-    TaskId, TaskSnapshot, TransitionEffect,
+    Aria2Status, Generation, Gid, MonotonicInstant, OptionPatchId, PublicError, QueueClass,
+    QueueOrder, RequestScheduler, RetryClass, SchedulerCommand, TaskConditions, TaskEvent,
+    TaskEventEnvelope, TaskId, TaskSnapshot, TransitionEffect, ValidatedOptionPatchKind,
 };
+use ariax_runtime::{RateArbiter, RateLimit};
 use ariax_storage::{
     ControlJournalAppender, GenerationStartReason, JournalPayload, OptionsSnapshotScope,
-    PathPlatform, PlatformPath, SafePathBuilder, SessionCommand, SessionCommandResult,
-    SessionHandle, SessionId, SessionQueueOrder, SessionQueueState, SessionSlowSlotState,
-    SessionStoppedResultRecord, SessionTaskRecord, SessionTerminalStatus, TaskPauseReason,
-    TaskRemoveReason,
+    PathPlatform, PlatformPath, SafePathBuilder, SanitizedOptionMap, SessionCommand,
+    SessionCommandResult, SessionHandle, SessionId, SessionQueueOrder, SessionQueueState,
+    SessionSlowSlotState, SessionStoppedResultRecord, SessionTaskRecord, SessionTerminalStatus,
+    TaskPauseReason, TaskRemoveReason,
 };
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
@@ -35,13 +41,14 @@ use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 
 const CONTROL_PROGRESS_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTROL_PROGRESS_POLL: Duration = Duration::from_micros(50);
 const MAX_HTTP_RETRY_ATTEMPTS: u32 = 1024;
 const MAX_HTTP_RETRY_WAIT_SECS: u64 = 600;
 const MAX_HTTP_RETRY_ELAPSED_SECS: u64 = 7200;
+const MAX_RPC_LIST_ITEMS: usize = 1000;
 
 /// Bounded process configuration needed by public HTTP task admission.
 #[derive(Clone, Debug)]
@@ -80,6 +87,7 @@ pub enum HttpControlError {
     NotFound,
     Unsupported(&'static str),
     Busy,
+    SlowConsumer,
 }
 
 impl fmt::Display for HttpControlError {
@@ -95,6 +103,7 @@ impl fmt::Display for HttpControlError {
             Self::NotFound => formatter.write_str("task was not found"),
             Self::Unsupported(message) => formatter.write_str(message),
             Self::Busy => formatter.write_str("control plane is busy"),
+            Self::SlowConsumer => formatter.write_str("RPC event subscriber is too slow"),
         }
     }
 }
@@ -112,6 +121,16 @@ pub struct HttpControlPlane {
     session_id: SessionId,
     journal_sequences: BTreeMap<Gid, u64>,
     next_task_id: u64,
+    global_options: BTreeMap<String, String>,
+    pending_option_snapshots: BTreeMap<OptionPatchId, SanitizedOptionMap>,
+    pending_restart_patches: BTreeMap<Gid, OptionPatchId>,
+    next_option_patch_id: u64,
+    shutdown_requested: bool,
+    force_shutdown_requested: bool,
+    events: RpcEventBroker,
+    subscriptions: BTreeMap<u64, RpcEventSubscriber>,
+    observed_statuses: BTreeMap<Gid, Aria2Status>,
+    global_download_rate: Option<RateArbiter>,
 }
 
 impl fmt::Debug for HttpControlPlane {
@@ -152,8 +171,19 @@ impl HttpControlPlane {
             supervisor: None,
             journal_sequences: BTreeMap::new(),
             next_task_id,
+            global_options: default_global_options()?,
+            pending_option_snapshots: BTreeMap::new(),
+            pending_restart_patches: BTreeMap::new(),
+            next_option_patch_id: now_unix_ms().max(1),
+            shutdown_requested: false,
+            force_shutdown_requested: false,
+            events: RpcEventBroker::new(),
+            subscriptions: BTreeMap::new(),
+            observed_statuses: BTreeMap::new(),
+            global_download_rate: None,
         };
         plane.restore_catalog()?;
+        plane.reset_observed_statuses();
         Ok(plane)
     }
 
@@ -174,6 +204,23 @@ impl HttpControlPlane {
         )
         .map_err(|_| HttpControlError::InvalidConfig)?;
         self.supervisor = Some(supervisor);
+        Ok(())
+    }
+
+    /// Attaches the process-owned download arbiter so global live option and
+    /// reload changes affect already-running HTTP workers.
+    pub fn attach_global_download_rate(
+        &mut self,
+        rate: RateArbiter,
+    ) -> Result<(), HttpControlError> {
+        if let Some(limit) = self.global_options.get("max-overall-download-limit") {
+            let bytes = limit
+                .parse::<u64>()
+                .map_err(|_| HttpControlError::InvalidConfig)?;
+            rate.set_global_limit(RateLimit::per_second(bytes))
+                .map_err(|_| HttpControlError::InvalidConfig)?;
+        }
+        self.global_download_rate = Some(rate);
         Ok(())
     }
 
@@ -308,6 +355,21 @@ impl HttpControlPlane {
         self.session.clone()
     }
 
+    #[must_use]
+    pub fn event_broker(&self) -> RpcEventBroker {
+        self.events.clone()
+    }
+
+    #[must_use]
+    pub const fn shutdown_requested(&self) -> bool {
+        self.shutdown_requested
+    }
+
+    #[must_use]
+    pub const fn force_shutdown_requested(&self) -> bool {
+        self.force_shutdown_requested
+    }
+
     /// Performs one bounded engine/supervisor progress turn.
     pub fn poll_once(&mut self) -> Result<(), HttpControlError> {
         let now = MonotonicInstant::now();
@@ -328,18 +390,217 @@ impl HttpControlPlane {
         if self.engine.is_idle() {
             self.try_admit_one(now)?;
         }
-        self.drive_engine()
+        self.drive_engine()?;
+        self.publish_task_state_events();
+        Ok(())
     }
 
     pub fn call(&mut self, method: &str, params: Value) -> Result<Value, HttpControlError> {
-        match method {
+        let result = match method {
             "aria2.addUri" | "addUri" => self.add_uri(params),
             "aria2.tellStatus" | "tellStatus" => self.tell_status(params),
-            "aria2.pause" | "pause" => self.pause(params),
-            "aria2.remove" | "remove" => self.remove(params),
+            "aria2.tellActive" | "tellActive" => self.tell_active(params),
+            "aria2.tellWaiting" | "tellWaiting" => self.tell_waiting(params),
+            "aria2.tellStopped" | "tellStopped" => self.tell_stopped(params),
+            "aria2.pause" | "pause" => self.pause(params, false),
+            "aria2.forcePause" | "forcePause" => self.pause(params, true),
+            "aria2.pauseAll" | "pauseAll" => self.pause_all(params, false),
+            "aria2.forcePauseAll" | "forcePauseAll" => self.pause_all(params, true),
+            "aria2.unpause" | "unpause" => self.unpause(params),
+            "aria2.unpauseAll" | "unpauseAll" => self.unpause_all(params),
+            "aria2.remove" | "remove" => self.remove(params, false),
+            "aria2.forceRemove" | "forceRemove" => self.remove(params, true),
+            "aria2.removeDownloadResult" | "removeDownloadResult" => {
+                self.remove_download_result(params)
+            }
+            "aria2.purgeDownloadResult" | "purgeDownloadResult" => {
+                self.purge_download_result(params)
+            }
+            "aria2.changePosition" | "changePosition" => self.change_position(params),
+            "aria2.getUris" | "getUris" => self.get_uris(params),
+            "aria2.getFiles" | "getFiles" => self.get_files(params),
+            "aria2.getServers" | "getServers" => self.get_servers(params),
+            "aria2.getOption" | "getOption" => self.get_option(params),
+            "aria2.changeOption" | "changeOption" => self.change_option(params),
+            "aria2.changeUri" | "changeUri" => self.change_uri(params),
+            "ariax.replaceSources" => self.replace_sources(params),
+            "aria2.getGlobalOption" | "getGlobalOption" => self.get_global_option(params),
+            "aria2.changeGlobalOption" | "changeGlobalOption" => self.change_global_option(params),
+            "aria2.getVersion" | "getVersion" => self.get_version(params),
+            "aria2.getSessionInfo" | "getSessionInfo" => self.get_session_info(params),
             "aria2.getGlobalStat" | "getGlobalStat" => self.global_stat(params),
+            "aria2.shutdown" | "shutdown" => self.request_shutdown(params, false),
+            "aria2.forceShutdown" | "forceShutdown" => self.request_shutdown(params, true),
+            "ariax.subscribe" => self.subscribe_events(params),
+            "ariax.unsubscribe" => self.unsubscribe_events(params),
+            "ariax.pollEvents" => self.poll_events(params),
+            "ariax.checkConfig" => self.check_config(params),
+            "ariax.reloadConfig" => self.reload_config(params),
+            "ariax.dumpConfig" => self.dump_config(params),
+            "ariax.exportSession" => self.export_session(params),
+            "ariax.importSession" => self.import_session(params),
             _ => Err(HttpControlError::Unsupported("method not found")),
+        };
+        if let Ok(value) = &result {
+            self.publish_control_event(method, value);
+            self.publish_task_state_events();
         }
+        result
+    }
+
+    fn subscribe_events(&mut self, params: Value) -> Result<Value, HttpControlError> {
+        let values = params.as_array().filter(|values| values.len() <= 2).ok_or(
+            HttpControlError::InvalidParams("subscribe accepts optional event and byte limits"),
+        )?;
+        let events = values
+            .first()
+            .map(|value| parse_bounded_usize(value, "event capacity"))
+            .transpose()?
+            .unwrap_or(crate::DEFAULT_RPC_EVENT_CAPACITY);
+        let bytes = values
+            .get(1)
+            .map(|value| parse_bounded_usize(value, "event byte capacity"))
+            .transpose()?
+            .unwrap_or(crate::DEFAULT_RPC_EVENT_BYTE_CAPACITY);
+        let limits = RpcEventLimits {
+            events: NonZeroUsize::new(events).ok_or(HttpControlError::InvalidParams(
+                "event capacity must be nonzero",
+            ))?,
+            bytes: NonZeroUsize::new(bytes).ok_or(HttpControlError::InvalidParams(
+                "event byte capacity must be nonzero",
+            ))?,
+        };
+        let subscriber = self.events.subscribe(limits).map_err(event_backend_error)?;
+        let id = subscriber.id();
+        self.subscriptions.insert(id, subscriber);
+        Ok(
+            json!({"subscriptionId": id.to_string(), "snapshotRevision": self.engine.snapshot_reader().load().revision()}),
+        )
+    }
+
+    fn unsubscribe_events(&mut self, params: Value) -> Result<Value, HttpControlError> {
+        let values = params.as_array().filter(|values| values.len() == 1).ok_or(
+            HttpControlError::InvalidParams("unsubscribe requires a subscription id"),
+        )?;
+        let id = parse_subscription_id(&values[0])?;
+        if self.subscriptions.remove(&id).is_none() {
+            return Err(HttpControlError::NotFound);
+        }
+        Ok(Value::String("OK".to_owned()))
+    }
+
+    fn poll_events(&mut self, params: Value) -> Result<Value, HttpControlError> {
+        let values = params
+            .as_array()
+            .filter(|values| (1..=2).contains(&values.len()))
+            .ok_or(HttpControlError::InvalidParams(
+                "pollEvents requires subscription id and optional count",
+            ))?;
+        let id = parse_subscription_id(&values[0])?;
+        let count = values
+            .get(1)
+            .map(|value| parse_bounded_usize(value, "event count"))
+            .transpose()?
+            .unwrap_or(64)
+            .min(256);
+        let subscriber = self
+            .subscriptions
+            .get_mut(&id)
+            .ok_or(HttpControlError::NotFound)?;
+        let mut events = Vec::new();
+        for _ in 0..count {
+            match subscriber.try_next().map_err(event_backend_error)? {
+                Some(delivery) => events.push(delivery.into_value()),
+                None => break,
+            }
+        }
+        Ok(Value::Array(events))
+    }
+
+    fn publish_control_event(&self, method: &str, value: &Value) {
+        let gid = value
+            .as_str()
+            .or_else(|| value.get("gid").and_then(Value::as_str))
+            .and_then(|value| value.parse().ok());
+        let event = match method {
+            "aria2.tellStatus" | "tellStatus" => RpcEvent::notification(
+                "ariax.onStatus",
+                value.clone(),
+                RpcEventClass::Coalesced,
+                Some(RpcEventKey::new(gid, "ariax.onStatus")),
+            ),
+            "aria2.shutdown" | "shutdown" | "aria2.forceShutdown" | "forceShutdown" => {
+                RpcEvent::notification(
+                    "ariax.onShutdown",
+                    json!({"force": self.force_shutdown_requested}),
+                    RpcEventClass::Reliable,
+                    None,
+                )
+            }
+            _ => return,
+        };
+        if let Ok(event) = event {
+            self.events.publish(event);
+        }
+    }
+
+    fn reset_observed_statuses(&mut self) {
+        let root = self.engine.snapshot_reader().load();
+        self.observed_statuses = root
+            .tasks()
+            .values()
+            .filter_map(|task| {
+                task.snapshot
+                    .wire_status()
+                    .ok()
+                    .map(|status| (task.snapshot.gid, status))
+            })
+            .collect();
+    }
+
+    fn publish_task_state_events(&mut self) {
+        let current = {
+            let root = self.engine.snapshot_reader().load();
+            root.tasks()
+                .values()
+                .filter_map(|task| {
+                    task.snapshot
+                        .wire_status()
+                        .ok()
+                        .map(|status| (task.snapshot.gid, status))
+                })
+                .collect::<BTreeMap<_, _>>()
+        };
+        for (&gid, &status) in &current {
+            let previous = self.observed_statuses.get(&gid).copied();
+            if previous == Some(status) {
+                continue;
+            }
+            let method = match status {
+                Aria2Status::Active => Some("aria2.onDownloadStart"),
+                Aria2Status::Paused => previous
+                    .is_some_and(|previous| previous != Aria2Status::Paused)
+                    .then_some("aria2.onDownloadPause"),
+                Aria2Status::Complete => Some("aria2.onDownloadComplete"),
+                Aria2Status::Error => Some("aria2.onDownloadError"),
+                Aria2Status::Removed => Some("aria2.onDownloadStop"),
+                Aria2Status::Waiting => None,
+            };
+            if let Some(method) = method
+                && let Ok(event) = aria2_task_event(method, Some(gid))
+            {
+                self.events.publish(event);
+            }
+            if let Ok(event) = RpcEvent::notification(
+                "ariax.onStatus",
+                json!({"gid": gid.to_string(), "status": status.as_str()}),
+                RpcEventClass::Coalesced,
+                Some(RpcEventKey::new(Some(gid), "ariax.onStatus")),
+            ) {
+                self.events.publish(event);
+            }
+        }
+        self.observed_statuses = current;
     }
 
     fn add_uri(&mut self, params: Value) -> Result<Value, HttpControlError> {
@@ -402,22 +663,87 @@ impl HttpControlPlane {
         Ok(Value::String(inserted.gid().to_string()))
     }
 
-    fn pause(&mut self, params: Value) -> Result<Value, HttpControlError> {
-        let gid = parse_gid_param(&params)?;
-        self.execute_control_command(SchedulerCommand::Pause { gid, force: false })?;
+    fn pause(&mut self, params: Value, force: bool) -> Result<Value, HttpControlError> {
+        let gid = self.resolve_gid_param(&params)?;
+        self.execute_control_command(SchedulerCommand::Pause { gid, force })?;
         Ok(Value::String(gid.to_string()))
     }
 
-    fn remove(&mut self, params: Value) -> Result<Value, HttpControlError> {
-        let gid = parse_gid_param(&params)?;
-        self.execute_control_command(SchedulerCommand::Remove { gid, force: false })?;
+    fn unpause(&mut self, params: Value) -> Result<Value, HttpControlError> {
+        let gid = self.resolve_gid_param(&params)?;
+        self.execute_control_command(SchedulerCommand::Resume { gid })?;
+        self.try_admit_one(MonotonicInstant::now())?;
+        self.drive_engine()?;
+        Ok(Value::String(gid.to_string()))
+    }
+
+    fn remove(&mut self, params: Value, force: bool) -> Result<Value, HttpControlError> {
+        let gid = self.resolve_gid_param(&params)?;
+        self.execute_control_command(SchedulerCommand::Remove { gid, force })?;
         Ok(Value::String(gid.to_string()))
     }
 
     fn tell_status(&mut self, params: Value) -> Result<Value, HttpControlError> {
-        let gid = parse_gid_param(&params)?;
+        let (gid, keys) = self.resolve_gid_and_keys(&params)?;
         let root = self.engine.snapshot_reader().load();
         let task = root.task(gid).ok_or(HttpControlError::NotFound)?;
+        self.applied_status(task, keys.as_deref())
+    }
+
+    fn tell_active(&self, params: Value) -> Result<Value, HttpControlError> {
+        let keys = parse_optional_keys_only(&params)?;
+        self.list_statuses(
+            &[QueueClass::Active],
+            0,
+            MAX_RPC_LIST_ITEMS,
+            keys.as_deref(),
+        )
+    }
+
+    fn tell_waiting(&self, params: Value) -> Result<Value, HttpControlError> {
+        let (offset, count, keys) = parse_list_params(&params)?;
+        self.list_statuses(
+            &[QueueClass::Waiting, QueueClass::Demoted, QueueClass::Paused],
+            offset,
+            count,
+            keys.as_deref(),
+        )
+    }
+
+    fn tell_stopped(&self, params: Value) -> Result<Value, HttpControlError> {
+        let (offset, count, keys) = parse_list_params(&params)?;
+        self.list_statuses(&[QueueClass::Stopped], offset, count, keys.as_deref())
+    }
+
+    fn list_statuses(
+        &self,
+        classes: &[QueueClass],
+        offset: i64,
+        count: usize,
+        keys: Option<&[String]>,
+    ) -> Result<Value, HttpControlError> {
+        let root = self.engine.snapshot_reader().load();
+        let gids = classes
+            .iter()
+            .flat_map(|class| root.queue(*class).iter().copied())
+            .collect::<Vec<_>>();
+        let start = normalized_offset(offset, gids.len());
+        let end = start.saturating_add(count).min(gids.len());
+        let mut values = Vec::with_capacity(end.saturating_sub(start));
+        for gid in &gids[start..end] {
+            let task = root.task(*gid).ok_or_else(|| {
+                HttpControlError::Scheduler("queue index references a missing task".to_owned())
+            })?;
+            values.push(self.applied_status(task, keys)?);
+        }
+        Ok(Value::Array(values))
+    }
+
+    fn applied_status(
+        &self,
+        task: &ariax_runtime::AppliedTaskSnapshot,
+        keys: Option<&[String]>,
+    ) -> Result<Value, HttpControlError> {
         let snapshot = &task.snapshot;
         let status = snapshot
             .wire_status()
@@ -427,7 +753,692 @@ impl HttpControlPlane {
             .get(task.task_id)
             .map(|stats| stats.snapshot())
             .unwrap_or_default();
-        Ok(status_value(snapshot, status, stats))
+        Ok(project_status(status_value(snapshot, status, stats), keys))
+    }
+
+    fn pause_all(&mut self, params: Value, force: bool) -> Result<Value, HttpControlError> {
+        require_no_params(&params, "pauseAll")?;
+        let root = self.engine.snapshot_reader().load();
+        let gids = [QueueClass::Active, QueueClass::Waiting, QueueClass::Demoted]
+            .into_iter()
+            .flat_map(|class| root.queue(class).iter().copied())
+            .collect::<Vec<_>>();
+        drop(root);
+        for gid in gids {
+            self.execute_control_command(SchedulerCommand::Pause { gid, force })?;
+        }
+        Ok(Value::String("OK".to_owned()))
+    }
+
+    fn unpause_all(&mut self, params: Value) -> Result<Value, HttpControlError> {
+        require_no_params(&params, "unpauseAll")?;
+        let root = self.engine.snapshot_reader().load();
+        let gids = root.queue(QueueClass::Paused).to_vec();
+        drop(root);
+        for gid in gids {
+            self.execute_control_command(SchedulerCommand::Resume { gid })?;
+        }
+        self.try_admit_one(MonotonicInstant::now())?;
+        self.drive_engine()?;
+        Ok(Value::String("OK".to_owned()))
+    }
+
+    fn remove_download_result(&mut self, params: Value) -> Result<Value, HttpControlError> {
+        let gid = self.resolve_gid_param(&params)?;
+        let root = self.engine.snapshot_reader().load();
+        let task = root.task(gid).ok_or(HttpControlError::NotFound)?.task_id;
+        drop(root);
+        self.execute_control_command(SchedulerCommand::RemoveStoppedResult { gid })?;
+        self.tasks.remove(task);
+        self.stats.remove(task);
+        Ok(Value::String("OK".to_owned()))
+    }
+
+    fn purge_download_result(&mut self, params: Value) -> Result<Value, HttpControlError> {
+        require_no_params(&params, "purgeDownloadResult")?;
+        let root = self.engine.snapshot_reader().load();
+        let gids = root.queue(QueueClass::Stopped).to_vec();
+        drop(root);
+        for gid in gids {
+            self.remove_download_result(json!([gid.to_string()]))?;
+        }
+        Ok(Value::String("OK".to_owned()))
+    }
+
+    fn change_position(&mut self, params: Value) -> Result<Value, HttpControlError> {
+        let values = params.as_array().filter(|values| values.len() == 3).ok_or(
+            HttpControlError::InvalidParams("changePosition requires GID, position, and mode"),
+        )?;
+        let gid = self.resolve_gid_text(
+            values[0]
+                .as_str()
+                .ok_or(HttpControlError::InvalidParams("GID must be a string"))?,
+        )?;
+        let requested = parse_i64(&values[1], "position")?;
+        let mode = values[2].as_str().ok_or(HttpControlError::InvalidParams(
+            "position mode must be a string",
+        ))?;
+        let root = self.engine.snapshot_reader().load();
+        let (order, current) = queue_order_and_position(&root, gid)?;
+        let last = i64::try_from(order.len().saturating_sub(1)).unwrap_or(i64::MAX);
+        let target = match mode {
+            "POS_SET" => requested,
+            "POS_CUR" => i64::try_from(current)
+                .unwrap_or(i64::MAX)
+                .saturating_add(requested),
+            "POS_END" => last.saturating_add(requested),
+            _ => return Err(HttpControlError::InvalidParams("invalid position mode")),
+        }
+        .clamp(0, last);
+        drop(root);
+        let target = usize::try_from(target)
+            .map_err(|_| HttpControlError::InvalidParams("position is out of range"))?;
+        self.execute_control_command(SchedulerCommand::ChangePosition {
+            gid,
+            position: target,
+        })?;
+        Ok(Value::from(target))
+    }
+
+    fn get_uris(&self, params: Value) -> Result<Value, HttpControlError> {
+        let gid = self.resolve_gid_param(&params)?;
+        let spec = self.tasks.get_gid(gid).ok_or(HttpControlError::NotFound)?;
+        Ok(Value::Array(
+            spec.sources()
+                .iter()
+                .map(|source| json!({"uri": source.uri(), "status": "used"}))
+                .collect(),
+        ))
+    }
+
+    fn get_files(&self, params: Value) -> Result<Value, HttpControlError> {
+        let gid = self.resolve_gid_param(&params)?;
+        let root = self.engine.snapshot_reader().load();
+        let task = root.task(gid).ok_or(HttpControlError::NotFound)?;
+        let spec = self.tasks.get_gid(gid).ok_or(HttpControlError::NotFound)?;
+        let stats = self
+            .stats
+            .get(task.task_id)
+            .map(|stats| stats.snapshot())
+            .unwrap_or_default();
+        let completed = task.snapshot.completed_length.max(stats.durable_bytes);
+        let total = task
+            .snapshot
+            .total_length
+            .unwrap_or(stats.total_length)
+            .max(completed);
+        let path = spec.output_root().join(spec.output().canonical_string());
+        Ok(json!([{
+            "index": "1",
+            "path": path.to_string_lossy(),
+            "length": total.to_string(),
+            "completedLength": completed.to_string(),
+            "selected": "true",
+            "uris": spec.sources().iter().map(|source| json!({"uri": source.uri(), "status":"used"})).collect::<Vec<_>>(),
+        }]))
+    }
+
+    fn get_servers(&self, params: Value) -> Result<Value, HttpControlError> {
+        let gid = self.resolve_gid_param(&params)?;
+        let spec = self.tasks.get_gid(gid).ok_or(HttpControlError::NotFound)?;
+        Ok(Value::Array(
+            spec.sources()
+                .iter()
+                .map(|source| {
+                    json!({
+                        "index": (usize::try_from(source.id().get()).unwrap_or(usize::MAX) + 1).to_string(),
+                        "servers": [{"uri": source.uri(), "currentUri": source.uri(), "downloadSpeed":"0"}],
+                    })
+                })
+                .collect(),
+        ))
+    }
+
+    fn get_option(&self, params: Value) -> Result<Value, HttpControlError> {
+        let gid = self.resolve_gid_param(&params)?;
+        let spec = self.tasks.get_gid(gid).ok_or(HttpControlError::NotFound)?;
+        let options = spec
+            .persistence_options()
+            .map_err(HttpControlError::TaskSpec)?;
+        Ok(string_map_value(options.entries()))
+    }
+
+    fn change_option(&mut self, params: Value) -> Result<Value, HttpControlError> {
+        let values = params.as_array().filter(|values| values.len() == 2).ok_or(
+            HttpControlError::InvalidParams("changeOption requires GID and option object"),
+        )?;
+        let gid = self.resolve_gid_text(
+            values[0]
+                .as_str()
+                .ok_or(HttpControlError::InvalidParams("GID must be a string"))?,
+        )?;
+        let patch = parse_registry_options(&values[1], Scope::RpcChange)?;
+        if patch.is_empty() {
+            return Ok(Value::String("OK".to_owned()));
+        }
+        let current = self.tasks.get_gid(gid).ok_or(HttpControlError::NotFound)?;
+        let root = self.engine.snapshot_reader().load();
+        let task = root.task(gid).ok_or(HttpControlError::NotFound)?;
+        let status = task
+            .snapshot
+            .wire_status()
+            .map_err(|_| HttpControlError::Scheduler("invalid public snapshot".to_owned()))?;
+        if matches!(
+            status,
+            Aria2Status::Complete | Aria2Status::Error | Aria2Status::Removed
+        ) {
+            return Err(HttpControlError::InvalidParams(
+                "terminal download options cannot be changed",
+            ));
+        }
+        if status == Aria2Status::Active
+            && patch
+                .values()
+                .any(|entry| entry.runtime_update == RuntimeUpdate::WaitingOnly)
+        {
+            return Err(HttpControlError::InvalidParams(
+                "one or more options may only change while waiting or paused",
+            ));
+        }
+        drop(root);
+
+        let mut merged = current
+            .persistence_options()
+            .map_err(HttpControlError::TaskSpec)?
+            .entries()
+            .map(|(name, value)| (name.to_owned(), value.to_owned()))
+            .collect::<BTreeMap<_, _>>();
+        for (name, entry) in &patch {
+            merged.insert(name.clone(), entry.canonical.clone());
+        }
+        let options = SanitizedOptionMap::new(merged)
+            .map_err(|_| HttpControlError::InvalidParams("option patch exceeds bounds"))?;
+        let http_options = HttpTaskOptions::from_sanitized(&options).map_err(|_| {
+            HttpControlError::InvalidParams("option is not supported by HTTP tasks")
+        })?;
+        let output =
+            HttpTaskSpec::persisted_output(&options).map_err(HttpControlError::TaskSpec)?;
+        let replacement = HttpTaskSpec::new(
+            current.task(),
+            current.gid(),
+            current
+                .sources()
+                .iter()
+                .map(|source| source.uri().to_owned()),
+            current.output_root().clone(),
+            output,
+            http_options,
+            current
+                .sources()
+                .iter()
+                .any(crate::HttpSourceSpec::needs_credentials),
+        )
+        .map_err(HttpControlError::TaskSpec)?;
+
+        let patch_id =
+            OptionPatchId::new(self.next_option_patch_id).ok_or(HttpControlError::InvalidConfig)?;
+        self.next_option_patch_id = self
+            .next_option_patch_id
+            .checked_add(1)
+            .ok_or(HttpControlError::InvalidConfig)?;
+        let kind = if status == Aria2Status::Active {
+            ValidatedOptionPatchKind::ActiveRestart
+        } else {
+            ValidatedOptionPatchKind::InPlace
+        };
+        let command = SchedulerCommand::ApplyOptionPatch {
+            gid,
+            patch_id,
+            kind,
+            satisfies_credentials: None,
+        };
+        if kind == ValidatedOptionPatchKind::ActiveRestart {
+            self.pending_option_snapshots
+                .insert(patch_id, options.clone());
+            self.pending_restart_patches.insert(gid, patch_id);
+        }
+        let mut simulation = self.engine.scheduler().clone();
+        let outcome = simulation
+            .execute_command_at(command.clone(), MonotonicInstant::now())
+            .map_err(|error| HttpControlError::Scheduler(error.to_string()))?;
+        if let Err(error) = self.prepare_outcome_plans(&mut simulation, outcome.effects, None) {
+            self.pending_option_snapshots.remove(&patch_id);
+            self.pending_restart_patches.remove(&gid);
+            return Err(error);
+        }
+        if kind == ValidatedOptionPatchKind::InPlace {
+            match self.session.execute(SessionCommand::ReplaceTaskOptions {
+                gid,
+                scope: OptionsSnapshotScope::CurrentGeneration,
+                options: options.clone(),
+            }) {
+                Ok(SessionCommandResult::Unit) => {}
+                Ok(_) => {
+                    return Err(HttpControlError::Persistence(
+                        "unexpected option replacement result".to_owned(),
+                    ));
+                }
+                Err(error) => return Err(HttpControlError::Persistence(error.to_string())),
+            }
+        }
+        self.tasks
+            .replace(replacement)
+            .map_err(HttpControlError::Catalog)?;
+        if let Err(error) = self
+            .engine
+            .execute_command_at(command, MonotonicInstant::now())
+            .map_err(|error| HttpControlError::Scheduler(format!("{error:?}")))
+        {
+            let _ = self.tasks.replace((*current).clone());
+            self.pending_option_snapshots.remove(&patch_id);
+            self.pending_restart_patches.remove(&gid);
+            return Err(error);
+        }
+        let result = self.drive_engine();
+        if result.is_ok() && kind == ValidatedOptionPatchKind::ActiveRestart {
+            match self.session.execute(SessionCommand::ReplaceTaskOptions {
+                gid,
+                scope: OptionsSnapshotScope::CurrentGeneration,
+                options,
+            }) {
+                Ok(SessionCommandResult::Unit) => {}
+                Ok(_) => {
+                    return Err(HttpControlError::Persistence(
+                        "unexpected promoted option result".to_owned(),
+                    ));
+                }
+                Err(error) => return Err(HttpControlError::Persistence(error.to_string())),
+            }
+        }
+        self.pending_option_snapshots.remove(&patch_id);
+        self.pending_restart_patches.remove(&gid);
+        result?;
+        Ok(Value::String("OK".to_owned()))
+    }
+
+    fn change_uri(&mut self, params: Value) -> Result<Value, HttpControlError> {
+        let values = params.as_array().filter(|values| (4..=5).contains(&values.len())).ok_or(
+            HttpControlError::InvalidParams(
+                "changeUri requires GID, file index, deleted URIs, added URIs, and optional position",
+            ),
+        )?;
+        let gid = self.resolve_gid_text(
+            values[0]
+                .as_str()
+                .ok_or(HttpControlError::InvalidParams("GID must be a string"))?,
+        )?;
+        if parse_i64(&values[1], "file index")? != 1 {
+            return Err(HttpControlError::InvalidParams(
+                "HTTP downloads have exactly one file with index 1",
+            ));
+        }
+        let deleted = parse_uri_array(&values[2])?;
+        let added = parse_uri_array(&values[3])?;
+        let position = values
+            .get(4)
+            .map(|value| parse_i64(value, "position"))
+            .transpose()?
+            .unwrap_or(i64::MAX);
+        let spec = self.tasks.get_gid(gid).ok_or(HttpControlError::NotFound)?;
+        let mut uris = spec
+            .sources()
+            .iter()
+            .map(|source| source.uri().to_owned())
+            .collect::<Vec<_>>();
+        let before = uris.len();
+        uris.retain(|uri| !deleted.contains(uri));
+        let deleted_count = before.saturating_sub(uris.len());
+        let insertion = if position < 0 {
+            0
+        } else {
+            usize::try_from(position)
+                .unwrap_or(usize::MAX)
+                .min(uris.len())
+        };
+        let mut added_count = 0_usize;
+        for uri in added.into_iter().rev() {
+            if !uris.contains(&uri) {
+                uris.insert(insertion, uri);
+                added_count += 1;
+            }
+        }
+        self.replace_task_sources(gid, uris)?;
+        Ok(json!([deleted_count, added_count]))
+    }
+
+    fn replace_sources(&mut self, params: Value) -> Result<Value, HttpControlError> {
+        let values = params.as_array().filter(|values| values.len() == 2).ok_or(
+            HttpControlError::InvalidParams("replaceSources requires GID and URI array"),
+        )?;
+        let gid = self.resolve_gid_text(
+            values[0]
+                .as_str()
+                .ok_or(HttpControlError::InvalidParams("GID must be a string"))?,
+        )?;
+        let uris = parse_uri_array(&values[1])?;
+        self.replace_task_sources(gid, uris)?;
+        Ok(Value::String(gid.to_string()))
+    }
+
+    fn replace_task_sources(
+        &mut self,
+        gid: Gid,
+        uris: Vec<String>,
+    ) -> Result<(), HttpControlError> {
+        let current = self.tasks.get_gid(gid).ok_or(HttpControlError::NotFound)?;
+        let root = self.engine.snapshot_reader().load();
+        let task = root.task(gid).ok_or(HttpControlError::NotFound)?;
+        let status = task
+            .snapshot
+            .wire_status()
+            .map_err(|_| HttpControlError::Scheduler("invalid public snapshot".to_owned()))?;
+        let was_active = status == Aria2Status::Active;
+        if matches!(
+            status,
+            Aria2Status::Complete | Aria2Status::Error | Aria2Status::Removed
+        ) {
+            return Err(HttpControlError::InvalidParams(
+                "terminal download sources cannot be replaced",
+            ));
+        }
+        drop(root);
+        let replacement = HttpTaskSpec::new(
+            current.task(),
+            current.gid(),
+            uris,
+            current.output_root().clone(),
+            current.output().clone(),
+            current.options().clone(),
+            current
+                .sources()
+                .iter()
+                .any(crate::HttpSourceSpec::needs_credentials),
+        )
+        .map_err(HttpControlError::TaskSpec)?;
+        let persisted = replacement.persistence_sources();
+        if was_active {
+            self.execute_control_command(SchedulerCommand::Pause { gid, force: false })?;
+        }
+        match self.session.execute(SessionCommand::ReplaceTaskSources {
+            gid,
+            sources: persisted,
+        }) {
+            Ok(SessionCommandResult::Unit) => {}
+            Ok(_) => {
+                return Err(HttpControlError::Persistence(
+                    "unexpected source replacement result".to_owned(),
+                ));
+            }
+            Err(error) => return Err(HttpControlError::Persistence(error.to_string())),
+        }
+        self.tasks
+            .replace(replacement)
+            .map_err(HttpControlError::Catalog)?;
+        if was_active {
+            self.execute_control_command(SchedulerCommand::Resume { gid })?;
+            self.try_admit_one(MonotonicInstant::now())?;
+            self.drive_engine()?;
+        }
+        Ok(())
+    }
+
+    fn get_global_option(&self, params: Value) -> Result<Value, HttpControlError> {
+        require_no_params(&params, "getGlobalOption")?;
+        Ok(string_map_value(
+            self.global_options
+                .iter()
+                .map(|(name, value)| (name.as_str(), value.as_str())),
+        ))
+    }
+
+    fn change_global_option(&mut self, params: Value) -> Result<Value, HttpControlError> {
+        let values = params.as_array().filter(|values| values.len() == 1).ok_or(
+            HttpControlError::InvalidParams("changeGlobalOption requires one option object"),
+        )?;
+        let patch = parse_registry_options(&values[0], Scope::RpcGlobal)?;
+        if patch.keys().any(|name| !is_executable_global_option(name)) {
+            return Err(HttpControlError::InvalidParams(
+                "global option is not executable in this checkpoint",
+            ));
+        }
+        for (name, entry) in patch {
+            if name == "max-overall-download-limit" {
+                self.apply_global_download_limit(&entry.canonical)?;
+            }
+            self.global_options.insert(name, entry.canonical);
+        }
+        Ok(Value::String("OK".to_owned()))
+    }
+
+    fn get_version(&self, params: Value) -> Result<Value, HttpControlError> {
+        require_no_params(&params, "getVersion")?;
+        Ok(json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "enabledFeatures": ["HTTP", "HTTPS", "JSON-RPC", "Session", "Async DNS"],
+        }))
+    }
+
+    fn get_session_info(&self, params: Value) -> Result<Value, HttpControlError> {
+        require_no_params(&params, "getSessionInfo")?;
+        Ok(json!({"sessionId": self.session_id.to_string()}))
+    }
+
+    fn request_shutdown(&mut self, params: Value, force: bool) -> Result<Value, HttpControlError> {
+        require_no_params(&params, if force { "forceShutdown" } else { "shutdown" })?;
+        self.shutdown_requested = true;
+        self.force_shutdown_requested |= force;
+        Ok(Value::String("OK".to_owned()))
+    }
+
+    fn check_config(&self, params: Value) -> Result<Value, HttpControlError> {
+        let values = params.as_array().filter(|values| values.len() == 1).ok_or(
+            HttpControlError::InvalidParams("checkConfig requires configuration text"),
+        )?;
+        let text = values[0].as_str().ok_or(HttpControlError::InvalidParams(
+            "configuration must be text",
+        ))?;
+        let parsed = parse_flat_config(
+            builtin_registry(),
+            text,
+            UnknownOptionMode::Strict,
+            FlatConfigLimits::default(),
+            None,
+        )
+        .map_err(|_| HttpControlError::InvalidParams("configuration is invalid"))?;
+        Ok(json!({
+            "valid": true,
+            "options": parsed.entries().count(),
+            "warnings": parsed.warnings().len(),
+        }))
+    }
+
+    fn reload_config(&mut self, params: Value) -> Result<Value, HttpControlError> {
+        let values = params.as_array().filter(|values| values.len() == 1).ok_or(
+            HttpControlError::InvalidParams("reloadConfig requires configuration text"),
+        )?;
+        let text = values[0].as_str().ok_or(HttpControlError::InvalidParams(
+            "configuration must be text",
+        ))?;
+        let parsed = parse_flat_config(
+            builtin_registry(),
+            text,
+            UnknownOptionMode::Strict,
+            FlatConfigLimits::default(),
+            None,
+        )
+        .map_err(|_| HttpControlError::InvalidParams("configuration is invalid"))?;
+        let mut next = self.global_options.clone();
+        for (name, entry) in parsed.entries() {
+            if !is_executable_global_option(name)
+                || !entry.definition.scopes.contains(Scope::Global)
+                || matches!(
+                    entry.definition.runtime_update,
+                    RuntimeUpdate::None
+                        | RuntimeUpdate::StartupOnly
+                        | RuntimeUpdate::UnsafeCompatOnly
+                        | RuntimeUpdate::BtLive
+                        | RuntimeUpdate::BtRestartRequired
+                )
+            {
+                return Err(HttpControlError::InvalidParams(
+                    "configuration contains a non-reloadable option",
+                ));
+            }
+            next.insert(name.to_owned(), canonical_option_value(&entry.value)?);
+        }
+        if let Some(limit) = next.get("max-overall-download-limit") {
+            self.apply_global_download_limit(limit)?;
+        }
+        self.global_options = next;
+        Ok(json!({"reloaded": true, "options": parsed.entries().count()}))
+    }
+
+    fn apply_global_download_limit(&self, canonical: &str) -> Result<(), HttpControlError> {
+        let bytes = canonical
+            .parse::<u64>()
+            .map_err(|_| HttpControlError::InvalidConfig)?;
+        if let Some(rate) = &self.global_download_rate {
+            rate.set_global_limit(RateLimit::per_second(bytes))
+                .map_err(|_| HttpControlError::InvalidConfig)?;
+        }
+        Ok(())
+    }
+
+    fn dump_config(&self, params: Value) -> Result<Value, HttpControlError> {
+        let values = params.as_array().filter(|values| values.len() <= 1).ok_or(
+            HttpControlError::InvalidParams("dumpConfig accepts an optional mode"),
+        )?;
+        let mode = values
+            .first()
+            .and_then(Value::as_str)
+            .unwrap_or("effective");
+        if !matches!(mode, "defaults" | "effective") {
+            return Err(HttpControlError::InvalidParams(
+                "dumpConfig mode must be defaults or effective",
+            ));
+        }
+        if mode == "effective" {
+            return Ok(string_map_value(
+                self.global_options
+                    .iter()
+                    .map(|(name, value)| (name.as_str(), value.as_str())),
+            ));
+        }
+        let mut defaults = BTreeMap::new();
+        for definition in builtin_registry().definitions() {
+            if definition.compat == CompatStatus::Unsupported
+                || definition.security != SecurityClass::Normal
+            {
+                continue;
+            }
+            if let Some(default) = definition.default {
+                let value = parse_option_value(definition, default, None)
+                    .map_err(|_| HttpControlError::InvalidConfig)?;
+                defaults.insert(definition.name.to_owned(), canonical_option_value(&value)?);
+            }
+        }
+        Ok(string_map_value(
+            defaults
+                .iter()
+                .map(|(name, value)| (name.as_str(), value.as_str())),
+        ))
+    }
+
+    fn export_session(&self, params: Value) -> Result<Value, HttpControlError> {
+        require_no_params(&params, "exportSession")?;
+        let root = self.engine.snapshot_reader().load();
+        if root.len() > MAX_RPC_LIST_ITEMS {
+            return Err(HttpControlError::Busy);
+        }
+        let mut tasks = Vec::with_capacity(root.len());
+        for applied in root.tasks().values() {
+            let spec = self
+                .tasks
+                .get(applied.task_id)
+                .ok_or(HttpControlError::NotFound)?;
+            let options = spec
+                .persistence_options()
+                .map_err(HttpControlError::TaskSpec)?;
+            tasks.push(json!({
+                "gid": applied.snapshot.gid.to_string(),
+                "uris": spec.sources().iter().map(|source| source.uri()).collect::<Vec<_>>(),
+                "options": string_map_value(options.entries()),
+                "state": applied.snapshot.state.code(),
+            }));
+        }
+        Ok(json!({"sessionId": self.session_id.to_string(), "tasks": tasks}))
+    }
+
+    fn import_session(&mut self, params: Value) -> Result<Value, HttpControlError> {
+        let values = params.as_array().filter(|values| values.len() == 1).ok_or(
+            HttpControlError::InvalidParams("importSession requires an export object"),
+        )?;
+        let tasks = values[0].get("tasks").and_then(Value::as_array).ok_or(
+            HttpControlError::InvalidParams("session export has no tasks"),
+        )?;
+        if tasks.len() > MAX_RPC_LIST_ITEMS {
+            return Err(HttpControlError::InvalidParams("too many session tasks"));
+        }
+        let mut gids = Vec::with_capacity(tasks.len());
+        for task in tasks {
+            let uris = task
+                .get("uris")
+                .ok_or(HttpControlError::InvalidParams("session task has no URIs"))?;
+            let mut options = task.get("options").cloned().unwrap_or_else(|| json!({}));
+            if let Some(object) = options.as_object_mut() {
+                object.insert("pause".to_owned(), Value::Bool(true));
+            }
+            gids.push(self.add_uri(json!([uris, options]))?);
+        }
+        Ok(Value::Array(gids))
+    }
+
+    fn resolve_gid_param(&self, params: &Value) -> Result<Gid, HttpControlError> {
+        let values = params.as_array().filter(|values| values.len() == 1).ok_or(
+            HttpControlError::InvalidParams("exactly one hexadecimal GID is required"),
+        )?;
+        let value = values[0].as_str().ok_or(HttpControlError::InvalidParams(
+            "a hexadecimal GID is required",
+        ))?;
+        self.resolve_gid_text(value)
+    }
+
+    fn resolve_gid_and_keys(
+        &self,
+        params: &Value,
+    ) -> Result<(Gid, Option<Vec<String>>), HttpControlError> {
+        let values = params
+            .as_array()
+            .filter(|values| (1..=2).contains(&values.len()))
+            .ok_or(HttpControlError::InvalidParams(
+                "tellStatus requires GID and optional key array",
+            ))?;
+        let value = values[0].as_str().ok_or(HttpControlError::InvalidParams(
+            "a hexadecimal GID is required",
+        ))?;
+        let keys = values.get(1).map(parse_keys).transpose()?;
+        Ok((self.resolve_gid_text(value)?, keys))
+    }
+
+    fn resolve_gid_text(&self, value: &str) -> Result<Gid, HttpControlError> {
+        if value.is_empty()
+            || value.len() > 16
+            || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(HttpControlError::InvalidParams("invalid GID"));
+        }
+        let value = value.to_ascii_lowercase();
+        let root = self.engine.snapshot_reader().load();
+        let mut matches = root
+            .tasks()
+            .keys()
+            .copied()
+            .filter(|gid| gid.to_string().starts_with(&value));
+        let gid = matches.next().ok_or(HttpControlError::NotFound)?;
+        if matches.next().is_some() {
+            return Err(HttpControlError::InvalidParams("GID prefix is ambiguous"));
+        }
+        Ok(gid)
     }
 
     fn global_stat(&mut self, params: Value) -> Result<Value, HttpControlError> {
@@ -568,6 +1579,15 @@ impl HttpControlPlane {
                         .map_err(|error| HttpControlError::Scheduler(error.to_string()))?;
                     queue.extend(outcome.effects);
                 }
+            } else if matches!(effect, TransitionEffect::ApplyOptionPatch { .. }) {
+                let plan = crate::OptionApplicationPlan::new(
+                    effect.clone(),
+                    crate::OptionApplicationOutcome::Applied,
+                )
+                .map_err(|error| HttpControlError::Scheduler(error.to_string()))?;
+                self.engine
+                    .prepare_runtime(crate::RuntimeEffectPreparation::OptionApplication(plan))
+                    .map_err(|error| HttpControlError::Scheduler(format!("{error:?}")))?;
             }
         }
         Ok(())
@@ -606,6 +1626,31 @@ impl HttpControlPlane {
                 gid,
                 generation,
             } => {
+                if let Some(patch_id) = self.pending_restart_patches.get(gid).copied() {
+                    let options =
+                        self.pending_option_snapshots
+                            .get(&patch_id)
+                            .ok_or_else(|| {
+                                HttpControlError::Persistence(
+                                    "option restart snapshot is unavailable".to_owned(),
+                                )
+                            })?;
+                    let previous_generation = Generation::new(generation.get().saturating_sub(1));
+                    return PersistenceEffectPlan::new(
+                        effect.clone(),
+                        vec![PersistencePlanStep::AppendAndFlushJournal {
+                            gid: *gid,
+                            generation: *generation,
+                            payload: JournalPayload::GenerationStarted {
+                                previous_generation,
+                                reason: GenerationStartReason::OptionPatch,
+                                next_snapshot_hash: options.snapshot_hash(),
+                                patch_id: Some(patch_id),
+                            },
+                        }],
+                    )
+                    .map_err(|error| HttpControlError::Persistence(format!("{error:?}")));
+                }
                 let steps = if *generation == Generation::INITIAL {
                     vec![PersistencePlanStep::FlushJournal {
                         gid: *gid,
@@ -681,6 +1726,46 @@ impl HttpControlPlane {
                 PersistenceEffectPlan::new(effect.clone(), steps)
                     .map_err(|error| HttpControlError::Persistence(format!("{error:?}")))
             }
+            TransitionEffect::StageOptionPatch { gid, patch_id, .. } => {
+                let options = self
+                    .pending_option_snapshots
+                    .get(patch_id)
+                    .ok_or_else(|| {
+                        HttpControlError::Persistence(
+                            "option patch snapshot is unavailable".to_owned(),
+                        )
+                    })?
+                    .clone();
+                let generation = self
+                    .engine
+                    .snapshot_reader()
+                    .load()
+                    .task(*gid)
+                    .ok_or(HttpControlError::NotFound)?
+                    .snapshot
+                    .generation;
+                PersistenceEffectPlan::new(
+                    effect.clone(),
+                    vec![
+                        PersistencePlanStep::AppendAndFlushJournal {
+                            gid: *gid,
+                            generation,
+                            payload: JournalPayload::OptionsSnapshot {
+                                scope: OptionsSnapshotScope::NextAdmission,
+                                patch_id: Some(*patch_id),
+                                snapshot_hash: options.snapshot_hash(),
+                                options: options.clone(),
+                            },
+                        },
+                        PersistencePlanStep::ReplaceTaskOptions {
+                            gid: *gid,
+                            scope: OptionsSnapshotScope::NextAdmission,
+                            options,
+                        },
+                    ],
+                )
+                .map_err(|error| HttpControlError::Persistence(format!("{error:?}")))
+            }
             TransitionEffect::PersistQueueTransition {
                 task_id: _,
                 gid,
@@ -746,6 +1831,19 @@ impl HttpControlPlane {
                 *slow_slot,
                 orders,
             ),
+            TransitionEffect::DeleteStoppedTaskMetadata {
+                gid,
+                remaining_order,
+                ..
+            } => PersistenceEffectPlan::new(
+                effect.clone(),
+                vec![PersistencePlanStep::DeleteStoppedTaskMetadata {
+                    gid: *gid,
+                    remaining_order: remaining_order.clone(),
+                    updated_ms: now_unix_ms(),
+                }],
+            )
+            .map_err(|error| HttpControlError::Persistence(format!("{error:?}"))),
             _ => Err(HttpControlError::Unsupported(
                 "HTTP control effect is not implemented",
             )),
@@ -1000,13 +2098,19 @@ impl HttpControlPlane {
 #[derive(Clone)]
 pub struct HttpControlBackend {
     plane: Arc<Mutex<HttpControlPlane>>,
+    shutdown: watch::Sender<bool>,
+    events: RpcEventBroker,
 }
 
 impl HttpControlBackend {
     #[must_use]
     pub fn new(plane: HttpControlPlane) -> Self {
+        let (shutdown, _) = watch::channel(false);
+        let events = plane.event_broker();
         Self {
             plane: Arc::new(Mutex::new(plane)),
+            shutdown,
+            events,
         }
     }
 
@@ -1020,12 +2124,21 @@ impl HttpControlBackend {
         self.plane
     }
 
+    #[must_use]
+    pub fn shutdown_receiver(&self) -> watch::Receiver<bool> {
+        self.shutdown.subscribe()
+    }
+
     /// Recovers the sole control-plane owner once all transport and progress
     /// handles have been drained.
     pub fn try_into_control_plane(self) -> Result<HttpControlPlane, Self> {
         match Arc::try_unwrap(self.plane) {
             Ok(plane) => Ok(plane.into_inner()),
-            Err(plane) => Err(Self { plane }),
+            Err(plane) => Err(Self {
+                plane,
+                shutdown: self.shutdown,
+                events: self.events,
+            }),
         }
     }
 }
@@ -1033,12 +2146,23 @@ impl HttpControlBackend {
 impl HttpRpcBackend for HttpControlBackend {
     fn call(&self, method: &str, params: Value) -> crate::RpcFuture {
         let plane = self.plane.clone();
+        let shutdown = self.shutdown.clone();
         let method = method.to_owned();
         Box::pin(async move {
             let mut plane = plane.lock().await;
             plane.poll_once().map_err(control_backend_error)?;
-            plane.call(&method, params).map_err(control_backend_error)
+            let result = plane.call(&method, params).map_err(control_backend_error);
+            if plane.shutdown_requested() {
+                let _ = shutdown.send(true);
+            }
+            result
         })
+    }
+}
+
+impl crate::RpcWebSocketBackend for HttpControlBackend {
+    fn event_broker(&self) -> RpcEventBroker {
+        self.events.clone()
     }
 }
 
@@ -1048,24 +2172,330 @@ fn control_backend_error(error: HttpControlError) -> HttpRpcBackendError {
         HttpControlError::Unsupported(_) => -32601,
         HttpControlError::NotFound => -32004,
         HttpControlError::Busy => -32005,
+        HttpControlError::SlowConsumer => -32007,
         _ => -32000,
     };
     HttpRpcBackendError::new(code, error.to_string())
 }
 
-fn parse_gid_param(params: &Value) -> Result<Gid, HttpControlError> {
-    let values = params.as_array().filter(|values| values.len() == 1).ok_or(
-        HttpControlError::InvalidParams("exactly one hexadecimal GID is required"),
-    )?;
-    let value = values
-        .first()
-        .and_then(Value::as_str)
-        .ok_or(HttpControlError::InvalidParams(
-            "a hexadecimal GID is required",
-        ))?;
+fn require_no_params(params: &Value, method: &'static str) -> Result<(), HttpControlError> {
+    if params.as_array().is_some_and(Vec::is_empty) {
+        Ok(())
+    } else {
+        Err(HttpControlError::InvalidParams(match method {
+            "pauseAll" => "pauseAll takes no params",
+            "unpauseAll" => "unpauseAll takes no params",
+            "purgeDownloadResult" => "purgeDownloadResult takes no params",
+            "getGlobalOption" => "getGlobalOption takes no params",
+            "getVersion" => "getVersion takes no params",
+            "getSessionInfo" => "getSessionInfo takes no params",
+            "getGlobalStat" => "getGlobalStat takes no params",
+            "saveSession" => "saveSession takes no params",
+            "shutdown" => "shutdown takes no params",
+            "forceShutdown" => "forceShutdown takes no params",
+            "exportSession" => "exportSession takes no params",
+            _ => "method takes no params",
+        }))
+    }
+}
+
+fn parse_bounded_usize(value: &Value, name: &'static str) -> Result<usize, HttpControlError> {
+    let value = value
+        .as_u64()
+        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or(HttpControlError::InvalidParams(match name {
+            "event capacity" => "event capacity must be a bounded integer",
+            "event byte capacity" => "event byte capacity must be a bounded integer",
+            "event count" => "event count must be a bounded integer",
+            _ => "value must be a bounded integer",
+        }))?;
+    Ok(value)
+}
+
+fn parse_subscription_id(value: &Value) -> Result<u64, HttpControlError> {
     value
-        .parse()
-        .map_err(|_| HttpControlError::InvalidParams("invalid GID"))
+        .as_u64()
+        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+        .filter(|value| *value != 0)
+        .ok_or(HttpControlError::InvalidParams(
+            "subscription id must be a nonzero integer",
+        ))
+}
+
+fn event_backend_error(error: RpcEventError) -> HttpControlError {
+    match error {
+        RpcEventError::Disconnected(crate::RpcEventDisconnect::SlowConsumer) => {
+            HttpControlError::SlowConsumer
+        }
+        RpcEventError::Disconnected(crate::RpcEventDisconnect::Unsubscribed) => {
+            HttpControlError::NotFound
+        }
+        RpcEventError::TooManySubscribers => HttpControlError::Busy,
+        _ => HttpControlError::InvalidParams("invalid event subscription"),
+    }
+}
+
+fn aria2_task_event(method: &'static str, gid: Option<Gid>) -> Result<RpcEvent, RpcEventError> {
+    let gid = gid.ok_or(RpcEventError::Serialization)?;
+    RpcEvent::notification(
+        method,
+        json!([{"gid": gid.to_string()}]),
+        RpcEventClass::Reliable,
+        None,
+    )
+}
+
+fn parse_optional_keys_only(params: &Value) -> Result<Option<Vec<String>>, HttpControlError> {
+    let values = params.as_array().filter(|values| values.len() <= 1).ok_or(
+        HttpControlError::InvalidParams("tellActive accepts an optional key array"),
+    )?;
+    values.first().map(parse_keys).transpose()
+}
+
+fn parse_list_params(
+    params: &Value,
+) -> Result<(i64, usize, Option<Vec<String>>), HttpControlError> {
+    let values = params
+        .as_array()
+        .filter(|values| (2..=3).contains(&values.len()))
+        .ok_or(HttpControlError::InvalidParams(
+            "list query requires offset, count, and optional keys",
+        ))?;
+    let offset = parse_i64(&values[0], "offset")?;
+    let count = parse_i64(&values[1], "count")?;
+    if count < 0
+        || usize::try_from(count)
+            .ok()
+            .is_none_or(|count| count > MAX_RPC_LIST_ITEMS)
+    {
+        return Err(HttpControlError::InvalidParams(
+            "list count must be between 0 and 1000",
+        ));
+    }
+    let keys = values.get(2).map(parse_keys).transpose()?;
+    Ok((
+        offset,
+        usize::try_from(count).expect("validated nonnegative bounded count"),
+        keys,
+    ))
+}
+
+fn parse_keys(value: &Value) -> Result<Vec<String>, HttpControlError> {
+    let values = value
+        .as_array()
+        .ok_or(HttpControlError::InvalidParams("keys must be an array"))?;
+    if values.len() > 128 {
+        return Err(HttpControlError::InvalidParams("too many status keys"));
+    }
+    values
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|key| key.len() <= 128)
+                .map(str::to_owned)
+                .ok_or(HttpControlError::InvalidParams(
+                    "status key must be a bounded string",
+                ))
+        })
+        .collect()
+}
+
+fn parse_uri_array(value: &Value) -> Result<Vec<String>, HttpControlError> {
+    let values = value
+        .as_array()
+        .ok_or(HttpControlError::InvalidParams("URIs must be an array"))?;
+    if values.len() > crate::MAX_HTTP_TASK_SOURCES {
+        return Err(HttpControlError::InvalidParams("too many URIs"));
+    }
+    values
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or(HttpControlError::InvalidParams("URI must be a string"))
+        })
+        .collect()
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ParsedRegistryOption {
+    canonical: String,
+    runtime_update: RuntimeUpdate,
+}
+
+fn default_global_options() -> Result<BTreeMap<String, String>, HttpControlError> {
+    let mut options = BTreeMap::new();
+    for definition in builtin_registry().definitions() {
+        if !is_executable_global_option(definition.name)
+            || !definition.scopes.contains(Scope::Global)
+            || definition.compat == CompatStatus::Unsupported
+            || definition.security != SecurityClass::Normal
+        {
+            continue;
+        }
+        let Some(default) = definition.default else {
+            continue;
+        };
+        let value = parse_option_value(definition, default, None)
+            .map_err(|_| HttpControlError::InvalidConfig)?;
+        options.insert(definition.name.to_owned(), canonical_option_value(&value)?);
+    }
+    Ok(options)
+}
+
+fn is_executable_global_option(name: &str) -> bool {
+    name == "max-overall-download-limit"
+}
+
+fn parse_registry_options(
+    value: &Value,
+    scope: Scope,
+) -> Result<BTreeMap<String, ParsedRegistryOption>, HttpControlError> {
+    let object = value
+        .as_object()
+        .ok_or(HttpControlError::InvalidParams("options must be an object"))?;
+    if object.len() > ariax_storage::MAX_OPTION_MAP_ENTRIES {
+        return Err(HttpControlError::InvalidParams("too many options"));
+    }
+    let registry = builtin_registry();
+    let mut parsed = BTreeMap::new();
+    for (name, value) in object {
+        let definition = registry
+            .find(name)
+            .ok_or(HttpControlError::InvalidParams("unknown option"))?;
+        if !definition.scopes.contains(scope) {
+            return Err(HttpControlError::InvalidParams(
+                "option is not allowed on this RPC surface",
+            ));
+        }
+        if definition.security != SecurityClass::Normal {
+            return Err(HttpControlError::InvalidParams(
+                "option requires a local administrative surface",
+            ));
+        }
+        if matches!(
+            definition.runtime_update,
+            RuntimeUpdate::None
+                | RuntimeUpdate::StartupOnly
+                | RuntimeUpdate::UnsafeCompatOnly
+                | RuntimeUpdate::BtLive
+                | RuntimeUpdate::BtRestartRequired
+        ) {
+            return Err(HttpControlError::InvalidParams(
+                "option cannot be changed at runtime",
+            ));
+        }
+        let input = option_input_text(value)?;
+        let value = parse_option_value(definition, &input, None)
+            .map_err(|_| HttpControlError::InvalidParams("invalid option value"))?;
+        let canonical = canonical_option_value(&value)?;
+        parsed.insert(
+            name.clone(),
+            ParsedRegistryOption {
+                canonical,
+                runtime_update: definition.runtime_update,
+            },
+        );
+    }
+    Ok(parsed)
+}
+
+fn option_input_text(value: &Value) -> Result<String, HttpControlError> {
+    match value {
+        Value::String(value) => Ok(value.clone()),
+        Value::Bool(value) => Ok(value.to_string()),
+        Value::Number(value) => Ok(value.to_string()),
+        _ => Err(HttpControlError::InvalidParams(
+            "option values must be strings, booleans, or numbers",
+        )),
+    }
+}
+
+fn canonical_option_value(value: &OptionValue) -> Result<String, HttpControlError> {
+    Ok(match value {
+        OptionValue::Bool(value) => value.to_string(),
+        OptionValue::Integer(value) => value.to_string(),
+        OptionValue::SizeBytes(value) => value.to_string(),
+        OptionValue::DurationSeconds(value) => value.to_string(),
+        OptionValue::Enum(value) | OptionValue::String(value) => value.clone(),
+        OptionValue::Path(value) => value.to_string_lossy().into_owned(),
+        OptionValue::HeaderList(values) => values.join(","),
+        OptionValue::StatusCodeSet(values) => values
+            .iter()
+            .map(u16::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+        OptionValue::Secret(_) => {
+            return Err(HttpControlError::InvalidParams(
+                "secret option cannot be persisted by this RPC surface",
+            ));
+        }
+    })
+}
+
+fn parse_i64(value: &Value, name: &'static str) -> Result<i64, HttpControlError> {
+    value
+        .as_i64()
+        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+        .ok_or(HttpControlError::InvalidParams(match name {
+            "offset" => "offset must be an integer",
+            "count" => "count must be an integer",
+            "position" => "position must be an integer",
+            _ => "value must be an integer",
+        }))
+}
+
+fn normalized_offset(offset: i64, length: usize) -> usize {
+    if offset >= 0 {
+        usize::try_from(offset).unwrap_or(usize::MAX).min(length)
+    } else {
+        length.saturating_sub(usize::try_from(offset.unsigned_abs()).unwrap_or(usize::MAX))
+    }
+}
+
+fn queue_order_and_position(
+    root: &ariax_runtime::StatusSnapshotRoot,
+    gid: Gid,
+) -> Result<(&[Gid], usize), HttpControlError> {
+    for class in [
+        QueueClass::Waiting,
+        QueueClass::Demoted,
+        QueueClass::Paused,
+        QueueClass::Active,
+        QueueClass::Stopped,
+    ] {
+        let order = root.queue(class);
+        if let Some(position) = order.iter().position(|candidate| *candidate == gid) {
+            return Ok((order, position));
+        }
+    }
+    Err(HttpControlError::NotFound)
+}
+
+fn project_status(value: Value, keys: Option<&[String]>) -> Value {
+    let Some(keys) = keys else {
+        return value;
+    };
+    let Some(object) = value.as_object() else {
+        return value;
+    };
+    Value::Object(
+        keys.iter()
+            .filter_map(|key| object.get(key).cloned().map(|value| (key.clone(), value)))
+            .collect(),
+    )
+}
+
+fn string_map_value<'a>(entries: impl IntoIterator<Item = (&'a str, &'a str)>) -> Value {
+    Value::Object(
+        entries
+            .into_iter()
+            .map(|(name, value)| (name.to_owned(), Value::String(value.to_owned())))
+            .collect(),
+    )
 }
 
 fn status_value(
@@ -1585,11 +3015,23 @@ fn persistence_ack(effect: &TransitionEffect) -> Option<TaskEventEnvelope> {
         TransitionEffect::PersistGenerationStarted { .. } => {
             TaskEvent::GenerationPersisted { gid, generation }
         }
+        TransitionEffect::StageOptionPatch { patch_id, .. } => TaskEvent::OptionPatchPersisted {
+            gid,
+            generation,
+            patch_id: *patch_id,
+        },
         TransitionEffect::PersistTerminal { status, .. } => TaskEvent::TerminalPersisted {
             gid,
             generation,
             status: *status,
         },
+        TransitionEffect::DeleteStoppedTaskMetadata { deletion_id, .. } => {
+            TaskEvent::StoppedResultDeleted {
+                gid,
+                generation,
+                deletion_id: *deletion_id,
+            }
+        }
         _ => return None,
     };
     Some(event.for_task(task_id))
@@ -1839,6 +3281,350 @@ mod tests {
             .expect("GID result")
             .parse()
             .expect("valid GID")
+    }
+
+    #[test]
+    fn query_surface_uses_bounded_indexes_prefixes_and_projection() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let gid = add_paused(&mut plane);
+        let prefix = &gid.to_string()[..8];
+
+        let status = plane
+            .call(
+                "aria2.tellStatus",
+                json!([prefix, ["gid", "status", "missing"]]),
+            )
+            .expect("prefix status");
+        assert_eq!(status, json!({"gid": gid.to_string(), "status": "paused"}));
+
+        let waiting = plane
+            .call("aria2.tellWaiting", json!([0, 1000, ["gid"]]))
+            .expect("waiting list");
+        assert_eq!(waiting, json!([{"gid": gid.to_string()}]));
+        assert!(matches!(
+            plane.call("aria2.tellWaiting", json!([0, 1001])),
+            Err(HttpControlError::InvalidParams(
+                "list count must be between 0 and 1000"
+            ))
+        ));
+
+        let uris = plane
+            .call("aria2.getUris", json!([prefix]))
+            .expect("URI view");
+        assert_eq!(uris[0]["uri"], "http://example.test/file.bin");
+        let options = plane
+            .call("aria2.getOption", json!([prefix]))
+            .expect("option view");
+        assert_eq!(options["out"], "file.bin");
+        assert_eq!(
+            plane
+                .call("aria2.getSessionInfo", json!([]))
+                .expect("session info")["sessionId"]
+                .as_str()
+                .expect("session id")
+                .len(),
+            32
+        );
+
+        assert!(plane.shutdown().expect("shutdown control plane").is_clean());
+    }
+
+    #[test]
+    fn pause_resume_bulk_position_and_shutdown_controls_are_shared() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let first = add_paused(&mut plane);
+        let second = add_paused(&mut plane);
+
+        assert_eq!(
+            plane
+                .call(
+                    "aria2.changePosition",
+                    json!([second.to_string(), 0, "POS_SET"])
+                )
+                .expect("move task"),
+            json!(0)
+        );
+        let waiting = plane
+            .call("aria2.tellWaiting", json!([0, 2, ["gid"]]))
+            .expect("ordered waiting list");
+        assert_eq!(waiting[0]["gid"], second.to_string());
+        assert_eq!(waiting[1]["gid"], first.to_string());
+
+        assert_eq!(
+            plane
+                .call("aria2.unpauseAll", json!([]))
+                .expect("resume all"),
+            "OK"
+        );
+        assert_eq!(
+            plane
+                .call("aria2.forcePauseAll", json!([]))
+                .expect("pause all"),
+            "OK"
+        );
+        assert_eq!(
+            plane
+                .call("aria2.forceShutdown", json!([]))
+                .expect("request shutdown"),
+            "OK"
+        );
+        assert!(plane.shutdown_requested());
+        assert!(plane.force_shutdown_requested());
+
+        assert!(plane.shutdown().expect("shutdown control plane").is_clean());
+    }
+
+    #[test]
+    fn source_replacement_validates_then_persists_before_catalog_publication() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let gid = add_paused(&mut plane);
+
+        assert_eq!(
+            plane
+                .call(
+                    "aria2.changeUri",
+                    json!([
+                        gid.to_string(),
+                        1,
+                        ["http://example.test/file.bin"],
+                        ["https://mirror.test/new.bin"],
+                        0
+                    ]),
+                )
+                .expect("replace source"),
+            json!([1, 1])
+        );
+        assert_eq!(
+            plane
+                .call("aria2.getUris", json!([gid.to_string()]))
+                .expect("updated source view")[0]["uri"],
+            "https://mirror.test/new.bin"
+        );
+        match plane
+            .session
+            .execute(SessionCommand::ReadTaskSources { gid })
+            .expect("read persisted sources")
+        {
+            SessionCommandResult::TaskSources(sources) => assert_eq!(
+                sources[0].persistence_safe_uri.as_deref(),
+                Some("https://mirror.test/new.bin")
+            ),
+            result => panic!("unexpected source result: {result:?}"),
+        }
+        assert!(matches!(
+            plane.call(
+                "ariax.replaceSources",
+                json!([gid.to_string(), ["ftp://example.test/file"]]),
+            ),
+            Err(HttpControlError::TaskSpec(
+                HttpTaskSpecError::UnsupportedScheme
+            ))
+        ));
+        assert_eq!(
+            plane
+                .call("aria2.getUris", json!([gid.to_string()]))
+                .expect("rejected source retained old view")[0]["uri"],
+            "https://mirror.test/new.bin"
+        );
+
+        assert!(plane.shutdown().expect("shutdown control plane").is_clean());
+    }
+
+    #[test]
+    fn typed_option_changes_are_atomic_persisted_and_scope_checked() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let gid = add_paused(&mut plane);
+
+        assert_eq!(
+            plane
+                .call(
+                    "aria2.changeOption",
+                    json!([gid.to_string(), {"max-download-limit": "1M", "timeout": 30}]),
+                )
+                .expect("change task options"),
+            "OK"
+        );
+        let options = plane
+            .call("aria2.getOption", json!([gid.to_string()]))
+            .expect("updated task options");
+        assert_eq!(options["max-download-limit"], "1048576");
+        assert_eq!(options["timeout"], "30");
+        match plane
+            .session
+            .execute(SessionCommand::ReadTaskOptions {
+                gid,
+                scope: OptionsSnapshotScope::CurrentGeneration,
+            })
+            .expect("read task options")
+        {
+            SessionCommandResult::TaskOptions(options) => {
+                assert_eq!(
+                    options
+                        .entries()
+                        .find_map(|(name, value)| (name == "max-download-limit").then_some(value)),
+                    Some("1048576")
+                );
+            }
+            result => panic!("unexpected option result: {result:?}"),
+        }
+
+        assert!(matches!(
+            plane.call(
+                "aria2.changeOption",
+                json!([gid.to_string(), {"rpc-secret": "secret"}]),
+            ),
+            Err(HttpControlError::InvalidParams(
+                "option is not allowed on this RPC surface"
+            )) | Err(HttpControlError::InvalidParams(
+                "option requires a local administrative surface"
+            ))
+        ));
+        assert_eq!(
+            plane
+                .call(
+                    "aria2.changeGlobalOption",
+                    json!([{"max-overall-download-limit": "2M"}]),
+                )
+                .expect("change global option"),
+            "OK"
+        );
+        assert_eq!(
+            plane
+                .call("aria2.getGlobalOption", json!([]))
+                .expect("global options")["max-overall-download-limit"],
+            "2097152"
+        );
+        assert!(matches!(
+            plane.call("aria2.changeGlobalOption", json!([{"timeout": 30}])),
+            Err(HttpControlError::InvalidParams(
+                "global option is not executable in this checkpoint"
+            ))
+        ));
+
+        assert!(plane.shutdown().expect("shutdown control plane").is_clean());
+    }
+
+    #[test]
+    fn event_subscriptions_are_bounded_pollable_and_explicitly_removed() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let subscription = plane
+            .call("ariax.subscribe", json!([4, 4096]))
+            .expect("subscribe");
+        let id = subscription["subscriptionId"]
+            .as_str()
+            .expect("subscription id")
+            .to_owned();
+        assert_eq!(subscription["snapshotRevision"], 0);
+
+        let gid = add_paused(&mut plane);
+        assert_eq!(
+            plane
+                .call("aria2.unpause", json!([gid.to_string()]))
+                .expect("resume task"),
+            gid.to_string()
+        );
+        assert_eq!(
+            plane
+                .call("aria2.remove", json!([gid.to_string()]))
+                .expect("remove task"),
+            gid.to_string()
+        );
+        let events = plane
+            .call("ariax.pollEvents", json!([id, 4]))
+            .expect("poll events");
+        let events = events.as_array().expect("events");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["method"], "ariax.onStatus");
+        assert_eq!(events[0]["params"]["status"], "removed");
+        assert_eq!(events[1]["method"], "aria2.onDownloadStop");
+        assert_eq!(events[1]["params"][0]["gid"], gid.to_string());
+
+        assert_eq!(
+            plane
+                .call(
+                    "ariax.unsubscribe",
+                    json!([subscription["subscriptionId"].clone()]),
+                )
+                .expect("unsubscribe"),
+            "OK"
+        );
+        assert!(matches!(
+            plane.call("ariax.pollEvents", json!([id])),
+            Err(HttpControlError::NotFound)
+        ));
+
+        assert!(plane.shutdown().expect("shutdown control plane").is_clean());
+    }
+
+    #[test]
+    fn config_reload_is_atomic_and_session_exports_are_bounded_and_importable() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let original = add_paused(&mut plane);
+
+        assert_eq!(
+            plane
+                .call(
+                    "ariax.checkConfig",
+                    json!(["max-overall-download-limit=1M\ntimeout=30\n"]),
+                )
+                .expect("check config")["valid"],
+            true
+        );
+        assert_eq!(
+            plane
+                .call(
+                    "ariax.reloadConfig",
+                    json!(["max-overall-download-limit=2M\n"]),
+                )
+                .expect("reload config")["reloaded"],
+            true
+        );
+        assert_eq!(
+            plane
+                .call("ariax.dumpConfig", json!(["effective"]))
+                .expect("dump effective config")["max-overall-download-limit"],
+            "2097152"
+        );
+        assert!(matches!(
+            plane.call("ariax.reloadConfig", json!(["session-store=memory\n"])),
+            Err(HttpControlError::InvalidParams(
+                "configuration contains a non-reloadable option"
+            ))
+        ));
+        assert_eq!(
+            plane
+                .call("ariax.dumpConfig", json!(["effective"]))
+                .expect("failed reload retained config")["max-overall-download-limit"],
+            "2097152"
+        );
+
+        let export = plane
+            .call("ariax.exportSession", json!([]))
+            .expect("export session");
+        assert_eq!(export["tasks"].as_array().expect("tasks").len(), 1);
+        assert_eq!(export["tasks"][0]["gid"], original.to_string());
+        let imported = plane
+            .call("ariax.importSession", json!([export]))
+            .expect("import session");
+        assert_eq!(imported.as_array().expect("imported gids").len(), 1);
+        assert_ne!(imported[0], original.to_string());
+        assert_eq!(
+            plane
+                .call("aria2.tellWaiting", json!([0, 10, ["gid"]]))
+                .expect("waiting after import")
+                .as_array()
+                .expect("waiting")
+                .len(),
+            2
+        );
+
+        assert!(plane.shutdown().expect("shutdown control plane").is_clean());
     }
 
     fn replay_journal_payloads(

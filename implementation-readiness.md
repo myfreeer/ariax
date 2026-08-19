@@ -2,9 +2,11 @@
 
 Status: overall implementation is underway. The P0 contract blockers recorded
 in `final-preimplementation-review.md` are resolved in their normative
-documents, and the scoped Phase-3B/3C HTTP(S) downloader milestone is complete
-and checkpointed at `f97845d`; remaining module work proceeds under the later
-phase exit criteria below and in `implementation-plan.md`.
+documents, the scoped Phase-3B/3C HTTP(S) downloader milestone is checkpointed
+at `30b70c5`, and the bounded Phase-4 control-plane checkpoint is executable in
+the working tree. Remaining compatibility, transport, benchmark, and release
+matrix work proceeds under the later phase exit criteria below and in
+`implementation-plan.md`.
 
 This document is the handoff checklist from architecture design to detailed
 module design and implementation.
@@ -72,6 +74,15 @@ The minimal process shutdown path now drives the fixed coordinator through real
 runtime admission, bounded HTTP-worker drain, all-journal flush/close, bounded
 session-owner join, and clean/dirty session-marker persistence. Cooperative
 drain is clean; active synchronous abort and asynchronous timeout are dirty.
+The control-plane checkpoint now adds one shared JSON-RPC dispatcher with
+aria2 method tokens, notifications, bounded batches and multicall, query/queue/
+source/typed-option/config/session controls, unique GID prefixes, loopback
+WebSocket, a bounded coalescing event broker, direct CLI controls, and a typed
+Rust embedding skeleton. HTTP, WebSocket, stdio request/response, CLI, and the
+library facade all reach the same process-owned control plane. Content-Length
+stdio uses the same bounded pushed event broker. Legacy HTTP Basic, aria2
+text-session compatibility, and the full Phase-4 exit matrix remain explicit
+gates.
 This remains a phase checkpoint, not a release/tag: broader RFC 9530/Metalink
 identity, `Content-Digest`, alternate digest algorithms, broader validators,
 growing/chunked transfers, HTTP/2, broader RPC, adaptive profile tuning, and the

@@ -16,13 +16,16 @@ slice and journal replay path:
 - `http_discard_budget`: hierarchical accounting, caps, overflow buckets, and
   no-refund invariants;
 - `journal_replay`: bounded segment/header/record replay and valid-prefix
-  accounting.
+  accounting;
+- `rpc_json`: bounded JSON-RPC request, notification, and batch dispatch with
+  complete-or-empty JSON response validation.
 
 From the repository root, after installing `cargo-fuzz`, run for example:
 
 ```text
 cargo fuzz run --manifest-path fuzz/Cargo.toml http_response_validator
 cargo fuzz run --manifest-path fuzz/Cargo.toml journal_replay
+cargo fuzz run --manifest-path fuzz/Cargo.toml rpc_json
 ```
 
 CI should use a fixed corpus/time budget and retain only minimized inputs. The
