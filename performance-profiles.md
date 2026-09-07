@@ -163,6 +163,12 @@ inside these guardrails.
 | per-client event queue (events / serialized bytes) | 256 / 4 MiB | 256 / 4 MiB | 512 / 8 MiB | 64 / 1 MiB |
 | stopped-result retention (`max-download-result`) | 1000 | 1000 | 1000 | 250 |
 
+The RPC budget row is a target profile contract. The current Phase-4 transport
+code enforces individual body/response caps and a bounded stdio request queue,
+but not yet the per-client/global pending-response reservations or the
+four-request/8 MiB HTTP acceptance rule. Those reservations are required
+before the control-plane checkpoint can claim the profile's RPC budget.
+
 Cache/cardinality defaults are also registry-owned and admission-visible:
 
 | Cache / metadata cap | concurrency | throughput | latency | compact |
@@ -415,6 +421,16 @@ The profile remains the baseline, and explicit options override only their
 specific setting.
 
 ## Success Metrics
+
+The Phase-4B control-plane acceptance target is p99 at most 50 ms for status
+queries and ordinary control acknowledgements under 1,000 simultaneously active
+HTTP ranges on native optimized Linux and Windows-GNU builds. Warm up before
+collecting 20,000 measured calls per transport scenario. Include stalled event
+and response consumers alongside responsive clients, and record latency, lock
+wait, budget peaks, and RSS/working set. Downloads must remain active throughout
+measurement. Administrative import/export and final shutdown drain are timed
+separately from ordinary control acknowledgements. WSL/DrvFS timings remain
+diagnostic rather than native release evidence.
 
 C10k profile success:
 

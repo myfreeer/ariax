@@ -197,10 +197,15 @@ transfers both to the completion path.
 
 ## External Client Event Queues
 
-Each WebSocket or stdio event subscriber owns a separate queue bounded by both
-event count and serialized bytes using the profile values in
-`performance-profiles.md`. External writers never run on or block the
-scheduler/storage actors.
+Each authorized WebSocket or stdio event subscriber owns a separate queue
+bounded by both event count and serialized bytes using the profile values in
+`performance-profiles.md`. When method-token authentication is configured,
+transport setup does not create a subscriber; the queue is installed after
+token validation and before dispatch of that connection's authorized method.
+Closing the connection removes it. With no secret, event authorization is
+immediate. `apis-and-embedding.md#event-delivery-and-slow-consumers` owns this
+lifecycle; Phase 4B implements and tests this authorization boundary (`P4-02`).
+External writers never run on or block the scheduler/storage actors.
 
 Event classes:
 

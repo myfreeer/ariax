@@ -2,7 +2,7 @@
 
 Status: implementation remains underway for the overall roadmap. The scoped
 Phase-3B/3C HTTP(S) downloader milestone is checkpointed at `30b70c5`, and the
-Phase-4 control-plane checkpoint is executable in the working tree. Phase 0
+Phase-4 control-plane checkpoint is executable at `71acb03`. Phase 0
 contracts and the gated Phase-1/2 core, config,
 persistence, recovery, runtime, storage, and native capability work have
 executable checkpoints. The completed HTTP checkpoint covers
@@ -35,7 +35,7 @@ secondary mirrors as endgame-only peers; they do not authorize ordinary
 concurrent pieces or replace the persisted whole-file checksum. `Content-Digest`,
 digest parameters/coverage metadata, alternate algorithms, server-advertised
 whole-entity admission, Metalink chunk hashes, Last-Modified/unsafe-override
-resume, HTTP/2, growing/chunked transfers, the broader Phase-4 control plane,
+resume, HTTP/2, growing/chunked transfers, the remaining Phase-4 repair gates,
 and the full release-platform matrix remain phase/tag gates. Hot-backup
 publication residue is now recovered through
 descriptor-bound same-file/link-count validation with no-clobber collision and
@@ -377,7 +377,7 @@ Exit criteria:
 
 ## Phase 4: Control Plane And RPC
 
-Checkpoint status: the shared dispatcher, method-token authentication,
+Checkpoint status (`71acb03`): the shared dispatcher, method-token authentication,
 notifications, bounded batches/multicall/list results, query and queue controls,
 unique GID prefixes, typed task/global option changes, source replacement,
 config check/reload/dump, bounded JSON session export/import, scheduler-observed
@@ -420,6 +420,23 @@ Exit criteria:
 - Oversized responses fail as typed complete errors, `system.multicall` obeys
   work/response caps without claiming transactional semantics, and one client
   cannot reserve the process RPC budget.
+
+Phase 4B repairs multicall envelope authentication, connection-local event
+authorization, and retry-option registry/persistence alignment. Active option
+replay, active source replacement outcomes, and per-client RPC budget accounting
+remain open [repair gates](implementation-readiness.md#phase-4-repair-gates).
+
+### Phase 4B Completion
+
+Phase 4B is the next implementation milestone from `71acb03`. It closes
+`P4-01` through `P4-11` in `implementation-readiness.md` before Phase 5:
+authentication and connection-local events; shared RPC accounting; replayable
+option/source changes; registry/configuration completion; sanitized session
+compatibility; CLI/transport/Rust parity; opt-in slow-slot scheduling; and real
+active-download performance plus platform evidence. The control p99 target is
+50 ms over 20,000 measured calls with 1,000 active HTTP ranges after warm-up.
+Document each owning contract before implementation and close gates only with
+their corresponding tests, rather than treating a compiled surface as complete.
 
 ## Phase 5: Metalink, FTP, SFTP
 

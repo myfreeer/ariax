@@ -2004,6 +2004,14 @@ impl HttpControlPlane {
         let sanitized = spec
             .persistence_options()
             .map_err(HttpControlError::TaskSpec)?;
+        if !self.engine.permits_persisted_options(&sanitized)
+            || !HttpTaskOptions::from_sanitized(&sanitized)
+                .is_ok_and(|recovered| &recovered == spec.options())
+        {
+            return Err(HttpControlError::InvalidParams(
+                "task options cannot be recovered under the persistence policy",
+            ));
+        }
         let journal_id = derive_http_journal_id(task_id, gid);
         let journal_directory = http_journal_directory(&self.config.journal_root, gid);
         let mut appender = ControlJournalAppender::create(
@@ -3152,8 +3160,16 @@ mod tests {
             &self,
             supervisor: HttpWorkerSupervisorConfig,
         ) -> HttpControlPlane {
-            let engine = bootstrap_process(self.process_config(), allow_all_options)
-                .expect("bootstrap process");
+            self.control_plane_with_policy(supervisor, ariax_config::persisted_option_is_safe)
+        }
+
+        fn control_plane_with_policy(
+            &self,
+            supervisor: HttpWorkerSupervisorConfig,
+            policy: impl ariax_storage::PersistedOptionPolicy + Clone + Send + Sync + 'static,
+        ) -> HttpControlPlane {
+            let engine =
+                bootstrap_process(self.process_config(), policy).expect("bootstrap process");
             HttpControlPlane::new(
                 engine,
                 HttpControlPlaneConfig {
@@ -3263,10 +3279,6 @@ mod tests {
     fn create_private_directory(path: &Path) {
         ariax_windows_security::create_private_directory(path)
             .expect("create private test directory");
-    }
-
-    fn allow_all_options(_name: &str) -> bool {
-        true
     }
 
     fn add_paused(plane: &mut HttpControlPlane) -> Gid {
@@ -4286,6 +4298,121 @@ mod tests {
                 Err(HttpControlError::InvalidParams(_))
             ));
         }
+    }
+
+    #[test]
+    fn retry_admission_recovers_canonical_options_with_production_policy() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let mut expected = Vec::new();
+        for mut options in [
+            json!({"retry-profile":"aria2"}),
+            json!({"retry-profile":"conservative", "max-tries":4}),
+            json!({"retry-profile":"aggressive"}),
+            json!({
+                "retry-profile":"custom", "retry-on":"timeout,lowest-speed",
+                "retry-on-http-status":"418,429", "retry-on-http-status-add":"500-501",
+                "retry-on-http-status-remove":"429", "max-tries":5, "retry-max-attempts":4,
+                "retry-max-attempts-per-mirror":2, "retry-wait":0, "retry-backoff":"fixed",
+                "retry-after":"ignore", "retry-after-min":0, "retry-after-max":60,
+                "retry-max-wait":60, "retry-max-elapsed":600, "stale-validator-policy":"revalidate"
+            }),
+            json!({"retry-profile":"aria2", "retry-on-http-status-remove":"504"}),
+        ] {
+            options["pause"] = json!(true);
+            let gid: Gid = plane
+                .call(
+                    "aria2.addUri",
+                    json!([["http://example.test/retry.bin"], options]),
+                )
+                .expect("production admission")
+                .as_str()
+                .expect("GID")
+                .parse()
+                .expect("valid GID");
+            let spec = plane.tasks.get_gid(gid).expect("task");
+            let persisted = spec.persistence_options().expect("canonical options");
+            for (name, value) in persisted.entries() {
+                let definition = builtin_registry().find(name).expect("registered option");
+                assert!(ariax_config::persisted_option_is_safe(name));
+                parse_option_value(definition, value, None).expect("canonical registry value");
+            }
+            assert!(
+                persisted
+                    .entries()
+                    .all(|(name, _)| !name.ends_with("-add") && !name.ends_with("-remove"))
+            );
+            expected.push((
+                gid,
+                spec.options().clone(),
+                plane
+                    .call("aria2.getOption", json!([gid.to_string()]))
+                    .expect("options"),
+            ));
+        }
+        plane.shutdown().expect("close first process");
+        let mut recovered = directory.control_plane();
+        for (gid, options, canonical) in expected {
+            assert_eq!(
+                recovered
+                    .tasks
+                    .get_gid(gid)
+                    .expect("recovered task")
+                    .options(),
+                &options
+            );
+            assert_eq!(
+                recovered
+                    .call("aria2.getOption", json!([gid.to_string()]))
+                    .expect("recovered options"),
+                canonical
+            );
+        }
+        add_paused(&mut recovered);
+        recovered
+            .call("aria2.getGlobalStat", json!([]))
+            .expect("subsequent query");
+        recovered.shutdown().expect("shutdown");
+    }
+
+    #[test]
+    fn rejected_admission_has_no_artifacts_and_does_not_fault_the_scheduler() {
+        let directory = TestDirectory::new();
+        let mut plane = directory
+            .control_plane_with_policy(HttpWorkerSupervisorConfig::default(), |name: &str| {
+                ariax_config::persisted_option_is_safe(name) && name != "retry-profile"
+            });
+        for options in [
+            json!({"max-tries":4}),
+            json!({"retry-max-attempts":0}),
+            json!({"rpc-secret":"secret-canary"}),
+            json!({"unknown-option":"value"}),
+            json!({"retry-on":"invalid"}),
+        ] {
+            assert!(matches!(
+                plane.call(
+                    "aria2.addUri",
+                    json!([["http://example.test/retry.bin"], options])
+                ),
+                Err(HttpControlError::InvalidParams(_))
+            ));
+            assert_eq!(plane.tasks.len(), 0);
+            assert!(
+                fs::read_dir(&directory.journals)
+                    .expect("journal directory")
+                    .next()
+                    .is_none()
+            );
+            assert!(
+                matches!(plane.session.execute(SessionCommand::ReadTasks).expect("session remains usable"), SessionCommandResult::Tasks(tasks) if tasks.is_empty())
+            );
+            plane
+                .call("aria2.getGlobalStat", json!([]))
+                .expect("query after rejection");
+        }
+        add_paused(&mut plane);
+        assert_eq!(plane.tasks.len(), 1);
+        plane.shutdown().expect("shutdown after valid admission");
     }
 
     #[tokio::test]

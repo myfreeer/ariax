@@ -363,6 +363,28 @@ returning owned records. Startup semantic validation repeats that per-task byte
 limit while streaming all source rows under the additional global 64 MiB
 task-materialization budget.
 
+The required active control path validates sources and scheduler conflicts
+before beginning a bounded internal quiescence operation. It preserves the
+user's desired pause state and services cancellation completions before source
+mutation; it must not hold the control owner waiting for an event that owner
+needs to process. A per-task pending operation prevents overlapping source or
+option mutations while explicit pause/remove remains authoritative.
+
+Once cancellation drains, source replacement commits the complete set and any
+required queue transition in one transaction through the session owner, then
+publishes the prepared catalog replacement. Durable queue/desired-state evidence must retain
+automatic readmission for a task that was running; an internal pause must not
+persist as a user pause. Restart before commit sees the old sources, while
+restart after commit sees the new sources and the latest desired state. Both
+paths still apply normal HTTP identity and durable-piece validation.
+
+Definite pre-commit rejection leaves the old sources authoritative. A confirmed
+commit returns the documented replacement success even when normal admission
+is delayed; later worker failures use task status. An uncertain accepted store
+operation faults the driver for recovery, without claiming either rollback or
+success. The checkpoint currently pauses, commits sources, and attempts resume
+before cancellation drain is complete; `P4-05` repairs that sequence.
+
 A redacted placeholder (`persistence_safe_uri IS NULL`) must set
 `needs_credentials`; otherwise startup would have neither a runnable source nor
 an explicit admission blocker. The dedicated owner materializes exactly one
@@ -575,7 +597,11 @@ Global queue mutation:
    representation readmission performs the same ordering inside one bounded
    persistence effect: append/flush the unchanged next-admission snapshot, then
    append/flush `GenerationStarted`; a generation record without its staged
-   snapshot is invalid,
+   snapshot is invalid. An active option patch uses one patch identity and may
+   have only one staged snapshot; replay must not treat a flushed staged record
+   as permission to append a duplicate. Promotion consumes the exact matching
+   patch snapshot once, and an identity/hash mismatch fails closed before
+   publication,
 2. one SQLite `BEGIN IMMEDIATE` transaction updates its queue/desired-state
    fields and journal snapshot hash; a cross-queue move shifts both queues and
    validates their final dense positions before commit,
@@ -742,6 +768,20 @@ database, WAL/SHM, journals, metadata, temporary/backup, companion, and export
 files for seeded secret values and verify recovery's `needs_credentials` path.
 
 ## Text Export
+
+Phase 4B exports unfinished work through the configured local destination for
+`aria2.saveSession` and periodic saving, or as bounded data for namespaced JSON
+RPC export. Both formats use the persistence-safe source view, never live raw
+URI strings. Credential placeholders remain explicit and cannot become runnable
+URIs through export/import. Remote callers cannot supply filesystem paths.
+
+Import parses and validates the entire bounded document and reserves admission
+capacity before publishing tasks. New task journals are prepared before one
+session-owner transaction installs the batch metadata; scheduler publication
+follows that transaction. Invalid input publishes no task prefix. Uncertain
+accepted persistence faults the driver for recovery. JSON import retains its
+paused-by-default behavior; aria2 input-file import honors validated per-task
+pause options. Existing progress is never inferred from an exported text file.
 
 Provide:
 

@@ -1,5 +1,6 @@
 //! Bounded JSON-RPC 2.0 framing shared by loopback HTTP and stdio.
 
+use crate::RpcClientContext;
 use bytes::Bytes;
 use futures_util::{SinkExt as _, StreamExt as _};
 use http_body_util::{BodyExt as _, Full, Limited};
@@ -105,6 +106,19 @@ pub type RpcFuture = Pin<Box<dyn Future<Output = Result<Value, HttpRpcBackendErr
 /// Backend implemented by the real scheduler control plane.
 pub trait HttpRpcBackend: Send + Sync + 'static {
     fn call(&self, method: &str, params: Value) -> RpcFuture;
+
+    fn call_with_context(
+        &self,
+        method: &str,
+        params: Value,
+        _context: RpcClientContext,
+    ) -> RpcFuture {
+        self.call(method, params)
+    }
+
+    fn authentication_required(&self) -> bool {
+        false
+    }
 }
 
 /// Method-token authentication shared by all JSON-RPC transports. The secret
@@ -140,7 +154,9 @@ impl RpcAuthPolicy {
         let Some(secret) = &self.secret else {
             return Ok(params);
         };
-        let mut params = params.as_array().cloned().ok_or_else(unauthorized)?;
+        let Value::Array(mut params) = params else {
+            return Err(unauthorized());
+        };
         let supplied = params
             .first()
             .and_then(Value::as_str)
@@ -176,11 +192,28 @@ impl<B> RpcDispatcher<B> {
 
 impl<B: HttpRpcBackend> HttpRpcBackend for RpcDispatcher<B> {
     fn call(&self, method: &str, params: Value) -> RpcFuture {
+        self.call_with_context(method, params, RpcClientContext::default())
+    }
+
+    fn authentication_required(&self) -> bool {
+        self.auth.is_required()
+    }
+
+    fn call_with_context(
+        &self,
+        method: &str,
+        params: Value,
+        context: RpcClientContext,
+    ) -> RpcFuture {
         let backend = self.backend.clone();
         let auth = self.auth.clone();
         let method = method.to_owned();
         Box::pin(async move {
+            if method == "system.multicall" {
+                return multicall(backend, auth, params, context).await;
+            }
             let params = auth.authorize(params)?;
+            authorize_client_events(&context)?;
             match method.as_str() {
                 "system.listMethods" => {
                     require_empty_params(&params, "listMethods")?;
@@ -200,11 +233,16 @@ impl<B: HttpRpcBackend> HttpRpcBackend for RpcDispatcher<B> {
                             .collect(),
                     ))
                 }
-                "system.multicall" => multicall(backend, auth, params).await,
-                _ => backend.call(&method, params).await,
+                _ => backend.call_with_context(&method, params, context).await,
             }
         })
     }
+}
+
+fn authorize_client_events(context: &RpcClientContext) -> Result<(), HttpRpcBackendError> {
+    context
+        .authorize()
+        .map_err(|_| HttpRpcBackendError::new(-32005, "Event subscription unavailable"))
 }
 
 impl<B: RpcWebSocketBackend> RpcWebSocketBackend for RpcDispatcher<B> {
@@ -309,6 +347,14 @@ pub trait RpcWebSocketBackend: HttpRpcBackend {
 /// Dispatches one JSON-RPC request. Parsing and response serialization are
 /// bounded before the backend is called.
 pub async fn dispatch_json<B: HttpRpcBackend>(backend: &B, bytes: &[u8]) -> Vec<u8> {
+    dispatch_json_with_context(backend, bytes, &RpcClientContext::default()).await
+}
+
+async fn dispatch_json_with_context<B: HttpRpcBackend>(
+    backend: &B,
+    bytes: &[u8],
+    context: &RpcClientContext,
+) -> Vec<u8> {
     let parsed = serde_json::from_slice::<Value>(bytes);
     let response = match parsed {
         Ok(Value::Array(requests)) if requests.is_empty() => {
@@ -324,7 +370,7 @@ pub async fn dispatch_json<B: HttpRpcBackend>(backend: &B, bytes: &[u8]) -> Vec<
             let mut responses = Vec::with_capacity(requests.len());
             let mut response_bytes = 2_usize;
             for request in requests {
-                if let Some(response) = dispatch_value(backend, request).await {
+                if let Some(response) = dispatch_value(backend, request, context).await {
                     let separator = usize::from(!responses.is_empty());
                     let remaining = MAX_HTTP_RPC_RESPONSE_BYTES
                         .saturating_sub(response_bytes)
@@ -344,7 +390,7 @@ pub async fn dispatch_json<B: HttpRpcBackend>(backend: &B, bytes: &[u8]) -> Vec<
             Value::Array(responses)
         }
         Ok(request) => {
-            let Some(response) = dispatch_value(backend, request).await else {
+            let Some(response) = dispatch_value(backend, request, context).await else {
                 return Vec::new();
             };
             response
@@ -354,7 +400,11 @@ pub async fn dispatch_json<B: HttpRpcBackend>(backend: &B, bytes: &[u8]) -> Vec<
     serialize_response(response).unwrap_or_else(|_| bounded_response_too_large(0))
 }
 
-async fn dispatch_value<B: HttpRpcBackend>(backend: &B, request: Value) -> Option<Value> {
+async fn dispatch_value<B: HttpRpcBackend>(
+    backend: &B,
+    request: Value,
+    context: &RpcClientContext,
+) -> Option<Value> {
     let object = match request.as_object() {
         Some(object) => object,
         None => return Some(error_response(Value::Null, -32600, "Invalid Request", None)),
@@ -383,13 +433,20 @@ async fn dispatch_value<B: HttpRpcBackend>(backend: &B, request: Value) -> Optio
         return Some(error_response(id, -32602, "Invalid params", None));
     }
     if notification {
-        let _ = backend.call(method, params).await;
+        let _ = backend
+            .call_with_context(method, params, context.clone())
+            .await;
         return None;
     }
-    Some(match backend.call(method, params).await {
-        Ok(result) => json!({"jsonrpc":"2.0", "id":id, "result":result}),
-        Err(error) => error_response(id, error.code, &error.message, error.data),
-    })
+    Some(
+        match backend
+            .call_with_context(method, params, context.clone())
+            .await
+        {
+            Ok(result) => json!({"jsonrpc":"2.0", "id":id, "result":result}),
+            Err(error) => error_response(id, error.code, &error.message, error.data),
+        },
+    )
 }
 
 fn error_response(id: Value, code: i64, message: &str, data: Option<Value>) -> Value {
@@ -448,6 +505,7 @@ async fn multicall<B: HttpRpcBackend>(
     backend: Arc<B>,
     auth: RpcAuthPolicy,
     params: Value,
+    context: RpcClientContext,
 ) -> Result<Value, HttpRpcBackendError> {
     let values = params
         .as_array()
@@ -508,6 +566,10 @@ async fn multicall<B: HttpRpcBackend>(
                 continue;
             }
         };
+        if let Err(error) = authorize_client_events(&context) {
+            append_multicall_result(&mut results, &mut result_bytes, multicall_error(error))?;
+            continue;
+        }
         let result = match method {
             "system.listMethods" => require_empty_params(&member_params, "listMethods").map(|()| {
                 Value::Array(
@@ -526,7 +588,11 @@ async fn multicall<B: HttpRpcBackend>(
                             .collect(),
                     )
                 }),
-            _ => backend.call(method, member_params).await,
+            _ => {
+                backend
+                    .call_with_context(method, member_params, context.clone())
+                    .await
+            }
         };
         let member = match result {
             Ok(value) => Value::Array(vec![value]),
@@ -894,9 +960,8 @@ async fn serve_websocket_connection<B: RpcWebSocketBackend>(
         .max_message_size(Some(MAX_HTTP_RPC_REQUEST_BYTES))
         .max_frame_size(Some(MAX_HTTP_RPC_REQUEST_BYTES));
     let mut socket = tokio_tungstenite::accept_async_with_config(stream, Some(config)).await?;
-    let mut subscriber = backend
-        .event_broker()
-        .subscribe(crate::RpcEventLimits::default())?;
+    let context =
+        RpcClientContext::with_events(backend.event_broker(), backend.authentication_required())?;
     let mut event_poll = tokio::time::interval(Duration::from_millis(10));
     event_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -908,13 +973,15 @@ async fn serve_websocket_connection<B: RpcWebSocketBackend>(
                         "method":"ariax.onShutdown",
                         "params":{},
                     });
-                    socket.send(Message::Text(notice.to_string().into())).await?;
+                    if context.is_authenticated() {
+                        socket.send(Message::Text(notice.to_string().into())).await?;
+                    }
                     socket.close(None).await?;
                     return Ok(());
                 }
             }
             _ = event_poll.tick() => {
-                match subscriber.try_next() {
+                match context.try_next_event() {
                     Ok(Some(delivery)) => {
                         let bytes = serde_json::to_vec(&delivery.into_value())
                             .map_err(|_| HttpRpcTransportError::ResponseTooLarge)?;
@@ -948,7 +1015,7 @@ async fn serve_websocket_connection<B: RpcWebSocketBackend>(
                 };
                 match message? {
                     Message::Text(text) => {
-                        let response = dispatch_json(backend.as_ref(), text.as_bytes()).await;
+                        let response = dispatch_json_with_context(backend.as_ref(), text.as_bytes(), &context).await;
                         if response.is_empty() {
                             continue;
                         }
@@ -958,7 +1025,7 @@ async fn serve_websocket_connection<B: RpcWebSocketBackend>(
                         socket.send(Message::Text(response.into())).await?;
                     }
                     Message::Binary(bytes) => {
-                        let response = dispatch_json(backend.as_ref(), &bytes).await;
+                        let response = dispatch_json_with_context(backend.as_ref(), &bytes, &context).await;
                         if response.is_empty() {
                             continue;
                         }
@@ -1046,9 +1113,8 @@ where
             }
         }
     });
-    let mut subscriber = backend
-        .event_broker()
-        .subscribe(crate::RpcEventLimits::default())?;
+    let context =
+        RpcClientContext::with_events(backend.event_broker(), backend.authentication_required())?;
     let mut event_poll = tokio::time::interval(Duration::from_millis(10));
     event_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let result = loop {
@@ -1058,13 +1124,13 @@ where
                     break Ok(());
                 };
                 let body = request?;
-                let response = dispatch_json(backend.as_ref(), &body).await;
+                let response = dispatch_json_with_context(backend.as_ref(), &body, &context).await;
                 if !response.is_empty() {
                     write_content_length_message(&mut writer, &response).await?;
                 }
             }
             _ = event_poll.tick() => {
-                match subscriber.try_next() {
+                match context.try_next_event() {
                     Ok(Some(delivery)) => {
                         let event = serialize_response(delivery.into_value())?;
                         write_content_length_message(&mut writer, &event).await?;
@@ -1319,7 +1385,6 @@ mod tests {
             .call(
                 "system.multicall",
                 json!([
-                    "token:correct",
                     [
                         {"methodName":"one", "params":["token:correct", 1]},
                         {"methodName":"two", "params":["token:wrong", 2]}
@@ -1327,7 +1392,7 @@ mod tests {
                 ]),
             )
             .await
-            .expect("outer multicall authorized");
+            .expect("member-token multicall");
         let results = result.as_array().expect("multicall results");
         assert_eq!(results[0][0]["params"], json!([1]));
         assert_eq!(results[1]["code"], RPC_UNAUTHORIZED);
@@ -1348,6 +1413,276 @@ mod tests {
             error.data,
             Some(json!({"limit": MAX_RPC_MULTICALL_MEMBERS}))
         );
+    }
+
+    #[tokio::test]
+    async fn invalid_envelopes_and_tokens_never_authorize_events() {
+        let events = crate::RpcEventBroker::new();
+        let dispatcher = RpcDispatcher::new(Arc::new(Echo), RpcAuthPolicy::with_secret("correct"));
+        let context = RpcClientContext::with_events(events.clone(), true).expect("context");
+        let invalid = [
+            json!({"jsonrpc":"2.0", "id":1, "method":"system.multicall", "params":[]}),
+            json!({"jsonrpc":"2.0", "id":1, "method":"system.multicall", "params":[[]]}),
+            json!({"jsonrpc":"2.0", "id":1, "method":"system.multicall", "params":["token:correct", []]}),
+            json!({"jsonrpc":"2.0", "id":1, "method":"system.multicall", "params":[[
+                {"methodName":"system.multicall", "params":["token:correct", []]},
+                {"methodName":"x", "params":["token:wrong"]},
+                {"methodName":"x"},
+                {"params":["token:correct"]},
+                null
+            ]]}),
+            json!({"jsonrpc":"2.0", "id":1, "method":"system.multicall", "params":[
+                vec![json!({"methodName":"x", "params":["token:correct"]}); MAX_RPC_MULTICALL_MEMBERS + 1]
+            ]}),
+            json!({"jsonrpc":"invalid", "id":1, "method":"x", "params":["token:correct"]}),
+        ];
+        for request in invalid {
+            let bytes = serde_json::to_vec(&request).expect("request JSON");
+            let _ = dispatch_json_with_context(&dispatcher, &bytes, &context).await;
+            assert!(!context.is_authenticated(), "invalid request: {request}");
+            assert_eq!(events.subscriber_count(), 0);
+        }
+        let response = dispatch_json_with_context(
+            &dispatcher,
+            br#"[{"jsonrpc":"2.0","id":1,"method":"x","params":["token:wrong"]},{"jsonrpc":"2.0","id":2,"method":"system.multicall","params":[[{"methodName":"x","params":["token:correct",3]}]]}]"#,
+            &context,
+        ).await;
+        let response: Value = serde_json::from_slice(&response).expect("response");
+        assert_eq!(response[0]["error"]["code"], RPC_UNAUTHORIZED);
+        assert_eq!(response[1]["result"][0][0]["params"], json!([3]));
+        assert!(context.is_authenticated());
+        assert_eq!(events.subscriber_count(), 1);
+        drop(context);
+        assert_eq!(events.subscriber_count(), 0);
+    }
+
+    struct PublishingBackend {
+        events: crate::RpcEventBroker,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl HttpRpcBackend for PublishingBackend {
+        fn call(&self, _method: &str, _params: Value) -> RpcFuture {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.events.publish(
+                crate::RpcEvent::notification(
+                    "ariax.onTest",
+                    json!({"firstCall":true}),
+                    crate::RpcEventClass::Reliable,
+                    None,
+                )
+                .expect("event"),
+            );
+            Box::pin(async { Err(HttpRpcBackendError::new(-32004, "Not found")) })
+        }
+    }
+
+    impl RpcWebSocketBackend for PublishingBackend {
+        fn event_broker(&self) -> crate::RpcEventBroker {
+            self.events.clone()
+        }
+    }
+
+    async fn read_stdio_value(stream: &mut (impl AsyncRead + Unpin)) -> Value {
+        let length = read_content_length(stream)
+            .await
+            .expect("frame header")
+            .expect("frame");
+        let mut bytes = vec![0; length];
+        stream.read_exact(&mut bytes).await.expect("frame body");
+        serde_json::from_slice(&bytes).expect("frame JSON")
+    }
+
+    #[tokio::test]
+    async fn stdio_authentication_precedes_first_method_event_and_survives_method_error() {
+        let events = crate::RpcEventBroker::new();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let backend = Arc::new(RpcDispatcher::new(
+            Arc::new(PublishingBackend {
+                events: events.clone(),
+                calls: calls.clone(),
+            }),
+            RpcAuthPolicy::with_secret("correct"),
+        ));
+        let (mut client, server) = duplex(16 * 1024);
+        let (reader, writer) = tokio::io::split(server);
+        let task = tokio::spawn(run_content_length_stdio_with_events(
+            backend, reader, writer,
+        ));
+        write_content_length_message(
+            &mut client,
+            br#"{"jsonrpc":"2.0","id":1,"method":"x","params":["token:wrong"]}"#,
+        )
+        .await
+        .expect("invalid request");
+        assert_eq!(
+            read_stdio_value(&mut client).await["error"]["code"],
+            RPC_UNAUTHORIZED
+        );
+        assert_eq!(events.subscriber_count(), 0);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 0);
+        write_content_length_message(&mut client, br#"{"jsonrpc":"2.0","id":2,"method":"system.multicall","params":[[{"methodName":"x","params":["token:correct"]}]]}"#).await.expect("authorized request");
+        assert_eq!(
+            read_stdio_value(&mut client).await["result"][0]["code"],
+            -32004
+        );
+        let event = tokio::time::timeout(Duration::from_secs(1), read_stdio_value(&mut client))
+            .await
+            .expect("first-call event");
+        assert_eq!(event["method"], "ariax.onTest");
+        assert_eq!(events.subscriber_count(), 1);
+        write_content_length_message(
+            &mut client,
+            br#"{"jsonrpc":"2.0","id":3,"method":"x","params":[]}"#,
+        )
+        .await
+        .expect("missing token");
+        assert_eq!(
+            read_stdio_value(&mut client).await["error"]["code"],
+            RPC_UNAUTHORIZED
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        client.shutdown().await.expect("EOF");
+        task.await.expect("join").expect("stdio shutdown");
+        assert_eq!(events.subscriber_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn websocket_authentication_is_connection_local_and_resets_on_reconnect() {
+        let events = crate::RpcEventBroker::new();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let backend = Arc::new(RpcDispatcher::new(
+            Arc::new(PublishingBackend {
+                events: events.clone(),
+                calls: calls.clone(),
+            }),
+            RpcAuthPolicy::with_secret("correct"),
+        ));
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let task = tokio::spawn(serve_loopback_websocket_listener_until(
+            listener,
+            backend,
+            async move {
+                shutdown_rx
+                    .await
+                    .map_err(|_| io::Error::other("shutdown dropped"))
+            },
+        ));
+        let url = format!("ws://{address}/jsonrpc");
+        let (mut authorized, _) = tokio_tungstenite::connect_async(&url)
+            .await
+            .expect("client one");
+        let (mut anonymous, _) = tokio_tungstenite::connect_async(&url)
+            .await
+            .expect("client two");
+        assert_eq!(events.subscriber_count(), 0);
+        authorized.send(Message::Text(r#"{"jsonrpc":"2.0","id":1,"method":"system.multicall","params":[[{"methodName":"x","params":["token:correct"]}]]}"#.into())).await.expect("request");
+        let response = authorized.next().await.expect("response").expect("frame");
+        assert_eq!(
+            serde_json::from_str::<Value>(response.to_text().expect("text")).expect("JSON")["result"]
+                [0]["code"],
+            -32004
+        );
+        let event = tokio::time::timeout(Duration::from_secs(1), authorized.next())
+            .await
+            .expect("event timeout")
+            .expect("event")
+            .expect("frame");
+        assert_eq!(
+            serde_json::from_str::<Value>(event.to_text().expect("text")).expect("JSON")["method"],
+            "ariax.onTest"
+        );
+        anonymous
+            .send(Message::Text(
+                r#"{"jsonrpc":"2.0","id":2,"method":"x","params":[]}"#.into(),
+            ))
+            .await
+            .expect("anonymous request");
+        let response = anonymous
+            .next()
+            .await
+            .expect("anonymous response")
+            .expect("frame");
+        assert_eq!(
+            serde_json::from_str::<Value>(response.to_text().expect("text")).expect("JSON")["error"]
+                ["code"],
+            RPC_UNAUTHORIZED
+        );
+        assert_eq!(events.subscriber_count(), 1);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        authorized
+            .close(None)
+            .await
+            .expect("close authenticated client");
+        let (mut reconnected, _) = tokio_tungstenite::connect_async(&url)
+            .await
+            .expect("reconnect");
+        reconnected
+            .send(Message::Text(
+                r#"{"jsonrpc":"2.0","id":3,"method":"x","params":["token:wrong"]}"#.into(),
+            ))
+            .await
+            .expect("bad reconnect token");
+        let response = reconnected
+            .next()
+            .await
+            .expect("reconnect response")
+            .expect("frame");
+        assert_eq!(
+            serde_json::from_str::<Value>(response.to_text().expect("text")).expect("JSON")["error"]
+                ["code"],
+            RPC_UNAUTHORIZED
+        );
+        shutdown_tx.send(()).expect("shutdown");
+        assert!(matches!(
+            anonymous.next().await,
+            Some(Ok(Message::Close(_))) | None
+        ));
+        assert!(matches!(
+            reconnected.next().await,
+            Some(Ok(Message::Close(_))) | None
+        ));
+        task.await.expect("server join").expect("server shutdown");
+        assert_eq!(events.subscriber_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn http_accepts_member_tokens_without_an_outer_token() {
+        let backend = Arc::new(RpcDispatcher::new(
+            Arc::new(Echo),
+            RpcAuthPolicy::with_secret("correct"),
+        ));
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let task = tokio::spawn(serve_loopback_http_listener_until(
+            listener,
+            backend,
+            async move {
+                shutdown_rx
+                    .await
+                    .map_err(|_| io::Error::other("shutdown dropped"))
+            },
+        ));
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"system.multicall","params":[[{"methodName":"x","params":["token:correct",1]},{"methodName":"x","params":[]}]]}"#;
+        let request = format!(
+            "POST /jsonrpc HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let response = raw_http(address, request.as_bytes()).await;
+        let start = response
+            .windows(4)
+            .position(|bytes| bytes == b"\r\n\r\n")
+            .expect("headers")
+            + 4;
+        let value: Value = serde_json::from_slice(&response[start..]).expect("response JSON");
+        assert_eq!(value["result"][0][0]["params"], json!([1]));
+        assert_eq!(value["result"][1]["code"], RPC_UNAUTHORIZED);
+        shutdown_tx.send(()).expect("shutdown");
+        task.await.expect("join").expect("shutdown");
     }
 
     #[tokio::test]

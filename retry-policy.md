@@ -3,20 +3,22 @@
 Status: implementation in progress. The shared bounded persisted-delay recovery
 and retry-budget accounting helper, cross-store retry/slow/no-space mapping,
 and scheduler-owned correlated automatic no-space probes are executable. The
-known-length HTTP worker now executes bounded per-range aria2, conservative,
-aggressive, and validated custom retry profiles; task admission persists the
-resolved trigger/status sets, caps, and delay policy; and timeout, hang, and
-lowest-speed failures remain distinct at policy selection. Nonzero span waits
-are flushed as paired piece/source retry decisions before scheduling; restart
-reconstructs bounded monotonic deadlines, generation elapsed budget, attempt
-caps, and visible retry counts while ignoring unrelated task/URI waits and
-fail-closing partial state. Stale-validator fail/restart/revalidation is
-executable. The latest bounded task-local retry decision is now visible through
-RPC with its exact live trigger/status, attempt and remaining caps, delay
-selection, source/piece/lease identities, prior lease disposition, and selected
-next action. Restart reconstructs the durable subset from the journaled error
-class, delay reason, attempts, and remaining wait; it labels that view as
-recovered instead of inventing the original protocol-specific trigger.
+known-length HTTP worker executes bounded per-range aria2, conservative,
+aggressive, and validated custom retry profiles, and the latest bounded
+task-local retry decision is visible through RPC. Registry-backed admission of
+the complete retry option set remains a required fix: the current add-URI
+parser recognizes more retry names than the persistence policy permits. Until
+that alignment is complete, the control-plane checkpoint must not claim that
+all parsed retry options are executable. Nonzero span waits are flushed as
+paired piece/source retry decisions before scheduling; restart reconstructs
+bounded monotonic deadlines, generation elapsed budget, attempt caps, and
+visible retry counts while ignoring unrelated task/URI waits and fail-closing
+partial state. Stale-validator fail/restart/revalidation is executable.
+
+Live diagnostics retain the exact trigger/status, attempt credit, delay,
+source/piece/lease identities, prior disposition, and next action. Recovery
+labels the coarser journaled error class and wait evidence as recovered; it does
+not invent protocol details that were never persisted.
 
 Retry behavior must be configurable, bounded, observable, and safe. A retry
 policy may decide whether to retry a failed transfer span, but it must not
@@ -160,6 +162,49 @@ registry marks one as an explicit override.
 
 `--retry-on` is a set, not a boolean. `custom` profile requires this set and the
 status-code set to be known in the resolved option snapshot.
+
+### Registry And Persistence Boundary
+
+Every retry option accepted by `addUri`, input files, configuration, or RPC
+must have one registry definition with its exact canonical name, allowed scope,
+value parser, runtime-update behavior, and persistence policy. `P4-03` adds the
+missing definitions for the HTTP parser's accepted set: `max-tries`,
+`retry-wait`, `retry-profile`, `retry-on`, `retry-on-http-status` and its
+`-add`/`-remove` modifiers, `retry-after`, `retry-after-min`, `retry-after-max`,
+`retry-backoff`, `retry-max-wait`, `retry-max-attempts`,
+`retry-max-attempts-per-mirror`, `retry-max-elapsed`, and
+`stale-validator-policy`. Registry types preserve the worker's finite numeric
+bounds, allowed enum values, and cross-field validation; adding a name must not
+advertise an unimplemented runtime scope.
+
+The Phase-4B admission repair registers that complete set for per-download
+admission and exact recovery. Its entries remain partial and do not enable
+runtime/global scopes until the corresponding `P4-07` application paths pass.
+The production registry policy is shared by CLI and embedding, retained at
+bootstrap, and checked before creating any admission journal. The canonical
+snapshot must round-trip through the protocol parser before publication.
+
+Modifiers resolve before persistence: status additions/removals become the
+effective status set, and `max-tries`/`retry-max-attempts` resolve to the stricter
+cap. `HttpTaskOptions::sanitized` emits only canonical resolved settings, all
+permitted by the production policy derived from the registry. Do not widen
+`PersistedOptionPolicy` to accept arbitrary keys. `max-file-not-found` and
+`max-resume-failure-tries` remain outside this HTTP parser's executable set.
+
+Admission validates the complete resolved option map against the registry and
+the storage `PersistedOptionPolicy` before creating a task row, source rows,
+journal, or scheduler-visible task. An unknown or unpersistable retry option is
+an invalid-parameter error before mutation. A successful admission must be
+recoverable through `HttpTaskOptions::from_sanitized` using the same canonical
+set, and registry coverage tests must fail if parser, sanitizer, recovery, and
+persistence policy diverge.
+
+Required evidence for `P4-03` uses the actual CLI/library persistence policy,
+not an allow-all test policy: admit non-default profiles, aliases, and modifiers;
+restart and recover their exact effective settings; reject unknown, secret,
+out-of-bounds, and invalid combined settings before mutation; and issue a valid
+add/query after each rejection to prove the shared scheduler remains usable.
+Keep the existing retry parser fuzz target covering the same resolved bounds.
 
 ## Profiles
 

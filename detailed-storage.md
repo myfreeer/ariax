@@ -739,6 +739,15 @@ Generation/patch crash rule:
   the generation record invalid at that point; replay stops before the advance
   rather than combining option versions.
 
+For an active RPC option patch, the staged `NextAdmission` record is keyed by
+the patch id and is written at most once. An uncertain accepted append or flush
+stops the driver for recovery under `session-persistence.md`. Recovery reuses
+the exact staged prefix; it cannot append another snapshot for the same patch
+or an untagged snapshot over it. A newly accepted complete patch may supersede
+it only with a distinct patch id. Promotion consumes the matching snapshot
+once. The existing duplicate/hash/identity rejection rules stay strict;
+`P4-04` fixes the producer sequence rather than accepting invalid journals.
+
 `layout_hash` covers the canonical relative file map, lengths, selection, and
 piece geometry but deliberately excludes the filesystem location.
 `root_binding_hash` covers the platform tag, canonical root path, stable root

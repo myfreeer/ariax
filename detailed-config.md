@@ -2,7 +2,11 @@
 
 Status: first-slice implementation in progress. The typed registry, bounded
 value parser, aria2-style flat parser, and generated option/runtime contracts
-are implemented; URL rules, reload, and config dumps remain pending.
+are implemented. Phase 4 supplies bounded config check/reload/dump for its
+limited executable option set; URL rules and full runtime application remain
+pending. Phase 4B repairs production-policy retry admission and recovery
+(`P4-03`); active option recovery remains under `P4-04` in
+`implementation-readiness.md`.
 
 This document expands `configuration.md` into concrete artifacts, parsers, and
 runtime update mechanics.
@@ -248,9 +252,28 @@ Apply algorithm:
    failure before this point leaves every old value visible and active,
 8. publish the planned values as one scheduler-owned patch version (including
    live atomics/handles) and acknowledge the patch,
-9. for active restart, enter `PausedRestarting`, cancel/drain workers, stage the
-   accepted pending values, and requeue. The subsequent scheduler admission is
+9. for active restart, enter `PausedRestarting`, cancel/drain workers, retain the
+   already accepted pending snapshot, and requeue. The subsequent admission is
    the sole generation increment point defined by `detailed-core.md`.
+
+The restart intent carries one `OptionPatchId` and one canonical staged
+snapshot. The accepted snapshot and patch identity outlive the RPC call and
+remain owned through cancellation drain and actual generation admission.
+`drive_engine` becoming idle does not prove that either barrier has finished.
+The current-generation SQLite mirror advances only after the matching
+generation record is flushed; pending state then clears. Recovery retains the
+complete pending options when only their staged journal prefix exists and
+repairs the SQLite mirror from journal authority.
+
+Queue-full rejection before owner acceptance can retry the same owned command.
+An uncertain accepted append, flush, or mirror failure instead faults the
+driver under `session-persistence.md`; it must not retry a speculative append.
+Recovery replays the prefix and appends only the missing generation promotion.
+Mismatched hashes, patch identities, and invalid option maps remain errors.
+New patches use distinct identities; only a newly accepted complete patch may
+supersede a pending snapshot. A live-only patch does not restart a task. A
+mixed patch publishes one accepted version and quiesces the task once if any
+member requires an authorized restart or new generation.
 
 An active restart is internal quiescence, not a user pause: the wire snapshot is
 `waiting`, the pause hook/event is not emitted, pending options are applied, and
@@ -264,6 +287,13 @@ are accepted durably; it does not wait for network/disk cancellation to finish.
 If quiescence or later option application fails after acknowledgement, the task
 follows the `PausedRestarting -> Error` row with the patch id in diagnostics; it
 does not silently roll back only the live members and create a mixed version.
+
+The checkpoint classifies every accepted active patch as `ActiveRestart`,
+promotes its SQLite options, and clears pending patch metadata when the drive
+loop returns. A later admission can then append an untagged snapshot over the
+staged patch, producing `InvalidStagedSnapshotReplacement` at restart. `P4-04`
+requires the sequence above for rate, split, output, and mixed patches,
+including restart after each persistence boundary.
 
 All rejected mutations use the same grouped public error; transport adapters do
 not invent per-option error types:
@@ -348,6 +378,13 @@ Required tests:
 - reload active-restart option reports pending restart by default,
 - RPC active restart reports `waiting`, emits no pause event, and resumes with
   the pending option,
+- delayed cancellation keeps the accepted patch pending beyond the RPC reply;
+  replay before/after staging, generation flush, and SQLite promotion retains
+  the exact options and a valid journal prefix,
+- uncertain append/flush/mirror failures stop the driver for recovery; queue
+  backpressure before acceptance retries without a duplicate staged snapshot,
+- live-only rate changes avoid a restart, mixed patches publish one complete
+  accepted version, and restart-class changes promote exactly once,
 - runtime compatibility generation distinguishes aria2 options from extensions,
 - every rejection surface maps to the one `OptionPatchRejected` vocabulary,
 - dump redacts secrets,

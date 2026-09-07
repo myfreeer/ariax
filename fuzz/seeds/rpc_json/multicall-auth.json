@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":1,"method":"system.multicall","params":[[{"methodName":"system.listMethods","params":["token:fuzz-token"]},{"methodName":"aria2.tellStatus","params":["token:wrong","0000000000000001"]},{"methodName":"system.listNotifications","params":[]}]]}

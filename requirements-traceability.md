@@ -1,8 +1,16 @@
 # Requirements Traceability
 
+Phase 4B completion is tracked by gates `P4-01` through `P4-11` in
+`implementation-readiness.md`. Each gate requires a named regression or
+integration test and recorded platform evidence before its status is closed.
+The selected real-download RPC p99 target is 50 ms; the existing mock dispatcher
+benchmark does not satisfy that requirement.
+
 Status: reviewed contract; the scoped Phase-3B/3C HTTP(S) downloader milestone
 is checkpointed at `30b70c5`, and the bounded Phase-4 control-plane checkpoint
-is executable in the working tree. Core scheduling,
+is executable at `71acb03`. Phase 4B repairs the first three of the six audit
+gates; active option/source mutations and shared RPC accounting remain open.
+Core scheduling,
 bounded persistence/recovery, native storage handoff, runtime ownership,
 packet-independent stats, process bootstrap, and the first public Phase-3B
 multi-mirror HTTP(S) slice have executable checkpoints. The latter includes
@@ -40,6 +48,19 @@ Last-Modified/unsafe-override resume, broader protocols/control APIs, adaptive
 profile tuning, and the complete release matrix remain incomplete. Optimized
 Linux and native Windows-GNU capacity evidence, including mandatory RSS or
 working-set samples, is recorded in `performance-profiles.md`.
+
+The Phase-4 audit of `71acb03` identified six control-plane repair gates: multicall
+envelopes must be dispatched before outer token parsing while checking every
+inner token; pushed WebSocket/stdio events must wait for successful client
+authentication; every accepted retry option must be registry- and
+persistence-approved; active option patches must replay through one staged
+snapshot; active source replacement must not report failure after committing
+source rows; and all RPC transports must enforce the documented client and
+process budgets. Each gate's owner and required evidence are tracked in
+[implementation-readiness.md](implementation-readiness.md#phase-4-repair-gates).
+Phase 4B closes `P4-01` through `P4-03` with Linux, MSRV, and native Windows-GNU
+regressions. `P4-04` through `P4-06` remain open correctness and resource-accounting
+requirements.
 
 The implemented HTTP discard hierarchy now has deterministic process/task/host
 fault coverage and a standalone bounded fuzz package (`fuzz/`) for HTTP
@@ -375,6 +396,9 @@ Acceptance:
 - waiting/active/stopped queues match aria2 semantics for implemented methods.
 - active restart-only options automatically restart, appear as `waiting`, and
   emit no pause event,
+- `P4-04`: an acknowledged restart patch retains its identity and staged
+  options through delayed cancellation and recovery; only the actual flushed
+  generation promotion advances the current SQLite mirror,
 - the generated compatibility matrix separates aria2 options from extensions,
 - compatibility GIDs are exactly 16 lowercase hexadecimal characters,
 - error codes and runtime-update outcomes come from one generated vocabulary.
@@ -397,13 +421,17 @@ Acceptance:
 - native API is typed and not just JSON-RPC wrapped in-process,
 - C ABI is opaque-handle based and introduced only after Rust API stability,
 - CLI/RPC/library share the same scheduler and state model.
-- aria2 token authentication, including `system.multicall`, follows the same
-  dispatcher policy on HTTP/WebSocket,
+- direct method tokens follow one policy on HTTP, WebSocket, and stdio;
+  `P4-01` routes `system.multicall` before direct-method authentication and
+  checks every inner member without an outer token,
 - each WebSocket/stdio client has a bounded queue, documented coalescing, and a
+  successful-authentication gate before it receives pushed events, plus a
   snapshot recovery path after dropped status/stat events,
 - RPC request, response, batch, list, per-client pending-work, and serialized
   output limits are enforced before dispatch/amplification; list queries clone
-  immutable membership indexes instead of blocking scheduler progress.
+  immutable membership indexes instead of blocking scheduler progress. Per-client
+  and global `rpc_budget` reservations cover pending response bytes, with at
+  most four accepted requests and 8 MiB of request/command state per client.
 
 ## Protocol Modernization
 
@@ -447,6 +475,8 @@ Design coverage:
 Acceptance:
 
 - retry triggers are explicit and bounded,
+- `P4-03`: production admission and recovery accept every canonical retry
+  setting; invalid options reject before mutation and subsequent calls work,
 - `Retry-After` is respected only for retryable responses and capped,
 - stale connection retry is distinct from stale validator restart/failure,
 - slow-slot demotion is off by default,
@@ -479,6 +509,9 @@ Acceptance:
 
 - per-task progress survives torn writes,
 - global queue and stopped results are transactional,
+- `P4-05`: active source replacement drains before mutation, preserves desired
+  pause, resumes automatically when eligible, and recovers old/new source sets
+  at the commit boundary without returning an ordinary rejection after commit,
 - text export/import exists for debugging/migration,
 - RocksDB/LMDB are not mandatory dependencies,
 - one serialized appender owns sequence assignment, payloads, and segment

@@ -236,6 +236,13 @@ Budget rules:
   stop new admission sooner, but it never authorizes allocation beyond permits,
 - all budgets are visible in diagnostics.
 
+The Phase-4 checkpoint currently enforces the individual RPC request/response
+caps and the bounded stdio request queue, but does not yet reserve
+per-client/global `rpc_budget` shares for HTTP pipelining or serialized
+responses. The implementation must add that reservation before accepting the
+next body or starting serialization; until then the RPC budget rows above are a
+design contract and a completion gate, not implementation evidence.
+
 ## Queue Wrappers
 
 Project-owned wrappers hide crate choices:

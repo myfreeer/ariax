@@ -2,7 +2,7 @@
 
 Status: overall implementation is underway. The scoped Phase-3B/3C HTTP(S)
 downloader milestone is implemented and checkpointed at `f97845d`, and the
-Phase-4 control-plane checkpoint is now executable in the working tree. Phase 0
+Phase-4 control-plane checkpoint is executable at `71acb03`. Phase 0
 through the core Phase-1/2
 scheduler, configuration, journal, SQLite session owner, bounded runtime,
 descriptor-safe storage, startup recovery, and platform capability work have
@@ -24,7 +24,12 @@ The dispatcher enforces method tokens, batch/multicall/list/response bounds,
 unique GID prefixes, typed option/source mutation, config/session extensions,
 and orderly worker/journal/session shutdown. A bounded event broker supplies
 scheduler-observed aria2 notifications and coalesced status updates, and a
-typed Rust embedding skeleton uses the same control plane.
+typed Rust embedding skeleton uses the same control plane. Phase 4B repairs
+multicall envelope authentication, connection-local event authorization, and
+production-policy retry admission and recovery. Active option replay, active
+source replacement outcomes, and per-client RPC budget accounting remain open
+[repair gates](implementation-readiness.md#phase-4-repair-gates), alongside the
+remaining Phase-4B completion requirements.
 
 Strict HTTP identity now distinguishes whole-file and exact-range evidence. A
 persisted user SHA-256 admits ordinary concurrent mirrors and final verification;

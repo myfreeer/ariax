@@ -30,6 +30,7 @@ use std::error::Error;
 use std::fmt;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const DEFAULT_PROCESS_SHUTDOWN_STEP_TIMEOUT_MS: u64 = 5_000;
@@ -73,9 +74,19 @@ pub struct BootstrappedEngine {
     tasks: Vec<RecoveredEngineTask>,
     installed_journals: BTreeSet<ariax_core::Gid>,
     retirement_failures: Vec<ariax_core::Gid>,
+    option_policy: Arc<dyn PersistedOptionPolicy + Send + Sync>,
 }
 
 impl BootstrappedEngine {
+    /// Reuses the owner's exact policy before a caller creates admission artifacts.
+    #[must_use]
+    pub fn permits_persisted_options(&self, options: &ariax_storage::SanitizedOptionMap) -> bool {
+        options.entries().len() <= ariax_storage::SESSION_MAX_OPTIONS_PER_TASK
+            && options
+                .entries()
+                .all(|(name, _)| self.option_policy.permits(name))
+    }
+
     #[must_use]
     pub fn task_count(&self) -> usize {
         self.tasks.len()
@@ -762,8 +773,9 @@ fn bootstrap_after_owner<P>(
     snapshot: ariax_storage::SessionStartupSnapshot,
 ) -> Result<BootstrappedEngine, Box<ProcessBootstrapFailure>>
 where
-    P: PersistedOptionPolicy + Send + Sync + 'static,
+    P: PersistedOptionPolicy + Clone + Send + Sync + 'static,
 {
+    let admission_option_policy = Arc::new(option_policy.clone());
     let session_record = snapshot
         .session
         .as_ref()
@@ -912,6 +924,7 @@ where
         tasks,
         installed_journals: native.installed_journals,
         retirement_failures: native.retirement_failures,
+        option_policy: admission_option_policy,
     })
 }
 

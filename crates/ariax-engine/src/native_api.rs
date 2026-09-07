@@ -7,7 +7,7 @@ use crate::{
     RpcEventBroker, RpcEventError, RpcEventLimits, RpcEventSubscriber, RuntimeEffectConfig,
     StartupRecoveryConfig,
 };
-use ariax_config::{SecurityClass, builtin_registry};
+use ariax_config::persisted_option_is_safe;
 use ariax_core::{Aria2Status, Gid, MonotonicInstant, SchedulerConfig};
 use ariax_runtime::RuntimeProfile;
 use ariax_storage::{JournalStateLimits, ReplayLimits, SessionOwnerConfig};
@@ -398,12 +398,6 @@ fn process_config(
         updated_ms: now_wall_unix_ms,
         recovery_created_at_unix_ms: now_wall_unix_ms,
     })
-}
-
-fn persisted_option_is_safe(name: &str) -> bool {
-    builtin_registry()
-        .find(name)
-        .is_some_and(|definition| definition.security == SecurityClass::Normal)
 }
 
 fn create_private_directory(

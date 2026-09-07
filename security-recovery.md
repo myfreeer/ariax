@@ -161,9 +161,15 @@ Defaults:
 - bind only loopback,
 - require `rpc-secret` for non-loopback,
 - cap request body by `rpc-max-request-size`,
-- reject unauthenticated WebSocket event subscriptions,
+- when a secret is configured, create WebSocket and event-enabled stdio broker
+  queues only after connection-local method-token validation, before dispatch,
 - redact tokens, passwords, cookies, Authorization headers, and proxy
   credentials.
+
+Phase 4B closes `P4-02`: pushed-event subscriptions now wait for connection-local
+authentication when a secret is configured. The connection lifecycle and
+rejection cases are owned by
+`apis-and-embedding.md#event-delivery-and-slow-consumers`.
 
 Remote RPC guardrails:
 

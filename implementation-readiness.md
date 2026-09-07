@@ -3,10 +3,14 @@
 Status: overall implementation is underway. The P0 contract blockers recorded
 in `final-preimplementation-review.md` are resolved in their normative
 documents, the scoped Phase-3B/3C HTTP(S) downloader milestone is checkpointed
-at `30b70c5`, and the bounded Phase-4 control-plane checkpoint is executable in
-the working tree. Remaining compatibility, transport, benchmark, and release
-matrix work proceeds under the later phase exit criteria below and in
-`implementation-plan.md`.
+at `30b70c5`, and the Phase-4 control-plane checkpoint is executable at
+`71acb03`. A 2026-09-06 implementation audit found that the Phase-4
+checkpoint still needs multicall authentication ordering, authenticated pushed
+events, complete registry-backed retry admission, active option restart replay,
+active source replacement outcome handling, and per-client RPC budget
+reservation before it can be treated as complete. Remaining compatibility,
+transport, benchmark, and release matrix work proceeds under the later phase
+exit criteria below and in `implementation-plan.md`.
 
 This document is the handoff checklist from architecture design to detailed
 module design and implementation.
@@ -283,7 +287,58 @@ poweroff evidence still gate the final Phase-3 claim.
 The detailed first-slice docs above are the intended module design input for
 this vertical slice.
 
+## Phase 4 Repair Gates
+
+The six defects below were established against `71acb03`. Phase 4B has now
+implemented `P4-01`, `P4-02`, and the admission/recovery portion of `P4-03`.
+Linux 1.97.1, MSRV 1.88, and native Windows-GNU workspace tests pass, including
+the production-policy retry regression and authenticated transport tests.
+Strict Linux and native Windows-GNU Clippy pass. The authenticated RPC fuzz
+target passes a 2,000-run local smoke check; this run is not coverage-instrumented
+and does not replace the instrumented CI fuzz requirement.
+`P4-04` through `P4-06` and the completion gates below remain open.
+Passing the existing workspace checks does not substitute for the regression
+evidence below. Tests must use the production authentication and persistence
+composition, including real delayed worker cancellation where relevant.
+
+| Gate | Current Implementation | Required Evidence And Owner |
+| --- | --- | --- |
+| `P4-01` Multicall authentication | Repaired: member-token envelopes dispatch without an outer token. | HTTP/WebSocket/stdio regression tests pass; invalid/missing tokens never dispatch a member. `invalid_envelopes_and_tokens_never_authorize_events` covers malformed, nested, empty, and over-limit envelopes. [API authentication](apis-and-embedding.md#rpc-authentication). |
+| `P4-02` Event authentication | Repaired: connection-local context installs a subscriber after authentication, before execution. | WebSocket two-client/reconnect/shutdown and Content-Length first-call/method-error tests pass; no-secret event tests remain green. Each method still requires its token. [Event delivery](apis-and-embedding.md#event-delivery-and-slow-consumers). |
+| `P4-03` Retry admission | Repaired: complete bounded retry registry and exact production-policy preflight before journal creation. Runtime/config scopes remain under `P4-07`. | `retry_admission_recovers_canonical_options_with_production_policy` and `rejected_admission_has_no_artifacts_and_does_not_fault_the_scheduler` pass with profiles, aliases, modifiers, forbidden keys, and a subsequent valid add/query. [Retry admission](retry-policy.md#registry-and-persistence-boundary). |
+| `P4-04` Active option recovery | `change_option` clears pending metadata and promotes SQLite when the drive loop returns; rate, split, and output changes produced journals rejected with `InvalidStagedSnapshotReplacement`. | Delay cancellation beyond the RPC reply; restart before/after staging, generation flush, and mirror promotion. Valid prefixes recover exact versions, one patch promotion, and fresh identities for subsequent patches. Invalid hashes/duplicates still reject; live-only rate changes avoid restart. [Option application](detailed-config.md#runtime-update-application), [journal rules](detailed-storage.md#control-journal-format). |
+| `P4-05` Active source replacement | `replace_task_sources` persists new sources and then returns a resume/cancellation-drain conflict, leaving the task paused. | Active, waiting, and paused replacements preserve desired state and return existing success shapes; eligible tasks resume after drain. Pause/remove races, commit failures, and restart before/after source commit preserve one complete source set. Validation conflicts reject before mutation. [Source persistence](session-persistence.md), [mutation contract](apis-and-embedding.md#control-mutation-recovery). |
+| `P4-06` RPC work accounting | Fixed body/response/event limits and connection caps exist, but no shared response-byte reservation; the four-slot stdio queue excludes executing and reader-held work. | Stalled HTTP, WebSocket, and stdio writers hold response credit; concurrent clients/listeners share global and resident limits. Four requests/8 MiB includes executing, queued, and reader-held state; the next body is backpressured. Disconnect, cancellation, parse failure, and response overflow release credit without blocking other clients. [RPC bounds](apis-and-embedding.md#query-and-response-work-bounds), [runtime budgets](detailed-runtime.md#resourcemanager). |
+
+Preserve the existing strict journal replay and uncertain-write failure rules.
+An invalid journal from the old checkpoint must not be made valid by ignoring a
+duplicate snapshot; any repair of existing damaged artifacts needs its own
+explicit recovery design. The bounded journal/parser fuzz targets and native
+persistence coverage remain required when implementing these repairs.
+
 ## Current Integration Gates
+
+### Phase 4B Completion Evidence
+
+Phase 4B completes the six repair gates above and the remaining control-plane
+requirements below before Phase 5 protocol implementation. These gates are
+initially open; a checkpoint closes a row only with recorded executable
+evidence. Existing compilation or mock-only dispatch timing is insufficient.
+
+| Gate | Required Behavior And Evidence |
+| --- | --- |
+| `P4-07` Configuration and runtime options | Registry-driven admission and atomic typed patches; live, pending, restart, and rejection behavior for every option according to its implemented/feature-gated status. Bounded URL rules, versioned atomic reload, and redacted flat/JSON/TOML dumps pass success, rejection, precedence, and rollback tests. |
+| `P4-08` Session compatibility | Configured aria2/JSON export, `aria2.saveSession`, periodic save, and local import use sanitized sources and options. Complete-document validation precedes publication; atomic batch metadata and crash tests prevent an invalid document from publishing a task prefix. |
+| `P4-09` Public interfaces | CLI, HTTP, WebSocket, both stdio framings, and typed Rust operations pass parity tests. Basic authentication supplements tokens; combined transports, EOF policies, filtered events, diagnostics, compatibility modes, and every advertised RPC method have executable behavior or explicit protocol-feature rejection. |
+| `P4-10` Slow-slot scheduling | Default `off` preserves queue behavior. Opt-in demote/pause, cooldown, retry-slot policy, queue ordering, user-action precedence, restart recovery, and local-pressure exclusions pass scheduler/worker integration tests. |
+| `P4-11` Performance and platform evidence | Native optimized Linux and Windows-GNU runs maintain 1,000 active HTTP ranges during 20,000 measured status/control calls after warm-up, with p99 at most 50 ms and bounded memory under stalled consumers. Workspace, MSRV, generated contracts, bounded fuzz runs, and relevant native platform CI pass. |
+
+The session schema stays at v2 and journal replay remains strict. Native disk
+backend additions, hardware poweroff, release packaging, and tagging remain
+separate roadmap gates. Record checkpoints and bounded benchmark evidence before
+removing generated target outputs; preserve pinned toolchains and archives.
+
+### Cross-Phase Integration
 
 - Keep the executable crash matrix green: deterministic partial-fsync,
   torn-tail, same-inode rotation residue, child-process exit/kill, and the
@@ -301,9 +356,17 @@ this vertical slice.
   server-advertised whole-entity admission have explicit bounded contracts.
 - Expand validator support beyond strong ETag and add HTTP/2 only behind its
   separately bounded stream/pool contract.
-- Expand the five-method request-only dispatcher into the authenticated,
-  batch/list/event-capable Phase-4 control plane without widening the default
-  loopback boundary.
+- Complete the Phase-4 control plane without widening the default loopback
+  boundary: route `system.multicall` before outer token parsing while checking
+  every inner member, gate WebSocket/stdio event subscriptions on successful
+  authentication, and enforce per-client/global RPC budget reservations before
+  parsing or serializing additional work.
+- Align every accepted retry option with the registry and persisted-option
+  policy before task admission; an accepted task must round-trip its complete
+  retry snapshot through recovery.
+- Make active option patches and active source replacement replayable and
+  outcome-consistent across cancellation drain, journal, SQLite, catalog, and
+  scheduler transitions.
 - Keep the executable minimal shutdown path green and carry the same typed
   timeout/dirty outcome into future native disk/CPU and BitTorrent lanes rather
   than bypassing the coordinator.

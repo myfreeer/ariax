@@ -1,12 +1,14 @@
 # APIs, Integrations, And Embedding
 
-Status: reviewed contract with the bounded Phase-4 control-plane checkpoint
-executable. The shared dispatcher, method-token authentication, batches,
-multicall, query/control/option/source/config/session operations, bounded event
-broker, loopback WebSocket transport, direct CLI controls, and typed Rust
-embedding skeleton are implemented. Legacy HTTP Basic authentication, aria2
-text-session export, the full compatibility matrix, and the C ABI remain
-pending.
+Status: reviewed contract with the Phase-4 control-plane checkpoint `71acb03`
+executable, but not yet complete. The shared dispatcher, query and control
+methods, option and source mutation, config and session operations, bounded
+event broker, loopback WebSocket transport, direct CLI controls, and typed Rust
+embedding skeleton are present. The six open repair gates and their required
+evidence are tracked in
+[implementation-readiness.md](implementation-readiness.md#phase-4-repair-gates).
+Legacy HTTP Basic authentication, aria2 text-session export, the full
+compatibility matrix, and the C ABI remain pending.
 
 Decision: expose aria2-compatible RPC for ecosystem compatibility, and expose a
 typed native library API for embedding. Add a stable C ABI only after the core
@@ -149,10 +151,27 @@ validation.  This applies equally to HTTP, WebSocket, and stdio when a secret is
 configured.  Tokens are never logged, echoed in errors, or retained in event
 payloads.
 
-`system.multicall` authenticates each inner method independently: every inner
-`params` array must begin with `token:<secret>`.  An outer credential does not
-authorize uncredentialed inner calls.  This prevents one authenticated envelope
-from accidentally granting a different method authorization scope.
+`system.multicall` is the envelope exception to direct method
+authentication. The dispatcher recognizes the method before applying the
+direct-method token check, requires exactly one outer parameter containing the
+member array, and authenticates every member's `params` array independently.
+Each member must begin with `token:<secret>` when a secret is configured. The
+outer envelope does not carry or consume a credential; an outer token is not a
+substitute for member tokens. This is the aria2 wire shape and prevents one
+authenticated envelope from granting a different method authorization scope.
+
+For example, this request authenticates its member without an outer token:
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"system.multicall","params":[[{"methodName":"aria2.getVersion","params":["token:<secret>"]}]]}
+```
+
+A missing or incorrect member token produces only that member's unauthorized
+result and does not dispatch it. Other members continue in order. An empty or
+invalid outer envelope, an over-limit envelope, or a rejected nested member
+cannot establish event authorization; a valid authenticated sibling may do so.
+The Phase-4B repair implements this member-token shape on HTTP, WebSocket,
+and stdio, including mixed authorized and rejected members (`P4-01`).
 
 `rpc-user`/`rpc-passwd` provide legacy HTTP Basic authentication only.  It is a
 deprecated transport gate, not a replacement for `rpc-secret`.  If both are
@@ -167,7 +186,8 @@ valid.
 ### Query And Response Work Bounds
 
 Request size alone does not bound response amplification or scheduler work.
-Baseline registry defaults are:
+The target registry defaults below match the checkpoint's fixed transport caps;
+configurable registry entries for these limits remain pending:
 
 ```text
 rpc-max-request-size=2MiB
@@ -192,14 +212,28 @@ building a second unbounded JSON value tree. Exceeding the cap returns a typed
 `ResponseTooLarge` error and releases all snapshot references; it never sends a
 truncated JSON document.
 
-Per-transport pending response bytes count against `rpc_budget`, and socket/
-stdio backpressure stops further response work. One client cannot reserve the
-whole process budget; per-client and global shares are enforced before
-serialization. Baseline permits one actively serializing/full-size response per
-client; later pipelined requests retain only their bounded parsed command state
-until the prior response releases bytes. Each client has at most four accepted
-requests / 8 MiB of request-plus-command state; further HTTP pipelining or stdio
-frames receive backpressure/a typed busy error before parsing another body.
+Pending responses require both client credit and process-wide `rpc_budget`
+credit before serialization, plus the resident-byte permit defined in
+`detailed-runtime.md`. One client is one HTTP/WebSocket connection or one stdio
+transport; all listeners share the process budget. One client cannot reserve
+the whole process budget. Baseline permits one actively serializing/full-size
+response per client, including a response blocked in the transport writer.
+The permit follows every retained serialized chunk until transport release or
+disconnect; constructing the HTTP response does not release its credit.
+
+Each client has at most four outstanding requests and 8 MiB of combined request
+and command state. This includes the executing request, queued requests, and
+the reader's current body, including one waiting to enter a full channel.
+Reserved bytes cover raw input and parsed state while both are retained.
+HTTP pipelining, WebSocket messages, and stdio frames stop before reading or
+allocating another body when credit is exhausted; a bounded busy response may
+be used instead. Serialization cannot begin behind a blocked full-size reply.
+Disconnect, cancellation, parse failure, and serialization failure release all
+owned credit. A channel with four slots alone does not establish this bound.
+
+The current checkpoint caps individual bodies, responses, and event queues,
+and uses a four-slot stdio reader channel. It does not enforce the shared RPC
+budget or complete per-client accounting above; those are gate `P4-06`.
 
 `system.multicall` is bounded but not transactional. Inner calls execute in
 order and may have side effects before a later inner call fails or the combined
@@ -213,6 +247,22 @@ WebSocket and stdio notifications use the per-client bounded queues defined in
 `messaging-model.md`.  A blocked client can never block the dispatcher,
 scheduler, storage, or journal appender.
 
+When a secret is configured, a WebSocket or event-enabled stdio connection is
+unauthenticated at transport setup. It receives no pushed notification and owns
+no broker subscription until the dispatcher validates a method token on that
+connection. Install the subscriber after authentication and before dispatching
+the authorized method so its events are observable. A later method error does
+not undo valid authentication. In a batch or multicall only an authenticated
+member can establish that authorization; parsing the envelope cannot.
+
+Event authorization is local to the connection, never shared through the
+process backend. Every subsequent method still requires its own token. Closing
+the transport drops the subscriber; reconnecting must authenticate again. With
+no secret configured, the connection is authorized immediately. Explicit
+`ariax.subscribe` and `ariax.pollEvents` use normal method authentication.
+The Phase-4B repair implements this lifecycle on WebSocket and Content-Length
+stdio, including first-call events, method errors, and reconnect (`P4-02`).
+
 - Replies, terminal errors, durability failures, and shutdown notices are
   lossless within the client deadline; failure to enqueue them disconnects the
   client with the stable `SlowConsumer` error.
@@ -222,7 +272,39 @@ scheduler, storage, or journal appender.
 - A reconnecting client obtains a fresh snapshot with normal query methods and
   then resubscribes; event streams are not a durable replay log.
 
-Compatibility target:
+### Control Mutation Recovery
+
+`changeOption` follows each option's declared `runtime_update` and the accepted
+patch-version rules in `detailed-config.md`. A live-only patch must remain live.
+For a restart-class patch, `OK` means the complete patch and restart intent are
+durably accepted, not that cancellation or readmission has finished. The patch
+identity and staged snapshot remain owned until the actual admission appends
+and flushes its matching `GenerationStarted(reason=option_patch)`. Only then
+does the current-generation SQLite mirror advance and the pending state clear.
+Recovery reuses an existing staged snapshot and appends only the missing
+promotion, as specified in `detailed-storage.md`; it must never append an
+untagged replacement over an accepted patch. Gate `P4-04` covers the current
+premature cleanup/promotion and restart replay failure.
+
+`changeUri` and `ariax.replaceSources` validate the complete proposed source set
+and scheduler conflicts before mutation. An active replacement owns a bounded
+internal quiescence operation, preserves the user's desired pause state, and
+waits for cancellation drain before committing source rows. It cannot issue
+`Resume` while that drain is pending. On commit, SQLite and the catalog use the
+new set and the task is requeued automatically if the user still wants it to
+run. Actual network admission remains subject to ordinary scheduler limits.
+
+Keep the existing success shapes: `changeUri` returns the deletion/addition
+counts and `ariax.replaceSources` returns the GID. A validation/conflict error
+means no replacement was committed. A confirmed commit must not become an
+ordinary rejection because readmission is delayed; later worker failures are
+reported through task status. An uncertain persistence outcome fails closed
+for recovery and is not described as a rollback. Paused/waiting tasks preserve
+their desired state, and a racing explicit pause or remove takes precedence
+over automatic readmission. Gate `P4-05` covers the current error-after-mutation
+path and its restart behavior.
+
+### Compatibility Target
 
 - JSON-RPC is required.
 - WebSocket event publishing is required for modern integrations.

@@ -451,8 +451,11 @@ fn retry_from_sanitized(
             HttpRetryTriggerSet::parse(value).map_err(|_| HttpTaskSpecError::InvalidOptions)?;
     }
     if let Some(value) = retry_value(options, "retry-on-http-status") {
-        policy.retryable_statuses =
-            HttpRetryStatusSet::parse(value).map_err(|_| HttpTaskSpecError::InvalidOptions)?;
+        policy.retryable_statuses = if value.is_empty() {
+            HttpRetryStatusSet::default()
+        } else {
+            HttpRetryStatusSet::parse(value).map_err(|_| HttpTaskSpecError::InvalidOptions)?
+        };
     }
     if let Some(value) = retry_value(options, "retry-on-http-status-add") {
         for code in HttpRetryStatusSet::parse(value)

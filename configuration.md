@@ -2,7 +2,10 @@
 
 Status: reviewed contract with first-slice implementation in progress. Typed
 option metadata, bounded values, flat config parsing, and generated compatibility
-coverage exist; runtime application and the remaining registry are pending.
+coverage exist. Phase 4 adds limited runtime mutation and config diagnostics;
+Phase 4B repairs retry admission alignment (`P4-03`). The remaining registry and
+runtime coverage and active option recovery (`P4-04`) remain open. Gates are tracked in
+`implementation-readiness.md`.
 
 Configurability is a product requirement. The implementation must be explicit
 about which aria2 options are implemented, unsupported, unsafe-compat only, or
@@ -247,8 +250,8 @@ Defaults:
 
 ## Parser And Metadata Resource Caps
 
-All untrusted parsers reserve input and emitted-state bytes before allocation.
-Defaults and hard maxima are registry data, not ad hoc constants:
+All untrusted parsers must reserve input and emitted-state bytes before
+allocation. The target defaults and hard maxima are registry data:
 
 | Input/result | Default | Hard maximum |
 | --- | --- | --- |
@@ -263,6 +266,10 @@ Defaults and hard maxima are registry data, not ad hoc constants:
 | XML nesting / attributes per element / one attribute | 64 / 128 / 64 KiB | same |
 | XML text node / aggregate emitted canonical layout | 8 MiB / 64 MiB | same |
 | persisted/displayed safe diagnostic message | 8 KiB | 64 KiB |
+
+Current RPC transports use fixed 2 MiB request, 16 MiB response, 256-member, and
+1,000-item page limits. These constants do not establish configurable registry
+support or the per-client/process budget required by `P4-06`.
 
 The exact public options are `rpc-max-request-size`,
 `rpc-stdio-max-request-size`, `rpc-max-response-size`,
@@ -523,18 +530,23 @@ HTTP/FTP/SFTP:
   `piece-length`, `checksum`, `allow-piece-length-change`,
   `max-tries`, `retry-wait`, `timeout`, `connect-timeout`,
   `lowest-speed-limit`, `max-file-not-found`, `max-resume-failure-tries`:
-  implemented for the stated protocol slices. The executable HTTP checksum
-  subset currently accepts SHA-256 only; the broader aria2 digest vocabulary
-  remains partial.
+  are the target transfer option set. The executable HTTP parser accepts split,
+  connection, piece, timeout, speed, and SHA-256 checksum settings. Explicit
+  retry-policy admission and recovery pass the production persistence policy
+  (`P4-03`); `allow-piece-length-change`, `max-file-not-found`, and
+  `max-resume-failure-tries` are not accepted by this HTTP RPC checkpoint.
+  Broader protocol and digest coverage remains partial.
 - `piece-length` defaults to 1 MiB for HTTP/FTP, is persisted, and is ignored
   when Metalink/BitTorrent metadata owns the verification piece size.
   `allow-piece-length-change=false` rejects a recovery mismatch; explicit true
   uses the conservative remap/readback/new-generation rule in
   `detailed-storage.md` and may return incompatible progress to pending.
-- Retry policy: aria2-compatible retry options are implemented, and extended
-  retry controls are implemented through `retry-policy.md` metadata. Retry
-  status-code sets, `Retry-After`, and stale connection/validator behavior must
-  be explicit, bounded, and test-covered.
+- Retry policy: the HTTP worker and option parser implement bounded profiles,
+  status-code sets, `Retry-After`, and stale connection/validator behavior.
+  Phase 4B aligns parser acceptance with the registry and production persistence
+  policy for per-download admission and recovery. Runtime/global application
+  remains under `P4-07`. `retry-policy.md#registry-and-persistence-boundary` owns
+  the admission/recovery checks.
 - HTTP headers/cookies/TLS: `header`, `user-agent`, `referer`,
   `load-cookies`, `save-cookies`, `check-certificate`, `ca-certificate`,
   `certificate`, `private-key`, `min-tls-version`: implemented or
@@ -570,17 +582,23 @@ Metalink:
 
 RPC:
 
-- `enable-rpc`, `rpc-listen-all`, `rpc-listen-port`,
+- The target RPC option set includes `enable-rpc`, `rpc-listen-all`, `rpc-listen-port`,
   `rpc-listen-address`, `rpc-secret`, `rpc-user`, `rpc-passwd`,
-  `rpc-max-request-size` (default 2 MiB; hard maximum 64 MiB), CORS options,
-  WebSocket events: implemented.
+  `rpc-max-request-size` (default 2 MiB; hard maximum 64 MiB), and CORS
+  options. The checkpoint exposes loopback HTTP/WebSocket and stdio through
+  dedicated CLI modes, reads `ARIAX_RPC_SECRET`, and uses fixed transport caps.
+  Most options in this target set have no registry entry or CLI wiring yet;
+  HTTP Basic and CORS configuration remain pending. Pushed event delivery
+  waits for connection-local authentication, as verified by `P4-02`.
 - `rpc-secret` uses aria2's first-positional-parameter `token:<secret>` scheme;
-  each inner request in `system.multicall` authenticates independently. Legacy
-  HTTP Basic Auth is compatibility-only and never overrides the token policy.
-- `rpc-secure`, `rpc-certificate`, `rpc-private-key`: implemented when TLS
-  server feature is enabled.
-- Remote RPC without a secret on non-loopback is rejected unless explicitly
-  overridden by an insecure startup-only option.
+  `system.multicall` is dispatched as an envelope and each inner request
+  authenticates independently. Legacy HTTP Basic Auth is compatibility-only
+  and never overrides the token policy. Phase 4B implements the multicall
+  dispatch ordering and pre-authentication event gate.
+- `rpc-secure`, `rpc-certificate`, `rpc-private-key` are target TLS-server
+  options; the checkpoint has no TLS RPC listener.
+- The checkpoint rejects every non-loopback RPC bind. Any later non-loopback
+  support must enforce the startup security policy in `security-recovery.md`.
 
 Advanced:
 

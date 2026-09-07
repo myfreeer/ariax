@@ -160,6 +160,7 @@ pub use http_rpc::{
     serve_loopback_http_until, serve_loopback_websocket_listener_until,
     serve_loopback_websocket_until,
 };
+mod rpc_client;
 pub use http_supervisor::{
     DEFAULT_HTTP_SUPERVISOR_POLL_INTERVAL, DEFAULT_HTTP_SUPERVISOR_SHUTDOWN_TIMEOUT,
     HttpTaskWorker, HttpWorkerFuture, HttpWorkerSuccess, HttpWorkerSupervisor,
@@ -195,6 +196,7 @@ pub use process_bootstrap::{
     ProcessSchedulerPreparation, ProcessSchedulerPrepareError, ProcessSchedulerSink,
     ProcessShutdownError, ProcessShutdownReport, bootstrap_process,
 };
+pub use rpc_client::RpcClientContext;
 pub use rpc_events::{
     DEFAULT_RPC_EVENT_BYTE_CAPACITY, DEFAULT_RPC_EVENT_CAPACITY, MAX_RPC_EVENT_BYTE_CAPACITY,
     MAX_RPC_EVENT_CAPACITY, MAX_RPC_EVENT_SUBSCRIBERS, RpcEvent, RpcEventBroker, RpcEventClass,

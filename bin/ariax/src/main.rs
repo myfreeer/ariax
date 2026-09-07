@@ -10,7 +10,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use ariax_config::{SecurityClass, builtin_registry};
+use ariax_config::persisted_option_is_safe;
 use ariax_core::{Aria2Status, Generation, Gid, MonotonicInstant, SchedulerConfig, TaskId};
 use ariax_engine::{
     AddUri, DownloadOptions, Engine, HttpCancellation, HttpControlBackend, HttpControlPlane,
@@ -868,10 +868,4 @@ fn check_bootstrap(
             ExitCode::FAILURE
         }
     }
-}
-
-fn persisted_option_is_safe(name: &str) -> bool {
-    builtin_registry()
-        .find(name)
-        .is_some_and(|definition| definition.security == SecurityClass::Normal)
 }

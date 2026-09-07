@@ -15,10 +15,11 @@ submitted mirrors with per-range/per-source retry budgets, durable-piece
 restart recovery, pre-network descriptor-bound SHA-256 readback of every
 durable piece, exact strong-ETag/resource/length binding for single-source and
 strict-fallback resume, packet-independent live speed sampling, and
-scheduler-owned worker supervision. Five methods (`addUri`, `tellStatus`,
-`pause`, `remove`, and `getGlobalStat`) are executable over loopback HTTP/1.1
-and bounded Content-Length stdio framing. The older pinned-peer CLI remains as
-a diagnostic harness. A persisted user `checksum=sha-256=<64 hex>` now gates
+scheduler-owned worker supervision. The original five-method Phase-3B RPC
+slice has expanded into the Phase-4 checkpoint `71acb03`, including loopback
+WebSocket and library NDJSON framing. `apis-and-embedding.md` owns its current
+surface and open repair gates. The older pinned-peer CLI remains a diagnostic
+harness. A persisted user `checksum=sha-256=<64 hex>` now gates
 strict concurrent mirrors, verifies the descriptor-bound assembled file on a
 bounded blocking worker before `TaskComplete`, and permits digest-bound restart
 without a strong server validator. The persisted stale-validator policy is also
@@ -42,9 +43,10 @@ treated as a whole-file checksum, so ordinary concurrent split and final
 whole-file verification still require a persisted user SHA-256. `Content-Digest`,
 digest parameters/coverage metadata, alternate algorithms, server-advertised
 whole-entity admission, Metalink chunk hashes, Last-Modified and unsafe-
-override resume, HTTP/2, unknown-length or chunked layouts, WebSocket/NDJSON and
-non-loopback RPC, and the rest of the Phase-4 control plane remain outside this
-checkpoint.
+override resume, HTTP/2, unknown-length or chunked layouts, and non-loopback
+RPC remain outside this checkpoint. The expanded control plane remains subject
+to `P4-01` through `P4-06` in `implementation-readiness.md`; worker-level retry
+coverage does not establish production admission of explicit retry options.
 
 The process-capacity boundary is executable for this HTTP slice. A resolved
 runtime profile creates one process-owned handle budget, one global resident-byte
@@ -195,27 +197,32 @@ keys, raw URLs, and credentials are not persisted or exposed in diagnostics.
 `ariax --rpc-http SESSION_DB CONTROL_DIR OUTPUT_ROOT LOOPBACK_ADDR` serves only
 `POST /jsonrpc` on an IP-loopback bind. `ariax --rpc-stdio` uses the same
 dispatcher with one required, non-duplicated `Content-Length` header per frame.
-Request bodies are capped at 2 MiB, responses at 8 MiB, stdio headers at 16 KiB,
+Request bodies are capped at 2 MiB, responses at 16 MiB, stdio headers at 16 KiB,
 and the HTTP listener at 64 established connection tasks. HTTP shutdown stops
 accepting, gives current requests a five-second graceful window, drains worker
 references, and then closes journals and the SQLite session owner.
 
-The checkpoint implements only these request forms:
+The original Phase-3B methods remain part of the expanded control surface:
 
 - `aria2.addUri([uris], [options])`, with one or more HTTP(S) mirrors and the
   reviewed options `dir`, `out`, `pause`, `split`,
   `max-connection-per-server`, `min-split-size`, `piece-length`,
   `connect-timeout`, `timeout`, `max-download-limit`, `lowest-speed-limit`,
-  `checksum`, the bounded retry-policy options, and
+  `checksum`, `endgame-max-duplicates`, the bounded retry-policy options, and
   `verify-mirror-identity`,
-- `aria2.tellStatus(gid)`, `aria2.pause(gid)`, and `aria2.remove(gid)`, each
-  requiring exactly one full hexadecimal GID,
+- `aria2.tellStatus(gid, [keys])`, `aria2.pause(gid)`, and `aria2.remove(gid)`;
+  Phase 4 accepts a unique hexadecimal GID prefix and returns full GIDs,
 - `aria2.getGlobalStat()` with no arguments.
 
 The configured output root is the only accepted `dir`; `out` must pass
-`SafePathBuilder`. Unsupported options and malformed method arity fail before a
-task row, source row, option snapshot, journal, or scheduler-visible task is
-published. `tellStatus` reports durable and discarded lengths, discard-budget
+`SafePathBuilder`. Admission must validate all options before creating task
+rows, sources, journals, or scheduler-visible tasks. Phase 4B closes `P4-03`:
+the complete bounded retry registry and production persistence policy accept
+canonical resolved snapshots, and admission checks exact recovery before
+creating a journal. The registry, preflight, and recovery contract is defined in
+`retry-policy.md#registry-and-persistence-boundary`.
+
+`tellStatus` reports durable and discarded lengths, discard-budget
 consumption and remaining credit, active connections, retry count, and
 packet-independent current/durable speed. When a retry decision exists, the
 single bounded `retryDiagnostic` object also reports exact live trigger/HTTP
@@ -224,9 +231,9 @@ credit, wait deadline and `Retry-After` disposition, prior lease outcome, and
 next action. It never returns URI text. Restart labels reconstructed journal
 error-class/reason evidence as recovered rather than claiming the original
 transport trigger survived; its failed lease stays unknown, while a replacement
-lease is attached if one is assigned after resumption. Batch,
-notifications, authentication, token handling, list methods, runtime option
-mutation, and non-loopback listeners remain Phase 4 work.
+lease is attached if one is assigned after resumption. Batch, notification,
+token, list, and runtime mutation paths now exist with the repair gates recorded
+in `apis-and-embedding.md`; non-loopback listeners remain unavailable.
 
 ## Request Preparation
 
@@ -799,6 +806,9 @@ Required tests:
   old progress into the new generation; the staged-prefix case retains a
   flushed `TaskPaused(reason=restarting)` marker, reuses only the exact matching
   snapshot, and appends only the missing promotion suffix,
+- an active option patch stages at most one next-admission snapshot for its
+  patch id; recovery consumes that snapshot exactly once at
+  `GenerationStarted(reason=option_patch)` and rejects no valid flushed prefix,
 - range/resume requests send `Accept-Encoding: identity`,
 - content-coded body to a range request is rejected, not written,
 - strict concurrent ordinary multi-mirror split requires a persisted user
