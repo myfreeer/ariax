@@ -324,10 +324,8 @@ impl Engine {
     }
 
     async fn call_control(&self, method: &str, params: Value) -> Result<Value, NativeApiError> {
-        self.plane
-            .lock()
+        HttpControlPlane::call_shared(&self.plane, method, params)
             .await
-            .call(method, params)
             .map_err(NativeApiError::Control)
     }
 }

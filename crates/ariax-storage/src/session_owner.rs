@@ -96,6 +96,10 @@ pub enum SessionCommand {
         gid: Gid,
         sources: Vec<SessionTaskSourceRecord>,
     },
+    ReplaceTaskSourcesAndQueue {
+        transition: SessionQueueTransition,
+        sources: Vec<SessionTaskSourceRecord>,
+    },
     ReadTaskSources {
         gid: Gid,
     },
@@ -873,6 +877,13 @@ fn execute_command(
         }
         SessionCommand::ReplaceTaskSources { gid, sources } => {
             store.replace_task_sources(gid, &sources)?;
+            Ok(SessionCommandResult::Unit)
+        }
+        SessionCommand::ReplaceTaskSourcesAndQueue {
+            transition,
+            sources,
+        } => {
+            store.replace_task_sources_and_queue(&transition, &sources)?;
             Ok(SessionCommandResult::Unit)
         }
         SessionCommand::ReadTaskSources { gid } => store

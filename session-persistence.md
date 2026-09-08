@@ -390,8 +390,11 @@ Definite pre-commit rejection leaves the old sources authoritative. A confirmed
 commit returns the documented replacement success even when normal admission
 is delayed; later worker failures use task status. An uncertain accepted store
 operation faults the driver for recovery, without claiming either rollback or
-success. The checkpoint currently pauses, commits sources, and attempts resume
-before cancellation drain is complete; `P4-05` repairs that sequence.
+success. The `P4-05` implementation uses scheduler-owned begin/commit commands
+and this atomic owner transaction. Delayed cancellation, explicit pause/remove,
+disconnected callers, interrupted quiescence, and restart after commit have
+regression coverage, as do exact-queue rejection and injected source-write
+rollback.
 
 A redacted placeholder (`persistence_safe_uri IS NULL`) must set
 `needs_credentials`; otherwise startup would have neither a runnable source nor

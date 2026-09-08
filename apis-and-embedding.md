@@ -309,8 +309,9 @@ ordinary rejection because readmission is delayed; later worker failures are
 reported through task status. An uncertain persistence outcome fails closed
 for recovery and is not described as a rollback. Paused/waiting tasks preserve
 their desired state, and a racing explicit pause or remove takes precedence
-over automatic readmission. Gate `P4-05` covers the current error-after-mutation
-path and its restart behavior.
+over automatic readmission. The `P4-05` implementation and regression tests now
+cover this contract, including retry-wait timer cancellation and a caller that
+disconnects after quiescence starts.
 
 ### Compatibility Target
 

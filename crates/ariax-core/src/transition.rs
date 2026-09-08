@@ -68,6 +68,7 @@ pub enum StateReason {
     OptionPatchPersistenceFailed,
     CancellationDrained,
     RestartQuiesced,
+    SourceReplacement,
     RestartApplicationSucceeded,
     RestartApplicationFailed,
     VerificationSucceeded,
@@ -126,6 +127,7 @@ pub const ALL_STATE_REASONS: &[StateReason] = &[
     StateReason::OptionPatchPersistenceFailed,
     StateReason::CancellationDrained,
     StateReason::RestartQuiesced,
+    StateReason::SourceReplacement,
     StateReason::RestartApplicationSucceeded,
     StateReason::RestartApplicationFailed,
     StateReason::VerificationSucceeded,
@@ -187,6 +189,7 @@ impl StateReason {
             Self::OptionPatchPersistenceFailed => "option_patch_persistence_failed",
             Self::CancellationDrained => "cancellation_drained",
             Self::RestartQuiesced => "restart_quiesced",
+            Self::SourceReplacement => "source_replacement",
             Self::RestartApplicationSucceeded => "restart_application_succeeded",
             Self::RestartApplicationFailed => "restart_application_failed",
             Self::VerificationSucceeded => "verification_succeeded",
@@ -243,6 +246,8 @@ pub enum SchedulerAction {
     HostKeyChallengeRequired,
     AllocationTerminalFailure,
     ActiveRestartOptionPatchAccepted,
+    SourceReplacementRequested,
+    SourceReplacementCommitted,
     ActiveRestartOptionPatchPersisted,
     ActiveRestartOptionPatchPersistenceFailed,
     LeaseRetryableWithRunnableWork,
@@ -318,6 +323,8 @@ pub const ALL_SCHEDULER_ACTIONS: &[SchedulerAction] = &[
     SchedulerAction::HostKeyChallengeRequired,
     SchedulerAction::AllocationTerminalFailure,
     SchedulerAction::ActiveRestartOptionPatchAccepted,
+    SchedulerAction::SourceReplacementRequested,
+    SchedulerAction::SourceReplacementCommitted,
     SchedulerAction::ActiveRestartOptionPatchPersisted,
     SchedulerAction::ActiveRestartOptionPatchPersistenceFailed,
     SchedulerAction::LeaseRetryableWithRunnableWork,
@@ -400,6 +407,8 @@ impl SchedulerAction {
             Self::HostKeyChallengeRequired => "host_key_challenge_required",
             Self::AllocationTerminalFailure => "allocation_terminal_failure",
             Self::ActiveRestartOptionPatchAccepted => "active_restart_option_patch_accepted",
+            Self::SourceReplacementRequested => "source_replacement_requested",
+            Self::SourceReplacementCommitted => "source_replacement_committed",
             Self::ActiveRestartOptionPatchPersisted => "active_restart_option_patch_persisted",
             Self::ActiveRestartOptionPatchPersistenceFailed => {
                 "active_restart_option_patch_persistence_failed"
@@ -510,6 +519,12 @@ impl SchedulerAction {
             | Self::ActiveRestartOptionPatchAccepted
             | Self::ApplyMatchingHostKeyOption => {
                 SchedulerActionSource::Command(SchedulerCommandKind::ApplyOptionPatch)
+            }
+            Self::SourceReplacementRequested => {
+                SchedulerActionSource::Command(SchedulerCommandKind::BeginSourceReplacement)
+            }
+            Self::SourceReplacementCommitted => {
+                SchedulerActionSource::Command(SchedulerCommandKind::CommitSourceReplacement)
             }
             Self::InPlaceOptionPatchApplied => {
                 SchedulerActionSource::TaskEvent(TaskEventKind::OptionPatchApplied)
@@ -1273,6 +1288,23 @@ pub const fn transition_contract(state: TaskState, action: SchedulerAction) -> T
             }
             _ => conflict(),
         },
+        SchedulerAction::SourceReplacementRequested => match state {
+            TaskState::Allocating
+            | TaskState::Active
+            | TaskState::Verifying
+            | TaskState::RetryWait => {
+                transition(StateReason::SourceReplacement, PAUSED_RESTARTING_TARGET)
+            }
+            TaskState::Waiting | TaskState::Paused => stay(state, StateReason::SourceReplacement),
+            _ => conflict(),
+        },
+        SchedulerAction::SourceReplacementCommitted => match state {
+            TaskState::PausedRestarting => {
+                transition(StateReason::SourceReplacement, WAITING_TARGET)
+            }
+            TaskState::Waiting | TaskState::Paused => stay(state, StateReason::SourceReplacement),
+            _ => conflict(),
+        },
         SchedulerAction::ActiveRestartOptionPatchPersisted => match state {
             TaskState::Allocating | TaskState::Active | TaskState::Verifying => transition(
                 StateReason::OptionPatchPersistenceSucceeded,
@@ -1630,7 +1662,7 @@ mod tests {
             }
         }
         assert_eq!(cells, ALL_TASK_STATES.len() * ALL_SCHEDULER_ACTIONS.len());
-        assert_eq!(cells, 16 * 71);
+        assert_eq!(cells, 16 * 73);
     }
 
     #[test]

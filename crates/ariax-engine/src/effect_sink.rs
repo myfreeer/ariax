@@ -33,6 +33,10 @@ pub enum PersistencePlanStep {
         options: SanitizedOptionMap,
     },
     TransitionTaskQueue(SessionQueueTransition),
+    ReplaceTaskSourcesAndQueue {
+        transition: SessionQueueTransition,
+        sources: Vec<SessionTaskSourceRecord>,
+    },
     ReplaceTaskOptions {
         gid: Gid,
         scope: OptionsSnapshotScope,
@@ -674,6 +678,42 @@ fn validate_plan(
             Ok(())
         }
         (
+            TransitionEffect::PersistQueueTransition {
+                gid,
+                from: Some(from),
+                to: Some(to),
+                desired_paused,
+                slow_demotion_count,
+                slow_slot,
+                orders,
+                ..
+            },
+            [
+                PersistencePlanStep::ReplaceTaskSourcesAndQueue {
+                    transition,
+                    sources,
+                },
+            ],
+        ) => {
+            if sources.is_empty()
+                || sources.iter().any(|source| {
+                    source.persistence_safe_uri.is_none() && !source.needs_credentials
+                })
+            {
+                return Err(PersistencePlanError::StateMismatch);
+            }
+            validate_transition(
+                *gid,
+                *from,
+                *to,
+                *desired_paused,
+                *slow_demotion_count,
+                slow_slot.as_ref(),
+                orders,
+                transition,
+            )
+        }
+        (
             TransitionEffect::PersistGenerationStarted {
                 gid, generation, ..
             },
@@ -1269,6 +1309,16 @@ fn command_for_step(step: &PersistencePlanStep) -> PendingOwnerCommand {
         ),
         PersistencePlanStep::TransitionTaskQueue(transition) => (
             SessionCommand::TransitionTaskQueue(transition.clone()),
+            ExpectedResult::Unit,
+        ),
+        PersistencePlanStep::ReplaceTaskSourcesAndQueue {
+            transition,
+            sources,
+        } => (
+            SessionCommand::ReplaceTaskSourcesAndQueue {
+                transition: transition.clone(),
+                sources: sources.clone(),
+            },
             ExpectedResult::Unit,
         ),
         PersistencePlanStep::ReplaceTaskOptions {

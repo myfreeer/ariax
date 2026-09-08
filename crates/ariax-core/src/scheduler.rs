@@ -51,6 +51,7 @@ pub struct SchedulerTaskView {
     pub pending_option_patch_mode: Option<PendingOptionPatchMode>,
     pub pending_credential_requirement: Option<CredentialRequirementKey>,
     pub pending_user_control: Option<PendingUserControl>,
+    pub pending_source_replacement: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -76,6 +77,7 @@ struct ScheduledTask {
     pending_option_patch_mode: Option<PendingOptionPatchMode>,
     pending_credential_requirement: Option<CredentialRequirementKey>,
     pending_user_control: Option<PendingUserControl>,
+    pending_source_replacement: bool,
     host_key_challenge: Option<PresentedHostKeyChallenge>,
     error: Option<PublicError>,
     stopped_status: Option<Aria2Status>,
@@ -115,6 +117,7 @@ impl ScheduledTask {
             pending_option_patch_mode: None,
             pending_credential_requirement: None,
             pending_user_control: None,
+            pending_source_replacement: false,
             host_key_challenge: None,
             error: None,
             stopped_status: None,
@@ -218,6 +221,7 @@ impl ScheduledTask {
             pending_option_patch_mode: self.pending_option_patch_mode,
             pending_credential_requirement: self.pending_credential_requirement,
             pending_user_control: self.pending_user_control,
+            pending_source_replacement: self.pending_source_replacement,
         }
     }
 
@@ -1516,6 +1520,12 @@ impl RequestScheduler {
             } => self.add_validated_task(task_id, gid, desired_paused, conditions, at),
             SchedulerCommand::Pause { gid, force } => self.pause(gid, force, at),
             SchedulerCommand::Resume { gid } => self.resume(gid, at),
+            SchedulerCommand::BeginSourceReplacement { gid } => {
+                self.begin_source_replacement(gid, at)
+            }
+            SchedulerCommand::CommitSourceReplacement { gid } => {
+                self.commit_source_replacement(gid, at)
+            }
             SchedulerCommand::ApproveHostKey {
                 gid,
                 challenge,
@@ -1721,6 +1731,12 @@ impl RequestScheduler {
         at: MonotonicInstant,
     ) -> Result<SchedulerOutcome, SchedulerError> {
         let original = self.task_clone(gid)?;
+        if original.pending_source_replacement {
+            return Err(SchedulerError::Conflict {
+                state: original.state,
+                operation: "source_replacement_pending",
+            });
+        }
         if let Some(barrier) = original.pending_barrier
             && Self::defers_user_control(barrier)
         {
@@ -1920,6 +1936,98 @@ impl RequestScheduler {
         )
     }
 
+    fn begin_source_replacement(
+        &mut self,
+        gid: Gid,
+        at: MonotonicInstant,
+    ) -> Result<SchedulerOutcome, SchedulerError> {
+        let original = self.task_clone(gid)?;
+        Self::reject_pending(&original, "begin_source_replacement")?;
+        if original.pending_source_replacement || original.pending_option_patch.is_some() {
+            return Err(SchedulerError::Conflict {
+                state: original.state,
+                operation: "source_replacement_pending",
+            });
+        }
+        let action = SchedulerAction::SourceReplacementRequested;
+        let target =
+            Self::target_for_action(&original, action)?.ok_or(SchedulerError::InternalInvariant)?;
+        let mut updated = original.clone();
+        let mut effects = Vec::new();
+        updated.state = target;
+        updated.pending_source_replacement = true;
+        Self::cancel_timers(&mut updated, &mut effects);
+        if updated.slot.owns_slot() {
+            Self::begin_cancellation(
+                &mut updated,
+                DrainTarget::PausedRestarting,
+                false,
+                &mut effects,
+                "source_replacement",
+            )?;
+        }
+        self.finish_action(
+            original,
+            Some(updated),
+            true,
+            action,
+            at,
+            effects,
+            true,
+            self.ids,
+        )
+    }
+
+    fn commit_source_replacement(
+        &mut self,
+        gid: Gid,
+        at: MonotonicInstant,
+    ) -> Result<SchedulerOutcome, SchedulerError> {
+        let original = self.task_clone(gid)?;
+        Self::reject_pending(&original, "commit_source_replacement")?;
+        if !original.pending_source_replacement || original.slot.owns_slot() {
+            return Err(SchedulerError::Conflict {
+                state: original.state,
+                operation: "source_replacement_not_quiesced",
+            });
+        }
+        let action = SchedulerAction::SourceReplacementCommitted;
+        let target =
+            Self::target_for_action(&original, action)?.ok_or(SchedulerError::InternalInvariant)?;
+        let mut updated = original.clone();
+        updated.state = target;
+        updated.pending_source_replacement = false;
+        let queue = original
+            .queue_class()
+            .ok_or(SchedulerError::InternalInvariant)?;
+        if updated.queue_class() != Some(queue) {
+            return Err(SchedulerError::InternalInvariant);
+        }
+        let effects = vec![TransitionEffect::PersistQueueTransition {
+            task_id: original.task_id,
+            gid,
+            from: Some(queue),
+            to: Some(queue),
+            desired_paused: updated.desired_paused,
+            slow_demotion_count: updated.slow_demotion_count,
+            slow_slot: updated.slow_slot,
+            orders: vec![QueueOrder {
+                class: queue,
+                order: self.queues.get(queue).to_vec(),
+            }],
+        }];
+        self.finish_action(
+            original,
+            Some(updated),
+            true,
+            action,
+            at,
+            effects,
+            true,
+            self.ids,
+        )
+    }
+
     fn apply_option_patch(
         &mut self,
         gid: Gid,
@@ -1930,6 +2038,12 @@ impl RequestScheduler {
     ) -> Result<SchedulerOutcome, SchedulerError> {
         let original = self.task_clone(gid)?;
         Self::reject_pending(&original, "apply_option_patch")?;
+        if original.pending_source_replacement {
+            return Err(SchedulerError::Conflict {
+                state: original.state,
+                operation: "source_replacement_pending",
+            });
+        }
         if original
             .highest_option_patch_id
             .is_some_and(|highest| patch_id <= highest)
@@ -2259,8 +2373,9 @@ impl RequestScheduler {
             .copied()
             .find(|gid| {
                 self.tasks.get(gid).is_some_and(|task| {
-                    matches!(task.state, TaskState::Waiting)
-                        || (task.state == TaskState::RetryWait && task.retry_ready)
+                    !task.pending_source_replacement
+                        && (matches!(task.state, TaskState::Waiting)
+                            || (task.state == TaskState::RetryWait && task.retry_ready))
                 }) && self.tasks.get(gid).is_some_and(|task| {
                     task.pending_barrier.is_none()
                         && !task.desired_paused
@@ -3559,6 +3674,7 @@ impl RequestScheduler {
         Self::release_slot(&mut updated, &mut effects);
 
         let publish = match target {
+            DrainTarget::PausedRestarting if updated.pending_source_replacement => true,
             DrainTarget::PausedRestarting => {
                 let patch_id = updated
                     .pending_option_patch

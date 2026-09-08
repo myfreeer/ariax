@@ -1821,24 +1821,30 @@ impl SessionStore {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if !task_exists(&transaction, gid)? {
-            return Err(SessionStoreError::NotFound);
+        replace_task_sources_in_transaction(&transaction, gid, sources)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn replace_task_sources_and_queue(
+        &mut self,
+        transition: &SessionQueueTransition,
+        sources: &[SessionTaskSourceRecord],
+    ) -> Result<(), SessionStoreError> {
+        validate_task_sources_for_write(sources)?;
+        if sources.is_empty()
+            || transition.expected_state == SessionQueueState::Stopped
+            || transition.target_state == SessionQueueState::Stopped
+        {
+            return Err(SessionStoreError::QueueTransitionRequired);
         }
-        transaction.execute("DELETE FROM task_source WHERE gid = ?1", [gid.to_string()])?;
-        let mut statement = transaction.prepare(
-            "INSERT INTO task_source(gid, uri_id, persistence_safe_uri, redacted_fingerprint, needs_credentials, priority) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        )?;
-        for source in sources {
-            statement.execute(params![
-                gid.to_string(),
-                i64::from(source.uri_id),
-                source.persistence_safe_uri,
-                source.redacted_fingerprint.as_slice(),
-                bool_to_i64(source.needs_credentials),
-                source.priority,
-            ])?;
-        }
-        drop(statement);
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        apply_exact_queue_transition_in_transaction(&transaction, transition)?;
+        replace_task_sources_in_transaction(&transaction, transition.gid, sources)?;
+        validate_dense_queues(&transaction)?;
+        validate_stopped_result_pairing(&transaction)?;
         transaction.commit()?;
         Ok(())
     }
@@ -2747,6 +2753,31 @@ fn replace_task_options_in_transaction(
             scope.number(),
             key,
             value.as_bytes()
+        ])?;
+    }
+    Ok(())
+}
+
+fn replace_task_sources_in_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    gid: Gid,
+    sources: &[SessionTaskSourceRecord],
+) -> Result<(), SessionStoreError> {
+    if !task_exists(transaction, gid)? {
+        return Err(SessionStoreError::NotFound);
+    }
+    transaction.execute("DELETE FROM task_source WHERE gid = ?1", [gid.to_string()])?;
+    let mut statement = transaction.prepare(
+        "INSERT INTO task_source(gid, uri_id, persistence_safe_uri, redacted_fingerprint, needs_credentials, priority) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?;
+    for source in sources {
+        statement.execute(params![
+            gid.to_string(),
+            i64::from(source.uri_id),
+            source.persistence_safe_uri,
+            source.redacted_fingerprint.as_slice(),
+            bool_to_i64(source.needs_credentials),
+            source.priority
         ])?;
     }
     Ok(())
@@ -9773,6 +9804,89 @@ mod tests {
                 .windows(b"seeded-secret".len())
                 .any(|window| window == b"seeded-secret")
         );
+    }
+
+    #[test]
+    fn source_replacement_and_queue_transition_commit_or_rollback_together() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        store.put_task(&task_record(gid(1), 0)).expect("task");
+        let old = SessionTaskSourceRecord {
+            uri_id: 0,
+            persistence_safe_uri: Some("https://old.example/file".to_owned()),
+            redacted_fingerprint: [1; 32],
+            needs_credentials: false,
+            priority: 0,
+        };
+        let next = SessionTaskSourceRecord {
+            persistence_safe_uri: Some("https://new.example/file".to_owned()),
+            redacted_fingerprint: [2; 32],
+            ..old.clone()
+        };
+        store
+            .replace_task_sources(gid(1), std::slice::from_ref(&old))
+            .expect("old sources");
+        let transition = SessionQueueTransition {
+            gid: gid(1),
+            expected_state: SessionQueueState::Waiting,
+            target_state: SessionQueueState::Paused,
+            desired_paused: true,
+            slow_demotion_count: 0,
+            slow_slot: None,
+            final_orders: vec![
+                SessionQueueOrder {
+                    state: SessionQueueState::Waiting,
+                    gids: Vec::new(),
+                },
+                SessionQueueOrder {
+                    state: SessionQueueState::Paused,
+                    gids: vec![gid(1)],
+                },
+            ],
+            updated_ms: 300,
+        };
+        let mut wrong = transition.clone();
+        wrong.final_orders[1].gids.push(gid(2));
+        assert!(
+            store
+                .replace_task_sources_and_queue(&wrong, std::slice::from_ref(&next))
+                .is_err()
+        );
+        assert_eq!(
+            store.task_sources(gid(1)).expect("old after wrong queue"),
+            vec![old.clone()]
+        );
+        store.connection.execute_batch("CREATE TEMP TRIGGER reject_source_insert BEFORE INSERT ON task_source BEGIN SELECT RAISE(ABORT, 'injected source write failure'); END;").expect("inject write failure");
+        assert!(
+            store
+                .replace_task_sources_and_queue(&transition, std::slice::from_ref(&next))
+                .is_err()
+        );
+        assert_eq!(
+            store
+                .task_sources(gid(1))
+                .expect("old sources after rollback"),
+            vec![old]
+        );
+        let task = store.tasks().expect("tasks").remove(0);
+        assert_eq!(task.queue_state, SessionQueueState::Waiting);
+        assert!(!task.desired_paused);
+        store
+            .connection
+            .execute_batch("DROP TRIGGER reject_source_insert;")
+            .expect("remove fault");
+        store
+            .replace_task_sources_and_queue(&transition, std::slice::from_ref(&next))
+            .expect("commit both");
+        drop(store);
+        let store = open_store(&directory);
+        assert_eq!(
+            store.task_sources(gid(1)).expect("durable sources"),
+            vec![next]
+        );
+        let task = store.tasks().expect("tasks").remove(0);
+        assert_eq!(task.queue_state, SessionQueueState::Paused);
+        assert!(task.desired_paused);
     }
 
     #[test]

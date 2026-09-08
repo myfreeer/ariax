@@ -5,10 +5,11 @@ in `final-preimplementation-review.md` are resolved in their normative
 documents, the scoped Phase-3B/3C HTTP(S) downloader milestone is checkpointed
 at `30b70c5`, and the Phase-4 control-plane checkpoint is executable at
 `71acb03`. A 2026-09-06 implementation audit found that the Phase-4
-checkpoint still needs multicall authentication ordering, authenticated pushed
+checkpoint needed multicall authentication ordering, authenticated pushed
 events, complete registry-backed retry admission, active option restart replay,
 active source replacement outcome handling, and per-client RPC budget
-reservation before it can be treated as complete. Remaining compatibility,
+reservation. Phase 4B repairs the first five as detailed below; shared RPC
+accounting and complete runtime option application remain open. Remaining compatibility,
 transport, benchmark, and release matrix work proceeds under the later phase
 exit criteria below and in `implementation-plan.md`.
 
@@ -299,8 +300,11 @@ and does not replace the instrumented CI fuzz requirement.
 The `P4-04` journal replay and live-rate repairs also pass Linux 1.97.1, MSRV
 1.88, and native Windows-GNU workspace tests and strict Linux/Windows-GNU Clippy.
 Real storage application for output-path changes remains under `P4-07`; the
-replay tests do not establish that broader runtime behavior. `P4-05`, `P4-06`,
-and the completion gates below remain open.
+replay tests do not establish that broader runtime behavior. The `P4-05` source
+replacement repair passes the same platforms, including delayed cancellation,
+pause/remove races, disconnected callers, retry waits, atomic rollback, and
+restart before and after source commit. `P4-06` and the completion gates below
+remain open.
 Passing the existing workspace checks does not substitute for the regression
 evidence below. Tests must use the production authentication and persistence
 composition, including real delayed worker cancellation where relevant.
@@ -311,7 +315,7 @@ composition, including real delayed worker cancellation where relevant.
 | `P4-02` Event authentication | Repaired: connection-local context installs a subscriber after authentication, before execution. | WebSocket two-client/reconnect/shutdown and Content-Length first-call/method-error tests pass; no-secret event tests remain green. Each method still requires its token. [Event delivery](apis-and-embedding.md#event-delivery-and-slow-consumers). |
 | `P4-03` Retry admission | Repaired: complete bounded retry registry and exact production-policy preflight before journal creation. Runtime/config scopes remain under `P4-07`. | `retry_admission_recovers_canonical_options_with_production_policy` and `rejected_admission_has_no_artifacts_and_does_not_fault_the_scheduler` pass with profiles, aliases, modifiers, forbidden keys, and a subsequent valid add/query. [Retry admission](retry-policy.md#registry-and-persistence-boundary). |
 | `P4-04` Active option recovery | Replay repaired: accepted snapshots survive drain, generation persistence includes atomic mirror promotion, and recovery restores exact staging and fresh patch identities. Live-only rate changes no longer restart. | Delayed-worker split/output/mixed patches, all durable prefixes, consecutive generations, rejected staging, and live-rate persistence pass. Exact promotion mismatch and injected SQLite rollback tests pass; strict journal replay tests remain green. Real output-path storage application is still a `P4-07` requirement. [Option application](detailed-config.md#runtime-update-application), [journal rules](detailed-storage.md#control-journal-format). |
-| `P4-05` Active source replacement | `replace_task_sources` persists new sources and then returns a resume/cancellation-drain conflict, leaving the task paused. | Active, waiting, and paused replacements preserve desired state and return existing success shapes; eligible tasks resume after drain. Pause/remove races, commit failures, and restart before/after source commit preserve one complete source set. Validation conflicts reject before mutation. [Source persistence](session-persistence.md), [mutation contract](apis-and-embedding.md#control-mutation-recovery). |
+| `P4-05` Active source replacement | Repaired: asynchronous replacements quiesce the worker without changing user intent, then commit the complete source set and exact queue state before catalog publication and ordinary readmission. | Delayed-worker tests cover both method shapes, independent queries, pause/remove races, disconnected callers, and restart before/after commit. Retry-wait tests cancel stale timers with retained/released slots. SQLite queue mismatch and injected source-write failure roll back both changes. The synchronous primitive rejects active replacement before mutation. [Source persistence](session-persistence.md), [mutation contract](apis-and-embedding.md#control-mutation-recovery). |
 | `P4-06` RPC work accounting | Fixed body/response/event limits and connection caps exist, but no shared response-byte reservation; the four-slot stdio queue excludes executing and reader-held work. | Stalled HTTP, WebSocket, and stdio writers hold response credit; concurrent clients/listeners share global and resident limits. Four requests/8 MiB includes executing, queued, and reader-held state; the next body is backpressured. Disconnect, cancellation, parse failure, and response overflow release credit without blocking other clients. [RPC bounds](apis-and-embedding.md#query-and-response-work-bounds), [runtime budgets](detailed-runtime.md#resourcemanager). |
 
 Preserve the existing strict journal replay and uncertain-write failure rules.

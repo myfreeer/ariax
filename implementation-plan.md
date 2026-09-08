@@ -422,9 +422,11 @@ Exit criteria:
   cannot reserve the process RPC budget.
 
 Phase 4B repairs multicall envelope authentication, connection-local event
-authorization, and retry-option registry/persistence alignment. Active option
-replay, active source replacement outcomes, and per-client RPC budget accounting
-remain open [repair gates](implementation-readiness.md#phase-4-repair-gates).
+authorization, retry-option registry/persistence alignment, active option
+replay, and source replacement after cancellation drain. Per-client RPC budget
+accounting remains an open
+[repair gate](implementation-readiness.md#phase-4-repair-gates); complete runtime
+option application and the completion requirements below are still pending.
 
 ### Phase 4B Completion
 

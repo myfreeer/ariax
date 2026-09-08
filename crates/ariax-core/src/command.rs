@@ -303,6 +303,12 @@ pub enum SchedulerCommand {
         kind: ValidatedOptionPatchKind,
         satisfies_credentials: Option<CredentialRequirementKey>,
     },
+    BeginSourceReplacement {
+        gid: Gid,
+    },
+    CommitSourceReplacement {
+        gid: Gid,
+    },
     Remove {
         gid: Gid,
         force: bool,
@@ -325,6 +331,8 @@ pub enum SchedulerCommandKind {
     Resume,
     ApproveHostKey,
     ApplyOptionPatch,
+    BeginSourceReplacement,
+    CommitSourceReplacement,
     Remove,
     RemoveStoppedResult,
     ChangePosition,
@@ -362,6 +370,8 @@ pub const ALL_SCHEDULER_COMMAND_KINDS: &[SchedulerCommandKind] = &[
     SchedulerCommandKind::Resume,
     SchedulerCommandKind::ApproveHostKey,
     SchedulerCommandKind::ApplyOptionPatch,
+    SchedulerCommandKind::BeginSourceReplacement,
+    SchedulerCommandKind::CommitSourceReplacement,
     SchedulerCommandKind::Remove,
     SchedulerCommandKind::RemoveStoppedResult,
     SchedulerCommandKind::ChangePosition,
@@ -377,6 +387,8 @@ impl SchedulerCommandKind {
             Self::Resume => "resume",
             Self::ApproveHostKey => "approve_host_key",
             Self::ApplyOptionPatch => "apply_option_patch",
+            Self::BeginSourceReplacement => "begin_source_replacement",
+            Self::CommitSourceReplacement => "commit_source_replacement",
             Self::Remove => "remove",
             Self::RemoveStoppedResult => "remove_stopped_result",
             Self::ChangePosition => "change_position",
@@ -395,6 +407,8 @@ impl SchedulerCommandKind {
             | Self::Resume
             | Self::ApproveHostKey
             | Self::ApplyOptionPatch
+            | Self::BeginSourceReplacement
+            | Self::CommitSourceReplacement
             | Self::Remove
             | Self::RemoveStoppedResult => SchedulerCommandHandling::StateMatrix,
         }
@@ -410,6 +424,8 @@ impl SchedulerCommand {
             Self::Resume { .. } => SchedulerCommandKind::Resume,
             Self::ApproveHostKey { .. } => SchedulerCommandKind::ApproveHostKey,
             Self::ApplyOptionPatch { .. } => SchedulerCommandKind::ApplyOptionPatch,
+            Self::BeginSourceReplacement { .. } => SchedulerCommandKind::BeginSourceReplacement,
+            Self::CommitSourceReplacement { .. } => SchedulerCommandKind::CommitSourceReplacement,
             Self::Remove { .. } => SchedulerCommandKind::Remove,
             Self::RemoveStoppedResult { .. } => SchedulerCommandKind::RemoveStoppedResult,
             Self::ChangePosition { .. } => SchedulerCommandKind::ChangePosition,
@@ -1489,7 +1505,7 @@ mod tests {
         );
         assert_eq!(drain_targets.len(), ALL_DRAIN_TARGETS.len());
         assert_eq!(effects.len(), ALL_TRANSITION_EFFECT_KINDS.len());
-        assert_eq!(ALL_SCHEDULER_COMMAND_KINDS.len(), 9);
+        assert_eq!(ALL_SCHEDULER_COMMAND_KINDS.len(), 11);
         assert_eq!(ALL_TASK_EVENT_KINDS.len(), 31);
         assert_eq!(ALL_NO_SPACE_PROBE_ORIGINS.len(), 2);
         assert_eq!(ALL_SCHEDULER_COMMAND_HANDLINGS.len(), 3);

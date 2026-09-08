@@ -41,7 +41,7 @@ use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{Mutex, oneshot, watch};
 
 const CONTROL_PROGRESS_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTROL_PROGRESS_POLL: Duration = Duration::from_micros(50);
@@ -115,6 +115,13 @@ struct PendingOptionSnapshot {
     previous_generation: Generation,
 }
 
+struct PendingSourceReplacement {
+    replacement: HttpTaskSpec,
+    response: Value,
+    reply: oneshot::Sender<Result<Value, HttpControlError>>,
+    committing: bool,
+}
+
 /// Shared mutable control plane used by both transports.
 pub struct HttpControlPlane {
     engine: crate::BootstrappedEngine,
@@ -129,6 +136,7 @@ pub struct HttpControlPlane {
     global_options: BTreeMap<String, String>,
     pending_option_snapshots: BTreeMap<OptionPatchId, PendingOptionSnapshot>,
     pending_restart_patches: BTreeMap<Gid, OptionPatchId>,
+    pending_source_replacements: BTreeMap<Gid, PendingSourceReplacement>,
     next_option_patch_id: u64,
     shutdown_requested: bool,
     force_shutdown_requested: bool,
@@ -179,6 +187,7 @@ impl HttpControlPlane {
             global_options: default_global_options()?,
             pending_option_snapshots: BTreeMap::new(),
             pending_restart_patches: BTreeMap::new(),
+            pending_source_replacements: BTreeMap::new(),
             next_option_patch_id: now_unix_ms().max(1),
             shutdown_requested: false,
             force_shutdown_requested: false,
@@ -504,6 +513,7 @@ impl HttpControlPlane {
             self.drive_engine()?;
         }
         if self.engine.is_idle() {
+            self.complete_source_replacements()?;
             self.try_admit_one(now)?;
         }
         self.drive_engine()?;
@@ -538,8 +548,9 @@ impl HttpControlPlane {
             "aria2.getServers" | "getServers" => self.get_servers(params),
             "aria2.getOption" | "getOption" => self.get_option(params),
             "aria2.changeOption" | "changeOption" => self.change_option(params),
-            "aria2.changeUri" | "changeUri" => self.change_uri(params),
-            "ariax.replaceSources" => self.replace_sources(params),
+            "aria2.changeUri" | "changeUri" | "ariax.replaceSources" => {
+                self.source_call_sync(method, params)
+            }
             "aria2.getGlobalOption" | "getGlobalOption" => self.get_global_option(params),
             "aria2.changeGlobalOption" | "changeGlobalOption" => self.change_global_option(params),
             "aria2.getVersion" | "getVersion" => self.get_version(params),
@@ -1029,7 +1040,9 @@ impl HttpControlPlane {
                 .ok_or(HttpControlError::InvalidParams("GID must be a string"))?,
         )?;
         let patch = parse_registry_options(&values[1], Scope::RpcChange)?;
-        if self.pending_restart_patches.contains_key(&gid) {
+        if self.pending_restart_patches.contains_key(&gid)
+            || self.pending_source_replacements.contains_key(&gid)
+        {
             return Err(HttpControlError::Busy);
         }
         if patch.is_empty() {
@@ -1194,7 +1207,10 @@ impl HttpControlPlane {
         Ok(Value::String("OK".to_owned()))
     }
 
-    fn change_uri(&mut self, params: Value) -> Result<Value, HttpControlError> {
+    fn change_uri_request(
+        &self,
+        params: Value,
+    ) -> Result<(Gid, Vec<String>, Value), HttpControlError> {
         let values = params.as_array().filter(|values| (4..=5).contains(&values.len())).ok_or(
             HttpControlError::InvalidParams(
                 "changeUri requires GID, file index, deleted URIs, added URIs, and optional position",
@@ -1240,11 +1256,13 @@ impl HttpControlPlane {
                 added_count += 1;
             }
         }
-        self.replace_task_sources(gid, uris)?;
-        Ok(json!([deleted_count, added_count]))
+        Ok((gid, uris, json!([deleted_count, added_count])))
     }
 
-    fn replace_sources(&mut self, params: Value) -> Result<Value, HttpControlError> {
+    fn replace_sources_request(
+        &self,
+        params: Value,
+    ) -> Result<(Gid, Vec<String>, Value), HttpControlError> {
         let values = params.as_array().filter(|values| values.len() == 2).ok_or(
             HttpControlError::InvalidParams("replaceSources requires GID and URI array"),
         )?;
@@ -1254,16 +1272,38 @@ impl HttpControlPlane {
                 .ok_or(HttpControlError::InvalidParams("GID must be a string"))?,
         )?;
         let uris = parse_uri_array(&values[1])?;
-        self.replace_task_sources(gid, uris)?;
-        Ok(Value::String(gid.to_string()))
+        Ok((gid, uris, Value::String(gid.to_string())))
     }
 
-    fn replace_task_sources(
-        &mut self,
+    fn prepare_source_call(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> Result<(HttpTaskSpec, Value), HttpControlError> {
+        let (gid, uris, response) = if method == "ariax.replaceSources" {
+            self.replace_sources_request(params)?
+        } else {
+            self.change_uri_request(params)?
+        };
+        Ok((self.prepare_source_replacement(gid, uris)?, response))
+    }
+
+    fn prepare_source_replacement(
+        &self,
         gid: Gid,
         uris: Vec<String>,
-    ) -> Result<(), HttpControlError> {
-        if self.pending_restart_patches.contains_key(&gid) {
+    ) -> Result<HttpTaskSpec, HttpControlError> {
+        if self.pending_restart_patches.contains_key(&gid)
+            || self.pending_source_replacements.contains_key(&gid)
+        {
+            return Err(HttpControlError::Busy);
+        }
+        let scheduler_task = self
+            .engine
+            .scheduler()
+            .task(gid)
+            .ok_or(HttpControlError::NotFound)?;
+        if scheduler_task.pending_barrier.is_some() || scheduler_task.pending_source_replacement {
             return Err(HttpControlError::Busy);
         }
         let current = self.tasks.get_gid(gid).ok_or(HttpControlError::NotFound)?;
@@ -1273,7 +1313,6 @@ impl HttpControlPlane {
             .snapshot
             .wire_status()
             .map_err(|_| HttpControlError::Scheduler("invalid public snapshot".to_owned()))?;
-        let was_active = status == Aria2Status::Active;
         if matches!(
             status,
             Aria2Status::Complete | Aria2Status::Error | Aria2Status::Removed
@@ -1283,7 +1322,7 @@ impl HttpControlPlane {
             ));
         }
         drop(root);
-        let replacement = HttpTaskSpec::new(
+        HttpTaskSpec::new(
             current.task(),
             current.gid(),
             uris,
@@ -1295,32 +1334,139 @@ impl HttpControlPlane {
                 .iter()
                 .any(crate::HttpSourceSpec::needs_credentials),
         )
-        .map_err(HttpControlError::TaskSpec)?;
-        let persisted = replacement.persistence_sources();
-        if was_active {
-            self.execute_control_command(SchedulerCommand::Pause { gid, force: false })?;
+        .map_err(HttpControlError::TaskSpec)
+    }
+
+    fn source_call_sync(&mut self, method: &str, params: Value) -> Result<Value, HttpControlError> {
+        let (replacement, response) = self.prepare_source_call(method, params)?;
+        if self
+            .engine
+            .scheduler()
+            .task(replacement.gid())
+            .is_some_and(|task| task.slot.owns_slot())
+        {
+            return Err(HttpControlError::Busy);
         }
-        match self.session.execute(SessionCommand::ReplaceTaskSources {
+        let mut reply = self.begin_source_plan(replacement, response)?;
+        self.complete_source_replacements()?;
+        reply.try_recv().map_err(|_| HttpControlError::Busy)?
+    }
+
+    fn begin_source_call(
+        &mut self,
+        method: &str,
+        params: Value,
+    ) -> Result<oneshot::Receiver<Result<Value, HttpControlError>>, HttpControlError> {
+        let (replacement, response) = self.prepare_source_call(method, params)?;
+        self.begin_source_plan(replacement, response)
+    }
+
+    fn begin_source_plan(
+        &mut self,
+        replacement: HttpTaskSpec,
+        response: Value,
+    ) -> Result<oneshot::Receiver<Result<Value, HttpControlError>>, HttpControlError> {
+        let gid = replacement.gid();
+        let (reply, receiver) = oneshot::channel();
+        self.execute_control_command(SchedulerCommand::BeginSourceReplacement { gid })?;
+        self.pending_source_replacements.insert(
             gid,
-            sources: persisted,
-        }) {
-            Ok(SessionCommandResult::Unit) => {}
-            Ok(_) => {
-                return Err(HttpControlError::Persistence(
-                    "unexpected source replacement result".to_owned(),
-                ));
+            PendingSourceReplacement {
+                replacement,
+                response,
+                reply,
+                committing: false,
+            },
+        );
+        Ok(receiver)
+    }
+
+    fn complete_source_replacements(&mut self) -> Result<(), HttpControlError> {
+        let ready = self
+            .pending_source_replacements
+            .keys()
+            .copied()
+            .filter(|gid| {
+                self.engine
+                    .scheduler()
+                    .task(*gid)
+                    .is_none_or(|task| task.pending_barrier.is_none() && !task.slot.owns_slot())
+            })
+            .collect::<Vec<_>>();
+        for gid in ready {
+            let terminal = self.engine.scheduler().task(gid).is_none_or(|task| {
+                matches!(
+                    task.state,
+                    ariax_core::TaskState::Removed
+                        | ariax_core::TaskState::Error
+                        | ariax_core::TaskState::Complete
+                        | ariax_core::TaskState::StoppedResult
+                )
+            });
+            if terminal {
+                let pending = self
+                    .pending_source_replacements
+                    .remove(&gid)
+                    .expect("pending source replacement");
+                let _ = pending.reply.send(Err(HttpControlError::InvalidParams(
+                    "source replacement was cancelled before commit",
+                )));
+                continue;
             }
-            Err(error) => return Err(HttpControlError::Persistence(error.to_string())),
-        }
-        self.tasks
-            .replace(replacement)
-            .map_err(HttpControlError::Catalog)?;
-        if was_active {
-            self.execute_control_command(SchedulerCommand::Resume { gid })?;
-            self.try_admit_one(MonotonicInstant::now())?;
-            self.drive_engine()?;
+            self.pending_source_replacements
+                .get_mut(&gid)
+                .expect("pending source replacement")
+                .committing = true;
+            let result =
+                self.execute_control_command(SchedulerCommand::CommitSourceReplacement { gid });
+            let pending = self
+                .pending_source_replacements
+                .remove(&gid)
+                .expect("pending source replacement");
+            match result {
+                Ok(()) => {
+                    self.tasks
+                        .replace(pending.replacement)
+                        .map_err(HttpControlError::Catalog)?;
+                    let _ = pending.reply.send(Ok(pending.response));
+                }
+                Err(error) => {
+                    let diagnostic = error.to_string();
+                    let _ = pending.reply.send(Err(error));
+                    return Err(HttpControlError::Persistence(diagnostic));
+                }
+            }
         }
         Ok(())
+    }
+
+    /// Drives a deferred control call without holding the owner while awaiting a worker.
+    pub async fn call_shared(
+        plane: &Arc<Mutex<Self>>,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, HttpControlError> {
+        let mut reply = {
+            let mut owner = plane.lock().await;
+            owner.poll_once()?;
+            if !matches!(
+                method,
+                "aria2.changeUri" | "changeUri" | "ariax.replaceSources"
+            ) {
+                return owner.call(method, params);
+            }
+            owner.begin_source_call(method, params)?
+        };
+        loop {
+            tokio::select! {
+                result = &mut reply => return result.map_err(|_| HttpControlError::Persistence("source replacement owner stopped".to_owned()))?,
+                () = tokio::time::sleep(Duration::from_millis(1)) => {
+                    if let Err(error) = plane.lock().await.poll_once() {
+                        return reply.try_recv().unwrap_or(Err(error));
+                    }
+                }
+            }
+        }
     }
 
     fn get_global_option(&self, params: Value) -> Result<Value, HttpControlError> {
@@ -1969,11 +2115,19 @@ impl HttpControlPlane {
                         .collect(),
                     updated_ms: now_unix_ms(),
                 };
-                PersistenceEffectPlan::new(
-                    effect.clone(),
-                    vec![PersistencePlanStep::TransitionTaskQueue(transition)],
-                )
-                .map_err(|error| HttpControlError::Persistence(format!("{error:?}")))
+                let step = match self
+                    .pending_source_replacements
+                    .get(gid)
+                    .filter(|pending| pending.committing)
+                {
+                    Some(pending) => PersistencePlanStep::ReplaceTaskSourcesAndQueue {
+                        transition,
+                        sources: pending.replacement.persistence_sources(),
+                    },
+                    None => PersistencePlanStep::TransitionTaskQueue(transition),
+                };
+                PersistenceEffectPlan::new(effect.clone(), vec![step])
+                    .map_err(|error| HttpControlError::Persistence(format!("{error:?}")))
             }
             TransitionEffect::PersistTerminal {
                 task_id,
@@ -2327,10 +2481,10 @@ impl HttpRpcBackend for HttpControlBackend {
         let shutdown = self.shutdown.clone();
         let method = method.to_owned();
         Box::pin(async move {
-            let mut plane = plane.lock().await;
-            plane.poll_once().map_err(control_backend_error)?;
-            let result = plane.call(&method, params).map_err(control_backend_error);
-            if plane.shutdown_requested() {
+            let result = HttpControlPlane::call_shared(&plane, &method, params)
+                .await
+                .map_err(control_backend_error);
+            if plane.lock().await.shutdown_requested() {
                 let _ = shutdown.send(true);
             }
             result
@@ -4105,6 +4259,324 @@ mod tests {
                 through_sequence,
             })
             .expect("flush prefix");
+    }
+
+    #[tokio::test]
+    async fn disconnected_source_caller_does_not_abandon_the_accepted_operation() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let started = Arc::new(Notify::new());
+        let drain = Arc::new(tokio::sync::Semaphore::new(0));
+        plane
+            .attach_worker(Arc::new(DelayedCancellationWorker {
+                started: started.clone(),
+                drain: drain.clone(),
+            }))
+            .expect("worker");
+        let gid: Gid = plane
+            .call("aria2.addUri", json!([["http://example.test/file.bin"]]))
+            .expect("add")
+            .as_str()
+            .expect("gid")
+            .parse()
+            .expect("gid");
+        plane.poll_once().expect("start worker");
+        started.notified().await;
+        poll_until(&mut plane, |plane| {
+            plane
+                .engine
+                .scheduler()
+                .task(gid)
+                .expect("task")
+                .pending_barrier
+                .is_none()
+        })
+        .await;
+        let shared = Arc::new(Mutex::new(plane));
+        let caller = shared.clone();
+        let request = tokio::spawn(async move {
+            HttpControlPlane::call_shared(
+                &caller,
+                "ariax.replaceSources",
+                json!([gid.to_string(), ["http://new.test/file.bin"]]),
+            )
+            .await
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !shared
+            .lock()
+            .await
+            .pending_source_replacements
+            .contains_key(&gid)
+        {
+            assert!(!request.is_finished());
+            assert!(Instant::now() < deadline);
+            tokio::task::yield_now().await;
+        }
+        request.abort();
+        assert!(
+            request
+                .await
+                .expect_err("caller disconnected")
+                .is_cancelled()
+        );
+        let mut plane = Arc::try_unwrap(shared)
+            .expect("owner remains available")
+            .into_inner();
+        drain.add_permits(1);
+        poll_until(&mut plane, |plane| {
+            plane.pending_source_replacements.is_empty()
+        })
+        .await;
+        assert_eq!(
+            plane
+                .tasks
+                .get_gid(gid)
+                .expect("committed catalog")
+                .sources()[0]
+                .uri(),
+            "http://new.test/file.bin"
+        );
+        drain.add_permits(1);
+        plane.shutdown_async().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn interrupted_source_quiescence_recovers_old_sources_and_running_intent() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane_with_supervisor(HttpWorkerSupervisorConfig {
+            shutdown_timeout: Duration::from_millis(10),
+            ..HttpWorkerSupervisorConfig::default()
+        });
+        let started = Arc::new(Notify::new());
+        plane
+            .attach_worker(Arc::new(DelayedCancellationWorker {
+                started: started.clone(),
+                drain: Arc::new(tokio::sync::Semaphore::new(0)),
+            }))
+            .expect("worker");
+        let gid: Gid = plane
+            .call("aria2.addUri", json!([["http://example.test/file.bin"]]))
+            .expect("add")
+            .as_str()
+            .expect("gid")
+            .parse()
+            .expect("gid");
+        plane.poll_once().expect("start worker");
+        started.notified().await;
+        poll_until(&mut plane, |plane| {
+            plane
+                .engine
+                .scheduler()
+                .task(gid)
+                .expect("task")
+                .pending_barrier
+                .is_none()
+        })
+        .await;
+        let reply = plane
+            .begin_source_call(
+                "ariax.replaceSources",
+                json!([gid.to_string(), ["http://new.test/file.bin"]]),
+            )
+            .expect("begin quiescence");
+        assert!(
+            !plane
+                .shutdown_async()
+                .await
+                .expect("bounded interrupted shutdown")
+                .is_clean()
+        );
+        assert!(reply.await.is_err());
+        let recovered = directory.control_plane();
+        assert_eq!(
+            recovered.tasks.get_gid(gid).expect("old sources").sources()[0].uri(),
+            "http://example.test/file.bin"
+        );
+        let task = recovered
+            .engine
+            .scheduler()
+            .task(gid)
+            .expect("running intent");
+        assert!(!task.desired_paused);
+        assert_eq!(task.state, ariax_core::TaskState::Waiting);
+        assert!(!task.pending_source_replacement);
+        recovered.shutdown().expect("recovered shutdown");
+    }
+
+    #[tokio::test]
+    async fn source_replacement_waits_for_drain_without_blocking_queries_or_user_controls() {
+        for method in ["ariax.replaceSources", "aria2.changeUri"] {
+            for user_control in [None, Some("aria2.pause"), Some("aria2.remove")] {
+                let directory = TestDirectory::new();
+                let mut plane = directory.control_plane();
+                let started = Arc::new(Notify::new());
+                let drain = Arc::new(tokio::sync::Semaphore::new(0));
+                plane
+                    .attach_worker(Arc::new(DelayedCancellationWorker {
+                        started: started.clone(),
+                        drain: drain.clone(),
+                    }))
+                    .expect("worker");
+                let gid: Gid = plane
+                    .call("aria2.addUri", json!([["http://example.test/file.bin"]]))
+                    .expect("add")
+                    .as_str()
+                    .expect("gid")
+                    .parse()
+                    .expect("gid");
+                plane.poll_once().expect("start worker");
+                started.notified().await;
+                poll_until(&mut plane, |plane| {
+                    plane
+                        .engine
+                        .scheduler()
+                        .task(gid)
+                        .expect("task")
+                        .pending_barrier
+                        .is_none()
+                })
+                .await;
+                let shared = Arc::new(Mutex::new(plane));
+                let caller = shared.clone();
+                let params = if method == "aria2.changeUri" {
+                    json!([
+                        gid.to_string(),
+                        1,
+                        ["http://example.test/file.bin"],
+                        ["http://new.test/file.bin"]
+                    ])
+                } else {
+                    json!([gid.to_string(), ["http://new.test/file.bin"]])
+                };
+                let request = tokio::spawn(async move {
+                    HttpControlPlane::call_shared(&caller, method, params).await
+                });
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while !shared
+                    .lock()
+                    .await
+                    .pending_source_replacements
+                    .contains_key(&gid)
+                {
+                    assert!(
+                        !request.is_finished(),
+                        "source request rejected before quiescence"
+                    );
+                    assert!(Instant::now() < deadline, "source request did not start");
+                    tokio::task::yield_now().await;
+                }
+                assert!(!request.is_finished());
+                let status = tokio::time::timeout(
+                    Duration::from_millis(500),
+                    HttpControlPlane::call_shared(
+                        &shared,
+                        "aria2.tellStatus",
+                        json!([gid.to_string()]),
+                    ),
+                )
+                .await
+                .expect("query remains responsive")
+                .expect("status");
+                assert_eq!(status["status"], "waiting");
+                {
+                    let owner = shared.lock().await;
+                    assert!(
+                        !owner
+                            .engine
+                            .scheduler()
+                            .task(gid)
+                            .expect("task")
+                            .desired_paused
+                    );
+                    assert_eq!(
+                        owner.tasks.get_gid(gid).expect("old catalog").sources()[0].uri(),
+                        "http://example.test/file.bin"
+                    );
+                    assert!(
+                        matches!(owner.session.execute(SessionCommand::ReadTaskSources { gid }).expect("sources"), SessionCommandResult::TaskSources(sources) if sources[0].persistence_safe_uri.as_deref() == Some("http://example.test/file.bin"))
+                    );
+                }
+                assert!(matches!(
+                    HttpControlPlane::call_shared(
+                        &shared,
+                        "aria2.changeOption",
+                        json!([gid.to_string(), {"split": 3}])
+                    )
+                    .await,
+                    Err(HttpControlError::Busy)
+                ));
+                if let Some(command) = user_control {
+                    HttpControlPlane::call_shared(&shared, command, json!([gid.to_string()]))
+                        .await
+                        .expect("user control wins");
+                }
+                drain.add_permits(1);
+                let result = tokio::time::timeout(Duration::from_secs(3), request)
+                    .await
+                    .expect("source request finishes")
+                    .expect("request task");
+                if user_control == Some("aria2.remove") {
+                    assert!(matches!(
+                        result,
+                        Err(HttpControlError::InvalidParams(
+                            "source replacement was cancelled before commit"
+                        ))
+                    ));
+                } else {
+                    assert_eq!(
+                        result.expect("confirmed commit"),
+                        if method == "aria2.changeUri" {
+                            json!([1, 1])
+                        } else {
+                            json!(gid.to_string())
+                        }
+                    );
+                }
+                let owner = Arc::try_unwrap(shared).expect("sole owner").into_inner();
+                let expected_uri = if user_control == Some("aria2.remove") {
+                    "http://example.test/file.bin"
+                } else {
+                    "http://new.test/file.bin"
+                };
+                assert_eq!(
+                    owner.tasks.get_gid(gid).expect("catalog").sources()[0].uri(),
+                    expected_uri
+                );
+                assert!(owner.pending_source_replacements.is_empty());
+                assert_eq!(
+                    owner
+                        .engine
+                        .scheduler()
+                        .task(gid)
+                        .expect("task")
+                        .desired_paused,
+                    user_control == Some("aria2.pause")
+                );
+                drain.add_permits(1);
+                owner.shutdown_async().await.expect("shutdown");
+                let recovered = directory.control_plane();
+                assert_eq!(
+                    recovered
+                        .tasks
+                        .get_gid(gid)
+                        .expect("recovered source set")
+                        .sources()[0]
+                        .uri(),
+                    expected_uri
+                );
+                assert_eq!(
+                    recovered
+                        .engine
+                        .scheduler()
+                        .task(gid)
+                        .expect("recovered task")
+                        .desired_paused,
+                    user_control == Some("aria2.pause")
+                );
+                recovered.shutdown().expect("recovered shutdown");
+            }
+        }
     }
 
     #[tokio::test]

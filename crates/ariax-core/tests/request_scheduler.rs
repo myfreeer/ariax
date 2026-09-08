@@ -2447,6 +2447,168 @@ fn delayed_non_token_events_cannot_cross_a_deleted_gid_replacement() {
 }
 
 #[test]
+fn source_replacement_cancels_retry_timer_before_new_source_admission() {
+    for retains_slot in [false, true] {
+        let at = MonotonicInstant::now();
+        let mut scheduler = new_scheduler(2, 1, retains_slot);
+        let task_gid = gid(1);
+        let generation = make_active(&mut scheduler, task_id(1), task_gid, at);
+        scheduler
+            .handle_event_at(
+                TaskEvent::ActiveRetryIdle {
+                    gid: task_gid,
+                    generation,
+                    retry_at: later(at, 30),
+                },
+                later(at, 4),
+            )
+            .expect("retry wait");
+        let timer_id = scheduler
+            .task(task_gid)
+            .expect("retrying task")
+            .retry_timer
+            .expect("retry timer");
+        let outcome = scheduler
+            .execute_command_at(
+                SchedulerCommand::BeginSourceReplacement { gid: task_gid },
+                later(at, 5),
+            )
+            .expect("quiesce retry");
+        assert!(outcome.effects.iter().any(|effect| matches!(effect, TransitionEffect::CancelRetry { retry_timer_id: id, .. } if *id == timer_id)));
+        assert!(
+            scheduler
+                .task(task_gid)
+                .expect("quiescing task")
+                .retry_timer
+                .is_none()
+        );
+        let stale = scheduler
+            .handle_event_at(
+                TaskEvent::RetryReady {
+                    gid: task_gid,
+                    generation,
+                    retry_timer_id: timer_id,
+                },
+                later(at, 30),
+            )
+            .expect("late retry event");
+        assert_ignored(&stale, StateReason::StaleEventIgnored);
+        if retains_slot {
+            scheduler
+                .handle_event_at(
+                    TaskEvent::CancellationDrained {
+                        gid: task_gid,
+                        generation,
+                    },
+                    later(at, 31),
+                )
+                .expect("drain retained slot");
+        }
+        assert!(scheduler.admit_next_at(later(at, 32)).is_err());
+        scheduler
+            .execute_command_at(
+                SchedulerCommand::CommitSourceReplacement { gid: task_gid },
+                later(at, 33),
+            )
+            .expect("commit replacement");
+        scheduler
+            .admit_next_at(later(at, 34))
+            .expect("new sources can be admitted");
+        assert_eq!(
+            scheduler.task(task_gid).expect("admitted").generation,
+            generation.checked_next().expect("next")
+        );
+    }
+}
+
+#[test]
+fn source_replacement_requires_drain_and_commit_and_preserves_user_pause() {
+    for pause in [false, true] {
+        let at = MonotonicInstant::now();
+        let mut scheduler = new_scheduler(2, 1, false);
+        let task_gid = gid(1);
+        let generation = make_active(&mut scheduler, task_id(1), task_gid, at);
+        scheduler
+            .execute_command_at(
+                SchedulerCommand::BeginSourceReplacement { gid: task_gid },
+                later(at, 4),
+            )
+            .expect("begin source quiescence");
+        let view = scheduler.task(task_gid).expect("quiescing");
+        assert_eq!(view.state, TaskState::PausedRestarting);
+        assert!(!view.desired_paused);
+        assert!(view.pending_source_replacement);
+        let before = state_fingerprint(&scheduler);
+        for command in [
+            SchedulerCommand::BeginSourceReplacement { gid: task_gid },
+            SchedulerCommand::CommitSourceReplacement { gid: task_gid },
+            SchedulerCommand::ApplyOptionPatch {
+                gid: task_gid,
+                patch_id: OptionPatchId::new(1).expect("patch"),
+                kind: ValidatedOptionPatchKind::InPlace,
+                satisfies_credentials: None,
+            },
+        ] {
+            assert!(scheduler.execute_command_at(command, later(at, 5)).is_err());
+            assert_eq!(state_fingerprint(&scheduler), before);
+        }
+        if pause {
+            scheduler
+                .execute_command_at(
+                    SchedulerCommand::Pause {
+                        gid: task_gid,
+                        force: false,
+                    },
+                    later(at, 6),
+                )
+                .expect("user pause wins");
+        }
+        scheduler
+            .handle_event_at(
+                TaskEvent::CancellationDrained {
+                    gid: task_gid,
+                    generation,
+                },
+                later(at, 7),
+            )
+            .expect("drain");
+        assert_eq!(scheduler.active_slot_count(), 0);
+        assert!(matches!(
+            scheduler.admit_next_at(later(at, 8)),
+            Err(SchedulerError::NoEligibleTask)
+        ));
+        let outcome = scheduler
+            .execute_command_at(
+                SchedulerCommand::CommitSourceReplacement { gid: task_gid },
+                later(at, 9),
+            )
+            .expect("commit source replacement");
+        assert!(outcome.effects.iter().any(|effect| matches!(effect, TransitionEffect::PersistQueueTransition { desired_paused, .. } if *desired_paused == pause)));
+        let view = scheduler.task(task_gid).expect("committed");
+        assert!(!view.pending_source_replacement);
+        assert_eq!(view.desired_paused, pause);
+        assert_eq!(view.generation, generation);
+        assert_eq!(
+            view.state,
+            if pause {
+                TaskState::Paused
+            } else {
+                TaskState::Waiting
+            }
+        );
+        if !pause {
+            scheduler
+                .admit_next_at(later(at, 10))
+                .expect("ordinary admission after commit");
+            assert_eq!(
+                scheduler.task(task_gid).expect("admitted").generation,
+                generation.checked_next().expect("next")
+            );
+        }
+    }
+}
+
+#[test]
 fn pause_during_restart_drain_preserves_patch_for_apply_before_readmission() {
     let at = MonotonicInstant::now();
     let internal_task = task_id(1);

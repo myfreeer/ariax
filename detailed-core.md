@@ -513,6 +513,11 @@ persistence barrier is pending, retains `desired_paused`, enters
 `CancellationDrained` releases the slot but leaves the task in internal
 quiescence until commit; ordinary admission cannot select it there.
 
+A task in `RetryWait` cancels its correlated retry timer when source quiescence
+begins. A retained slot follows the same drain; a released slot needs no worker
+drain. The accepted replacement requeues with the preserved desired state, and
+a delayed retry-ready event cannot admit the old source set.
+
 Commit requires the matching pending operation and completed drain. It moves
 the task to `Waiting`, or retains an explicit user pause, and emits an exact
 queue transition even when the queue class does not change. The persistence
