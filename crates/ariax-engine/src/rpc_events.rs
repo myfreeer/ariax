@@ -272,6 +272,13 @@ impl RpcEventSubscriber {
     }
 
     pub fn try_next(&mut self) -> Result<Option<RpcEventDelivery>, RpcEventError> {
+        self.try_next_bounded(usize::MAX)
+    }
+
+    pub(crate) fn try_next_bounded(
+        &mut self,
+        bytes: usize,
+    ) -> Result<Option<RpcEventDelivery>, RpcEventError> {
         let mut state = lock_unpoisoned(&self.broker.state);
         let subscriber = state
             .subscribers
@@ -281,6 +288,13 @@ impl RpcEventSubscriber {
             ))?;
         if let Some(reason) = subscriber.disconnect {
             return Err(RpcEventError::Disconnected(reason));
+        }
+        if subscriber
+            .queue
+            .front()
+            .is_some_and(|queued| queued.event.owned_bytes.saturating_add(1024) > bytes)
+        {
+            return Err(RpcEventError::EventTooLarge);
         }
         let Some(queued) = subscriber.queue.pop_front() else {
             return Ok(None);
@@ -402,6 +416,26 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_poll_keeps_an_oversized_event_and_its_permits_queued() {
+        let broker = RpcEventBroker::new();
+        let mut subscriber = broker
+            .subscribe(RpcEventLimits::default())
+            .expect("subscriber");
+        broker.publish(event(RpcEventClass::Reliable, None, 1));
+        assert!(matches!(
+            subscriber.try_next_bounded(1),
+            Err(RpcEventError::EventTooLarge)
+        ));
+        let delivered = subscriber
+            .try_next_bounded(64 * 1024)
+            .expect("budget fits")
+            .expect("event remains queued")
+            .into_value();
+        assert_eq!(delivered["params"]["sequence"], 1);
+        assert!(subscriber.try_next().expect("empty").is_none());
+    }
 
     #[test]
     fn event_credit_follows_delivery_and_preserves_command_capacity() {

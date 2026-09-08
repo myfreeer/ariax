@@ -28,6 +28,25 @@ pub(crate) fn owned_value_bytes(value: &Value) -> usize {
     })
 }
 
+pub(crate) fn command_value_bytes(value: &Value) -> usize {
+    1024_usize.saturating_add(match value {
+        Value::String(text) => text.len().saturating_mul(12),
+        Value::Array(values) => values
+            .iter()
+            .map(command_value_bytes)
+            .fold(0, usize::saturating_add),
+        Value::Object(values) => values
+            .iter()
+            .map(|(key, value)| {
+                1024_usize
+                    .saturating_add(key.len().saturating_mul(12))
+                    .saturating_add(command_value_bytes(value))
+            })
+            .fold(0, usize::saturating_add),
+        _ => 0,
+    })
+}
+
 #[derive(Debug)]
 pub(crate) enum RpcJsonError {
     Parse,

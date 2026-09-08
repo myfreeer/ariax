@@ -242,6 +242,14 @@ or read backpressure; it does not execute a partially parsed request. Response
 construction transfers permit ownership to the HTTP/WebSocket byte owner and
 stdio writer, so a completed backend call cannot refund a blocked response.
 
+Typed Rust calls share one client budget per engine handle. Their caller-owned
+arguments enter request accounting before the facade constructs JSON command
+state, and intermediate results retain their workspace until typed projection
+finishes. Returned typed values belong to the embedding caller. Event polling
+uses the same client budget and rejects an event larger than its projection
+allowance before cloning it. The synchronous low-level control primitive is an
+owner API; transport and embedding adapters must provide request accounting.
+
 The current implementation has shared profile/resident reservations, bounded
 Serde request construction, four client request leases, one response lease,
 and transport-owned serialized bytes. Event entries and connection caches are
@@ -249,11 +257,14 @@ also charged; deferred source mutations retain their command leases after
 disconnect. Batch results serialize one member at a time, and retained
 multicall members acquire additional credit.
 
-`P4-06` remains open for pre-allocation checks in every result builder and the
-complete typed-command memory forecast. The current fixed 8 MiB result
-workspace and post-construction checks do not establish those builder bounds.
-Immutable query projection outside the control owner and the real active-range
-latency target remain completion requirements under `P4-11`.
+Borrowed result preflight bounds URI, file, option, and session construction;
+status/event lists bound each row and the accumulated result. Typed input
+preparation reserves temporary copies, and pending option/source changes retain
+their request leases. Native calls share those client and projection budgets.
+`P4-06` remains open for scheduler simulation and status-draft copies of existing
+task state, including their pending owner lifetimes. Immutable query projection
+outside the control owner and the real active-range latency target remain
+completion requirements under `P4-11`.
 
 `system.multicall` is bounded but not transactional. Inner calls execute in
 order and may have side effects before a later inner call fails or the combined

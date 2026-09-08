@@ -102,7 +102,7 @@ impl RpcClientContext {
     pub(crate) fn try_next_event(&self) -> Result<Option<RpcEventDelivery>, RpcEventError> {
         let mut state = self.state.lock().expect("RPC client state");
         match &mut state.subscriber {
-            Some(subscriber) => subscriber.try_next(),
+            Some(subscriber) => subscriber.try_next_bounded(crate::rpc_result::RESULT_VALUE_BYTES),
             None => Ok(None),
         }
     }

@@ -31,6 +31,7 @@ mod process_bootstrap;
 mod rpc_budget;
 mod rpc_events;
 mod rpc_json;
+mod rpc_result;
 mod runtime_effects;
 mod startup_executor;
 mod startup_filesystem;

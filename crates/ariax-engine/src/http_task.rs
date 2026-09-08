@@ -701,6 +701,22 @@ impl HttpTaskSpec {
         &self.options
     }
 
+    pub(crate) fn with_options(
+        &self,
+        output: SafeRelativePath,
+        options: HttpTaskOptions,
+    ) -> Result<Self, HttpTaskSpecError> {
+        options.validate()?;
+        Ok(Self {
+            task: self.task,
+            gid: self.gid,
+            sources: self.sources.clone(),
+            output_root: self.output_root.clone(),
+            output,
+            options,
+        })
+    }
+
     #[must_use]
     pub fn persistence_sources(&self) -> Vec<SessionTaskSourceRecord> {
         self.sources
@@ -933,6 +949,40 @@ mod tests {
     fn output() -> SafeRelativePath {
         SafePathBuilder::from_user_path("downloads/file.bin", PathPlatform::current())
             .expect("safe output")
+    }
+
+    #[test]
+    fn option_replacement_shares_validated_sources_and_rejects_invalid_options() {
+        let spec = HttpTaskSpec::new(
+            task(1),
+            gid(1),
+            ["https://example.test/file".to_owned()],
+            std::env::current_dir().expect("absolute root"),
+            output(),
+            HttpTaskOptions::default(),
+            false,
+        )
+        .expect("task");
+        let options = HttpTaskOptions {
+            split: NonZeroUsize::new(3).expect("split"),
+            ..spec.options.clone()
+        };
+        let replacement = spec
+            .with_options(output(), options.clone())
+            .expect("valid replacement");
+        assert!(Arc::ptr_eq(&spec.sources, &replacement.sources));
+        assert!(Arc::ptr_eq(&spec.output_root, &replacement.output_root));
+        assert_eq!(replacement.options, options);
+        assert_ne!(spec.options, replacement.options);
+        let invalid = HttpTaskOptions {
+            split: NonZeroUsize::new(MAX_HTTP_TASK_SOURCES + 1).expect("invalid split"),
+            ..options
+        };
+        assert_eq!(
+            spec.with_options(output(), invalid),
+            Err(HttpTaskSpecError::InvalidOptions)
+        );
+        assert_eq!(spec.sources[0].uri(), "https://example.test/file");
     }
 
     #[test]

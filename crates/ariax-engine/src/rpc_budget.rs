@@ -200,6 +200,7 @@ impl RpcClientBudget {
                 allocation: Mutex::new(allocation),
                 _slot: slot,
             }),
+            _command: None,
         })
     }
 
@@ -309,6 +310,7 @@ impl Drop for RpcItemCharge {
 #[derive(Clone, Debug)]
 pub(crate) struct RpcRequestLease {
     inner: Arc<RequestLease>,
+    _command: Option<Arc<RpcAllocation>>,
 }
 
 #[derive(Debug)]
@@ -318,6 +320,15 @@ struct RequestLease {
 }
 
 impl RpcRequestLease {
+    pub(crate) fn reserve_command(&self, bytes: usize) -> Result<Self, RpcBudgetError> {
+        let mut command = RpcAllocation::new(self.client(), true);
+        command.reserve(bytes)?;
+        Ok(Self {
+            inner: self.inner.clone(),
+            _command: Some(Arc::new(command)),
+        })
+    }
+
     pub(crate) fn client(&self) -> RpcClientBudget {
         self.inner
             .allocation
@@ -404,6 +415,38 @@ mod tests {
 
     fn budgets() -> RpcBudgets {
         RpcBudgets::new(32, 32 * 1024 * 1024, ByteBudget::new(40 * 1024 * 1024))
+    }
+
+    #[test]
+    fn sequential_commands_refund_temporary_state_but_deferred_commands_retain_it() {
+        let process = budgets();
+        let client = process.client().expect("client");
+        let request = client.try_request(1024).expect("batch request");
+        let baseline = client.request_bytes();
+        for _ in 0..256 {
+            let command = request
+                .reserve_command(128 * 1024)
+                .expect("one batch member");
+            assert!(client.request_bytes() > baseline);
+            drop(command);
+            assert_eq!(client.request_bytes(), baseline);
+        }
+        let pending = request
+            .reserve_command(128 * 1024)
+            .expect("deferred mutation");
+        drop(request);
+        assert_eq!(client.outstanding_requests(), 1);
+        assert!(client.request_bytes() > baseline);
+        assert!(
+            pending
+                .reserve_command(MAX_RPC_CLIENT_REQUEST_BYTES)
+                .is_err()
+        );
+        drop(pending);
+        assert_eq!(client.outstanding_requests(), 0);
+        assert_eq!(client.request_bytes(), 0);
+        drop(client);
+        assert_eq!(process.snapshot().bytes, 0);
     }
 
     #[test]

@@ -268,15 +268,41 @@ leaving command/reply capacity for polling or removing subscriptions even when
 their event queues are full. Coalescing, informational loss, and reliable-event
 overflow retain their documented behavior when shared credit is exhausted.
 
+Owned JSON result construction first measures a borrowed `Serialize` view with
+a bounded counting serializer. This pass accounts for values, map keys,
+container capacity hints, strings, and formatting scratch before
+`serde_json::to_value` can allocate the result. List builders retain one bounded
+row scratch area and charge accumulated rows against the same result allowance.
+They iterate immutable queue slices without first copying every GID. Source and
+session views borrow URI text; constructing an intermediate URI JSON tree before
+the counting pass is not permitted. An oversized event poll leaves the
+unreturned event queued. Result overflow remains a complete typed error.
+
+Typed command preparation reserves a conservative peak before copying input:
+twelve bytes per input string byte and 1,024 bytes per value/key cover URI
+canonicalization/deduplication, typed fields, persisted rows, and ordered-owner
+copies. The forecast includes current source text for `changeUri`, whose input
+can be tiny while the replacement set is large, and a bounded fixed task/option
+shell. Option-only changes share already-validated immutable sources instead
+of re-parsing and copying them. A queued generation patch retains the request
+lease through cancellation and durable promotion just as a source mutation
+does. Reservations beyond the combined 8 MiB request/command ceiling reject
+before journal or SQLite mutation. Config and session parsers remain subject
+to their own structured limits in addition to this command reservation.
+Sequential batch members release each completed command's temporary lease;
+their request body and parsed batch remain charged until the batch retires.
+
 Phase 4B implements these request, serializer, event, and transport ownership
 reservations using the resolved profile and shared resident budget. Regression
 tests cover parser expansion, reader backpressure, deferred commands, retained
 body frames, response overflow, writer failure/cancellation, and controlled
-HTTP/WebSocket stalls with another client served concurrently. A fixed 8 MiB
-workspace is reserved before backend dispatch; result builders still need
-pre-allocation checks against it. Until those checks and complete typed-command
-forecasts are implemented, `P4-06` remains open. The active-range performance
-and RSS evidence is a separate `P4-11` requirement.
+HTTP/WebSocket stalls with another client served concurrently. Borrowed result
+preflight, bounded row accumulation, typed input preparation, and native-call
+projection reservations pass the same Linux, MSRV, and Windows-GNU workspace
+matrix. Scheduler simulations and status drafts still copy existing task state
+outside the input forecast; accounting for those copies and their pending
+owner lifetimes remains a `P4-06` requirement. Active-range performance and RSS
+evidence is a separate `P4-11` requirement.
 
 ## Queue Wrappers
 

@@ -163,11 +163,13 @@ inside these guardrails.
 | per-client event queue (events / serialized bytes) | 256 / 4 MiB | 256 / 4 MiB | 512 / 8 MiB | 64 / 1 MiB |
 | stopped-result retention (`max-download-result`) | 1000 | 1000 | 1000 | 250 |
 
-The RPC budget row is a target profile contract. The current Phase-4 transport
-code enforces individual body/response caps and a bounded stdio request queue,
-but not yet the per-client/global pending-response reservations or the
-four-request/8 MiB HTTP acceptance rule. Those reservations are required
-before the control-plane checkpoint can claim the profile's RPC budget.
+Phase 4B now enforces shared profile RPC/resident reservations, four client
+request leases, bounded parsing, and response credit through transport release.
+Large source/session results use borrowed preflight views and typed input
+preparation reserves its temporary copies; native calls retain projection
+credit through typed conversion. Scheduler simulation and status-draft copies
+remain under `P4-06`; the profile's active-download/RSS and latency claims still
+require the `P4-11` benchmark evidence.
 
 Cache/cardinality defaults are also registry-owned and admission-visible:
 

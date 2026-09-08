@@ -424,8 +424,9 @@ Exit criteria:
 Phase 4B repairs multicall envelope authentication, connection-local event
 authorization, retry-option registry/persistence alignment, active option
 replay, and source replacement after cancellation drain. Shared RPC reservations
-and transport ownership are implemented; result/command materialization
-accounting remains an open
+and transport ownership, borrowed result preflight, and typed input/native
+projection accounting are implemented. Scheduler simulation and status-draft
+copies remain an open
 [repair gate](implementation-readiness.md#phase-4-repair-gates); complete runtime
 option application and the completion requirements below are still pending.
 

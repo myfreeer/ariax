@@ -28,9 +28,10 @@ typed Rust embedding skeleton uses the same control plane. Phase 4B repairs
 multicall envelope authentication, connection-local event authorization, and
 production-policy retry admission and recovery, active option journal replay,
 live-only rate changes, and source replacement after cancellation drain.
-Shared RPC reservations and transport ownership are implemented; complete
-result/command materialization accounting remains an open
-[repair gates](implementation-readiness.md#phase-4-repair-gates), alongside the
+Shared RPC reservations, transport ownership, borrowed result preflight, and
+typed input/native projection accounting are implemented. Scheduler simulation
+and status-draft copies remain an open
+[repair gate](implementation-readiness.md#phase-4-repair-gates), alongside the
 remaining Phase-4B completion requirements.
 
 Strict HTTP identity now distinguishes whole-file and exact-range evidence. A

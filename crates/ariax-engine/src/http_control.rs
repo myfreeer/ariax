@@ -5,6 +5,9 @@
 //! transports never mutate the scheduler directly.
 
 use crate::http_first_slice::append_initial_admission_with_options;
+use crate::rpc_result::{
+    DisplayValue, OptionMap, RESULT_VALUE_BYTES, ResultList, SourceServers, SourceUris,
+};
 use crate::{
     HttpContentChecksum, HttpRetryAfterPolicy, HttpRetryBackoff, HttpRetryPolicy, HttpRetryProfile,
     HttpRetryStatusSet, HttpRetryTriggerSet, HttpRpcBackend, HttpRpcBackendError,
@@ -88,6 +91,7 @@ pub enum HttpControlError {
     Unsupported(&'static str),
     Busy,
     SlowConsumer,
+    ResponseTooLarge,
 }
 
 impl fmt::Display for HttpControlError {
@@ -104,15 +108,25 @@ impl fmt::Display for HttpControlError {
             Self::Unsupported(message) => formatter.write_str(message),
             Self::Busy => formatter.write_str("control plane is busy"),
             Self::SlowConsumer => formatter.write_str("RPC event subscriber is too slow"),
+            Self::ResponseTooLarge => {
+                formatter.write_str("RPC response exceeds its materialization budget")
+            }
         }
     }
 }
 
 impl Error for HttpControlError {}
 
+impl From<crate::rpc_result::ResultTooLarge> for HttpControlError {
+    fn from(_: crate::rpc_result::ResultTooLarge) -> Self {
+        Self::ResponseTooLarge
+    }
+}
+
 struct PendingOptionSnapshot {
     options: SanitizedOptionMap,
     previous_generation: Generation,
+    _request: Option<crate::rpc_budget::RpcRequestLease>,
 }
 
 struct PendingSourceReplacement {
@@ -364,6 +378,7 @@ impl HttpControlPlane {
                     PendingOptionSnapshot {
                         options: persisted_options.clone(),
                         previous_generation: recovered.journal.generation(),
+                        _request: None,
                     },
                 );
                 self.pending_restart_patches.insert(recovered.gid, patch_id);
@@ -537,6 +552,16 @@ impl HttpControlPlane {
     }
 
     pub fn call(&mut self, method: &str, params: Value) -> Result<Value, HttpControlError> {
+        self.call_admitted(method, params, None)
+    }
+
+    fn call_admitted(
+        &mut self,
+        method: &str,
+        params: Value,
+        request: Option<crate::rpc_budget::RpcRequestLease>,
+    ) -> Result<Value, HttpControlError> {
+        let request = self.reserve_command_memory(method, &params, request.as_ref())?;
         let result = match method {
             "aria2.addUri" | "addUri" => self.add_uri(params),
             "aria2.tellStatus" | "tellStatus" => self.tell_status(params),
@@ -562,7 +587,7 @@ impl HttpControlPlane {
             "aria2.getFiles" | "getFiles" => self.get_files(params),
             "aria2.getServers" | "getServers" => self.get_servers(params),
             "aria2.getOption" | "getOption" => self.get_option(params),
-            "aria2.changeOption" | "changeOption" => self.change_option(params),
+            "aria2.changeOption" | "changeOption" => self.change_option(params, request),
             "aria2.changeUri" | "changeUri" | "ariax.replaceSources" => {
                 self.source_call_sync(method, params)
             }
@@ -661,14 +686,16 @@ impl HttpControlPlane {
             .subscriptions
             .get_mut(&id)
             .ok_or(HttpControlError::NotFound)?;
-        let mut events = Vec::new();
+        let mut events = ResultList::new();
         for _ in 0..count {
-            match subscriber.try_next().map_err(event_backend_error)? {
-                Some(delivery) => events.push(delivery.into_value()),
-                None => break,
+            match subscriber.try_next_bounded(events.remaining()) {
+                Ok(Some(delivery)) => events.push_scratch(delivery.into_value())?,
+                Ok(None) => break,
+                Err(RpcEventError::EventTooLarge) if !events.is_empty() => break,
+                Err(error) => return Err(event_backend_error(error)),
             }
         }
-        Ok(Value::Array(events))
+        Ok(events.finish())
     }
 
     fn publish_control_event(&self, method: &str, value: &Value) {
@@ -877,20 +904,21 @@ impl HttpControlPlane {
         keys: Option<&[String]>,
     ) -> Result<Value, HttpControlError> {
         let root = self.engine.snapshot_reader().load();
-        let gids = classes
+        let total = classes.iter().map(|class| root.queue(*class).len()).sum();
+        let start = normalized_offset(offset, total);
+        let mut values = ResultList::new();
+        for gid in classes
             .iter()
-            .flat_map(|class| root.queue(*class).iter().copied())
-            .collect::<Vec<_>>();
-        let start = normalized_offset(offset, gids.len());
-        let end = start.saturating_add(count).min(gids.len());
-        let mut values = Vec::with_capacity(end.saturating_sub(start));
-        for gid in &gids[start..end] {
+            .flat_map(|class| root.queue(*class))
+            .skip(start)
+            .take(count)
+        {
             let task = root.task(*gid).ok_or_else(|| {
                 HttpControlError::Scheduler("queue index references a missing task".to_owned())
             })?;
-            values.push(self.applied_status(task, keys)?);
+            values.push_scratch(self.applied_status(task, keys)?)?;
         }
-        Ok(Value::Array(values))
+        Ok(values.finish())
     }
 
     fn applied_status(
@@ -907,7 +935,9 @@ impl HttpControlPlane {
             .get(task.task_id)
             .map(|stats| stats.snapshot())
             .unwrap_or_default();
-        Ok(project_status(status_value(snapshot, status, stats), keys))
+        let value = status_value(snapshot, status, stats);
+        debug_assert!(crate::rpc_json::owned_value_bytes(&value) < 64 * 1024);
+        Ok(project_status(value, keys))
     }
 
     fn pause_all(&mut self, params: Value, force: bool) -> Result<Value, HttpControlError> {
@@ -997,12 +1027,13 @@ impl HttpControlPlane {
     fn get_uris(&self, params: Value) -> Result<Value, HttpControlError> {
         let gid = self.resolve_gid_param(&params)?;
         let spec = self.tasks.get_gid(gid).ok_or(HttpControlError::NotFound)?;
-        Ok(Value::Array(
-            spec.sources()
-                .iter()
-                .map(|source| json!({"uri": source.uri(), "status": "used"}))
-                .collect(),
-        ))
+        Ok(crate::rpc_result::to_value(
+            &SourceUris {
+                sources: spec.sources(),
+                status: true,
+            },
+            RESULT_VALUE_BYTES,
+        )?)
     }
 
     fn get_files(&self, params: Value) -> Result<Value, HttpControlError> {
@@ -1022,30 +1053,39 @@ impl HttpControlPlane {
             .unwrap_or(stats.total_length)
             .max(completed);
         let path = spec.output_root().join(spec.output().canonical_string());
-        Ok(json!([{
-            "index": "1",
-            "path": path.to_string_lossy(),
-            "length": total.to_string(),
-            "completedLength": completed.to_string(),
-            "selected": "true",
-            "uris": spec.sources().iter().map(|source| json!({"uri": source.uri(), "status":"used"})).collect::<Vec<_>>(),
-        }]))
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct File<'a> {
+            index: &'static str,
+            path: std::borrow::Cow<'a, str>,
+            length: DisplayValue<u64>,
+            completed_length: DisplayValue<u64>,
+            selected: &'static str,
+            uris: SourceUris<'a>,
+        }
+        Ok(crate::rpc_result::to_value(
+            &[File {
+                index: "1",
+                path: path.to_string_lossy(),
+                length: DisplayValue(total),
+                completed_length: DisplayValue(completed),
+                selected: "true",
+                uris: SourceUris {
+                    sources: spec.sources(),
+                    status: true,
+                },
+            }],
+            RESULT_VALUE_BYTES,
+        )?)
     }
 
     fn get_servers(&self, params: Value) -> Result<Value, HttpControlError> {
         let gid = self.resolve_gid_param(&params)?;
         let spec = self.tasks.get_gid(gid).ok_or(HttpControlError::NotFound)?;
-        Ok(Value::Array(
-            spec.sources()
-                .iter()
-                .map(|source| {
-                    json!({
-                        "index": (usize::try_from(source.id().get()).unwrap_or(usize::MAX) + 1).to_string(),
-                        "servers": [{"uri": source.uri(), "currentUri": source.uri(), "downloadSpeed":"0"}],
-                    })
-                })
-                .collect(),
-        ))
+        Ok(crate::rpc_result::to_value(
+            &SourceServers(spec.sources()),
+            RESULT_VALUE_BYTES,
+        )?)
     }
 
     fn get_option(&self, params: Value) -> Result<Value, HttpControlError> {
@@ -1054,10 +1094,17 @@ impl HttpControlPlane {
         let options = spec
             .persistence_options()
             .map_err(HttpControlError::TaskSpec)?;
-        Ok(string_map_value(options.entries()))
+        Ok(crate::rpc_result::to_value(
+            &OptionMap(&options),
+            RESULT_VALUE_BYTES,
+        )?)
     }
 
-    fn change_option(&mut self, params: Value) -> Result<Value, HttpControlError> {
+    fn change_option(
+        &mut self,
+        params: Value,
+        request: Option<crate::rpc_budget::RpcRequestLease>,
+    ) -> Result<Value, HttpControlError> {
         let values = params.as_array().filter(|values| values.len() == 2).ok_or(
             HttpControlError::InvalidParams("changeOption requires GID and option object"),
         )?;
@@ -1123,22 +1170,9 @@ impl HttpControlPlane {
         })?;
         let output =
             HttpTaskSpec::persisted_output(&options).map_err(HttpControlError::TaskSpec)?;
-        let replacement = HttpTaskSpec::new(
-            current.task(),
-            current.gid(),
-            current
-                .sources()
-                .iter()
-                .map(|source| source.uri().to_owned()),
-            current.output_root().clone(),
-            output,
-            http_options,
-            current
-                .sources()
-                .iter()
-                .any(crate::HttpSourceSpec::needs_credentials),
-        )
-        .map_err(HttpControlError::TaskSpec)?;
+        let replacement = current
+            .with_options(output, http_options)
+            .map_err(HttpControlError::TaskSpec)?;
 
         let patch_id =
             OptionPatchId::new(self.next_option_patch_id).ok_or(HttpControlError::InvalidConfig)?;
@@ -1190,6 +1224,7 @@ impl HttpControlPlane {
                 PendingOptionSnapshot {
                     options: options.clone(),
                     previous_generation,
+                    _request: request,
                 },
             );
             self.pending_restart_patches.insert(gid, patch_id);
@@ -1480,7 +1515,7 @@ impl HttpControlPlane {
             .await
     }
 
-    async fn call_shared_with_context(
+    pub(crate) async fn call_shared_with_context(
         plane: &Arc<Mutex<Self>>,
         method: &str,
         params: Value,
@@ -1490,15 +1525,22 @@ impl HttpControlPlane {
             let mut owner = plane.lock().await;
             owner.poll_once()?;
             if method == "ariax.subscribe" {
+                let _command = owner.reserve_command_memory(
+                    method,
+                    &params,
+                    context.request_lease().as_ref(),
+                )?;
                 return owner.subscribe_events_with_client(params, context.client_budget());
             }
             if !matches!(
                 method,
                 "aria2.changeUri" | "changeUri" | "ariax.replaceSources"
             ) {
-                return owner.call(method, params);
+                return owner.call_admitted(method, params, context.request_lease());
             }
-            owner.begin_source_call(method, params, context.request_lease())?
+            let command =
+                owner.reserve_command_memory(method, &params, context.request_lease().as_ref())?;
+            owner.begin_source_call(method, params, command)?
         };
         loop {
             tokio::select! {
@@ -1512,13 +1554,47 @@ impl HttpControlPlane {
         }
     }
 
+    fn reserve_command_memory(
+        &self,
+        method: &str,
+        params: &Value,
+        request: Option<&crate::rpc_budget::RpcRequestLease>,
+    ) -> Result<Option<crate::rpc_budget::RpcRequestLease>, HttpControlError> {
+        let mut bytes = crate::rpc_json::command_value_bytes(params).saturating_add(64 * 1024);
+        if matches!(method, "aria2.changeUri" | "changeUri")
+            && let Some(gid) = params
+                .as_array()
+                .and_then(|params| params.first())
+                .and_then(Value::as_str)
+        {
+            let gid = self.resolve_gid_text(gid)?;
+            if let Some(spec) = self.tasks.get_gid(gid) {
+                for source in spec.sources() {
+                    bytes = bytes
+                        .saturating_add(source.uri().len().saturating_mul(12))
+                        .saturating_add(1024);
+                }
+            }
+        }
+        if bytes > crate::MAX_RPC_CLIENT_REQUEST_BYTES {
+            return Err(HttpControlError::Busy);
+        }
+        if let Some(request) = request {
+            return request
+                .reserve_command(bytes)
+                .map(Some)
+                .map_err(|_| HttpControlError::Busy);
+        }
+        Ok(None)
+    }
+
     fn get_global_option(&self, params: Value) -> Result<Value, HttpControlError> {
         require_no_params(&params, "getGlobalOption")?;
         Ok(string_map_value(
             self.global_options
                 .iter()
                 .map(|(name, value)| (name.as_str(), value.as_str())),
-        ))
+        )?)
     }
 
     fn change_global_option(&mut self, params: Value) -> Result<Value, HttpControlError> {
@@ -1652,7 +1728,7 @@ impl HttpControlPlane {
                 self.global_options
                     .iter()
                     .map(|(name, value)| (name.as_str(), value.as_str())),
-            ));
+            )?);
         }
         let mut defaults = BTreeMap::new();
         for definition in builtin_registry().definitions() {
@@ -1671,7 +1747,7 @@ impl HttpControlPlane {
             defaults
                 .iter()
                 .map(|(name, value)| (name.as_str(), value.as_str())),
-        ))
+        )?)
     }
 
     fn export_session(&self, params: Value) -> Result<Value, HttpControlError> {
@@ -1680,7 +1756,7 @@ impl HttpControlPlane {
         if root.len() > MAX_RPC_LIST_ITEMS {
             return Err(HttpControlError::Busy);
         }
-        let mut tasks = Vec::with_capacity(root.len());
+        let mut tasks = ResultList::new();
         for applied in root.tasks().values() {
             let spec = self
                 .tasks
@@ -1689,14 +1765,30 @@ impl HttpControlPlane {
             let options = spec
                 .persistence_options()
                 .map_err(HttpControlError::TaskSpec)?;
-            tasks.push(json!({
-                "gid": applied.snapshot.gid.to_string(),
-                "uris": spec.sources().iter().map(|source| source.uri()).collect::<Vec<_>>(),
-                "options": string_map_value(options.entries()),
-                "state": applied.snapshot.state.code(),
-            }));
+            #[derive(serde::Serialize)]
+            struct Task<'a> {
+                gid: DisplayValue<Gid>,
+                uris: SourceUris<'a>,
+                options: OptionMap<'a>,
+                state: &'static str,
+            }
+            tasks.push(&Task {
+                gid: DisplayValue(applied.snapshot.gid),
+                uris: SourceUris {
+                    sources: spec.sources(),
+                    status: false,
+                },
+                options: OptionMap(&options),
+                state: applied.snapshot.state.code(),
+            })?;
         }
-        Ok(json!({"sessionId": self.session_id.to_string(), "tasks": tasks}))
+        let mut result = serde_json::Map::new();
+        result.insert(
+            "sessionId".to_owned(),
+            Value::String(self.session_id.to_string()),
+        );
+        result.insert("tasks".to_owned(), tasks.finish());
+        Ok(Value::Object(result))
     }
 
     fn import_session(&mut self, params: Value) -> Result<Value, HttpControlError> {
@@ -2566,6 +2658,7 @@ fn control_backend_error(error: HttpControlError) -> HttpRpcBackendError {
         HttpControlError::NotFound => -32004,
         HttpControlError::Busy => -32005,
         HttpControlError::SlowConsumer => -32007,
+        HttpControlError::ResponseTooLarge => -32006,
         _ => -32000,
     };
     HttpRpcBackendError::new(code, error.to_string())
@@ -2627,6 +2720,7 @@ fn event_backend_error(error: RpcEventError) -> HttpControlError {
         RpcEventError::TooManySubscribers | RpcEventError::BudgetExhausted => {
             HttpControlError::Busy
         }
+        RpcEventError::EventTooLarge => HttpControlError::ResponseTooLarge,
         _ => HttpControlError::InvalidParams("invalid event subscription"),
     }
 }
@@ -2884,13 +2978,10 @@ fn project_status(value: Value, keys: Option<&[String]>) -> Value {
     )
 }
 
-fn string_map_value<'a>(entries: impl IntoIterator<Item = (&'a str, &'a str)>) -> Value {
-    Value::Object(
-        entries
-            .into_iter()
-            .map(|(name, value)| (name.to_owned(), Value::String(value.to_owned())))
-            .collect(),
-    )
+fn string_map_value<'a>(
+    entries: impl Clone + Iterator<Item = (&'a str, &'a str)>,
+) -> Result<Value, crate::rpc_result::ResultTooLarge> {
+    crate::rpc_result::to_value(&crate::rpc_result::StringMap(entries), RESULT_VALUE_BYTES)
 }
 
 fn status_value(
@@ -4029,6 +4120,136 @@ mod tests {
         assert!(plane.shutdown().expect("shutdown control plane").is_clean());
     }
 
+    #[test]
+    fn borrowed_source_results_reject_oversize_before_building_json_and_queries_remain_usable() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let gid = add_paused(&mut plane);
+        let original = plane.tasks.get_gid(gid).expect("task");
+        for count in [2, 512] {
+            let spec = HttpTaskSpec::new(
+                original.task(),
+                gid,
+                (0..count).map(|index| {
+                    format!(
+                        "http://example.test/file?index={index}&padding={}",
+                        "x".repeat(6000)
+                    )
+                }),
+                original.output_root().clone(),
+                original.output().clone(),
+                original.options().clone(),
+                false,
+            )
+            .expect("bounded source catalog");
+            plane.tasks.replace(spec).expect("test source catalog");
+            for method in [
+                "aria2.getUris",
+                "aria2.getFiles",
+                "aria2.getServers",
+                "ariax.exportSession",
+            ] {
+                let params = if method == "ariax.exportSession" {
+                    json!([])
+                } else {
+                    json!([gid.to_string()])
+                };
+                let result = plane.call(method, params);
+                if count == 2 {
+                    let value = result.expect("small borrowed result");
+                    assert!(crate::rpc_json::owned_value_bytes(&value) <= RESULT_VALUE_BYTES);
+                    if method == "aria2.getFiles" {
+                        assert_eq!(value[0]["index"], "1");
+                        assert_eq!(value[0]["uris"].as_array().expect("uris").len(), 2);
+                    }
+                } else {
+                    assert!(
+                        matches!(result, Err(HttpControlError::ResponseTooLarge)),
+                        "{method}: {result:?}"
+                    );
+                }
+            }
+            assert_eq!(
+                plane
+                    .call("aria2.tellStatus", json!([gid.to_string(), ["gid"]]))
+                    .expect("subsequent status"),
+                json!({"gid": gid.to_string()})
+            );
+        }
+        plane
+            .tasks
+            .replace((*original).clone())
+            .expect("restore persisted test catalog");
+        plane.shutdown().expect("shutdown");
+    }
+
+    #[test]
+    fn typed_command_forecast_rejects_before_admission_and_accounts_existing_change_uri_sources() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let client = plane.rpc_budgets.client().expect("client");
+        let lease = client.try_request(1).expect("request");
+        let large_uri = format!("http://example.test/file?{}", "x".repeat(700_000));
+        assert!(matches!(
+            plane.call_admitted("aria2.addUri", json!([[large_uri]]), Some(lease.clone())),
+            Err(HttpControlError::Busy)
+        ));
+        assert!(plane.tasks.is_empty());
+        assert!(
+            fs::read_dir(&directory.journals)
+                .expect("journal directory")
+                .next()
+                .is_none()
+        );
+        let gid = add_paused(&mut plane);
+        let original = plane.tasks.get_gid(gid).expect("task");
+        let spec = HttpTaskSpec::new(
+            original.task(),
+            gid,
+            (0..128).map(|index| {
+                format!(
+                    "http://example.test/file?index={index}&{}",
+                    "x".repeat(6000)
+                )
+            }),
+            original.output_root().clone(),
+            original.output().clone(),
+            original.options().clone(),
+            false,
+        )
+        .expect("large existing source set");
+        plane.tasks.replace(spec).expect("catalog");
+        assert!(matches!(
+            plane.call_admitted(
+                "aria2.changeUri",
+                json!([gid.to_string(), 1, [], ["http://other.test/file"]]),
+                Some(lease.clone())
+            ),
+            Err(HttpControlError::Busy)
+        ));
+        assert!(plane.pending_source_replacements.is_empty());
+        plane
+            .call_admitted(
+                "aria2.changeOption",
+                json!([gid.to_string(), {"split": 3}]),
+                Some(lease.clone()),
+            )
+            .expect("option-only changes share sources");
+        assert_eq!(
+            plane
+                .tasks
+                .get_gid(gid)
+                .expect("unchanged sources")
+                .sources()
+                .len(),
+            128
+        );
+        assert!(client.request_bytes() < 256 * 1024);
+        drop(lease);
+        assert_eq!(client.request_bytes(), 0);
+        plane.shutdown().expect("shutdown");
+    }
+
     fn replay_journal_payloads(
         directory: &TestDirectory,
         task_id: TaskId,
@@ -4986,12 +5207,19 @@ mod tests {
                 .await
                 .expect("worker started");
             let old = option_mirror(&plane, gid, OptionsSnapshotScope::CurrentGeneration);
+            let client = plane.rpc_budgets.client().expect("RPC client");
+            let request = client.try_request(512).expect("option command request");
             assert_eq!(
                 plane
-                    .call("aria2.changeOption", json!([gid.to_string(), patch]))
+                    .call_admitted(
+                        "aria2.changeOption",
+                        json!([gid.to_string(), patch]),
+                        Some(request)
+                    )
                     .expect("accept patch"),
                 "OK"
             );
+            assert_eq!(client.outstanding_requests(), 1);
             let patch_id = plane.pending_restart_patches[&gid];
             let expected = plane
                 .tasks
@@ -5039,6 +5267,8 @@ mod tests {
                 !plane.pending_restart_patches.contains_key(&gid)
             })
             .await;
+            assert_eq!(client.outstanding_requests(), 0);
+            assert_eq!(client.request_bytes(), 0);
             assert_eq!(
                 plane
                     .engine

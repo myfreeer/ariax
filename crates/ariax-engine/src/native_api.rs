@@ -4,8 +4,8 @@ use crate::{
     HttpControlError, HttpControlPlane, HttpControlPlaneConfig, HttpCookieJar, HttpCookieLimits,
     HttpDestinationPolicy, HttpMultiRangeWorker, HttpPolicyClient, HttpProcessResources,
     HttpResolver, HttpResolverConfig, HttpWorkerSupervisorConfig, ProcessBootstrapConfig,
-    RpcEventBroker, RpcEventError, RpcEventLimits, RpcEventSubscriber, RuntimeEffectConfig,
-    StartupRecoveryConfig,
+    RpcClientBudget, RpcClientContext, RpcEventBroker, RpcEventError, RpcEventLimits,
+    RpcEventSubscriber, RuntimeEffectConfig, StartupRecoveryConfig,
 };
 use ariax_config::persisted_option_is_safe;
 use ariax_core::{Aria2Status, Gid, MonotonicInstant, SchedulerConfig};
@@ -165,6 +165,10 @@ impl EngineBuilder {
             .map_err(|error| NativeApiError::Bootstrap(error.to_string()))?;
 
         let events = plane.event_broker();
+        let client = resources
+            .rpc_budgets()
+            .client()
+            .map_err(|_| NativeApiError::Control(HttpControlError::Busy))?;
         let plane = Arc::new(Mutex::new(plane));
         let progress_plane = plane.clone();
         let progress = tokio::spawn(async move {
@@ -182,6 +186,7 @@ impl EngineBuilder {
         Ok(Engine {
             plane,
             events,
+            client,
             progress: Mutex::new(Some(progress)),
         })
     }
@@ -190,6 +195,7 @@ impl EngineBuilder {
 pub struct Engine {
     plane: Arc<Mutex<HttpControlPlane>>,
     events: RpcEventBroker,
+    client: RpcClientBudget,
     progress: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -209,11 +215,27 @@ impl Engine {
     }
 
     pub async fn add_uri(&self, request: AddUri) -> Result<Gid, NativeApiError> {
-        if request.uris.is_empty() {
+        if request.uris.is_empty() || request.uris.len() > crate::MAX_HTTP_TASK_SOURCES {
             return Err(NativeApiError::InvalidConfiguration(
-                "at least one URI is required",
+                "URI count is outside the supported bound",
             ));
         }
+        let lease = self.client.try_request(0).map_err(native_budget_error)?;
+        let input_bytes = request
+            .uris
+            .iter()
+            .map(|uri| uri.capacity().saturating_add(1024))
+            .fold(
+                (64 * 1024_usize).saturating_add(
+                    request
+                        .uris
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<String>()),
+                ),
+                usize::saturating_add,
+            )
+            .saturating_add(request.options.output.as_ref().map_or(0, String::capacity));
+        lease.reserve(input_bytes).map_err(native_budget_error)?;
         let mut options = serde_json::Map::new();
         options.insert("pause".to_owned(), Value::Bool(request.options.pause));
         if let Some(output) = request.options.output {
@@ -229,7 +251,14 @@ impl Engine {
             options.insert("max-download-limit".to_owned(), Value::from(limit));
         }
         let value = self
-            .call_control("aria2.addUri", json!([request.uris, options]))
+            .call_control_admitted(
+                "aria2.addUri",
+                Value::Array(vec![
+                    Value::Array(request.uris.into_iter().map(Value::String).collect()),
+                    Value::Object(options),
+                ]),
+                lease,
+            )
             .await?;
         value
             .as_str()
@@ -297,8 +326,11 @@ impl Engine {
         limits: RpcEventLimits,
     ) -> Result<NativeEventSubscription, NativeApiError> {
         self.events
-            .subscribe(limits)
-            .map(|subscriber| NativeEventSubscription { subscriber })
+            .subscribe_with_client(limits, self.client.clone())
+            .map(|subscriber| NativeEventSubscription {
+                subscriber,
+                client: self.client.clone(),
+            })
             .map_err(NativeApiError::Event)
     }
 
@@ -326,21 +358,70 @@ impl Engine {
         Ok(())
     }
 
-    async fn call_control(&self, method: &str, params: Value) -> Result<Value, NativeApiError> {
-        HttpControlPlane::call_shared(&self.plane, method, params)
-            .await
-            .map_err(NativeApiError::Control)
+    async fn call_control(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> Result<NativeResult, NativeApiError> {
+        let lease = self.client.try_request(0).map_err(native_budget_error)?;
+        lease
+            .reserve(crate::rpc_json::owned_value_bytes(&params))
+            .map_err(native_budget_error)?;
+        self.call_control_admitted(method, params, lease).await
+    }
+
+    async fn call_control_admitted(
+        &self,
+        method: &str,
+        params: Value,
+        lease: crate::rpc_budget::RpcRequestLease,
+    ) -> Result<NativeResult, NativeApiError> {
+        let response = self
+            .client
+            .response(Some(lease.clone()))
+            .map_err(native_budget_error)?;
+        let workspace = response.workspace().map_err(native_budget_error)?;
+        let context = RpcClientContext::default().with_request(lease);
+        let value =
+            HttpControlPlane::call_shared_with_context(&self.plane, method, params, context)
+                .await
+                .map_err(NativeApiError::Control)?;
+        Ok(NativeResult {
+            value,
+            _response: response,
+            _workspace: workspace,
+        })
+    }
+}
+
+fn native_budget_error(_: crate::RpcBudgetError) -> NativeApiError {
+    NativeApiError::Control(HttpControlError::Busy)
+}
+
+struct NativeResult {
+    value: Value,
+    _response: crate::rpc_budget::RpcResponseLease,
+    _workspace: crate::rpc_budget::RpcByteCharge,
+}
+
+impl std::ops::Deref for NativeResult {
+    type Target = Value;
+    fn deref(&self) -> &Value {
+        &self.value
     }
 }
 
 pub struct NativeEventSubscription {
     subscriber: RpcEventSubscriber,
+    client: RpcClientBudget,
 }
 
 impl NativeEventSubscription {
     pub fn try_next(&mut self) -> Result<Option<Value>, NativeApiError> {
+        let response = self.client.response(None).map_err(native_budget_error)?;
+        let _workspace = response.workspace().map_err(native_budget_error)?;
         self.subscriber
-            .try_next()
+            .try_next_bounded(crate::rpc_result::RESULT_VALUE_BYTES)
             .map(|delivery| delivery.map(|delivery| delivery.into_value()))
             .map_err(NativeApiError::Event)
     }
@@ -463,6 +544,59 @@ mod tests {
             .expect("add URI");
         let status = engine.status(gid).await.expect("status");
         assert_eq!(status.status, Aria2Status::Paused);
+        let baseline = engine.client.bytes();
+        let retained = engine
+            .call_control("aria2.tellStatus", json!([gid.to_string()]))
+            .await
+            .expect("retained native projection");
+        assert_eq!(engine.client.outstanding_requests(), 1);
+        assert!(engine.client.bytes() > baseline);
+        assert!(matches!(
+            engine.status(gid).await,
+            Err(NativeApiError::Control(HttpControlError::Busy))
+        ));
+        drop(retained);
+        assert_eq!(engine.client.outstanding_requests(), 0);
+        assert_eq!(engine.client.bytes(), baseline);
+        let held = (0..crate::MAX_RPC_CLIENT_REQUESTS)
+            .map(|_| engine.client.try_request(1).expect("outstanding request"))
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            engine
+                .add_uri(AddUri {
+                    uris: vec!["http://example.test/second.bin".to_owned()],
+                    options: DownloadOptions {
+                        pause: true,
+                        ..DownloadOptions::default()
+                    }
+                })
+                .await,
+            Err(NativeApiError::Control(HttpControlError::Busy))
+        ));
+        assert_eq!(engine.plane.lock().await.task_catalog().len(), 1);
+        drop(held);
+        assert!(matches!(
+            engine
+                .add_uri(AddUri {
+                    uris: vec![format!("http://example.test/large?{}", "x".repeat(700_000))],
+                    options: DownloadOptions {
+                        pause: true,
+                        ..DownloadOptions::default()
+                    }
+                })
+                .await,
+            Err(NativeApiError::Control(HttpControlError::Busy))
+        ));
+        assert_eq!(engine.client.outstanding_requests(), 0);
+        assert_eq!(engine.client.bytes(), baseline);
+        assert_eq!(
+            engine
+                .status(gid)
+                .await
+                .expect("query after rejection")
+                .status,
+            Aria2Status::Paused
+        );
         engine.shutdown().await.expect("shutdown");
         let _ = fs::remove_dir_all(root);
     }
