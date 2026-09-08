@@ -11,6 +11,13 @@ workers and asynchronous native storage I/O remain pending.
 This document defines the core types and state machines shared by config,
 scheduler, storage, HTTP, RPC, and session persistence.
 
+Scheduler planning exposes a conservative, allocation-free estimate of the
+heap copied by `RequestScheduler::clone`. It includes task and identity maps,
+published snapshots, event-deduplication sets, queue orders, condition and
+public error text, and presented host-key material. Container estimates include sparse-node
+overhead and checked or saturating arithmetic. The estimate is a reservation
+bound, not a claim about measured allocator or RSS usage.
+
 ## Crate Boundary
 
 Suggested crates for the first slice:

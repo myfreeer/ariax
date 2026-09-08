@@ -8,8 +8,8 @@ at `30b70c5`, and the Phase-4 control-plane checkpoint is executable at
 checkpoint needed multicall authentication ordering, authenticated pushed
 events, complete registry-backed retry admission, active option restart replay,
 active source replacement outcome handling, and per-client RPC budget
-reservation. Phase 4B repairs the first five as detailed below; shared RPC
-accounting and complete runtime option application remain open. Remaining compatibility,
+reservation. Phase 4B implements these six repairs as detailed below; complete
+runtime option application remains open. Remaining compatibility,
 transport, benchmark, and release matrix work proceeds under the later phase
 exit criteria below and in `implementation-plan.md`.
 
@@ -303,8 +303,7 @@ Real storage application for output-path changes remains under `P4-07`; the
 replay tests do not establish that broader runtime behavior. The `P4-05` source
 replacement repair passes the same platforms, including delayed cancellation,
 pause/remove races, disconnected callers, retry waits, atomic rollback, and
-restart before and after source commit. `P4-06` and the completion gates below
-remain open.
+restart before and after source commit. The completion gates below remain open.
 The `P4-06` reservation/transport implementation now passes Linux 1.97.1, MSRV
 1.88, and native Windows-GNU workspace tests. Its controlled writer stalls use
 real HTTP/WebSocket framing and TCP connections with an injected pending write;
@@ -316,8 +315,20 @@ uninstrumented and does not replace CI fuzz coverage.
 Borrowed result preflight, bounded status/event accumulation, typed input
 forecasts, retained option-patch leases, and native admission/projection credit
 now pass Linux 1.97.1, MSRV 1.88, and native Windows-GNU workspace tests.
-Scheduler simulation and status-draft copies of existing tasks, including
-pending owner lifetimes, still gate closure of `P4-06`.
+Scheduler simulation/status-draft reservations now cover existing task copies,
+retained roots, validation indexes, and pending owner lifetimes. Regression
+coverage includes rejection before journal creation, timeout retention, idle-only
+unused-plan cleanup, event retention under pressure, and independent direct/owner
+request slots. A 1,000-active-task forecast test is allocation-contract evidence;
+native optimized latency and RSS measurements remain under `P4-11`.
+Accepted-write continuation remains an implementation gap: a synchronous
+control handler can return `Busy` after the driver accepted work but before the
+handler reaches catalog publication or installs its deferred source plan.
+Retaining RPC credit across that timeout does not complete the mutation. The
+remaining phase work must preserve each accepted command's continuation through
+publication and final reply, with delayed-owner and disconnected-caller tests
+for admission, option changes, and source replacement. This also belongs to the
+owner/query separation required by `P4-11`.
 Passing the existing workspace checks does not substitute for the regression
 evidence below. Tests must use the production authentication and persistence
 composition, including real delayed worker cancellation where relevant.
@@ -329,7 +340,7 @@ composition, including real delayed worker cancellation where relevant.
 | `P4-03` Retry admission | Repaired: complete bounded retry registry and exact production-policy preflight before journal creation. Runtime/config scopes remain under `P4-07`. | `retry_admission_recovers_canonical_options_with_production_policy` and `rejected_admission_has_no_artifacts_and_does_not_fault_the_scheduler` pass with profiles, aliases, modifiers, forbidden keys, and a subsequent valid add/query. [Retry admission](retry-policy.md#registry-and-persistence-boundary). |
 | `P4-04` Active option recovery | Replay repaired: accepted snapshots survive drain, generation persistence includes atomic mirror promotion, and recovery restores exact staging and fresh patch identities. Live-only rate changes no longer restart. | Delayed-worker split/output/mixed patches, all durable prefixes, consecutive generations, rejected staging, and live-rate persistence pass. Exact promotion mismatch and injected SQLite rollback tests pass; strict journal replay tests remain green. Real output-path storage application is still a `P4-07` requirement. [Option application](detailed-config.md#runtime-update-application), [journal rules](detailed-storage.md#control-journal-format). |
 | `P4-05` Active source replacement | Repaired: asynchronous replacements quiesce the worker without changing user intent, then commit the complete source set and exact queue state before catalog publication and ordinary readmission. | Delayed-worker tests cover both method shapes, independent queries, pause/remove races, disconnected callers, and restart before/after commit. Retry-wait tests cancel stale timers with retained/released slots. SQLite queue mismatch and injected source-write failure roll back both changes. The synchronous primitive rejects active replacement before mutation. [Source persistence](session-persistence.md), [mutation contract](apis-and-embedding.md#control-mutation-recovery). |
-| `P4-06` RPC work accounting | Reservations cover client leases, bounded parsing, borrowed result preflight, typed input copies, native projections, serialized responses, events, multicall results, and transport caches. Scheduler simulation and status-draft copies and pending owner lifetimes remain open. | Controlled transport stalls, independent clients, four outstanding requests, retained bodies and deferred mutations, overflow/failure/cancellation, borrowed result bounds, scoped batch command refunds, and native admission/projection tests pass on Linux/MSRV/Windows-GNU. Complete scheduler/draft accounting before closure. [RPC bounds](apis-and-embedding.md#query-and-response-work-bounds), [runtime budgets](detailed-runtime.md#resourcemanager). |
+| `P4-06` RPC work accounting | Repaired: profile/client/resident reservations cover parsing, typed input, scheduler/draft copies, native and JSON projections, responses, events, multicall results, transport caches, and pending owner lifetimes. | Transport stalls, independent clients, four outstanding requests, overflow/failure/cancellation, preflight/refunds, deferred mutations, native projections, scheduler rejection before journal creation, timeout retention, unused-plan cleanup, event retention, and 1,000-active-task forecasts have executable regressions. Native optimized real-download/RSS evidence is tracked separately by `P4-11`. [RPC bounds](apis-and-embedding.md#query-and-response-work-bounds), [runtime budgets](detailed-runtime.md#resourcemanager). |
 
 Preserve the existing strict journal replay and uncertain-write failure rules.
 An invalid journal from the old checkpoint must not be made valid by ignoring a

@@ -125,7 +125,8 @@ impl Error for OptionApplicationPlanError {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RuntimeEffectPreparation {
-    OptionApplication(OptionApplicationPlan),
+    OptionApplication(Box<OptionApplicationPlan>),
+    DiscardOptionApplications,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1076,6 +1077,10 @@ impl SchedulerEffectSinkPrepare for RuntimeSchedulerEffectSink {
 
     fn prepare(&mut self, preparation: Self::Preparation) -> Result<(), Self::Error> {
         match preparation {
+            RuntimeEffectPreparation::DiscardOptionApplications => {
+                self.option_plans.clear();
+                Ok(())
+            }
             RuntimeEffectPreparation::OptionApplication(plan) => {
                 if self
                     .option_plans
@@ -1087,7 +1092,7 @@ impl SchedulerEffectSinkPrepare for RuntimeSchedulerEffectSink {
                 if self.option_plans.len() == self.option_plan_capacity {
                     return Err(RuntimeEffectPrepareError::Full);
                 }
-                self.option_plans.push_back(plan);
+                self.option_plans.push_back(*plan);
                 Ok(())
             }
         }
@@ -1258,10 +1263,12 @@ mod tests {
         };
         let plan = OptionApplicationPlan::new(effect, OptionApplicationOutcome::Applied)
             .expect("option plan");
-        sink.prepare(RuntimeEffectPreparation::OptionApplication(plan.clone()))
-            .expect("register option plan");
+        sink.prepare(RuntimeEffectPreparation::OptionApplication(Box::new(
+            plan.clone(),
+        )))
+        .expect("register option plan");
         assert_eq!(
-            sink.prepare(RuntimeEffectPreparation::OptionApplication(plan)),
+            sink.prepare(RuntimeEffectPreparation::OptionApplication(Box::new(plan))),
             Err(RuntimeEffectPrepareError::Duplicate)
         );
         let other = OptionApplicationPlan::new(
@@ -1275,8 +1282,15 @@ mod tests {
         )
         .expect("other option plan");
         assert_eq!(
-            sink.prepare(RuntimeEffectPreparation::OptionApplication(other)),
+            sink.prepare(RuntimeEffectPreparation::OptionApplication(Box::new(
+                other.clone()
+            ))),
             Err(RuntimeEffectPrepareError::Full)
         );
+        sink.prepare(RuntimeEffectPreparation::DiscardOptionApplications)
+            .expect("discard unused preparations");
+        assert!(sink.option_plans.is_empty());
+        sink.prepare(RuntimeEffectPreparation::OptionApplication(Box::new(other)))
+            .expect("capacity restored");
     }
 }

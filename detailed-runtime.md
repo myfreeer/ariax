@@ -79,6 +79,29 @@ Rules:
   path,
 - driver faults are sticky and reject further mutation.
 
+The HTTP control owner reserves scheduler simulation and status-draft memory
+before accepting a mutating command. The forecast includes existing task
+state, a prior root retained by a bulk command, draft validation indexes,
+queue/effect copies, and new-task allowance;
+it shares the client's 8 MiB request/command ceiling with parsed input.
+Exhaustion rejects before journal or session mutation. Command-copy credit
+retires when synchronous work finishes, while a still-pending driver chain
+retains both input and copy leases across timeout or caller cancellation.
+Deferred option/source data keeps its separate input lease after a driver
+chain becomes idle. A later owner progress turn reserves fresh scratch before
+consuming a runtime event or preparing readmission, so a budget rejection
+cannot lose an already-popped event. Faulted chains retain credit until teardown.
+At an idle command boundary, the control owner discards unused persistence and
+option-application preparations before releasing input credit. These are plans
+that were never dispatched, including the unused tail after a rejected or failed
+command. Discard uses the driver's typed preparation boundary and is rejected
+while an effect chain is active; it cannot cancel an accepted owner write.
+
+Read-only control queries project the last published immutable status root;
+they do not first drive pending persistence or build an event-difference map.
+Ordinary owner progress publishes task events. This keeps queries available
+when command scratch is exhausted, without exposing planned scheduler state.
+
 `SchedulerDriver` exclusively owns its non-cloneable `StatusSnapshotStore`.
 Callers receive cloneable `StatusSnapshotReader` handles, never a writer lineage
 that can be attached to another driver. Each load returns one immutable
@@ -299,10 +322,12 @@ body frames, response overflow, writer failure/cancellation, and controlled
 HTTP/WebSocket stalls with another client served concurrently. Borrowed result
 preflight, bounded row accumulation, typed input preparation, and native-call
 projection reservations pass the same Linux, MSRV, and Windows-GNU workspace
-matrix. Scheduler simulations and status drafts still copy existing task state
-outside the input forecast; accounting for those copies and their pending
-owner lifetimes remains a `P4-06` requirement. Active-range performance and RSS
-evidence is a separate `P4-11` requirement.
+matrix. Scheduler simulations, status drafts, and pending owner lifetimes now
+use pre-admitted reservations, with failure/refund, timeout, unused-plan cleanup,
+and event-retention regressions. The forecast fits 1,000 active scheduler tasks;
+this is an allocation-contract test, not a real-download benchmark. Active-range
+performance, query projection outside the owner, and RSS evidence remain separate
+`P4-11` requirements.
 
 ## Queue Wrappers
 

@@ -29,10 +29,11 @@ multicall envelope authentication, connection-local event authorization, and
 production-policy retry admission and recovery, active option journal replay,
 live-only rate changes, and source replacement after cancellation drain.
 Shared RPC reservations, transport ownership, borrowed result preflight, and
-typed input/native projection accounting are implemented. Scheduler simulation
-and status-draft copies remain an open
-[repair gate](implementation-readiness.md#phase-4-repair-gates), alongside the
-remaining Phase-4B completion requirements.
+typed input/native projection accounting are implemented. Scheduler simulations
+and status drafts reserve before mutation and retain credit through pending
+driver work. The [repair evidence](implementation-readiness.md#phase-4-repair-gates)
+records these changes; configuration, session and interface completion, slow-slot
+integration, and real-download performance remain Phase-4B requirements.
 
 Strict HTTP identity now distinguishes whole-file and exact-range evidence. A
 persisted user SHA-256 admits ordinary concurrent mirrors and final verification;

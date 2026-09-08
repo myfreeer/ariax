@@ -247,8 +247,10 @@ arguments enter request accounting before the facade constructs JSON command
 state, and intermediate results retain their workspace until typed projection
 finishes. Returned typed values belong to the embedding caller. Event polling
 uses the same client budget and rejects an event larger than its projection
-allowance before cloning it. The synchronous low-level control primitive is an
-owner API; transport and embedding adapters must provide request accounting.
+allowance before cloning it. The synchronous low-level control primitive has a
+fallback direct-call client for typed input and scheduler work. Transports and
+embedding adapters supply their own client for input parsing, projection, and
+response ownership. Background owner progress has separate request slots.
 
 The current implementation has shared profile/resident reservations, bounded
 Serde request construction, four client request leases, one response lease,
@@ -261,10 +263,12 @@ Borrowed result preflight bounds URI, file, option, and session construction;
 status/event lists bound each row and the accumulated result. Typed input
 preparation reserves temporary copies, and pending option/source changes retain
 their request leases. Native calls share those client and projection budgets.
-`P4-06` remains open for scheduler simulation and status-draft copies of existing
-task state, including their pending owner lifetimes. Immutable query projection
-outside the control owner and the real active-range latency target remain
-completion requirements under `P4-11`.
+Scheduler simulation and status-draft copies of existing tasks are forecast
+before mutation and retained with the input lease while a driver chain remains
+pending. Idle cleanup discards unused plans before refunding their input.
+Queries read the published root without first driving persistence. Immutable
+query projection outside the control owner and the real active-range latency
+target remain completion requirements under `P4-11`.
 
 `system.multicall` is bounded but not transactional. Inner calls execute in
 order and may have side effects before a later inner call fails or the combined

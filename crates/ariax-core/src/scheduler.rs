@@ -821,6 +821,58 @@ impl RequestScheduler {
         self.tasks.is_empty()
     }
 
+    /// Conservative heap reservation for a planning clone, including sparse
+    /// tree nodes and nested text/key storage. This method does not allocate.
+    #[must_use]
+    pub fn estimated_clone_bytes(&self) -> usize {
+        let mut bytes = tree_clone_bytes::<Gid, ScheduledTask>(self.tasks.len())
+            .saturating_add(tree_clone_bytes::<TaskId, Gid>(self.task_ids.len()))
+            .saturating_add(tree_clone_bytes::<Gid, TaskSnapshot>(
+                self.published_snapshots.len(),
+            ));
+        for task in self.tasks.values() {
+            bytes = bytes
+                .saturating_add(tree_clone_bytes::<TaskEventKind, ()>(
+                    task.seen_events.len(),
+                ))
+                .saturating_add(
+                    task.error
+                        .as_ref()
+                        .map_or(0, |error| error.safe_message().len().saturating_add(64)),
+                );
+            if let Some(requirement) = &task.conditions.needs_credentials {
+                bytes = bytes
+                    .saturating_add(requirement.safe_description.len())
+                    .saturating_add(64);
+            }
+            if let Some(condition) = &task.conditions.no_space {
+                bytes = bytes
+                    .saturating_add(condition.redacted_path.len())
+                    .saturating_add(64);
+            }
+            if let Some(challenge) = &task.host_key_challenge {
+                bytes = bytes
+                    .saturating_add(challenge.summary().canonical_host.len())
+                    .saturating_add(challenge.summary().algorithm.len())
+                    .saturating_add(challenge.presented_public_key().len())
+                    .saturating_add(192);
+            }
+        }
+        for snapshot in self.published_snapshots.values() {
+            bytes = bytes.saturating_add(snapshot.estimated_clone_bytes());
+        }
+        for class in ALL_QUEUE_CLASSES {
+            bytes = bytes.saturating_add(
+                self.queues
+                    .get(*class)
+                    .len()
+                    .saturating_mul(std::mem::size_of::<Gid>())
+                    .saturating_add(64),
+            );
+        }
+        bytes
+    }
+
     /// Returns the scheduler's current planned state, which may be ahead of
     /// persistence acknowledgements and must not be exposed as a public snapshot.
     #[must_use]
@@ -857,6 +909,17 @@ impl RequestScheduler {
 struct QueueUpdate {
     class: QueueClass,
     order: Vec<Gid>,
+}
+
+fn tree_clone_bytes<K, V>(count: usize) -> usize {
+    if count == 0 {
+        return 0;
+    }
+    count.saturating_add(4).saturating_mul(
+        std::mem::size_of::<(K, V)>()
+            .saturating_mul(3)
+            .saturating_add(128),
+    )
 }
 
 impl RequestScheduler {

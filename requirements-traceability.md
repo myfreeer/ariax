@@ -11,8 +11,10 @@ is checkpointed at `30b70c5`, and the bounded Phase-4 control-plane checkpoint
 is executable at `71acb03`. Phase 4B repairs authentication, retry admission,
 active option journal recovery, live-rate changes, and source mutations. Shared
 RPC reservations, transport ownership, borrowed result preflight, and typed
-input/native projection accounting are implemented. Scheduler simulation and
-status-draft copies and complete runtime option application remain open.
+input/native projection accounting are implemented. Scheduler simulations and
+status drafts reserve before mutation and retain credit through pending driver
+work. Complete runtime option application and the remaining completion gates
+are still open.
 Core scheduling,
 bounded persistence/recovery, native storage handoff, runtime ownership,
 packet-independent stats, process bootstrap, and the first public Phase-3B
@@ -71,9 +73,12 @@ pass on Linux, MSRV, and native Windows-GNU. Shared RPC request/response/event
 reservations, bounded request parsing, blocked-writer ownership, and release
 paths pass the same workspace test matrix. Borrowed source/session preflight,
 bounded result accumulation, typed input forecasts, retained option-patch leases,
-and native admission/projection credit also pass that matrix. `P4-06` remains
-open for scheduler simulation and status-draft copies and pending owner
-lifetimes; complete runtime option application under `P4-07` also remains open.
+and native admission/projection credit also pass that matrix. Scheduler/draft
+reservations cover mutation rejection before journal creation, pending-driver
+timeouts, unused-plan cleanup, event retention, and resumed admission after
+credit release. An allocation-contract test covers 1,000 active scheduler tasks;
+real-download latency/RSS evidence remains under `P4-11`. Complete runtime option
+application under `P4-07` also remains open.
 
 The implemented HTTP discard hierarchy now has deterministic process/task/host
 fault coverage and a standalone bounded fuzz package (`fuzz/`) for HTTP

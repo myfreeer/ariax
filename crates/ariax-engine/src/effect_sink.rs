@@ -140,6 +140,7 @@ pub enum PersistenceCatalogError {
 pub enum PersistenceSchedulerPreparation<P> {
     Persistence(Box<PersistenceEffectPlan>),
     Delegate(P),
+    DiscardPrepared(P),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -537,6 +538,13 @@ impl<D: SchedulerEffectSinkPrepare> SchedulerEffectSinkPrepare
                 .delegate
                 .prepare(preparation)
                 .map_err(PersistenceSchedulerPrepareError::Delegate),
+            PersistenceSchedulerPreparation::DiscardPrepared(preparation) => {
+                self.delegate
+                    .prepare(preparation)
+                    .map_err(PersistenceSchedulerPrepareError::Delegate)?;
+                self.catalog.entries.clear();
+                Ok(())
+            }
         }
     }
 }
@@ -2155,11 +2163,26 @@ mod tests {
             driver.poll(),
             SchedulerDriverPoll::Backpressured { .. }
         ));
+        assert!(matches!(
+            driver.prepare_sink(PersistenceSchedulerPreparation::DiscardPrepared(())),
+            Err(ariax_runtime::SchedulerDriverPrepareError::Busy)
+        ));
+        assert_eq!(driver.sink().catalog().len(), 1);
         finish_chain(&mut driver);
         let submitted = control.submitted();
         assert_eq!(submitted.len(), 2);
         assert_eq!(submitted[0], submitted[1]);
         assert!(driver.sink().catalog().is_empty());
+        driver
+            .prepare_sink(PersistenceSchedulerPreparation::Persistence(Box::new(
+                persist_task_plan(gid(2)),
+            )))
+            .expect("unused future preparation");
+        driver
+            .prepare_sink(PersistenceSchedulerPreparation::DiscardPrepared(()))
+            .expect("discard only while idle");
+        assert!(driver.sink().catalog().is_empty());
+        assert_eq!(control.submitted().len(), 2);
     }
 
     #[test]

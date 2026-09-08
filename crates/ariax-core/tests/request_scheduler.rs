@@ -3702,6 +3702,50 @@ fn command_and_event_rejections_are_atomic() {
 }
 
 #[test]
+fn planning_copy_forecast_tracks_nested_conditions_and_rejected_inputs() {
+    let at = MonotonicInstant::now();
+    for count in [1, 17, 257, 1000] {
+        let mut scheduler = new_scheduler(count, count, false);
+        let mut previous = scheduler.estimated_clone_bytes();
+        for index in 1..=count {
+            scheduler
+                .execute_command_at(
+                    SchedulerCommand::AddValidatedTask {
+                        task_id: task_id(index as u64),
+                        gid: gid(index as u64),
+                        desired_paused: true,
+                        conditions: TaskConditions {
+                            needs_credentials: Some(CredentialRequirement {
+                                kind: CredentialKind::HttpAuthentication,
+                                source: None,
+                                safe_description: "x".repeat(128),
+                            }),
+                            no_space: Some(NoSpaceCondition {
+                                redacted_path: "y".repeat(128),
+                                retry_at: None,
+                            }),
+                        },
+                    },
+                    at,
+                )
+                .expect("bounded blocked task");
+            let estimate = scheduler.estimated_clone_bytes();
+            assert!(estimate >= previous + 256);
+            previous = estimate;
+        }
+        let copy = scheduler.clone();
+        assert_eq!(copy.estimated_clone_bytes(), previous);
+        assert_eq!(copy.0, scheduler.0);
+        assert!(
+            scheduler
+                .execute_command_at(add_command(task_id(1), gid(1), false), at)
+                .is_err()
+        );
+        assert_eq!(scheduler.estimated_clone_bytes(), previous);
+    }
+}
+
+#[test]
 fn oversized_condition_payloads_are_rejected_without_mutation() {
     let at = MonotonicInstant::now();
     let task_gid = gid(1);

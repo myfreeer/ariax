@@ -173,6 +173,15 @@ impl BootstrappedEngine {
             .prepare_sink(ProcessSchedulerPreparation::Delegate(preparation))
     }
 
+    pub(crate) fn discard_prepared_control(
+        &mut self,
+    ) -> Result<(), SchedulerDriverPrepareError<ProcessSchedulerPrepareError>> {
+        self.driver
+            .prepare_sink(ProcessSchedulerPreparation::DiscardPrepared(
+                RuntimeEffectPreparation::DiscardOptionApplications,
+            ))
+    }
+
     pub fn execute_command(
         &mut self,
         command: SchedulerCommand,

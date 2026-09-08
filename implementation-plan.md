@@ -425,10 +425,11 @@ Phase 4B repairs multicall envelope authentication, connection-local event
 authorization, retry-option registry/persistence alignment, active option
 replay, and source replacement after cancellation drain. Shared RPC reservations
 and transport ownership, borrowed result preflight, and typed input/native
-projection accounting are implemented. Scheduler simulation and status-draft
-copies remain an open
-[repair gate](implementation-readiness.md#phase-4-repair-gates); complete runtime
-option application and the completion requirements below are still pending.
+projection accounting are implemented. Scheduler simulations and status drafts
+reserve before mutation and retain credit through pending driver work. The
+[repair gates](implementation-readiness.md#phase-4-repair-gates) record regression
+evidence; complete runtime option application and the completion requirements
+below are still pending.
 
 ### Phase 4B Completion
 

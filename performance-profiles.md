@@ -168,8 +168,9 @@ request leases, bounded parsing, and response credit through transport release.
 Large source/session results use borrowed preflight views and typed input
 preparation reserves its temporary copies; native calls retain projection
 credit through typed conversion. Scheduler simulation and status-draft copies
-remain under `P4-06`; the profile's active-download/RSS and latency claims still
-require the `P4-11` benchmark evidence.
+reserve before mutation and retain credit while driver work is pending. The
+1,000-active-task forecast test covers allocation contracts; the profile's
+active-download/RSS and latency claims still require the `P4-11` benchmark evidence.
 
 Cache/cardinality defaults are also registry-owned and admission-visible:
 

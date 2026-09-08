@@ -126,7 +126,7 @@ impl From<crate::rpc_result::ResultTooLarge> for HttpControlError {
 struct PendingOptionSnapshot {
     options: SanitizedOptionMap,
     previous_generation: Generation,
-    _request: Option<crate::rpc_budget::RpcRequestLease>,
+    request: Option<crate::rpc_budget::RpcRequestLease>,
 }
 
 struct PendingSourceReplacement {
@@ -135,6 +135,11 @@ struct PendingSourceReplacement {
     reply: oneshot::Sender<Result<Value, HttpControlError>>,
     committing: bool,
     _request: Option<crate::rpc_budget::RpcRequestLease>,
+}
+
+struct ControlWorkReservation {
+    _input: crate::rpc_budget::RpcRequestLease,
+    _copies: crate::rpc_budget::RpcRequestLease,
 }
 
 /// Shared mutable control plane used by both transports.
@@ -160,6 +165,9 @@ pub struct HttpControlPlane {
     observed_statuses: BTreeMap<Gid, Aria2Status>,
     global_download_rate: Option<RateArbiter>,
     rpc_budgets: crate::RpcBudgets,
+    owner_client: crate::RpcClientBudget,
+    direct_client: crate::RpcClientBudget,
+    pending_work: Option<ControlWorkReservation>,
 }
 
 impl fmt::Debug for HttpControlPlane {
@@ -190,6 +198,9 @@ impl HttpControlPlane {
             .unwrap_or(0)
             .checked_add(1)
             .ok_or(HttpControlError::InvalidConfig)?;
+        let rpc_budgets = crate::RpcBudgets::process_default();
+        let owner_client = rpc_budgets.client().map_err(|_| HttpControlError::Busy)?;
+        let direct_client = rpc_budgets.client().map_err(|_| HttpControlError::Busy)?;
         let mut plane = Self {
             session: engine.session_handle(),
             session_id: engine.session_id(),
@@ -211,7 +222,10 @@ impl HttpControlPlane {
             subscriptions: BTreeMap::new(),
             observed_statuses: BTreeMap::new(),
             global_download_rate: None,
-            rpc_budgets: crate::RpcBudgets::process_default(),
+            rpc_budgets,
+            owner_client,
+            direct_client,
+            pending_work: None,
         };
         plane.restore_catalog()?;
         plane.reset_observed_statuses();
@@ -222,11 +236,22 @@ impl HttpControlPlane {
         &mut self,
         budgets: crate::RpcBudgets,
     ) -> Result<(), HttpControlError> {
-        if self.events.subscriber_count() != 0 || !self.pending_source_replacements.is_empty() {
+        if self.events.subscriber_count() != 0
+            || !self.pending_source_replacements.is_empty()
+            || self
+                .pending_option_snapshots
+                .values()
+                .any(|pending| pending.request.is_some())
+            || self.pending_work.is_some()
+        {
             return Err(HttpControlError::Busy);
         }
+        let owner_client = budgets.client().map_err(|_| HttpControlError::Busy)?;
+        let direct_client = budgets.client().map_err(|_| HttpControlError::Busy)?;
         self.events = RpcEventBroker::with_budgets(budgets.clone());
         self.rpc_budgets = budgets;
+        self.owner_client = owner_client;
+        self.direct_client = direct_client;
         Ok(())
     }
 
@@ -378,7 +403,7 @@ impl HttpControlPlane {
                     PendingOptionSnapshot {
                         options: persisted_options.clone(),
                         previous_generation: recovered.journal.generation(),
-                        _request: None,
+                        request: None,
                     },
                 );
                 self.pending_restart_patches.insert(recovered.gid, patch_id);
@@ -527,6 +552,16 @@ impl HttpControlPlane {
 
     /// Performs one bounded engine/supervisor progress turn.
     pub fn poll_once(&mut self) -> Result<(), HttpControlError> {
+        if !self.engine.is_idle() {
+            self.drive_engine()?;
+        }
+        let work = self.reserve_scheduler_work(None, 0)?;
+        let result = self.poll_once_reserved();
+        self.retain_pending_work(Some(work))?;
+        result
+    }
+
+    fn poll_once_reserved(&mut self) -> Result<(), HttpControlError> {
         let now = MonotonicInstant::now();
         if let Some(supervisor) = self.supervisor.as_mut() {
             supervisor
@@ -562,6 +597,21 @@ impl HttpControlPlane {
         request: Option<crate::rpc_budget::RpcRequestLease>,
     ) -> Result<Value, HttpControlError> {
         let request = self.reserve_command_memory(method, &params, request.as_ref())?;
+        let changes_tasks = changes_scheduler_tasks(method);
+        let work = changes_tasks
+            .then(|| {
+                let new_tasks = if method == "ariax.importSession" {
+                    params
+                        .get(0)
+                        .and_then(|document| document.get("tasks"))
+                        .and_then(Value::as_array)
+                        .map_or(0, Vec::len)
+                } else {
+                    usize::from(matches!(method, "aria2.addUri" | "addUri"))
+                };
+                self.reserve_scheduler_work(request.as_ref(), new_tasks)
+            })
+            .transpose()?;
         let result = match method {
             "aria2.addUri" | "addUri" => self.add_uri(params),
             "aria2.tellStatus" | "tellStatus" => self.tell_status(params),
@@ -587,7 +637,7 @@ impl HttpControlPlane {
             "aria2.getFiles" | "getFiles" => self.get_files(params),
             "aria2.getServers" | "getServers" => self.get_servers(params),
             "aria2.getOption" | "getOption" => self.get_option(params),
-            "aria2.changeOption" | "changeOption" => self.change_option(params, request),
+            "aria2.changeOption" | "changeOption" => self.change_option(params, request.clone()),
             "aria2.changeUri" | "changeUri" | "ariax.replaceSources" => {
                 self.source_call_sync(method, params)
             }
@@ -610,8 +660,11 @@ impl HttpControlPlane {
         };
         if let Ok(value) = &result {
             self.publish_control_event(method, value);
-            self.publish_task_state_events();
+            if changes_tasks {
+                self.publish_task_state_events();
+            }
         }
+        self.retain_pending_work(work)?;
         result
     }
 
@@ -1224,7 +1277,7 @@ impl HttpControlPlane {
                 PendingOptionSnapshot {
                     options: options.clone(),
                     previous_generation,
-                    _request: request,
+                    request,
                 },
             );
             self.pending_restart_patches.insert(gid, patch_id);
@@ -1523,7 +1576,9 @@ impl HttpControlPlane {
     ) -> Result<Value, HttpControlError> {
         let mut reply = {
             let mut owner = plane.lock().await;
-            owner.poll_once()?;
+            if changes_scheduler_tasks(method) {
+                owner.poll_once()?;
+            }
             if method == "ariax.subscribe" {
                 let _command = owner.reserve_command_memory(
                     method,
@@ -1540,7 +1595,10 @@ impl HttpControlPlane {
             }
             let command =
                 owner.reserve_command_memory(method, &params, context.request_lease().as_ref())?;
-            owner.begin_source_call(method, params, command)?
+            let work = owner.reserve_scheduler_work(command.as_ref(), 0)?;
+            let result = owner.begin_source_call(method, params, command);
+            owner.retain_pending_work(Some(work))?;
+            result?
         };
         loop {
             tokio::select! {
@@ -1579,13 +1637,64 @@ impl HttpControlPlane {
         if bytes > crate::MAX_RPC_CLIENT_REQUEST_BYTES {
             return Err(HttpControlError::Busy);
         }
-        if let Some(request) = request {
-            return request
-                .reserve_command(bytes)
-                .map(Some)
-                .map_err(|_| HttpControlError::Busy);
+        let request = match request {
+            Some(request) => request.clone(),
+            None => self
+                .direct_client
+                .try_request(0)
+                .map_err(|_| HttpControlError::Busy)?,
+        };
+        request
+            .reserve_command(bytes)
+            .map(Some)
+            .map_err(|_| HttpControlError::Busy)
+    }
+
+    fn reserve_scheduler_work(
+        &self,
+        request: Option<&crate::rpc_budget::RpcRequestLease>,
+        new_tasks: usize,
+    ) -> Result<ControlWorkReservation, HttpControlError> {
+        if !self.engine.is_idle() {
+            return Err(HttpControlError::Busy);
         }
-        Ok(None)
+        let scheduler = self.engine.scheduler();
+        let bytes = scheduler
+            .estimated_clone_bytes()
+            .saturating_add(self.engine.snapshot_reader().load().estimated_draft_bytes())
+            .saturating_add(scheduler.len().saturating_mul(512))
+            .saturating_add(new_tasks.saturating_mul(8192))
+            .saturating_add(128 * 1024);
+        let input = match request {
+            Some(request) => request.clone(),
+            None => self
+                .owner_client
+                .try_request(0)
+                .map_err(|_| HttpControlError::Busy)?,
+        };
+        let copies = input
+            .reserve_command(bytes)
+            .map_err(|_| HttpControlError::Busy)?;
+        Ok(ControlWorkReservation {
+            _input: input,
+            _copies: copies,
+        })
+    }
+
+    fn retain_pending_work(
+        &mut self,
+        work: Option<ControlWorkReservation>,
+    ) -> Result<(), HttpControlError> {
+        if self.engine.is_idle() {
+            if let Err(error) = self.engine.discard_prepared_control() {
+                self.pending_work = work;
+                return Err(HttpControlError::Scheduler(format!("{error:?}")));
+            }
+        } else if let Some(work) = work {
+            debug_assert!(self.pending_work.is_none());
+            self.pending_work = Some(work);
+        }
+        Ok(())
     }
 
     fn get_global_option(&self, params: Value) -> Result<Value, HttpControlError> {
@@ -1940,12 +2049,19 @@ impl HttpControlPlane {
     }
 
     fn drive_engine(&mut self) -> Result<(), HttpControlError> {
-        let deadline = Instant::now() + CONTROL_PROGRESS_TIMEOUT;
+        self.drive_engine_until(Instant::now() + CONTROL_PROGRESS_TIMEOUT)
+    }
+
+    fn drive_engine_until(&mut self, deadline: Instant) -> Result<(), HttpControlError> {
         loop {
             match self.engine.poll_at(MonotonicInstant::now()) {
                 ariax_runtime::SchedulerDriverPoll::Idle
                 | ariax_runtime::SchedulerDriverPoll::Completed { .. } => {
                     if self.engine.is_idle() {
+                        self.engine
+                            .discard_prepared_control()
+                            .map_err(|error| HttpControlError::Scheduler(format!("{error:?}")))?;
+                        self.pending_work = None;
                         self.retire_promoted_option_patches();
                         return Ok(());
                     }
@@ -2024,7 +2140,9 @@ impl HttpControlPlane {
                 )
                 .map_err(|error| HttpControlError::Scheduler(error.to_string()))?;
                 self.engine
-                    .prepare_runtime(crate::RuntimeEffectPreparation::OptionApplication(plan))
+                    .prepare_runtime(crate::RuntimeEffectPreparation::OptionApplication(
+                        Box::new(plan),
+                    ))
                     .map_err(|error| HttpControlError::Scheduler(format!("{error:?}")))?;
             }
         }
@@ -2649,6 +2767,28 @@ impl crate::RpcWebSocketBackend for HttpControlBackend {
     fn event_broker(&self) -> RpcEventBroker {
         self.events.clone()
     }
+}
+
+fn changes_scheduler_tasks(method: &str) -> bool {
+    matches!(
+        method.strip_prefix("aria2.").unwrap_or(method),
+        "addUri"
+            | "pause"
+            | "forcePause"
+            | "pauseAll"
+            | "forcePauseAll"
+            | "unpause"
+            | "unpauseAll"
+            | "remove"
+            | "forceRemove"
+            | "removeDownloadResult"
+            | "purgeDownloadResult"
+            | "changePosition"
+            | "changeOption"
+            | "changeUri"
+            | "ariax.replaceSources"
+            | "ariax.importSession"
+    )
 }
 
 fn control_backend_error(error: HttpControlError) -> HttpRpcBackendError {
@@ -4121,6 +4261,146 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_scratch_rejects_before_journal_creation_and_refunds_after_success() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let client = plane.rpc_budgets.client().expect("client");
+        let held = client.try_request(0).expect("retained command");
+        held.reserve(crate::MAX_RPC_CLIENT_REQUEST_BYTES - 160 * 1024)
+            .expect("occupy request bytes");
+        let request = client.try_request(0).expect("next request");
+        let baseline = client.request_bytes();
+        assert!(matches!(
+            plane.call_admitted(
+                "aria2.addUri",
+                json!([["http://example.test/rejected.bin"], {"pause": true}]),
+                Some(request.clone()),
+            ),
+            Err(HttpControlError::Busy)
+        ));
+        assert!(plane.tasks.is_empty());
+        assert!(
+            fs::read_dir(&directory.journals)
+                .expect("journals")
+                .next()
+                .is_none()
+        );
+        assert_eq!(client.request_bytes(), baseline);
+        assert_eq!(
+            plane
+                .call_admitted("aria2.tellActive", json!([]), Some(request.clone()))
+                .expect("query without scheduler scratch"),
+            json!([])
+        );
+        drop(held);
+        plane
+            .call_admitted(
+                "aria2.addUri",
+                json!([["http://example.test/accepted.bin"], {"pause": true}]),
+                Some(request.clone()),
+            )
+            .expect("admit after credit release");
+        drop(request);
+        assert_eq!(client.outstanding_requests(), 0);
+        assert_eq!(client.request_bytes(), 0);
+        assert!(plane.pending_work.is_none());
+        plane.shutdown().expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn pending_scheduler_chain_retains_credit_and_queries_use_published_state() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let gid = add_paused(&mut plane);
+        let client = plane.rpc_budgets.client().expect("client");
+        let request = client.try_request(1).expect("request");
+        let input = plane
+            .reserve_command_memory("aria2.unpause", &json!([gid.to_string()]), Some(&request))
+            .expect("typed input");
+        let work = plane
+            .reserve_scheduler_work(input.as_ref(), 0)
+            .expect("scheduler scratch");
+        let command = SchedulerCommand::Resume { gid };
+        let now = MonotonicInstant::now();
+        let mut simulation = plane.engine.scheduler().clone();
+        let outcome = simulation
+            .execute_command_at(command.clone(), now)
+            .expect("preview");
+        plane
+            .prepare_outcome_plans(&mut simulation, outcome.effects, None)
+            .expect("plans");
+        plane
+            .engine
+            .execute_command_at(command, now)
+            .expect("pending driver input");
+        drop(simulation);
+        plane
+            .retain_pending_work(Some(work))
+            .expect("retain pending work");
+        drop(input);
+        drop(request);
+        assert!(matches!(
+            plane.drive_engine_until(Instant::now()),
+            Err(HttpControlError::Busy)
+        ));
+        assert!(plane.pending_work.is_some());
+        assert_eq!(client.outstanding_requests(), 1);
+        assert!(client.request_bytes() > 128 * 1024);
+
+        let plane = Arc::new(Mutex::new(plane));
+        let status =
+            HttpControlPlane::call_shared(&plane, "aria2.tellStatus", json!([gid.to_string()]))
+                .await
+                .expect("query during pending persistence");
+        assert_eq!(status["status"], "paused");
+        let mut owner = plane.lock().await;
+        assert!(owner.pending_work.is_some());
+        owner.drive_engine().expect("finish pending chain");
+        assert!(owner.pending_work.is_none());
+        assert_eq!(client.outstanding_requests(), 0);
+        assert_eq!(client.request_bytes(), 0);
+        assert_eq!(
+            owner
+                .call("aria2.tellStatus", json!([gid.to_string()]))
+                .expect("new root")["status"],
+            "waiting"
+        );
+        drop(owner);
+        let owner = Arc::try_unwrap(plane).expect("sole owner").into_inner();
+        owner.shutdown().expect("shutdown");
+    }
+
+    #[test]
+    fn owner_budget_rejection_preserves_events_and_direct_requests_do_not_block_progress() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let gid = add_paused(&mut plane);
+        let task = plane.tasks.get_gid(gid).expect("task").task();
+        let runtime = plane.engine.runtime_handle();
+        runtime.enqueue_allocation_for_test(task, gid, Generation::INITIAL);
+        let event = runtime.take_allocation().expect("allocation").succeeded();
+        let expected = event.event().clone();
+        assert!(runtime.try_submit_event(event).is_ok());
+        let held = plane.owner_client.try_request(0).expect("owner pressure");
+        held.reserve(crate::MAX_RPC_CLIENT_REQUEST_BYTES - 64 * 1024)
+            .expect("occupy owner bytes");
+        assert!(matches!(plane.poll_once(), Err(HttpControlError::Busy)));
+        assert_eq!(
+            runtime.poll_event_at(MonotonicInstant::now()),
+            Some(expected)
+        );
+        drop(held);
+        let direct = (0..crate::MAX_RPC_CLIENT_REQUESTS)
+            .map(|_| plane.direct_client.try_request(0).expect("direct request"))
+            .collect::<Vec<_>>();
+        plane.poll_once().expect("independent owner progress");
+        drop(direct);
+        assert_eq!(plane.owner_client.outstanding_requests(), 0);
+        assert_eq!(plane.owner_client.request_bytes(), 0);
+        plane.shutdown().expect("shutdown");
+    }
+
+    #[test]
     fn borrowed_source_results_reject_oversize_before_building_json_and_queries_remain_usable() {
         let directory = TestDirectory::new();
         let mut plane = directory.control_plane();
@@ -5066,6 +5346,9 @@ mod tests {
             plane.shutdown().expect("close prefix");
 
             let mut recovered = directory.control_plane();
+            recovered
+                .attach_rpc_budgets(crate::RpcBudgets::process_default())
+                .expect("recovered patches have no live client lease");
             let expected = if boundary == 0 { &before } else { &next };
             assert_eq!(
                 &recovered
@@ -5220,6 +5503,10 @@ mod tests {
                 "OK"
             );
             assert_eq!(client.outstanding_requests(), 1);
+            assert!(matches!(
+                plane.attach_rpc_budgets(crate::RpcBudgets::process_default()),
+                Err(HttpControlError::Busy)
+            ));
             let patch_id = plane.pending_restart_patches[&gid];
             let expected = plane
                 .tasks

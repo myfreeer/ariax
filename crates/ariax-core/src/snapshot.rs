@@ -131,6 +131,23 @@ pub struct TaskSnapshot {
 }
 
 impl TaskSnapshot {
+    /// Heap storage copied by `Clone`, including allocator rounding for text.
+    #[must_use]
+    pub fn estimated_clone_bytes(&self) -> usize {
+        let error = self
+            .error
+            .as_ref()
+            .map_or(0, |error| error.safe_message().len().saturating_add(64));
+        let host_key = self.host_key_challenge.as_ref().map_or(0, |challenge| {
+            challenge
+                .canonical_host
+                .len()
+                .saturating_add(challenge.algorithm.len())
+                .saturating_add(128)
+        });
+        error.saturating_add(host_key)
+    }
+
     /// Derives the public aria2 status from scheduler-owned state and context.
     pub fn wire_status(&self) -> Result<Aria2Status, WireProjectionError> {
         let status = WireProjection {

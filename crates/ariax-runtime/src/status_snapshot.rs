@@ -60,6 +60,32 @@ impl StatusSnapshotRoot {
     pub fn queue(&self, class: QueueClass) -> &[Gid] {
         &self.queues[queue_index(class)]
     }
+
+    /// Reservation for a private draft, a prior root retained by a bulk command,
+    /// validation indexes, and queue scratch. Loading a root does not copy it.
+    #[must_use]
+    pub fn estimated_draft_bytes(&self) -> usize {
+        let tree = |entry_bytes: usize| {
+            self.tasks
+                .len()
+                .saturating_add(4)
+                .saturating_mul(entry_bytes.saturating_mul(3).saturating_add(128))
+        };
+        let maps = tree(std::mem::size_of::<(Gid, AppliedTaskSnapshot)>())
+            .saturating_mul(2)
+            .saturating_add(tree(std::mem::size_of::<(Gid, QueueClass)>()))
+            .saturating_add(tree(std::mem::size_of::<(TaskId, Gid)>()))
+            .saturating_add(tree(std::mem::size_of::<Gid>()));
+        self.tasks
+            .values()
+            .map(|task| task.snapshot.estimated_clone_bytes().saturating_mul(2))
+            .fold(maps, usize::saturating_add)
+            .saturating_add(
+                self.tasks
+                    .len()
+                    .saturating_mul(4 * std::mem::size_of::<Gid>()),
+            )
+    }
 }
 
 /// Driver-owned writer lineage for the latest applied status root.
@@ -422,6 +448,97 @@ mod tests {
             error: None,
             terminal_persisted: false,
         }
+    }
+
+    #[test]
+    fn thousand_task_planning_and_draft_forecast_fits_ordinary_control_budget() {
+        const TASKS: usize = 1000;
+        let count = NonZeroUsize::new(TASKS).expect("task count");
+        let mut scheduler = RequestScheduler::new(
+            SchedulerConfig::new(count, count, false).expect("scheduler config"),
+        );
+        let store = StatusSnapshotStore::new();
+        let mut draft = store.draft();
+        for index in 1..=TASKS as u64 {
+            scheduler
+                .execute_command(ariax_core::SchedulerCommand::AddValidatedTask {
+                    task_id: task_id(index),
+                    gid: gid(index),
+                    desired_paused: false,
+                    conditions: ariax_core::TaskConditions::default(),
+                })
+                .expect("ordinary task");
+            scheduler.admit_next().expect("admit active task");
+            scheduler
+                .handle_event(
+                    &ariax_core::TaskEvent::GenerationPersisted {
+                        gid: gid(index),
+                        generation: Generation::INITIAL,
+                    }
+                    .for_task(task_id(index)),
+                )
+                .expect("persist generation");
+            scheduler
+                .handle_event(
+                    &ariax_core::TaskEvent::AllocationSucceeded {
+                        gid: gid(index),
+                        generation: Generation::INITIAL,
+                    }
+                    .for_task(task_id(index)),
+                )
+                .expect("activate task");
+            draft
+                .insert_task(
+                    task_id(index),
+                    scheduler.snapshot(gid(index)).expect("active snapshot"),
+                )
+                .expect("snapshot");
+        }
+        draft
+            .replace_queue(QueueClass::Active, (1..=TASKS as u64).map(gid).collect())
+            .expect("queue");
+        store.publish(draft).expect("publish");
+        let estimate = scheduler.estimated_clone_bytes()
+            + store.load().estimated_draft_bytes()
+            + TASKS * 512
+            + 128 * 1024
+            + 80 * 1024;
+        assert!(
+            estimate < 8 * 1024 * 1024,
+            "ordinary control forecast: {estimate}"
+        );
+    }
+
+    #[test]
+    fn draft_forecast_includes_error_text_and_failed_drafts_leave_it_unchanged() {
+        let store = StatusSnapshotStore::new();
+        let mut draft = store.draft();
+        for index in 1..=17 {
+            let mut stopped = snapshot(gid(index));
+            stopped.state = TaskState::StoppedResult;
+            stopped.stopped_status = Some(Aria2Status::Error);
+            stopped.terminal_persisted = true;
+            stopped.error = Some(ariax_core::PublicError::new(
+                ariax_core::ErrorKind::Network,
+                "x".repeat(ariax_core::MAX_PUBLIC_ERROR_MESSAGE_BYTES),
+                ariax_core::RetryClass::Never,
+            ));
+            draft
+                .insert_task(task_id(index), stopped)
+                .expect("error row");
+        }
+        draft
+            .replace_queue(QueueClass::Stopped, (1..=17).map(gid).collect())
+            .expect("queue");
+        store.publish(draft).expect("publish");
+        let root = store.load();
+        let estimate = root.estimated_draft_bytes();
+        assert!(estimate > 17 * ariax_core::MAX_PUBLIC_ERROR_MESSAGE_BYTES);
+        let mut invalid = store.draft();
+        invalid.remove_task(task_id(1), gid(1));
+        assert!(store.publish(invalid).is_err());
+        assert_eq!(store.load().estimated_draft_bytes(), estimate);
+        assert!(Arc::ptr_eq(&root, &store.load()));
     }
 
     #[test]
