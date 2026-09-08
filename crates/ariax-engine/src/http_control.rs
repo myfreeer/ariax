@@ -20,11 +20,11 @@ use ariax_config::{
     UnknownOptionMode, builtin_registry, parse_flat_config, parse_option_value,
 };
 use ariax_core::{
-    Aria2Status, Generation, Gid, MonotonicInstant, OptionPatchId, PublicError, QueueClass,
-    QueueOrder, RequestScheduler, RetryClass, SchedulerCommand, TaskConditions, TaskEvent,
-    TaskEventEnvelope, TaskId, TaskSnapshot, TransitionEffect, ValidatedOptionPatchKind,
+    Aria2Status, Generation, Gid, MonotonicInstant, OptionPatchId, PendingBarrier, PublicError,
+    QueueClass, QueueOrder, RequestScheduler, RetryClass, SchedulerCommand, TaskConditions,
+    TaskEvent, TaskEventEnvelope, TaskId, TaskSnapshot, TransitionEffect, ValidatedOptionPatchKind,
 };
-use ariax_runtime::{RateArbiter, RateLimit};
+use ariax_runtime::{RateArbiter, RateLimit, RateScope};
 use ariax_storage::{
     ControlJournalAppender, GenerationStartReason, JournalPayload, OptionsSnapshotScope,
     PathPlatform, PlatformPath, SafePathBuilder, SanitizedOptionMap, SessionCommand,
@@ -110,6 +110,11 @@ impl fmt::Display for HttpControlError {
 
 impl Error for HttpControlError {}
 
+struct PendingOptionSnapshot {
+    options: SanitizedOptionMap,
+    previous_generation: Generation,
+}
+
 /// Shared mutable control plane used by both transports.
 pub struct HttpControlPlane {
     engine: crate::BootstrappedEngine,
@@ -122,7 +127,7 @@ pub struct HttpControlPlane {
     journal_sequences: BTreeMap<Gid, u64>,
     next_task_id: u64,
     global_options: BTreeMap<String, String>,
-    pending_option_snapshots: BTreeMap<OptionPatchId, SanitizedOptionMap>,
+    pending_option_snapshots: BTreeMap<OptionPatchId, PendingOptionSnapshot>,
     pending_restart_patches: BTreeMap<Gid, OptionPatchId>,
     next_option_patch_id: u64,
     shutdown_requested: bool,
@@ -276,6 +281,22 @@ impl HttpControlPlane {
             _ => BTreeMap::new(),
         };
         for recovered in recovered {
+            for snapshot in [
+                recovered.journal.current_options(),
+                recovered.journal.pending_options(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if let Some(patch_id) = snapshot.patch_id() {
+                    self.next_option_patch_id = self.next_option_patch_id.max(
+                        patch_id
+                            .get()
+                            .checked_add(1)
+                            .ok_or(HttpControlError::InvalidConfig)?,
+                    );
+                }
+            }
             let Some(record) = records.get(&recovered.gid) else {
                 continue;
             };
@@ -297,16 +318,72 @@ impl HttpControlPlane {
             if uris.is_empty() {
                 continue;
             }
-            let persisted_options = match self.session.execute(SessionCommand::ReadTaskOptions {
-                gid: recovered.gid,
-                scope: OptionsSnapshotScope::CurrentGeneration,
-            }) {
-                Ok(SessionCommandResult::TaskOptions(options)) => options,
-                _ => continue,
-            };
+            let mut persisted_options =
+                match self.session.execute(SessionCommand::ReadTaskOptions {
+                    gid: recovered.gid,
+                    scope: OptionsSnapshotScope::CurrentGeneration,
+                }) {
+                    Ok(SessionCommandResult::TaskOptions(options)) => options,
+                    _ => continue,
+                };
+            if let Some(staged) = recovered.journal.pending_options()
+                && let Some(patch_id) = staged.patch_id()
+            {
+                self.replace_option_mirror(
+                    recovered.gid,
+                    OptionsSnapshotScope::NextAdmission,
+                    staged.options().clone(),
+                )?;
+                persisted_options = staged.options().clone();
+                self.pending_option_snapshots.insert(
+                    patch_id,
+                    PendingOptionSnapshot {
+                        options: persisted_options.clone(),
+                        previous_generation: recovered.journal.generation(),
+                    },
+                );
+                self.pending_restart_patches.insert(recovered.gid, patch_id);
+            } else if let Some(current) = recovered.journal.current_options()
+                && current.patch_id().is_some()
+            {
+                let staged = match self.session.execute(SessionCommand::ReadTaskOptions {
+                    gid: recovered.gid,
+                    scope: OptionsSnapshotScope::NextAdmission,
+                }) {
+                    Ok(SessionCommandResult::TaskOptions(options)) => options,
+                    _ => {
+                        return Err(HttpControlError::Persistence(
+                            "cannot read staged option mirror".to_owned(),
+                        ));
+                    }
+                };
+                if staged.entries().len() != 0 {
+                    if &staged != current.options() {
+                        return Err(HttpControlError::Persistence(
+                            "promoted option mirror does not match the journal".to_owned(),
+                        ));
+                    }
+                    match self.session.execute(SessionCommand::PromoteTaskOptions {
+                        gid: recovered.gid,
+                        options: staged.clone(),
+                    }) {
+                        Ok(SessionCommandResult::Unit) => persisted_options = staged,
+                        _ => {
+                            return Err(HttpControlError::Persistence(
+                                "cannot promote recovered option mirror".to_owned(),
+                            ));
+                        }
+                    }
+                }
+            }
             let options = match HttpTaskOptions::from_sanitized(&persisted_options) {
                 Ok(options) => options,
-                Err(_) => continue,
+                Err(_) if !self.pending_restart_patches.contains_key(&recovered.gid) => continue,
+                Err(_) => {
+                    return Err(HttpControlError::Persistence(
+                        "recovered option patch is invalid".to_owned(),
+                    ));
+                }
             };
             let output = HttpTaskSpec::persisted_output(&persisted_options).or_else(|_| {
                 recovered
@@ -338,6 +415,45 @@ impl HttpControlPlane {
             }
         }
         Ok(())
+    }
+
+    fn replace_option_mirror(
+        &self,
+        gid: Gid,
+        scope: OptionsSnapshotScope,
+        options: SanitizedOptionMap,
+    ) -> Result<(), HttpControlError> {
+        match self.session.execute(SessionCommand::ReplaceTaskOptions {
+            gid,
+            scope,
+            options,
+        }) {
+            Ok(SessionCommandResult::Unit) => Ok(()),
+            Ok(_) => Err(HttpControlError::Persistence(
+                "unexpected option replacement result".to_owned(),
+            )),
+            Err(error) => Err(HttpControlError::Persistence(error.to_string())),
+        }
+    }
+
+    fn retire_promoted_option_patches(&mut self) {
+        self.pending_restart_patches.retain(|gid, patch_id| {
+            let promoted = self.engine.scheduler().task(*gid).is_none_or(|task| {
+                self.pending_option_snapshots
+                    .get(patch_id)
+                    .is_some_and(|pending| {
+                        task.generation > pending.previous_generation
+                            && !matches!(
+                                task.pending_barrier,
+                                Some(PendingBarrier::GenerationPersistence { .. })
+                            )
+                    })
+            });
+            if promoted {
+                self.pending_option_snapshots.remove(patch_id);
+            }
+            !promoted
+        });
     }
 
     #[must_use]
@@ -913,12 +1029,16 @@ impl HttpControlPlane {
                 .ok_or(HttpControlError::InvalidParams("GID must be a string"))?,
         )?;
         let patch = parse_registry_options(&values[1], Scope::RpcChange)?;
+        if self.pending_restart_patches.contains_key(&gid) {
+            return Err(HttpControlError::Busy);
+        }
         if patch.is_empty() {
             return Ok(Value::String("OK".to_owned()));
         }
         let current = self.tasks.get_gid(gid).ok_or(HttpControlError::NotFound)?;
         let root = self.engine.snapshot_reader().load();
         let task = root.task(gid).ok_or(HttpControlError::NotFound)?;
+        let previous_generation = task.snapshot.generation;
         let status = task
             .snapshot
             .wire_status()
@@ -953,6 +1073,11 @@ impl HttpControlPlane {
         }
         let options = SanitizedOptionMap::new(merged)
             .map_err(|_| HttpControlError::InvalidParams("option patch exceeds bounds"))?;
+        if !self.engine.permits_persisted_options(&options) {
+            return Err(HttpControlError::InvalidParams(
+                "option patch violates persistence policy",
+            ));
+        }
         let http_options = HttpTaskOptions::from_sanitized(&options).map_err(|_| {
             HttpControlError::InvalidParams("option is not supported by HTTP tasks")
         })?;
@@ -981,10 +1106,33 @@ impl HttpControlPlane {
             .next_option_patch_id
             .checked_add(1)
             .ok_or(HttpControlError::InvalidConfig)?;
-        let kind = if status == Aria2Status::Active {
+        let live_only = patch
+            .values()
+            .all(|entry| entry.runtime_update == RuntimeUpdate::Live);
+        let kind = if status == Aria2Status::Active && !live_only {
             ValidatedOptionPatchKind::ActiveRestart
         } else {
             ValidatedOptionPatchKind::InPlace
+        };
+        let live_rate = if status == Aria2Status::Active && patch.contains_key("max-download-limit")
+        {
+            match &self.global_download_rate {
+                Some(rate) => Some(
+                    rate.prepare_scoped_limit(
+                        RateScope::Task(current.task().get()),
+                        RateLimit::per_second(replacement.options().max_download_limit),
+                    )
+                    .map_err(|_| HttpControlError::InvalidConfig)?
+                    .ok_or(HttpControlError::Busy)?,
+                ),
+                None => {
+                    return Err(HttpControlError::Unsupported(
+                        "live rate control requires the process rate arbiter",
+                    ));
+                }
+            }
+        } else {
+            None
         };
         let command = SchedulerCommand::ApplyOptionPatch {
             gid,
@@ -992,67 +1140,57 @@ impl HttpControlPlane {
             kind,
             satisfies_credentials: None,
         };
-        if kind == ValidatedOptionPatchKind::ActiveRestart {
-            self.pending_option_snapshots
-                .insert(patch_id, options.clone());
-            self.pending_restart_patches.insert(gid, patch_id);
-        }
         let mut simulation = self.engine.scheduler().clone();
         let outcome = simulation
             .execute_command_at(command.clone(), MonotonicInstant::now())
             .map_err(|error| HttpControlError::Scheduler(error.to_string()))?;
+        if kind == ValidatedOptionPatchKind::ActiveRestart {
+            self.pending_option_snapshots.insert(
+                patch_id,
+                PendingOptionSnapshot {
+                    options: options.clone(),
+                    previous_generation,
+                },
+            );
+            self.pending_restart_patches.insert(gid, patch_id);
+        }
         if let Err(error) = self.prepare_outcome_plans(&mut simulation, outcome.effects, None) {
             self.pending_option_snapshots.remove(&patch_id);
             self.pending_restart_patches.remove(&gid);
             return Err(error);
         }
         if kind == ValidatedOptionPatchKind::InPlace {
-            match self.session.execute(SessionCommand::ReplaceTaskOptions {
-                gid,
-                scope: OptionsSnapshotScope::CurrentGeneration,
-                options: options.clone(),
-            }) {
-                Ok(SessionCommandResult::Unit) => {}
-                Ok(_) => {
-                    return Err(HttpControlError::Persistence(
-                        "unexpected option replacement result".to_owned(),
-                    ));
-                }
-                Err(error) => return Err(HttpControlError::Persistence(error.to_string())),
-            }
+            self.replace_option_mirror(gid, OptionsSnapshotScope::CurrentGeneration, options)?;
         }
-        self.tasks
-            .replace(replacement)
-            .map_err(HttpControlError::Catalog)?;
         if let Err(error) = self
             .engine
             .execute_command_at(command, MonotonicInstant::now())
             .map_err(|error| HttpControlError::Scheduler(format!("{error:?}")))
         {
-            let _ = self.tasks.replace((*current).clone());
             self.pending_option_snapshots.remove(&patch_id);
             self.pending_restart_patches.remove(&gid);
             return Err(error);
         }
-        let result = self.drive_engine();
-        if result.is_ok() && kind == ValidatedOptionPatchKind::ActiveRestart {
-            match self.session.execute(SessionCommand::ReplaceTaskOptions {
-                gid,
-                scope: OptionsSnapshotScope::CurrentGeneration,
-                options,
-            }) {
-                Ok(SessionCommandResult::Unit) => {}
-                Ok(_) => {
-                    return Err(HttpControlError::Persistence(
-                        "unexpected promoted option result".to_owned(),
-                    ));
-                }
-                Err(error) => return Err(HttpControlError::Persistence(error.to_string())),
-            }
+        self.drive_engine()?;
+        if kind == ValidatedOptionPatchKind::ActiveRestart
+            && self.engine.scheduler().task(gid).is_some_and(|task| {
+                task.pending_option_patch.is_none()
+                    && task.pending_barrier.is_none()
+                    && task.generation == previous_generation
+            })
+        {
+            self.pending_option_snapshots.remove(&patch_id);
+            self.pending_restart_patches.remove(&gid);
+            return Err(HttpControlError::Persistence(
+                "option patch was not persisted".to_owned(),
+            ));
         }
-        self.pending_option_snapshots.remove(&patch_id);
-        self.pending_restart_patches.remove(&gid);
-        result?;
+        if let Some(update) = live_rate {
+            update.apply();
+        }
+        self.tasks
+            .replace(replacement)
+            .map_err(HttpControlError::Catalog)?;
         Ok(Value::String("OK".to_owned()))
     }
 
@@ -1125,6 +1263,9 @@ impl HttpControlPlane {
         gid: Gid,
         uris: Vec<String>,
     ) -> Result<(), HttpControlError> {
+        if self.pending_restart_patches.contains_key(&gid) {
+            return Err(HttpControlError::Busy);
+        }
         let current = self.tasks.get_gid(gid).ok_or(HttpControlError::NotFound)?;
         let root = self.engine.snapshot_reader().load();
         let task = root.task(gid).ok_or(HttpControlError::NotFound)?;
@@ -1524,6 +1665,7 @@ impl HttpControlPlane {
                 ariax_runtime::SchedulerDriverPoll::Idle
                 | ariax_runtime::SchedulerDriverPoll::Completed { .. } => {
                     if self.engine.is_idle() {
+                        self.retire_promoted_option_patches();
                         return Ok(());
                     }
                 }
@@ -1550,6 +1692,18 @@ impl HttpControlPlane {
             Ok(outcome) => outcome,
             Err(_) => return Ok(()),
         };
+        if let Some(rate) = &self.global_download_rate {
+            for effect in &outcome.effects {
+                if let TransitionEffect::PersistGenerationStarted { task_id, .. } = effect {
+                    let spec = self.tasks.get(*task_id).ok_or(HttpControlError::NotFound)?;
+                    rate.set_scoped_limit(
+                        RateScope::Task(task_id.get()),
+                        RateLimit::per_second(spec.options().max_download_limit),
+                    )
+                    .map_err(|_| HttpControlError::Busy)?;
+                }
+            }
+        }
         self.prepare_outcome_plans(
             &mut simulation,
             outcome.effects,
@@ -1573,7 +1727,10 @@ impl HttpControlPlane {
                 self.engine
                     .prepare_persistence(self.plan_for_effect(&effect, generation_reason)?)
                     .map_err(|error| HttpControlError::Persistence(format!("{error:?}")))?;
-                if let Some(ack) = persistence_ack(&effect) {
+                let generation = simulation
+                    .task(effect.gid())
+                    .map_or(Generation::INITIAL, |task| task.generation);
+                if let Some(ack) = persistence_ack(&effect, generation) {
                     let outcome = simulation
                         .handle_event_at(&ack, MonotonicInstant::now())
                         .map_err(|error| HttpControlError::Scheduler(error.to_string()))?;
@@ -1627,7 +1784,7 @@ impl HttpControlPlane {
                 generation,
             } => {
                 if let Some(patch_id) = self.pending_restart_patches.get(gid).copied() {
-                    let options =
+                    let pending =
                         self.pending_option_snapshots
                             .get(&patch_id)
                             .ok_or_else(|| {
@@ -1636,18 +1793,30 @@ impl HttpControlPlane {
                                 )
                             })?;
                     let previous_generation = Generation::new(generation.get().saturating_sub(1));
+                    if previous_generation != pending.previous_generation {
+                        return Err(HttpControlError::Persistence(
+                            "option patch generation does not match admission".to_owned(),
+                        ));
+                    }
+                    let options = &pending.options;
                     return PersistenceEffectPlan::new(
                         effect.clone(),
-                        vec![PersistencePlanStep::AppendAndFlushJournal {
-                            gid: *gid,
-                            generation: *generation,
-                            payload: JournalPayload::GenerationStarted {
-                                previous_generation,
-                                reason: GenerationStartReason::OptionPatch,
-                                next_snapshot_hash: options.snapshot_hash(),
-                                patch_id: Some(patch_id),
+                        vec![
+                            PersistencePlanStep::AppendAndFlushJournal {
+                                gid: *gid,
+                                generation: *generation,
+                                payload: JournalPayload::GenerationStarted {
+                                    previous_generation,
+                                    reason: GenerationStartReason::OptionPatch,
+                                    next_snapshot_hash: options.snapshot_hash(),
+                                    patch_id: Some(patch_id),
+                                },
                             },
-                        }],
+                            PersistencePlanStep::PromoteTaskOptions {
+                                gid: *gid,
+                                options: options.clone(),
+                            },
+                        ],
                     )
                     .map_err(|error| HttpControlError::Persistence(format!("{error:?}")));
                 }
@@ -1735,6 +1904,7 @@ impl HttpControlPlane {
                             "option patch snapshot is unavailable".to_owned(),
                         )
                     })?
+                    .options
                     .clone();
                 let generation = self
                     .engine
@@ -3015,10 +3185,13 @@ fn now_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn persistence_ack(effect: &TransitionEffect) -> Option<TaskEventEnvelope> {
+fn persistence_ack(
+    effect: &TransitionEffect,
+    current_generation: Generation,
+) -> Option<TaskEventEnvelope> {
     let task_id = effect.task_id();
     let gid = effect.gid();
-    let generation = effect.generation().unwrap_or(Generation::INITIAL);
+    let generation = effect.generation().unwrap_or(current_generation);
     let event = match effect {
         TransitionEffect::PersistGenerationStarted { .. } => {
             TaskEvent::GenerationPersisted { gid, generation }
@@ -3848,6 +4021,669 @@ mod tests {
 
     struct UncooperativeShutdownWorker {
         started: Arc<Notify>,
+    }
+
+    struct DelayedCancellationWorker {
+        started: Arc<Notify>,
+        drain: Arc<tokio::sync::Semaphore>,
+    }
+
+    impl HttpTaskWorker for DelayedCancellationWorker {
+        fn start(
+            &self,
+            _task: Arc<HttpTaskSpec>,
+            _generation: Generation,
+            cancellation: crate::HttpCancellation,
+        ) -> crate::HttpWorkerFuture {
+            let started = self.started.clone();
+            let drain = self.drain.clone();
+            Box::pin(async move {
+                started.notify_one();
+                cancellation.cancelled().await;
+                drain.acquire().await.expect("drain gate").forget();
+                Err(PublicError::new(
+                    ErrorKind::Cancelled,
+                    "cancelled",
+                    RetryClass::Never,
+                ))
+            })
+        }
+    }
+
+    fn option_mirror(
+        plane: &HttpControlPlane,
+        gid: Gid,
+        scope: OptionsSnapshotScope,
+    ) -> SanitizedOptionMap {
+        match plane
+            .session
+            .execute(SessionCommand::ReadTaskOptions { gid, scope })
+            .expect("read option mirror")
+        {
+            SessionCommandResult::TaskOptions(options) => options,
+            other => panic!("unexpected options response: {other:?}"),
+        }
+    }
+
+    async fn poll_until(
+        plane: &mut HttpControlPlane,
+        predicate: impl Fn(&HttpControlPlane) -> bool,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !predicate(plane) {
+            plane.poll_once().expect("drive control plane");
+            assert!(
+                Instant::now() < deadline,
+                "control progress timed out: {plane:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
+    fn append_and_flush(
+        plane: &HttpControlPlane,
+        gid: Gid,
+        generation: Generation,
+        payload: JournalPayload,
+    ) {
+        let through_sequence = match plane
+            .session
+            .execute(SessionCommand::AppendJournal {
+                gid,
+                generation,
+                payload,
+            })
+            .expect("append prefix")
+        {
+            SessionCommandResult::JournalAppended(evidence) => evidence.sequence(),
+            other => panic!("unexpected append response: {other:?}"),
+        };
+        plane
+            .session
+            .execute(SessionCommand::FlushJournal {
+                gid,
+                through_sequence,
+            })
+            .expect("flush prefix");
+    }
+
+    #[tokio::test]
+    async fn live_only_rate_patch_changes_credit_without_restarting_and_recovers() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let rate = RateArbiter::new(
+            ariax_runtime::RateDirection::Download,
+            ariax_runtime::RateArbiterConfig::default(),
+        )
+        .expect("rate arbiter");
+        plane
+            .attach_global_download_rate(rate.clone())
+            .expect("attach rate");
+        let started = Arc::new(Notify::new());
+        let drain = Arc::new(tokio::sync::Semaphore::new(1));
+        plane
+            .attach_worker(Arc::new(DelayedCancellationWorker {
+                started: started.clone(),
+                drain,
+            }))
+            .expect("worker");
+        let gid: Gid = plane
+            .call(
+                "aria2.addUri",
+                json!([["http://example.test/file.bin"], {"max-download-limit": 4}]),
+            )
+            .expect("add")
+            .as_str()
+            .expect("gid")
+            .parse()
+            .expect("gid");
+        plane.poll_once().expect("start worker");
+        started.notified().await;
+        poll_until(&mut plane, |plane| {
+            plane
+                .engine
+                .scheduler()
+                .task(gid)
+                .expect("task")
+                .pending_barrier
+                .is_none()
+        })
+        .await;
+        let path = ariax_runtime::RatePath {
+            host: 1,
+            task: 1,
+            stream: 1,
+        };
+        let requested = NonZeroUsize::new(4).expect("quantum");
+        let permit = rate
+            .try_acquire(path, requested)
+            .expect("old rate")
+            .expect("old permit");
+        assert_eq!(permit.reserved_bytes(), 4);
+        drop(permit);
+        let before = plane
+            .call("aria2.getOption", json!([gid.to_string()]))
+            .expect("options");
+        assert!(
+            plane
+                .call(
+                    "aria2.changeOption",
+                    json!([gid.to_string(), {"max-download-limit": 1, "split": 0}])
+                )
+                .is_err()
+        );
+        assert_eq!(
+            plane
+                .call("aria2.getOption", json!([gid.to_string()]))
+                .expect("options after rejection"),
+            before
+        );
+        let permit = rate
+            .try_acquire(path, requested)
+            .expect("unchanged rate")
+            .expect("permit");
+        assert_eq!(permit.reserved_bytes(), 4);
+        drop(permit);
+        assert_eq!(
+            plane
+                .call(
+                    "aria2.changeOption",
+                    json!([gid.to_string(), {"max-download-limit": 1}])
+                )
+                .expect("live patch"),
+            "OK"
+        );
+        let permit = rate
+            .try_acquire(path, requested)
+            .expect("new rate")
+            .expect("permit");
+        assert_eq!(permit.reserved_bytes(), 1);
+        drop(permit);
+        assert!(plane.pending_restart_patches.is_empty());
+        assert_eq!(
+            plane.engine.scheduler().task(gid).expect("task").generation,
+            Generation::INITIAL
+        );
+        assert_eq!(
+            plane
+                .call("aria2.tellStatus", json!([gid.to_string()]))
+                .expect("status")["status"],
+            "active"
+        );
+        let expected = plane
+            .tasks
+            .get_gid(gid)
+            .expect("task")
+            .persistence_options()
+            .expect("options");
+        plane.shutdown_async().await.expect("shutdown");
+        let recovered = directory.control_plane();
+        assert_eq!(
+            recovered
+                .tasks
+                .get_gid(gid)
+                .expect("recovered task")
+                .persistence_options()
+                .expect("options"),
+            expected
+        );
+        recovered.shutdown().expect("shutdown recovery");
+        let payloads = replay_journal_payloads(
+            &directory,
+            TaskId::new(1).expect("task"),
+            gid,
+            Generation::INITIAL,
+        );
+        assert!(!payloads.iter().any(|payload| matches!(
+            payload,
+            JournalPayload::GenerationStarted { .. }
+                | JournalPayload::OptionsSnapshot {
+                    scope: OptionsSnapshotScope::NextAdmission,
+                    ..
+                }
+        )));
+    }
+
+    #[tokio::test]
+    async fn option_patch_recovery_repairs_each_durable_prefix_without_reappending_staging() {
+        for boundary in 0..5 {
+            let directory = TestDirectory::new();
+            let mut plane = directory.control_plane();
+            let gid = add_paused(&mut plane);
+            let before = option_mirror(&plane, gid, OptionsSnapshotScope::CurrentGeneration);
+            let mut entries = before
+                .entries()
+                .map(|(key, value)| (key.to_owned(), value.to_owned()))
+                .collect::<BTreeMap<_, _>>();
+            entries.insert("split".to_owned(), "3".to_owned());
+            let next = SanitizedOptionMap::new(entries).expect("next options");
+            let patch_id = OptionPatchId::new(u64::MAX - 100).expect("recovered high patch id");
+            if boundary >= 1 {
+                append_and_flush(
+                    &plane,
+                    gid,
+                    Generation::INITIAL,
+                    JournalPayload::OptionsSnapshot {
+                        scope: OptionsSnapshotScope::NextAdmission,
+                        patch_id: Some(patch_id),
+                        snapshot_hash: next.snapshot_hash(),
+                        options: next.clone(),
+                    },
+                );
+            }
+            if boundary >= 2 {
+                plane
+                    .replace_option_mirror(gid, OptionsSnapshotScope::NextAdmission, next.clone())
+                    .expect("stage mirror");
+            }
+            if boundary >= 3 {
+                append_and_flush(
+                    &plane,
+                    gid,
+                    Generation::new(1),
+                    JournalPayload::GenerationStarted {
+                        previous_generation: Generation::INITIAL,
+                        reason: GenerationStartReason::OptionPatch,
+                        next_snapshot_hash: next.snapshot_hash(),
+                        patch_id: Some(patch_id),
+                    },
+                );
+            }
+            if boundary >= 4 {
+                plane
+                    .session
+                    .execute(SessionCommand::PromoteTaskOptions {
+                        gid,
+                        options: next.clone(),
+                    })
+                    .expect("promote mirror");
+            }
+            plane.shutdown().expect("close prefix");
+
+            let mut recovered = directory.control_plane();
+            let expected = if boundary == 0 { &before } else { &next };
+            assert_eq!(
+                &recovered
+                    .tasks
+                    .get_gid(gid)
+                    .expect("recovered task")
+                    .persistence_options()
+                    .expect("options"),
+                expected
+            );
+            let task = recovered
+                .engine
+                .scheduler()
+                .task(gid)
+                .expect("recovered scheduler task");
+            assert!(task.desired_paused);
+            assert_eq!(
+                recovered
+                    .call("aria2.tellStatus", json!([gid.to_string()]))
+                    .expect("status")["status"],
+                "paused"
+            );
+            if boundary > 0 {
+                assert!(recovered.next_option_patch_id > patch_id.get());
+            }
+            if (1..3).contains(&boundary) {
+                assert_eq!(
+                    option_mirror(&recovered, gid, OptionsSnapshotScope::CurrentGeneration),
+                    before
+                );
+                assert_eq!(
+                    option_mirror(&recovered, gid, OptionsSnapshotScope::NextAdmission),
+                    next
+                );
+                let drain = Arc::new(tokio::sync::Semaphore::new(1));
+                recovered
+                    .attach_worker(Arc::new(DelayedCancellationWorker {
+                        started: Arc::new(Notify::new()),
+                        drain,
+                    }))
+                    .expect("worker");
+                recovered
+                    .call("aria2.unpause", json!([gid.to_string()]))
+                    .expect("admit staged patch");
+                assert!(recovered.pending_restart_patches.is_empty());
+                assert_eq!(
+                    option_mirror(&recovered, gid, OptionsSnapshotScope::CurrentGeneration),
+                    next
+                );
+                assert_eq!(
+                    option_mirror(&recovered, gid, OptionsSnapshotScope::NextAdmission)
+                        .entries()
+                        .len(),
+                    0
+                );
+            } else {
+                assert_eq!(
+                    &option_mirror(&recovered, gid, OptionsSnapshotScope::CurrentGeneration),
+                    expected
+                );
+                assert_eq!(
+                    option_mirror(&recovered, gid, OptionsSnapshotScope::NextAdmission)
+                        .entries()
+                        .len(),
+                    0
+                );
+            }
+            recovered.shutdown_async().await.expect("shutdown recovery");
+            let payloads = replay_journal_payloads(
+                &directory,
+                TaskId::new(1).expect("task id"),
+                gid,
+                Generation::new(u64::from(boundary != 0)),
+            );
+            assert_eq!(
+                payloads
+                    .iter()
+                    .filter(|payload| matches!(
+                        payload,
+                        JournalPayload::OptionsSnapshot {
+                            patch_id: Some(_),
+                            ..
+                        }
+                    ))
+                    .count(),
+                usize::from(boundary != 0)
+            );
+            assert_eq!(
+                payloads
+                    .iter()
+                    .filter(|payload| matches!(
+                        payload,
+                        JournalPayload::GenerationStarted {
+                            patch_id: Some(_),
+                            ..
+                        }
+                    ))
+                    .count(),
+                usize::from(boundary != 0)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn active_option_patch_survives_delayed_drain_and_promotes_exactly_once() {
+        for patch in [
+            json!({"split": 3}),
+            json!({"out": "renamed.bin"}),
+            json!({"split": 3, "max-download-limit": "1M"}),
+        ] {
+            let directory = TestDirectory::new();
+            let mut plane = directory.control_plane();
+            plane
+                .attach_global_download_rate(
+                    RateArbiter::new(
+                        ariax_runtime::RateDirection::Download,
+                        ariax_runtime::RateArbiterConfig::default(),
+                    )
+                    .expect("rate arbiter"),
+                )
+                .expect("attach rate");
+            let started = Arc::new(Notify::new());
+            let drain = Arc::new(tokio::sync::Semaphore::new(0));
+            plane
+                .attach_worker(Arc::new(DelayedCancellationWorker {
+                    started: started.clone(),
+                    drain: drain.clone(),
+                }))
+                .expect("worker");
+            let gid: Gid = plane
+                .call("aria2.addUri", json!([["http://example.test/file.bin"]]))
+                .expect("add")
+                .as_str()
+                .expect("gid")
+                .parse()
+                .expect("gid");
+            plane.poll_once().expect("start worker");
+            tokio::time::timeout(Duration::from_secs(1), started.notified())
+                .await
+                .expect("worker started");
+            let old = option_mirror(&plane, gid, OptionsSnapshotScope::CurrentGeneration);
+            assert_eq!(
+                plane
+                    .call("aria2.changeOption", json!([gid.to_string(), patch]))
+                    .expect("accept patch"),
+                "OK"
+            );
+            let patch_id = plane.pending_restart_patches[&gid];
+            let expected = plane
+                .tasks
+                .get_gid(gid)
+                .expect("task")
+                .persistence_options()
+                .expect("options");
+            assert_ne!(old, expected);
+            assert_eq!(
+                option_mirror(&plane, gid, OptionsSnapshotScope::CurrentGeneration),
+                old
+            );
+            assert_eq!(
+                option_mirror(&plane, gid, OptionsSnapshotScope::NextAdmission),
+                expected
+            );
+            assert_eq!(
+                plane
+                    .call("aria2.tellStatus", json!([gid.to_string()]))
+                    .expect("waiting status")["status"],
+                "waiting"
+            );
+            assert!(matches!(
+                plane.call("aria2.changeOption", json!([gid.to_string(), {"split": 7}])),
+                Err(HttpControlError::Busy)
+            ));
+            assert!(matches!(
+                plane.call(
+                    "ariax.replaceSources",
+                    json!([gid.to_string(), ["http://other.test/file.bin"]])
+                ),
+                Err(HttpControlError::Busy)
+            ));
+            for _ in 0..3 {
+                plane.poll_once().expect("delayed drain");
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(
+                plane.engine.scheduler().task(gid).expect("task").generation,
+                Generation::INITIAL
+            );
+            assert_eq!(plane.pending_restart_patches[&gid], patch_id);
+            drain.add_permits(1);
+            poll_until(&mut plane, |plane| {
+                !plane.pending_restart_patches.contains_key(&gid)
+            })
+            .await;
+            assert_eq!(
+                plane
+                    .engine
+                    .scheduler()
+                    .task(gid)
+                    .expect("promoted task")
+                    .generation,
+                Generation::new(1)
+            );
+            assert_eq!(
+                option_mirror(&plane, gid, OptionsSnapshotScope::CurrentGeneration),
+                expected
+            );
+            assert_eq!(
+                option_mirror(&plane, gid, OptionsSnapshotScope::NextAdmission)
+                    .entries()
+                    .len(),
+                0
+            );
+            drain.add_permits(1);
+            plane
+                .shutdown_async()
+                .await
+                .expect("shutdown promoted task");
+            let recovered = directory.control_plane();
+            assert_eq!(
+                recovered
+                    .tasks
+                    .get_gid(gid)
+                    .expect("recovered task")
+                    .persistence_options()
+                    .expect("recovered options"),
+                expected
+            );
+            assert!(recovered.next_option_patch_id > patch_id.get());
+            recovered.shutdown().expect("shutdown recovered task");
+            let payloads = replay_journal_payloads(
+                &directory,
+                TaskId::new(1).expect("task id"),
+                gid,
+                Generation::new(1),
+            );
+            assert_eq!(payloads.iter().filter(|payload| matches!(payload, JournalPayload::OptionsSnapshot { patch_id: Some(id), .. } if *id == patch_id)).count(), 1);
+            assert_eq!(payloads.iter().filter(|payload| matches!(payload, JournalPayload::GenerationStarted { patch_id: Some(id), .. } if *id == patch_id)).count(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn consecutive_option_patches_use_current_generation_acknowledgements() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let started = Arc::new(Notify::new());
+        let drain = Arc::new(tokio::sync::Semaphore::new(0));
+        plane
+            .attach_worker(Arc::new(DelayedCancellationWorker {
+                started: started.clone(),
+                drain: drain.clone(),
+            }))
+            .expect("worker");
+        let gid: Gid = plane
+            .call("aria2.addUri", json!([["http://example.test/file.bin"]]))
+            .expect("add")
+            .as_str()
+            .expect("gid")
+            .parse()
+            .expect("gid");
+        let mut patches = Vec::new();
+        for generation in 0..2 {
+            plane.poll_once().expect("start worker");
+            tokio::time::timeout(Duration::from_secs(1), started.notified())
+                .await
+                .expect("worker started");
+            poll_until(&mut plane, |plane| {
+                plane
+                    .engine
+                    .scheduler()
+                    .task(gid)
+                    .expect("task")
+                    .pending_barrier
+                    .is_none()
+            })
+            .await;
+            assert_eq!(
+                plane
+                    .call(
+                        "aria2.changeOption",
+                        json!([gid.to_string(), {"split": generation + 3}])
+                    )
+                    .expect("patch"),
+                "OK"
+            );
+            patches.push(plane.pending_restart_patches[&gid]);
+            drain.add_permits(1);
+            poll_until(&mut plane, |plane| {
+                !plane.pending_restart_patches.contains_key(&gid)
+            })
+            .await;
+            assert_eq!(
+                plane.engine.scheduler().task(gid).expect("task").generation,
+                Generation::new(generation + 1)
+            );
+        }
+        assert!(patches[1] > patches[0]);
+        drain.add_permits(1);
+        plane.shutdown_async().await.expect("shutdown");
+        let recovered = directory.control_plane();
+        assert_eq!(
+            recovered
+                .tasks
+                .get_gid(gid)
+                .expect("recovered")
+                .options()
+                .split
+                .get(),
+            4
+        );
+        assert!(recovered.next_option_patch_id > patches[1].get());
+        recovered.shutdown().expect("recovered shutdown");
+    }
+
+    #[tokio::test]
+    async fn rejected_patch_staging_retains_the_old_catalog_and_mirrors() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let started = Arc::new(Notify::new());
+        let drain = Arc::new(tokio::sync::Semaphore::new(1));
+        plane
+            .attach_worker(Arc::new(DelayedCancellationWorker {
+                started: started.clone(),
+                drain,
+            }))
+            .expect("worker");
+        let gid: Gid = plane
+            .call("aria2.addUri", json!([["http://example.test/file.bin"]]))
+            .expect("add")
+            .as_str()
+            .expect("gid")
+            .parse()
+            .expect("gid");
+        plane.poll_once().expect("start worker");
+        started.notified().await;
+        poll_until(&mut plane, |plane| {
+            plane
+                .engine
+                .scheduler()
+                .task(gid)
+                .expect("task")
+                .pending_barrier
+                .is_none()
+        })
+        .await;
+        let previous = plane
+            .tasks
+            .get_gid(gid)
+            .expect("task")
+            .persistence_options()
+            .expect("options");
+        plane
+            .session
+            .execute(SessionCommand::CloseJournal { gid })
+            .expect("inject missing journal");
+        assert!(matches!(
+            plane.call("aria2.changeOption", json!([gid.to_string(), {"split": 3}])),
+            Err(HttpControlError::Persistence(_))
+        ));
+        assert_eq!(
+            plane
+                .tasks
+                .get_gid(gid)
+                .expect("task")
+                .persistence_options()
+                .expect("options"),
+            previous
+        );
+        assert_eq!(
+            option_mirror(&plane, gid, OptionsSnapshotScope::CurrentGeneration),
+            previous
+        );
+        assert_eq!(
+            option_mirror(&plane, gid, OptionsSnapshotScope::NextAdmission)
+                .entries()
+                .len(),
+            0
+        );
+        assert!(plane.pending_restart_patches.is_empty());
+        plane
+            .call("aria2.getGlobalStat", json!([]))
+            .expect("control remains usable");
+        plane.shutdown_async().await.expect("shutdown");
     }
 
     impl HttpTaskWorker for UncooperativeShutdownWorker {

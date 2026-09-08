@@ -8,8 +8,9 @@ benchmark does not satisfy that requirement.
 
 Status: reviewed contract; the scoped Phase-3B/3C HTTP(S) downloader milestone
 is checkpointed at `30b70c5`, and the bounded Phase-4 control-plane checkpoint
-is executable at `71acb03`. Phase 4B repairs the first three of the six audit
-gates; active option/source mutations and shared RPC accounting remain open.
+is executable at `71acb03`. Phase 4B repairs authentication, retry admission,
+active option journal recovery, and live-rate changes. Source mutations, shared
+RPC accounting, and complete runtime option application remain open.
 Core scheduling,
 bounded persistence/recovery, native storage handoff, runtime ownership,
 packet-independent stats, process bootstrap, and the first public Phase-3B
@@ -59,8 +60,10 @@ source rows; and all RPC transports must enforce the documented client and
 process budgets. Each gate's owner and required evidence are tracked in
 [implementation-readiness.md](implementation-readiness.md#phase-4-repair-gates).
 Phase 4B closes `P4-01` through `P4-03` with Linux, MSRV, and native Windows-GNU
-regressions. `P4-04` through `P4-06` remain open correctness and resource-accounting
-requirements.
+regressions. The `P4-04` journal/live-rate repairs pass the same platforms,
+including delayed cancellation, durable prefixes, exact mirror promotion, and
+consecutive generations. `P4-05`, `P4-06`, and complete runtime option
+application under `P4-07` remain open.
 
 The implemented HTTP discard hierarchy now has deterministic process/task/host
 fault coverage and a standalone bounded fuzz package (`fuzz/`) for HTTP

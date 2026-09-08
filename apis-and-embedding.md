@@ -283,8 +283,9 @@ and flushes its matching `GenerationStarted(reason=option_patch)`. Only then
 does the current-generation SQLite mirror advance and the pending state clear.
 Recovery reuses an existing staged snapshot and appends only the missing
 promotion, as specified in `detailed-storage.md`; it must never append an
-untagged replacement over an accepted patch. Gate `P4-04` covers the current
-premature cleanup/promotion and restart replay failure.
+untagged replacement over an accepted patch. Phase 4B implements these `P4-04`
+replay and live-rate repairs. Full runtime option application remains under
+`P4-07`.
 
 `changeUri` and `ariax.replaceSources` validate the complete proposed source set
 and scheduler conflicts before mutation. An active replacement owns a bounded
@@ -293,6 +294,13 @@ waits for cancellation drain before committing source rows. It cannot issue
 `Resume` while that drain is pending. On commit, SQLite and the catalog use the
 new set and the task is requeued automatically if the user still wants it to
 run. Actual network admission remains subject to ordinary scheduler limits.
+
+The asynchronous control entry point owns the pending reply while the control
+owner continues polling completions and accepting independent commands. The
+synchronous primitive rejects a replacement needing active quiescence before
+mutation; CLI, transport, and typed Rust adapters use the asynchronous entry
+point for that operation. Disconnecting a caller releases reply ownership but
+does not cancel a mutation whose quiescence has already begun.
 
 Keep the existing success shapes: `changeUri` returns the deletion/addition
 counts and `ariax.replaceSources` returns the GID. A validation/conflict error

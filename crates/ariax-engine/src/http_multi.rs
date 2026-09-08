@@ -848,6 +848,27 @@ impl HttpMultiRangeWorker {
         generation: Generation,
         cancellation: HttpCancellation,
     ) -> Result<HttpWorkerSuccess, HttpMultiRangeError> {
+        self.initialize_task_rate(&task)?;
+        self.run_initialized_task(task, generation, cancellation)
+            .await
+    }
+
+    fn initialize_task_rate(&self, task: &HttpTaskSpec) -> Result<(), HttpMultiRangeError> {
+        self.config
+            .download_rate
+            .set_scoped_limit(
+                RateScope::Task(task.task().get()),
+                RateLimit::per_second(task.options().max_download_limit),
+            )
+            .map_err(|_| HttpMultiRangeError::InvalidConfig)
+    }
+
+    async fn run_initialized_task(
+        &self,
+        task: Arc<HttpTaskSpec>,
+        generation: Generation,
+        cancellation: HttpCancellation,
+    ) -> Result<HttpWorkerSuccess, HttpMultiRangeError> {
         let retry_policy = task.options().retry.as_ref().unwrap_or(&self.config.retry);
         let discard_limits = HttpDiscardBudgetLimits::for_http_task(
             self.config.discard_budget.process_limit(),
@@ -874,13 +895,6 @@ impl HttpMultiRangeWorker {
             discard_snapshot.task_consumed,
             discard_snapshot.task_remaining,
         );
-        self.config
-            .download_rate
-            .set_scoped_limit(
-                RateScope::Task(task.task().get()),
-                RateLimit::per_second(task.options().max_download_limit),
-            )
-            .map_err(|_| HttpMultiRangeError::InvalidConfig)?;
         self.stats.clear_completion(task.task());
         self.close_owned_journal(task.gid()).await?;
         let prepared_storage = match self.prepare_storage(&task, generation) {
@@ -2217,9 +2231,13 @@ impl HttpTaskWorker for HttpMultiRangeWorker {
             .retry
             .clone()
             .unwrap_or_else(|| worker.config.retry.clone());
+        let rate_initialization = worker
+            .initialize_task_rate(&task)
+            .map_err(|error| error.into_public(&retry_policy, generation));
         Box::pin(async move {
+            rate_initialization?;
             worker
-                .run_task(task, generation, cancellation)
+                .run_initialized_task(task, generation, cancellation)
                 .await
                 .map_err(|error| error.into_public(&retry_policy, generation))
         })

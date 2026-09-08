@@ -504,6 +504,24 @@ Command rules:
 - long work returns immediately after scheduling tracked tasks,
 - response data comes from snapshots or explicit command acks.
 
+### Source Replacement Quiescence
+
+`BeginSourceReplacement` and `CommitSourceReplacement` delimit the control
+adapter's bounded source operation. Begin validates that no mutation or
+persistence barrier is pending, retains `desired_paused`, enters
+`PausedRestarting`, and requests cancellation for the current generation.
+`CancellationDrained` releases the slot but leaves the task in internal
+quiescence until commit; ordinary admission cannot select it there.
+
+Commit requires the matching pending operation and completed drain. It moves
+the task to `Waiting`, or retains an explicit user pause, and emits an exact
+queue transition even when the queue class does not change. The persistence
+adapter binds that transition to the prepared complete source set and commits
+both in one owner transaction before publishing the scheduler snapshot and
+catalog. A racing remove cancels the source operation before commit. Pause and
+remove use the existing cancellation retargeting rules and take precedence over
+automatic readmission. No generation is advanced until ordinary admission.
+
 ## Snapshots
 
 Hot status reads use immutable snapshots:

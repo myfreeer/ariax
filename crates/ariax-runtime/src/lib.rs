@@ -46,9 +46,9 @@ pub use queue::{
 };
 pub use rate::{
     DEFAULT_RATE_MAX_WAITERS, DEFAULT_RATE_QUANTUM_BYTES, MAX_RATE_BURST_BYTES,
-    MAX_RATE_QUANTUM_BYTES, MAX_RATE_TRACKED_SCOPES, MAX_RATE_WAITERS, RateArbiter,
-    RateArbiterConfig, RateArbiterError, RateArbiterStats, RateCharge, RateDirection, RateLimit,
-    RatePath, RatePermit, RateScope,
+    MAX_RATE_QUANTUM_BYTES, MAX_RATE_TRACKED_SCOPES, MAX_RATE_WAITERS, PreparedRateLimit,
+    RateArbiter, RateArbiterConfig, RateArbiterError, RateArbiterStats, RateCharge, RateDirection,
+    RateLimit, RatePath, RatePermit, RateScope,
 };
 pub use scheduler_driver::{
     DispatchedEffect, EffectCompletion, EffectDispatchId, EffectSinkError, SchedulerDriver,

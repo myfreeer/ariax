@@ -5,8 +5,9 @@ value parser, aria2-style flat parser, and generated option/runtime contracts
 are implemented. Phase 4 supplies bounded config check/reload/dump for its
 limited executable option set; URL rules and full runtime application remain
 pending. Phase 4B repairs production-policy retry admission and recovery
-(`P4-03`); active option recovery remains under `P4-04` in
-`implementation-readiness.md`.
+(`P4-03`), active option journal recovery and live-only rate mutation (`P4-04`).
+Full runtime application, including output-path changes with real storage,
+remains under `P4-07` in `implementation-readiness.md`.
 
 This document expands `configuration.md` into concrete artifacts, parsers, and
 runtime update mechanics.
@@ -265,6 +266,15 @@ generation record is flushed; pending state then clears. Recovery retains the
 complete pending options when only their staged journal prefix exists and
 repairs the SQLite mirror from journal authority.
 
+The generation persistence effect includes both the journal append/flush and an
+owner transaction that compares the exact staged option map, replaces the
+current-generation map, and removes the staged mirror. Its scheduler
+acknowledgement follows both operations. Recovery repairs a missing staged
+mirror from a tagged journal snapshot, or finishes mirror promotion when the
+journal has already consumed that same snapshot. It does not overwrite later
+in-place options when no staged mirror remains. Recovered current and pending
+patch identities establish the lower bound for the next patch identity.
+
 Queue-full rejection before owner acceptance can retry the same owned command.
 An uncertain accepted append, flush, or mirror failure instead faults the
 driver under `session-persistence.md`; it must not retry a speculative append.
@@ -274,6 +284,16 @@ New patches use distinct identities; only a newly accepted complete patch may
 supersede a pending snapshot. A live-only patch does not restart a task. A
 mixed patch publishes one accepted version and quiesces the task once if any
 member requires an authorized restart or new generation.
+
+Live rate changes first obtain a validated update handle for the task's existing
+rate bucket. Preparing or dropping that handle changes no effective rate;
+committing it after durable option acceptance cannot allocate a new bucket or
+fail. Admission initializes the bucket before starting a worker; worker launch
+installs its initial limit synchronously before returning the transfer future,
+so later live updates cannot be overwritten by delayed first polling. An
+unregistered bucket returns busy before option persistence.
+Mixed restart patches publish the accepted live rate while
+the remaining options wait for their generation admission.
 
 An active restart is internal quiescence, not a user pause: the wire snapshot is
 `waiting`, the pause hook/event is not emitted, pending options are applied, and
@@ -288,12 +308,13 @@ If quiescence or later option application fails after acknowledgement, the task
 follows the `PausedRestarting -> Error` row with the patch id in diagnostics; it
 does not silently roll back only the live members and create a mixed version.
 
-The checkpoint classifies every accepted active patch as `ActiveRestart`,
-promotes its SQLite options, and clears pending patch metadata when the drive
-loop returns. A later admission can then append an untagged snapshot over the
-staged patch, producing `InvalidStagedSnapshotReplacement` at restart. `P4-04`
-requires the sequence above for rate, split, output, and mixed patches,
-including restart after each persistence boundary.
+The `71acb03` checkpoint cleared accepted patch metadata before cancellation
+drained, producing `InvalidStagedSnapshotReplacement` on recovery. Phase 4B
+repairs that ordering with a retained snapshot, exact generation/mirror
+promotion, recovery of each durable prefix, and current-generation
+acknowledgements for consecutive patches. Live-only rate patches use the
+validated rate handle and do not stage a restart. Full output-path storage
+application and broader runtime option coverage remain under `P4-07`.
 
 All rejected mutations use the same grouped public error; transport adapters do
 not invent per-option error types:

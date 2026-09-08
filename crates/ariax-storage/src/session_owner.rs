@@ -104,6 +104,10 @@ pub enum SessionCommand {
         scope: OptionsSnapshotScope,
         options: SanitizedOptionMap,
     },
+    PromoteTaskOptions {
+        gid: Gid,
+        options: SanitizedOptionMap,
+    },
     ReadTaskOptions {
         gid: Gid,
         scope: OptionsSnapshotScope,
@@ -887,6 +891,10 @@ fn execute_command(
             .task_options(gid, scope, policy)
             .map(SessionCommandResult::TaskOptions)
             .map_err(SessionPersistenceError::Store),
+        SessionCommand::PromoteTaskOptions { gid, options } => {
+            store.promote_task_options(gid, &options, policy)?;
+            Ok(SessionCommandResult::Unit)
+        }
         SessionCommand::PutHostKeyChallenge(challenge) => {
             store.put_host_key_challenge(&challenge)?;
             Ok(SessionCommandResult::Unit)

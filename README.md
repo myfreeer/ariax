@@ -26,8 +26,9 @@ and orderly worker/journal/session shutdown. A bounded event broker supplies
 scheduler-observed aria2 notifications and coalesced status updates, and a
 typed Rust embedding skeleton uses the same control plane. Phase 4B repairs
 multicall envelope authentication, connection-local event authorization, and
-production-policy retry admission and recovery. Active option replay, active
-source replacement outcomes, and per-client RPC budget accounting remain open
+production-policy retry admission and recovery, active option journal replay,
+and live-only rate changes. Active source replacement outcomes and per-client
+RPC budget accounting remain open
 [repair gates](implementation-readiness.md#phase-4-repair-gates), alongside the
 remaining Phase-4B completion requirements.
 

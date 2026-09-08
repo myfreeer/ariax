@@ -1771,6 +1771,47 @@ impl SessionStore {
         Ok(())
     }
 
+    pub fn promote_task_options(
+        &mut self,
+        gid: Gid,
+        options: &SanitizedOptionMap,
+        policy: &impl PersistedOptionPolicy,
+    ) -> Result<(), SessionStoreError> {
+        validate_options_for_persistence(options, policy)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if !task_exists(&transaction, gid)? {
+            return Err(SessionStoreError::NotFound);
+        }
+        let staged = read_task_options(
+            &transaction,
+            gid,
+            OptionsSnapshotScope::NextAdmission,
+            policy,
+        )?;
+        if staged.entries().len() == 0 || &staged != options {
+            return Err(SessionStoreError::InvalidRecord(
+                "task_option.promotion_mismatch",
+            ));
+        }
+        replace_task_options_in_transaction(
+            &transaction,
+            gid,
+            OptionsSnapshotScope::CurrentGeneration,
+            options,
+        )?;
+        transaction.execute(
+            "DELETE FROM task_option WHERE gid = ?1 AND scope = ?2",
+            params![
+                gid.to_string(),
+                OptionsSnapshotScope::NextAdmission.number()
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn replace_task_sources(
         &mut self,
         gid: Gid,
@@ -1934,55 +1975,7 @@ impl SessionStore {
         scope: OptionsSnapshotScope,
         policy: &impl PersistedOptionPolicy,
     ) -> Result<SanitizedOptionMap, SessionStoreError> {
-        let count: i64 = self.connection.query_row(
-            "SELECT COUNT(*) FROM task_option WHERE gid = ?1 AND scope = ?2",
-            params![gid.to_string(), scope.number()],
-            |row| row.get(0),
-        )?;
-        let count = bounded_count(count, SESSION_MAX_OPTIONS_PER_TASK, "task_option.count")?;
-        let mut statement = self.connection.prepare(
-            "SELECT key, canonical_value FROM task_option WHERE gid = ?1 AND scope = ?2 ORDER BY key",
-        )?;
-        let mut rows = statement.query(params![gid.to_string(), scope.number()])?;
-        let mut decoded = Vec::new();
-        decoded
-            .try_reserve_exact(count)
-            .map_err(|_| SessionStoreError::InvalidPersistedValue("task_option.allocation"))?;
-        let mut canonical_bytes = 4_usize;
-        while let Some(row) = rows.next()? {
-            let key = row.get::<_, String>(0)?;
-            let value = row.get::<_, Vec<u8>>(1)?;
-            if !policy.permits(&key) {
-                return Err(SessionStoreError::ForbiddenPersistedOption);
-            }
-            canonical_bytes = canonical_bytes
-                .checked_add(8)
-                .and_then(|total| total.checked_add(key.len()))
-                .and_then(|total| total.checked_add(value.len()))
-                .ok_or(SessionStoreError::InvalidPersistedValue(
-                    "task_option.bytes",
-                ))?;
-            if canonical_bytes > MAX_OPTION_MAP_BYTES {
-                return Err(SessionStoreError::InvalidPersistedValue(
-                    "task_option.bytes",
-                ));
-            }
-            let value = String::from_utf8(value)
-                .map_err(|_| SessionStoreError::InvalidPersistedValue("task_option.value"))?;
-            decoded.push((key, value));
-            if decoded.len() > count {
-                return Err(SessionStoreError::InvalidPersistedValue(
-                    "task_option.count",
-                ));
-            }
-        }
-        if decoded.len() != count {
-            return Err(SessionStoreError::InvalidPersistedValue(
-                "task_option.count",
-            ));
-        }
-        SanitizedOptionMap::new(decoded)
-            .map_err(|_| SessionStoreError::InvalidPersistedValue("task_option"))
+        read_task_options(&self.connection, gid, scope, policy)
     }
 
     pub fn reconcile_journal_cache(
@@ -2673,6 +2666,63 @@ fn validate_options_for_persistence(
         return Err(SessionStoreError::ForbiddenPersistedOption);
     }
     Ok(())
+}
+
+fn read_task_options(
+    connection: &Connection,
+    gid: Gid,
+    scope: OptionsSnapshotScope,
+    policy: &impl PersistedOptionPolicy,
+) -> Result<SanitizedOptionMap, SessionStoreError> {
+    let count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM task_option WHERE gid = ?1 AND scope = ?2",
+        params![gid.to_string(), scope.number()],
+        |row| row.get(0),
+    )?;
+    let count = bounded_count(count, SESSION_MAX_OPTIONS_PER_TASK, "task_option.count")?;
+    let mut statement = connection.prepare(
+        "SELECT key, canonical_value FROM task_option WHERE gid = ?1 AND scope = ?2 ORDER BY key",
+    )?;
+    let mut rows = statement.query(params![gid.to_string(), scope.number()])?;
+    let mut decoded = Vec::new();
+    decoded
+        .try_reserve_exact(count)
+        .map_err(|_| SessionStoreError::InvalidPersistedValue("task_option.allocation"))?;
+    let mut canonical_bytes = 4_usize;
+    while let Some(row) = rows.next()? {
+        let key = row.get::<_, String>(0)?;
+        let value = row.get::<_, Vec<u8>>(1)?;
+        if !policy.permits(&key) {
+            return Err(SessionStoreError::ForbiddenPersistedOption);
+        }
+        canonical_bytes = canonical_bytes
+            .checked_add(8)
+            .and_then(|total| total.checked_add(key.len()))
+            .and_then(|total| total.checked_add(value.len()))
+            .ok_or(SessionStoreError::InvalidPersistedValue(
+                "task_option.bytes",
+            ))?;
+        if canonical_bytes > MAX_OPTION_MAP_BYTES {
+            return Err(SessionStoreError::InvalidPersistedValue(
+                "task_option.bytes",
+            ));
+        }
+        let value = String::from_utf8(value)
+            .map_err(|_| SessionStoreError::InvalidPersistedValue("task_option.value"))?;
+        decoded.push((key, value));
+        if decoded.len() > count {
+            return Err(SessionStoreError::InvalidPersistedValue(
+                "task_option.count",
+            ));
+        }
+    }
+    if decoded.len() != count {
+        return Err(SessionStoreError::InvalidPersistedValue(
+            "task_option.count",
+        ));
+    }
+    SanitizedOptionMap::new(decoded)
+        .map_err(|_| SessionStoreError::InvalidPersistedValue("task_option"))
 }
 
 fn replace_task_options_in_transaction(
@@ -9722,6 +9772,91 @@ mod tests {
                 .expect("read database")
                 .windows(b"seeded-secret".len())
                 .any(|window| window == b"seeded-secret")
+        );
+    }
+
+    #[test]
+    fn option_promotion_requires_exact_staging_and_rolls_back_both_scopes() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        store.put_task(&task_record(gid(1), 0)).expect("task");
+        let policy = ariax_config::persisted_option_is_safe;
+        let current =
+            SanitizedOptionMap::new([("split".to_owned(), "2".to_owned())]).expect("current");
+        let next = SanitizedOptionMap::new([("split".to_owned(), "4".to_owned())]).expect("next");
+        for (scope, options) in [
+            (OptionsSnapshotScope::CurrentGeneration, &current),
+            (OptionsSnapshotScope::NextAdmission, &next),
+        ] {
+            store
+                .replace_task_options(gid(1), scope, options, &policy)
+                .expect("seed options");
+        }
+        assert!(matches!(
+            store.promote_task_options(gid(1), &current, &policy),
+            Err(SessionStoreError::InvalidRecord(
+                "task_option.promotion_mismatch"
+            ))
+        ));
+        assert!(matches!(
+            store.promote_task_options(gid(2), &next, &policy),
+            Err(SessionStoreError::NotFound)
+        ));
+        let secret = SanitizedOptionMap::new([("rpc-secret".to_owned(), "canary".to_owned())])
+            .expect("secret map");
+        assert!(matches!(
+            store.promote_task_options(gid(1), &secret, &policy),
+            Err(SessionStoreError::ForbiddenPersistedOption)
+        ));
+
+        store.connection.execute_batch(&format!(
+            "CREATE TEMP TRIGGER reject_option_promotion BEFORE DELETE ON task_option WHEN OLD.scope = {} BEGIN SELECT RAISE(ABORT, 'injected promotion failure'); END;",
+            OptionsSnapshotScope::NextAdmission.number(),
+        )).expect("inject delete failure");
+        assert!(matches!(
+            store.promote_task_options(gid(1), &next, &policy),
+            Err(SessionStoreError::Sqlite(_))
+        ));
+        assert_eq!(
+            store
+                .task_options(gid(1), OptionsSnapshotScope::CurrentGeneration, &policy)
+                .expect("current after rollback"),
+            current
+        );
+        assert_eq!(
+            store
+                .task_options(gid(1), OptionsSnapshotScope::NextAdmission, &policy)
+                .expect("staged after rollback"),
+            next
+        );
+        store
+            .connection
+            .execute_batch("DROP TRIGGER reject_option_promotion;")
+            .expect("remove fault");
+        store
+            .promote_task_options(gid(1), &next, &policy)
+            .expect("promote exact snapshot");
+        assert!(matches!(
+            store.promote_task_options(gid(1), &next, &policy),
+            Err(SessionStoreError::InvalidRecord(
+                "task_option.promotion_mismatch"
+            ))
+        ));
+        drop(store);
+        let store = open_store(&directory);
+        assert_eq!(
+            store
+                .task_options(gid(1), OptionsSnapshotScope::CurrentGeneration, &policy)
+                .expect("durable promoted options"),
+            next
+        );
+        assert_eq!(
+            store
+                .task_options(gid(1), OptionsSnapshotScope::NextAdmission, &policy)
+                .expect("durable cleared staging")
+                .entries()
+                .len(),
+            0
         );
     }
 

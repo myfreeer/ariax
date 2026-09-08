@@ -378,6 +378,14 @@ persist as a user pause. Restart before commit sees the old sources, while
 restart after commit sees the new sources and the latest desired state. Both
 paths still apply normal HTTP identity and durable-piece validation.
 
+`ReplaceTaskSourcesAndQueue` is the owner operation for active replacements.
+It validates the bounded source set, applies the scheduler's exact queue orders,
+replaces all source rows, and verifies dense queues within one
+`BEGIN IMMEDIATE` transaction. Queue mismatch or a source-write failure rolls
+back both changes. The source mutation's reply is retained separately from the
+control lock until this transaction completes; dropping the client reply does
+not abandon accepted cancellation or persistence work.
+
 Definite pre-commit rejection leaves the old sources authoritative. A confirmed
 commit returns the documented replacement success even when normal admission
 is delayed; later worker failures use task status. An uncertain accepted store
@@ -611,6 +619,15 @@ If step 2 fails, journal-owned generation state remains authoritative and the
 SQLite mirror is repaired on recovery. If a queue-only mutation has no task
 generation effect, it is a normal SQLite transaction and does not append a
 redundant journal record.
+
+Option-patch promotion uses one owner transaction to compare the complete
+`NextAdmission` option map with the generation's accepted snapshot, replace
+`CurrentGeneration`, and delete `NextAdmission`. A mismatch rejects without
+changing either map. The engine submits it only after the matching generation
+record is flushed and acknowledges generation persistence only after the owner
+confirms the transaction. Recovery can reconstruct a missing staged mirror from
+the journal before finishing promotion; an unrelated current-only option update
+must not be replaced by an older journal snapshot.
 
 Completion:
 

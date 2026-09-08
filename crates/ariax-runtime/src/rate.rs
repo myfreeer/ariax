@@ -587,6 +587,14 @@ impl RateArbiterState {
         }
         Ok(())
     }
+
+    fn contains_scope(&self, scope: RateScope) -> bool {
+        match scope {
+            RateScope::Host(key) => self.hosts.contains_key(&key),
+            RateScope::Task(key) => self.tasks.contains_key(&key),
+            RateScope::Stream { task, stream } => self.streams.contains_key(&(task, stream)),
+        }
+    }
 }
 
 /// Hierarchy member for a live scoped limit change.
@@ -595,6 +603,31 @@ pub enum RateScope {
     Host(u64),
     Task(u64),
     Stream { task: u64, stream: u64 },
+}
+
+/// Validated update to an existing bucket, committed after option persistence.
+#[must_use]
+pub struct PreparedRateLimit {
+    inner: Arc<RateArbiterInner>,
+    scope: RateScope,
+    limit: RateLimit,
+}
+
+impl PreparedRateLimit {
+    pub fn apply(self) {
+        let mut state = lock_unpoisoned(&self.inner.state);
+        // Tracked buckets are never removed, so preparation reserves no new state.
+        let entry = match self.scope {
+            RateScope::Host(key) => state.hosts.get_mut(&key),
+            RateScope::Task(key) => state.tasks.get_mut(&key),
+            RateScope::Stream { task, stream } => state.streams.get_mut(&(task, stream)),
+        }
+        .expect("prepared rate bucket remains tracked");
+        entry.bucket.reconfigure(self.limit, Instant::now());
+        entry.explicit = true;
+        drop(state);
+        self.inner.notify.notify_waiters();
+    }
 }
 
 fn set_limit_entry<K: Ord>(
@@ -670,6 +703,24 @@ impl RateArbiter {
         drop(state);
         self.inner.notify.notify_waiters();
         Ok(())
+    }
+
+    /// Returns no handle until the worker has registered the requested scope.
+    pub fn prepare_scoped_limit(
+        &self,
+        scope: RateScope,
+        limit: RateLimit,
+    ) -> Result<Option<PreparedRateLimit>, RateArbiterError> {
+        if !limit.validate() {
+            return Err(RateArbiterError::InvalidConfig);
+        }
+        let state = lock_unpoisoned(&self.inner.state);
+        let tracked = state.contains_scope(scope);
+        Ok(tracked.then(|| PreparedRateLimit {
+            inner: self.inner.clone(),
+            scope,
+            limit,
+        }))
     }
 
     /// Attempts immediate admission. Existing queued readers retain priority,
@@ -1112,6 +1163,59 @@ mod tests {
         for worker in workers {
             worker.await.expect("worker");
         }
+    }
+
+    #[test]
+    fn prepared_scoped_limit_is_inert_until_committed() {
+        let arbiter = RateArbiter::new(RateDirection::Download, RateArbiterConfig::default())
+            .expect("arbiter");
+        let scope = RateScope::Task(PATH.task);
+        assert!(
+            arbiter
+                .prepare_scoped_limit(scope, RateLimit::per_second(1))
+                .expect("untracked scope")
+                .is_none()
+        );
+        arbiter
+            .set_scoped_limit(scope, RateLimit::per_second(4))
+            .expect("worker registers scope");
+        assert!(matches!(
+            arbiter.prepare_scoped_limit(
+                scope,
+                RateLimit {
+                    bytes_per_second: 1,
+                    burst_bytes: 0
+                }
+            ),
+            Err(RateArbiterError::InvalidConfig)
+        ));
+        let update = arbiter
+            .prepare_scoped_limit(scope, RateLimit::per_second(1))
+            .expect("prepare")
+            .expect("tracked");
+        let permit = arbiter
+            .try_acquire(PATH, request(4))
+            .expect("admit old rate")
+            .expect("old credit");
+        assert_eq!(permit.reserved_bytes(), 4);
+        drop(permit);
+        drop(update);
+        let permit = arbiter
+            .try_acquire(PATH, request(4))
+            .expect("drop retains rate")
+            .expect("old credit");
+        assert_eq!(permit.reserved_bytes(), 4);
+        drop(permit);
+        arbiter
+            .prepare_scoped_limit(scope, RateLimit::per_second(1))
+            .expect("prepare")
+            .expect("tracked")
+            .apply();
+        let permit = arbiter
+            .try_acquire(PATH, request(4))
+            .expect("admit new rate")
+            .expect("new credit");
+        assert_eq!(permit.reserved_bytes(), 1);
     }
 
     #[tokio::test(start_paused = true)]

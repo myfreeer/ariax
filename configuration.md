@@ -3,8 +3,9 @@
 Status: reviewed contract with first-slice implementation in progress. Typed
 option metadata, bounded values, flat config parsing, and generated compatibility
 coverage exist. Phase 4 adds limited runtime mutation and config diagnostics;
-Phase 4B repairs retry admission alignment (`P4-03`). The remaining registry and
-runtime coverage and active option recovery (`P4-04`) remain open. Gates are tracked in
+Phase 4B repairs retry admission alignment (`P4-03`), active option journal
+recovery, and live-rate changes (`P4-04`). Full registry and runtime application
+coverage remain open under `P4-07`. Gates are tracked in
 `implementation-readiness.md`.
 
 Configurability is a product requirement. The implementation must be explicit

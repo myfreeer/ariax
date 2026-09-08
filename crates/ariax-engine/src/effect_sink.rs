@@ -38,6 +38,10 @@ pub enum PersistencePlanStep {
         scope: OptionsSnapshotScope,
         options: SanitizedOptionMap,
     },
+    PromoteTaskOptions {
+        gid: Gid,
+        options: SanitizedOptionMap,
+    },
     SetNoSpaceCondition {
         gid: Gid,
         condition: Option<SessionNoSpaceCondition>,
@@ -675,6 +679,44 @@ fn validate_plan(
             },
             [
                 PersistencePlanStep::AppendAndFlushJournal {
+                    gid: journal_gid,
+                    generation: journal_generation,
+                    payload:
+                        JournalPayload::GenerationStarted {
+                            previous_generation,
+                            reason,
+                            next_snapshot_hash,
+                            patch_id,
+                        },
+                },
+                PersistencePlanStep::PromoteTaskOptions {
+                    gid: options_gid,
+                    options,
+                },
+            ],
+        ) => {
+            if journal_gid != gid || options_gid != gid {
+                return Err(PersistencePlanError::IdentityMismatch);
+            }
+            if journal_generation != generation
+                || previous_generation.checked_next() != Some(*generation)
+            {
+                return Err(PersistencePlanError::GenerationMismatch);
+            }
+            if *reason != ariax_storage::GenerationStartReason::OptionPatch
+                || patch_id.is_none()
+                || *next_snapshot_hash != options.snapshot_hash()
+            {
+                return Err(PersistencePlanError::StateMismatch);
+            }
+            Ok(())
+        }
+        (
+            TransitionEffect::PersistGenerationStarted {
+                gid, generation, ..
+            },
+            [
+                PersistencePlanStep::AppendAndFlushJournal {
                     gid: marker_gid,
                     generation: marker_generation,
                     payload:
@@ -803,12 +845,10 @@ fn validate_plan(
             {
                 return Err(PersistencePlanError::GenerationMismatch);
             }
-            let resumes_option_patch =
-                *reason == ariax_storage::GenerationStartReason::OptionPatch && patch_id.is_some();
             let resumes_representation_restart = *reason
                 == ariax_storage::GenerationStartReason::RepresentationRestart
                 && patch_id.is_none();
-            if !resumes_option_patch && !resumes_representation_restart {
+            if !resumes_representation_restart {
                 return Err(PersistencePlanError::StateMismatch);
             }
             Ok(())
@@ -1239,6 +1279,13 @@ fn command_for_step(step: &PersistencePlanStep) -> PendingOwnerCommand {
             SessionCommand::ReplaceTaskOptions {
                 gid: *gid,
                 scope: *scope,
+                options: options.clone(),
+            },
+            ExpectedResult::Unit,
+        ),
+        PersistencePlanStep::PromoteTaskOptions { gid, options } => (
+            SessionCommand::PromoteTaskOptions {
+                gid: *gid,
                 options: options.clone(),
             },
             ExpectedResult::Unit,
@@ -2612,7 +2659,7 @@ mod tests {
         );
 
         let next = Generation::new(1);
-        assert!(
+        assert_eq!(
             PersistenceEffectPlan::new(
                 TransitionEffect::PersistGenerationStarted {
                     task_id: task_id(1),
@@ -2629,13 +2676,55 @@ mod tests {
                         patch_id: Some(OptionPatchId::new(8).expect("patch id")),
                     },
                 }],
-            )
-            .is_ok()
+            ),
+            Err(PersistencePlanError::StateMismatch)
         );
 
         let options =
             SanitizedOptionMap::new([("out".to_owned(), "file.bin".to_owned())]).expect("options");
         let snapshot_hash = options.snapshot_hash();
+        let effect = TransitionEffect::PersistGenerationStarted {
+            task_id: task_id(1),
+            gid: task_gid,
+            generation: next,
+        };
+        let promotion = vec![
+            PersistencePlanStep::AppendAndFlushJournal {
+                gid: task_gid,
+                generation: next,
+                payload: JournalPayload::GenerationStarted {
+                    previous_generation: Generation::INITIAL,
+                    reason: GenerationStartReason::OptionPatch,
+                    next_snapshot_hash: snapshot_hash,
+                    patch_id: Some(OptionPatchId::new(8).expect("patch")),
+                },
+            },
+            PersistencePlanStep::PromoteTaskOptions {
+                gid: task_gid,
+                options: options.clone(),
+            },
+        ];
+        assert!(PersistenceEffectPlan::new(effect.clone(), promotion.clone()).is_ok());
+        let mut mismatched = promotion.clone();
+        if let PersistencePlanStep::PromoteTaskOptions { options, .. } = &mut mismatched[1] {
+            *options = SanitizedOptionMap::new([("out".to_owned(), "wrong.bin".to_owned())])
+                .expect("different snapshot");
+        }
+        assert_eq!(
+            PersistenceEffectPlan::new(effect.clone(), mismatched),
+            Err(PersistencePlanError::StateMismatch)
+        );
+        let mut mismatched = promotion.clone();
+        if let PersistencePlanStep::PromoteTaskOptions { gid, .. } = &mut mismatched[1] {
+            *gid = self::gid(2);
+        }
+        assert_eq!(
+            PersistenceEffectPlan::new(effect.clone(), mismatched),
+            Err(PersistencePlanError::IdentityMismatch)
+        );
+        let mut reversed = promotion;
+        reversed.reverse();
+        assert!(PersistenceEffectPlan::new(effect, reversed).is_err());
         assert!(
             PersistenceEffectPlan::new(
                 TransitionEffect::PersistGenerationStarted {
