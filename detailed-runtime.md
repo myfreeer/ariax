@@ -236,12 +236,47 @@ Budget rules:
   stop new admission sooner, but it never authorizes allocation beyond permits,
 - all budgets are visible in diagnostics.
 
-The Phase-4 checkpoint currently enforces the individual RPC request/response
-caps and the bounded stdio request queue, but does not yet reserve
-per-client/global `rpc_budget` shares for HTTP pipelining or serialized
-responses. The implementation must add that reservation before accepting the
-next body or starting serialization; until then the RPC budget rows above are a
-design contract and a completion gate, not implementation evidence.
+`RpcBudgets` belongs to `HttpProcessResources`: it uses the resolved profile's
+RPC item/byte limits and the same resident budget as HTTP ingress and storage.
+Cloned dispatchers and listeners retain this instance. A connection owns one
+`RpcClientBudget`; its four request slots count a reader-held body, queued or
+executing commands, and a response awaiting transport release. The client's
+combined allocation ceiling is the smaller of 32 MiB and three quarters of the
+process RPC byte limit, so a single client cannot reserve the whole domain.
+The separate request/command ceiling remains 8 MiB.
+
+Request reservations precede body allocation and include parser scratch.
+Bounded Serde visitors reserve conservative node, container, and string storage
+before constructing owned values; a short JSON array of tiny values must not
+expand beyond its reservation. Deferred mutations retain their request lease
+after the original caller disconnects, until the accepted command retires.
+
+Response admission precedes backend result materialization. Result builders
+use a bounded workspace and serialization acquires additional chunk credit
+before growing its output. A response owner carries its request slot and byte
+permits into `Bytes`; clones and slices keep credit until the last transport
+reference is released. Stdio retains that owner through `write_all` and
+`flush`, including errors or cancellation. Event delivery uses the same
+allocation domain and does not create an uncharged parallel output queue.
+Framework receive/write caches remain charged for as long as the connection
+retains their capacity; draining their logical contents does not refund that
+capacity. A cancelled stdio transport aborts its reader task so queued and
+reader-held request leases cannot outlive the transport accidentally.
+Event queue entries consume process RPC item credit as well as client, process,
+and resident bytes. Queued events may use at most half the process item limit,
+leaving command/reply capacity for polling or removing subscriptions even when
+their event queues are full. Coalescing, informational loss, and reliable-event
+overflow retain their documented behavior when shared credit is exhausted.
+
+Phase 4B implements these request, serializer, event, and transport ownership
+reservations using the resolved profile and shared resident budget. Regression
+tests cover parser expansion, reader backpressure, deferred commands, retained
+body frames, response overflow, writer failure/cancellation, and controlled
+HTTP/WebSocket stalls with another client served concurrently. A fixed 8 MiB
+workspace is reserved before backend dispatch; result builders still need
+pre-allocation checks against it. Until those checks and complete typed-command
+forecasts are implemented, `P4-06` remains open. The active-range performance
+and RSS evidence is a separate `P4-11` requirement.
 
 ## Queue Wrappers
 

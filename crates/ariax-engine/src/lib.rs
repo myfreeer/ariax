@@ -28,7 +28,9 @@ mod http_task;
 mod http_transport;
 mod native_api;
 mod process_bootstrap;
+mod rpc_budget;
 mod rpc_events;
+mod rpc_json;
 mod runtime_effects;
 mod startup_executor;
 mod startup_filesystem;
@@ -159,6 +161,10 @@ pub use http_rpc::{
     serve_loopback_http, serve_loopback_http_listener, serve_loopback_http_listener_until,
     serve_loopback_http_until, serve_loopback_websocket_listener_until,
     serve_loopback_websocket_until,
+};
+pub use rpc_budget::{
+    MAX_RPC_CLIENT_BYTES, MAX_RPC_CLIENT_REQUEST_BYTES, MAX_RPC_CLIENT_REQUESTS, RpcBudgetError,
+    RpcBudgetSnapshot, RpcBudgets, RpcClientBudget,
 };
 mod rpc_client;
 pub use http_supervisor::{

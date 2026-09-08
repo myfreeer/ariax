@@ -140,6 +140,9 @@ impl EngineBuilder {
             },
         )
         .map_err(|error| NativeApiError::Bootstrap(error.to_string()))?;
+        plane
+            .attach_rpc_budgets(resources.rpc_budgets())
+            .map_err(|error| NativeApiError::Bootstrap(error.to_string()))?;
         let resolver = HttpResolver::new(HttpResolverConfig::default())
             .map_err(|error| NativeApiError::Bootstrap(error.to_string()))?;
         let cookies = HttpCookieJar::bundled(HttpCookieLimits::default())

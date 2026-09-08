@@ -10,7 +10,8 @@ Status: reviewed contract; the scoped Phase-3B/3C HTTP(S) downloader milestone
 is checkpointed at `30b70c5`, and the bounded Phase-4 control-plane checkpoint
 is executable at `71acb03`. Phase 4B repairs authentication, retry admission,
 active option journal recovery, live-rate changes, and source mutations. Shared
-RPC accounting and complete runtime option application remain open.
+RPC reservations and transport ownership are implemented. Result/command
+materialization accounting and complete runtime option application remain open.
 Core scheduling,
 bounded persistence/recovery, native storage handoff, runtime ownership,
 packet-independent stats, process bootstrap, and the first public Phase-3B
@@ -65,8 +66,11 @@ including delayed cancellation, durable prefixes, exact mirror promotion, and
 consecutive generations. `P4-05` now covers cancellation drain, desired pause
 state, remove races, disconnected callers, retry timer cancellation, atomic
 source/queue rollback, and restart before and after commit. These regressions
-pass on Linux, MSRV, and native Windows-GNU. `P4-06` and complete runtime option
-application under `P4-07` remain open.
+pass on Linux, MSRV, and native Windows-GNU. Shared RPC request/response/event
+reservations, bounded request parsing, blocked-writer ownership, and release
+paths pass the same workspace test matrix. `P4-06` remains open for result
+builder pre-allocation checks and full typed-command forecasts; complete runtime
+option application under `P4-07` also remains open.
 
 The implemented HTTP discard hierarchy now has deterministic process/task/host
 fault coverage and a standalone bounded fuzz package (`fuzz/`) for HTTP

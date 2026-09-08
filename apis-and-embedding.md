@@ -230,10 +230,30 @@ allocating another body when credit is exhausted; a bounded busy response may
 be used instead. Serialization cannot begin behind a blocked full-size reply.
 Disconnect, cancellation, parse failure, and serialization failure release all
 owned credit. A channel with four slots alone does not establish this bound.
+An accepted deferred mutation retains its command lease until completion even
+when the originating transport disconnects. Its reply bytes are released with
+the transport; its still-owned command state is not prematurely refunded.
 
-The current checkpoint caps individual bodies, responses, and event queues,
-and uses a four-slot stdio reader channel. It does not enforce the shared RPC
-budget or complete per-client accounting above; those are gate `P4-06`.
+The bounded parser uses Serde's structured visitor interface to reserve owned
+nodes and strings before allocation. Raw input, parser scratch, queued command
+state, result workspace, and serialized bytes have separate lifetimes within
+the shared accounting domain. Budget exhaustion produces a bounded busy error
+or read backpressure; it does not execute a partially parsed request. Response
+construction transfers permit ownership to the HTTP/WebSocket byte owner and
+stdio writer, so a completed backend call cannot refund a blocked response.
+
+The current implementation has shared profile/resident reservations, bounded
+Serde request construction, four client request leases, one response lease,
+and transport-owned serialized bytes. Event entries and connection caches are
+also charged; deferred source mutations retain their command leases after
+disconnect. Batch results serialize one member at a time, and retained
+multicall members acquire additional credit.
+
+`P4-06` remains open for pre-allocation checks in every result builder and the
+complete typed-command memory forecast. The current fixed 8 MiB result
+workspace and post-construction checks do not establish those builder bounds.
+Immutable query projection outside the control owner and the real active-range
+latency target remain completion requirements under `P4-11`.
 
 `system.multicall` is bounded but not transactional. Inner calls execute in
 order and may have side effects before a later inner call fails or the combined

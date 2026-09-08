@@ -120,6 +120,7 @@ struct PendingSourceReplacement {
     response: Value,
     reply: oneshot::Sender<Result<Value, HttpControlError>>,
     committing: bool,
+    _request: Option<crate::rpc_budget::RpcRequestLease>,
 }
 
 /// Shared mutable control plane used by both transports.
@@ -144,6 +145,7 @@ pub struct HttpControlPlane {
     subscriptions: BTreeMap<u64, RpcEventSubscriber>,
     observed_statuses: BTreeMap<Gid, Aria2Status>,
     global_download_rate: Option<RateArbiter>,
+    rpc_budgets: crate::RpcBudgets,
 }
 
 impl fmt::Debug for HttpControlPlane {
@@ -195,10 +197,23 @@ impl HttpControlPlane {
             subscriptions: BTreeMap::new(),
             observed_statuses: BTreeMap::new(),
             global_download_rate: None,
+            rpc_budgets: crate::RpcBudgets::process_default(),
         };
         plane.restore_catalog()?;
         plane.reset_observed_statuses();
         Ok(plane)
+    }
+
+    pub fn attach_rpc_budgets(
+        &mut self,
+        budgets: crate::RpcBudgets,
+    ) -> Result<(), HttpControlError> {
+        if self.events.subscriber_count() != 0 || !self.pending_source_replacements.is_empty() {
+            return Err(HttpControlError::Busy);
+        }
+        self.events = RpcEventBroker::with_budgets(budgets.clone());
+        self.rpc_budgets = budgets;
+        Ok(())
     }
 
     /// Attaches the real HTTP worker supervisor.  The catalog is shared with
@@ -576,6 +591,14 @@ impl HttpControlPlane {
     }
 
     fn subscribe_events(&mut self, params: Value) -> Result<Value, HttpControlError> {
+        self.subscribe_events_with_client(params, None)
+    }
+
+    fn subscribe_events_with_client(
+        &mut self,
+        params: Value,
+        client: Option<crate::RpcClientBudget>,
+    ) -> Result<Value, HttpControlError> {
         let values = params.as_array().filter(|values| values.len() <= 2).ok_or(
             HttpControlError::InvalidParams("subscribe accepts optional event and byte limits"),
         )?;
@@ -597,7 +620,11 @@ impl HttpControlPlane {
                 "event byte capacity must be nonzero",
             ))?,
         };
-        let subscriber = self.events.subscribe(limits).map_err(event_backend_error)?;
+        let subscriber = match client {
+            Some(client) => self.events.subscribe_with_client(limits, client),
+            None => self.events.subscribe(limits),
+        }
+        .map_err(event_backend_error)?;
         let id = subscriber.id();
         self.subscriptions.insert(id, subscriber);
         Ok(
@@ -1347,7 +1374,7 @@ impl HttpControlPlane {
         {
             return Err(HttpControlError::Busy);
         }
-        let mut reply = self.begin_source_plan(replacement, response)?;
+        let mut reply = self.begin_source_plan(replacement, response, None)?;
         self.complete_source_replacements()?;
         reply.try_recv().map_err(|_| HttpControlError::Busy)?
     }
@@ -1356,15 +1383,17 @@ impl HttpControlPlane {
         &mut self,
         method: &str,
         params: Value,
+        request: Option<crate::rpc_budget::RpcRequestLease>,
     ) -> Result<oneshot::Receiver<Result<Value, HttpControlError>>, HttpControlError> {
         let (replacement, response) = self.prepare_source_call(method, params)?;
-        self.begin_source_plan(replacement, response)
+        self.begin_source_plan(replacement, response, request)
     }
 
     fn begin_source_plan(
         &mut self,
         replacement: HttpTaskSpec,
         response: Value,
+        request: Option<crate::rpc_budget::RpcRequestLease>,
     ) -> Result<oneshot::Receiver<Result<Value, HttpControlError>>, HttpControlError> {
         let gid = replacement.gid();
         let (reply, receiver) = oneshot::channel();
@@ -1376,6 +1405,7 @@ impl HttpControlPlane {
                 response,
                 reply,
                 committing: false,
+                _request: request,
             },
         );
         Ok(receiver)
@@ -1446,16 +1476,29 @@ impl HttpControlPlane {
         method: &str,
         params: Value,
     ) -> Result<Value, HttpControlError> {
+        Self::call_shared_with_context(plane, method, params, crate::RpcClientContext::default())
+            .await
+    }
+
+    async fn call_shared_with_context(
+        plane: &Arc<Mutex<Self>>,
+        method: &str,
+        params: Value,
+        context: crate::RpcClientContext,
+    ) -> Result<Value, HttpControlError> {
         let mut reply = {
             let mut owner = plane.lock().await;
             owner.poll_once()?;
+            if method == "ariax.subscribe" {
+                return owner.subscribe_events_with_client(params, context.client_budget());
+            }
             if !matches!(
                 method,
                 "aria2.changeUri" | "changeUri" | "ariax.replaceSources"
             ) {
                 return owner.call(method, params);
             }
-            owner.begin_source_call(method, params)?
+            owner.begin_source_call(method, params, context.request_lease())?
         };
         loop {
             tokio::select! {
@@ -2432,6 +2475,7 @@ pub struct HttpControlBackend {
     plane: Arc<Mutex<HttpControlPlane>>,
     shutdown: watch::Sender<bool>,
     events: RpcEventBroker,
+    rpc_budgets: crate::RpcBudgets,
 }
 
 impl HttpControlBackend {
@@ -2439,10 +2483,12 @@ impl HttpControlBackend {
     pub fn new(plane: HttpControlPlane) -> Self {
         let (shutdown, _) = watch::channel(false);
         let events = plane.event_broker();
+        let rpc_budgets = plane.rpc_budgets.clone();
         Self {
             plane: Arc::new(Mutex::new(plane)),
             shutdown,
             events,
+            rpc_budgets,
         }
     }
 
@@ -2470,6 +2516,7 @@ impl HttpControlBackend {
                 plane,
                 shutdown: self.shutdown,
                 events: self.events,
+                rpc_budgets: self.rpc_budgets,
             }),
         }
     }
@@ -2477,13 +2524,27 @@ impl HttpControlBackend {
 
 impl HttpRpcBackend for HttpControlBackend {
     fn call(&self, method: &str, params: Value) -> crate::RpcFuture {
+        self.call_with_context(method, params, crate::RpcClientContext::default())
+    }
+
+    fn rpc_budgets(&self) -> crate::RpcBudgets {
+        self.rpc_budgets.clone()
+    }
+
+    fn call_with_context(
+        &self,
+        method: &str,
+        params: Value,
+        context: crate::RpcClientContext,
+    ) -> crate::RpcFuture {
         let plane = self.plane.clone();
         let shutdown = self.shutdown.clone();
         let method = method.to_owned();
         Box::pin(async move {
-            let result = HttpControlPlane::call_shared(&plane, &method, params)
-                .await
-                .map_err(control_backend_error);
+            let result =
+                HttpControlPlane::call_shared_with_context(&plane, &method, params, context)
+                    .await
+                    .map_err(control_backend_error);
             if plane.lock().await.shutdown_requested() {
                 let _ = shutdown.send(true);
             }
@@ -2563,7 +2624,9 @@ fn event_backend_error(error: RpcEventError) -> HttpControlError {
         RpcEventError::Disconnected(crate::RpcEventDisconnect::Unsubscribed) => {
             HttpControlError::NotFound
         }
-        RpcEventError::TooManySubscribers => HttpControlError::Busy,
+        RpcEventError::TooManySubscribers | RpcEventError::BudgetExhausted => {
+            HttpControlError::Busy
+        }
         _ => HttpControlError::InvalidParams("invalid event subscription"),
     }
 }
@@ -4292,13 +4355,17 @@ mod tests {
                 .is_none()
         })
         .await;
+        let client = plane.rpc_budgets.client().expect("RPC client");
+        let lease = client.try_request(512).expect("command lease");
+        let context = crate::RpcClientContext::default().with_request(lease);
         let shared = Arc::new(Mutex::new(plane));
         let caller = shared.clone();
         let request = tokio::spawn(async move {
-            HttpControlPlane::call_shared(
+            HttpControlPlane::call_shared_with_context(
                 &caller,
                 "ariax.replaceSources",
                 json!([gid.to_string(), ["http://new.test/file.bin"]]),
+                context,
             )
             .await
         });
@@ -4320,6 +4387,8 @@ mod tests {
                 .expect_err("caller disconnected")
                 .is_cancelled()
         );
+        assert_eq!(client.outstanding_requests(), 1);
+        assert!(client.request_bytes() > 0);
         let mut plane = Arc::try_unwrap(shared)
             .expect("owner remains available")
             .into_inner();
@@ -4328,6 +4397,8 @@ mod tests {
             plane.pending_source_replacements.is_empty()
         })
         .await;
+        assert_eq!(client.outstanding_requests(), 0);
+        assert_eq!(client.request_bytes(), 0);
         assert_eq!(
             plane
                 .tasks
@@ -4378,6 +4449,7 @@ mod tests {
             .begin_source_call(
                 "ariax.replaceSources",
                 json!([gid.to_string(), ["http://new.test/file.bin"]]),
+                None,
             )
             .expect("begin quiescence");
         assert!(

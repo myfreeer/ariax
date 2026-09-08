@@ -305,6 +305,16 @@ replacement repair passes the same platforms, including delayed cancellation,
 pause/remove races, disconnected callers, retry waits, atomic rollback, and
 restart before and after source commit. `P4-06` and the completion gates below
 remain open.
+The `P4-06` reservation/transport implementation now passes Linux 1.97.1, MSRV
+1.88, and native Windows-GNU workspace tests. Its controlled writer stalls use
+real HTTP/WebSocket framing and TCP connections with an injected pending write;
+they do not replace native optimized active-range or RSS benchmark evidence.
+Strict Linux/Windows-GNU Clippy, workspace build, formatting, and generated
+contract checks pass. The RPC fuzz target adds permit-bound and refund
+assertions and passes another 2,000-run local smoke check; it remains
+uninstrumented and does not replace CI fuzz coverage.
+Result-builder pre-allocation checks and complete typed-command forecasts still
+gate closure of `P4-06`.
 Passing the existing workspace checks does not substitute for the regression
 evidence below. Tests must use the production authentication and persistence
 composition, including real delayed worker cancellation where relevant.
@@ -316,7 +326,7 @@ composition, including real delayed worker cancellation where relevant.
 | `P4-03` Retry admission | Repaired: complete bounded retry registry and exact production-policy preflight before journal creation. Runtime/config scopes remain under `P4-07`. | `retry_admission_recovers_canonical_options_with_production_policy` and `rejected_admission_has_no_artifacts_and_does_not_fault_the_scheduler` pass with profiles, aliases, modifiers, forbidden keys, and a subsequent valid add/query. [Retry admission](retry-policy.md#registry-and-persistence-boundary). |
 | `P4-04` Active option recovery | Replay repaired: accepted snapshots survive drain, generation persistence includes atomic mirror promotion, and recovery restores exact staging and fresh patch identities. Live-only rate changes no longer restart. | Delayed-worker split/output/mixed patches, all durable prefixes, consecutive generations, rejected staging, and live-rate persistence pass. Exact promotion mismatch and injected SQLite rollback tests pass; strict journal replay tests remain green. Real output-path storage application is still a `P4-07` requirement. [Option application](detailed-config.md#runtime-update-application), [journal rules](detailed-storage.md#control-journal-format). |
 | `P4-05` Active source replacement | Repaired: asynchronous replacements quiesce the worker without changing user intent, then commit the complete source set and exact queue state before catalog publication and ordinary readmission. | Delayed-worker tests cover both method shapes, independent queries, pause/remove races, disconnected callers, and restart before/after commit. Retry-wait tests cancel stale timers with retained/released slots. SQLite queue mismatch and injected source-write failure roll back both changes. The synchronous primitive rejects active replacement before mutation. [Source persistence](session-persistence.md), [mutation contract](apis-and-embedding.md#control-mutation-recovery). |
-| `P4-06` RPC work accounting | Fixed body/response/event limits and connection caps exist, but no shared response-byte reservation; the four-slot stdio queue excludes executing and reader-held work. | Stalled HTTP, WebSocket, and stdio writers hold response credit; concurrent clients/listeners share global and resident limits. Four requests/8 MiB includes executing, queued, and reader-held state; the next body is backpressured. Disconnect, cancellation, parse failure, and response overflow release credit without blocking other clients. [RPC bounds](apis-and-embedding.md#query-and-response-work-bounds), [runtime budgets](detailed-runtime.md#resourcemanager). |
+| `P4-06` RPC work accounting | Reservations implemented: profile RPC and resident budgets cover client request leases, bounded parsing, serialized responses, queued events, retained multicall results, and transport caches. Result-builder pre-allocation checks and full typed-command forecasts remain open. | Controlled HTTP/WebSocket/stdio writer stalls, another client/listener, four executing/queued/reader-held requests, retained body frames/slices, deferred source calls, parse failure, overflow, writer error, and cancellation pass on Linux/MSRV/Windows-GNU. Complete the remaining materialization checks before closure. [RPC bounds](apis-and-embedding.md#query-and-response-work-bounds), [runtime budgets](detailed-runtime.md#resourcemanager). |
 
 Preserve the existing strict journal replay and uncertain-write failure rules.
 An invalid journal from the old checkpoint must not be made valid by ignoring a

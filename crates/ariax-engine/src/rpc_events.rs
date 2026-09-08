@@ -1,3 +1,5 @@
+use crate::rpc_budget::{RpcByteCharge, RpcEventCharge};
+use crate::{RpcBudgets, RpcClientBudget};
 use ariax_core::Gid;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, VecDeque};
@@ -39,6 +41,7 @@ impl RpcEventKey {
 pub struct RpcEvent {
     value: Arc<Value>,
     serialized_bytes: usize,
+    owned_bytes: usize,
     class: RpcEventClass,
     key: Option<RpcEventKey>,
 }
@@ -54,15 +57,14 @@ impl RpcEvent {
             return Err(RpcEventError::MissingCoalesceKey);
         }
         let value = json!({"jsonrpc":"2.0", "method":method.into(), "params":params});
-        let serialized_bytes = serde_json::to_vec(&value)
-            .map_err(|_| RpcEventError::Serialization)?
-            .len();
-        if serialized_bytes > MAX_RPC_EVENT_BYTE_CAPACITY {
-            return Err(RpcEventError::EventTooLarge);
-        }
+        let serialized_bytes =
+            crate::http_rpc::serialized_value_size(&value, MAX_RPC_EVENT_BYTE_CAPACITY)
+                .ok_or(RpcEventError::EventTooLarge)?;
+        let owned_bytes = crate::rpc_json::owned_value_bytes(&value);
         Ok(Self {
             value: Arc::new(value),
             serialized_bytes,
+            owned_bytes,
             class,
             key,
         })
@@ -110,6 +112,7 @@ pub enum RpcEventError {
     MissingCoalesceKey,
     EventTooLarge,
     Serialization,
+    BudgetExhausted,
     Disconnected(RpcEventDisconnect),
 }
 
@@ -121,6 +124,7 @@ impl fmt::Display for RpcEventError {
             Self::MissingCoalesceKey => "coalesced RPC event requires a key",
             Self::EventTooLarge => "RPC event exceeds the byte bound",
             Self::Serialization => "RPC event serialization failed",
+            Self::BudgetExhausted => "RPC event budget is busy",
             Self::Disconnected(RpcEventDisconnect::SlowConsumer) => {
                 "RPC event subscriber is a slow consumer"
             }
@@ -136,6 +140,7 @@ impl Error for RpcEventError {}
 #[derive(Clone, Debug)]
 struct QueuedEvent {
     event: RpcEvent,
+    charge: Arc<RpcEventCharge>,
 }
 
 #[derive(Debug)]
@@ -146,6 +151,8 @@ struct SubscriberState {
     dropped: u64,
     coalesced: u64,
     disconnect: Option<RpcEventDisconnect>,
+    client: RpcClientBudget,
+    _queue_charge: RpcByteCharge,
 }
 
 #[derive(Debug)]
@@ -157,6 +164,7 @@ struct BrokerState {
 #[derive(Clone, Debug)]
 pub struct RpcEventBroker {
     state: Arc<Mutex<BrokerState>>,
+    budgets: RpcBudgets,
 }
 
 impl Default for RpcEventBroker {
@@ -168,7 +176,13 @@ impl Default for RpcEventBroker {
 impl RpcEventBroker {
     #[must_use]
     pub fn new() -> Self {
+        Self::with_budgets(RpcBudgets::process_default())
+    }
+
+    #[must_use]
+    pub fn with_budgets(budgets: RpcBudgets) -> Self {
         Self {
+            budgets,
             state: Arc::new(Mutex::new(BrokerState {
                 next_id: 1,
                 subscribers: BTreeMap::new(),
@@ -177,11 +191,28 @@ impl RpcEventBroker {
     }
 
     pub fn subscribe(&self, limits: RpcEventLimits) -> Result<RpcEventSubscriber, RpcEventError> {
+        self.subscribe_with_client(limits, self.client_budget()?)
+    }
+
+    pub(crate) fn client_budget(&self) -> Result<RpcClientBudget, RpcEventError> {
+        self.budgets
+            .client()
+            .map_err(|_| RpcEventError::BudgetExhausted)
+    }
+
+    pub(crate) fn subscribe_with_client(
+        &self,
+        limits: RpcEventLimits,
+        client: RpcClientBudget,
+    ) -> Result<RpcEventSubscriber, RpcEventError> {
         let limits = limits.validate()?;
         let mut state = lock_unpoisoned(&self.state);
         if state.subscribers.len() == MAX_RPC_EVENT_SUBSCRIBERS {
             return Err(RpcEventError::TooManySubscribers);
         }
+        let queue_charge = client
+            .charge(limits.events.get() * std::mem::size_of::<QueuedEvent>() + 1024)
+            .map_err(|_| RpcEventError::BudgetExhausted)?;
         let id = state.next_id;
         state.next_id = state.next_id.checked_add(1).unwrap_or(1);
         if state.next_id == 0 {
@@ -196,6 +227,8 @@ impl RpcEventBroker {
                 dropped: 0,
                 coalesced: 0,
                 disconnect: None,
+                client,
+                _queue_charge: queue_charge,
             },
         );
         Ok(RpcEventSubscriber {
@@ -259,6 +292,7 @@ impl RpcEventSubscriber {
         Ok(Some(RpcEventDelivery {
             value: queued.event.value,
             dropped,
+            _charge: queued.charge,
         }))
     }
 }
@@ -276,6 +310,7 @@ impl Drop for RpcEventSubscriber {
 pub struct RpcEventDelivery {
     value: Arc<Value>,
     dropped: u64,
+    _charge: Arc<RpcEventCharge>,
 }
 
 impl RpcEventDelivery {
@@ -310,7 +345,16 @@ fn enqueue(subscriber: &mut SubscriberState, event: RpcEvent) {
             .queued_bytes
             .saturating_sub(replaced_bytes)
             .saturating_add(event.serialized_bytes);
-        if next_bytes <= subscriber.limits.bytes.get() {
+        let replaced = next_bytes <= subscriber.limits.bytes.get()
+            && Arc::get_mut(&mut previous.charge).is_some_and(|charge| {
+                charge
+                    .replace_bytes(
+                        &subscriber.client,
+                        event.owned_bytes.saturating_mul(2).saturating_add(256),
+                    )
+                    .is_ok()
+            });
+        if replaced {
             previous.event = event;
             subscriber.queued_bytes = next_bytes;
             subscriber.coalesced = subscriber.coalesced.saturating_add(1);
@@ -324,11 +368,22 @@ fn enqueue(subscriber: &mut SubscriberState, event: RpcEvent) {
             .queued_bytes
             .saturating_add(event.serialized_bytes)
             <= subscriber.limits.bytes.get();
-    if fits {
+    let charge = fits
+        .then(|| {
+            subscriber
+                .client
+                .event_charge(event.owned_bytes.saturating_mul(2).saturating_add(256))
+                .ok()
+        })
+        .flatten();
+    if let Some(charge) = charge {
         subscriber.queued_bytes = subscriber
             .queued_bytes
             .saturating_add(event.serialized_bytes);
-        subscriber.queue.push_back(QueuedEvent { event });
+        subscriber.queue.push_back(QueuedEvent {
+            event,
+            charge: Arc::new(charge),
+        });
     } else if event.class == RpcEventClass::Reliable {
         subscriber.disconnect = Some(RpcEventDisconnect::SlowConsumer);
         subscriber.queue.clear();
@@ -347,6 +402,56 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn event_credit_follows_delivery_and_preserves_command_capacity() {
+        let profile = ariax_runtime::ResolvedRuntimeProfile::resolve(
+            ariax_runtime::RuntimeProfile::Compact,
+            None,
+        );
+        let budgets = RpcBudgets::with_shared_resident(
+            profile,
+            ariax_runtime::ByteBudget::new(64 * 1024 * 1024),
+        );
+        let broker = RpcEventBroker::with_budgets(budgets.clone());
+        let client = budgets.client().expect("client");
+        let mut subscriber = broker
+            .subscribe_with_client(RpcEventLimits::default(), client.clone())
+            .expect("subscriber");
+        let baseline = budgets.snapshot().bytes;
+        let limit = budgets.snapshot().item_limit / 2;
+        for sequence in 0..limit {
+            broker.publish(event(RpcEventClass::Informational, None, sequence as u64));
+        }
+        assert_eq!(budgets.snapshot().items, limit);
+        assert!(budgets.snapshot().bytes > baseline);
+        broker.publish(event(RpcEventClass::Informational, None, 100));
+        assert_eq!(budgets.snapshot().items, limit);
+        let request = client.try_request(128).expect("polling remains possible");
+        let response = client
+            .response(Some(request))
+            .expect("reply remains possible");
+        drop(response);
+        let delivery = subscriber.try_next().expect("queue").expect("delivery");
+        let retained = delivery.clone();
+        drop(delivery);
+        assert_eq!(budgets.snapshot().items, limit);
+        drop(retained);
+        assert_eq!(budgets.snapshot().items, limit - 1);
+        broker.publish(event(RpcEventClass::Reliable, None, 101));
+        broker.publish(event(RpcEventClass::Reliable, None, 102));
+        assert!(matches!(
+            subscriber.try_next(),
+            Err(RpcEventError::Disconnected(
+                RpcEventDisconnect::SlowConsumer
+            ))
+        ));
+        assert_eq!(budgets.snapshot().items, 0);
+        drop(subscriber);
+        drop(client);
+        assert_eq!(budgets.snapshot().bytes, 0);
+        assert_eq!(budgets.snapshot().resident_bytes, 0);
+    }
 
     fn event(class: RpcEventClass, key: Option<RpcEventKey>, sequence: u64) -> RpcEvent {
         RpcEvent::notification("ariax.test", json!({"sequence": sequence}), class, key)

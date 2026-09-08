@@ -1,6 +1,7 @@
 //! Bounded JSON-RPC 2.0 framing shared by loopback HTTP and stdio.
 
-use crate::RpcClientContext;
+use crate::rpc_budget::{RpcAllocation, RpcRequestLease, RpcResponseLease};
+use crate::{RpcBudgets, RpcClientBudget, RpcClientContext};
 use bytes::Bytes;
 use futures_util::{SinkExt as _, StreamExt as _};
 use http_body_util::{BodyExt as _, Full, Limited};
@@ -20,7 +21,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, mpsc, watch};
 use tokio::task::JoinSet;
 use tokio_tungstenite::tungstenite::protocol::{Message, WebSocketConfig};
@@ -119,6 +120,10 @@ pub trait HttpRpcBackend: Send + Sync + 'static {
     fn authentication_required(&self) -> bool {
         false
     }
+
+    fn rpc_budgets(&self) -> RpcBudgets {
+        RpcBudgets::process_default()
+    }
 }
 
 /// Method-token authentication shared by all JSON-RPC transports. The secret
@@ -197,6 +202,10 @@ impl<B: HttpRpcBackend> HttpRpcBackend for RpcDispatcher<B> {
 
     fn authentication_required(&self) -> bool {
         self.auth.is_required()
+    }
+
+    fn rpc_budgets(&self) -> RpcBudgets {
+        self.backend.rpc_budgets()
     }
 
     fn call_with_context(
@@ -294,6 +303,7 @@ pub enum HttpRpcTransportError {
     Backend(HttpRpcBackendError),
     WebSocket(tokio_tungstenite::tungstenite::Error),
     Event(crate::RpcEventError),
+    Budget(crate::RpcBudgetError),
 }
 
 impl fmt::Display for HttpRpcTransportError {
@@ -310,6 +320,7 @@ impl fmt::Display for HttpRpcTransportError {
             Self::Backend(error) => error.fmt(formatter),
             Self::WebSocket(error) => error.fmt(formatter),
             Self::Event(error) => error.fmt(formatter),
+            Self::Budget(error) => error.fmt(formatter),
         }
     }
 }
@@ -340,13 +351,19 @@ impl From<crate::RpcEventError> for HttpRpcTransportError {
     }
 }
 
+impl From<crate::RpcBudgetError> for HttpRpcTransportError {
+    fn from(error: crate::RpcBudgetError) -> Self {
+        Self::Budget(error)
+    }
+}
+
 pub trait RpcWebSocketBackend: HttpRpcBackend {
     fn event_broker(&self) -> crate::RpcEventBroker;
 }
 
 /// Dispatches one JSON-RPC request. Parsing and response serialization are
 /// bounded before the backend is called.
-pub async fn dispatch_json<B: HttpRpcBackend>(backend: &B, bytes: &[u8]) -> Vec<u8> {
+pub async fn dispatch_json<B: HttpRpcBackend>(backend: &B, bytes: &[u8]) -> Bytes {
     dispatch_json_with_context(backend, bytes, &RpcClientContext::default()).await
 }
 
@@ -354,8 +371,40 @@ async fn dispatch_json_with_context<B: HttpRpcBackend>(
     backend: &B,
     bytes: &[u8],
     context: &RpcClientContext,
-) -> Vec<u8> {
-    let parsed = serde_json::from_slice::<Value>(bytes);
+) -> Bytes {
+    let Ok(client) = backend.rpc_budgets().client() else {
+        return Bytes::from_static(RPC_BUSY_RESPONSE);
+    };
+    if bytes.len() > MAX_HTTP_RPC_REQUEST_BYTES {
+        return Bytes::from_static(RPC_INPUT_LIMIT_RESPONSE);
+    }
+    let Ok(request) = client.try_request(bytes.len()) else {
+        return Bytes::from_static(RPC_BUSY_RESPONSE);
+    };
+    dispatch_admitted_json(backend, bytes, context, &client, request).await
+}
+
+const RPC_BUSY_RESPONSE: &[u8] =
+    br#"{"jsonrpc":"2.0","id":null,"error":{"code":-32005,"message":"RPC budget is busy"}}"#;
+const RPC_INPUT_LIMIT_RESPONSE: &[u8] =
+    br#"{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Request limit exceeded"}}"#;
+
+async fn dispatch_admitted_json<B: HttpRpcBackend>(
+    backend: &B,
+    bytes: &[u8],
+    context: &RpcClientContext,
+    client: &RpcClientBudget,
+    request: RpcRequestLease,
+) -> Bytes {
+    let context = context.with_request(request.clone());
+    let Ok(response_lease) = client.response(Some(request.clone())) else {
+        return leased_static_response(RPC_BUSY_RESPONSE, request);
+    };
+    let Ok(_workspace) = response_lease.workspace() else {
+        return leased_static_response(RPC_BUSY_RESPONSE, request);
+    };
+    let parsed = crate::rpc_json::parse(bytes, &request);
+    let mut writer = RpcResponseWriter::new(response_lease);
     let response = match parsed {
         Ok(Value::Array(requests)) if requests.is_empty() => {
             error_response(Value::Null, -32600, "Invalid Request", None)
@@ -367,37 +416,136 @@ async fn dispatch_json_with_context<B: HttpRpcBackend>(
             Some(json!({"limit": MAX_RPC_BATCH_MEMBERS})),
         ),
         Ok(Value::Array(requests)) => {
-            let mut responses = Vec::with_capacity(requests.len());
-            let mut response_bytes = 2_usize;
+            let mut completed = 0;
+            if io::Write::write_all(&mut writer, b"[").is_err() {
+                return leased_static_response(RPC_BUSY_RESPONSE, request);
+            }
             for request in requests {
-                if let Some(response) = dispatch_value(backend, request, context).await {
-                    let separator = usize::from(!responses.is_empty());
-                    let remaining = MAX_HTTP_RPC_RESPONSE_BYTES
-                        .saturating_sub(response_bytes)
-                        .saturating_sub(separator);
-                    let Some(member_bytes) = serialized_value_size(&response, remaining) else {
-                        return bounded_response_too_large(responses.len());
-                    };
-                    response_bytes = response_bytes
-                        .saturating_add(separator)
-                        .saturating_add(member_bytes);
-                    responses.push(response);
+                if let Some(response) = dispatch_value(backend, request, &context).await {
+                    if (completed != 0 && io::Write::write_all(&mut writer, b",").is_err())
+                        || !value_fits_workspace(&response)
+                        || serde_json::to_writer(&mut writer, &response).is_err()
+                    {
+                        return writer.error(completed);
+                    }
+                    completed += 1;
                 }
             }
-            if responses.is_empty() {
-                return Vec::new();
+            if completed == 0 {
+                return Bytes::new();
             }
-            Value::Array(responses)
+            if io::Write::write_all(&mut writer, b"]").is_err() {
+                return writer.error(completed);
+            }
+            return writer.finish();
         }
         Ok(request) => {
-            let Some(response) = dispatch_value(backend, request, context).await else {
-                return Vec::new();
+            let Some(response) = dispatch_value(backend, request, &context).await else {
+                return Bytes::new();
             };
             response
         }
-        Err(_) => error_response(Value::Null, -32700, "Parse error", None),
+        Err(crate::rpc_json::RpcJsonError::Parse) => {
+            error_response(Value::Null, -32700, "Parse error", None)
+        }
+        Err(crate::rpc_json::RpcJsonError::Budget(error)) => {
+            error_response(Value::Null, -32005, &error.to_string(), None)
+        }
     };
-    serialize_response(response).unwrap_or_else(|_| bounded_response_too_large(0))
+    if !value_fits_workspace(&response) || serde_json::to_writer(&mut writer, &response).is_err() {
+        return writer.error(0);
+    }
+    writer.finish()
+}
+
+fn value_fits_workspace(value: &Value) -> bool {
+    crate::rpc_json::owned_value_bytes(value) <= crate::rpc_budget::RPC_RESULT_WORKSPACE_BYTES
+}
+
+struct StaticResponseOwner<T> {
+    bytes: &'static [u8],
+    _lease: T,
+}
+
+impl<T> AsRef<[u8]> for StaticResponseOwner<T> {
+    fn as_ref(&self) -> &[u8] {
+        self.bytes
+    }
+}
+
+fn leased_static_response(bytes: &'static [u8], request: RpcRequestLease) -> Bytes {
+    Bytes::from_owner(StaticResponseOwner {
+        bytes,
+        _lease: request,
+    })
+}
+
+struct RpcResponseWriter {
+    bytes: Vec<u8>,
+    allocation: RpcAllocation,
+    _lease: RpcResponseLease,
+}
+
+impl RpcResponseWriter {
+    fn new(lease: RpcResponseLease) -> Self {
+        Self {
+            bytes: Vec::new(),
+            allocation: lease.allocation(),
+            _lease: lease,
+        }
+    }
+
+    fn finish(self) -> Bytes {
+        Bytes::from_owner(self)
+    }
+
+    fn error(mut self, completed: usize) -> Bytes {
+        self.bytes.clear();
+        let error = bounded_response_too_large(completed);
+        // The first output page always leaves room for a complete bounded error.
+        if self.bytes.capacity() < error.len() {
+            if self.allocation.reserve(error.len()).is_err() {
+                return Bytes::from_owner(StaticResponseOwner {
+                    bytes: RPC_BUSY_RESPONSE,
+                    _lease: self._lease,
+                });
+            }
+            self.bytes.reserve_exact(error.len());
+        }
+        self.bytes.extend_from_slice(&error);
+        self.finish()
+    }
+}
+
+impl AsRef<[u8]> for RpcResponseWriter {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl io::Write for RpcResponseWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let next = self.bytes.len().saturating_add(bytes.len());
+        if next > MAX_HTTP_RPC_RESPONSE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "RPC response limit",
+            ));
+        }
+        if next > self.bytes.capacity() {
+            let capacity = next.div_ceil(4096) * 4096;
+            self.allocation
+                .reserve(capacity - self.bytes.capacity())
+                .map_err(io::Error::other)?;
+            self.bytes.reserve_exact(capacity - self.bytes.len());
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 async fn dispatch_value<B: HttpRpcBackend>(
@@ -405,45 +553,48 @@ async fn dispatch_value<B: HttpRpcBackend>(
     request: Value,
     context: &RpcClientContext,
 ) -> Option<Value> {
-    let object = match request.as_object() {
-        Some(object) => object,
-        None => return Some(error_response(Value::Null, -32600, "Invalid Request", None)),
+    let mut object = match request {
+        Value::Object(object) => object,
+        _ => return Some(error_response(Value::Null, -32600, "Invalid Request", None)),
     };
     if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
         return Some(error_response(
-            object.get("id").cloned().unwrap_or(Value::Null),
+            object.remove("id").unwrap_or(Value::Null),
             -32600,
             "Invalid Request",
             None,
         ));
     }
     let notification = !object.contains_key("id");
-    let id = object.get("id").cloned().unwrap_or(Value::Null);
+    let id = object.remove("id").unwrap_or(Value::Null);
     if !notification && (id.is_null() || !(id.is_string() || id.is_number())) {
         return Some(error_response(Value::Null, -32600, "Invalid Request", None));
     }
-    let Some(method) = object.get("method").and_then(Value::as_str) else {
+    let Some(Value::String(method)) = object.remove("method") else {
         return Some(error_response(id, -32600, "Invalid Request", None));
     };
-    let params = object
-        .get("params")
-        .cloned()
-        .unwrap_or(Value::Array(Vec::new()));
+    let params = object.remove("params").unwrap_or(Value::Array(Vec::new()));
     if !(params.is_array() || params.is_object()) {
         return Some(error_response(id, -32602, "Invalid params", None));
     }
     if notification {
         let _ = backend
-            .call_with_context(method, params, context.clone())
+            .call_with_context(&method, params, context.clone())
             .await;
         return None;
     }
     Some(
         match backend
-            .call_with_context(method, params, context.clone())
+            .call_with_context(&method, params, context.clone())
             .await
         {
-            Ok(result) => json!({"jsonrpc":"2.0", "id":id, "result":result}),
+            Ok(result) => {
+                let mut response = serde_json::Map::new();
+                response.insert("jsonrpc".to_owned(), Value::String("2.0".to_owned()));
+                response.insert("id".to_owned(), id);
+                response.insert("result".to_owned(), result);
+                Value::Object(response)
+            }
             Err(error) => error_response(id, error.code, &error.message, error.data),
         },
     )
@@ -456,7 +607,11 @@ fn error_response(id: Value, code: i64, message: &str, data: Option<Value>) -> V
     if let Some(data) = data {
         error.insert("data".to_owned(), data);
     }
-    json!({"jsonrpc":"2.0", "id":id, "error":Value::Object(error)})
+    let mut response = serde_json::Map::new();
+    response.insert("jsonrpc".to_owned(), Value::String("2.0".to_owned()));
+    response.insert("id".to_owned(), id);
+    response.insert("error".to_owned(), Value::Object(error));
+    Value::Object(response)
 }
 
 fn serialize_response(response: Value) -> Result<Vec<u8>, HttpRpcTransportError> {
@@ -526,6 +681,7 @@ async fn multicall<B: HttpRpcBackend>(
             append_multicall_result(
                 &mut results,
                 &mut result_bytes,
+                &context,
                 multicall_error(HttpRpcBackendError::new(
                     -32602,
                     "multicall member must be an object",
@@ -537,6 +693,7 @@ async fn multicall<B: HttpRpcBackend>(
             append_multicall_result(
                 &mut results,
                 &mut result_bytes,
+                &context,
                 multicall_error(HttpRpcBackendError::new(
                     -32602,
                     "multicall member requires methodName",
@@ -548,6 +705,7 @@ async fn multicall<B: HttpRpcBackend>(
             append_multicall_result(
                 &mut results,
                 &mut result_bytes,
+                &context,
                 multicall_error(HttpRpcBackendError::new(
                     -32602,
                     "nested multicall is not supported",
@@ -562,12 +720,22 @@ async fn multicall<B: HttpRpcBackend>(
         let member_params = match auth.authorize(member_params) {
             Ok(params) => params,
             Err(error) => {
-                append_multicall_result(&mut results, &mut result_bytes, multicall_error(error))?;
+                append_multicall_result(
+                    &mut results,
+                    &mut result_bytes,
+                    &context,
+                    multicall_error(error),
+                )?;
                 continue;
             }
         };
         if let Err(error) = authorize_client_events(&context) {
-            append_multicall_result(&mut results, &mut result_bytes, multicall_error(error))?;
+            append_multicall_result(
+                &mut results,
+                &mut result_bytes,
+                &context,
+                multicall_error(error),
+            )?;
             continue;
         }
         let result = match method {
@@ -598,7 +766,7 @@ async fn multicall<B: HttpRpcBackend>(
             Ok(value) => Value::Array(vec![value]),
             Err(error) => multicall_error(error),
         };
-        append_multicall_result(&mut results, &mut result_bytes, member)?;
+        append_multicall_result(&mut results, &mut result_bytes, &context, member)?;
     }
     Ok(Value::Array(results))
 }
@@ -606,8 +774,19 @@ async fn multicall<B: HttpRpcBackend>(
 fn append_multicall_result(
     results: &mut Vec<Value>,
     result_bytes: &mut usize,
+    context: &RpcClientContext,
     member: Value,
 ) -> Result<(), HttpRpcBackendError> {
+    if !value_fits_workspace(&member)
+        || context
+            .retain_result(crate::rpc_json::owned_value_bytes(&member))
+            .is_err()
+    {
+        return Err(
+            HttpRpcBackendError::new(RPC_RESPONSE_TOO_LARGE, "Response too large")
+                .with_data(json!({"completed": results.len().saturating_add(1)})),
+        );
+    }
     let separator = usize::from(!results.is_empty());
     let remaining = MAX_MULTICALL_RESULT_BYTES
         .saturating_sub(*result_bytes)
@@ -678,7 +857,7 @@ fn bounded_response_too_large(completed: usize) -> Vec<u8> {
     .expect("bounded JSON-RPC error fits the response cap")
 }
 
-fn serialized_value_size(value: &impl serde::Serialize, limit: usize) -> Option<usize> {
+pub(crate) fn serialized_value_size(value: &impl serde::Serialize, limit: usize) -> Option<usize> {
     struct Counter {
         used: usize,
         limit: usize,
@@ -818,18 +997,24 @@ where
 }
 
 async fn serve_http_connection<B: HttpRpcBackend>(
-    stream: TcpStream,
+    stream: impl AsyncRead + AsyncWrite + Unpin,
     backend: Arc<B>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), HttpRpcTransportError> {
+    let client = backend.rpc_budgets().client()?;
     let io = TokioIo::new(stream);
-    let connection = http1::Builder::new().keep_alive(true).serve_connection(
-        io,
-        service_fn(move |request| {
-            let backend = backend.clone();
-            async move { Ok::<_, Infallible>(http_request(backend, request).await) }
-        }),
-    );
+    let connection = http1::Builder::new()
+        .keep_alive(true)
+        .writev(true)
+        .max_buf_size(MAX_HTTP_RPC_HEADER_BYTES)
+        .serve_connection(
+            io,
+            service_fn(move |request| {
+                let backend = backend.clone();
+                let client = client.clone();
+                async move { Ok::<_, Infallible>(http_request(backend, request, client).await) }
+            }),
+        );
     tokio::pin!(connection);
     loop {
         tokio::select! {
@@ -847,10 +1032,24 @@ async fn serve_http_connection<B: HttpRpcBackend>(
 async fn http_request<B: HttpRpcBackend>(
     backend: Arc<B>,
     request: Request<Incoming>,
+    client: RpcClientBudget,
 ) -> Response<Full<Bytes>> {
     if request.method() != Method::POST || request.uri().path() != "/jsonrpc" {
         return plain_response(StatusCode::NOT_FOUND, b"not found");
     }
+    let length = request
+        .headers()
+        .get(hyper::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(MAX_HTTP_RPC_REQUEST_BYTES);
+    if length > MAX_HTTP_RPC_REQUEST_BYTES {
+        return plain_response(StatusCode::PAYLOAD_TOO_LARGE, b"request too large");
+    }
+    let lease = match client.request(length).await {
+        Ok(lease) => lease,
+        Err(_) => return plain_response(StatusCode::SERVICE_UNAVAILABLE, b"RPC budget is busy"),
+    };
     let body = match Limited::new(request.into_body(), MAX_HTTP_RPC_REQUEST_BYTES)
         .collect()
         .await
@@ -858,7 +1057,14 @@ async fn http_request<B: HttpRpcBackend>(
         Ok(body) => body.to_bytes(),
         Err(_) => return plain_response(StatusCode::PAYLOAD_TOO_LARGE, b"request too large"),
     };
-    let bytes = dispatch_json(backend.as_ref(), &body).await;
+    let bytes = dispatch_admitted_json(
+        backend.as_ref(),
+        &body,
+        &RpcClientContext::default(),
+        &client,
+        lease,
+    )
+    .await;
     if bytes.len() > MAX_HTTP_RPC_RESPONSE_BYTES {
         return plain_response(StatusCode::INTERNAL_SERVER_ERROR, b"response too large");
     }
@@ -866,7 +1072,7 @@ async fn http_request<B: HttpRpcBackend>(
         .status(StatusCode::OK)
         .header("content-type", "application/json")
         .header("content-length", bytes.len())
-        .body(Full::new(Bytes::from(bytes)))
+        .body(Full::new(bytes))
         .expect("static HTTP response headers are valid")
 }
 
@@ -952,18 +1158,29 @@ where
 }
 
 async fn serve_websocket_connection<B: RpcWebSocketBackend>(
-    stream: TcpStream,
+    stream: impl AsyncRead + AsyncWrite + Unpin,
     backend: Arc<B>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), HttpRpcTransportError> {
+    let client = backend.rpc_budgets().client()?;
+    // Tungstenite retains its receive allocation after an assembled message is consumed.
+    let _read_cache = client.charge(2 * MAX_HTTP_RPC_REQUEST_BYTES)?;
+    let mut write_cache = WebSocketWriteReservation::new(client.clone());
     let config = WebSocketConfig::default()
+        .read_buffer_size(MAX_HTTP_RPC_HEADER_BYTES)
+        .write_buffer_size(0)
+        .max_write_buffer_size(MAX_HTTP_RPC_RESPONSE_BYTES + MAX_HTTP_RPC_HEADER_BYTES)
         .max_message_size(Some(MAX_HTTP_RPC_REQUEST_BYTES))
         .max_frame_size(Some(MAX_HTTP_RPC_REQUEST_BYTES));
     let mut socket = tokio_tungstenite::accept_async_with_config(stream, Some(config)).await?;
-    let context =
-        RpcClientContext::with_events(backend.event_broker(), backend.authentication_required())?;
+    let context = RpcClientContext::with_events_and_budget(
+        backend.event_broker(),
+        backend.authentication_required(),
+        client.clone(),
+    )?;
     let mut event_poll = tokio::time::interval(Duration::from_millis(10));
     event_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut request = Some(client.request(MAX_HTTP_RPC_REQUEST_BYTES).await?);
     loop {
         tokio::select! {
             changed = shutdown.changed() => {
@@ -974,7 +1191,7 @@ async fn serve_websocket_connection<B: RpcWebSocketBackend>(
                         "params":{},
                     });
                     if context.is_authenticated() {
-                        socket.send(Message::Text(notice.to_string().into())).await?;
+                        send_websocket_json(&mut socket, &mut write_cache, serialize_event(&client, notice)?, false).await?;
                     }
                     socket.close(None).await?;
                     return Ok(());
@@ -983,15 +1200,8 @@ async fn serve_websocket_connection<B: RpcWebSocketBackend>(
             _ = event_poll.tick() => {
                 match context.try_next_event() {
                     Ok(Some(delivery)) => {
-                        let bytes = serde_json::to_vec(&delivery.into_value())
-                            .map_err(|_| HttpRpcTransportError::ResponseTooLarge)?;
-                        if bytes.len() > MAX_HTTP_RPC_RESPONSE_BYTES {
-                            return Err(HttpRpcTransportError::ResponseTooLarge);
-                        }
-                        let text = String::from_utf8(bytes).map_err(|_| {
-                            HttpRpcTransportError::InvalidFrame("event JSON is not UTF-8")
-                        })?;
-                        socket.send(Message::Text(text.into())).await?;
+                        let bytes = serialize_delivery(&client, delivery)?;
+                        send_websocket_json(&mut socket, &mut write_cache, bytes, false).await?;
                     }
                     Ok(None) => {}
                     Err(crate::RpcEventError::Disconnected(
@@ -1002,7 +1212,7 @@ async fn serve_websocket_connection<B: RpcWebSocketBackend>(
                             "method":"ariax.onError",
                             "params":{"code":"slow_consumer"},
                         });
-                        socket.send(Message::Text(error.to_string().into())).await?;
+                        send_websocket_json(&mut socket, &mut write_cache, serialize_event(&client, error)?, false).await?;
                         socket.close(None).await?;
                         return Ok(());
                     }
@@ -1015,23 +1225,25 @@ async fn serve_websocket_connection<B: RpcWebSocketBackend>(
                 };
                 match message? {
                     Message::Text(text) => {
-                        let response = dispatch_json_with_context(backend.as_ref(), text.as_bytes(), &context).await;
-                        if response.is_empty() {
-                            continue;
+                        let response = dispatch_admitted_json(backend.as_ref(), text.as_bytes(), &context, &client, request.take().expect("read lease")).await;
+                        drop(text);
+                        if !response.is_empty() {
+                            send_websocket_json(&mut socket, &mut write_cache, response, false).await?;
                         }
-                        let response = String::from_utf8(response).map_err(|_| {
-                            HttpRpcTransportError::InvalidFrame("response JSON is not UTF-8")
-                        })?;
-                        socket.send(Message::Text(response.into())).await?;
+                        request = Some(client.request(MAX_HTTP_RPC_REQUEST_BYTES).await?);
                     }
                     Message::Binary(bytes) => {
-                        let response = dispatch_json_with_context(backend.as_ref(), &bytes, &context).await;
-                        if response.is_empty() {
-                            continue;
+                        let response = dispatch_admitted_json(backend.as_ref(), &bytes, &context, &client, request.take().expect("read lease")).await;
+                        drop(bytes);
+                        if !response.is_empty() {
+                            send_websocket_json(&mut socket, &mut write_cache, response, true).await?;
                         }
-                        socket.send(Message::Binary(response.into())).await?;
+                        request = Some(client.request(MAX_HTTP_RPC_REQUEST_BYTES).await?);
                     }
-                    Message::Ping(bytes) => socket.send(Message::Pong(bytes)).await?,
+                    Message::Ping(bytes) => {
+                        write_cache.reserve(bytes.len())?;
+                        socket.send(Message::Pong(bytes)).await?;
+                    }
                     Message::Pong(_) => {}
                     Message::Close(_) => return Ok(()),
                     Message::Frame(_) => {}
@@ -1039,6 +1251,81 @@ async fn serve_websocket_connection<B: RpcWebSocketBackend>(
             }
         }
     }
+}
+
+struct WebSocketWriteReservation {
+    client: RpcClientBudget,
+    charges: Vec<crate::rpc_budget::RpcByteCharge>,
+    reserved: usize,
+}
+
+impl WebSocketWriteReservation {
+    fn new(client: RpcClientBudget) -> Self {
+        Self {
+            client,
+            charges: Vec::new(),
+            reserved: 0,
+        }
+    }
+
+    fn reserve(&mut self, bytes: usize) -> Result<(), crate::RpcBudgetError> {
+        let required = bytes.saturating_add(128).saturating_mul(2);
+        if required > self.reserved {
+            self.charges
+                .push(self.client.charge(required - self.reserved)?);
+            self.reserved = required;
+        }
+        Ok(())
+    }
+}
+
+async fn send_websocket_json<S: AsyncRead + AsyncWrite + Unpin>(
+    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    cache: &mut WebSocketWriteReservation,
+    bytes: Bytes,
+    binary: bool,
+) -> Result<(), HttpRpcTransportError> {
+    cache.reserve(bytes.len())?;
+    let message = if binary {
+        Message::Binary(bytes.clone())
+    } else {
+        Message::Text(
+            bytes
+                .clone()
+                .try_into()
+                .map_err(|_| HttpRpcTransportError::InvalidFrame("response JSON is not UTF-8"))?,
+        )
+    };
+    socket.send(message).await?;
+    drop(bytes);
+    Ok(())
+}
+
+fn serialize_event(client: &RpcClientBudget, value: Value) -> Result<Bytes, HttpRpcTransportError> {
+    serialize_event_with(client, || value)
+}
+
+fn serialize_delivery(
+    client: &RpcClientBudget,
+    delivery: crate::RpcEventDelivery,
+) -> Result<Bytes, HttpRpcTransportError> {
+    serialize_event_with(client, || delivery.into_value())
+}
+
+fn serialize_event_with(
+    client: &RpcClientBudget,
+    value: impl FnOnce() -> Value,
+) -> Result<Bytes, HttpRpcTransportError> {
+    let lease = client.response(None)?;
+    let _workspace = lease.workspace()?;
+    let value = value();
+    if !value_fits_workspace(&value) {
+        return Err(HttpRpcTransportError::ResponseTooLarge);
+    }
+    let mut writer = RpcResponseWriter::new(lease);
+    serde_json::to_writer(&mut writer, &value)
+        .map_err(|_| HttpRpcTransportError::ResponseTooLarge)?;
+    Ok(writer.finish())
 }
 
 /// Runs the same dispatcher over LSP-style `Content-Length` stdio frames.
@@ -1052,6 +1339,7 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
+    let client = backend.rpc_budgets().client()?;
     loop {
         let Some(length) = read_content_length(&mut reader).await? else {
             return Ok(());
@@ -1059,9 +1347,17 @@ where
         if length > MAX_HTTP_RPC_REQUEST_BYTES {
             return Err(HttpRpcTransportError::RequestTooLarge);
         }
+        let lease = client.request(length).await?;
         let mut body = vec![0_u8; length];
         reader.read_exact(&mut body).await?;
-        let response = dispatch_json(backend.as_ref(), &body).await;
+        let response = dispatch_admitted_json(
+            backend.as_ref(),
+            &body,
+            &RpcClientContext::default(),
+            &client,
+            lease,
+        )
+        .await;
         if response.is_empty() {
             continue;
         }
@@ -1085,10 +1381,19 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin,
 {
-    const PENDING_REQUESTS: usize = 4;
+    const PENDING_REQUESTS: usize = crate::MAX_RPC_CLIENT_REQUESTS;
+    let client = backend.rpc_budgets().client()?;
+    let reader_client = client.clone();
     let (sender, mut requests) = mpsc::channel(PENDING_REQUESTS);
-    let reader_task = tokio::spawn(async move {
+    let mut reader_task = RpcReaderTask(tokio::spawn(async move {
         loop {
+            let lease = match reader_client.request(0).await {
+                Ok(lease) => lease,
+                Err(error) => {
+                    let _ = sender.send(Err(error.into())).await;
+                    return;
+                }
+            };
             let length = match read_content_length(&mut reader).await {
                 Ok(Some(length)) => length,
                 Ok(None) => return,
@@ -1103,28 +1408,35 @@ where
                     .await;
                 return;
             }
+            if let Err(error) = lease.reserve(length.saturating_mul(2)) {
+                let _ = sender.send(Err(error.into())).await;
+                return;
+            }
             let mut body = vec![0_u8; length];
             if let Err(error) = reader.read_exact(&mut body).await {
                 let _ = sender.send(Err(HttpRpcTransportError::Io(error))).await;
                 return;
             }
-            if sender.send(Ok(body)).await.is_err() {
+            if sender.send(Ok((body, lease))).await.is_err() {
                 return;
             }
         }
-    });
-    let context =
-        RpcClientContext::with_events(backend.event_broker(), backend.authentication_required())?;
+    }));
+    let context = RpcClientContext::with_events_and_budget(
+        backend.event_broker(),
+        backend.authentication_required(),
+        client.clone(),
+    )?;
     let mut event_poll = tokio::time::interval(Duration::from_millis(10));
     event_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let result = loop {
+    let result = async { loop {
         tokio::select! {
             request = requests.recv() => {
                 let Some(request) = request else {
                     break Ok(());
                 };
-                let body = request?;
-                let response = dispatch_json_with_context(backend.as_ref(), &body, &context).await;
+                let (body, lease) = request?;
+                let response = dispatch_admitted_json(backend.as_ref(), &body, &context, &client, lease).await;
                 if !response.is_empty() {
                     write_content_length_message(&mut writer, &response).await?;
                 }
@@ -1132,14 +1444,14 @@ where
             _ = event_poll.tick() => {
                 match context.try_next_event() {
                     Ok(Some(delivery)) => {
-                        let event = serialize_response(delivery.into_value())?;
+                        let event = serialize_delivery(&client, delivery)?;
                         write_content_length_message(&mut writer, &event).await?;
                     }
                     Ok(None) => {}
                     Err(crate::RpcEventError::Disconnected(
                         crate::RpcEventDisconnect::SlowConsumer,
                     )) => {
-                        let event = serialize_response(json!({
+                        let event = serialize_event(&client, json!({
                             "jsonrpc":"2.0",
                             "method":"ariax.onError",
                             "params":{"code":"slow_consumer"},
@@ -1151,10 +1463,18 @@ where
                 }
             }
         }
-    };
-    reader_task.abort();
-    let _ = reader_task.await;
+    }}.await;
+    reader_task.0.abort();
+    let _ = (&mut reader_task.0).await;
     result
+}
+
+struct RpcReaderTask(tokio::task::JoinHandle<()>);
+
+impl Drop for RpcReaderTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 async fn write_content_length_message<W: AsyncWrite + Unpin>(
@@ -1181,9 +1501,10 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let mut line = Vec::new();
+    let client = backend.rpc_budgets().client()?;
     loop {
-        line.clear();
+        let lease = client.request(MAX_HTTP_RPC_REQUEST_BYTES).await?;
+        let mut line = Vec::new();
         let mut byte = [0_u8; 1];
         loop {
             let read = reader.read(&mut byte).await?;
@@ -1206,7 +1527,14 @@ where
         if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        let response = dispatch_json(backend.as_ref(), &line).await;
+        let response = dispatch_admitted_json(
+            backend.as_ref(),
+            &line,
+            &RpcClientContext::default(),
+            &client,
+            lease,
+        )
+        .await;
         if response.is_empty() {
             continue;
         }
@@ -1272,8 +1600,409 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use tokio::io::duplex;
-    use tokio::net::TcpListener;
+    use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::oneshot;
+
+    fn isolated_budgets() -> RpcBudgets {
+        let profile = ariax_runtime::ResolvedRuntimeProfile::resolve(
+            ariax_runtime::RuntimeProfile::Compact,
+            None,
+        );
+        RpcBudgets::with_shared_resident(profile, ariax_runtime::ByteBudget::new(64 * 1024 * 1024))
+    }
+
+    struct BudgetBackend {
+        budgets: RpcBudgets,
+        events: crate::RpcEventBroker,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl BudgetBackend {
+        fn new() -> Self {
+            let budgets = isolated_budgets();
+            Self {
+                events: crate::RpcEventBroker::with_budgets(budgets.clone()),
+                budgets,
+                calls: Arc::default(),
+            }
+        }
+    }
+
+    impl HttpRpcBackend for BudgetBackend {
+        fn rpc_budgets(&self) -> RpcBudgets {
+            self.budgets.clone()
+        }
+
+        fn call(&self, method: &str, _params: Value) -> RpcFuture {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let large = method == "large";
+            Box::pin(async move {
+                Ok(if large {
+                    Value::String("x".repeat(4 * 1024 * 1024))
+                } else {
+                    json!("OK")
+                })
+            })
+        }
+    }
+
+    impl RpcWebSocketBackend for BudgetBackend {
+        fn event_broker(&self) -> crate::RpcEventBroker {
+            self.events.clone()
+        }
+    }
+
+    struct CountedReader {
+        cursor: std::io::Cursor<Vec<u8>>,
+        read: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl AsyncRead for CountedReader {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            context: &mut std::task::Context<'_>,
+            buffer: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            let before = buffer.filled().len();
+            let result = Pin::new(&mut self.cursor).poll_read(context, buffer);
+            self.read.fetch_add(
+                buffer.filled().len() - before,
+                std::sync::atomic::Ordering::SeqCst,
+            );
+            result
+        }
+    }
+
+    async fn wait_for(mut condition: impl FnMut() -> bool) {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !condition() {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .expect("condition reached");
+    }
+
+    #[tokio::test]
+    async fn response_credit_follows_http_body_frames_clones_and_slices() {
+        let backend = BudgetBackend::new();
+        let client = backend.budgets.client().expect("client");
+        let request = br#"{"jsonrpc":"2.0","id":1,"method":"large"}"#;
+        let lease = client.try_request(request.len()).expect("request");
+        let bytes = dispatch_admitted_json(
+            &backend,
+            request,
+            &RpcClientContext::default(),
+            &client,
+            lease,
+        )
+        .await;
+        assert!(bytes.len() > 4 * 1024 * 1024);
+        assert_eq!(client.outstanding_requests(), 1);
+        let response = Response::new(Full::new(bytes));
+        let mut body = response.into_body();
+        let chunk = body
+            .frame()
+            .await
+            .expect("frame")
+            .expect("body")
+            .into_data()
+            .expect("data");
+        let retained = chunk.slice(0..16);
+        drop(chunk);
+        drop(body);
+        assert!(backend.budgets.snapshot().bytes >= 4 * 1024 * 1024);
+        assert!(client.response(None).is_err());
+        let other = backend.budgets.client().expect("other client");
+        let other_request = other.try_request(1).expect("other request");
+        assert!(other.response(Some(other_request)).is_ok());
+        drop(other);
+        drop(retained);
+        assert_eq!(client.outstanding_requests(), 0);
+        assert_eq!(client.request_bytes(), 0);
+        drop(client);
+        assert_eq!(backend.budgets.snapshot().bytes, 0);
+        assert_eq!(backend.budgets.snapshot().items, 0);
+    }
+
+    #[tokio::test]
+    async fn stalled_stdio_counts_executing_queued_and_reader_held_requests_and_cancels_cleanly() {
+        let backend = Arc::new(BudgetBackend::new());
+        let request = br#"{"jsonrpc":"2.0","id":1,"method":"large"}"#;
+        let mut frame = format!("Content-Length: {}\r\n\r\n", request.len()).into_bytes();
+        frame.extend_from_slice(request);
+        let read = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reader = CountedReader {
+            cursor: std::io::Cursor::new(frame.repeat(6)),
+            read: read.clone(),
+        };
+        let (writer, _stalled_reader) = duplex(64);
+        let server = tokio::spawn(run_content_length_stdio_with_events(
+            backend.clone(),
+            reader,
+            writer,
+        ));
+        wait_for(|| read.load(std::sync::atomic::Ordering::SeqCst) == 4 * frame.len()).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(
+            read.load(std::sync::atomic::Ordering::SeqCst),
+            4 * frame.len()
+        );
+        assert_eq!(backend.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(backend.budgets.snapshot().bytes >= 4 * 1024 * 1024);
+        assert_eq!(backend.budgets.snapshot().items, 5);
+        server.abort();
+        assert!(
+            server
+                .await
+                .expect_err("cancelled transport")
+                .is_cancelled()
+        );
+        wait_for(|| backend.budgets.snapshot().items == 0).await;
+        assert_eq!(backend.budgets.snapshot().bytes, 0);
+        assert_eq!(backend.budgets.snapshot().resident_bytes, 0);
+        assert_eq!(backend.events.subscriber_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn expanded_or_malformed_json_rejects_without_dispatch_and_refunds_credit() {
+        let backend = BudgetBackend::new();
+        let client = backend.budgets.client().expect("client");
+        let expanded = format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"large\",\"params\":[{}null]}}",
+            "null,".repeat(40_000)
+        );
+        for (request, code) in [
+            (expanded.as_bytes(), -32005),
+            (b"not json".as_slice(), -32700),
+        ] {
+            let lease = client.try_request(request.len()).expect("request");
+            let response = dispatch_admitted_json(
+                &backend,
+                request,
+                &RpcClientContext::default(),
+                &client,
+                lease,
+            )
+            .await;
+            let value: Value = serde_json::from_slice(&response).expect("complete error");
+            assert_eq!(value["error"]["code"], code);
+            drop(response);
+            assert_eq!(client.outstanding_requests(), 0);
+            assert_eq!(client.request_bytes(), 0);
+        }
+        assert_eq!(backend.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        drop(client);
+        assert_eq!(backend.budgets.snapshot().bytes, 0);
+    }
+
+    #[test]
+    fn response_overflow_keeps_a_complete_error_and_refunds_on_release() {
+        let budgets = isolated_budgets();
+        let client = budgets.client().expect("client");
+        let request = client.try_request(1).expect("request");
+        let response = client.response(Some(request)).expect("response");
+        let mut writer = RpcResponseWriter::new(response);
+        io::Write::write_all(&mut writer, &vec![b'x'; MAX_HTTP_RPC_RESPONSE_BYTES])
+            .expect("response cap");
+        assert!(io::Write::write_all(&mut writer, b"x").is_err());
+        let response = writer.error(3);
+        let value: Value = serde_json::from_slice(&response).expect("complete error");
+        assert_eq!(value["error"]["code"], RPC_RESPONSE_TOO_LARGE);
+        assert_eq!(value["error"]["data"]["completed"], 3);
+        assert_eq!(client.outstanding_requests(), 1);
+        drop(response);
+        assert_eq!(client.outstanding_requests(), 0);
+        drop(client);
+        assert_eq!(budgets.snapshot().bytes, 0);
+        assert_eq!(budgets.snapshot().items, 0);
+    }
+
+    #[tokio::test]
+    async fn multicall_retained_results_are_charged_until_response_materialization_finishes() {
+        let backend = Arc::new(BudgetBackend::new());
+        let dispatcher = RpcDispatcher::new(backend.clone(), RpcAuthPolicy::default());
+        let response = dispatch_json(&dispatcher, br#"{"jsonrpc":"2.0","id":1,"method":"system.multicall","params":[[{"methodName":"large","params":[]},{"methodName":"large","params":[]},{"methodName":"large","params":[]},{"methodName":"large","params":[]}]]}"#).await;
+        let value: Value = serde_json::from_slice(&response).expect("complete bounded response");
+        assert_eq!(value["error"]["code"], RPC_RESPONSE_TOO_LARGE);
+        assert!(backend.budgets.snapshot().bytes <= backend.budgets.snapshot().byte_limit);
+        drop(response);
+        assert_eq!(backend.budgets.snapshot().bytes, 0);
+        assert_eq!(backend.budgets.snapshot().items, 0);
+    }
+
+    #[tokio::test]
+    async fn failed_stdio_writer_releases_reader_and_response_reservations() {
+        let backend = Arc::new(BudgetBackend::new());
+        let request = br#"{"jsonrpc":"2.0","id":1,"method":"large"}"#;
+        let mut frame = format!("Content-Length: {}\r\n\r\n", request.len()).into_bytes();
+        frame.extend_from_slice(request);
+        let (writer, reader) = duplex(64);
+        drop(reader);
+        assert!(
+            run_content_length_stdio_with_events(
+                backend.clone(),
+                std::io::Cursor::new(frame.repeat(6)),
+                writer
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(backend.budgets.snapshot().items, 0);
+        assert_eq!(backend.budgets.snapshot().bytes, 0);
+        assert_eq!(backend.budgets.snapshot().resident_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn stalled_http_and_websocket_writers_hold_credit_without_exhausting_other_listeners() {
+        for websocket in [false, true] {
+            let backend = Arc::new(BudgetBackend::new());
+            let http_listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("HTTP listener");
+            let http_address = http_listener.local_addr().expect("HTTP address");
+            let (http_shutdown, stopped) = oneshot::channel();
+            let http = tokio::spawn(serve_loopback_http_listener_until(
+                http_listener,
+                backend.clone(),
+                async {
+                    let _ = stopped.await;
+                    Ok(())
+                },
+            ));
+            let gated_listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("gated listener");
+            let gated_address = gated_listener.local_addr().expect("gated address");
+            let gate = Arc::new(WriteGate::default());
+            gate.open.store(true, std::sync::atomic::Ordering::SeqCst);
+            let gate_owner = gate.clone();
+            let gated_backend = backend.clone();
+            let gated = tokio::spawn(async move {
+                let (stream, _) = gated_listener.accept().await.expect("gated connection");
+                let stream = GatedWriter {
+                    stream,
+                    gate: gate_owner,
+                };
+                let (_stop, shutdown) = watch::channel(false);
+                if websocket {
+                    serve_websocket_connection(stream, gated_backend, shutdown).await
+                } else {
+                    serve_http_connection(stream, gated_backend, shutdown).await
+                }
+            });
+            let request = br#"{"jsonrpc":"2.0","id":1,"method":"large"}"#;
+            let mut retained_http = None;
+            let mut retained_ws = None;
+            if websocket {
+                let (mut socket, _) =
+                    tokio_tungstenite::connect_async(format!("ws://{gated_address}/jsonrpc"))
+                        .await
+                        .expect("WS client");
+                gate.open.store(false, std::sync::atomic::Ordering::SeqCst);
+                socket
+                    .send(Message::Binary(Bytes::copy_from_slice(request)))
+                    .await
+                    .expect("WS request");
+                retained_ws = Some(socket);
+            } else {
+                let mut socket = TcpStream::connect(gated_address)
+                    .await
+                    .expect("HTTP client");
+                gate.open.store(false, std::sync::atomic::Ordering::SeqCst);
+                socket.write_all(format!("POST /jsonrpc HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n", request.len()).as_bytes()).await.expect("HTTP header");
+                socket.write_all(request).await.expect("HTTP body");
+                retained_http = Some(socket);
+            }
+            wait_for(|| gate.blocked.load(std::sync::atomic::Ordering::SeqCst)).await;
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            assert!(
+                backend.budgets.snapshot().items >= 2,
+                "blocked response owns its request and serializer slots"
+            );
+            assert!(backend.budgets.snapshot().bytes >= 4 * 1024 * 1024);
+            let small = br#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#;
+            let mut frame = format!("POST /jsonrpc HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {}\r\n\r\n", small.len()).into_bytes();
+            frame.extend_from_slice(small);
+            let response =
+                tokio::time::timeout(Duration::from_secs(1), raw_http(http_address, &frame))
+                    .await
+                    .expect("independent client responds");
+            assert!(
+                std::str::from_utf8(&response)
+                    .expect("HTTP response")
+                    .contains("\"result\":\"OK\"")
+            );
+            drop(retained_http);
+            drop(retained_ws);
+            gate.open.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(waker) = gate.waker.lock().expect("write waker").take() {
+                waker.wake();
+            }
+            let _ = tokio::time::timeout(Duration::from_secs(1), gated)
+                .await
+                .expect("gated connection settles")
+                .expect("gated task");
+            wait_for(|| backend.budgets.snapshot().items == 0).await;
+            let _ = http_shutdown.send(());
+            http.await.expect("HTTP task").expect("HTTP shutdown");
+            assert_eq!(backend.budgets.snapshot().bytes, 0);
+            assert_eq!(backend.budgets.snapshot().resident_bytes, 0);
+        }
+    }
+
+    #[derive(Default)]
+    struct WriteGate {
+        open: std::sync::atomic::AtomicBool,
+        blocked: std::sync::atomic::AtomicBool,
+        waker: std::sync::Mutex<Option<std::task::Waker>>,
+    }
+
+    struct GatedWriter {
+        stream: TcpStream,
+        gate: Arc<WriteGate>,
+    }
+
+    impl AsyncRead for GatedWriter {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            context: &mut std::task::Context<'_>,
+            buffer: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            Pin::new(&mut self.stream).poll_read(context, buffer)
+        }
+    }
+
+    impl AsyncWrite for GatedWriter {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            context: &mut std::task::Context<'_>,
+            bytes: &[u8],
+        ) -> std::task::Poll<io::Result<usize>> {
+            if !self.gate.open.load(std::sync::atomic::Ordering::SeqCst) {
+                *self.gate.waker.lock().expect("write waker") = Some(context.waker().clone());
+                self.gate
+                    .blocked
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                return std::task::Poll::Pending;
+            }
+            Pin::new(&mut self.stream).poll_write(context, bytes)
+        }
+
+        fn poll_flush(
+            mut self: Pin<&mut Self>,
+            context: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            Pin::new(&mut self.stream).poll_flush(context)
+        }
+
+        fn poll_shutdown(
+            mut self: Pin<&mut Self>,
+            context: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            Pin::new(&mut self.stream).poll_shutdown(context)
+        }
+    }
 
     struct Echo;
 

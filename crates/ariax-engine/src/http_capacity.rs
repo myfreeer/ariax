@@ -1,7 +1,7 @@
 use crate::{
     HttpDirectTransportConfig, HttpDiscardBudget, HttpIngressBudgets, HttpMultiRangeWorkerConfig,
     HttpPolicyClientConfig, HttpProxyConnectConfig, HttpProxyRequestConfig, HttpTransportBudgets,
-    HttpTransportError, StorageEngineConfig,
+    HttpTransportError, RpcBudgets, StorageEngineConfig,
 };
 use ariax_runtime::{
     ByteBudget, HTTP_IDLE_CONNECTION_RESERVATION_BYTES, HandleBudgetError, HandleBudgetLimits,
@@ -23,6 +23,7 @@ pub struct HttpProcessResources {
     transport: HttpTransportBudgets,
     ingress: HttpIngressBudgets,
     discard: HttpDiscardBudget,
+    rpc: RpcBudgets,
 }
 
 impl HttpProcessResources {
@@ -62,6 +63,7 @@ impl HttpProcessResources {
         );
         Ok(Self {
             profile: resolved,
+            rpc: RpcBudgets::with_shared_resident(resolved, resident.clone()),
             resident,
             transport,
             ingress,
@@ -83,6 +85,11 @@ impl HttpProcessResources {
     #[must_use]
     pub fn resident_budget(&self) -> ByteBudget {
         self.resident.clone()
+    }
+
+    #[must_use]
+    pub fn rpc_budgets(&self) -> RpcBudgets {
+        self.rpc.clone()
     }
 
     #[must_use]

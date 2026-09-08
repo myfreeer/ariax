@@ -665,6 +665,10 @@ fn run_rpc(
             return ExitCode::FAILURE;
         }
     };
+    if let Err(error) = plane.attach_rpc_budgets(resources.rpc_budgets()) {
+        eprintln!("ariax: RPC budget initialization failed: {error}");
+        return ExitCode::FAILURE;
+    }
     let resolver = match HttpResolver::new(HttpResolverConfig::default()) {
         Ok(resolver) => resolver,
         Err(error) => {
