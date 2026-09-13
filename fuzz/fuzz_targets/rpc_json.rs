@@ -18,6 +18,8 @@ impl HttpRpcBackend for RejectingBackend {
 
 static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
     tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .start_paused(true)
         .build()
         .expect("fuzz runtime")
 });
@@ -25,6 +27,22 @@ static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
 fuzz_target!(|data: &[u8]| {
     if data.len() > MAX_HTTP_RPC_REQUEST_BYTES {
         return;
+    }
+    if data.len() <= ariax_engine::MAX_HTTP_RPC_HEADER_BYTES
+        && let Ok(value) = hyper::header::HeaderValue::from_bytes(data)
+    {
+        let policy = RpcAuthPolicy::default()
+            .with_http_basic("fuzz-user".to_owned(), "fuzz-password".to_owned())
+            .expect("bounded credentials");
+        let dispatcher = RpcDispatcher::new(Arc::new(RejectingBackend), policy);
+        let mut headers = hyper::HeaderMap::new();
+        headers.append(hyper::header::AUTHORIZATION, value.clone());
+        let _authorized = dispatcher.authorize_http(&headers);
+        headers.append(hyper::header::AUTHORIZATION, value);
+        assert!(
+            !dispatcher.authorize_http(&headers),
+            "duplicate credentials never authorize"
+        );
     }
     for auth in [
         RpcAuthPolicy::default(),

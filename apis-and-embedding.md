@@ -4,11 +4,12 @@ Status: reviewed contract with the Phase-4 control-plane checkpoint `71acb03`
 executable, but not yet complete. The shared dispatcher, query and control
 methods, option and source mutation, config and session operations, bounded
 event broker, loopback WebSocket transport, direct CLI controls, and typed Rust
-embedding skeleton are present. The six open repair gates and their required
+embedding skeleton are present. The six repair gates and their completion
 evidence are tracked in
 [implementation-readiness.md](implementation-readiness.md#phase-4-repair-gates).
-Legacy HTTP Basic authentication, aria2 text-session export, the full
-compatibility matrix, and the C ABI remain pending.
+aria2 text-session export, the full compatibility matrix, and the C ABI remain
+pending. Optional legacy HTTP Basic authentication supplements method tokens
+at the HTTP request and WebSocket upgrade boundaries.
 
 Decision: expose aria2-compatible RPC for ecosystem compatibility, and expose a
 typed native library API for embedding. Add a stable C ABI only after the core
@@ -77,8 +78,9 @@ The bounded broker publishes scheduler-observed aria2 start/pause/stop/
 complete/error notifications plus coalesced namespaced status updates.
 WebSocket and Content-Length stdio clients receive pushed events; HTTP and
 other request/response clients can use explicit `ariax.subscribe`/
-`ariax.pollEvents`. Legacy HTTP Basic remains a later transport gate and does
-not weaken method-token requirements.
+`ariax.pollEvents`. `--rpc-user` and `--rpc-passwd` (or `ARIAX_RPC_USER` and
+`ARIAX_RPC_PASSWD`) enable HTTP Basic on HTTP requests and WebSocket upgrades.
+Basic authentication does not apply to stdio or replace method tokens.
 
 The typed Rust `Engine`/`EngineBuilder` skeleton provides typed add, status,
 pause, resume, remove, option query, bounded event subscription, and orderly
@@ -178,6 +180,27 @@ deprecated transport gate, not a replacement for `rpc-secret`.  If both are
 configured, a network request must pass Basic authentication and each method
 must carry a valid token; Basic authentication never overrides token policy.
 New deployments should use a secret over TLS or a local stdio transport.
+
+Configured method secrets must contain 1 through 4,096 UTF-8 bytes; an empty
+configured secret is an error. Startup requires both Basic fields when either
+is configured. Requiring the pair and a nonempty user is an intentional
+fail-closed divergence from aria2's empty-field fallback. User names are
+nonempty, at most 1,024 UTF-8 bytes, and cannot contain a colon or control
+characters; passwords are at most 4,096 UTF-8 bytes and cannot contain control
+characters. An explicitly empty password is permitted. CLI values override
+their corresponding environment values. Invalid credentials are rejected
+before directories or session files are created, with no credential text in
+diagnostics. Registry metadata marks both fields sensitive and startup-only;
+remote option updates and persistence omit them.
+
+HTTP checks exactly one `Authorization` header before reading the JSON body.
+WebSocket checks the same gate before creating an event context. Scheme names
+are case-insensitive; the encoded credentials must match the canonical Basic
+value. Missing, duplicate, malformed, and incorrect headers receive the same
+bounded `401` and `WWW-Authenticate` challenge. An HTTP authentication failure
+closes that connection so unread request bytes cannot become another request.
+Successful Basic authentication alone never authenticates method-token events.
+Cloned dispatchers share authentication-failure throttling across listeners.
 
 Authentication failures use a generic unauthorized response and are rate
 limited; they never reveal whether a user name, password, token, or GID was

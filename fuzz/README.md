@@ -17,8 +17,10 @@ slice and journal replay path:
   no-refund invariants;
 - `journal_replay`: bounded segment/header/record replay and valid-prefix
   accounting;
-- `rpc_json`: bounded JSON-RPC request, notification, and batch dispatch with
-  complete-or-empty JSON response validation.
+- `rpc_json`: bounded JSON-RPC request, notification, and batch dispatch,
+  canonical/duplicate Basic authorization headers, response validity, and exact
+  budget refunds. Its paused Tokio clock exercises authentication throttling
+  without real-time sleeps in the fuzz loop.
 
 From the repository root, after installing `cargo-fuzz`, run for example:
 

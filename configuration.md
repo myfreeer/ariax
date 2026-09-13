@@ -588,8 +588,11 @@ RPC:
   `rpc-max-request-size` (default 2 MiB; hard maximum 64 MiB), and CORS
   options. The checkpoint exposes loopback HTTP/WebSocket and stdio through
   dedicated CLI modes, reads `ARIAX_RPC_SECRET`, and uses fixed transport caps.
-  Most options in this target set have no registry entry or CLI wiring yet;
-  HTTP Basic and CORS configuration remain pending. Pushed event delivery
+  `--rpc-secret`, `--rpc-user`, and `--rpc-passwd` are startup options; the
+  corresponding `ARIAX_RPC_SECRET`, `ARIAX_RPC_USER`, and `ARIAX_RPC_PASSWD`
+  environment variables provide defaults. The Basic pair is validated before
+  bootstrap and applies only to HTTP and WebSocket. Other options in this target
+  set still need registry or CLI wiring, including CORS. Pushed event delivery
   waits for connection-local authentication, as verified by `P4-02`.
 - `rpc-secret` uses aria2's first-positional-parameter `token:<secret>` scheme;
   `system.multicall` is dispatched as an envelope and each inner request

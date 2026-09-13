@@ -26,7 +26,12 @@ use std::thread;
 static TEST_ID: AtomicU64 = AtomicU64::new(1);
 
 fn ariax() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_ariax"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_ariax"));
+    command
+        .env_remove("ARIAX_RPC_SECRET")
+        .env_remove("ARIAX_RPC_USER")
+        .env_remove("ARIAX_RPC_PASSWD");
+    command
 }
 
 #[test]
@@ -88,6 +93,54 @@ fn invalid_runtime_profile_is_rejected_before_startup_work() {
         .expect("run ariax");
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&output.stderr).contains("invalid runtime profile"));
+}
+
+#[test]
+fn invalid_rpc_credentials_are_redacted_and_rejected_before_startup_work() {
+    let root = std::env::temp_dir().join(format!(
+        "ariax-invalid-rpc-auth-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    for options in [
+        vec!["--rpc-user=user-canary".to_owned()],
+        vec![
+            "--rpc-user=user:canary".to_owned(),
+            "--rpc-passwd=pass-canary".to_owned(),
+        ],
+        vec![
+            "--rpc-user=user-canary".to_owned(),
+            format!("--rpc-passwd={}pass-canary", "x".repeat(4096)),
+        ],
+    ] {
+        let output = ariax()
+            .args(options)
+            .arg("--rpc-http")
+            .arg(root.join("session.db"))
+            .arg(root.join("control"))
+            .arg(root.join("output"))
+            .arg("127.0.0.1:0")
+            .output()
+            .expect("run ariax");
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("canary"));
+        assert!(!root.exists());
+    }
+    let output = ariax()
+        .env("ARIAX_RPC_PASSWD", "pass-canary")
+        .arg("--rpc-stdio")
+        .arg(root.join("session.db"))
+        .arg(root.join("control"))
+        .arg(root.join("output"))
+        .output()
+        .expect("run ariax");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("canary"));
+    assert!(!root.exists());
 }
 
 #[test]

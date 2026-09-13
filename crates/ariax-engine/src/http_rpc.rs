@@ -36,6 +36,7 @@ pub const DEFAULT_HTTP_RPC_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 const RPC_UNAUTHORIZED: i64 = -32001;
 const RPC_RESPONSE_TOO_LARGE: i64 = -32006;
+const RPC_AUTH_FAILURE_INTERVAL: Duration = Duration::from_millis(25);
 const MAX_MULTICALL_RESULT_BYTES: usize =
     MAX_HTTP_RPC_RESPONSE_BYTES - MAX_HTTP_RPC_REQUEST_BYTES - 1024;
 
@@ -121,6 +122,15 @@ pub trait HttpRpcBackend: Send + Sync + 'static {
         false
     }
 
+    /// Additional HTTP transport gate; method-token policy remains independent.
+    fn authorize_http(&self, _headers: &hyper::HeaderMap) -> bool {
+        true
+    }
+
+    fn authentication_failure_delay(&self) -> Duration {
+        RPC_AUTH_FAILURE_INTERVAL
+    }
+
     fn rpc_budgets(&self) -> RpcBudgets {
         RpcBudgets::process_default()
     }
@@ -131,6 +141,8 @@ pub trait HttpRpcBackend: Send + Sync + 'static {
 #[derive(Clone, Default)]
 pub struct RpcAuthPolicy {
     secret: Option<Arc<str>>,
+    basic: Option<crate::HttpAuthorization>,
+    next_failure: Arc<std::sync::Mutex<Option<tokio::time::Instant>>>,
 }
 
 impl fmt::Debug for RpcAuthPolicy {
@@ -138,6 +150,7 @@ impl fmt::Debug for RpcAuthPolicy {
         formatter
             .debug_struct("RpcAuthPolicy")
             .field("secret_configured", &self.secret.is_some())
+            .field("basic_configured", &self.basic.is_some())
             .finish()
     }
 }
@@ -147,7 +160,24 @@ impl RpcAuthPolicy {
     pub fn with_secret(secret: impl Into<Arc<str>>) -> Self {
         Self {
             secret: Some(secret.into()),
+            ..Self::default()
         }
+    }
+
+    pub fn with_http_basic(
+        mut self,
+        username: String,
+        password: String,
+    ) -> Result<Self, crate::HttpAuthError> {
+        if username.contains(':')
+            || username.bytes().any(|byte| byte.is_ascii_control())
+            || password.bytes().any(|byte| byte.is_ascii_control())
+        {
+            return Err(crate::HttpAuthError::InvalidCredentials);
+        }
+        self.basic =
+            Some(crate::HttpBasicCredentials::new(username, password)?.authorization_header()?);
+        Ok(self)
     }
 
     #[must_use]
@@ -155,7 +185,48 @@ impl RpcAuthPolicy {
         self.secret.is_some()
     }
 
-    fn authorize(&self, params: Value) -> Result<Value, HttpRpcBackendError> {
+    async fn authorize(&self, params: Value) -> Result<Value, HttpRpcBackendError> {
+        let result = self.authorize_token(params);
+        if result.is_err() {
+            tokio::time::sleep(self.failure_delay()).await;
+        }
+        result
+    }
+
+    fn failure_delay(&self) -> Duration {
+        let now = tokio::time::Instant::now();
+        let mut next = self
+            .next_failure
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let scheduled = next.unwrap_or(now).max(now) + RPC_AUTH_FAILURE_INTERVAL;
+        *next = Some(scheduled);
+        scheduled.saturating_duration_since(now)
+    }
+
+    fn authorize_http(&self, headers: &hyper::HeaderMap) -> bool {
+        let Some(expected) = &self.basic else {
+            return true;
+        };
+        let mut values = headers.get_all(hyper::header::AUTHORIZATION).iter();
+        let Some(value) = values.next() else {
+            return false;
+        };
+        if values.next().is_some() {
+            return false;
+        }
+        let Some((scheme, encoded)) = value.to_str().ok().and_then(|value| value.split_once(' '))
+        else {
+            return false;
+        };
+        scheme.eq_ignore_ascii_case("Basic")
+            && constant_time_eq(
+                encoded.trim_start_matches(' ').as_bytes(),
+                &expected.as_header_value().as_bytes()[6..],
+            )
+    }
+
+    fn authorize_token(&self, params: Value) -> Result<Value, HttpRpcBackendError> {
         let Some(secret) = &self.secret else {
             return Ok(params);
         };
@@ -204,6 +275,14 @@ impl<B: HttpRpcBackend> HttpRpcBackend for RpcDispatcher<B> {
         self.auth.is_required()
     }
 
+    fn authorize_http(&self, headers: &hyper::HeaderMap) -> bool {
+        self.auth.authorize_http(headers) && self.backend.authorize_http(headers)
+    }
+
+    fn authentication_failure_delay(&self) -> Duration {
+        self.auth.failure_delay()
+    }
+
     fn rpc_budgets(&self) -> RpcBudgets {
         self.backend.rpc_budgets()
     }
@@ -221,7 +300,7 @@ impl<B: HttpRpcBackend> HttpRpcBackend for RpcDispatcher<B> {
             if method == "system.multicall" {
                 return multicall(backend, auth, params, context).await;
             }
-            let params = auth.authorize(params)?;
+            let params = auth.authorize(params).await?;
             authorize_client_events(&context)?;
             match method.as_str() {
                 "system.listMethods" => {
@@ -717,7 +796,7 @@ async fn multicall<B: HttpRpcBackend>(
             .get("params")
             .cloned()
             .unwrap_or_else(|| Value::Array(Vec::new()));
-        let member_params = match auth.authorize(member_params) {
+        let member_params = match auth.authorize(member_params).await {
             Ok(params) => params,
             Err(error) => {
                 append_multicall_result(
@@ -1037,6 +1116,10 @@ async fn http_request<B: HttpRpcBackend>(
     if request.method() != Method::POST || request.uri().path() != "/jsonrpc" {
         return plain_response(StatusCode::NOT_FOUND, b"not found");
     }
+    if !backend.authorize_http(request.headers()) {
+        tokio::time::sleep(backend.authentication_failure_delay()).await;
+        return unauthorized_http_response();
+    }
     let length = request
         .headers()
         .get(hyper::header::CONTENT_LENGTH)
@@ -1083,6 +1166,20 @@ fn plain_response(status: StatusCode, body: &[u8]) -> Response<Full<Bytes>> {
         .header("content-length", body.len())
         .body(Full::new(Bytes::copy_from_slice(body)))
         .expect("static HTTP response headers are valid")
+}
+
+fn unauthorized_http_response() -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(StatusCode::UNAUTHORIZED)
+        .header(
+            hyper::header::WWW_AUTHENTICATE,
+            "Basic realm=\"ariax\", charset=\"UTF-8\"",
+        )
+        .header(hyper::header::CONNECTION, "close")
+        .header(hyper::header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(hyper::header::CONTENT_LENGTH, 12)
+        .body(Full::new(Bytes::from_static(b"unauthorized")))
+        .expect("static authentication response")
 }
 
 /// Serves JSON-RPC and bounded pushed events over a dedicated loopback
@@ -1172,7 +1269,36 @@ async fn serve_websocket_connection<B: RpcWebSocketBackend>(
         .max_write_buffer_size(MAX_HTTP_RPC_RESPONSE_BYTES + MAX_HTTP_RPC_HEADER_BYTES)
         .max_message_size(Some(MAX_HTTP_RPC_REQUEST_BYTES))
         .max_frame_size(Some(MAX_HTTP_RPC_REQUEST_BYTES));
-    let mut socket = tokio_tungstenite::accept_async_with_config(stream, Some(config)).await?;
+    let mut rejected_auth = false;
+    #[allow(
+        clippy::result_large_err,
+        reason = "Tungstenite requires an unboxed HTTP rejection response from its handshake callback"
+    )]
+    let handshake = tokio_tungstenite::accept_hdr_async_with_config(
+        stream,
+        |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+            if request.uri().path() != "/jsonrpc" {
+                return Err(Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .body(Some("not found".to_owned()))
+                    .expect("static WebSocket rejection"));
+            }
+            if !backend.authorize_http(request.headers()) {
+                rejected_auth = true;
+                let (parts, _) = unauthorized_http_response().into_parts();
+                return Err(Response::from_parts(parts, Some("unauthorized".to_owned())));
+            }
+            Ok(response)
+        },
+        Some(config),
+    )
+    .await;
+    if rejected_auth {
+        // Retain the bounded connection slot through the shared rejection delay,
+        // including handshakes whose peer disconnects before reading the 401.
+        tokio::time::sleep(backend.authentication_failure_delay()).await;
+    }
+    let mut socket = handshake?;
     let context = RpcClientContext::with_events_and_budget(
         backend.event_broker(),
         backend.authentication_required(),
@@ -2211,6 +2337,317 @@ mod tests {
         fn event_broker(&self) -> crate::RpcEventBroker {
             self.events.clone()
         }
+    }
+
+    fn basic_policy() -> RpcAuthPolicy {
+        RpcAuthPolicy::with_secret("token-canary")
+            .with_http_basic("user-canary".to_owned(), "pass-canary".to_owned())
+            .expect("Basic credentials")
+    }
+
+    fn basic_header() -> hyper::header::HeaderValue {
+        crate::HttpBasicCredentials::new("user-canary".to_owned(), "pass-canary".to_owned())
+            .expect("credentials")
+            .authorization_header()
+            .expect("header")
+            .as_header_value()
+            .clone()
+    }
+
+    #[test]
+    fn basic_policy_bounds_credentials_and_rejects_ambiguous_headers() {
+        for (user, password) in [
+            ("".to_owned(), "pass-canary".to_owned()),
+            ("x".repeat(1025), "pass-canary".to_owned()),
+            ("user-canary".to_owned(), "x".repeat(4097)),
+            ("user:canary".to_owned(), "pass-canary".to_owned()),
+            ("user\tcanary".to_owned(), "pass-canary".to_owned()),
+            ("user-canary".to_owned(), "pass\x7fcanary".to_owned()),
+        ] {
+            let error = RpcAuthPolicy::default()
+                .with_http_basic(user, password)
+                .expect_err("invalid credentials");
+            assert!(!format!("{error:?} {error}").contains("canary"));
+        }
+        assert!(
+            RpcAuthPolicy::default()
+                .with_http_basic("u".repeat(1024), "p".repeat(4096))
+                .is_ok()
+        );
+        assert!(
+            RpcAuthPolicy::default()
+                .with_http_basic("user".to_owned(), String::new())
+                .is_ok()
+        );
+        let policy = basic_policy();
+        assert!(!format!("{policy:?}").contains("canary"));
+        let mut headers = hyper::HeaderMap::new();
+        assert!(!policy.authorize_http(&headers));
+        for header in [
+            "Bearer ignored",
+            "Basic",
+            "Basic ???",
+            "Basic ",
+            "Basic dXNlcjpwYXNz",
+        ] {
+            headers.insert(
+                hyper::header::AUTHORIZATION,
+                header.parse().expect("header"),
+            );
+            assert!(!policy.authorize_http(&headers));
+        }
+        let expected = basic_header();
+        for prefix in ["Basic ", "basic ", "BASIC   "] {
+            let value = format!("{prefix}{}", &expected.to_str().expect("ASCII")[6..]);
+            headers.insert(hyper::header::AUTHORIZATION, value.parse().expect("header"));
+            assert!(policy.authorize_http(&headers));
+        }
+        headers.append(hyper::header::AUTHORIZATION, expected);
+        assert!(!policy.authorize_http(&headers));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cloned_auth_policies_throttle_rejections_without_delaying_valid_tokens() {
+        let auth = basic_policy();
+        let other = auth.clone();
+        let start = tokio::time::Instant::now();
+        let first = tokio::spawn(async move { auth.authorize(json!(["token:wrong"])).await });
+        let next = other.clone();
+        let second = tokio::spawn(async move { next.authorize(json!([])).await });
+        tokio::task::yield_now().await;
+        assert!(!first.is_finished());
+        assert!(!second.is_finished());
+        assert_eq!(
+            other
+                .authorize(json!(["token:token-canary", 7]))
+                .await
+                .expect("valid token"),
+            json!([7])
+        );
+        assert_eq!(tokio::time::Instant::now(), start);
+        assert_eq!(
+            first.await.expect("join").expect_err("invalid token").code,
+            RPC_UNAUTHORIZED
+        );
+        assert_eq!(
+            second.await.expect("join").expect_err("missing token").code,
+            RPC_UNAUTHORIZED
+        );
+        assert!(start.elapsed() >= 2 * RPC_AUTH_FAILURE_INTERVAL);
+    }
+
+    #[tokio::test]
+    async fn http_basic_rejects_before_body_and_preserves_token_policy() {
+        let events = crate::RpcEventBroker::new();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let backend = Arc::new(RpcDispatcher::new(
+            Arc::new(PublishingBackend {
+                events: events.clone(),
+                calls: calls.clone(),
+            }),
+            basic_policy(),
+        ));
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let (shutdown, stopped) = oneshot::channel();
+        let server = tokio::spawn(serve_loopback_http_listener_until(
+            listener,
+            backend,
+            async move {
+                stopped
+                    .await
+                    .map_err(|_| io::Error::other("shutdown dropped"))
+            },
+        ));
+        let basic = basic_header();
+        let basic = basic.to_str().expect("ASCII");
+        for headers in [
+            String::new(),
+            "Authorization: Basic wrong\r\n".to_owned(),
+            "Authorization: Bearer token-canary\r\n".to_owned(),
+            format!("Authorization: {basic}\r\nAuthorization: {basic}\r\n"),
+        ] {
+            let mut client = tokio::net::TcpStream::connect(address)
+                .await
+                .expect("client");
+            // Do not send the declared body: rejection must precede body reads.
+            client.write_all(format!("POST /jsonrpc HTTP/1.1\r\nHost: localhost\r\n{headers}Content-Length: 4096\r\n\r\n").as_bytes()).await.expect("headers");
+            let mut bytes = Vec::new();
+            tokio::time::timeout(Duration::from_secs(2), client.read_to_end(&mut bytes))
+                .await
+                .expect("reject without waiting for body")
+                .expect("response");
+            let response = String::from_utf8(bytes).expect("response text");
+            assert!(response.starts_with("HTTP/1.1 401"));
+            assert!(
+                response
+                    .to_ascii_lowercase()
+                    .contains("www-authenticate: basic realm=\"ariax\"")
+            );
+            assert!(response.ends_with("unauthorized"));
+            assert!(!response.contains("canary"));
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(events.subscriber_count(), 0);
+        for (params, code) in [
+            (json!([]), RPC_UNAUTHORIZED),
+            (json!(["token:token-canary"]), -32004),
+        ] {
+            let body = json!({"jsonrpc":"2.0", "id":1, "method":"x", "params":params}).to_string();
+            let mut client = tokio::net::TcpStream::connect(address)
+                .await
+                .expect("client");
+            client.write_all(format!("POST /jsonrpc HTTP/1.1\r\nHost: localhost\r\nAuthorization: {basic}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.expect("request");
+            let mut bytes = Vec::new();
+            tokio::time::timeout(Duration::from_secs(2), client.read_to_end(&mut bytes))
+                .await
+                .expect("response timeout")
+                .expect("response");
+            let response = String::from_utf8(bytes).expect("response text");
+            assert!(response.starts_with("HTTP/1.1 200"));
+            let (_, body) = response.split_once("\r\n\r\n").expect("HTTP response");
+            assert_eq!(
+                serde_json::from_str::<Value>(body).expect("JSON")["error"]["code"],
+                code
+            );
+            assert!(!response.contains("canary"));
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        shutdown.send(()).expect("shutdown");
+        server.await.expect("join").expect("server shutdown");
+    }
+
+    #[tokio::test]
+    async fn websocket_basic_upgrade_does_not_authorize_method_events() {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+
+        let events = crate::RpcEventBroker::new();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let backend = Arc::new(RpcDispatcher::new(
+            Arc::new(PublishingBackend {
+                events: events.clone(),
+                calls: calls.clone(),
+            }),
+            basic_policy(),
+        ));
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let (shutdown, stopped) = oneshot::channel();
+        let server = tokio::spawn(serve_loopback_websocket_listener_until(
+            listener,
+            backend,
+            async move {
+                stopped
+                    .await
+                    .map_err(|_| io::Error::other("shutdown dropped"))
+            },
+        ));
+        let url = format!("ws://{address}/jsonrpc");
+        for variant in 0..3 {
+            let mut request = url.clone().into_client_request().expect("upgrade");
+            if variant == 1 {
+                request.headers_mut().insert(
+                    hyper::header::AUTHORIZATION,
+                    "Basic wrong".parse().expect("header"),
+                );
+            } else if variant == 2 {
+                request
+                    .headers_mut()
+                    .append(hyper::header::AUTHORIZATION, basic_header());
+                request
+                    .headers_mut()
+                    .append(hyper::header::AUTHORIZATION, basic_header());
+            }
+            let error = tokio_tungstenite::connect_async(request)
+                .await
+                .expect_err("unauthorized upgrade");
+            let tokio_tungstenite::tungstenite::Error::Http(response) = error else {
+                panic!("expected an HTTP rejection");
+            };
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            assert!(
+                response
+                    .headers()
+                    .contains_key(hyper::header::WWW_AUTHENTICATE)
+            );
+            assert_eq!(response.body().as_deref(), Some(b"unauthorized".as_slice()));
+            assert_eq!(events.subscriber_count(), 0);
+        }
+        let mut request = url.into_client_request().expect("upgrade");
+        request
+            .headers_mut()
+            .insert(hyper::header::AUTHORIZATION, basic_header());
+        let (mut client, _) = tokio_tungstenite::connect_async(request)
+            .await
+            .expect("Basic accepted");
+        assert_eq!(events.subscriber_count(), 0);
+        client
+            .send(Message::Text(
+                r#"{"jsonrpc":"2.0","id":1,"method":"x","params":[]}"#.into(),
+            ))
+            .await
+            .expect("missing token");
+        let reply = client.next().await.expect("reply").expect("message");
+        assert_eq!(
+            serde_json::from_str::<Value>(reply.to_text().expect("text")).expect("JSON")["error"]["code"],
+            RPC_UNAUTHORIZED
+        );
+        assert_eq!(events.subscriber_count(), 0);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 0);
+        client
+            .send(Message::Text(
+                r#"{"jsonrpc":"2.0","id":2,"method":"x","params":["token:token-canary"]}"#.into(),
+            ))
+            .await
+            .expect("valid token");
+        let reply = client.next().await.expect("reply").expect("message");
+        assert_eq!(
+            serde_json::from_str::<Value>(reply.to_text().expect("text")).expect("JSON")["error"]["code"],
+            -32004
+        );
+        let event = tokio::time::timeout(Duration::from_secs(2), client.next())
+            .await
+            .expect("event timeout")
+            .expect("event")
+            .expect("message");
+        assert_eq!(
+            serde_json::from_str::<Value>(event.to_text().expect("text")).expect("JSON")["method"],
+            "ariax.onTest"
+        );
+        assert_eq!(events.subscriber_count(), 1);
+        client.close(None).await.expect("close");
+        shutdown.send(()).expect("shutdown");
+        server.await.expect("join").expect("server shutdown");
+        assert_eq!(events.subscriber_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn basic_configuration_does_not_gate_stdio_or_direct_dispatch() {
+        let dispatcher = RpcDispatcher::new(Arc::new(Echo), basic_policy());
+        let reply = dispatch_json(
+            &dispatcher,
+            br#"{"jsonrpc":"2.0","id":1,"method":"x","params":["token:token-canary",7]}"#,
+        )
+        .await;
+        assert_eq!(
+            serde_json::from_slice::<Value>(&reply).expect("JSON")["result"]["params"],
+            json!([7])
+        );
+        let dispatcher = Arc::new(dispatcher);
+        let request = br#"{"jsonrpc":"2.0","id":2,"method":"x","params":["token:token-canary",8]}"#;
+        let mut frame = format!("Content-Length: {}\r\n\r\n", request.len()).into_bytes();
+        frame.extend_from_slice(request);
+        let (writer, mut reader) = duplex(4096);
+        let server = tokio::spawn(run_content_length_stdio(
+            dispatcher,
+            std::io::Cursor::new(frame),
+            writer,
+        ));
+        assert_eq!(
+            read_stdio_value(&mut reader).await["result"]["params"],
+            json!([8])
+        );
+        server.await.expect("join").expect("stdio completion");
     }
 
     async fn read_stdio_value(stream: &mut (impl AsyncRead + Unpin)) -> Value {

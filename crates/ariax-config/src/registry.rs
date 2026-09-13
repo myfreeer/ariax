@@ -966,12 +966,57 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         owner: "rpc",
         build_features: MINIMAL,
         security: SecurityClass::Sensitive,
-        compat: PARTIAL,
+        compat: CompatStatus::Implemented,
         aria2_available: true,
         aria2_runtime_update: RuntimeUpdate::StartupOnly,
         compatibility_difference: CompatibilityDifference::None,
         docs: "apis-and-embedding.md#rpc-authentication",
-        behavior_tests: NONE,
+        behavior_tests: &[
+            "rpc_auth_options_are_sensitive_startup_only_and_bounded",
+            "rpc_startup_credentials_override_environment_without_exposure",
+        ],
+    },
+    OptionDef {
+        name: "rpc-user",
+        short: None,
+        value_type: ValueType::SecretString { max_len: 1024 },
+        default: None,
+        category: "rpc",
+        scopes: STARTUP_ONLY,
+        runtime_update: RuntimeUpdate::StartupOnly,
+        owner: "rpc",
+        build_features: MINIMAL,
+        security: SecurityClass::Sensitive,
+        compat: CompatStatus::Implemented,
+        aria2_available: true,
+        aria2_runtime_update: RuntimeUpdate::StartupOnly,
+        compatibility_difference: CompatibilityDifference::Required,
+        docs: "apis-and-embedding.md#rpc-authentication",
+        behavior_tests: &[
+            "rpc_auth_options_are_sensitive_startup_only_and_bounded",
+            "http_basic_rejects_before_body_and_preserves_token_policy",
+        ],
+    },
+    OptionDef {
+        name: "rpc-passwd",
+        short: None,
+        value_type: ValueType::SecretString { max_len: 4096 },
+        default: None,
+        category: "rpc",
+        scopes: STARTUP_ONLY,
+        runtime_update: RuntimeUpdate::StartupOnly,
+        owner: "rpc",
+        build_features: MINIMAL,
+        security: SecurityClass::Sensitive,
+        compat: CompatStatus::Implemented,
+        aria2_available: true,
+        aria2_runtime_update: RuntimeUpdate::StartupOnly,
+        compatibility_difference: CompatibilityDifference::Required,
+        docs: "apis-and-embedding.md#rpc-authentication",
+        behavior_tests: &[
+            "rpc_auth_options_are_sensitive_startup_only_and_bounded",
+            "websocket_basic_upgrade_does_not_authorize_method_events",
+        ],
     },
     OptionDef {
         name: "profile",
@@ -1222,5 +1267,25 @@ mod tests {
             OptionRegistry::new(BAD),
             Err(RegistryError::MissingBehaviorTest("test-option"))
         );
+    }
+
+    #[test]
+    fn rpc_auth_options_are_sensitive_startup_only_and_bounded() {
+        for (name, bound) in [
+            ("rpc-secret", 4096),
+            ("rpc-user", 1024),
+            ("rpc-passwd", 4096),
+        ] {
+            let definition = builtin_registry().find(name).expect("RPC option");
+            assert_eq!(definition.scopes, ScopeSet::one(Scope::Startup));
+            assert_eq!(definition.runtime_update, RuntimeUpdate::StartupOnly);
+            assert_eq!(definition.security, SecurityClass::Sensitive);
+            assert!(!super::persisted_option_is_safe(name));
+            let value = crate::parse_option_value(definition, "credential-canary", None)
+                .expect("bounded credential");
+            assert!(!format!("{value:?}").contains("credential-canary"));
+            assert!(crate::parse_option_value(definition, &"x".repeat(bound), None).is_ok());
+            assert!(crate::parse_option_value(definition, &"x".repeat(bound + 1), None).is_err());
+        }
     }
 }

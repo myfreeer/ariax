@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+mod startup;
+
 use std::env;
 use std::ffi::OsString;
 use std::net::SocketAddr;
@@ -36,12 +38,32 @@ fn main() -> ExitCode {
 
 fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
     let arguments: Vec<_> = arguments.into_iter().collect();
-    let (profile, arguments) = match split_runtime_profile_argument(&arguments) {
+    let (startup, arguments) = match startup::StartupOptions::parse(&arguments) {
         Ok(value) => value,
         Err(error) => {
             eprintln!("ariax: {error}");
             return ExitCode::from(2);
         }
+    };
+    let profile = startup.profile;
+    let rpc = matches!(
+        arguments.first().and_then(|arg| arg.to_str()),
+        Some("--rpc-http" | "--rpc-ws" | "--rpc-stdio")
+    );
+    if startup.has_rpc_arguments() && !rpc {
+        eprintln!("ariax: RPC authentication options require an RPC command");
+        return ExitCode::from(2);
+    }
+    let auth = if rpc {
+        match startup.auth_from_environment() {
+            Ok(auth) => auth,
+            Err(error) => {
+                eprintln!("ariax: {error}");
+                return ExitCode::from(2);
+            }
+        }
+    } else {
+        RpcAuthPolicy::default()
     };
     if profile.is_some()
         && !matches!(
@@ -62,11 +84,11 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
     }
     match arguments {
         [] => {
-            print!("{HELP}");
+            print!("{HELP}{RPC_STARTUP_HELP}");
             ExitCode::SUCCESS
         }
         [arg] if arg == "--help" || arg == "-h" => {
-            print!("{HELP}");
+            print!("{HELP}{RPC_STARTUP_HELP}");
             ExitCode::SUCCESS
         }
         [arg] if arg == "--version" || arg == "-V" => {
@@ -95,6 +117,7 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
                 Some(bind),
                 profile.unwrap_or_default(),
                 false,
+                auth,
             )
         }
         [command, database, control, output_root, bind] if command == "--rpc-ws" => {
@@ -112,6 +135,7 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
                 Some(bind),
                 profile.unwrap_or_default(),
                 true,
+                auth,
             )
         }
         [command, database, control, output_root] if command == "--rpc-stdio" => run_rpc(
@@ -121,6 +145,7 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
             None,
             profile.unwrap_or_default(),
             false,
+            auth,
         ),
         [command, database, control, output_root, uris @ ..]
             if command == "--add-uri" && !uris.is_empty() =>
@@ -230,30 +255,7 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
     }
 }
 
-fn split_runtime_profile_argument(
-    arguments: &[OsString],
-) -> Result<(Option<RuntimeProfile>, &[OsString]), String> {
-    let Some(first) = arguments.first() else {
-        return Ok((None, arguments));
-    };
-    let Some(first) = first.to_str() else {
-        return Ok((None, arguments));
-    };
-    let Some(value) = first.strip_prefix("--profile=") else {
-        if first == "--profile" {
-            return Err(
-                "--profile requires =auto|concurrency|throughput|latency|compact".to_owned(),
-            );
-        }
-        return Ok((None, arguments));
-    };
-    let profile = RuntimeProfile::parse(value).map_err(|_| {
-        format!(
-            "invalid runtime profile {value:?}; expected auto, concurrency, throughput, latency, or compact"
-        )
-    })?;
-    Ok((Some(profile), &arguments[1..]))
-}
+const RPC_STARTUP_HELP: &str = "\nRPC startup options (before the command):\n  --rpc-secret=VALUE   Method token; defaults to ARIAX_RPC_SECRET\n  --rpc-user=VALUE     HTTP Basic user; defaults to ARIAX_RPC_USER\n  --rpc-passwd=VALUE   HTTP Basic password; defaults to ARIAX_RPC_PASSWD\nBoth Basic fields must be configured together. HTTP Basic applies to HTTP and WebSocket; method tokens also apply to stdio.\n";
 
 enum DirectControl {
     Add(Vec<String>),
@@ -612,6 +614,7 @@ fn run_rpc(
     bind: Option<SocketAddr>,
     profile: RuntimeProfile,
     websocket: bool,
+    auth: RpcAuthPolicy,
 ) -> ExitCode {
     if let Err(error) = std::fs::create_dir_all(&control_directory) {
         eprintln!("ariax: cannot create control directory: {error}");
@@ -716,16 +719,6 @@ fn run_rpc(
     };
     runtime.block_on(async move {
         let backend = Arc::new(HttpControlBackend::new(plane));
-        let auth = match env::var("ARIAX_RPC_SECRET") {
-            Ok(secret) if !secret.is_empty() => {
-                RpcAuthPolicy::with_secret(Arc::<str>::from(secret))
-            }
-            Ok(_) | Err(env::VarError::NotPresent) => RpcAuthPolicy::default(),
-            Err(env::VarError::NotUnicode(_)) => {
-                eprintln!("ariax: ARIAX_RPC_SECRET must be valid Unicode");
-                return ExitCode::from(2);
-            }
-        };
         let dispatcher = Arc::new(RpcDispatcher::new(backend.clone(), auth));
         let progress_plane = backend.plane();
         let progress = tokio::spawn(async move {

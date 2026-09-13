@@ -336,9 +336,15 @@ Design coverage:
   admission, and the Phase-4 shared dispatcher/control/event checkpoint.
   Broader RFC
   9530/Metalink identity, `Content-Digest`, additional checksum algorithms,
-  Last-Modified/unsafe-override resume, HTTP/2, growing bodies, legacy HTTP
-  Basic RPC, aria2 text-session compatibility, and the remaining Phase-4 exit
+  Last-Modified/unsafe-override resume, HTTP/2, growing bodies,
+  aria2 text-session compatibility, and the remaining Phase-4 exit
   matrix remain pending.
+
+Legacy HTTP Basic RPC now has startup registry/CLI/environment validation,
+HTTP request and WebSocket upgrade gates, independent method tokens, redacted
+failures, and shared rejection throttling. Success/rejection and event-isolation
+tests pass on Linux, MSRV, and native Windows-GNU; the broader public-interface
+matrix remains under `P4-09`.
 
 Acceptance:
 

@@ -355,6 +355,16 @@ requirements below before Phase 5 protocol implementation. These gates are
 initially open; a checkpoint closes a row only with recorded executable
 evidence. Existing compilation or mock-only dispatch timing is insufficient.
 
+The `P4-09` HTTP Basic portion is executable: startup validates the sensitive
+`rpc-secret`/`rpc-user`/`rpc-passwd` CLI and environment settings before bootstrap;
+HTTP and WebSocket enforce Basic before body dispatch or event subscription.
+Method tokens remain independent, duplicate credentials reject, and cloned
+dispatchers share rejection throttling. Linux 1.97.1, MSRV 1.88, native
+Windows-GNU workspace tests, strict Linux/native Clippy, and generated contract
+checks pass. The updated RPC fuzz target passes 2,000 short, uninstrumented
+smoke runs using virtual time for throttle waits. Other `P4-09` interface
+requirements below remain open.
+
 | Gate | Required Behavior And Evidence |
 | --- | --- |
 | `P4-07` Configuration and runtime options | Registry-driven admission and atomic typed patches; live, pending, restart, and rejection behavior for every option according to its implemented/feature-gated status. Bounded URL rules, versioned atomic reload, and redacted flat/JSON/TOML dumps pass success, rejection, precedence, and rollback tests. |
