@@ -35,7 +35,7 @@ secondary mirrors as endgame-only peers; they do not authorize ordinary
 concurrent pieces or replace the persisted whole-file checksum. `Content-Digest`,
 digest parameters/coverage metadata, alternate algorithms, server-advertised
 whole-entity admission, Metalink chunk hashes, Last-Modified/unsafe-override
-resume, HTTP/2, growing/chunked transfers, the remaining Phase-4 repair gates,
+resume, HTTP/2, growing/chunked transfers, native Linux Phase-4 benchmark acceptance,
 and the full release-platform matrix remain phase/tag gates. Hot-backup
 publication residue is now recovered through
 descriptor-bound same-file/link-count validation with no-clobber collision and
@@ -377,18 +377,16 @@ Exit criteria:
 
 ## Phase 4: Control Plane And RPC
 
-Checkpoint status (`71acb03`): the shared dispatcher, method-token authentication,
+Phase 4B implementation: the shared dispatcher, method-token/HTTP Basic authentication,
 notifications, bounded batches/multicall/list results, query and queue controls,
 unique GID prefixes, typed task/global option changes, source replacement,
-config check/reload/dump, bounded JSON session export/import, scheduler-observed
-event broker, loopback WebSocket, NDJSON engine framing, direct CLI controls,
-and typed Rust embedding skeleton are executable. Content-Length stdio also
-pushes bounded notifications through a single serialized writer. A standalone
-RPC JSON fuzz target and dispatch-latency harness are included. Legacy HTTP
-Basic, configured aria2 text-session export/import, full option-matrix runtime
-coverage, active-download p99 evidence, and the remaining release
-platform matrix stay open exit gates; this checkpoint therefore does not mark
-the whole phase complete.
+versioned config check/reload/dump and URL rules, bounded JSON/aria2 session
+export/import and configured saves, filtered events, loopback WebSocket,
+Content-Length/NDJSON stdio, combined transports, direct CLI controls, and
+typed Rust embedding are executable. Real option restart and slow-slot/retry
+scheduling tests pass. Native Windows active-download p99 evidence is recorded;
+native Linux measurement is deferred until CI is ready, as requested on
+September 13, 2026. Release-platform gates remain separate.
 
 - Complete control-plane operations over the Phase-1 scheduler.
 - Request/response, batch, list-page, per-client pending-work, and serialized-byte
@@ -402,7 +400,7 @@ the whole phase complete.
 - Config reload/check/dump commands and RPC diagnostics.
 - Session save/load.
 - aria2-compatible `--save-session` text export and native JSON export.
-- Native Rust API skeleton.
+- Typed Rust query, control, configuration, session and event APIs.
 
 Exit criteria:
 
@@ -428,20 +426,23 @@ and transport ownership, borrowed result preflight, and typed input/native
 projection accounting are implemented. Scheduler simulations and status drafts
 reserve before mutation and retain credit through pending driver work. The
 [repair gates](implementation-readiness.md#phase-4-repair-gates) record regression
-evidence; complete runtime option application and the completion requirements
-below are still pending.
+evidence. Runtime option application and the interface/scheduling completion
+requirements below are implemented and tested.
 
 ### Phase 4B Completion
 
-Phase 4B is the next implementation milestone from `71acb03`. It closes
-`P4-01` through `P4-11` in `implementation-readiness.md` before Phase 5:
+Phase 4B completes the implementation and regression gates `P4-01` through
+`P4-10` in `implementation-readiness.md`:
 authentication and connection-local events; shared RPC accounting; replayable
 option/source changes; registry/configuration completion; sanitized session
 compatibility; CLI/transport/Rust parity; opt-in slow-slot scheduling; and real
-active-download performance plus platform evidence. The control p99 target is
-50 ms over 20,000 measured calls with 1,000 active HTTP ranges after warm-up.
-Document each owning contract before implementation and close gates only with
-their corresponding tests, rather than treating a compiled surface as complete.
+active-download performance plus platform evidence. `P4-11` passes natively on
+Windows-GNU for all four transports: 20,000 calls each, 1,000 active HTTP ranges,
+worst p99 0.542 ms against 50 ms, and bounded memory under stalled consumers.
+Measured bursts last at most 343 ms. Native Linux acceptance remains deferred
+until CI is ready; the manual native Linux workflow preserves the same gates.
+Do not claim that deferred platform evidence or the complete release matrix
+has passed.
 
 ## Phase 5: Metalink, FTP, SFTP
 

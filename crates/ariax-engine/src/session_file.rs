@@ -604,6 +604,12 @@ mod tests {
         let tasks = parse(json!([text.clone(), "aria2"])).expect("reimport");
         assert_eq!(tasks[0].options["piece-length"], "1048576");
         assert_eq!(tasks[0].options["retry-profile"], "standard");
-        assert!(parse(json!([format!("{text}  retry-profile=standard\n"), "aria2"])).is_err());
+        assert!(
+            parse(json!([
+                format!("{text}  retry-profile=standard\n"),
+                "aria2"
+            ]))
+            .is_err()
+        );
     }
 }

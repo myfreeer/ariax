@@ -1,0 +1,9 @@
+[[rule]]
+name = "https-images"
+[rule.match]
+scheme = ["https"]
+host_suffix = "example.test"
+path_glob = "/images/*"
+[rule.options]
+split = 3
+retry-profile = "conservative"

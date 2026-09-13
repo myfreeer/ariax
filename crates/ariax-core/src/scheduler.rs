@@ -72,6 +72,7 @@ struct ScheduledTask {
     pending_slow_readmission: Option<SlowReadmissionDecision>,
     slow_demotion_count: u32,
     slow_slot: Option<SlowSlotPersistence>,
+    slow_remaining_position: usize,
     no_space_probe: Option<(NoSpaceProbeId, NoSpaceProbeOrigin)>,
     pending_option_patch: Option<OptionPatchId>,
     pending_option_patch_mode: Option<PendingOptionPatchMode>,
@@ -112,6 +113,7 @@ impl ScheduledTask {
             pending_slow_readmission: None,
             slow_demotion_count: 0,
             slow_slot: None,
+            slow_remaining_position: 0,
             no_space_probe: None,
             pending_option_patch: None,
             pending_option_patch_mode: None,
@@ -533,6 +535,16 @@ pub struct RequestScheduler {
 }
 
 impl RequestScheduler {
+    /// Changes only policy for future decisions; accepted timers and task intent remain intact.
+    pub fn configure_queue_policies(
+        &mut self,
+        retry_wait_holds_slot: bool,
+        slow_readmission_policy: crate::SlowReadmissionPolicy,
+    ) {
+        self.config.retry_wait_holds_slot = retry_wait_holds_slot;
+        self.config.slow_readmission_policy = slow_readmission_policy;
+    }
+
     #[must_use]
     pub fn new(config: SchedulerConfig) -> Self {
         Self {
@@ -605,6 +617,8 @@ impl RequestScheduler {
             task.generation_started = recovered.generation_started;
             task.slow_demotion_count = recovered.slow_demotion_count;
             task.slow_slot = recovered.slow_slot;
+            task.slow_remaining_position =
+                recovered.slow_slot.map_or(0, |slot| slot.original_position);
             task.host_key_challenge = recovered.host_key_challenge;
             task.error = recovered.error;
             task.stopped_status = recovered.stopped_status;
@@ -2491,8 +2505,17 @@ impl RequestScheduler {
                 })
             });
 
+        let preferred_demoted = demoted.filter(|gid| match self.config.slow_readmission_policy {
+            crate::SlowReadmissionPolicy::Front => true,
+            crate::SlowReadmissionPolicy::OriginalPosition => self
+                .tasks
+                .get(gid)
+                .is_some_and(|task| task.slow_remaining_position == 0),
+            crate::SlowReadmissionPolicy::Back => false,
+        });
         let gid = pending_restart_patch
             .or(retained_retry)
+            .or(preferred_demoted)
             .or(waiting)
             .or(demoted)
             .ok_or_else(|| {
@@ -2553,7 +2576,8 @@ impl RequestScheduler {
         let mut updated = original.clone();
         let mut effects = Vec::new();
         self.plan_admission(&mut updated, action, &mut effects)?;
-        self.finish_action(
+        let ordinary = original.state != TaskState::WaitingSlow;
+        let result = self.finish_action(
             original,
             Some(updated),
             true,
@@ -2562,7 +2586,17 @@ impl RequestScheduler {
             effects,
             true,
             self.ids,
-        )
+        )?;
+        if ordinary {
+            for task in self
+                .tasks
+                .values_mut()
+                .filter(|task| task.slow_readmission_ready)
+            {
+                task.slow_remaining_position = task.slow_remaining_position.saturating_sub(1);
+            }
+        }
+        Ok(result)
     }
 }
 
@@ -3491,6 +3525,7 @@ impl RequestScheduler {
             demotion_count,
             decision,
         });
+        updated.slow_remaining_position = original_position;
         let mut effects = Vec::new();
         Self::begin_cancellation(
             &mut updated,
@@ -3560,7 +3595,21 @@ impl RequestScheduler {
         if disposition != EventDisposition::Fresh {
             return Self::ignored_for_disposition(&original, disposition, at);
         }
-        let can_admit = self.active_slot_count() < self.config.max_active_tasks.get()
+        let waiting_first = self.queues.get(QueueClass::Waiting).iter().any(|gid| {
+            self.tasks.get(gid).is_some_and(|task| {
+                !task.desired_paused
+                    && task.pending_barrier.is_none()
+                    && !task.conditions.blocks_admission()
+                    && (task.state == TaskState::Waiting
+                        || (task.state == TaskState::RetryWait && task.retry_ready))
+            })
+        }) && match self.config.slow_readmission_policy {
+            crate::SlowReadmissionPolicy::Front => false,
+            crate::SlowReadmissionPolicy::OriginalPosition => original.slow_remaining_position != 0,
+            crate::SlowReadmissionPolicy::Back => true,
+        };
+        let can_admit = !waiting_first
+            && self.active_slot_count() < self.config.max_active_tasks.get()
             && !original.desired_paused
             && !original.conditions.blocks_admission();
         let action = if can_admit {

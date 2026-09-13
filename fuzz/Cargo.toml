@@ -9,6 +9,7 @@ rust-version = "1.88"
 cargo-fuzz = true
 
 [dependencies]
+ariax-config = { path = "../crates/ariax-config" }
 ariax-core = { path = "../crates/ariax-core" }
 ariax-engine = { path = "../crates/ariax-engine" }
 ariax-storage = { path = "../crates/ariax-storage" }
@@ -62,6 +63,13 @@ bench = false
 [[bin]]
 name = "session_document"
 path = "fuzz_targets/session_document.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "url_rules"
+path = "fuzz_targets/url_rules.rs"
 test = false
 doc = false
 bench = false

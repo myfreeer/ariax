@@ -1,0 +1,5 @@
+[[rule]]
+[rule.match]
+host = "example.test"
+[rule.options]
+rpc-secret = "must-not-be-admitted"

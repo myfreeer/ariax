@@ -38,6 +38,7 @@ mod startup_executor;
 mod startup_filesystem;
 mod startup_native;
 mod storage_engine;
+mod storage_journal;
 
 pub use session_file::{
     MAX_SESSION_DOCUMENT_BYTES, MAX_SESSION_LINE_BYTES, SessionFormat, validate_session_syntax,
@@ -66,8 +67,8 @@ pub use http_connector::{
     classify_http_address, resolve_http_destination, resolve_http_destination_with_resolver,
 };
 pub use http_control::{
-    HttpControlBackend, HttpControlError, HttpControlPlane, HttpControlPlaneConfig,
-    SessionExportConfig,
+    ControlDiagnostics, HttpControlBackend, HttpControlError, HttpControlPlane,
+    HttpControlPlaneConfig, OptionPatchRejection, SessionExportConfig,
 };
 pub use http_cookie::{
     DEFAULT_HTTP_COOKIE_TOTAL_ENTRIES, HTTP_PSL_SHA256, HTTP_PSL_SNAPSHOT_ID, HttpCookieError,
@@ -163,17 +164,20 @@ pub use http_rpc::{
     DEFAULT_HTTP_RPC_SHUTDOWN_TIMEOUT, HttpRpcBackend, HttpRpcBackendError, HttpRpcTransportError,
     MAX_HTTP_RPC_CONNECTIONS, MAX_HTTP_RPC_HEADER_BYTES, MAX_HTTP_RPC_REQUEST_BYTES,
     MAX_HTTP_RPC_RESPONSE_BYTES, MAX_RPC_BATCH_MEMBERS, MAX_RPC_MULTICALL_MEMBERS, RPC_METHODS,
-    RPC_NOTIFICATIONS, RpcAuthPolicy, RpcDispatcher, RpcFuture, RpcWebSocketBackend, dispatch_json,
-    run_content_length_stdio, run_content_length_stdio_with_events, run_ndjson_stdio,
-    serve_loopback_http, serve_loopback_http_listener, serve_loopback_http_listener_until,
-    serve_loopback_http_until, serve_loopback_websocket_listener_until,
-    serve_loopback_websocket_until,
+    RPC_NOTIFICATIONS, RpcAuthPolicy, RpcDispatcher, RpcFuture, RpcStdioEof, RpcStdioFraming,
+    RpcStdioOptions, RpcWebSocketBackend, dispatch_json, run_content_length_stdio,
+    run_content_length_stdio_with_events, run_ndjson_stdio, run_ndjson_stdio_with_events,
+    run_stdio, run_stdio_until, serve_loopback_http, serve_loopback_http_listener,
+    serve_loopback_http_listener_until, serve_loopback_http_until,
+    serve_loopback_websocket_listener_until, serve_loopback_websocket_until,
 };
 pub use rpc_budget::{
     MAX_RPC_CLIENT_BYTES, MAX_RPC_CLIENT_REQUEST_BYTES, MAX_RPC_CLIENT_REQUESTS, RpcBudgetError,
     RpcBudgetSnapshot, RpcBudgets, RpcClientBudget,
 };
 mod rpc_client;
+mod rpc_compat;
+mod slow_slots;
 pub use http_supervisor::{
     DEFAULT_HTTP_SUPERVISOR_POLL_INTERVAL, DEFAULT_HTTP_SUPERVISOR_SHUTDOWN_TIMEOUT,
     HttpTaskWorker, HttpWorkerFuture, HttpWorkerSuccess, HttpWorkerSupervisor,
@@ -199,8 +203,10 @@ pub use http_transport::{
     MAX_HTTP_TLS_BUNDLE_BYTES, MAX_HTTP_TLS_BUNDLE_CERTIFICATES,
 };
 pub use native_api::{
-    AddUri, DownloadOptions, Engine, EngineBuilder, NativeApiError, NativeEventSubscription,
-    TaskStatus,
+    AddUri, ConfigDumpFormat, ConfigDumpMode, ConfigurationReport, ConfigurationUpdate,
+    DownloadFile, DownloadOptions, DownloadServer, DownloadServers, DownloadUri, Engine,
+    EngineBuilder, EngineSession, EngineVersion, GlobalOptions, GlobalStatistics, NativeApiError,
+    NativeEventSubscription, PositionOrigin, TaskStatus, UriUsage,
 };
 pub(crate) use process_bootstrap::ProcessDrainOutcome;
 pub use process_bootstrap::{
@@ -210,10 +216,12 @@ pub use process_bootstrap::{
     ProcessShutdownError, ProcessShutdownReport, bootstrap_process,
 };
 pub use rpc_client::RpcClientContext;
+pub use rpc_compat::RpcCompatibility;
 pub use rpc_events::{
     DEFAULT_RPC_EVENT_BYTE_CAPACITY, DEFAULT_RPC_EVENT_CAPACITY, MAX_RPC_EVENT_BYTE_CAPACITY,
-    MAX_RPC_EVENT_CAPACITY, MAX_RPC_EVENT_SUBSCRIBERS, RpcEvent, RpcEventBroker, RpcEventClass,
-    RpcEventDelivery, RpcEventDisconnect, RpcEventError, RpcEventKey, RpcEventLimits,
+    MAX_RPC_EVENT_CAPACITY, MAX_RPC_EVENT_FILTER_GIDS, MAX_RPC_EVENT_FILTER_METHODS,
+    MAX_RPC_EVENT_SUBSCRIBERS, RpcEvent, RpcEventBroker, RpcEventClass, RpcEventDelivery,
+    RpcEventDisconnect, RpcEventError, RpcEventFilter, RpcEventKey, RpcEventLimits,
     RpcEventSubscriber,
 };
 pub use runtime_effects::{
@@ -224,6 +232,7 @@ pub use runtime_effects::{
     RuntimeEventSubmission, RuntimeEventSubmitError, RuntimeSchedulerEffectSink,
     VerifyingTransferRequest,
 };
+pub use slow_slots::{HttpSchedulingPolicy, RetryWaitSlotPolicy, SlowSlotConfig, SlowSlotPolicy};
 pub use startup_executor::{
     StartupSessionRepairError, StartupSessionRepairExecutor, StartupSessionRepairFinishError,
     StartupSessionRepairPoll,

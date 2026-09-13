@@ -8,10 +8,11 @@ at `30b70c5`, and the Phase-4 control-plane checkpoint is executable at
 checkpoint needed multicall authentication ordering, authenticated pushed
 events, complete registry-backed retry admission, active option restart replay,
 active source replacement outcome handling, and per-client RPC budget
-reservation. Phase 4B implements these six repairs as detailed below; complete
-runtime option application remains open. Remaining compatibility,
-transport, benchmark, and release matrix work proceeds under the later phase
-exit criteria below and in `implementation-plan.md`.
+reservation. Phase 4B implements these six repairs and completes the runtime
+option, configuration, session, interface and slow-slot integration gates.
+Native Windows benchmarks pass all four transports. Native Linux benchmark
+acceptance is deferred at the user's request until CI is ready; release matrix
+work remains governed by the exit criteria below and `implementation-plan.md`.
 
 This document is the handoff checklist from architecture design to detailed
 module design and implementation.
@@ -83,11 +84,11 @@ The control-plane checkpoint now adds one shared JSON-RPC dispatcher with
 aria2 method tokens, notifications, bounded batches and multicall, query/queue/
 source/typed-option/config/session controls, unique GID prefixes, loopback
 WebSocket, a bounded coalescing event broker, direct CLI controls, and a typed
-Rust embedding skeleton. HTTP, WebSocket, stdio request/response, CLI, and the
+Rust embedding API. HTTP, WebSocket, stdio request/response, CLI, and the
 library facade all reach the same process-owned control plane. Content-Length
-stdio uses the same bounded pushed event broker. Legacy HTTP Basic, aria2
-text-session compatibility, and the full Phase-4 exit matrix remain explicit
-gates.
+and NDJSON stdio use the same bounded pushed event broker. Optional HTTP Basic,
+aria2 text-session compatibility, combined transports, EOF policies, event
+filters and compatibility modes have executable success/rejection coverage.
 This remains a phase checkpoint, not a release/tag: broader RFC 9530/Metalink
 identity, `Content-Digest`, alternate digest algorithms, broader validators,
 growing/chunked transfers, HTTP/2, broader RPC, adaptive profile tuning, and the
@@ -290,53 +291,30 @@ this vertical slice.
 
 ## Phase 4 Repair Gates
 
-The six defects below were established against `71acb03`. Phase 4B has now
-implemented `P4-01`, `P4-02`, and the admission/recovery portion of `P4-03`.
-Linux 1.97.1, MSRV 1.88, and native Windows-GNU workspace tests pass, including
-the production-policy retry regression and authenticated transport tests.
-Strict Linux and native Windows-GNU Clippy pass. The authenticated RPC fuzz
-target passes a 2,000-run local smoke check; this run is not coverage-instrumented
-and does not replace the instrumented CI fuzz requirement.
-The `P4-04` journal replay and live-rate repairs also pass Linux 1.97.1, MSRV
-1.88, and native Windows-GNU workspace tests and strict Linux/Windows-GNU Clippy.
-Real storage application for output-path changes remains under `P4-07`; the
-replay tests do not establish that broader runtime behavior. The `P4-05` source
-replacement repair passes the same platforms, including delayed cancellation,
-pause/remove races, disconnected callers, retry waits, atomic rollback, and
-restart before and after source commit. The completion gates below remain open.
-The `P4-06` reservation/transport implementation now passes Linux 1.97.1, MSRV
-1.88, and native Windows-GNU workspace tests. Its controlled writer stalls use
-real HTTP/WebSocket framing and TCP connections with an injected pending write;
-they do not replace native optimized active-range or RSS benchmark evidence.
-Strict Linux/Windows-GNU Clippy, workspace build, formatting, and generated
-contract checks pass. The RPC fuzz target adds permit-bound and refund
-assertions and passes another 2,000-run local smoke check; it remains
-uninstrumented and does not replace CI fuzz coverage.
-Borrowed result preflight, bounded status/event accumulation, typed input
-forecasts, retained option-patch leases, and native admission/projection credit
-now pass Linux 1.97.1, MSRV 1.88, and native Windows-GNU workspace tests.
-Scheduler simulation/status-draft reservations now cover existing task copies,
-retained roots, validation indexes, and pending owner lifetimes. Regression
-coverage includes rejection before journal creation, timeout retention, idle-only
-unused-plan cleanup, event retention under pressure, and independent direct/owner
-request slots. A 1,000-active-task forecast test is allocation-contract evidence;
-native optimized latency and RSS measurements remain under `P4-11`.
-Accepted add, option, and source writes now retain an owner continuation through
-catalog publication and final reply. RPC credit remains held after a delayed or
-disconnected caller, and shutdown drains the continuation before closing the
-journal; a failed drain records a dirty checkpoint. The remaining `P4-11` work
-is to move the other synchronous control and bulk handlers onto the same bounded
-progress lane and to collect native delayed-worker evidence for every transport.
-Passing the existing workspace checks does not substitute for the regression
-evidence below. Tests must use the production authentication and persistence
-composition, including real delayed worker cancellation where relevant.
+The six defects below were established against `71acb03` and are repaired.
+Linux 1.97.1 and native Windows-GNU workspace tests pass, including production
+retry admission, authenticated transports, delayed cancellation, durable
+prefixes, exact mirror promotion, source rollback and disconnected callers.
+Strict Clippy passes on both platforms; the all-target/all-feature graph also
+checks at Linux MSRV 1.88. The instrumented parser smoke evidence is recorded
+with the completion gates below.
+
+Reservations cover borrowed result preflight, typed conversion, scheduler
+simulations, retained snapshots and pending owner lifetimes. Rejection before
+journal creation, timeout retention, unused-plan cleanup and independent
+client/owner slots have executable regressions. Accepted add, option, source
+and batch-import mutations retain an owner continuation through publication,
+including after caller disconnect; failed drains record dirty checkpoints.
+Real output placement and piece-geometry application are covered by `P4-07`.
+Allocation-contract tests and deterministic writer stalls remain separate from
+the real-worker native Windows measurements under `P4-11`.
 
 | Gate | Current Implementation | Required Evidence And Owner |
 | --- | --- | --- |
 | `P4-01` Multicall authentication | Repaired: member-token envelopes dispatch without an outer token. | HTTP/WebSocket/stdio regression tests pass; invalid/missing tokens never dispatch a member. `invalid_envelopes_and_tokens_never_authorize_events` covers malformed, nested, empty, and over-limit envelopes. [API authentication](apis-and-embedding.md#rpc-authentication). |
 | `P4-02` Event authentication | Repaired: connection-local context installs a subscriber after authentication, before execution. | WebSocket two-client/reconnect/shutdown and Content-Length first-call/method-error tests pass; no-secret event tests remain green. Each method still requires its token. [Event delivery](apis-and-embedding.md#event-delivery-and-slow-consumers). |
-| `P4-03` Retry admission | Repaired: complete bounded retry registry and exact production-policy preflight before journal creation. Runtime/config scopes remain under `P4-07`. | `retry_admission_recovers_canonical_options_with_production_policy` and `rejected_admission_has_no_artifacts_and_does_not_fault_the_scheduler` pass with profiles, aliases, modifiers, forbidden keys, and a subsequent valid add/query. [Retry admission](retry-policy.md#registry-and-persistence-boundary). |
-| `P4-04` Active option recovery | Replay repaired: accepted snapshots survive drain, generation persistence includes atomic mirror promotion, and recovery restores exact staging and fresh patch identities. Live-only rate changes no longer restart. | Delayed-worker split/output/mixed patches, all durable prefixes, consecutive generations, rejected staging, and live-rate persistence pass. Exact promotion mismatch and injected SQLite rollback tests pass; strict journal replay tests remain green. Real output-path storage application is still a `P4-07` requirement. [Option application](detailed-config.md#runtime-update-application), [journal rules](detailed-storage.md#control-journal-format). |
+| `P4-03` Retry admission | Repaired: complete bounded retry registry and exact production-policy preflight before journal creation. Runtime/config scopes are covered by `P4-07`. | `retry_admission_recovers_canonical_options_with_production_policy` and `rejected_admission_has_no_artifacts_and_does_not_fault_the_scheduler` pass with profiles, aliases, modifiers, forbidden keys, and a subsequent valid add/query. [Retry admission](retry-policy.md#registry-and-persistence-boundary). |
+| `P4-04` Active option recovery | Replay repaired: accepted snapshots survive drain, generation persistence includes atomic mirror promotion, and recovery restores exact staging and fresh patch identities. Live-only rate changes no longer restart. | Delayed-worker split/output/mixed patches, all durable prefixes, consecutive generations, rejected staging, and live-rate persistence pass. Exact promotion mismatch and injected SQLite rollback tests pass; strict journal replay tests remain green. Real output-path storage application also passes under `P4-07`. [Option application](detailed-config.md#runtime-update-application), [journal rules](detailed-storage.md#control-journal-format). |
 | `P4-05` Active source replacement | Repaired: asynchronous replacements quiesce the worker without changing user intent, then commit the complete source set and exact queue state before catalog publication and ordinary readmission. | Delayed-worker tests cover both method shapes, independent queries, pause/remove races, disconnected callers, and restart before/after commit. Retry-wait tests cancel stale timers with retained/released slots. SQLite queue mismatch and injected source-write failure roll back both changes. The synchronous primitive rejects active replacement before mutation. [Source persistence](session-persistence.md), [mutation contract](apis-and-embedding.md#control-mutation-recovery). |
 | `P4-06` RPC work accounting | Repaired: profile/client/resident reservations cover parsing, typed input, scheduler/draft copies, native and JSON projections, responses, events, multicall results, transport caches, and pending owner lifetimes. | Transport stalls, independent clients, four outstanding requests, overflow/failure/cancellation, preflight/refunds, deferred mutations, native projections, scheduler rejection before journal creation, timeout retention, unused-plan cleanup, event retention, and 1,000-active-task forecasts have executable regressions. Native optimized real-download/RSS evidence is tracked separately by `P4-11`. [RPC bounds](apis-and-embedding.md#query-and-response-work-bounds), [runtime budgets](detailed-runtime.md#resourcemanager). |
 
@@ -350,10 +328,10 @@ persistence coverage remain required when implementing these repairs.
 
 ### Phase 4B Completion Evidence
 
-Phase 4B completes the six repair gates above and the remaining control-plane
-requirements below before Phase 5 protocol implementation. These gates are
-initially open; a checkpoint closes a row only with recorded executable
-evidence. Existing compilation or mock-only dispatch timing is insufficient.
+As of September 13, 2026, `P4-01` through `P4-10` are implemented and tested.
+The native Windows portion of `P4-11` passes. The user explicitly deferred
+native Linux benchmark acceptance until CI is ready; that platform gate stays
+deferred and must not be represented as passing WSL evidence.
 
 The `P4-09` HTTP Basic portion is executable: startup validates the sensitive
 `rpc-secret`/`rpc-user`/`rpc-passwd` CLI and environment settings before bootstrap;
@@ -361,9 +339,9 @@ HTTP and WebSocket enforce Basic before body dispatch or event subscription.
 Method tokens remain independent, duplicate credentials reject, and cloned
 dispatchers share rejection throttling. Linux 1.97.1, MSRV 1.88, native
 Windows-GNU workspace tests, strict Linux/native Clippy, and generated contract
-checks pass. The updated RPC fuzz target passes 2,000 short, uninstrumented
-smoke runs using virtual time for throttle waits. Other `P4-09` interface
-requirements below remain open.
+checks pass. The updated RPC fuzz target now passes 2,000 instrumented smoke
+runs across all three compatibility modes and both token policies, with virtual
+time for throttle waits. The remaining `P4-09` interfaces also pass as below.
 
 The `P4-08` source sanitization boundary is executable: live query-bearing HTTP
 sources persist and export only credential placeholders, and startup retains
@@ -389,16 +367,25 @@ ACLs on descriptor-created files; creation now supplies the protected private
 descriptor before writing any bytes. Linux 1.97.1 and native Windows-GNU workspace
 tests, strict Linux/native Clippy, Linux MSRV 1.88 checking, workspace build,
 formatting, and generated contract verification pass. The session parser also
-passes 2,000 bounded uninstrumented fuzz smoke runs; instrumented fuzz and the
-remaining platform/performance evidence stay under `P4-11`.
+passes 2,000 bounded instrumented fuzz smoke runs.
 
-| Gate | Required Behavior And Evidence |
+The final workspace run passes 330 engine tests on Linux and 328 on native
+Windows-GNU, together with the core, configuration, runtime, storage, CLI and
+xtask suites and doctests. The ignored child entrypoints are exercised by their
+parent crash tests. Linux/native Windows workspace builds and strict all-target,
+all-feature Clippy, Linux MSRV 1.88 checking, formatting and generated contract
+verification pass. Generated inventories cover 50 reviewed options. All eight
+fuzz targets pass 2,000-run AddressSanitizer/coverage smoke checks each; coverage
+counters were loaded. These bounded runs complement the regression and crash
+suites and do not replace longer native CI campaigns.
+
+| Gate | Status And Evidence |
 | --- | --- |
-| `P4-07` Configuration and runtime options | Registry-driven admission and atomic typed patches; live, pending, restart, and rejection behavior for every option according to its implemented/feature-gated status. Bounded URL rules, versioned atomic reload, and redacted flat/JSON/TOML dumps pass success, rejection, precedence, and rollback tests. |
-| `P4-08` Session compatibility | Implemented and locally validated on Linux/MSRV/native Windows as recorded above. Configured aria2/JSON export, explicit/periodic/shutdown saves, local input and typed Rust operations share bounded sanitized documents. Whole-document validation, atomic batch metadata, disconnect retention and crash tests prevent invalid task prefixes and partial exports. |
-| `P4-09` Public interfaces | CLI, HTTP, WebSocket, both stdio framings, and typed Rust operations pass parity tests. Basic authentication supplements tokens; combined transports, EOF policies, filtered events, diagnostics, compatibility modes, and every advertised RPC method have executable behavior or explicit protocol-feature rejection. |
-| `P4-10` Slow-slot scheduling | Default `off` preserves queue behavior. Opt-in demote/pause, cooldown, retry-slot policy, queue ordering, user-action precedence, restart recovery, and local-pressure exclusions pass scheduler/worker integration tests. |
-| `P4-11` Performance and platform evidence | Native optimized Linux and Windows-GNU runs maintain 1,000 active HTTP ranges during 20,000 measured status/control calls collected in short bursts with cooldowns, with p99 at most 50 ms and bounded memory under stalled consumers. Each burst reestablishes the active-range barrier after warm-up. Workspace, MSRV, generated contracts, bounded fuzz runs, and relevant native platform CI pass. |
+| `P4-07` Configuration and runtime options | Closed. Registry-driven admission and atomic typed patches preserve live/pending/restart/rejection behavior. `runtime_patch_rejections_are_grouped_value_free_and_atomic`, `versioned_reload_and_url_rules_preserve_precedence_and_reject_atomic_mixed_changes`, and `explicit_layout_changes_download_new_placement_and_geometry_without_clobbering` pass. URL-rule bounds, precedence, redacted flat/JSON/TOML dumps, and rollback are covered. |
+| `P4-08` Session compatibility | Closed. Linux/native Windows tests and Linux MSRV checking pass as recorded above. Configured aria2/JSON export, explicit/periodic/shutdown saves, local input and typed Rust operations share bounded sanitized documents. Whole-document validation, atomic batch metadata, disconnect retention and crash tests prevent invalid task prefixes and partial exports. |
+| `P4-09` Public interfaces | Closed. CLI, HTTP, WebSocket, both stdio framings and typed Rust queries/mutations share the dispatcher. `every_advertised_method_executes_or_reports_its_disabled_protocol`, combined-transport/EOF integration tests, native parity and credit exhaustion, authenticated filters, diagnostics, and all compatibility modes pass success/rejection coverage. |
+| `P4-10` Slow-slot scheduling | Closed. Default `off`, demote/pause, queue ordering, cooldown, user precedence, recovery and concurrent local-pressure guards are covered. `slow_remote_workers_free_slots_and_user_controls_override_cooldown` and `retry_wait_slot_policy_uses_real_worker_deadlines` pass. Automatic retry readmission preserves range deadlines and attempt counts under unchanged snapshots; strict generation rejection remains tested. |
+| `P4-11` Performance and platform evidence | Native Windows accepted; native Linux deferred until CI is ready. All four optimized Windows scenarios complete 20,000 calls with 1,000 real active ranges, renewed barriers after warm-up, per-status connection checks and stalled event/response consumers. Worst p99 is 0.542 ms; longest burst is 343 ms; sampled working set is below 129 MiB and all reservations stay bounded. [Reports and limits](performance-profiles.md#native-windows-control-plane-evidence). Local build/test/lint/MSRV/contracts/fuzz evidence passes; the manual Linux workflow still requires a native CI result. |
 
 The session schema stays at v2 and journal replay remains strict. Native disk
 backend additions, hardware poweroff, release packaging, and tagging remain

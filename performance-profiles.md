@@ -1,18 +1,90 @@
 # Performance Profiles
 
+## Control Plane Measurement Protocol
+
+`ariax-engine/benches/rpc_active_profile.rs` measures the real HTTP worker and
+shared dispatcher in a separate engine process. The loopback origin and RPC
+client run outside that process so its RSS/working-set samples exclude fixture
+memory. One known-length task owns 1,000 concurrent HTTP/1.1 ranges across 125
+loopback origins, with eight connections per origin, 1,000-way splitting and
+64 KiB ingress frames. The fixture respects the transport's eight-connection
+per-origin ceiling and the unchanged concurrency-profile process limits.
+
+Each HTTP, WebSocket, Content-Length stdio and NDJSON scenario collects exactly
+20,000 round trips, including a global-template mutation every twentieth call.
+Runs use at most 1,000 calls or 500 ms per burst, followed by a 250 ms cooldown.
+Each scenario has a 90-second overall deadline; setup, barrier queries and
+shutdown also have deadlines so a failed fixture cannot run indefinitely.
+After each warm-up the origin pulses every open response and the harness waits
+for both its 1,000-response acknowledgement and the engine's received-byte and
+connection barriers before timing calls. The barrier is checked again afterward.
+Every measured status response must also report 1,000 connections. Reports
+separate total measured burst time, round-trip time and whole-scenario time.
+The p99 gate is 50 ms; missing range, RSS or budget evidence fails the run.
+
+A second consumer stops reading large source-list replies throughout the
+measured bursts. A separate WebSocket consumer stops reading 512 KiB coalesced
+fixture notifications through the production event broker; an event is refreshed
+before each warm-up. Both retained response and event credits must release after
+their respective consumers disconnect. For stdio, the measured client uses native OS pipes and the
+second framed runner uses a loopback socket as its stalled writer. Both runners
+share the production dispatcher and process budgets. Reports distinguish this
+fixture from a second process-stdio handle, and record retained-credit growth,
+release after disconnect, and the maximum sampled engine RSS and reservations.
+Enable with `ARIAX_RUN_ACTIVE_RPC_BENCH=1`; select one bounded scenario with
+`--scenario=http|websocket|content-length|ndjson`.
+On Linux, run in a shell with a 20,000-file-descriptor soft limit, as for the
+capacity harness; the default 1,024 limit cannot hold the origin listeners and
+1,000 live responses. This changes only the benchmark shell and its children.
+
+Native Linux acceptance is deferred at the user's request on September 13,
+2026, until CI is ready. WSL 1 timings do not close that platform gate. The
+manually dispatched `native-linux-rpc-benchmarks.yml` workflow runs the same four
+optimized scenarios and fails on a missing barrier, incomplete call count,
+unreleased stalled-consumer credit, memory overflow or latency-gate failure.
+Its JSON reports must be recorded before closing native Linux acceptance.
+
+### Native Windows Control Plane Evidence
+
+The September 13, 2026 run uses native Windows-GNU Rust 1.97.1, two Tokio
+workers per process, the concurrency profile and `BlockingDiskLane` storage.
+Each scenario completed 19,000 status calls and 1,000 global-template mutations
+in 20 bursts, with 250 ms cooldowns and renewed barriers after warm-up. All
+stalled response/event credits released, and every engine shutdown was clean.
+
+| Transport | Measured Calls | p99 (ms) | Longest Burst (ms) | Measured Burst Time (s) | Scenario Time (s) | Peak Working Set (MiB) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| HTTP | 20,000 | 0.371 | 169 | 2.587 | 14.508 | 128.94 |
+| WebSocket | 20,000 | 0.331 | 131 | 2.110 | 13.614 | 127.70 |
+| Content-Length stdio | 20,000 | 0.542 | 343 | 5.833 | 17.093 | 128.81 |
+| NDJSON stdio | 20,000 | 0.344 | 155 | 2.524 | 14.036 | 127.31 |
+
+The largest sampled RPC reservation was 36.40 MiB against 64 MiB; the largest
+shared resident reservation was 192.65 MiB against 896 MiB. Working set stayed
+below the 1 GiB profile target. Measured burst time excludes warm-up, barriers,
+cooldowns and cleanup; scenario time includes them. These are sampled memory
+maxima, with admission limits enforced independently by permits. The
+[raw reports](performance-evidence/phase-4b-windows-gnu-2026-09-13.json) include
+all limits, retained-credit release, elapsed times, toolchain identity and
+the tested binary hash. Stdio's second stalled writer uses the socket fixture
+described above; the measured stdio round trips use native OS pipes.
+
+## Profile Implementation
+
 Status: executable profile and HTTP-capacity slice implemented and recorded;
 optimized Linux and native Windows-GNU HTTP-capacity runs are recorded below.
-Adaptive tuning,
-non-HTTP resource wiring, and the remaining release-platform matrix remain
-pending.
+The native Windows control-plane runs above also pass. Adaptive tuning,
+non-HTTP resource wiring, native Linux control-plane acceptance, and the
+remaining release-platform matrix remain pending.
 
 The runtime resolver now owns the exact preset matrix below, subtracts the
 64-handle control reserve from the native soft handle limit, and derives shared
 process/socket/file and resident-byte budgets. The RPC binary accepts
 `--profile=auto|concurrency|throughput|latency|compact`; its HTTP transport,
 HTTP ingress, and storage buffer pool share the resolved resident budget, while
-transport sockets consume the process/socket handle permits. File-handle and
-non-HTTP consumers are not wired yet. `auto` currently resolves to the
+transport sockets consume the process/socket handle permits. Selected storage
+files share file-handle permits; eviction and non-HTTP consumers remain later
+work. `auto` currently resolves to the
 concurrency baseline; adaptive movement inside the guardrails is a later
 milestone.
 
@@ -169,8 +241,9 @@ Large source/session results use borrowed preflight views and typed input
 preparation reserves its temporary copies; native calls retain projection
 credit through typed conversion. Scheduler simulation and status-draft copies
 reserve before mutation and retain credit while driver work is pending. The
-1,000-active-task forecast test covers allocation contracts; the profile's
-active-download/RSS and latency claims still require the `P4-11` benchmark evidence.
+1,000-active-task forecast test covers allocation contracts. The native Windows
+active-download/RSS and latency evidence above closes that platform's `P4-11`
+measurement; native Linux acceptance remains deferred until CI is ready.
 
 Cache/cardinality defaults are also registry-owned and admission-visible:
 
@@ -436,8 +509,8 @@ separately from ordinary control acknowledgements. WSL/DrvFS timings remain
 diagnostic rather than native release evidence.
 
 Local collection uses short bursts to avoid CPU-frequency degradation during
-sustained load. Default to at most 1,000 calls or two seconds of measurement per
-burst, with a brief warm-up and at least one second of unloaded cooldown between
+sustained load. Default to at most 1,000 calls or 500 ms of measurement per
+burst, with a brief warm-up and at least 250 ms of unloaded cooldown between
 bursts. Reestablish the active-range barrier before every measured burst. The
 20,000-call scenario target is an aggregate across those bursts; retain all
 samples and report actual counts, elapsed load time, and any incomplete scenario.

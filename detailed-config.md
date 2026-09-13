@@ -1,13 +1,12 @@
 # Detailed Config And Option Registry Design
 
-Status: first-slice implementation in progress. The typed registry, bounded
-value parser, aria2-style flat parser, and generated option/runtime contracts
-are implemented. Phase 4 supplies bounded config check/reload/dump for its
-limited executable option set; URL rules and full runtime application remain
-pending. Phase 4B repairs production-policy retry admission and recovery
-(`P4-03`), active option journal recovery and live-only rate mutation (`P4-04`).
-Full runtime application, including output-path changes with real storage,
-remains under `P4-07` in `implementation-readiness.md`.
+Status: Phase 4B implements the typed registry, bounded value/flat parsers,
+TOML URL rules, versioned atomic reload, and redacted flat/JSON/TOML dumps. The 50
+reviewed registry options have explicit executable or feature-gated behavior.
+Production retry admission/recovery, live rate updates, and durable option
+restarts are tested, including real output-path and piece-geometry changes.
+Evidence for `P4-03`, `P4-04`, and `P4-07` is recorded in
+`implementation-readiness.md`; additional protocol options remain later work.
 
 This document expands `configuration.md` into concrete artifacts, parsers, and
 runtime update mechanics.
@@ -225,6 +224,65 @@ built-in defaults
 
 Rules apply at `AddUri` time only. They never mutate active tasks by URL after
 creation.
+
+The Phase-4B executable HTTP profile parses TOML through a bounded schema with
+unknown fields rejected. Globs accept literal bytes, `*`, and `?`; a bounded
+non-backtracking matcher rejects work above its aggregate admission budget.
+Matching uses the first submitted HTTP(S) source, with normalized scheme/host,
+effective port, and path; userinfo, query, and fragment are excluded from the
+URL used for matching. A rule may not contain credentials or secret options.
+Per-download HTTP tuning and retry options share the registry validation used
+by add/import/runtime changes. Options for deferred protocols, unsafe hooks,
+and unavailable backends reject before publication.
+
+The shared dispatcher accepts `ariax.reloadConfig` with configuration text and
+an optional object containing `urlRules` TOML and `expectedGeneration`. It
+validates the complete candidate, including merged retry policy and output
+placement, before committing any live rate or template change. Stale versions
+and invalid rules retain the entire previous configuration. Successful reloads
+increment `configGeneration`; ordinary reloads affect future-task defaults and
+live process limits, leaving existing task versions intact.
+
+Flat configuration defaults precede matching rules; explicit RPC global
+template values precede per-task request values. Local input-file values retain
+their documented precedence below RPC global defaults. Dumps accept an explicit
+`flat`, `json`, or `toml` format with defaults, effective, task-effective, and
+URL-rule modes; diagnostic JSON/TOML includes the configuration version and
+source layer. Secret values are omitted or replaced with a redaction marker.
+
+Selecting a retry profile resets inherited retry fields to that profile before
+same-layer explicit overrides. Updating one attempt-cap alias replaces the
+inherited counterpart; when both aliases occur in one patch the stricter cap
+wins. Status additions/removals are applied once and persisted as a canonical
+complete policy, so replay does not apply modifiers a second time.
+
+Each matching rule is a separate layer. Retry modifiers are resolved against
+the preceding layer before the next rule is applied; a higher-layer status
+replacement cannot accidentally inherit an earlier addition or removal.
+Effective dumps contain the resolved retry policy, including profile defaults.
+All admission paths validate values against the registry before constructing
+the protocol snapshot.
+
+`checkConfig` applies the same cross-option validation as reload, including
+the existing RPC template and every rule layer. It may also check startup
+settings without publishing them. Derived retry fields in diagnostic dumps
+name the layer that selected their profile or status/attempt override.
+Runtime patch errors collect all rejected option names and stable reasons in
+`error.data`, with `code=OptionPatchRejected`; option values are never echoed.
+The Rust API retains those same typed reasons. Options recognized by the
+registry but not implemented for HTTP tasks report `unsupported`.
+
+The optional third `changeOption` argument is a closed settings object with
+`restart=true`. Changing `out` or `piece-length` on an active task requires this
+explicit new-generation authorization. After cancellation drains, a changed
+`out` creates a new file beneath the existing trusted output root, with no
+overwrite, and downloads it from the beginning. The old file is preserved.
+Changing piece geometry reuses the identity-checked file but discards its old
+piece evidence when the new layout is durably installed. Recovery of a current
+generation still requires an exact path and geometry match; only an admitted
+new generation can replace its predecessor's layout. An existing destination
+or unsafe path fails closed. Runtime `dir` remains confined to the configured
+trusted root.
 
 ## Runtime Update Application
 

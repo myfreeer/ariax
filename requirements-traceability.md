@@ -13,8 +13,10 @@ active option journal recovery, live-rate changes, and source mutations. Shared
 RPC reservations, transport ownership, borrowed result preflight, and typed
 input/native projection accounting are implemented. Scheduler simulations and
 status drafts reserve before mutation and retain credit through pending driver
-work. Complete runtime option application and the remaining completion gates
-are still open.
+work. Runtime option application, bounded URL rules, configuration reload/dumps,
+interface parity, sanitized sessions and slow-slot scheduling are implemented
+and tested. Native Windows active-download RPC evidence passes; native Linux
+benchmark acceptance is deferred at the user's request until CI is ready.
 Core scheduling,
 bounded persistence/recovery, native storage handoff, runtime ownership,
 packet-independent stats, process bootstrap, and the first public Phase-3B
@@ -77,8 +79,11 @@ and native admission/projection credit also pass that matrix. Scheduler/draft
 reservations cover mutation rejection before journal creation, pending-driver
 timeouts, unused-plan cleanup, event retention, and resumed admission after
 credit release. An allocation-contract test covers 1,000 active scheduler tasks;
-real-download latency/RSS evidence remains under `P4-11`. Complete runtime option
-application under `P4-07` also remains open.
+real-download latency/RSS evidence is recorded separately under `P4-11`.
+`P4-07` now includes real output-path and piece-geometry restarts, grouped
+value-free patch rejection, versioned atomic reload, bounded URL rules, resolved
+retry precedence and redacted flat/JSON/TOML dumps. Its success, rejection and
+rollback regressions pass.
 
 `P4-08` now covers strict whole-document JSON/aria2 parsing, atomic batch task
 metadata with crash recovery, private configured exports, periodic/final saves,
@@ -87,7 +92,25 @@ task prefix, disconnected accepted imports finish, and export failures leave
 complete old or new bytes. Linux/native Windows workspace tests and Clippy,
 Linux MSRV 1.88, generated contracts, and a short 2,000-run parser fuzz smoke
 check pass. Native Windows file creation supplies a protected private ACL;
-instrumented fuzz and final performance/platform evidence remain `P4-11` gates.
+all eight parser targets now pass 2,000 instrumented smoke runs each.
+
+`P4-09` covers every advertised method, typed Rust query/control/configuration/
+session operations, CLI JSON calls, combined HTTP/WebSocket/stdio transports,
+both stdio framings, EOF policies, authenticated event filters, diagnostics and
+all compatibility modes. Disabled download protocols return explicit feature
+rejections. `P4-10` has real-worker slow demotion/pause and retry-slot tests,
+queue-policy and user-action recovery, preserved retry deadlines/attempt counts,
+and concurrent local-pressure exclusions. Both gates are implemented and tested.
+
+Native Windows `P4-11` evidence records 20,000 calls per transport with 1,000
+active ranges, worst p99 0.542 ms, at most 343 ms per measured burst, 250 ms
+cooldowns, renewed barriers, stalled event/response consumers and bounded memory.
+See the [raw results](performance-evidence/phase-4b-windows-gnu-2026-09-13.json).
+Native Linux measurement is explicitly deferred until CI is ready; the manual
+native Linux workflow preserves the full acceptance checks. Linux/native Windows
+builds, workspace tests and strict Clippy, Linux MSRV 1.88, generated contracts,
+formatting and instrumented smoke fuzzing pass. This does not close deferred
+native Linux or broader release-platform gates.
 
 The implemented HTTP discard hierarchy now has deterministic process/task/host
 fault coverage and a standalone bounded fuzz package (`fuzz/`) for HTTP
@@ -345,15 +368,15 @@ Design coverage:
   admission, and the Phase-4 shared dispatcher/control/event checkpoint.
   Broader RFC
   9530/Metalink identity, `Content-Digest`, additional checksum algorithms,
-  Last-Modified/unsafe-override resume, HTTP/2, growing bodies,
-  aria2 text-session compatibility, and the remaining Phase-4 exit
-  matrix remain pending.
+  Last-Modified/unsafe-override resume, HTTP/2, growing bodies and native Linux
+  Phase-4 benchmark acceptance remain pending. Aria2 text-session compatibility
+  and the Phase-4B implementation gates are covered above.
 
 Legacy HTTP Basic RPC now has startup registry/CLI/environment validation,
 HTTP request and WebSocket upgrade gates, independent method tokens, redacted
 failures, and shared rejection throttling. Success/rejection and event-isolation
-tests pass on Linux, MSRV, and native Windows-GNU; the broader public-interface
-matrix remains under `P4-09`.
+tests pass on Linux and native Windows-GNU, and MSRV checking passes. The broader
+public-interface matrix also passes under `P4-09`.
 
 Acceptance:
 

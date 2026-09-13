@@ -1,6 +1,7 @@
 # Download Scheduling
 
-Status: reviewed pre-implementation contract. Implementation pending.
+Status: reviewed contract with executable scheduler transitions. Phase 4B
+connects the opt-in policy to HTTP workers and the shared configuration layer.
 
 The scheduler owns active, waiting, paused, and stopped task queues. It should
 preserve aria2-style `max-concurrent-downloads` semantics by default, while
@@ -120,6 +121,29 @@ Options:
 The resolved threshold above exists only when the user explicitly enables
 `slow-slot-policy`; with the default `off`, it causes no classification work.
 
+The HTTP control plane evaluates at most one policy action per 100 ms tick.
+It requires a runnable ordinary waiting task, a network-phase worker, sustained
+low useful throughput, and an unchanged generation throughout the grace
+window. A late control tick resets the window rather than interpreting event
+loop lag as remote slowness. Any configured global/task rate ceiling or local
+buffer, disk, CPU, journal, or rate wait suppresses classification. Worker
+pressure guards cover the entire local wait even when another lease makes
+progress. Verification/finalization are outside the network phase.
+
+Policy values are process-wide startup/global settings and apply atomically
+to subsequent decisions. They do not rewrite a previously accepted cooldown.
+Durations are whole seconds. A slow pause persists user pause intent before
+cancellation; after the worker drains, `TaskPaused(reason=slow_slot)` records
+the diagnostic reason. A crash during the drain recovers a safe paused task;
+a completed drain also recovers its slow-slot reason. An explicit user pause
+replaces that reason after any outstanding drain.
+`front` gives an eligible demoted task priority over ordinary waiting work;
+`back` drains ordinary waiting work first. `original-position` permits the
+saved number of ordinary admissions before readmission. Recovery starts from
+that saved position relative to the remaining queue. User queue moves still
+order tasks within their queue, and explicit pause/resume/remove supersede
+automatic decisions.
+
 ## Interaction With Retry Policy
 
 Slow slot freeing and retry are related but distinct:
@@ -165,6 +189,15 @@ Defaults:
 The scheduler must avoid double punishment. A single slow connection should not
 both consume many retry attempts and repeatedly demote the whole task without
 cooldown.
+
+Workers publish an all-ranges retry deadline only after their last runnable
+range has settled. With `false`, or an `auto` decision to release, the worker
+joins its range tasks, flushes its journal, releases buffers, and returns a
+typed retry outcome to the supervisor. Only then can the scheduler release the
+slot and schedule readmission. `true` keeps the bounded worker wait in the
+current generation. `auto` releases for a long wait or when every active worker
+is waiting or stalled. A fresh generation recovers the persisted per-range
+deadlines and attempt counts; slot release cannot shorten a retry delay.
 
 ## Backpressure Guardrails
 

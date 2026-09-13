@@ -13,6 +13,104 @@ pub const DEFAULT_RPC_EVENT_BYTE_CAPACITY: usize = 4 * 1024 * 1024;
 pub const MAX_RPC_EVENT_CAPACITY: usize = 4096;
 pub const MAX_RPC_EVENT_BYTE_CAPACITY: usize = 64 * 1024 * 1024;
 pub const MAX_RPC_EVENT_SUBSCRIBERS: usize = 1024;
+pub const MAX_RPC_EVENT_FILTER_METHODS: usize = 64;
+pub const MAX_RPC_EVENT_FILTER_GIDS: usize = 256;
+
+/// A bounded conjunction of method and task selections. Empty selections match all.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RpcEventFilter {
+    methods: Vec<String>,
+    gids: Vec<Gid>,
+}
+
+impl RpcEventFilter {
+    pub(crate) fn from_rpc(value: &Value) -> Result<Self, RpcEventError> {
+        let object = value.as_object().ok_or(RpcEventError::InvalidFilter)?;
+        if object
+            .keys()
+            .any(|key| !matches!(key.as_str(), "methods" | "gids"))
+        {
+            return Err(RpcEventError::InvalidFilter);
+        }
+        let array = |name: &str, limit: usize| -> Result<&[Value], RpcEventError> {
+            match object.get(name) {
+                None => Ok(&[]),
+                Some(Value::Array(values)) if values.len() <= limit => Ok(values),
+                _ => Err(RpcEventError::InvalidFilter),
+            }
+        };
+        let methods = array("methods", MAX_RPC_EVENT_FILTER_METHODS)?
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .filter(|text| text.len() <= 128)
+                    .map(str::to_owned)
+                    .ok_or(RpcEventError::InvalidFilter)
+            })
+            .collect::<Result<_, _>>()?;
+        let gids = array("gids", MAX_RPC_EVENT_FILTER_GIDS)?
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .and_then(|text| text.parse().ok())
+                    .ok_or(RpcEventError::InvalidFilter)
+            })
+            .collect::<Result<_, _>>()?;
+        Self::new(methods, gids)
+    }
+
+    pub fn new(mut methods: Vec<String>, mut gids: Vec<Gid>) -> Result<Self, RpcEventError> {
+        if methods.len() > MAX_RPC_EVENT_FILTER_METHODS
+            || gids.len() > MAX_RPC_EVENT_FILTER_GIDS
+            || methods.iter().any(|method| {
+                method.is_empty()
+                    || method.len() > 128
+                    || !method
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_'))
+            })
+        {
+            return Err(RpcEventError::InvalidFilter);
+        }
+        methods.sort();
+        methods.dedup();
+        gids.sort();
+        gids.dedup();
+        Ok(Self { methods, gids })
+    }
+
+    fn owned_bytes(&self) -> usize {
+        self.methods.capacity() * std::mem::size_of::<String>()
+            + self.methods.iter().map(String::capacity).sum::<usize>()
+            + self.gids.capacity() * std::mem::size_of::<Gid>()
+            + 128
+    }
+
+    fn matches(&self, event: &RpcEvent) -> bool {
+        let method = event
+            .value
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let gid = event.key.as_ref().and_then(|key| key.gid).or_else(|| {
+            let params = event.value.get("params")?;
+            params
+                .get("gid")
+                .or_else(|| params.get(0)?.get("gid"))?
+                .as_str()?
+                .parse()
+                .ok()
+        });
+        (self.methods.is_empty()
+            || self
+                .methods
+                .binary_search_by(|candidate| candidate.as_str().cmp(method))
+                .is_ok())
+            && (self.gids.is_empty() || gid.is_none_or(|gid| self.gids.binary_search(&gid).is_ok()))
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RpcEventClass {
@@ -108,6 +206,7 @@ pub enum RpcEventDisconnect {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RpcEventError {
     InvalidLimits,
+    InvalidFilter,
     TooManySubscribers,
     MissingCoalesceKey,
     EventTooLarge,
@@ -120,6 +219,7 @@ impl fmt::Display for RpcEventError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::InvalidLimits => "invalid RPC event queue limits",
+            Self::InvalidFilter => "invalid RPC event filter",
             Self::TooManySubscribers => "RPC event subscriber limit reached",
             Self::MissingCoalesceKey => "coalesced RPC event requires a key",
             Self::EventTooLarge => "RPC event exceeds the byte bound",
@@ -152,6 +252,8 @@ struct SubscriberState {
     coalesced: u64,
     disconnect: Option<RpcEventDisconnect>,
     client: RpcClientBudget,
+    filter: RpcEventFilter,
+    _filter_charge: RpcByteCharge,
     _queue_charge: RpcByteCharge,
 }
 
@@ -194,6 +296,14 @@ impl RpcEventBroker {
         self.subscribe_with_client(limits, self.client_budget()?)
     }
 
+    pub fn subscribe_filtered(
+        &self,
+        limits: RpcEventLimits,
+        filter: RpcEventFilter,
+    ) -> Result<RpcEventSubscriber, RpcEventError> {
+        self.subscribe_filtered_with_client(limits, filter, self.client_budget()?)
+    }
+
     pub(crate) fn client_budget(&self) -> Result<RpcClientBudget, RpcEventError> {
         self.budgets
             .client()
@@ -205,7 +315,19 @@ impl RpcEventBroker {
         limits: RpcEventLimits,
         client: RpcClientBudget,
     ) -> Result<RpcEventSubscriber, RpcEventError> {
+        self.subscribe_filtered_with_client(limits, RpcEventFilter::default(), client)
+    }
+
+    pub(crate) fn subscribe_filtered_with_client(
+        &self,
+        limits: RpcEventLimits,
+        filter: RpcEventFilter,
+        client: RpcClientBudget,
+    ) -> Result<RpcEventSubscriber, RpcEventError> {
         let limits = limits.validate()?;
+        let filter_charge = client
+            .charge(filter.owned_bytes())
+            .map_err(|_| RpcEventError::BudgetExhausted)?;
         let mut state = lock_unpoisoned(&self.state);
         if state.subscribers.len() == MAX_RPC_EVENT_SUBSCRIBERS {
             return Err(RpcEventError::TooManySubscribers);
@@ -228,6 +350,8 @@ impl RpcEventBroker {
                 coalesced: 0,
                 disconnect: None,
                 client,
+                filter,
+                _filter_charge: filter_charge,
                 _queue_charge: queue_charge,
             },
         );
@@ -269,6 +393,31 @@ impl RpcEventSubscriber {
     #[must_use]
     pub const fn id(&self) -> u64 {
         self.id
+    }
+
+    pub fn set_filter(&mut self, filter: RpcEventFilter) -> Result<(), RpcEventError> {
+        let mut state = lock_unpoisoned(&self.broker.state);
+        let subscriber = state
+            .subscribers
+            .get_mut(&self.id)
+            .ok_or(RpcEventError::Disconnected(
+                RpcEventDisconnect::Unsubscribed,
+            ))?;
+        let charge = subscriber
+            .client
+            .charge(filter.owned_bytes())
+            .map_err(|_| RpcEventError::BudgetExhausted)?;
+        subscriber
+            .queue
+            .retain(|queued| filter.matches(&queued.event));
+        subscriber.queued_bytes = subscriber
+            .queue
+            .iter()
+            .map(|queued| queued.event.serialized_bytes)
+            .sum();
+        subscriber.filter = filter;
+        subscriber._filter_charge = charge;
+        Ok(())
     }
 
     pub fn try_next(&mut self) -> Result<Option<RpcEventDelivery>, RpcEventError> {
@@ -341,7 +490,7 @@ impl RpcEventDelivery {
 }
 
 fn enqueue(subscriber: &mut SubscriberState, event: RpcEvent) {
-    if subscriber.disconnect.is_some() {
+    if subscriber.disconnect.is_some() || !subscriber.filter.matches(&event) {
         return;
     }
     if event.class == RpcEventClass::Coalesced
@@ -416,6 +565,80 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn filters_prevent_unrelated_overflow_and_atomically_remove_queued_events() {
+        let broker = RpcEventBroker::new();
+        let gid: Gid = "0000000000000001".parse().expect("gid");
+        let other: Gid = "0000000000000002".parse().expect("gid");
+        let filter = RpcEventFilter::new(vec!["aria2.onDownloadComplete".to_owned()], vec![gid])
+            .expect("filter");
+        let mut subscriber = broker
+            .subscribe_filtered(
+                RpcEventLimits {
+                    events: NonZeroUsize::new(1).expect("one"),
+                    bytes: NonZeroUsize::new(4096).expect("bytes"),
+                },
+                filter,
+            )
+            .expect("subscribe");
+        for _ in 0..8 {
+            broker.publish(
+                RpcEvent::notification(
+                    "aria2.onDownloadComplete",
+                    json!([{"gid":other.to_string()}]),
+                    RpcEventClass::Reliable,
+                    None,
+                )
+                .expect("event"),
+            );
+        }
+        assert!(
+            subscriber
+                .try_next()
+                .expect("no unrelated overflow")
+                .is_none()
+        );
+        broker.publish(
+            RpcEvent::notification(
+                "aria2.onDownloadComplete",
+                json!([{"gid":gid.to_string()}]),
+                RpcEventClass::Reliable,
+                None,
+            )
+            .expect("event"),
+        );
+        subscriber
+            .set_filter(
+                RpcEventFilter::new(vec!["ariax.onShutdown".to_owned()], vec![other])
+                    .expect("replacement"),
+            )
+            .expect("replace");
+        assert!(subscriber.try_next().expect("discard old queue").is_none());
+        broker.publish(
+            RpcEvent::notification("ariax.onShutdown", json!({}), RpcEventClass::Reliable, None)
+                .expect("global"),
+        );
+        assert_eq!(
+            subscriber
+                .try_next()
+                .expect("global bypasses GID")
+                .expect("event")
+                .into_value()["method"],
+            "ariax.onShutdown"
+        );
+        for value in [
+            json!({"extra":[]}),
+            json!({"gids":["1"]}),
+            json!({"methods":["bad\nmethod"]}),
+            json!({"methods":vec!["x";65]}),
+        ] {
+            assert_eq!(
+                RpcEventFilter::from_rpc(&value),
+                Err(RpcEventError::InvalidFilter)
+            );
+        }
+    }
 
     #[test]
     fn bounded_poll_keeps_an_oversized_event_and_its_permits_queued() {

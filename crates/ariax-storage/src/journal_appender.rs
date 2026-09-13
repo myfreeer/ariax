@@ -948,6 +948,27 @@ impl ControlJournalAppender {
         })
     }
 
+    /// Reads a bounded, flushed snapshot without transferring write ownership.
+    pub fn snapshot(
+        &mut self,
+        limits: ReplayLimits,
+    ) -> Result<JournalReplay, JournalAppenderError> {
+        self.flush(self.appended_sequence)?;
+        let prepared = Self::prepare_recovered_in(
+            self.directory_capability.clone(),
+            &self.segment_paths,
+            self.header.task_gid(),
+            self.header.journal_id(),
+            limits,
+        )?;
+        if prepared.replay.stop != ReplayStop::CleanEnd
+            || prepared.replay.last_sequence != self.appended_sequence
+        {
+            return Err(JournalAppenderError::RecoveryStopped(prepared.replay.stop));
+        }
+        Ok(prepared.replay)
+    }
+
     pub fn close_flushed(&mut self) -> Result<(), JournalAppenderError> {
         self.ensure_healthy()?;
         if self.appended_sequence != self.flushed_sequence {
@@ -1934,6 +1955,60 @@ mod tests {
         JournalPayload::TaskPaused {
             reason: TaskPauseReason::User,
         }
+    }
+
+    #[test]
+    fn snapshots_preserve_the_single_writer_and_latch_flush_failures() {
+        let directory = TestDirectory::new();
+        let mut appender = ControlJournalAppender::create(
+            directory.path(),
+            gid(),
+            journal_id(),
+            Generation::INITIAL,
+            0,
+        )
+        .expect("journal");
+        appender
+            .append_payload(Generation::INITIAL, &task_created())
+            .expect("created");
+        let first = appender
+            .snapshot(ReplayLimits::default())
+            .expect("first snapshot flushes");
+        assert_eq!(first.last_sequence, 1);
+        assert_eq!(appender.flushed_sequence(), 1);
+        assert_eq!(
+            appender
+                .append_payload(Generation::INITIAL, &task_paused())
+                .expect("writer retained")
+                .sequence(),
+            2
+        );
+        assert!(
+            appender
+                .snapshot(ReplayLimits {
+                    max_records: 1,
+                    ..ReplayLimits::default()
+                })
+                .is_err()
+        );
+        assert_eq!(
+            appender
+                .snapshot(ReplayLimits::default())
+                .expect("bounded rejection preserves writer")
+                .records
+                .len(),
+            2
+        );
+        appender
+            .append_payload(Generation::INITIAL, &task_paused())
+            .expect("third record");
+        appender.inject_test_fault(JournalTestFault::NextSyncSegment);
+        assert!(appender.snapshot(ReplayLimits::default()).is_err());
+        assert_eq!(appender.flushed_sequence(), 2);
+        assert_eq!(
+            appender.append_payload(Generation::INITIAL, &task_paused()),
+            Err(JournalAppenderError::Faulted(JournalAppenderFault::Flush))
+        );
     }
 
     fn recover(

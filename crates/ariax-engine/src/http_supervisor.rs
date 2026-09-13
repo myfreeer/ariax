@@ -26,6 +26,8 @@ pub const DEFAULT_HTTP_SUPERVISOR_SHUTDOWN_TIMEOUT: Duration = Duration::from_se
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct HttpWorkerSuccess {
     pub seed: bool,
+    /// All ranges are settled and the journal is flushed; retry may release its slot.
+    pub retry_at: Option<MonotonicInstant>,
 }
 
 pub type HttpWorkerFuture =
@@ -490,6 +492,10 @@ impl HttpWorkerSupervisor {
                 |completion| completion.result,
             );
         match result {
+            Ok(HttpWorkerSuccess {
+                retry_at: Some(deadline),
+                ..
+            }) => self.enqueue_event(worker.authority.retryable(deadline)),
             Ok(success) => {
                 let (data_complete, verifying) = worker.authority.data_complete(success.seed);
                 self.enqueue_event(data_complete)?;
@@ -653,7 +659,7 @@ mod tests {
         tasks.insert(task(task_id(1), gid(7))).expect("insert");
         runtime.enqueue_allocation_for_test(task_id(1), gid(7), Generation::INITIAL);
         let worker = Arc::new(ImmediateWorker {
-            result: Mutex::new(Some(Ok(HttpWorkerSuccess { seed: false }))),
+            result: Mutex::new(Some(Ok(HttpWorkerSuccess::default()))),
         });
         let mut supervisor = HttpWorkerSupervisor::new(runtime.clone(), tasks, worker, config(2))
             .expect("supervisor");

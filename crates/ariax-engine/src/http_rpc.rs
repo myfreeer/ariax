@@ -1,7 +1,7 @@
 //! Bounded JSON-RPC 2.0 framing shared by loopback HTTP and stdio.
 
 use crate::rpc_budget::{RpcAllocation, RpcRequestLease, RpcResponseLease};
-use crate::{RpcBudgets, RpcClientBudget, RpcClientContext};
+use crate::{RpcBudgets, RpcClientBudget, RpcClientContext, RpcCompatibility};
 use bytes::Bytes;
 use futures_util::{SinkExt as _, StreamExt as _};
 use http_body_util::{BodyExt as _, Full, Limited};
@@ -89,6 +89,8 @@ pub const RPC_METHODS: &[&str] = &[
     "ariax.dumpConfig",
     "ariax.exportSession",
     "ariax.importSession",
+    "ariax.getDiagnostics",
+    "ariax.setEventFilter",
 ];
 
 pub const RPC_NOTIFICATIONS: &[&str] = &[
@@ -120,6 +122,10 @@ pub trait HttpRpcBackend: Send + Sync + 'static {
 
     fn authentication_required(&self) -> bool {
         false
+    }
+
+    fn rpc_compatibility(&self) -> RpcCompatibility {
+        RpcCompatibility::Extended
     }
 
     /// Additional HTTP transport gate; method-token policy remains independent.
@@ -252,12 +258,23 @@ impl RpcAuthPolicy {
 pub struct RpcDispatcher<B> {
     backend: Arc<B>,
     auth: RpcAuthPolicy,
+    compatibility: RpcCompatibility,
 }
 
 impl<B> RpcDispatcher<B> {
     #[must_use]
     pub fn new(backend: Arc<B>, auth: RpcAuthPolicy) -> Self {
-        Self { backend, auth }
+        Self {
+            backend,
+            auth,
+            compatibility: RpcCompatibility::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_compatibility(mut self, compatibility: RpcCompatibility) -> Self {
+        self.compatibility = compatibility;
+        self
     }
 
     #[must_use]
@@ -267,6 +284,9 @@ impl<B> RpcDispatcher<B> {
 }
 
 impl<B: HttpRpcBackend> HttpRpcBackend for RpcDispatcher<B> {
+    fn rpc_compatibility(&self) -> RpcCompatibility {
+        self.compatibility
+    }
     fn call(&self, method: &str, params: Value) -> RpcFuture {
         self.call_with_context(method, params, RpcClientContext::default())
     }
@@ -296,13 +316,28 @@ impl<B: HttpRpcBackend> HttpRpcBackend for RpcDispatcher<B> {
         let backend = self.backend.clone();
         let auth = self.auth.clone();
         let method = method.to_owned();
+        let compatibility = self.compatibility;
         Box::pin(async move {
             if method == "system.multicall" {
-                return multicall(backend, auth, params, context).await;
+                return multicall(backend, auth, params, context, compatibility).await;
             }
             let params = auth.authorize(params).await?;
             authorize_client_events(&context)?;
-            match method.as_str() {
+            dispatch_authorized(backend.as_ref(), &method, params, context, compatibility).await
+        })
+    }
+}
+
+async fn dispatch_authorized<B: HttpRpcBackend>(
+    backend: &B,
+    method: &str,
+    params: Value,
+    context: RpcClientContext,
+    compatibility: RpcCompatibility,
+) -> Result<Value, HttpRpcBackendError> {
+    crate::rpc_compat::validate(compatibility, method, &params)?;
+    let explicit_keys = crate::rpc_compat::has_explicit_keys(method, &params);
+    let mut result = match method {
                 "system.listMethods" => {
                     require_empty_params(&params, "listMethods")?;
                     Ok(Value::Array(
@@ -321,10 +356,17 @@ impl<B: HttpRpcBackend> HttpRpcBackend for RpcDispatcher<B> {
                             .collect(),
                     ))
                 }
-                _ => backend.call_with_context(&method, params, context).await,
-            }
-        })
-    }
+                "ariax.setEventFilter" => {
+                    let values = params.as_array().filter(|values| values.len() == 1).ok_or_else(|| HttpRpcBackendError::new(-32602, "setEventFilter requires one filter"))?;
+                    let filter = crate::RpcEventFilter::from_rpc(&values[0]).map_err(|_| HttpRpcBackendError::new(-32602, "invalid event filter"))?;
+                    context.set_event_filter(filter).map_err(|_| HttpRpcBackendError::new(-32602, "event filter requires a pushed event transport"))?;
+                    Ok(json!("OK"))
+                }
+                "aria2.addTorrent" | "aria2.getPeers" | "aria2.addMetalink" => Err(HttpRpcBackendError::new(-32601, "ProtocolFeatureUnavailable").with_data(json!({"code":"ProtocolFeatureUnavailable", "feature": if method == "aria2.addMetalink" { "metalink" } else { "bittorrent" }}))),
+                _ => backend.call_with_context(method, params, context).await,
+            }?;
+    crate::rpc_compat::project(compatibility, method, explicit_keys, &mut result);
+    Ok(result)
 }
 
 fn authorize_client_events(context: &RpcClientContext) -> Result<(), HttpRpcBackendError> {
@@ -468,7 +510,7 @@ const RPC_BUSY_RESPONSE: &[u8] =
 const RPC_INPUT_LIMIT_RESPONSE: &[u8] =
     br#"{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Request limit exceeded"}}"#;
 
-async fn dispatch_admitted_json<B: HttpRpcBackend>(
+pub(crate) async fn dispatch_admitted_json<B: HttpRpcBackend>(
     backend: &B,
     bytes: &[u8],
     context: &RpcClientContext,
@@ -636,7 +678,12 @@ async fn dispatch_value<B: HttpRpcBackend>(
         Value::Object(object) => object,
         _ => return Some(error_response(Value::Null, -32600, "Invalid Request", None)),
     };
-    if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+    if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
+        || (backend.rpc_compatibility() == RpcCompatibility::Strict
+            && object
+                .keys()
+                .any(|key| !matches!(key.as_str(), "jsonrpc" | "id" | "method" | "params")))
+    {
         return Some(error_response(
             object.remove("id").unwrap_or(Value::Null),
             -32600,
@@ -740,6 +787,7 @@ async fn multicall<B: HttpRpcBackend>(
     auth: RpcAuthPolicy,
     params: Value,
     context: RpcClientContext,
+    compatibility: RpcCompatibility,
 ) -> Result<Value, HttpRpcBackendError> {
     let values = params
         .as_array()
@@ -768,7 +816,16 @@ async fn multicall<B: HttpRpcBackend>(
             )?;
             continue;
         };
-        let Some(method) = object.get("methodName").and_then(Value::as_str) else {
+        let Some(method) = object
+            .get("methodName")
+            .and_then(Value::as_str)
+            .filter(|_| {
+                compatibility != RpcCompatibility::Strict
+                    || object
+                        .keys()
+                        .all(|key| matches!(key.as_str(), "methodName" | "params"))
+            })
+        else {
             append_multicall_result(
                 &mut results,
                 &mut result_bytes,
@@ -817,30 +874,14 @@ async fn multicall<B: HttpRpcBackend>(
             )?;
             continue;
         }
-        let result = match method {
-            "system.listMethods" => require_empty_params(&member_params, "listMethods").map(|()| {
-                Value::Array(
-                    RPC_METHODS
-                        .iter()
-                        .map(|method| Value::String((*method).to_owned()))
-                        .collect(),
-                )
-            }),
-            "system.listNotifications" => require_empty_params(&member_params, "listNotifications")
-                .map(|()| {
-                    Value::Array(
-                        RPC_NOTIFICATIONS
-                            .iter()
-                            .map(|method| Value::String((*method).to_owned()))
-                            .collect(),
-                    )
-                }),
-            _ => {
-                backend
-                    .call_with_context(method, member_params, context.clone())
-                    .await
-            }
-        };
+        let result = dispatch_authorized(
+            backend.as_ref(),
+            method,
+            member_params,
+            context.clone(),
+            compatibility,
+        )
+        .await;
         let member = match result {
             Ok(value) => Value::Array(vec![value]),
             Err(error) => multicall_error(error),
@@ -1499,19 +1540,95 @@ where
 /// a single writer serializes responses and notifications without interleaving.
 pub async fn run_content_length_stdio_with_events<B, R, W>(
     backend: Arc<B>,
-    mut reader: R,
-    mut writer: W,
+    reader: R,
+    writer: W,
 ) -> Result<(), HttpRpcTransportError>
 where
     B: RpcWebSocketBackend,
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin,
 {
+    run_stdio(backend, reader, writer, RpcStdioOptions::default()).await
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RpcStdioFraming {
+    #[default]
+    ContentLength,
+    Ndjson,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RpcStdioEof {
+    #[default]
+    Shutdown,
+    CloseTransport,
+    Ignore,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct RpcStdioOptions {
+    pub framing: RpcStdioFraming,
+    pub events: bool,
+    pub max_request_bytes: usize,
+}
+
+impl Default for RpcStdioOptions {
+    fn default() -> Self {
+        Self {
+            framing: RpcStdioFraming::ContentLength,
+            events: true,
+            max_request_bytes: MAX_HTTP_RPC_REQUEST_BYTES,
+        }
+    }
+}
+
+impl RpcStdioOptions {
+    pub fn validate(self) -> Result<Self, HttpRpcTransportError> {
+        if self.max_request_bytes == 0 || self.max_request_bytes > MAX_HTTP_RPC_REQUEST_BYTES {
+            return Err(HttpRpcTransportError::RequestTooLarge);
+        }
+        Ok(self)
+    }
+}
+
+/// Both supported stdio framings share bounded admission, events, and writer ownership.
+pub async fn run_stdio<B, R, W>(
+    backend: Arc<B>,
+    reader: R,
+    writer: W,
+    options: RpcStdioOptions,
+) -> Result<(), HttpRpcTransportError>
+where
+    B: RpcWebSocketBackend,
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin,
+{
+    run_stdio_until(backend, reader, writer, options, std::future::pending()).await
+}
+
+pub async fn run_stdio_until<B, R, W, F>(
+    backend: Arc<B>,
+    reader: R,
+    mut writer: W,
+    options: RpcStdioOptions,
+    shutdown: F,
+) -> Result<(), HttpRpcTransportError>
+where
+    B: RpcWebSocketBackend,
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin,
+    F: Future<Output = io::Result<()>> + Send,
+{
+    let options = options.validate()?;
     const PENDING_REQUESTS: usize = crate::MAX_RPC_CLIENT_REQUESTS;
     let client = backend.rpc_budgets().client()?;
+    let reader_buffer = client.charge(MAX_HTTP_RPC_HEADER_BYTES)?;
+    let mut reader = tokio::io::BufReader::with_capacity(MAX_HTTP_RPC_HEADER_BYTES, reader);
     let reader_client = client.clone();
     let (sender, mut requests) = mpsc::channel(PENDING_REQUESTS);
     let mut reader_task = RpcReaderTask(tokio::spawn(async move {
+        let _reader_buffer = reader_buffer;
         loop {
             let lease = match reader_client.request(0).await {
                 Ok(lease) => lease,
@@ -1520,43 +1637,39 @@ where
                     return;
                 }
             };
-            let length = match read_content_length(&mut reader).await {
-                Ok(Some(length)) => length,
+            let body = match read_stdio_frame(&mut reader, options, &lease).await {
+                Ok(Some(body)) => body,
                 Ok(None) => return,
                 Err(error) => {
                     let _ = sender.send(Err(error)).await;
                     return;
                 }
             };
-            if length > MAX_HTTP_RPC_REQUEST_BYTES {
-                let _ = sender
-                    .send(Err(HttpRpcTransportError::RequestTooLarge))
-                    .await;
-                return;
-            }
-            if let Err(error) = lease.reserve(length.saturating_mul(2)) {
-                let _ = sender.send(Err(error.into())).await;
-                return;
-            }
-            let mut body = vec![0_u8; length];
-            if let Err(error) = reader.read_exact(&mut body).await {
-                let _ = sender.send(Err(HttpRpcTransportError::Io(error))).await;
-                return;
+            if body.iter().all(u8::is_ascii_whitespace)
+                && options.framing == RpcStdioFraming::Ndjson
+            {
+                continue;
             }
             if sender.send(Ok((body, lease))).await.is_err() {
                 return;
             }
         }
     }));
-    let context = RpcClientContext::with_events_and_budget(
-        backend.event_broker(),
-        backend.authentication_required(),
-        client.clone(),
-    )?;
+    let context = if options.events {
+        RpcClientContext::with_events_and_budget(
+            backend.event_broker(),
+            backend.authentication_required(),
+            client.clone(),
+        )?
+    } else {
+        RpcClientContext::default()
+    };
     let mut event_poll = tokio::time::interval(Duration::from_millis(10));
     event_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    tokio::pin!(shutdown);
     let result = async { loop {
         tokio::select! {
+            result = &mut shutdown => break result.map_err(HttpRpcTransportError::Io),
             request = requests.recv() => {
                 let Some(request) = request else {
                     break Ok(());
@@ -1564,14 +1677,14 @@ where
                 let (body, lease) = request?;
                 let response = dispatch_admitted_json(backend.as_ref(), &body, &context, &client, lease).await;
                 if !response.is_empty() {
-                    write_content_length_message(&mut writer, &response).await?;
+                    write_stdio_message(&mut writer, &response, options.framing).await?;
                 }
             }
-            _ = event_poll.tick() => {
+            _ = event_poll.tick(), if options.events => {
                 match context.try_next_event() {
                     Ok(Some(delivery)) => {
                         let event = serialize_delivery(&client, delivery)?;
-                        write_content_length_message(&mut writer, &event).await?;
+                        write_stdio_message(&mut writer, &event, options.framing).await?;
                     }
                     Ok(None) => {}
                     Err(crate::RpcEventError::Disconnected(
@@ -1582,7 +1695,7 @@ where
                             "method":"ariax.onError",
                             "params":{"code":"slow_consumer"},
                         }))?;
-                        write_content_length_message(&mut writer, &event).await?;
+                        write_stdio_message(&mut writer, &event, options.framing).await?;
                         break Ok(());
                     }
                     Err(error) => break Err(error.into()),
@@ -1615,11 +1728,105 @@ async fn write_content_length_message<W: AsyncWrite + Unpin>(
     Ok(())
 }
 
+async fn write_stdio_message<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    message: &[u8],
+    framing: RpcStdioFraming,
+) -> Result<(), HttpRpcTransportError> {
+    match framing {
+        RpcStdioFraming::ContentLength => write_content_length_message(writer, message).await,
+        RpcStdioFraming::Ndjson => {
+            writer.write_all(message).await?;
+            writer.write_all(b"\n").await?;
+            writer.flush().await?;
+            Ok(())
+        }
+    }
+}
+
+async fn read_stdio_frame<R: AsyncRead + Unpin>(
+    reader: &mut tokio::io::BufReader<R>,
+    options: RpcStdioOptions,
+    lease: &RpcRequestLease,
+) -> Result<Option<Vec<u8>>, HttpRpcTransportError> {
+    use tokio::io::AsyncBufReadExt as _;
+    if options.framing == RpcStdioFraming::ContentLength {
+        let Some(length) = read_content_length(reader.get_mut()).await? else {
+            return Ok(None);
+        };
+        if length > options.max_request_bytes {
+            return Err(HttpRpcTransportError::RequestTooLarge);
+        }
+        lease.reserve(length.saturating_mul(2))?;
+        let mut body = vec![0_u8; length];
+        reader.get_mut().read_exact(&mut body).await?;
+        return Ok(Some(body));
+    }
+    let mut line = Vec::new();
+    loop {
+        let chunk = reader.fill_buf().await?;
+        if chunk.is_empty() {
+            return if line.is_empty() {
+                Ok(None)
+            } else if line.len() > options.max_request_bytes {
+                Err(HttpRpcTransportError::RequestTooLarge)
+            } else {
+                Ok(Some(line))
+            };
+        }
+        let newline = chunk.iter().position(|byte| *byte == b'\n');
+        let length = newline.unwrap_or(chunk.len());
+        let next_length = line.len().saturating_add(length);
+        if next_length > options.max_request_bytes.saturating_add(1) {
+            return Err(HttpRpcTransportError::RequestTooLarge);
+        }
+        // Vec growth may reserve twice its current size; reserve before copying.
+        lease.reserve(length.saturating_mul(2).saturating_add(if line.is_empty() {
+            1024
+        } else {
+            0
+        }))?;
+        line.extend_from_slice(&chunk[..length]);
+        reader.consume(length + usize::from(newline.is_some()));
+        if newline.is_some() {
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            if line.len() > options.max_request_bytes {
+                return Err(HttpRpcTransportError::RequestTooLarge);
+            }
+            return Ok(Some(line));
+        }
+    }
+}
+
+pub async fn run_ndjson_stdio_with_events<B, R, W>(
+    backend: Arc<B>,
+    reader: R,
+    writer: W,
+) -> Result<(), HttpRpcTransportError>
+where
+    B: RpcWebSocketBackend,
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin,
+{
+    run_stdio(
+        backend,
+        reader,
+        writer,
+        RpcStdioOptions {
+            framing: RpcStdioFraming::Ndjson,
+            ..RpcStdioOptions::default()
+        },
+    )
+    .await
+}
+
 /// Runs the same bounded dispatcher over newline-delimited JSON. Blank lines
 /// are ignored; each non-empty line is one complete JSON-RPC request or batch.
 pub async fn run_ndjson_stdio<B, R, W>(
     backend: Arc<B>,
-    mut reader: R,
+    reader: R,
     mut writer: W,
 ) -> Result<(), HttpRpcTransportError>
 where
@@ -1628,28 +1835,18 @@ where
     W: AsyncWrite + Unpin,
 {
     let client = backend.rpc_budgets().client()?;
+    let _reader_buffer = client.charge(MAX_HTTP_RPC_HEADER_BYTES)?;
+    let mut reader = tokio::io::BufReader::with_capacity(MAX_HTTP_RPC_HEADER_BYTES, reader);
+    let options = RpcStdioOptions {
+        framing: RpcStdioFraming::Ndjson,
+        events: false,
+        ..RpcStdioOptions::default()
+    };
     loop {
-        let lease = client.request(MAX_HTTP_RPC_REQUEST_BYTES).await?;
-        let mut line = Vec::new();
-        let mut byte = [0_u8; 1];
-        loop {
-            let read = reader.read(&mut byte).await?;
-            if read == 0 {
-                if line.is_empty() {
-                    return Ok(());
-                }
-                break;
-            }
-            if byte[0] == b'\n' {
-                break;
-            }
-            if byte[0] != b'\r' {
-                line.push(byte[0]);
-                if line.len() > MAX_HTTP_RPC_REQUEST_BYTES {
-                    return Err(HttpRpcTransportError::RequestTooLarge);
-                }
-            }
-        }
+        let lease = client.request(0).await?;
+        let Some(line) = read_stdio_frame(&mut reader, options, &lease).await? else {
+            return Ok(());
+        };
         if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
@@ -2131,6 +2328,177 @@ mod tests {
     }
 
     struct Echo;
+
+    struct CompatibilityFixture;
+    impl HttpRpcBackend for CompatibilityFixture {
+        fn call(&self, _: &str, _: Value) -> RpcFuture {
+            Box::pin(async {
+                Ok(json!({"gid":"0000000000000001", "status":"active", "verifiedLength":"42"}))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn compatibility_modes_apply_to_direct_batch_and_multicall_results() {
+        for mode in [
+            RpcCompatibility::Aria2,
+            RpcCompatibility::Extended,
+            RpcCompatibility::Strict,
+        ] {
+            let dispatcher =
+                RpcDispatcher::new(Arc::new(CompatibilityFixture), RpcAuthPolicy::default())
+                    .with_compatibility(mode);
+            for request in [
+                json!({"jsonrpc":"2.0","id":1,"method":"aria2.tellStatus","params":["0000000000000001"]}),
+                json!([{ "jsonrpc":"2.0","id":1,"method":"aria2.tellStatus","params":["0000000000000001"] }]),
+                json!({"jsonrpc":"2.0","id":1,"method":"system.multicall","params":[[{"methodName":"aria2.tellStatus","params":["0000000000000001"]}]]}),
+            ] {
+                let bytes =
+                    dispatch_json(&dispatcher, &serde_json::to_vec(&request).expect("request"))
+                        .await;
+                let response: Value = serde_json::from_slice(&bytes).expect("response");
+                let result = if request.is_array() {
+                    &response[0]["result"]
+                } else if request["method"] == "system.multicall" {
+                    &response["result"][0][0]
+                } else {
+                    &response["result"]
+                };
+                assert_eq!(result["status"], "active");
+                assert_eq!(
+                    result.get("verifiedLength").is_some(),
+                    mode == RpcCompatibility::Extended
+                );
+            }
+            let response: Value = serde_json::from_slice(&dispatch_json(&dispatcher, br#"{"jsonrpc":"2.0","id":1,"method":"aria2.tellStatus","params":["0000000000000001",["verifiedLength"]]}"#).await).expect("selected");
+            assert_eq!(response["result"]["verifiedLength"], "42");
+            let feature: Value = serde_json::from_slice(
+                &dispatch_json(
+                    &dispatcher,
+                    br#"{"jsonrpc":"2.0","id":1,"method":"aria2.addTorrent","params":[]}"#,
+                )
+                .await,
+            )
+            .expect("feature rejection");
+            assert_eq!(feature["error"]["data"]["feature"], "bittorrent");
+        }
+        let strict = RpcDispatcher::new(Arc::new(CompatibilityFixture), RpcAuthPolicy::default())
+            .with_compatibility(RpcCompatibility::Strict);
+        for (request, code) in [
+            (
+                json!({"jsonrpc":"2.0","id":1,"method":"aria2.tellStatus","params":["1",["unknown"]]}),
+                -32602,
+            ),
+            (
+                json!({"jsonrpc":"2.0","id":1,"method":"aria2.getVersion","surprise":true}),
+                -32600,
+            ),
+            (json!({"jsonrpc":"2.0","id":1,"method":"missing"}), -32601),
+        ] {
+            let response: Value = serde_json::from_slice(
+                &dispatch_json(&strict, &serde_json::to_vec(&request).expect("request")).await,
+            )
+            .expect("rejection");
+            assert_eq!(response["error"]["code"], code);
+        }
+    }
+
+    #[tokio::test]
+    async fn both_stdio_framings_filter_authenticated_events_and_reject_oversize_frames() {
+        for framing in [RpcStdioFraming::ContentLength, RpcStdioFraming::Ndjson] {
+            let backend = Arc::new(BudgetBackend::new());
+            let dispatcher = Arc::new(RpcDispatcher::new(
+                backend.clone(),
+                RpcAuthPolicy::with_secret("canary"),
+            ));
+            let (client, server) = duplex(4096);
+            let (reader, writer) = tokio::io::split(server);
+            let (client_reader, mut client_writer) = tokio::io::split(client);
+            let mut client_reader = tokio::io::BufReader::new(client_reader);
+            let options = RpcStdioOptions {
+                framing,
+                max_request_bytes: 1024,
+                events: true,
+            };
+            let task = tokio::spawn(run_stdio(dispatcher, reader, writer, options));
+            let read = |mut reader: tokio::io::BufReader<
+                tokio::io::ReadHalf<tokio::io::DuplexStream>,
+            >| async move {
+                use tokio::io::AsyncBufReadExt as _;
+                let body = if framing == RpcStdioFraming::ContentLength {
+                    let size = read_content_length(&mut reader)
+                        .await
+                        .expect("header")
+                        .expect("length");
+                    let mut body = vec![0; size];
+                    reader.read_exact(&mut body).await.expect("body");
+                    body
+                } else {
+                    let mut body = Vec::new();
+                    reader.read_until(b'\n', &mut body).await.expect("line");
+                    body
+                };
+                (
+                    reader,
+                    serde_json::from_slice::<Value>(&body).expect("JSON"),
+                )
+            };
+            write_stdio_message(&mut client_writer, br#"{"jsonrpc":"2.0","id":1,"method":"ariax.setEventFilter","params":["token:canary",{"methods":["ariax.onShutdown"]}]}"#, framing).await.expect("filter request");
+            let (reader, response) = read(client_reader).await;
+            client_reader = reader;
+            assert_eq!(response["result"], "OK");
+            backend.events.publish(
+                crate::RpcEvent::notification(
+                    "ariax.onStatus",
+                    json!({}),
+                    crate::RpcEventClass::Reliable,
+                    None,
+                )
+                .expect("excluded"),
+            );
+            backend.events.publish(
+                crate::RpcEvent::notification(
+                    "ariax.onShutdown",
+                    json!({}),
+                    crate::RpcEventClass::Reliable,
+                    None,
+                )
+                .expect("selected"),
+            );
+            let (retained_reader, notification) =
+                tokio::time::timeout(Duration::from_secs(2), read(client_reader))
+                    .await
+                    .expect("event deadline");
+            assert_eq!(notification["method"], "ariax.onShutdown");
+            // Keep the output reader alive until oversize rejection reaches the transport.
+            write_stdio_message(&mut client_writer, &vec![b'x'; 1025], framing)
+                .await
+                .expect("oversize frame");
+            assert!(matches!(
+                task.await.expect("join"),
+                Err(HttpRpcTransportError::RequestTooLarge)
+            ));
+            drop(retained_reader);
+            assert_eq!(backend.events.subscriber_count(), 0);
+            assert_eq!(backend.budgets.snapshot().bytes, 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn ndjson_keeps_embedded_carriage_returns_invalid_and_accepts_crlf() {
+        let request = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"bad\rmethod\"}\r\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"x\"}\r\n";
+        let mut output = Vec::new();
+        run_ndjson_stdio(Arc::new(Echo), std::io::Cursor::new(request), &mut output)
+            .await
+            .expect("NDJSON");
+        let replies: Vec<Value> = output
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).expect("JSON"))
+            .collect();
+        assert_eq!(replies[0]["error"]["code"], -32700);
+        assert_eq!(replies[1]["id"], 2);
+    }
 
     impl HttpRpcBackend for Echo {
         fn call(&self, method: &str, params: Value) -> RpcFuture {

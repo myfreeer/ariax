@@ -282,7 +282,8 @@ const STARTUP_GLOBAL_DOWNLOAD: ScopeSet = ScopeSet::one(Scope::Startup)
     .with(Scope::PerDownload)
     .with(Scope::InputFile)
     .with(Scope::RpcChange)
-    .with(Scope::RpcGlobal);
+    .with(Scope::RpcGlobal)
+    .with(Scope::UrlRule);
 const DOWNLOAD_SCOPES: ScopeSet = ScopeSet::one(Scope::Global)
     .with(Scope::PerDownload)
     .with(Scope::InputFile)
@@ -291,7 +292,7 @@ const DOWNLOAD_SCOPES: ScopeSet = ScopeSet::one(Scope::Global)
     .with(Scope::UrlRule);
 const STARTUP_ONLY: ScopeSet = ScopeSet::one(Scope::Startup);
 const GLOBAL_LIVE: ScopeSet = ScopeSet::one(Scope::Global).with(Scope::RpcGlobal);
-const RETRY_ADMISSION_SCOPES: ScopeSet = ScopeSet::one(Scope::PerDownload);
+const RETRY_ADMISSION_SCOPES: ScopeSet = DOWNLOAD_SCOPES;
 
 const PARTIAL: CompatStatus = CompatStatus::Partial;
 const MINIMAL: &[&str] = &["minimal"];
@@ -309,6 +310,55 @@ pub fn persisted_option_is_safe(name: &str) -> bool {
 
 /// The first reviewed registry slice. It grows until every upstream and extension option is covered.
 pub const BUILTIN_OPTIONS: &[OptionDef] = &[
+    scheduling_option(
+        "slow-slot-policy",
+        ValueType::Enum {
+            values: &["off", "demote", "pause"],
+        },
+        "off",
+    ),
+    scheduling_option(
+        "slow-slot-speed-limit",
+        ValueType::SizeBytes {
+            min: 0,
+            max: u64::MAX,
+        },
+        "0",
+    ),
+    scheduling_option(
+        "slow-slot-grace-period",
+        ValueType::DurationSeconds { min: 1, max: 86400 },
+        "60",
+    ),
+    scheduling_option(
+        "slow-slot-min-active-time",
+        ValueType::DurationSeconds { min: 0, max: 86400 },
+        "30",
+    ),
+    scheduling_option(
+        "slow-slot-max-demotions",
+        ValueType::Integer { min: 1, max: 1024 },
+        "3",
+    ),
+    scheduling_option(
+        "slow-slot-readmit-after",
+        ValueType::DurationSeconds { min: 1, max: 86400 },
+        "60",
+    ),
+    scheduling_option(
+        "slow-slot-readmit-policy",
+        ValueType::Enum {
+            values: &["front", "original-position", "back"],
+        },
+        "original-position",
+    ),
+    scheduling_option(
+        "retry-wait-consumes-slot",
+        ValueType::Enum {
+            values: &["true", "false", "auto"],
+        },
+        "true",
+    ),
     OptionDef {
         name: "allow-overwrite",
         short: None,
@@ -1115,6 +1165,37 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         behavior_tests: NONE,
     },
 ];
+
+const fn scheduling_option(
+    name: &'static str,
+    value_type: ValueType,
+    default: &'static str,
+) -> OptionDef {
+    OptionDef {
+        name,
+        short: None,
+        value_type,
+        default: Some(default),
+        category: "scheduling",
+        scopes: ScopeSet::one(Scope::Startup)
+            .with(Scope::Global)
+            .with(Scope::RpcGlobal),
+        runtime_update: RuntimeUpdate::Live,
+        owner: "segment_scheduler",
+        build_features: MINIMAL,
+        security: SecurityClass::Normal,
+        compat: CompatStatus::Implemented,
+        aria2_available: false,
+        aria2_runtime_update: RuntimeUpdate::None,
+        compatibility_difference: CompatibilityDifference::None,
+        docs: "download-scheduling.md#slow-slot-freeing",
+        behavior_tests: &[
+            "slow_remote_workers_free_slots_and_user_controls_override_cooldown",
+            "retry_wait_slot_policy_uses_real_worker_deadlines",
+            "slow_classifier_excludes_local_pressure_and_honors_all_thresholds",
+        ],
+    }
+}
 
 /// A validated immutable view of option definitions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

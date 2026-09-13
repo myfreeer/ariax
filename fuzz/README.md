@@ -23,6 +23,8 @@ slice and journal replay path:
   without real-time sleeps in the fuzz loop.
 - `session_document`: strict JSON migration documents and aria2 input-file
   syntax, including bounded metadata comments and exact safe projections.
+- `url_rules`: bounded TOML rule parsing, safe option admission, canonical
+  round trips, and bounded URL matching without network access.
 
 From the repository root, after installing `cargo-fuzz`, run for example:
 
@@ -31,6 +33,7 @@ cargo fuzz run --manifest-path fuzz/Cargo.toml http_response_validator
 cargo fuzz run --manifest-path fuzz/Cargo.toml journal_replay
 cargo fuzz run --manifest-path fuzz/Cargo.toml rpc_json
 cargo fuzz run --manifest-path fuzz/Cargo.toml session_document
+cargo fuzz run --manifest-path fuzz/Cargo.toml url_rules
 ```
 
 CI should use a fixed corpus/time budget and retain only minimized inputs. The

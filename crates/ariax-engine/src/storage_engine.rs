@@ -1,3 +1,4 @@
+use crate::storage_journal::{JournalWrite, StorageJournal};
 use ariax_core::{
     ErrorKind, FileId, Generation, LeaseId, OverlapGroupId, PieceId, TaskId, TransferAttemptId,
 };
@@ -380,7 +381,7 @@ pub struct StorageEngine {
     overlap_groups: BTreeMap<OverlapGroupId, OverlapGroup>,
     seen_leases: BTreeSet<LeaseId>,
     next_operation_id: u64,
-    journal: ControlJournalAppender,
+    journal: StorageJournal,
     shutdown_timeout: Duration,
     #[cfg(test)]
     crash_point: Option<StorageEngineCrashPoint>,
@@ -395,6 +396,15 @@ impl StorageEngine {
         layout: FileLayout,
         opened_files: impl IntoIterator<Item = (FileId, RootFileCapability)>,
         journal: ControlJournalAppender,
+        config: StorageEngineConfig,
+    ) -> Result<Self, StorageEngineError> {
+        Self::open_with_journal(layout, opened_files, journal.into(), config)
+    }
+
+    pub(crate) fn open_with_journal(
+        layout: FileLayout,
+        opened_files: impl IntoIterator<Item = (FileId, RootFileCapability)>,
+        journal: StorageJournal,
         config: StorageEngineConfig,
     ) -> Result<Self, StorageEngineError> {
         let mapper = GlobalOffsetMapper::new(&layout).map_err(|error| {
@@ -1229,7 +1239,11 @@ impl StorageEngine {
     /// Quiesces storage and returns the flushed journal to its serialized
     /// session owner. The caller must install it before emitting a scheduler
     /// event that can require further journal-backed persistence.
-    pub fn into_flushed_journal(mut self) -> Result<ControlJournalAppender, StorageEngineError> {
+    pub fn into_flushed_journal(self) -> Result<ControlJournalAppender, StorageEngineError> {
+        self.release_journal()?.into_local().map_err(journal_error)
+    }
+
+    pub(crate) fn release_journal(mut self) -> Result<StorageJournal, StorageEngineError> {
         self.shutdown_lane()?;
         self.journal.close_flushed().map_err(journal_error)?;
         Ok(self.journal)

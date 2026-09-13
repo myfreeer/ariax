@@ -19,12 +19,12 @@ retry within total/per-source budgets, preserve durable pieces across restart,
 and publish packet-independent speed, connection, retry, discard, and durable
 progress counters. The experimental CLI exposes the real scheduler through a
 shared bounded JSON-RPC dispatcher over loopback HTTP/1.1, loopback WebSocket,
-and Content-Length stdio, plus direct add/status/pause/resume/remove commands.
+and Content-Length/NDJSON stdio, plus direct add/status/pause/resume/remove commands.
 The dispatcher enforces method tokens, batch/multicall/list/response bounds,
 unique GID prefixes, typed option/source mutation, config/session extensions,
 and orderly worker/journal/session shutdown. A bounded event broker supplies
 scheduler-observed aria2 notifications and coalesced status updates, and a
-typed Rust embedding skeleton uses the same control plane. Phase 4B repairs
+typed Rust embedding API uses the same control plane. Phase 4B repairs
 multicall envelope authentication, connection-local event authorization, and
 production-policy retry admission and recovery, active option journal replay,
 live-only rate changes, and source replacement after cancellation drain.
@@ -34,8 +34,14 @@ and status drafts reserve before mutation and retain credit through pending
 driver work. The [repair evidence](implementation-readiness.md#phase-4-repair-gates)
 records these changes; sanitized atomic session import/export and configured
 explicit, periodic, and shutdown saves now share the CLI/Rust/RPC control plane.
-Configuration and interface completion, slow-slot
-integration, and real-download performance remain Phase-4B requirements.
+Versioned configuration reload, bounded URL rules, redacted dumps, real option
+restarts, combined transports, compatibility modes and opt-in slow-slot/retry
+scheduling are implemented and tested. Native Windows benchmarks pass all four
+transports with 1,000 active HTTP ranges and 20,000 measured calls each; worst
+p99 is 0.542 ms and the longest measured burst is 343 ms. Native Linux benchmark
+acceptance is deferred at the user's request until CI is ready. The
+[recorded evidence](performance-profiles.md#native-windows-control-plane-evidence)
+states the measurement limits and remaining platform gate.
 
 Strict HTTP identity now distinguishes whole-file and exact-range evidence. A
 persisted user SHA-256 admits ordinary concurrent mirrors and final verification;
@@ -50,7 +56,7 @@ hierarchical rate limiter, stall policy, process-owned discard guard, same-origi
 endgame fencing, bounded exact-range cross-origin digest fencing, and local
 capacity benchmarks are executable; HTTP/2, unknown-length/chunked layouts,
 broader RFC 9530/Metalink and `Content-Digest` modes,
-the remaining Phase-4 exit matrix, non-loopback RPC,
+native Linux Phase-4 benchmark acceptance, non-loopback RPC,
 and the full native release matrix remain
 gated by `implementation-readiness.md`
 and `implementation-plan.md`. Deterministic ENOSPC, permission-denied,

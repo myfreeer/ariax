@@ -1889,7 +1889,7 @@ pub(crate) fn build_single_file_layout(
 }
 
 pub(crate) fn append_layout(
-    journal: &mut ControlJournalAppender,
+    journal: &mut impl crate::storage_journal::JournalWrite,
     layout: &FileLayout,
 ) -> Result<(), KnownLengthHttpError> {
     let entry = &layout.files()[0];
@@ -1931,7 +1931,7 @@ pub(crate) fn append_layout(
 }
 
 pub(crate) fn append_http_strong_validator(
-    journal: &mut ControlJournalAppender,
+    journal: &mut impl crate::storage_journal::JournalWrite,
     generation: Generation,
     resource_fingerprint: JournalHash,
     validator_fingerprint: JournalHash,

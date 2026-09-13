@@ -4001,6 +4001,177 @@ fn recovered_queues(
 }
 
 #[test]
+fn recovered_slow_readmission_honors_each_queue_policy_and_keeps_demotion_count() {
+    use ariax_core::SlowReadmissionPolicy;
+    for (policy, expected) in [
+        (SlowReadmissionPolicy::Front, [3, 1, 2]),
+        (SlowReadmissionPolicy::OriginalPosition, [1, 3, 2]),
+        (SlowReadmissionPolicy::Back, [1, 2, 3]),
+    ] {
+        let at = MonotonicInstant::now();
+        let mut slow = recovered_task(3, 3, TaskState::WaitingSlow);
+        slow.slow_demotion_count = 2;
+        slow.slow_slot = Some(SlowSlotPersistence {
+            original_position: 1,
+            demotion_count: 2,
+            decision: SlowReadmissionDecision {
+                readmit_at: later(at, 10),
+                scheduled_at_ms: 1000,
+                delay_ms: 10000,
+            },
+        });
+        let mut config = SchedulerConfig::new(
+            NonZeroUsize::new(8).unwrap(),
+            NonZeroUsize::new(1).unwrap(),
+            true,
+        )
+        .unwrap();
+        config.slow_readmission_policy = policy;
+        let (scheduler, _) = RequestScheduler::restore(
+            config,
+            SchedulerRestoreBatch::new(
+                vec![
+                    recovered_task(1, 1, TaskState::Waiting),
+                    recovered_task(2, 2, TaskState::Waiting),
+                    slow,
+                ],
+                recovered_queues(vec![gid(1), gid(2)], vec![gid(3)], vec![], vec![]),
+            ),
+        )
+        .unwrap();
+        let mut scheduler = TestScheduler(scheduler);
+        let readmission_id = scheduler.task(gid(3)).unwrap().slow_readmission.unwrap();
+        scheduler
+            .handle_event_at(
+                TaskEvent::SlowReadmit {
+                    gid: gid(3),
+                    generation: Generation::new(2),
+                    readmission_id,
+                },
+                later(at, 10),
+            )
+            .unwrap();
+        for (index, value) in expected.into_iter().enumerate() {
+            let time = later(at, 11 + index as u64 * 10);
+            if scheduler.active_slot_count() == 0 {
+                scheduler.admit_next_at(time).unwrap();
+            }
+            assert_eq!(
+                scheduler.queue_snapshot(QueueClass::Active),
+                vec![gid(value)],
+                "{policy:?}"
+            );
+            if value == 3 {
+                assert_eq!(scheduler.task(gid(3)).unwrap().slow_demotion_count, 2);
+                assert_eq!(
+                    scheduler.task(gid(3)).unwrap().generation,
+                    Generation::new(3)
+                );
+            }
+            let before = state_fingerprint(&scheduler);
+            assert!(scheduler.admit_next_at(time).is_err());
+            assert_eq!(
+                state_fingerprint(&scheduler),
+                before,
+                "rejected admission changed queue policy state"
+            );
+            let generation = scheduler.task(gid(value)).unwrap().generation;
+            scheduler
+                .handle_event_at(
+                    TaskEvent::GenerationPersisted {
+                        gid: gid(value),
+                        generation,
+                    },
+                    later(time, 1),
+                )
+                .unwrap();
+            scheduler
+                .handle_event_at(
+                    TaskEvent::AllocationSucceeded {
+                        gid: gid(value),
+                        generation,
+                    },
+                    later(time, 2),
+                )
+                .unwrap();
+            scheduler
+                .execute_command_at(
+                    SchedulerCommand::Pause {
+                        gid: gid(value),
+                        force: false,
+                    },
+                    later(time, 3),
+                )
+                .unwrap();
+            scheduler
+                .handle_event_at(
+                    TaskEvent::CancellationDrained {
+                        gid: gid(value),
+                        generation,
+                    },
+                    later(time, 4),
+                )
+                .unwrap();
+        }
+    }
+}
+
+#[test]
+fn explicit_slow_resume_cancels_the_recovered_cooldown_and_old_timer() {
+    let at = MonotonicInstant::now();
+    let mut slow = recovered_task(1, 1, TaskState::WaitingSlow);
+    slow.slow_demotion_count = 3;
+    slow.slow_slot = Some(SlowSlotPersistence {
+        original_position: 0,
+        demotion_count: 3,
+        decision: SlowReadmissionDecision {
+            readmit_at: later(at, 60),
+            scheduled_at_ms: 1000,
+            delay_ms: 60000,
+        },
+    });
+    let (scheduler, _) = RequestScheduler::restore(
+        SchedulerConfig::new(
+            NonZeroUsize::new(2).unwrap(),
+            NonZeroUsize::new(1).unwrap(),
+            true,
+        )
+        .unwrap(),
+        SchedulerRestoreBatch::new(
+            vec![slow],
+            recovered_queues(vec![], vec![gid(1)], vec![], vec![]),
+        ),
+    )
+    .unwrap();
+    let mut scheduler = TestScheduler(scheduler);
+    let readmission_id = scheduler.task(gid(1)).unwrap().slow_readmission.unwrap();
+    scheduler
+        .execute_command_at(SchedulerCommand::Resume { gid: gid(1) }, later(at, 1))
+        .unwrap();
+    assert_eq!(scheduler.task(gid(1)).unwrap().state, TaskState::Waiting);
+    assert_eq!(scheduler.task(gid(1)).unwrap().slow_demotion_count, 0);
+    assert!(scheduler.task(gid(1)).unwrap().slow_readmission.is_none());
+    let before = state_fingerprint(&scheduler);
+    let ignored = scheduler
+        .handle_event_at(
+            TaskEvent::SlowReadmit {
+                gid: gid(1),
+                generation: Generation::new(2),
+                readmission_id,
+            },
+            later(at, 60),
+        )
+        .unwrap();
+    assert_ignored(&ignored, StateReason::StaleEventIgnored);
+    assert_eq!(state_fingerprint(&scheduler), before);
+    scheduler.admit_next_at(later(at, 2)).unwrap();
+    assert_eq!(
+        scheduler.task(gid(1)).unwrap().generation,
+        Generation::new(3)
+    );
+}
+
+#[test]
 fn restore_rebuilds_exact_membership_timers_snapshots_and_task_identity() {
     let at = MonotonicInstant::now();
     let mut waiting = recovered_task(1, 1, TaskState::Waiting);

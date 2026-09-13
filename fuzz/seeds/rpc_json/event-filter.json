@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":1,"method":"ariax.setEventFilter","params":[{"methods":["ariax.onStatus"],"gids":["0000000000000001"]}]}

@@ -4,6 +4,7 @@ use crate::http_first_slice::{
     KnownLengthHttpError, append_http_strong_validator, append_initial_admission_with_options,
     append_layout, build_single_file_layout, now_unix_ms,
 };
+use crate::storage_journal::StorageJournal;
 use crate::{
     HttpCancellation, HttpClientRequest, HttpContentChecksum, HttpDiscardAttemptGuard,
     HttpDiscardBudget, HttpDiscardBudgetError, HttpDiscardBudgetLimits, HttpDiscardScope,
@@ -43,7 +44,7 @@ use std::error::Error;
 use std::fmt;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::{Semaphore, mpsc, oneshot};
@@ -322,6 +323,9 @@ pub struct HttpTransferStatsSnapshot {
     pub condition_reason: Option<ConnectionConditionReason>,
     pub rate_debt_bytes: u64,
     pub retry_diagnostic: Option<HttpRetryDiagnosticSnapshot>,
+    pub network_phase: bool,
+    pub local_pressure: bool,
+    pub retry_wait_until: Option<MonotonicInstant>,
 }
 
 /// Durable completion evidence written by the worker before the scheduler
@@ -336,6 +340,9 @@ pub struct HttpCompletedEvidence {
 
 #[derive(Debug)]
 struct HttpTransferStatsInner {
+    network_phase: AtomicBool,
+    local_pressure: AtomicUsize,
+    retry_wait_until: Mutex<Option<MonotonicInstant>>,
     total_length: AtomicU64,
     raw_body_bytes: AtomicU64,
     accepted_bytes: AtomicU64,
@@ -355,6 +362,9 @@ struct HttpTransferStatsInner {
 impl Default for HttpTransferStatsInner {
     fn default() -> Self {
         Self {
+            network_phase: AtomicBool::new(false),
+            local_pressure: AtomicUsize::new(0),
+            retry_wait_until: Mutex::new(None),
             total_length: AtomicU64::new(0),
             raw_body_bytes: AtomicU64::new(0),
             accepted_bytes: AtomicU64::new(0),
@@ -435,6 +445,8 @@ pub struct HttpTransferStats {
 
 impl HttpTransferStats {
     fn begin(&self) {
+        self.inner.network_phase.store(false, Ordering::Relaxed);
+        self.set_retry_wait(None);
         for value in [
             &self.inner.total_length,
             &self.inner.raw_body_bytes,
@@ -466,6 +478,15 @@ impl HttpTransferStats {
     #[must_use]
     pub fn snapshot(&self) -> HttpTransferStatsSnapshot {
         self.snapshot_at(ariax_core::MonotonicInstant::now())
+    }
+
+    fn local_wait(&self) -> LocalPressureGuard {
+        self.inner.local_pressure.fetch_add(1, Ordering::Relaxed);
+        LocalPressureGuard(self.clone())
+    }
+
+    fn set_retry_wait(&self, deadline: Option<MonotonicInstant>) {
+        *self.inner.retry_wait_until.lock().expect("HTTP retry wait") = deadline;
     }
 
     fn set_total_length(&self, value: u64) {
@@ -595,7 +616,10 @@ impl HttpTransferStats {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = HttpSpeedState::new(at);
     }
 
-    fn snapshot_at(&self, at: ariax_core::MonotonicInstant) -> HttpTransferStatsSnapshot {
+    pub(crate) fn snapshot_at(
+        &self,
+        at: ariax_core::MonotonicInstant,
+    ) -> HttpTransferStatsSnapshot {
         let total_length = self.inner.total_length.load(Ordering::Relaxed);
         let raw_body_bytes = self.inner.raw_body_bytes.load(Ordering::Relaxed);
         let accepted_bytes = self.inner.accepted_bytes.load(Ordering::Relaxed);
@@ -648,6 +672,9 @@ impl HttpTransferStats {
             )
         };
         HttpTransferStatsSnapshot {
+            network_phase: self.inner.network_phase.load(Ordering::Relaxed),
+            local_pressure: self.inner.local_pressure.load(Ordering::Relaxed) != 0,
+            retry_wait_until: *self.inner.retry_wait_until.lock().expect("HTTP retry wait"),
             total_length,
             raw_body_bytes,
             accepted_bytes,
@@ -669,6 +696,26 @@ impl HttpTransferStats {
             rate_debt_bytes,
             retry_diagnostic,
         }
+    }
+}
+
+struct LocalPressureGuard(HttpTransferStats);
+impl Drop for LocalPressureGuard {
+    fn drop(&mut self) {
+        self.0.inner.local_pressure.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+struct NetworkPhaseGuard(HttpTransferStats);
+impl NetworkPhaseGuard {
+    fn new(stats: &HttpTransferStats) -> Self {
+        stats.inner.network_phase.store(true, Ordering::Relaxed);
+        Self(stats.clone())
+    }
+}
+impl Drop for NetworkPhaseGuard {
+    fn drop(&mut self) {
+        self.0.inner.network_phase.store(false, Ordering::Relaxed);
     }
 }
 
@@ -747,6 +794,7 @@ pub struct HttpMultiRangeWorkerConfig {
     pub journal_root: PathBuf,
     pub storage: StorageEngineConfig,
     pub retry: HttpRetryPolicy,
+    pub scheduling: crate::HttpSchedulingPolicy,
     /// Process-owned download limiter shared by all workers constructed from
     /// this config. Per-task limits are installed at task admission.
     pub download_rate: RateArbiter,
@@ -786,6 +834,7 @@ impl Default for HttpMultiRangeWorkerConfig {
             journal_root: PathBuf::new(),
             storage: StorageEngineConfig::default(),
             retry: HttpRetryPolicy::default(),
+            scheduling: crate::HttpSchedulingPolicy::default(),
             download_rate: RateArbiter::new(RateDirection::Download, RateArbiterConfig::default())
                 .expect("default download rate arbiter is valid"),
             discard_budget: HttpDiscardBudget::default(),
@@ -896,7 +945,6 @@ impl HttpMultiRangeWorker {
             discard_snapshot.task_remaining,
         );
         self.stats.clear_completion(task.task());
-        self.close_owned_journal(task.gid()).await?;
         let prepared_storage = match self.prepare_storage(&task, generation) {
             Ok(storage) => storage,
             Err(error) => {
@@ -905,6 +953,9 @@ impl HttpMultiRangeWorker {
                 return Err(error);
             }
         };
+        let prepared_storage = prepared_storage
+            .manage(self.session.as_ref(), task.gid())
+            .map_err(KnownLengthHttpError::from)?;
         if task.options().checksum.is_some()
             && let Some(total_length) = prepared_storage.fully_durable_length()
         {
@@ -1019,6 +1070,7 @@ impl HttpMultiRangeWorker {
             return Err(HttpMultiRangeError::Storage(error));
         }
         stats.set_durable(durable_bytes);
+        let network_phase = NetworkPhaseGuard::new(&stats);
         let range_outcome = self
             .run_ranges(
                 &task,
@@ -1033,6 +1085,7 @@ impl HttpMultiRangeWorker {
                 &discard_task,
             )
             .await;
+        drop(network_phase);
         let outcome = match range_outcome {
             Ok(()) => {
                 self.verify_expected_checksum(
@@ -1065,14 +1118,14 @@ impl HttpMultiRangeWorker {
                     Ok(sequence) => sequence,
                     Err(error) => {
                         let journal = storage
-                            .into_flushed_journal()
+                            .release_journal()
                             .map_err(HttpMultiRangeError::Storage)?;
                         self.handoff_journal(task.gid(), journal).await?;
                         return Err(HttpMultiRangeError::Storage(error));
                     }
                 };
                 let journal = storage
-                    .into_flushed_journal()
+                    .release_journal()
                     .map_err(HttpMultiRangeError::Storage)?;
                 self.handoff_journal(task.gid(), journal).await?;
                 self.stats.record_completion(
@@ -1084,11 +1137,11 @@ impl HttpMultiRangeWorker {
                         terminal_sequence,
                     },
                 );
-                Ok(HttpWorkerSuccess { seed: false })
+                Ok(HttpWorkerSuccess::default())
             }
             Err(error) => {
                 let journal = storage
-                    .into_flushed_journal()
+                    .release_journal()
                     .map_err(HttpMultiRangeError::Storage)?;
                 self.handoff_journal(task.gid(), journal).await?;
                 Err(error)
@@ -1350,8 +1403,10 @@ impl HttpMultiRangeWorker {
             .ok_or(HttpMultiRangeError::Setup(
                 KnownLengthHttpError::RecoveryState,
             ))?;
+        let readmission = recovered.layout().generation() != generation;
+        let geometry_changed = recovered.layout().piece_length() != task.options().piece_length;
         if state.generation() != generation
-            || recovered.layout().piece_length() != task.options().piece_length
+            || (!readmission && geometry_changed)
             || PlatformPath::from_current(root.display()).map_err(KnownLengthHttpError::from)?
                 != *recovered.layout().root_binding().path()
             || root.identity().encode().as_ref()
@@ -1372,10 +1427,18 @@ impl HttpMultiRangeWorker {
             .ok_or(HttpMultiRangeError::Setup(
                 KnownLengthHttpError::RecoveryState,
             ))?;
-        if selected.next().is_some() || entry.safe_path() != task.output() {
+        if selected.next().is_some() || (!readmission && entry.safe_path() != task.output()) {
             return Err(HttpMultiRangeError::Setup(
                 KnownLengthHttpError::RecoveryState,
             ));
+        }
+        if entry.safe_path() != task.output() {
+            // Only an admitted generation may install new placement. Keep the
+            // previous file untouched and require exclusive creation of the
+            // new path; no old piece or retry evidence belongs to this file.
+            return Ok(PreparedHttpStorage::Fresh(Box::new(
+                FreshPreparedHttpStorage { root, appender },
+            )));
         }
         let output = root
             .open_existing_file(
@@ -1403,10 +1466,14 @@ impl HttpMultiRangeWorker {
             task.options().piece_length,
         )
         .map_err(KnownLengthHttpError::from)?;
-        let durable_evidence = state.durable_pieces().clone();
+        let durable_evidence = if geometry_changed {
+            BTreeMap::new()
+        } else {
+            state.durable_pieces().clone()
+        };
         let (durable_pieces, durable_bytes) =
             verify_recovered_piece_digests(&output, &durable_evidence)?;
-        if recovered.layout().generation() != generation {
+        if readmission {
             return Ok(PreparedHttpStorage::Readmission(Box::new(
                 ReadmissionPreparedHttpStorage {
                     root,
@@ -1416,8 +1483,16 @@ impl HttpMultiRangeWorker {
                     durable_evidence,
                     durable_pieces,
                     durable_bytes,
-                    retry_states: state.retry_states().values().cloned().collect(),
-                    range_identity: state.http_range_identity().cloned(),
+                    retry_states: if geometry_changed {
+                        Vec::new()
+                    } else {
+                        state.retry_states().values().cloned().collect()
+                    },
+                    range_identity: if geometry_changed {
+                        None
+                    } else {
+                        state.http_range_identity().cloned()
+                    },
                 },
             )));
         }
@@ -1592,7 +1667,7 @@ impl HttpMultiRangeWorker {
             .map(|_| output.try_clone_capability())
             .transpose()
             .map_err(KnownLengthHttpError::from)?;
-        let storage = StorageEngine::open_layout(
+        let storage = StorageEngine::open_with_journal(
             layout,
             [(ariax_core::FileId::new(0), output)],
             appender,
@@ -1647,6 +1722,38 @@ impl HttpMultiRangeWorker {
         task: &HttpTaskSpec,
         generation: Generation,
     ) -> Result<OpenedTaskJournal, HttpMultiRangeError> {
+        if let Some(session) = &self.session {
+            match session.execute(SessionCommand::SnapshotJournal { gid: task.gid() }) {
+                Ok(ariax_storage::SessionCommandResult::JournalSnapshot(framing)) => {
+                    let replay = recover_journal_state(
+                        &framing.records,
+                        task.task(),
+                        &ariax_config::persisted_option_is_safe,
+                        JournalStateLimits::default(),
+                    );
+                    if replay.accepted_records != framing.records.len() {
+                        return Err(HttpMultiRangeError::Setup(
+                            KnownLengthHttpError::RecoveryState,
+                        ));
+                    }
+                    let state = replay.state.ok_or(HttpMultiRangeError::Setup(
+                        KnownLengthHttpError::RecoveryState,
+                    ))?;
+                    return Ok(OpenedTaskJournal {
+                        appender: StorageJournal::attached(
+                            session.clone(),
+                            task.gid(),
+                            framing.last_sequence,
+                        ),
+                        state: Some(state),
+                    });
+                }
+                Err(SessionOwnerError::Persistence(SessionPersistenceError::MissingJournal {
+                    ..
+                })) => {}
+                _ => return Err(HttpMultiRangeError::Protocol),
+            }
+        }
         let directory = http_journal_directory(&self.config.journal_root, task.gid());
         if directory.exists() {
             let capability = JournalDirectoryCapability::open_trusted(&directory)
@@ -1682,7 +1789,7 @@ impl HttpMultiRangeWorker {
                     KnownLengthHttpError::RecoveryState,
                 ))?;
                 return Ok(OpenedTaskJournal {
-                    appender,
+                    appender: appender.into(),
                     state: Some(state),
                 });
             }
@@ -1700,25 +1807,9 @@ impl HttpMultiRangeWorker {
             .map_err(|_| HttpMultiRangeError::InvalidConfig)?;
         append_initial_admission_with_options(&mut journal, generation, options)?;
         Ok(OpenedTaskJournal {
-            appender: journal,
+            appender: journal.into(),
             state: None,
         })
-    }
-
-    async fn close_owned_journal(&self, gid: Gid) -> Result<(), HttpMultiRangeError> {
-        let Some(session) = self.session.clone() else {
-            return Ok(());
-        };
-        tokio::task::spawn_blocking(move || session.execute(SessionCommand::CloseJournal { gid }))
-            .await
-            .map_err(|_| HttpMultiRangeError::Protocol)?
-            .map(|_| ())
-            .or_else(|error| match error {
-                SessionOwnerError::Persistence(SessionPersistenceError::MissingJournal {
-                    ..
-                }) => Ok(()),
-                _other => Err(HttpMultiRangeError::Protocol),
-            })
     }
 
     async fn handoff_new_or_recovered_journal(
@@ -1726,6 +1817,15 @@ impl HttpMultiRangeWorker {
         task: &HttpTaskSpec,
         generation: Generation,
     ) -> Result<(), HttpMultiRangeError> {
+        if let Some(session) = &self.session {
+            match session.execute(SessionCommand::FlushJournalHead { gid: task.gid() }) {
+                Ok(ariax_storage::SessionCommandResult::JournalFlushed(_)) => return Ok(()),
+                Err(SessionOwnerError::Persistence(SessionPersistenceError::MissingJournal {
+                    ..
+                })) => {}
+                _ => return Err(HttpMultiRangeError::Protocol),
+            }
+        }
         let journal = self.open_task_journal(task, generation)?;
         self.handoff_journal(task.gid(), journal.appender).await
     }
@@ -1733,25 +1833,15 @@ impl HttpMultiRangeWorker {
     async fn handoff_journal(
         &self,
         gid: Gid,
-        mut journal: ControlJournalAppender,
+        journal: StorageJournal,
     ) -> Result<(), HttpMultiRangeError> {
-        let Some(session) = self.session.clone() else {
-            journal
-                .close_flushed()
-                .map_err(KnownLengthHttpError::from)?;
-            return Ok(());
-        };
-        tokio::task::spawn_blocking(move || {
-            session
-                .execute(SessionCommand::InstallJournalAppender {
-                    gid,
-                    appender: journal,
-                })
-                .map(|_| ())
-        })
-        .await
-        .map_err(|_| HttpMultiRangeError::Protocol)?
-        .map_err(|_| HttpMultiRangeError::Protocol)
+        let mut journal = journal
+            .manage(self.session.as_ref(), gid)
+            .map_err(KnownLengthHttpError::from)?;
+        journal
+            .close_flushed()
+            .map_err(KnownLengthHttpError::from)?;
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1974,15 +2064,23 @@ impl HttpMultiRangeWorker {
                 && let Some(deadline) = retry_at
             {
                 let wait = Duration::from_millis(deadline.saturating_sub(elapsed_ms(started)));
+                let deadline = MonotonicInstant::now()
+                    .checked_add(wait)
+                    .ok_or(HttpMultiRangeError::Protocol)?;
+                stats.set_retry_wait(Some(deadline));
+                if self.config.scheduling.release_retry_wait(wait) {
+                    break 'download Err(HttpMultiRangeError::RetryWait(deadline));
+                }
                 tokio::select! {
                     biased;
                     _ = cancellation.cancelled() => {
                         break 'download Err(HttpMultiRangeError::Cancelled);
                     }
-                    () = tokio::time::sleep(wait) => {}
+                    () = tokio::time::sleep(wait.min(crate::slow_slots::SLOW_SAMPLE_INTERVAL)) => {}
                 }
                 continue;
             }
+            stats.set_retry_wait(None);
 
             tokio::select! {
                 biased;
@@ -1993,6 +2091,7 @@ impl HttpMultiRangeWorker {
                     let Some(event) = event else {
                         break 'download Err(HttpMultiRangeError::Protocol);
                     };
+                    let _local_work = stats.local_wait();
                     match process_attempt_event(
                         event,
                         task.task(),
@@ -2241,10 +2340,16 @@ impl HttpTaskWorker for HttpMultiRangeWorker {
             .map_err(|error| error.into_public(&retry_policy, generation));
         Box::pin(async move {
             rate_initialization?;
-            worker
+            match worker
                 .run_initialized_task(task, generation, cancellation)
                 .await
-                .map_err(|error| error.into_public(&retry_policy, generation))
+            {
+                Err(HttpMultiRangeError::RetryWait(retry_at)) => Ok(HttpWorkerSuccess {
+                    seed: false,
+                    retry_at: Some(retry_at),
+                }),
+                result => result.map_err(|error| error.into_public(&retry_policy, generation)),
+            }
         })
     }
 }
@@ -2540,7 +2645,7 @@ struct RecoveredRangeDigestVerification<'a> {
 }
 
 struct OpenedTaskJournal {
-    appender: ControlJournalAppender,
+    appender: StorageJournal,
     state: Option<RecoveredJournalState>,
 }
 
@@ -2552,11 +2657,11 @@ enum PreparedHttpStorage {
 
 struct FreshPreparedHttpStorage {
     root: RootDirectoryCapability,
-    appender: ControlJournalAppender,
+    appender: StorageJournal,
 }
 
 struct RecoveredPreparedHttpStorage {
-    appender: ControlJournalAppender,
+    appender: StorageJournal,
     layout: FileLayout,
     output: RootFileCapability,
     durable_evidence: BTreeMap<PieceId, RecoveredDurablePiece>,
@@ -2569,7 +2674,7 @@ struct RecoveredPreparedHttpStorage {
 
 struct ReadmissionPreparedHttpStorage {
     root: RootDirectoryCapability,
-    appender: ControlJournalAppender,
+    appender: StorageJournal,
     previous_layout_hash: ariax_storage::LayoutHash,
     output: RootFileCapability,
     durable_evidence: BTreeMap<PieceId, RecoveredDurablePiece>,
@@ -2580,6 +2685,26 @@ struct ReadmissionPreparedHttpStorage {
 }
 
 impl PreparedHttpStorage {
+    fn manage(
+        self,
+        session: Option<&SessionHandle>,
+        gid: Gid,
+    ) -> Result<Self, ariax_storage::JournalAppenderError> {
+        Ok(match self {
+            Self::Fresh(mut value) => {
+                value.appender = value.appender.manage(session, gid)?;
+                Self::Fresh(value)
+            }
+            Self::Recovered(mut value) => {
+                value.appender = value.appender.manage(session, gid)?;
+                Self::Recovered(value)
+            }
+            Self::Readmission(mut value) => {
+                value.appender = value.appender.manage(session, gid)?;
+                Self::Readmission(value)
+            }
+        })
+    }
     fn fully_durable_length(&self) -> Option<u64> {
         let Self::Recovered(recovered) = self else {
             return None;
@@ -2608,7 +2733,7 @@ impl PreparedHttpStorage {
         }
     }
 
-    fn into_appender(self) -> ControlJournalAppender {
+    fn into_appender(self) -> StorageJournal {
         match self {
             Self::Fresh(fresh) => fresh.appender,
             Self::Recovered(recovered) => recovered.appender,
@@ -2917,6 +3042,7 @@ enum RangeAttemptFailure {
 
 #[derive(Debug)]
 pub enum HttpMultiRangeError {
+    RetryWait(MonotonicInstant),
     InvalidConfig,
     StatsCatalogFull,
     DiscardBudgetExhausted(HttpDiscardScope),
@@ -2954,6 +3080,7 @@ impl HttpMultiRangeError {
             Self::ShortBody => "short_range_body",
             Self::OversizedBody => "oversized_range_body",
             Self::Cancelled => "cancelled",
+            Self::RetryWait(_) => "http_retry_wait",
             Self::Exhausted => "http_range_attempts_exhausted",
             Self::IdentifierExhausted => "http_identifier_exhausted",
             Self::Protocol => "http_range_protocol_invariant",
@@ -3474,6 +3601,7 @@ async fn acquire_read_slot(
     cancellation: &HttpCancellation,
     stats: &HttpTransferStats,
 ) -> Result<(BufferLease, HttpIngressPermit, RatePermit), RangeAttemptFailure> {
+    let _local_wait = stats.local_wait();
     let requested = NonZeroUsize::new(minimum_capacity).ok_or(RangeAttemptFailure::Cancelled)?;
     loop {
         let (response, receiver) = oneshot::channel();
@@ -5354,6 +5482,7 @@ mod tests {
             result = &mut worker => panic!("read-slot worker stopped while backpressured: {result:?}"),
         }
         let snapshot = stats.snapshot();
+        assert!(snapshot.local_pressure);
         assert_eq!(
             snapshot.connection_condition,
             ConnectionCondition::Backpressured
@@ -5365,6 +5494,20 @@ mod tests {
 
         cancellation.cancel();
         assert!(matches!(worker.await, Err(RangeAttemptFailure::Cancelled)));
+        assert!(!stats.snapshot().local_pressure);
+    }
+
+    #[test]
+    fn concurrent_local_pressure_guards_survive_other_lease_progress() {
+        let stats = HttpTransferStats::default();
+        let disk_wait = stats.local_wait();
+        let rate_wait = stats.local_wait();
+        stats.clear_diagnostic();
+        assert!(stats.snapshot().local_pressure);
+        drop(rate_wait);
+        assert!(stats.snapshot().local_pressure);
+        drop(disk_wait);
+        assert!(!stats.snapshot().local_pressure);
     }
 
     #[test]

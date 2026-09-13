@@ -4,6 +4,9 @@
 //! scheduler effects, persisted task metadata, and the worker catalog.  RPC
 //! transports never mutate the scheduler directly.
 
+mod configuration;
+mod scheduling;
+
 use crate::http_first_slice::append_initial_admission_with_options;
 use crate::rpc_result::{
     DisplayValue, OptionMap, PersistedSources, PersistedUris, RESULT_VALUE_BYTES, ResultList,
@@ -24,9 +27,10 @@ use ariax_config::{
     UnknownOptionMode, builtin_registry, parse_flat_config, parse_option_value,
 };
 use ariax_core::{
-    Aria2Status, Generation, Gid, MonotonicInstant, OptionPatchId, PendingBarrier, PublicError,
-    QueueClass, QueueOrder, RequestScheduler, RetryClass, SchedulerCommand, TaskConditions,
-    TaskEvent, TaskEventEnvelope, TaskId, TaskSnapshot, TransitionEffect, ValidatedOptionPatchKind,
+    Aria2Status, Generation, Gid, MonotonicInstant, OptionPatchId, OptionPatchRejectReason,
+    PendingBarrier, PublicError, QueueClass, QueueOrder, RequestScheduler, RetryClass,
+    SchedulerCommand, TaskConditions, TaskEvent, TaskEventEnvelope, TaskId, TaskSnapshot,
+    TransitionEffect, ValidatedOptionPatchKind,
 };
 use ariax_runtime::{RateArbiter, RateLimit, RateScope};
 use ariax_storage::{
@@ -105,6 +109,7 @@ impl HttpControlPlaneConfig {
 pub enum HttpControlError {
     InvalidConfig,
     InvalidParams(&'static str),
+    OptionPatchRejected(Vec<OptionPatchRejection>),
     TaskSpec(HttpTaskSpecError),
     Catalog(HttpTaskCatalogError),
     Persistence(String),
@@ -117,11 +122,38 @@ pub enum HttpControlError {
     ResponseTooLarge,
 }
 
+/// One value-free rejection in an atomic runtime option patch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OptionPatchRejection {
+    pub name: String,
+    pub reason: OptionPatchRejectReason,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ControlDiagnostics {
+    pub profile: Option<String>,
+    pub event_backend: Option<String>,
+    pub disk_backend: Option<String>,
+    pub buffer_budget_bytes: Option<usize>,
+    pub task_count: usize,
+    pub active_workers: usize,
+    pub config_generation: u64,
+    pub event_subscribers: usize,
+    pub rpc_items: usize,
+    pub rpc_item_limit: usize,
+    pub rpc_bytes: usize,
+    pub rpc_byte_limit: usize,
+    pub resident_bytes: usize,
+    pub resident_limit: usize,
+}
+
 impl fmt::Display for HttpControlError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidConfig => formatter.write_str("invalid HTTP control configuration"),
             Self::InvalidParams(message) => formatter.write_str(message),
+            Self::OptionPatchRejected(_) => formatter.write_str("OptionPatchRejected"),
             Self::TaskSpec(error) => error.fmt(formatter),
             Self::Catalog(error) => write!(formatter, "HTTP task catalog error: {error:?}"),
             Self::Persistence(error) => write!(formatter, "persistence failed: {error}"),
@@ -210,6 +242,11 @@ pub struct HttpControlPlane {
     journal_sequences: BTreeMap<Gid, u64>,
     next_task_id: u64,
     global_options: BTreeMap<String, String>,
+    flat_options: BTreeMap<String, String>,
+    rpc_template: BTreeMap<String, String>,
+    url_rules: Arc<ariax_config::UrlRules>,
+    config_generation: u64,
+    config_charge: Option<crate::rpc_budget::RpcByteCharge>,
     pending_option_snapshots: BTreeMap<OptionPatchId, PendingOptionSnapshot>,
     pending_restart_patches: BTreeMap<Gid, OptionPatchId>,
     pending_source_replacements: BTreeMap<Gid, PendingSourceReplacement>,
@@ -221,6 +258,10 @@ pub struct HttpControlPlane {
     observed_statuses: BTreeMap<Gid, Aria2Status>,
     global_download_rate: Option<RateArbiter>,
     rpc_budgets: crate::RpcBudgets,
+    process_resources: Option<crate::HttpProcessResources>,
+    scheduling: crate::HttpSchedulingPolicy,
+    slow_observations: BTreeMap<Gid, crate::slow_slots::SlowObservation>,
+    next_slow_sample: Option<MonotonicInstant>,
     owner_client: crate::RpcClientBudget,
     direct_client: crate::RpcClientBudget,
     pending_work: Option<ControlWorkReservation>,
@@ -273,6 +314,11 @@ impl HttpControlPlane {
             journal_sequences: BTreeMap::new(),
             next_task_id,
             global_options: default_global_options()?,
+            flat_options: BTreeMap::new(),
+            rpc_template: BTreeMap::new(),
+            url_rules: Arc::new(ariax_config::UrlRules::default()),
+            config_generation: 0,
+            config_charge: None,
             pending_option_snapshots: BTreeMap::new(),
             pending_restart_patches: BTreeMap::new(),
             pending_source_replacements: BTreeMap::new(),
@@ -284,6 +330,10 @@ impl HttpControlPlane {
             observed_statuses: BTreeMap::new(),
             global_download_rate: None,
             rpc_budgets,
+            process_resources: None,
+            scheduling: crate::HttpSchedulingPolicy::default(),
+            slow_observations: BTreeMap::new(),
+            next_slow_sample: None,
             owner_client,
             direct_client,
             pending_work: None,
@@ -303,6 +353,8 @@ impl HttpControlPlane {
         budgets: crate::RpcBudgets,
     ) -> Result<(), HttpControlError> {
         if self.events.subscriber_count() != 0
+            || self.pending_session_export.is_some()
+            || self.config_charge.is_some()
             || !self.pending_source_replacements.is_empty()
             || self
                 .pending_option_snapshots
@@ -316,9 +368,60 @@ impl HttpControlPlane {
         let direct_client = budgets.client().map_err(|_| HttpControlError::Busy)?;
         self.events = RpcEventBroker::with_budgets(budgets.clone());
         self.rpc_budgets = budgets;
+        self.process_resources = None;
         self.owner_client = owner_client;
         self.direct_client = direct_client;
         Ok(())
+    }
+
+    pub fn attach_process_resources(
+        &mut self,
+        resources: crate::HttpProcessResources,
+    ) -> Result<(), HttpControlError> {
+        self.attach_rpc_budgets(resources.rpc_budgets())?;
+        self.scheduling = resources.scheduling_policy();
+        self.process_resources = Some(resources);
+        Ok(())
+    }
+
+    pub fn scheduling_policy(&self) -> crate::HttpSchedulingPolicy {
+        self.scheduling.clone()
+    }
+
+    pub fn diagnostics(&self) -> ControlDiagnostics {
+        let budget = self.rpc_budgets.snapshot();
+        let profile = self
+            .process_resources
+            .as_ref()
+            .map(crate::HttpProcessResources::profile);
+        ControlDiagnostics {
+            profile: profile.map(|profile| profile.baseline().code().to_owned()),
+            event_backend: profile.map(|_| {
+                if cfg!(windows) {
+                    "tokio-iocp"
+                } else if cfg!(target_os = "linux") {
+                    "tokio-epoll"
+                } else {
+                    "tokio"
+                }
+                .to_owned()
+            }),
+            disk_backend: profile.map(|_| "blocking-positioned".to_owned()),
+            buffer_budget_bytes: profile.map(|profile| profile.limits().buffer_budget_bytes),
+            task_count: self.tasks.len(),
+            active_workers: self
+                .supervisor
+                .as_ref()
+                .map_or(0, HttpWorkerSupervisor::active_workers),
+            config_generation: self.config_generation,
+            event_subscribers: self.events.subscriber_count(),
+            rpc_items: budget.items,
+            rpc_item_limit: budget.item_limit,
+            rpc_bytes: budget.bytes,
+            rpc_byte_limit: budget.byte_limit,
+            resident_bytes: budget.resident_bytes,
+            resident_limit: budget.resident_limit,
+        }
     }
 
     /// Attaches the real HTTP worker supervisor.  The catalog is shared with
@@ -790,6 +893,9 @@ impl HttpControlPlane {
         if self.engine.is_idle() {
             self.complete_source_replacements()?;
             if self.engine.is_idle() {
+                self.poll_slow_slots_at(now)?;
+            }
+            if self.engine.is_idle() {
                 self.try_admit_one(now)?;
             }
         }
@@ -895,6 +1001,11 @@ impl HttpControlPlane {
             "ariax.checkConfig" => self.check_config(params),
             "ariax.reloadConfig" => self.reload_config(params),
             "ariax.dumpConfig" => self.dump_config(params),
+            "ariax.getDiagnostics" => {
+                require_no_params(&params, "getDiagnostics")?;
+                crate::rpc_result::to_value(&self.diagnostics(), RESULT_VALUE_BYTES)
+                    .map_err(Into::into)
+            }
             "ariax.exportSession" => self.export_session(params),
             _ => Err(HttpControlError::Unsupported("method not found")),
         };
@@ -940,8 +1051,8 @@ impl HttpControlPlane {
         params: Value,
         client: Option<crate::RpcClientBudget>,
     ) -> Result<Value, HttpControlError> {
-        let values = params.as_array().filter(|values| values.len() <= 2).ok_or(
-            HttpControlError::InvalidParams("subscribe accepts optional event and byte limits"),
+        let values = params.as_array().filter(|values| values.len() <= 3).ok_or(
+            HttpControlError::InvalidParams("subscribe accepts event and byte limits and a filter"),
         )?;
         let events = values
             .first()
@@ -961,9 +1072,17 @@ impl HttpControlPlane {
                 "event byte capacity must be nonzero",
             ))?,
         };
+        let filter = values
+            .get(2)
+            .map(crate::RpcEventFilter::from_rpc)
+            .transpose()
+            .map_err(event_backend_error)?
+            .unwrap_or_default();
         let subscriber = match client {
-            Some(client) => self.events.subscribe_with_client(limits, client),
-            None => self.events.subscribe(limits),
+            Some(client) => self
+                .events
+                .subscribe_filtered_with_client(limits, filter, client),
+            None => self.events.subscribe_filtered(limits, filter),
         }
         .map_err(event_backend_error)?;
         let id = subscriber.id();
@@ -1130,6 +1249,7 @@ impl HttpControlPlane {
             ));
         }
         let options = array.get(1).cloned().unwrap_or_else(|| json!({}));
+        let options = self.merged_add_options(options, &uris, false)?;
         let (spec, record, plan, appender) = self.build_admission(uris, options)?;
         let task_id = spec.task();
         let gid = spec.gid();
@@ -1256,7 +1376,8 @@ impl HttpControlPlane {
             .get(task.task_id)
             .map(|stats| stats.snapshot())
             .unwrap_or_default();
-        let value = status_value(snapshot, status, stats);
+        let mut value = status_value(snapshot, status, stats);
+        self.add_slot_diagnostics(&mut value, snapshot, stats);
         debug_assert!(crate::rpc_json::owned_value_bytes(&value) < 64 * 1024);
         Ok(project_status(value, keys))
     }
@@ -1426,15 +1547,28 @@ impl HttpControlPlane {
         params: Value,
         request: Option<crate::rpc_budget::RpcRequestLease>,
     ) -> Result<ControlReply, HttpControlError> {
-        let values = params.as_array().filter(|values| values.len() == 2).ok_or(
-            HttpControlError::InvalidParams("changeOption requires GID and option object"),
-        )?;
+        let values = params
+            .as_array()
+            .filter(|values| (2..=3).contains(&values.len()))
+            .ok_or(HttpControlError::InvalidParams(
+                "changeOption requires GID, options, and optional restart settings",
+            ))?;
+        let restart = match values.get(2) {
+            None => false,
+            Some(Value::Object(settings))
+                if settings.len() == 1
+                    && settings.get("restart").and_then(Value::as_bool).is_some() =>
+            {
+                settings["restart"].as_bool().expect("validated flag")
+            }
+            _ => return Err(HttpControlError::InvalidParams("invalid restart settings")),
+        };
         let gid = self.resolve_gid_text(
             values[0]
                 .as_str()
                 .ok_or(HttpControlError::InvalidParams("GID must be a string"))?,
         )?;
-        let patch = parse_registry_options(&values[1], Scope::RpcChange)?;
+        let mut patch = parse_registry_options(&values[1], Scope::RpcChange)?;
         if self.pending_restart_patches.contains_key(&gid)
             || self.pending_source_replacements.contains_key(&gid)
         {
@@ -1444,6 +1578,17 @@ impl HttpControlPlane {
             return Ok(ControlReply::Ready(Value::String("OK".to_owned())));
         }
         let current = self.tasks.get_gid(gid).ok_or(HttpControlError::NotFound)?;
+        if let Some(directory) = patch.remove("dir") {
+            if Path::new(&directory.canonical) != current.output_root() {
+                return Err(rejected_option_names(
+                    ["dir"],
+                    OptionPatchRejectReason::InvalidValue,
+                ));
+            }
+            if patch.is_empty() {
+                return Ok(ControlReply::Ready(Value::String("OK".to_owned())));
+            }
+        }
         let root = self.engine.snapshot_reader().load();
         let task = root.task(gid).ok_or(HttpControlError::NotFound)?;
         let previous_generation = task.snapshot.generation;
@@ -1455,18 +1600,31 @@ impl HttpControlPlane {
             status,
             Aria2Status::Complete | Aria2Status::Error | Aria2Status::Removed
         ) {
-            return Err(HttpControlError::InvalidParams(
-                "terminal download options cannot be changed",
+            return Err(rejected_option_names(
+                patch.keys(),
+                OptionPatchRejectReason::NotRuntimeMutable,
             ));
         }
-        if status == Aria2Status::Active
-            && patch
-                .values()
-                .any(|entry| entry.runtime_update == RuntimeUpdate::WaitingOnly)
-        {
-            return Err(HttpControlError::InvalidParams(
-                "one or more options may only change while waiting or paused",
-            ));
+        if status == Aria2Status::Active {
+            let rejected: Vec<_> = patch
+                .iter()
+                .filter_map(|(name, entry)| {
+                    let reason = match entry.runtime_update {
+                        RuntimeUpdate::NewGeneration if !restart => {
+                            OptionPatchRejectReason::RequiresNewGeneration
+                        }
+                        RuntimeUpdate::WaitingOnly => OptionPatchRejectReason::NotRuntimeMutable,
+                        _ => return None,
+                    };
+                    Some(OptionPatchRejection {
+                        name: name.clone(),
+                        reason,
+                    })
+                })
+                .collect();
+            if !rejected.is_empty() {
+                return Err(HttpControlError::OptionPatchRejected(rejected));
+            }
         }
         drop(root);
 
@@ -1476,6 +1634,9 @@ impl HttpControlPlane {
             .entries()
             .map(|(name, value)| (name.to_owned(), value.to_owned()))
             .collect::<BTreeMap<_, _>>();
+        merged.retain(|name, _| {
+            !configuration::discard_inherited_retry(name, |key| patch.contains_key(key))
+        });
         for (name, entry) in &patch {
             merged.insert(name.clone(), entry.canonical.clone());
         }
@@ -1487,12 +1648,16 @@ impl HttpControlPlane {
             ));
         }
         let http_options = HttpTaskOptions::from_sanitized(&options).map_err(|_| {
-            HttpControlError::InvalidParams("option is not supported by HTTP tasks")
+            rejected_option_names(patch.keys(), OptionPatchRejectReason::InvalidValue)
         })?;
-        let output =
-            HttpTaskSpec::persisted_output(&options).map_err(HttpControlError::TaskSpec)?;
-        let replacement = current
-            .with_options(output, http_options)
+        let output = HttpTaskSpec::persisted_output(&options).map_err(|_| {
+            rejected_option_names(patch.keys(), OptionPatchRejectReason::InvalidValue)
+        })?;
+        let replacement = current.with_options(output, http_options).map_err(|_| {
+            rejected_option_names(patch.keys(), OptionPatchRejectReason::InvalidValue)
+        })?;
+        let options = replacement
+            .persistence_options()
             .map_err(HttpControlError::TaskSpec)?;
 
         let patch_id =
@@ -1936,6 +2101,7 @@ impl HttpControlPlane {
         request: Option<&crate::rpc_budget::RpcRequestLease>,
     ) -> Result<Option<crate::rpc_budget::RpcRequestLease>, HttpControlError> {
         let mut bytes = crate::rpc_json::command_value_bytes(params).saturating_add(64 * 1024);
+        bytes = bytes.saturating_add(self.configuration_command_bytes(method, params)?);
         if matches!(method, "aria2.changeUri" | "changeUri")
             && let Some(gid) = params
                 .as_array()
@@ -2023,25 +2189,6 @@ impl HttpControlPlane {
         )?)
     }
 
-    fn change_global_option(&mut self, params: Value) -> Result<Value, HttpControlError> {
-        let values = params.as_array().filter(|values| values.len() == 1).ok_or(
-            HttpControlError::InvalidParams("changeGlobalOption requires one option object"),
-        )?;
-        let patch = parse_registry_options(&values[0], Scope::RpcGlobal)?;
-        if patch.keys().any(|name| !is_executable_global_option(name)) {
-            return Err(HttpControlError::InvalidParams(
-                "global option is not executable in this checkpoint",
-            ));
-        }
-        for (name, entry) in patch {
-            if name == "max-overall-download-limit" {
-                self.apply_global_download_limit(&entry.canonical)?;
-            }
-            self.global_options.insert(name, entry.canonical);
-        }
-        Ok(Value::String("OK".to_owned()))
-    }
-
     fn get_version(&self, params: Value) -> Result<Value, HttpControlError> {
         require_no_params(&params, "getVersion")?;
         Ok(json!({
@@ -2060,120 +2207,6 @@ impl HttpControlPlane {
         self.shutdown_requested = true;
         self.force_shutdown_requested |= force;
         Ok(Value::String("OK".to_owned()))
-    }
-
-    fn check_config(&self, params: Value) -> Result<Value, HttpControlError> {
-        let values = params.as_array().filter(|values| values.len() == 1).ok_or(
-            HttpControlError::InvalidParams("checkConfig requires configuration text"),
-        )?;
-        let text = values[0].as_str().ok_or(HttpControlError::InvalidParams(
-            "configuration must be text",
-        ))?;
-        let parsed = parse_flat_config(
-            builtin_registry(),
-            text,
-            UnknownOptionMode::Strict,
-            FlatConfigLimits::default(),
-            None,
-        )
-        .map_err(|_| HttpControlError::InvalidParams("configuration is invalid"))?;
-        Ok(json!({
-            "valid": true,
-            "options": parsed.entries().count(),
-            "warnings": parsed.warnings().len(),
-        }))
-    }
-
-    fn reload_config(&mut self, params: Value) -> Result<Value, HttpControlError> {
-        let values = params.as_array().filter(|values| values.len() == 1).ok_or(
-            HttpControlError::InvalidParams("reloadConfig requires configuration text"),
-        )?;
-        let text = values[0].as_str().ok_or(HttpControlError::InvalidParams(
-            "configuration must be text",
-        ))?;
-        let parsed = parse_flat_config(
-            builtin_registry(),
-            text,
-            UnknownOptionMode::Strict,
-            FlatConfigLimits::default(),
-            None,
-        )
-        .map_err(|_| HttpControlError::InvalidParams("configuration is invalid"))?;
-        let mut next = self.global_options.clone();
-        for (name, entry) in parsed.entries() {
-            if !is_executable_global_option(name)
-                || !entry.definition.scopes.contains(Scope::Global)
-                || matches!(
-                    entry.definition.runtime_update,
-                    RuntimeUpdate::None
-                        | RuntimeUpdate::StartupOnly
-                        | RuntimeUpdate::UnsafeCompatOnly
-                        | RuntimeUpdate::BtLive
-                        | RuntimeUpdate::BtRestartRequired
-                )
-            {
-                return Err(HttpControlError::InvalidParams(
-                    "configuration contains a non-reloadable option",
-                ));
-            }
-            next.insert(name.to_owned(), canonical_option_value(&entry.value)?);
-        }
-        if let Some(limit) = next.get("max-overall-download-limit") {
-            self.apply_global_download_limit(limit)?;
-        }
-        self.global_options = next;
-        Ok(json!({"reloaded": true, "options": parsed.entries().count()}))
-    }
-
-    fn apply_global_download_limit(&self, canonical: &str) -> Result<(), HttpControlError> {
-        let bytes = canonical
-            .parse::<u64>()
-            .map_err(|_| HttpControlError::InvalidConfig)?;
-        if let Some(rate) = &self.global_download_rate {
-            rate.set_global_limit(RateLimit::per_second(bytes))
-                .map_err(|_| HttpControlError::InvalidConfig)?;
-        }
-        Ok(())
-    }
-
-    fn dump_config(&self, params: Value) -> Result<Value, HttpControlError> {
-        let values = params.as_array().filter(|values| values.len() <= 1).ok_or(
-            HttpControlError::InvalidParams("dumpConfig accepts an optional mode"),
-        )?;
-        let mode = values
-            .first()
-            .and_then(Value::as_str)
-            .unwrap_or("effective");
-        if !matches!(mode, "defaults" | "effective") {
-            return Err(HttpControlError::InvalidParams(
-                "dumpConfig mode must be defaults or effective",
-            ));
-        }
-        if mode == "effective" {
-            return Ok(string_map_value(
-                self.global_options
-                    .iter()
-                    .map(|(name, value)| (name.as_str(), value.as_str())),
-            )?);
-        }
-        let mut defaults = BTreeMap::new();
-        for definition in builtin_registry().definitions() {
-            if definition.compat == CompatStatus::Unsupported
-                || definition.security != SecurityClass::Normal
-            {
-                continue;
-            }
-            if let Some(default) = definition.default {
-                let value = parse_option_value(definition, default, None)
-                    .map_err(|_| HttpControlError::InvalidConfig)?;
-                defaults.insert(definition.name.to_owned(), canonical_option_value(&value)?);
-            }
-        }
-        Ok(string_map_value(
-            defaults
-                .iter()
-                .map(|(name, value)| (name.as_str(), value.as_str())),
-        )?)
     }
 
     fn export_session(&self, params: Value) -> Result<Value, HttpControlError> {
@@ -2259,6 +2292,12 @@ impl HttpControlPlane {
         if imported.is_empty() {
             return Ok(ControlReply::Ready(json!([])));
         }
+        request
+            .reserve(
+                self.configuration_defaults_bytes()
+                    .saturating_mul(imported.len()),
+            )
+            .map_err(|_| HttpControlError::Busy)?;
         if self.tasks.len().saturating_add(imported.len()) > self.config.task_capacity.get() {
             return Err(HttpControlError::Busy);
         }
@@ -2274,8 +2313,9 @@ impl HttpControlPlane {
                 .checked_add(1)
                 .ok_or(HttpControlError::InvalidConfig)?;
             let gid = derive_http_gid(self.session_id, task_id);
+            let options = self.merged_add_options(task.options, &task.uris, true)?;
             let (options, root, output, paused) =
-                parse_add_options(&task.options, &self.config.output_root, &task.uris)?;
+                parse_add_options(&options, &self.config.output_root, &task.uris)?;
             let spec = match task.sources {
                 Some(sources) => HttpTaskSpec::from_persisted_sources(
                     task_id, gid, sources, root, output, options,
@@ -2839,6 +2879,41 @@ impl HttpControlPlane {
     ) -> Result<(), HttpControlError> {
         let mut queue = VecDeque::from(effects);
         while let Some(effect) = queue.pop_front() {
+            if let TransitionEffect::PublishSnapshot { snapshot, .. } = &effect
+                && let Some(task) = simulation.task(snapshot.gid)
+                && self.engine.scheduler().task(snapshot.gid).is_some()
+                && task.pending_barrier.is_none()
+                && matches!(
+                    task.state,
+                    ariax_core::TaskState::Paused | ariax_core::TaskState::PausedSlow
+                )
+            {
+                // TaskPaused requires an empty lease set. The supervisor's
+                // drained event supplies that authority; never write it while
+                // cancellation still owns the generation's worker.
+                let reason = if task.state == ariax_core::TaskState::PausedSlow {
+                    TaskPauseReason::SlowSlot
+                } else {
+                    TaskPauseReason::User
+                };
+                let appended = self.session.execute(SessionCommand::AppendJournal {
+                    gid: task.gid,
+                    generation: task.generation,
+                    payload: JournalPayload::TaskPaused { reason },
+                });
+                if !matches!(appended, Ok(SessionCommandResult::JournalAppended(_)))
+                    || !matches!(
+                        self.session
+                            .execute(SessionCommand::FlushJournalHead { gid: task.gid }),
+                        Ok(SessionCommandResult::JournalFlushed(_))
+                    )
+                {
+                    self.engine.fail_control_publication();
+                    return Err(HttpControlError::Persistence(
+                        "drained pause reason could not be made durable".to_owned(),
+                    ));
+                }
+            }
             if effect.kind().persistence_effect() {
                 self.engine
                     .prepare_persistence(self.plan_for_effect(&effect, generation_reason)?)
@@ -3456,6 +3531,20 @@ pub struct HttpControlBackend {
 }
 
 impl HttpControlBackend {
+    pub(crate) async fn from_shared(plane: Arc<Mutex<HttpControlPlane>>) -> Self {
+        let (shutdown, _) = watch::channel(false);
+        let owner = plane.lock().await;
+        let events = owner.events.clone();
+        let rpc_budgets = owner.rpc_budgets.clone();
+        drop(owner);
+        Self {
+            plane,
+            shutdown,
+            events,
+            rpc_budgets,
+        }
+    }
+
     #[must_use]
     pub fn new(plane: HttpControlPlane) -> Self {
         let (shutdown, _) = watch::channel(false);
@@ -3559,6 +3648,12 @@ fn changes_scheduler_tasks(method: &str) -> bool {
 }
 
 fn control_backend_error(error: HttpControlError) -> HttpRpcBackendError {
+    if let HttpControlError::OptionPatchRejected(rejected) = &error {
+        return HttpRpcBackendError::new(-32602, "OptionPatchRejected").with_data(json!({
+            "code": "OptionPatchRejected",
+            "rejected": rejected.iter().map(|entry| json!({"name": entry.name, "reason": entry.reason.code()})).collect::<Vec<_>>()
+        }));
+    }
     let code = match error {
         HttpControlError::InvalidParams(_) | HttpControlError::TaskSpec(_) => -32602,
         HttpControlError::Unsupported(_) => -32601,
@@ -3723,27 +3818,67 @@ struct ParsedRegistryOption {
 }
 
 fn default_global_options() -> Result<BTreeMap<String, String>, HttpControlError> {
-    let mut options = BTreeMap::new();
-    for definition in builtin_registry().definitions() {
-        if !is_executable_global_option(definition.name)
-            || !definition.scopes.contains(Scope::Global)
-            || definition.compat == CompatStatus::Unsupported
-            || definition.security != SecurityClass::Normal
-        {
-            continue;
-        }
-        let Some(default) = definition.default else {
-            continue;
-        };
-        let value = parse_option_value(definition, default, None)
-            .map_err(|_| HttpControlError::InvalidConfig)?;
-        options.insert(definition.name.to_owned(), canonical_option_value(&value)?);
+    let options = HttpTaskOptions {
+        retry: Some(HttpRetryPolicy::default()),
+        ..HttpTaskOptions::default()
     }
-    Ok(options)
+    .sanitized()
+    .map_err(HttpControlError::TaskSpec)?;
+    let mut result = options
+        .entries()
+        .map(|(name, value)| (name.to_owned(), value.to_owned()))
+        .collect::<BTreeMap<_, _>>();
+    result.insert("max-overall-download-limit".to_owned(), "0".to_owned());
+    for option in builtin_registry()
+        .definitions()
+        .iter()
+        .filter(|option| is_scheduling_option(option.name))
+    {
+        result.insert(
+            option.name.to_owned(),
+            option.default.expect("scheduling default").to_owned(),
+        );
+    }
+    Ok(result)
+}
+
+fn is_executable_download_option(name: &str) -> bool {
+    matches!(
+        name,
+        "dir"
+            | "out"
+            | "split"
+            | "max-connection-per-server"
+            | "min-split-size"
+            | "piece-length"
+            | "connect-timeout"
+            | "timeout"
+            | "max-download-limit"
+            | "lowest-speed-limit"
+            | "endgame-max-duplicates"
+            | "checksum"
+            | "verify-mirror-identity"
+    ) || is_retry_option(name)
 }
 
 fn is_executable_global_option(name: &str) -> bool {
     name == "max-overall-download-limit"
+        || is_executable_download_option(name)
+        || is_scheduling_option(name)
+}
+
+fn is_scheduling_option(name: &str) -> bool {
+    matches!(
+        name,
+        "slow-slot-policy"
+            | "slow-slot-speed-limit"
+            | "slow-slot-grace-period"
+            | "slow-slot-min-active-time"
+            | "slow-slot-max-demotions"
+            | "slow-slot-readmit-after"
+            | "slow-slot-readmit-policy"
+            | "retry-wait-consumes-slot"
+    )
 }
 
 fn parse_registry_options(
@@ -3758,45 +3893,89 @@ fn parse_registry_options(
     }
     let registry = builtin_registry();
     let mut parsed = BTreeMap::new();
+    let mut rejected = Vec::new();
     for (name, value) in object {
-        let definition = registry
-            .find(name)
-            .ok_or(HttpControlError::InvalidParams("unknown option"))?;
-        if !definition.scopes.contains(scope) {
-            return Err(HttpControlError::InvalidParams(
-                "option is not allowed on this RPC surface",
-            ));
-        }
-        if definition.security != SecurityClass::Normal {
-            return Err(HttpControlError::InvalidParams(
-                "option requires a local administrative surface",
-            ));
-        }
-        if matches!(
-            definition.runtime_update,
-            RuntimeUpdate::None
-                | RuntimeUpdate::StartupOnly
-                | RuntimeUpdate::UnsafeCompatOnly
-                | RuntimeUpdate::BtLive
-                | RuntimeUpdate::BtRestartRequired
-        ) {
-            return Err(HttpControlError::InvalidParams(
-                "option cannot be changed at runtime",
-            ));
-        }
-        let input = option_input_text(value)?;
-        let value = parse_option_value(definition, &input, None)
-            .map_err(|_| HttpControlError::InvalidParams("invalid option value"))?;
-        let canonical = canonical_option_value(&value)?;
-        parsed.insert(
-            name.clone(),
-            ParsedRegistryOption {
+        let result = (|| {
+            let definition = registry
+                .find(name)
+                .ok_or(OptionPatchRejectReason::Unsupported)?;
+            if definition.compat == CompatStatus::UnsafeCompat {
+                return Err(OptionPatchRejectReason::UnsafeCompatRequired);
+            }
+            if !definition.scopes.contains(scope)
+                || definition.security != SecurityClass::Normal
+                || matches!(definition.runtime_update, RuntimeUpdate::StartupOnly)
+            {
+                return Err(OptionPatchRejectReason::NotRuntimeMutable);
+            }
+            if matches!(
+                definition.compat,
+                CompatStatus::Unsupported | CompatStatus::FeatureGated
+            ) || !is_executable_global_option(name)
+                || matches!(
+                    definition.runtime_update,
+                    RuntimeUpdate::None
+                        | RuntimeUpdate::UnsafeCompatOnly
+                        | RuntimeUpdate::BtLive
+                        | RuntimeUpdate::BtRestartRequired
+                )
+            {
+                return Err(OptionPatchRejectReason::Unsupported);
+            }
+            let input =
+                option_input_text(value).map_err(|_| OptionPatchRejectReason::InvalidValue)?;
+            let value = parse_option_value(definition, &input, None)
+                .map_err(|_| OptionPatchRejectReason::InvalidValue)?;
+            let canonical = canonical_option_value(&value)
+                .map_err(|_| OptionPatchRejectReason::InvalidValue)?;
+            Ok(ParsedRegistryOption {
                 canonical,
                 runtime_update: definition.runtime_update,
-            },
-        );
+            })
+        })();
+        match result {
+            Ok(entry) => {
+                parsed.insert(name.clone(), entry);
+            }
+            Err(reason) => rejected.push(OptionPatchRejection {
+                name: safe_option_name(name),
+                reason,
+            }),
+        }
     }
-    Ok(parsed)
+    if rejected.is_empty() {
+        Ok(parsed)
+    } else {
+        Err(HttpControlError::OptionPatchRejected(rejected))
+    }
+}
+
+fn safe_option_name(name: &str) -> String {
+    if name.len() <= 128
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        name.to_owned()
+    } else {
+        "unknown-option".to_owned()
+    }
+}
+
+fn rejected_option_names<I, S>(names: I, reason: OptionPatchRejectReason) -> HttpControlError
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    HttpControlError::OptionPatchRejected(
+        names
+            .into_iter()
+            .map(|name| OptionPatchRejection {
+                name: safe_option_name(name.as_ref()),
+                reason,
+            })
+            .collect(),
+    )
 }
 
 fn option_input_text(value: &Value) -> Result<String, HttpControlError> {
@@ -4027,6 +4206,26 @@ fn parse_add_options(
     let object = options.as_object().ok_or(HttpControlError::InvalidParams(
         "addUri options must be an object",
     ))?;
+    if object.len() > ariax_storage::MAX_OPTION_MAP_ENTRIES {
+        return Err(HttpControlError::InvalidParams("too many options"));
+    }
+    let registry = builtin_registry();
+    for (name, value) in object {
+        if name == "pause" {
+            continue;
+        }
+        let definition = registry
+            .find(name)
+            .ok_or(HttpControlError::InvalidParams("unsupported addUri option"))?;
+        if !definition.scopes.contains(Scope::PerDownload)
+            || definition.security != SecurityClass::Normal
+            || !is_executable_download_option(name)
+        {
+            return Err(HttpControlError::InvalidParams("unsupported addUri option"));
+        }
+        parse_option_value(definition, &option_input_text(value)?, None)
+            .map_err(|_| HttpControlError::InvalidParams("invalid option value"))?;
+    }
     let mut parsed = HttpTaskOptions::default();
     let mut root = default_root.to_path_buf();
     let mut out = None;
@@ -4165,15 +4364,10 @@ fn parse_retry_options(
             .map_err(|_| HttpControlError::InvalidParams("invalid retry trigger set"))?;
     }
     if let Some(value) = object.get("retry-on-http-status") {
-        policy.retryable_statuses =
-            HttpRetryStatusSet::parse(retry_text(value, "retry-on-http-status")?)
-                .map_err(|_| HttpControlError::InvalidParams("invalid retry status set"))?;
+        policy.retryable_statuses = parse_retry_status_option(value, "retry-on-http-status")?;
     }
     if let Some(value) = object.get("retry-on-http-status-add") {
-        for code in HttpRetryStatusSet::parse(retry_text(value, "retry-on-http-status-add")?)
-            .map_err(|_| HttpControlError::InvalidParams("invalid retry status set"))?
-            .iter()
-        {
+        for code in parse_retry_status_option(value, "retry-on-http-status-add")?.iter() {
             policy
                 .retryable_statuses
                 .insert(code)
@@ -4181,10 +4375,7 @@ fn parse_retry_options(
         }
     }
     if let Some(value) = object.get("retry-on-http-status-remove") {
-        for code in HttpRetryStatusSet::parse(retry_text(value, "retry-on-http-status-remove")?)
-            .map_err(|_| HttpControlError::InvalidParams("invalid retry status set"))?
-            .iter()
-        {
+        for code in parse_retry_status_option(value, "retry-on-http-status-remove")?.iter() {
             policy.retryable_statuses.remove(code);
         }
     }
@@ -4248,6 +4439,18 @@ fn parse_retry_options(
         .validate()
         .map_err(|_| HttpControlError::InvalidParams("invalid retry policy"))?;
     Ok(policy)
+}
+
+fn parse_retry_status_option(
+    value: &Value,
+    name: &str,
+) -> Result<HttpRetryStatusSet, HttpControlError> {
+    let text = retry_text(value, name)?;
+    if text.trim().is_empty() {
+        return Ok(HttpRetryStatusSet::default());
+    }
+    HttpRetryStatusSet::parse(text)
+        .map_err(|_| HttpControlError::InvalidParams("invalid retry status set"))
 }
 
 fn retry_text<'a>(value: &'a Value, name: &str) -> Result<&'a str, HttpControlError> {
@@ -4464,7 +4667,7 @@ mod tests {
         HttpResolver, HttpResolverConfig, HttpTransportBudgets, ProcessBootstrapConfig,
         RuntimeEffectConfig, StartupRecoveryConfig, StorageEngineConfig, bootstrap_process,
     };
-    use ariax_core::{ErrorKind, LeaseId, PieceId, SchedulerConfig, UriId};
+    use ariax_core::{ErrorKind, LeaseId, PieceId, SchedulerConfig, TaskState, UriId};
     use ariax_runtime::ShutdownStep;
     use ariax_storage::{
         JournalDirectoryCapability, JournalStateLimits, ReplayLimits, ReplayStop,
@@ -4542,6 +4745,23 @@ mod tests {
 
         fn control_plane(&self) -> HttpControlPlane {
             self.control_plane_with_supervisor(HttpWorkerSupervisorConfig::default())
+        }
+
+        fn control_plane_with_active_limit(&self, limit: usize) -> HttpControlPlane {
+            let mut config = self.process_config();
+            config.recovery.scheduler.max_active_tasks = NonZeroUsize::new(limit).unwrap();
+            let engine = bootstrap_process(config, ariax_config::persisted_option_is_safe)
+                .expect("bootstrap process");
+            HttpControlPlane::new(
+                engine,
+                HttpControlPlaneConfig {
+                    output_root: self.output.clone(),
+                    journal_root: self.journals.clone(),
+                    task_capacity: NonZeroUsize::new(16).unwrap(),
+                    supervisor: HttpWorkerSupervisorConfig::default(),
+                },
+            )
+            .expect("control plane")
         }
 
         fn control_plane_with_supervisor(
@@ -4877,11 +5097,7 @@ mod tests {
                 "aria2.changeOption",
                 json!([gid.to_string(), {"rpc-secret": "secret"}]),
             ),
-            Err(HttpControlError::InvalidParams(
-                "option is not allowed on this RPC surface"
-            )) | Err(HttpControlError::InvalidParams(
-                "option requires a local administrative surface"
-            ))
+            Err(HttpControlError::OptionPatchRejected(_))
         ));
         assert_eq!(
             plane
@@ -4898,12 +5114,37 @@ mod tests {
                 .expect("global options")["max-overall-download-limit"],
             "2097152"
         );
-        assert!(matches!(
-            plane.call("aria2.changeGlobalOption", json!([{"timeout": 30}])),
-            Err(HttpControlError::InvalidParams(
-                "global option is not executable in this checkpoint"
-            ))
-        ));
+        plane
+            .call("aria2.changeGlobalOption", json!([{"timeout": 45}]))
+            .expect("future download template");
+        let next = add_paused(&mut plane);
+        assert_eq!(
+            plane
+                .tasks
+                .get_gid(next)
+                .expect("new task")
+                .options()
+                .response_body_timeout,
+            Duration::from_secs(45)
+        );
+        assert_eq!(
+            plane
+                .tasks
+                .get_gid(gid)
+                .expect("existing task")
+                .options()
+                .response_body_timeout,
+            Duration::from_secs(30)
+        );
+        assert!(
+            plane
+                .call(
+                    "aria2.changeGlobalOption",
+                    json!([{"timeout": 20, "allow-overwrite": true}])
+                )
+                .is_err()
+        );
+        assert_eq!(plane.global_options["timeout"], "45");
 
         assert!(plane.shutdown().expect("shutdown control plane").is_clean());
     }
@@ -5028,6 +5269,113 @@ mod tests {
     }
 
     #[test]
+    fn config_checks_validate_merged_policy_and_dumps_track_derived_sources() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        for method in ["ariax.checkConfig", "ariax.reloadConfig"] {
+            assert!(
+                plane
+                    .call(method, json!(["retry-wait=30\nretry-max-wait=5\n"]))
+                    .is_err()
+            );
+            assert_eq!(plane.config_generation, 0);
+        }
+        plane
+            .call(
+                "ariax.checkConfig",
+                json!(["session-store=memory\nretry-profile=aggressive\n"]),
+            )
+            .expect("startup check without publishing");
+        assert_eq!(plane.config_generation, 0);
+        plane
+            .call("ariax.reloadConfig", json!(["retry-profile=aggressive\n"]))
+            .expect("profile");
+        plane
+            .call(
+                "aria2.changeGlobalOption",
+                json!([{"retry-max-attempts": 9, "retry-on-http-status-add":"404"}]),
+            )
+            .expect("partial override");
+        let dump = plane
+            .call("ariax.dumpConfig", json!(["effective", "json"]))
+            .expect("sources");
+        assert_eq!(dump["sources"]["retry-wait"], "config");
+        assert_eq!(dump["sources"]["retry-max-attempts"], "rpc");
+        assert_eq!(dump["sources"]["max-tries"], "rpc");
+        assert_eq!(dump["sources"]["retry-on-http-status"], "rpc");
+        assert_eq!(dump["options"]["max-tries"], "9");
+        plane
+            .call(
+                "aria2.changeGlobalOption",
+                json!([{"retry-max-wait": 5, "retry-after-max":5}]),
+            )
+            .expect("valid upper wait");
+        let before = plane.global_options.clone();
+        for method in ["ariax.checkConfig", "ariax.reloadConfig"] {
+            assert!(plane.call(method, json!(["retry-after-min=10\n"])).is_err());
+            assert_eq!(plane.global_options, before);
+        }
+        assert!(plane.shutdown().expect("shutdown").is_clean());
+    }
+
+    #[test]
+    fn runtime_patch_rejections_are_grouped_value_free_and_atomic() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let gid = add_paused(&mut plane);
+        let before = plane
+            .call("aria2.getOption", json!([gid.to_string()]))
+            .expect("before");
+        let error = plane
+            .call(
+                "aria2.changeOption",
+                json!([gid.to_string(), {
+                    "split":0, "event-backend":"auto", "allow-overwrite":true,
+                    "on-download-complete":"secret-command-canary", "max-download-limit":"1M"
+                }]),
+            )
+            .expect_err("atomic rejection");
+        let error = control_backend_error(error);
+        let data = error.data.expect("grouped reasons");
+        assert_eq!(
+            data,
+            json!({"code":"OptionPatchRejected", "rejected":[
+                {"name":"allow-overwrite","reason":"unsupported"},
+                {"name":"event-backend","reason":"not_runtime_mutable"},
+                {"name":"on-download-complete","reason":"unsafe_compat_required"},
+                {"name":"split","reason":"invalid_value"}
+            ]})
+        );
+        assert!(!data.to_string().contains("canary"));
+        assert_eq!(
+            plane
+                .call("aria2.getOption", json!([gid.to_string()]))
+                .expect("after"),
+            before
+        );
+        let error = plane
+            .call(
+                "aria2.changeOption",
+                json!([gid.to_string(), {"retry-wait":30, "retry-max-wait":5}]),
+            )
+            .expect_err("cross-field validation");
+        assert!(matches!(error, HttpControlError::OptionPatchRejected(_)));
+        plane
+            .call(
+                "aria2.changeOption",
+                json!([gid.to_string(), {"retry-profile":"aggressive", "max-download-limit":"1M"}]),
+            )
+            .expect("valid complete patch");
+        assert_eq!(
+            plane
+                .call("aria2.getOption", json!([gid.to_string()]))
+                .expect("changed")["max-download-limit"],
+            "1048576"
+        );
+        assert!(plane.shutdown().expect("shutdown").is_clean());
+    }
+
+    #[test]
     fn configured_session_saves_are_bounded_periodic_and_complete_after_disconnect() {
         for format in [crate::SessionFormat::Json, crate::SessionFormat::Aria2] {
             let directory = TestDirectory::new();
@@ -5102,6 +5450,147 @@ mod tests {
             assert_eq!(recovered.tasks.len(), 4);
             assert!(recovered.shutdown().expect("shutdown import").is_clean());
         }
+    }
+
+    #[test]
+    fn versioned_reload_and_url_rules_preserve_precedence_and_reject_atomic_mixed_changes() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let original = add_paused(&mut plane);
+        let rules = "[[rule]]\nmatch.host='example.test'\noptions.split=3\noptions.timeout=20\n";
+        let result = plane.call("ariax.reloadConfig", json!(["split=2\ntimeout=40\nmax-overall-download-limit=1M\n", {"urlRules":rules, "expectedGeneration":0}])).expect("versioned reload");
+        assert_eq!(result["configGeneration"], 1);
+        assert_eq!(
+            plane
+                .tasks
+                .get_gid(original)
+                .expect("unchanged old task")
+                .options()
+                .split
+                .get(),
+            5
+        );
+        let ruled = add_paused(&mut plane);
+        assert_eq!(
+            plane
+                .tasks
+                .get_gid(ruled)
+                .expect("ruled task")
+                .options()
+                .split
+                .get(),
+            3
+        );
+        assert_eq!(
+            plane
+                .tasks
+                .get_gid(ruled)
+                .expect("rule timeout")
+                .options()
+                .response_body_timeout
+                .as_secs(),
+            20
+        );
+        plane
+            .call("aria2.changeGlobalOption", json!([{"split":7}]))
+            .expect("RPC template override");
+        let template = add_paused(&mut plane);
+        assert_eq!(
+            plane
+                .tasks
+                .get_gid(template)
+                .expect("RPC template")
+                .options()
+                .split
+                .get(),
+            7
+        );
+        let explicit: Gid = plane
+            .call(
+                "aria2.addUri",
+                json!([["http://example.test/file"], {"pause":true, "split":9}]),
+            )
+            .expect("explicit override")
+            .as_str()
+            .expect("gid")
+            .parse()
+            .expect("gid");
+        assert_eq!(
+            plane
+                .tasks
+                .get_gid(explicit)
+                .expect("per-download override")
+                .options()
+                .split
+                .get(),
+            9
+        );
+        let before = plane.global_options.clone();
+        let generation = plane.config_generation;
+        for params in [
+            json!(["timeout=10\n", {"expectedGeneration":0}]),
+            json!(["max-overall-download-limit=2M\n", {"urlRules":"[[rule]]\nmatch.host='example.test'\noptions.rpc-secret='secret-canary'\n"}]),
+            json!(["max-overall-download-limit=2M\nretry-wait=30\nretry-max-wait=5\n"]),
+            json!(["max-overall-download-limit=2M\nrpc-passwd=secret-canary\n"]),
+        ] {
+            assert!(plane.call("ariax.reloadConfig", params).is_err());
+            assert_eq!(plane.global_options, before);
+            assert_eq!(plane.config_generation, generation);
+        }
+        let flat = plane
+            .call("ariax.dumpConfig", json!(["effective", "flat"]))
+            .expect("flat");
+        assert!(flat.as_str().expect("text").contains("split=7\n"));
+        let json = plane
+            .call("ariax.dumpConfig", json!(["effective", "json"]))
+            .expect("JSON");
+        assert_eq!(json["options"]["split"], "7");
+        assert_eq!(json["sources"]["split"], "rpc");
+        let toml = plane
+            .call("ariax.dumpConfig", json!(["effective", "toml"]))
+            .expect("TOML");
+        assert!(toml.as_str().expect("text").contains("[sources]"));
+        assert!(!format!("{flat} {json} {toml}").contains("secret-canary"));
+        let rule_text = plane
+            .call("ariax.dumpConfig", json!(["url-rules", "toml"]))
+            .expect("TOML rules");
+        assert_eq!(
+            ariax_config::UrlRules::parse(rule_text.as_str().expect("TOML"))
+                .expect("rule dump roundtrip")
+                .apply("http://example.test/file")
+                .expect("apply")["split"],
+            "3"
+        );
+        let task = plane
+            .call(
+                "ariax.dumpConfig",
+                json!(["task-effective", "json", original.to_string()]),
+            )
+            .expect("task dump");
+        assert_eq!(task["options"]["split"], "5");
+        assert!(plane.shutdown().expect("shutdown").is_clean());
+        let recovered = directory.control_plane();
+        assert_eq!(
+            recovered
+                .tasks
+                .get_gid(ruled)
+                .expect("persisted rules")
+                .options()
+                .split
+                .get(),
+            3
+        );
+        assert_eq!(
+            recovered
+                .tasks
+                .get_gid(explicit)
+                .expect("persisted override")
+                .options()
+                .split
+                .get(),
+            9
+        );
+        recovered.shutdown().expect("recovery shutdown");
     }
 
     #[tokio::test]
@@ -6126,6 +6615,7 @@ mod tests {
             HttpMultiRangeWorkerConfig {
                 journal_root: directory.journals.clone(),
                 storage: StorageEngineConfig::default(),
+                scheduling: plane.scheduling_policy(),
                 ..HttpMultiRangeWorkerConfig::default()
             },
             plane.stats_catalog(),
@@ -6910,7 +7400,7 @@ mod tests {
                 plane
                     .call_admitted(
                         "aria2.changeOption",
-                        json!([gid.to_string(), patch]),
+                        json!([gid.to_string(), patch, {"restart":true}]),
                         Some(request)
                     )
                     .expect("accept patch"),
@@ -7825,6 +8315,409 @@ mod tests {
         );
     }
 
+    async fn serve_slot_file(
+        retry: bool,
+    ) -> (
+        String,
+        Arc<std::sync::Mutex<Vec<Instant>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let uri = format!("http://{}", listener.local_addr().unwrap());
+        let attempts = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = attempts.clone();
+        let server = tokio::spawn(async move {
+            let mut connections = tokio::task::JoinSet::new();
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let recorded = recorded.clone();
+                connections.spawn(async move {
+                    let mut request = Vec::new();
+                    let mut byte = [0];
+                    while !request.ends_with(b"\r\n\r\n") {
+                        if stream.read_exact(&mut byte).await.is_err() { return; }
+                        request.push(byte[0]);
+                        assert!(request.len() < 8192);
+                    }
+                    let text = String::from_utf8(request).unwrap();
+                    let (start, end) = text.lines().find_map(|line| {
+                        let value = line.strip_prefix("range: bytes=").or_else(|| line.strip_prefix("Range: bytes="))?;
+                        let (start, end) = value.split_once('-')?;
+                        Some((start.parse::<usize>().ok()?, end.parse::<usize>().ok()?))
+                    }).unwrap();
+                    let slow = text.starts_with("GET /slow.bin ") && end > start;
+                    let attempt = if slow {
+                        let mut attempts = recorded.lock().unwrap();
+                        attempts.push(Instant::now());
+                        attempts.len()
+                    } else { 0 };
+                    if slow && retry && attempt == 1 {
+                        let _ = stream.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nRetry-After: 1\r\nConnection: close\r\n\r\n").await;
+                        return;
+                    }
+                    let length = end - start + 1;
+                    let head = format!("HTTP/1.1 206 Partial Content\r\nContent-Length: {length}\r\nContent-Range: bytes {start}-{end}/1048576\r\nETag: \"slots-v1\"\r\nConnection: close\r\n\r\n");
+                    if stream.write_all(head.as_bytes()).await.is_err() { return; }
+                    if slow && !retry {
+                        let _ = stream.read(&mut byte).await;
+                    } else {
+                        let _ = stream.write_all(&vec![0x63; length]).await;
+                    }
+                });
+                while connections.try_join_next().is_some() {}
+            }
+        });
+        (uri, attempts, server)
+    }
+
+    async fn progress_until(
+        plane: &mut HttpControlPlane,
+        ready: impl Fn(&HttpControlPlane) -> bool,
+    ) {
+        let deadline = Instant::now() + CONTROL_PROGRESS_TIMEOUT;
+        loop {
+            plane.poll_once().expect("control progress");
+            if plane.engine.is_idle() && ready(plane) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "control progress deadline");
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
+    fn add_slot_task(plane: &mut HttpControlPlane, uri: &str, file: &str) -> Gid {
+        plane
+            .call(
+                "aria2.addUri",
+                json!([[format!("{uri}/{file}")], {
+                    "split":1, "endgame-max-duplicates":0,
+                    "retry-wait":1, "retry-max-wait":1, "retry-after-min":1,
+                    "retry-after-max":1, "retry-backoff":"fixed"
+                }]),
+            )
+            .expect("add slot task")
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn every_advertised_method_executes_or_reports_its_disabled_protocol() {
+        use crate::{
+            HttpRpcBackend, RpcAuthPolicy, RpcClientContext, RpcCompatibility, RpcDispatcher,
+        };
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        plane
+            .configure_session_export(SessionExportConfig {
+                path: directory.root.join("catalog-session.json"),
+                format: crate::SessionFormat::Json,
+                interval: None,
+            })
+            .unwrap();
+        let gid = add_paused(&mut plane).to_string();
+        let second = add_paused(&mut plane).to_string();
+        let context = RpcClientContext::with_events(plane.event_broker(), false).unwrap();
+        let backend = Arc::new(HttpControlBackend::new(plane));
+        let dispatcher = RpcDispatcher::new(backend.clone(), RpcAuthPolicy::default())
+            .with_compatibility(RpcCompatibility::Strict);
+        let mut covered = std::collections::BTreeSet::new();
+        for method in crate::RPC_METHODS {
+            let error = dispatcher
+                .call_with_context(method, json!([{"invalidArgument":true}]), context.clone())
+                .await
+                .expect_err("bad arguments must reject");
+            if matches!(
+                *method,
+                "aria2.addTorrent" | "aria2.addMetalink" | "aria2.getPeers"
+            ) {
+                assert_eq!(error.data.unwrap()["code"], "ProtocolFeatureUnavailable");
+                covered.insert(*method);
+            } else {
+                assert_ne!(
+                    error.code, -32601,
+                    "advertised method has no handler: {method}"
+                );
+            }
+        }
+        macro_rules! call {
+            ($method:expr, $params:expr) => {{
+                covered.insert($method);
+                dispatcher
+                    .call_with_context($method, $params, context.clone())
+                    .await
+                    .unwrap_or_else(|error| panic!("{}: {error}", $method))
+            }};
+        }
+        for method in [
+            "system.listMethods",
+            "system.listNotifications",
+            "aria2.tellActive",
+            "aria2.getGlobalOption",
+            "aria2.getVersion",
+            "aria2.getSessionInfo",
+            "aria2.getGlobalStat",
+            "ariax.getDiagnostics",
+        ] {
+            call!(method, json!([]));
+        }
+        for method in [
+            "aria2.tellStatus",
+            "aria2.getUris",
+            "aria2.getFiles",
+            "aria2.getServers",
+            "aria2.getOption",
+        ] {
+            call!(method, json!([gid]));
+        }
+        call!("aria2.tellWaiting", json!([0, 10]));
+        call!("aria2.tellStopped", json!([0, 10]));
+        call!(
+            "system.multicall",
+            json!([[{"methodName":"aria2.getVersion","params":[]}]])
+        );
+        call!("aria2.changeOption", json!([gid,{"split":2}]));
+        call!("aria2.changeGlobalOption", json!([{"timeout":30}]));
+        call!("ariax.checkConfig", json!(["split=3\n"]));
+        call!("ariax.reloadConfig", json!(["split=3\n"]));
+        call!("ariax.dumpConfig", json!([]));
+        call!(
+            "aria2.changeUri",
+            json!([gid, 1, [], ["http://example.test/replacement.bin"]])
+        );
+        call!(
+            "ariax.replaceSources",
+            json!([gid, ["http://example.test/replacement.bin"]])
+        );
+        call!("aria2.changePosition", json!([gid, 0, "POS_SET"]));
+        call!("aria2.pause", json!([gid]));
+        call!("aria2.forcePause", json!([gid]));
+        call!("aria2.unpause", json!([gid]));
+        call!("aria2.pauseAll", json!([]));
+        call!("aria2.unpauseAll", json!([]));
+        call!("aria2.forcePauseAll", json!([]));
+        let subscription = call!(
+            "ariax.subscribe",
+            json!([16,65536,{"methods":["ariax.onStatus"]}])
+        );
+        call!(
+            "ariax.pollEvents",
+            json!([subscription["subscriptionId"], 16])
+        );
+        call!("ariax.unsubscribe", json!([subscription["subscriptionId"]]));
+        call!("ariax.setEventFilter", json!([{"gids":[gid]}]));
+        let exported = call!("ariax.exportSession", json!([]));
+        call!("ariax.importSession", json!([exported]));
+        call!("aria2.saveSession", json!([]));
+        call!("aria2.remove", json!([gid]));
+        call!("aria2.removeDownloadResult", json!([gid]));
+        call!("aria2.forceRemove", json!([second]));
+        call!("aria2.purgeDownloadResult", json!([]));
+        call!(
+            "aria2.addUri",
+            json!([["http://example.test/catalog.bin"],{"pause":true}])
+        );
+        call!("aria2.shutdown", json!([]));
+        call!("aria2.forceShutdown", json!([]));
+        assert_eq!(covered, crate::RPC_METHODS.iter().copied().collect());
+        drop(dispatcher);
+        drop(context);
+        Arc::try_unwrap(backend)
+            .ok()
+            .expect("sole backend")
+            .try_into_control_plane()
+            .ok()
+            .expect("sole plane")
+            .shutdown_async()
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn slow_remote_workers_free_slots_and_user_controls_override_cooldown() {
+        for policy in ["off", "demote", "pause"] {
+            let directory = TestDirectory::new();
+            let (uri, _, server) = serve_slot_file(false).await;
+            let mut plane = directory.control_plane_with_active_limit(1);
+            plane
+                .call(
+                    "aria2.changeGlobalOption",
+                    json!([{
+                        "slow-slot-policy":policy, "slow-slot-grace-period":1,
+                        "slow-slot-min-active-time":0, "slow-slot-readmit-after":60,
+                        "slow-slot-max-demotions":1
+                    }]),
+                )
+                .expect("configure policy");
+            attach_loopback_worker(&mut plane, &directory);
+            let slow = add_slot_task(&mut plane, &uri, "slow.bin");
+            progress_until(&mut plane, |plane| {
+                let task = plane.engine.scheduler().task(slow).unwrap();
+                plane.stats.get(task.task_id).is_some_and(|stats| {
+                    let stats = stats.snapshot();
+                    stats.network_phase && stats.active_connections == 1 && !stats.local_pressure
+                })
+            })
+            .await;
+            let generation = plane.engine.scheduler().task(slow).unwrap().generation;
+            let waiter = add_slot_task(&mut plane, &uri, "waiting.bin");
+            // Advance only the pure policy clock; the HTTP worker and persistence
+            // execute normally. This exercises a sustained interval without a long sleep.
+            plane.slow_observations.clear();
+            plane.next_slow_sample = None;
+            let start = MonotonicInstant::now();
+            for step in 0..=10 {
+                plane
+                    .poll_slow_slots_at(
+                        start
+                            .checked_add(Duration::from_millis(step * 100))
+                            .unwrap(),
+                    )
+                    .expect("policy sample");
+            }
+            if policy == "off" {
+                assert!(plane.slow_observations.is_empty());
+                assert_eq!(
+                    plane.engine.scheduler().task(slow).unwrap().state,
+                    TaskState::Active
+                );
+                assert_eq!(
+                    plane.engine.scheduler().task(waiter).unwrap().state,
+                    TaskState::Waiting
+                );
+            } else {
+                progress_until(&mut plane, |plane| {
+                    let slow = plane.engine.scheduler().task(slow).unwrap();
+                    slow.pending_barrier.is_none()
+                        && plane.engine.scheduler().task(waiter).unwrap().state
+                            == TaskState::StoppedResult
+                })
+                .await;
+                let status = plane
+                    .call("aria2.tellStatus", json!([slow.to_string()]))
+                    .unwrap();
+                assert_eq!(
+                    status["slotState"],
+                    if policy == "demote" {
+                        "waitingSlow"
+                    } else {
+                        "pausedSlow"
+                    }
+                );
+                assert_eq!(status["slotReason"], "remoteSlow");
+                assert_eq!(
+                    fs::read(directory.output.join("waiting.bin")).unwrap(),
+                    vec![0x63; 1024 * 1024]
+                );
+                assert!(plane.shutdown_async().await.unwrap().is_clean());
+                plane = directory.control_plane_with_active_limit(1);
+                let restored = plane.engine.scheduler().task(slow).unwrap();
+                assert_eq!(
+                    restored.state,
+                    if policy == "demote" {
+                        TaskState::WaitingSlow
+                    } else {
+                        TaskState::PausedSlow
+                    }
+                );
+                assert_eq!(restored.slow_demotion_count, u32::from(policy == "demote"));
+                attach_loopback_worker(&mut plane, &directory);
+                plane
+                    .call("aria2.unpause", json!([slow.to_string()]))
+                    .expect("user overrides cooldown");
+                progress_until(&mut plane, |plane| {
+                    plane.engine.scheduler().task(slow).unwrap().state == TaskState::Active
+                })
+                .await;
+                let resumed = plane.engine.scheduler().task(slow).unwrap();
+                assert!(resumed.generation > generation);
+                assert_eq!(resumed.slow_demotion_count, 0);
+            }
+            assert!(plane.shutdown_async().await.unwrap().is_clean());
+            server.abort();
+            let _ = server.await;
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_wait_slot_policy_uses_real_worker_deadlines() {
+        for policy in ["true", "false", "auto"] {
+            let directory = TestDirectory::new();
+            let (uri, attempts, server) = serve_slot_file(true).await;
+            let mut plane = directory.control_plane_with_active_limit(1);
+            plane
+                .call(
+                    "aria2.changeGlobalOption",
+                    json!([{"retry-wait-consumes-slot":policy}]),
+                )
+                .unwrap();
+            attach_loopback_worker(&mut plane, &directory);
+            let slow = add_slot_task(&mut plane, &uri, "slow.bin");
+            let waiter = add_slot_task(&mut plane, &uri, "waiting.bin");
+            progress_until(&mut plane, |plane| {
+                let task = plane.engine.scheduler().task(slow).unwrap();
+                if policy == "true" {
+                    plane
+                        .stats
+                        .get(task.task_id)
+                        .is_some_and(|stats| stats.snapshot().retry_wait_until.is_some())
+                } else {
+                    task.state == TaskState::RetryWait && !task.slot.owns_slot()
+                }
+            })
+            .await;
+            let status = plane
+                .call("aria2.tellStatus", json!([slow.to_string()]))
+                .unwrap();
+            assert_eq!(status["slotState"], "retryWait");
+            assert_eq!(status["retryWaitConsumesSlot"], policy == "true");
+            assert_eq!(attempts.lock().unwrap().len(), 1);
+            if policy == "true" {
+                assert_eq!(
+                    plane.engine.scheduler().task(waiter).unwrap().state,
+                    TaskState::Waiting
+                );
+            } else {
+                progress_until(&mut plane, |plane| {
+                    plane.engine.scheduler().task(waiter).unwrap().state == TaskState::StoppedResult
+                })
+                .await;
+            }
+            if policy == "false" {
+                assert!(plane.shutdown_async().await.unwrap().is_clean());
+                plane = directory.control_plane_with_active_limit(1);
+                // Recovery retains the persisted deadline even if process policy resets.
+                attach_loopback_worker(&mut plane, &directory);
+                assert_eq!(attempts.lock().unwrap().len(), 1);
+            }
+            progress_until(&mut plane, |plane| {
+                [slow, waiter].into_iter().all(|gid| {
+                    plane.engine.scheduler().task(gid).unwrap().state == TaskState::StoppedResult
+                })
+            })
+            .await;
+            let status = plane
+                .call("aria2.tellStatus", json!([slow.to_string()]))
+                .unwrap();
+            assert_eq!(status["status"], "complete");
+            let times = attempts.lock().unwrap().clone();
+            assert_eq!(times.len(), 2);
+            assert!(
+                times[1].duration_since(times[0]) >= Duration::from_millis(990),
+                "{policy}: slot release shortened the durable retry wait to {:?}: {status}",
+                times[1].duration_since(times[0])
+            );
+            assert_eq!(
+                fs::read(directory.output.join("slow.bin")).unwrap(),
+                vec![0x63; 1024 * 1024]
+            );
+            assert!(plane.shutdown_async().await.unwrap().is_clean());
+            server.abort();
+            let _ = server.await;
+        }
+    }
+
     #[tokio::test]
     async fn live_supervisor_completes_http_task_and_persists_terminal_evidence() {
         let directory = TestDirectory::new();
@@ -7880,6 +8773,170 @@ mod tests {
         let report = plane.shutdown_async().await.expect("shutdown");
         assert!(report.is_clean());
         assert_eq!(report.journals_closed, 1);
+    }
+
+    #[tokio::test]
+    async fn explicit_layout_changes_download_new_placement_and_geometry_without_clobbering() {
+        for case in ["placement", "geometry", "occupied"] {
+            let directory = TestDirectory::new();
+            let data: Arc<[u8]> = vec![0x37; 2 * 1024 * 1024].into();
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+            let uri = format!(
+                "http://{}/original.bin",
+                listener.local_addr().expect("address")
+            );
+            let served = Arc::new(AtomicU64::new(0));
+            let server_data = data.clone();
+            let server = tokio::spawn(async move {
+                let mut connections = tokio::task::JoinSet::new();
+                loop {
+                    let (mut stream, _) = listener.accept().await.expect("accept");
+                    let data = server_data.clone();
+                    let served = served.clone();
+                    connections.spawn(async move {
+                        let mut request = Vec::new();
+                        let mut byte = [0];
+                        while !request.ends_with(b"\r\n\r\n") {
+                            if stream.read_exact(&mut byte).await.is_err() { return; }
+                            request.push(byte[0]);
+                            assert!(request.len() < 8192);
+                        }
+                        let text = String::from_utf8(request).expect("request");
+                        let (start, end) = text.lines().find_map(|line| {
+                            let value = line.strip_prefix("range: bytes=").or_else(|| line.strip_prefix("Range: bytes="))?;
+                            let (start, end) = value.split_once('-')?;
+                            Some((start.parse::<usize>().ok()?, end.parse::<usize>().ok()?))
+                        }).expect("range");
+                        let body = &data[start..=end];
+                        let head = format!("HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\nETag: \"layout-v1\"\r\nConnection: close\r\n\r\n", body.len(), data.len());
+                        if stream.write_all(head.as_bytes()).await.is_err() { return; }
+                        if body.len() > 1 && served.fetch_add(1, Ordering::SeqCst) == 0 {
+                            stream.write_all(&body[..1024 * 1024]).await.expect("first durable piece");
+                            let _ = stream.read(&mut byte).await;
+                        } else {
+                            let _ = stream.write_all(body).await;
+                        }
+                    });
+                    while connections.try_join_next().is_some() {}
+                }
+            });
+            let mut plane = directory.control_plane();
+            attach_loopback_worker(&mut plane, &directory);
+            let gid: Gid = plane
+                .call(
+                    "aria2.addUri",
+                    json!([[uri], {"split":1,"endgame-max-duplicates":0}]),
+                )
+                .expect("add")
+                .as_str()
+                .expect("gid")
+                .parse()
+                .expect("gid");
+            let deadline = Instant::now() + CONTROL_PROGRESS_TIMEOUT;
+            loop {
+                plane.poll_once().expect("progress first generation");
+                let status = plane
+                    .call("aria2.tellStatus", json!([gid.to_string()]))
+                    .expect("status");
+                if status["verifiedLength"]
+                    .as_str()
+                    .expect("length")
+                    .parse::<u64>()
+                    .expect("integer")
+                    >= 1024 * 1024
+                {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "first piece never became durable: {status}"
+                );
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            let patch = if case == "geometry" {
+                json!({"piece-length":"2M"})
+            } else {
+                json!({"out":"replacement.bin"})
+            };
+            let before = plane
+                .call("aria2.getOption", json!([gid.to_string()]))
+                .expect("old options");
+            assert!(
+                plane
+                    .call("aria2.changeOption", json!([gid.to_string(), patch]))
+                    .is_err()
+            );
+            assert_eq!(
+                plane
+                    .call("aria2.getOption", json!([gid.to_string()]))
+                    .expect("unchanged"),
+                before
+            );
+            if case == "occupied" {
+                fs::write(
+                    directory.output.join("replacement.bin"),
+                    b"existing-user-file",
+                )
+                .expect("existing destination");
+            }
+            plane
+                .call(
+                    "aria2.changeOption",
+                    json!([gid.to_string(), patch, {"restart":true}]),
+                )
+                .expect("authorized generation");
+            let expected_status = if case == "occupied" {
+                "error"
+            } else {
+                "complete"
+            };
+            loop {
+                plane.poll_once().expect("progress replacement generation");
+                let status = plane
+                    .call("aria2.tellStatus", json!([gid.to_string()]))
+                    .expect("status");
+                if status["status"] == expected_status {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "replacement did not reach {expected_status}: {status}"
+                );
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            if case == "occupied" {
+                assert_eq!(
+                    fs::read(directory.output.join("replacement.bin")).expect("destination"),
+                    b"existing-user-file"
+                );
+            } else {
+                let path = if case == "geometry" {
+                    "original.bin"
+                } else {
+                    "replacement.bin"
+                };
+                assert_eq!(
+                    fs::read(directory.output.join(path)).expect("download"),
+                    data.as_ref()
+                );
+            }
+            if case != "geometry" {
+                let original = fs::read(directory.output.join("original.bin"))
+                    .expect("preserved previous file");
+                assert_eq!(&original[..1024 * 1024], &data[..1024 * 1024]);
+            }
+            assert!(plane.shutdown_async().await.expect("shutdown").is_clean());
+            server.abort();
+            let _ = server.await;
+            let mut recovered = directory.control_plane();
+            assert_eq!(
+                recovered
+                    .call("aria2.tellStatus", json!([gid.to_string()]))
+                    .expect("recovered status")["status"],
+                expected_status
+            );
+            recovered.shutdown().expect("recovered shutdown");
+        }
     }
 
     #[tokio::test]

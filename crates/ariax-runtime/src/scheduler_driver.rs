@@ -256,6 +256,17 @@ impl<S: SchedulerEffectSink> SchedulerDriver<S> {
         &self.scheduler
     }
 
+    pub fn configure_queue_policies(
+        &mut self,
+        retry_wait_holds_slot: bool,
+        slow_readmission_policy: ariax_core::SlowReadmissionPolicy,
+    ) -> Result<(), SchedulerDriverInputError> {
+        self.ensure_input_ready()?;
+        self.scheduler
+            .configure_queue_policies(retry_wait_holds_slot, slow_readmission_policy);
+        Ok(())
+    }
+
     /// Stops mutations when a caller cannot publish an already durable control
     /// operation. Existing snapshots remain readable; recovery owns resolution.
     pub fn fail_control_publication(&mut self) {

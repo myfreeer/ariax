@@ -1751,9 +1751,22 @@ where
             state.pending_options = Some(pending);
             return Err(JournalStateError::StagedSnapshotMismatch);
         }
+        let retain_range_retries = matches!(
+            reason,
+            GenerationStartReason::RetryReadmission | GenerationStartReason::RecoveryRepair
+        ) && state
+            .current_options
+            .as_ref()
+            .is_some_and(|current| current.options == pending.options);
         state.generation = record.generation;
         state.current_options = Some(pending);
-        state.retry_states.clear();
+        if retain_range_retries {
+            state
+                .retry_states
+                .retain(|_, retry| matches!(retry.scope, RetryScope::Piece | RetryScope::Span));
+        } else {
+            state.retry_states.clear();
+        }
         state.paused = None;
         state.http_strong_validator = None;
         state.http_range_identity = None;
@@ -3790,6 +3803,98 @@ mod tests {
                 .record_sequence,
             4
         );
+    }
+
+    #[test]
+    fn automatic_readmission_preserves_range_waits_without_relaxing_generation_checks() {
+        for reason in [
+            GenerationStartReason::RetryReadmission,
+            GenerationStartReason::RecoveryRepair,
+            GenerationStartReason::ExplicitRestart,
+        ] {
+            let staged = options(&[("split", "1")]);
+            let mut records = vec![
+                record(1, 0, task_created()),
+                record(2, 0, current_options(&[("split", "1")])),
+            ];
+            for scope in [
+                crate::RetryScope::Task,
+                crate::RetryScope::Piece,
+                crate::RetryScope::Span,
+            ] {
+                records.push(record(
+                    records.len() as u64 + 1,
+                    0,
+                    JournalPayload::RetryState {
+                        scope,
+                        scope_id: crate::PersistedId::new(1).unwrap(),
+                        attempt: 2,
+                        elapsed_before_wait_ms: 100,
+                        scheduled_at_unix_ms: 1000,
+                        delay_ms: 5000,
+                        error_class: ariax_core::ErrorKind::Network,
+                        retry_reason: crate::RetryReason::RetryAfter,
+                    },
+                ));
+            }
+            records.push(record(
+                6,
+                0,
+                JournalPayload::OptionsSnapshot {
+                    scope: OptionsSnapshotScope::NextAdmission,
+                    patch_id: None,
+                    snapshot_hash: staged.snapshot_hash(),
+                    options: staged.clone(),
+                },
+            ));
+            records.push(record(
+                7,
+                1,
+                JournalPayload::GenerationStarted {
+                    previous_generation: Generation::INITIAL,
+                    reason,
+                    next_snapshot_hash: staged.snapshot_hash(),
+                    patch_id: None,
+                },
+            ));
+            let replay = recover_journal_state(&records, task(), &allow_all, Default::default());
+            assert_eq!(replay.stop, JournalStateStop::CleanEnd);
+            let state = replay.state.unwrap();
+            assert_eq!(
+                state.retry_states().len(),
+                if reason == GenerationStartReason::ExplicitRestart {
+                    0
+                } else {
+                    2
+                }
+            );
+            for retry in state.retry_states().values() {
+                assert_eq!(
+                    (retry.attempt, retry.delay_ms, retry.scheduled_at_unix_ms),
+                    (2, 5000, 1000)
+                );
+            }
+            // No rollover can bypass the exact staged snapshot, even when retry state survives.
+            records[6] = record(
+                7,
+                1,
+                JournalPayload::GenerationStarted {
+                    previous_generation: Generation::INITIAL,
+                    reason,
+                    next_snapshot_hash: hash(99),
+                    patch_id: None,
+                },
+            );
+            let rejected = recover_journal_state(&records, task(), &allow_all, Default::default());
+            assert!(matches!(
+                rejected.stop,
+                JournalStateStop::InvalidRecord {
+                    error: JournalStateError::StagedSnapshotMismatch,
+                    ..
+                }
+            ));
+            assert_eq!(rejected.state.unwrap().generation(), Generation::INITIAL);
+        }
     }
 
     #[test]

@@ -1,15 +1,13 @@
 # APIs, Integrations, And Embedding
 
-Status: reviewed contract with the Phase-4 control-plane checkpoint `71acb03`
-executable, but not yet complete. The shared dispatcher, query and control
-methods, option and source mutation, config and session operations, bounded
-event broker, loopback WebSocket transport, direct CLI controls, and typed Rust
-embedding skeleton are present. The six repair gates and their completion
-evidence are tracked in
+Status: Phase 4B implements the shared dispatcher, query and control methods,
+durable option/source mutation, configuration and session operations, filtered
+events, loopback HTTP/WebSocket, both stdio framings, combined transports, direct
+CLI controls and typed Rust embedding. Repair and completion evidence is tracked in
 [implementation-readiness.md](implementation-readiness.md#phase-4-repair-gates).
-aria2 text-session export, the full compatibility matrix, and the C ABI remain
-pending. Optional legacy HTTP Basic authentication supplements method tokens
-at the HTTP request and WebSocket upgrade boundaries.
+The C ABI and additional download protocols remain later work. Optional legacy
+HTTP Basic authentication supplements method tokens at the HTTP request and
+WebSocket upgrade boundaries.
 
 Decision: expose aria2-compatible RPC for ecosystem compatibility, and expose a
 typed native library API for embedding. Add a stable C ABI only after the core
@@ -49,15 +47,15 @@ The experimental `ariax` binary exposes one dispatcher through:
 
 - HTTP/1.1 `POST /jsonrpc` on an explicitly IP-loopback listener, and
 - a dedicated IP-loopback WebSocket listener, and
-- stdio frames with exactly one `Content-Length` header. The engine library
-  also provides bounded NDJSON framing for supervisors that select it.
+- stdio frames with exactly one `Content-Length` header, or bounded NDJSON.
+  Startup selection also supports shared HTTP+stdio and WebSocket+stdio services.
 
 All transports cap requests at 2 MiB and responses at 16 MiB. Batches and
 `system.multicall` are capped at 256 members, list pages at 1,000 tasks, stdio
 headers at 16 KiB, concurrent listener tasks at 64, and graceful network drain
 at five seconds. Missing, duplicate, invalid, oversized, or truncated stdio
 framing is rejected. Network listeners refuse non-loopback bind addresses. On
-EOF, Ctrl-C, or RPC shutdown, transport/progress handles drain, live HTTP
+EOF by default, Ctrl-C, or RPC shutdown, transport/progress handles drain, live HTTP
 workers are cancelled and joined, and process bootstrap closes journals and the
 session owner.
 
@@ -82,11 +80,13 @@ other request/response clients can use explicit `ariax.subscribe`/
 `ARIAX_RPC_PASSWD`) enable HTTP Basic on HTTP requests and WebSocket upgrades.
 Basic authentication does not apply to stdio or replace method tokens.
 
-The typed Rust `Engine`/`EngineBuilder` skeleton provides typed add, status,
-pause, resume, remove, option query, bounded event subscription, and orderly
-shutdown over the same process control plane. The direct CLI add/status/pause/
-resume/remove commands use that same engine. The stable external-runtime API,
-broader typed option families, and C ABI remain later gates.
+The typed Rust `Engine`/`EngineBuilder` provides task and queue status, URI/file/
+server queries, global statistics, version/session information, typed HTTP
+options and configuration updates, task/source/queue controls, session import/
+export, filtered subscriptions, diagnostics and orderly shutdown over the same
+process control plane. `rpc_json` is the explicit complete JSON compatibility
+entry point. The direct CLI commands use that engine. A stable external-runtime
+API and the C ABI remain later gates.
 
 `tellStatus` retains aria2's closed status vocabulary and adds bounded HTTP
 extension fields. Its optional `retryDiagnostic` object carries decimal source,
@@ -392,6 +392,22 @@ disconnects after quiescence starts.
 
 ## RPC Over Stdio
 
+The executable combined form is
+`ariax --rpc-transport=http+stdio --rpc SESSION_DB CONTROL_DIR OUTPUT_ROOT LOOPBACK_ADDR`.
+The `--rpc-http`, `--rpc-ws`, and `--rpc-stdio` forms remain aliases for one
+transport. `--rpc-transport` also accepts `http`, `websocket`, `stdio`, and
+`websocket+stdio`. All startup switches precede the command. Both stdio
+framings use the same bounded reader, single writer, authentication context,
+and optional event stream. The request limit may be lowered, never raised
+above the process cap. CRLF is accepted only as a line ending in NDJSON;
+embedded raw carriage returns remain invalid JSON rather than being erased.
+
+The default EOF policy is `shutdown`. `close-transport` and `ignore` stop
+reading the closed input without polling it again and leave other listeners
+and the engine running until an RPC shutdown or Ctrl-C. A standalone engine
+with no remaining listener can still be stopped by Ctrl-C. Transport failures
+and progress-loop failures request an orderly process drain.
+
 Decision: support a stdio RPC mode for embedding.
 
 Use cases:
@@ -494,6 +510,27 @@ Modes:
 - rejects options/method fields not in the implemented compatibility matrix,
 - useful for CI and third-party client testing.
 
+The dispatcher applies compatibility projection to direct calls, batches, and
+each multicall member. `aria2` hides additional status fields unless the caller
+names them in its key selection, and hides extension-only option keys from
+aria2 option queries; `ariax` methods remain explicit opt-ins. `extended`
+includes all implemented fields. `strict` additionally rejects unknown request,
+multicall-member, method, and status-selection fields before backend dispatch.
+Disabled protocol methods return `ProtocolFeatureUnavailable` with a stable
+feature name instead of fabricating a result.
+
+`ariax.getDiagnostics` reports the actual profile, selected event/disk backend,
+RPC/resident credits, task/worker counts, configuration generation, and event
+subscriber count. It contains no paths, URI text, credentials, or command
+arguments. `ariax.subscribe` accepts a third closed filter object with `methods`
+and `gids` arrays (at most 64 methods and 256 full GIDs). An omitted or empty
+array matches everything; both nonempty arrays must match. Global events
+without a GID bypass only the GID filter. Filtering happens before enqueue and
+budget charging. `ariax.setEventFilter` applies the same filter to the current
+authenticated WebSocket/stdio push stream; HTTP callers use explicit
+subscriptions. Changing a filter removes queued events it no longer matches.
+Native subscriptions use the same typed filter and queue limits.
+
 ## Native Rust Library API
 
 The Rust API is not just a wrapper around RPC.
@@ -532,6 +569,17 @@ may coalesce; a subscriber that cannot receive required terminal events is
 closed with `SlowConsumer` and can recover by querying a snapshot and creating a
 new subscription.  Library callbacks must not run on scheduler or storage
 actor threads.
+
+The typed facade accepts the complete implemented HTTP option family on add
+and change, typed retry/checksum/mirror policies, future-task global defaults,
+versioned configuration checks/reloads/dumps, source replacement, queue
+position, bulk controls, diagnostics, and filtered subscriptions. Explicit
+`Engine::rpc_json` is available for compatibility clients that choose JSON;
+it uses the same dispatcher and the engine client's existing budget, and its
+returned bytes retain response credit until released. The CLI `--rpc-call`
+form accepts one complete JSON-RPC document after the session paths and prints
+its bounded reply before orderly shutdown. It provides the full advertised
+method catalog through the shared dispatcher.
 
 ## Runtime Ownership For Embedding
 

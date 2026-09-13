@@ -21,6 +21,15 @@ pub struct SchedulerConfig {
     pub max_tasks: NonZeroUsize,
     pub max_active_tasks: NonZeroUsize,
     pub retry_wait_holds_slot: bool,
+    pub slow_readmission_policy: SlowReadmissionPolicy,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SlowReadmissionPolicy {
+    Front,
+    #[default]
+    OriginalPosition,
+    Back,
 }
 
 impl SchedulerConfig {
@@ -40,6 +49,7 @@ impl SchedulerConfig {
             max_tasks,
             max_active_tasks,
             retry_wait_holds_slot,
+            slow_readmission_policy: SlowReadmissionPolicy::default(),
         })
     }
 }

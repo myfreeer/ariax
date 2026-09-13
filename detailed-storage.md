@@ -1,5 +1,16 @@
 # Detailed Storage And Journal Design
 
+Managed HTTP workers keep the journal appender on the native session owner
+throughout a transfer. Storage appends and flushes use its bounded typed command
+queue, so an active option snapshot and piece evidence share one serialized
+sequence and one fault latch. The worker retains a command handle, not a second
+file writer. Control mutations stage their complete snapshot while network I/O
+is active; acknowledgement follows journal flush and the exact SQLite mirror
+update. Cancellation drains storage before generation promotion. Completion
+leaves the flushed appender installed for scheduler persistence and shutdown.
+Standalone storage and pinned transfers retain their local single writer.
+An uncertain accepted append is never retried.
+
 Status: first-slice implementation in progress. Portable NFC path validation,
 persisted root/file identity binding, immutable layout hashing, and global
 offset mapping are implemented. Journal v1 segment/record framing, CRC-32C and
@@ -730,6 +741,13 @@ Generation/patch crash rule:
   to current and clears the pending slot and restart marker. A representation
   restart promotion also invalidates every old durable piece before any new
   layout or lease. The worker starts only after this record is flushed.
+- Automatic `retry_readmission` and `recovery_repair` rollovers retain bounded
+  piece/span retry decisions when the complete option snapshot is unchanged.
+  This preserves attempt caps and deadlines across released slots, slow-slot
+  readmission and process recovery. Task/URI decisions are consumed by admission.
+  An option change or explicit/representation restart clears prior retry state.
+  The exact generation, staging hash, patch identity and drained-lease checks
+  remain mandatory; retention never accepts an otherwise invalid record.
 - A crash after the restarting marker but before staging resumes with the marker
   as reason authority. A crash after staging but before `GenerationStarted`
   retains the exact accepted pending restart and appends only the missing

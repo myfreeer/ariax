@@ -170,6 +170,12 @@ pub enum SessionCommand {
         gid: Gid,
         through_sequence: u64,
     },
+    FlushJournalHead {
+        gid: Gid,
+    },
+    SnapshotJournal {
+        gid: Gid,
+    },
     FlushAllJournals,
     CloseJournal {
         gid: Gid,
@@ -205,6 +211,7 @@ pub enum SessionCommandResult {
     QueueOrder(Vec<Gid>),
     JournalAppended(Appended),
     JournalFlushed(Flushed),
+    JournalSnapshot(Box<crate::JournalReplay>),
     JournalsFlushed(usize),
     JournalsClosed(usize),
 }
@@ -1018,6 +1025,20 @@ fn execute_command(
                 .map_err(|error| journal_error(gid, error))
         }
         SessionCommand::FlushAllJournals => flush_all_journals(journals),
+        SessionCommand::FlushJournalHead { gid } => {
+            let journal = journal_mut(journals, gid)?;
+            let sequence = journal.appender.appended_sequence();
+            journal
+                .appender
+                .flush(sequence)
+                .map(SessionCommandResult::JournalFlushed)
+                .map_err(|error| journal_error(gid, error))
+        }
+        SessionCommand::SnapshotJournal { gid } => journal_mut(journals, gid)?
+            .appender
+            .snapshot(crate::ReplayLimits::default())
+            .map(|replay| SessionCommandResult::JournalSnapshot(Box::new(replay)))
+            .map_err(|error| journal_error(gid, error)),
         SessionCommand::CloseJournal { gid } => {
             let journal = journal_mut(journals, gid)?;
             journal
@@ -2129,6 +2150,62 @@ mod tests {
             SessionCommandResult::Unit
         );
         handle.shutdown().expect("shutdown owner");
+    }
+
+    #[test]
+    fn journal_snapshots_keep_native_ownership_and_preserve_command_order() {
+        let directory = TestDirectory::new();
+        let task_gid = gid(1);
+        let (handle, _) =
+            SessionOwner::spawn(owner_config(&directory, 4), |_: &str| true).expect("owner");
+        assert!(matches!(
+            handle.execute(SessionCommand::SnapshotJournal { gid: task_gid }),
+            Err(SessionOwnerError::Persistence(
+                SessionPersistenceError::MissingJournal { .. }
+            ))
+        ));
+        handle
+            .execute(SessionCommand::InstallJournalAppender {
+                gid: task_gid,
+                appender: appender(&directory, task_gid, 1),
+            })
+            .expect("install");
+        for sequence in 1..=2 {
+            let result = handle
+                .execute(SessionCommand::AppendJournal {
+                    gid: task_gid,
+                    generation: Generation::INITIAL,
+                    payload: JournalPayload::TaskCreated {
+                        durability: crate::DurabilityMode::Balanced,
+                        creator_version: 1,
+                    },
+                })
+                .expect("append");
+            assert!(
+                matches!(result, SessionCommandResult::JournalAppended(value) if value.sequence() == sequence)
+            );
+            let SessionCommandResult::JournalSnapshot(snapshot) = handle
+                .execute(SessionCommand::SnapshotJournal { gid: task_gid })
+                .expect("snapshot")
+            else {
+                panic!("wrong result");
+            };
+            assert_eq!(snapshot.last_sequence, sequence);
+            assert_eq!(snapshot.records.len(), sequence as usize);
+        }
+        assert!(
+            matches!(handle.execute(SessionCommand::FlushJournalHead { gid: task_gid }).expect("flush"), SessionCommandResult::JournalFlushed(value) if value.through_sequence() == 2)
+        );
+        handle
+            .execute(SessionCommand::CloseJournal { gid: task_gid })
+            .expect("close");
+        assert!(matches!(
+            handle.execute(SessionCommand::FlushJournalHead { gid: task_gid }),
+            Err(SessionOwnerError::Persistence(
+                SessionPersistenceError::MissingJournal { .. }
+            ))
+        ));
+        handle.shutdown().expect("shutdown");
     }
 
     #[test]

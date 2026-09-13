@@ -4,7 +4,13 @@
 
 mod flat;
 mod registry;
+mod url_rules;
 mod value;
+
+pub use url_rules::{
+    MAX_URL_GLOB_BYTES, MAX_URL_RULE_DOCUMENT_BYTES, MAX_URL_RULE_MATCH_WORK,
+    MAX_URL_RULE_METADATA_BYTES, MAX_URL_RULES, UrlRule, UrlRuleError, UrlRules,
+};
 
 pub use flat::{
     ConfigEntry, ConfigWarning, FlatConfig, FlatConfigError, FlatConfigLimits, SourceSpan,

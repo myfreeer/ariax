@@ -106,4 +106,16 @@ impl RpcClientContext {
             None => Ok(None),
         }
     }
+
+    pub(crate) fn set_event_filter(
+        &self,
+        filter: crate::RpcEventFilter,
+    ) -> Result<(), RpcEventError> {
+        let mut state = self.state.lock().expect("RPC client state");
+        state
+            .subscriber
+            .as_mut()
+            .ok_or(RpcEventError::InvalidFilter)?
+            .set_filter(filter)
+    }
 }

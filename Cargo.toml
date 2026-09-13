@@ -50,6 +50,7 @@ tokio = "=1.53.1"
 tokio-tungstenite = { version = "=0.30.0", default-features = false, features = ["connect", "handshake"] }
 tokio-rustls = { version = "=0.26.4", default-features = false, features = ["ring", "tls12"] }
 tower-service = "=0.3.3"
+toml = { version = "=0.9.8", default-features = false, features = ["parse", "serde", "std", "display"] }
 unicode-normalization = "=0.1.25"
 url = "=2.5.8"
 windows-sys = { version = "=0.61.2", default-features = false }

@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod rpc_service;
 mod startup;
 
 use std::env;
@@ -19,10 +20,8 @@ use ariax_engine::{
     HttpControlPlaneConfig, HttpCookieJar, HttpCookieLimits, HttpDestinationPolicy,
     HttpMultiRangeWorker, HttpPolicyClient, HttpProcessResources, HttpResolver, HttpResolverConfig,
     KnownLengthHttpRecoveryRequest, KnownLengthHttpRequest, KnownLengthHttpResumeRequest,
-    ProcessBootstrapConfig, RpcAuthPolicy, RpcDispatcher, RuntimeEffectConfig,
-    StartupRecoveryConfig, StorageEngineConfig, download_known_length_http_blocking,
-    resume_known_length_http_blocking, run_content_length_stdio_with_events,
-    serve_loopback_http_until, serve_loopback_websocket_until,
+    ProcessBootstrapConfig, RpcAuthPolicy, RuntimeEffectConfig, StartupRecoveryConfig,
+    StorageEngineConfig, download_known_length_http_blocking, resume_known_length_http_blocking,
 };
 use ariax_runtime::RuntimeProfile;
 use ariax_storage::{
@@ -48,10 +47,15 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
     let profile = startup.profile;
     let rpc = matches!(
         arguments.first().and_then(|arg| arg.to_str()),
-        Some("--rpc-http" | "--rpc-ws" | "--rpc-stdio")
+        Some("--rpc" | "--rpc-http" | "--rpc-ws" | "--rpc-stdio")
     );
-    if startup.has_rpc_arguments() && !rpc {
-        eprintln!("ariax: RPC authentication options require an RPC command");
+    let rpc_call = arguments
+        .first()
+        .is_some_and(|argument| argument == "--rpc-call");
+    if startup.has_rpc_arguments() && !rpc && (!rpc_call || startup.requires_rpc_service()) {
+        eprintln!(
+            "ariax: transport, credentials and configuration startup options require an RPC service; --rpc-call accepts --rpc-compat"
+        );
         return ExitCode::from(2);
     }
     if (startup.session_export.is_some() || startup.input_file.is_some()) && !rpc {
@@ -74,6 +78,8 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
             arguments.first(),
             Some(command)
                 if command == "--rpc-http"
+                    || command == "--rpc"
+                    || command == "--rpc-call"
                     || command == "--rpc-ws"
                     || command == "--rpc-stdio"
                     || command == "--add-uri"
@@ -88,11 +94,11 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
     }
     match arguments {
         [] => {
-            print!("{HELP}{RPC_STARTUP_HELP}");
+            print!("{HELP}{RPC_STARTUP_HELP}{RPC_INTERFACE_HELP}");
             ExitCode::SUCCESS
         }
         [arg] if arg == "--help" || arg == "-h" => {
-            print!("{HELP}{RPC_STARTUP_HELP}");
+            print!("{HELP}{RPC_STARTUP_HELP}{RPC_INTERFACE_HELP}");
             ExitCode::SUCCESS
         }
         [arg] if arg == "--version" || arg == "-V" => {
@@ -123,6 +129,60 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
                 false,
                 auth,
                 &startup,
+            )
+        }
+        [command, database, control, output_root, bind] if command == "--rpc" => {
+            let transport = startup.rpc_transport.unwrap_or(startup::RpcTransport::Http);
+            let bind = match bind
+                .to_str()
+                .and_then(|value| value.parse::<SocketAddr>().ok())
+            {
+                Some(bind) if transport.has_network() => bind,
+                _ => {
+                    eprintln!("ariax: a network RPC transport requires a loopback address");
+                    return ExitCode::from(2);
+                }
+            };
+            run_rpc(
+                PathBuf::from(database),
+                PathBuf::from(control),
+                PathBuf::from(output_root),
+                Some(bind),
+                profile.unwrap_or_default(),
+                transport.websocket(),
+                auth,
+                &startup,
+            )
+        }
+        [command, database, control, output_root]
+            if command == "--rpc"
+                && startup.rpc_transport == Some(startup::RpcTransport::Stdio) =>
+        {
+            run_rpc(
+                PathBuf::from(database),
+                PathBuf::from(control),
+                PathBuf::from(output_root),
+                None,
+                profile.unwrap_or_default(),
+                false,
+                auth,
+                &startup,
+            )
+        }
+        [command, database, control, output_root, request] if command == "--rpc-call" => {
+            let Some(request) = request
+                .to_str()
+                .filter(|request| request.len() <= ariax_engine::MAX_HTTP_RPC_REQUEST_BYTES)
+            else {
+                eprintln!("ariax: RPC document must be bounded UTF-8 text");
+                return ExitCode::from(2);
+            };
+            run_direct_control(
+                PathBuf::from(database),
+                PathBuf::from(control),
+                PathBuf::from(output_root),
+                profile.unwrap_or_default(),
+                DirectControl::RpcJson(request.to_owned(), startup.compatibility),
             )
         }
         [command, database, control, output_root, bind] if command == "--rpc-ws" => {
@@ -264,12 +324,15 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
 
 const RPC_STARTUP_HELP: &str = "\nRPC startup options (before the command):\n  --rpc-secret=VALUE   Method token; defaults to ARIAX_RPC_SECRET\n  --rpc-user=VALUE     HTTP Basic user; defaults to ARIAX_RPC_USER\n  --rpc-passwd=VALUE   HTTP Basic password; defaults to ARIAX_RPC_PASSWD\nSession startup options:\n  --save-session=FILE  Atomically save unfinished downloads at shutdown\n  --save-session-format=aria2|json  Default aria2\n  --save-session-interval=SECONDS  Periodic saving; 0 disables it\n  --input-file=FILE    Import a complete bounded session before workers start\n  --input-file-format=aria2|json   Default aria2\nBoth Basic fields must be configured together. HTTP Basic applies to HTTP and WebSocket; method tokens also apply to stdio.\n";
 
+const RPC_INTERFACE_HELP: &str = "\nCombined RPC and compatibility commands:\n  --rpc SESSION_DB CONTROL_DIR OUTPUT_ROOT [LOOPBACK_ADDR]\n  --rpc-call SESSION_DB CONTROL_DIR OUTPUT_ROOT JSON_RPC_DOCUMENT\nAdditional startup options (before the command):\n  --rpc-transport=http|websocket|stdio|http+stdio|websocket+stdio\n  --rpc-stdio-framing=content-length|ndjson\n  --rpc-stdio-eof=shutdown|close-transport|ignore\n  --rpc-stdio-events=true|false\n  --rpc-stdio-max-request-size=SIZE  At most 2M\n  --rpc-compat=aria2|extended|strict\n  --conf-path=FILE   Reloadable HTTP task defaults\n  --url-rules=FILE   Bounded TOML rules\n";
+
 enum DirectControl {
     Add(Vec<String>),
     Status(Gid),
     Pause(Gid),
     Resume(Gid),
     Remove(Gid),
+    RpcJson(String, ariax_engine::RpcCompatibility),
 }
 
 fn run_direct_control(
@@ -322,6 +385,18 @@ fn run_direct_control(
                 .await
                 .map(|()| println!("removed {gid}"))
                 .map_err(|error| error.to_string()),
+            DirectControl::RpcJson(request, mode) => {
+                match engine.rpc_json(request.as_bytes(), mode).await {
+                    Ok(response) => {
+                        use std::io::Write as _;
+                        std::io::stdout()
+                            .write_all(&response)
+                            .and_then(|()| std::io::stdout().write_all(b"\n"))
+                            .map_err(|error| error.to_string())
+                    }
+                    Err(error) => Err(error.to_string()),
+                }
+            }
         };
         let shutdown = engine.shutdown().await.map_err(|error| error.to_string());
         if let Err(error) = result {
@@ -584,7 +659,7 @@ fn process_bootstrap_config(
     let runtime_capacity = NonZeroUsize::new(1024).expect("bootstrap runtime capacity is nonzero");
     let plan_capacity = NonZeroUsize::new(64).expect("plan capacity is nonzero");
     let max_wait_ms = NonZeroU64::new(86_400_000).expect("maximum wait is nonzero");
-    let scheduler = SchedulerConfig::new(task_capacity, active_capacity, false)
+    let scheduler = SchedulerConfig::new(task_capacity, active_capacity, true)
         .map_err(|error| format!("invalid scheduler bootstrap policy: {error}"))?;
     Ok(ProcessBootstrapConfig {
         session_owner: SessionOwnerConfig::new(database_path),
@@ -625,6 +700,26 @@ fn run_rpc(
     auth: RpcAuthPolicy,
     startup: &startup::StartupOptions,
 ) -> ExitCode {
+    let transport = startup.rpc_transport.unwrap_or(if bind.is_none() {
+        startup::RpcTransport::Stdio
+    } else if websocket {
+        startup::RpcTransport::Websocket
+    } else {
+        startup::RpcTransport::Http
+    });
+    if transport.has_network() != bind.is_some()
+        || bind.is_some_and(|bind| !bind.ip().is_loopback())
+    {
+        eprintln!("ariax: network RPC requires an IP-loopback bind address");
+        return ExitCode::from(2);
+    }
+    let configuration = match rpc_service::read_configuration(startup) {
+        Ok(configuration) => configuration,
+        Err(error) => {
+            eprintln!("ariax: {error}");
+            return ExitCode::from(2);
+        }
+    };
     if let Err(error) = std::fs::create_dir_all(&control_directory) {
         eprintln!("ariax: cannot create control directory: {error}");
         return ExitCode::FAILURE;
@@ -677,8 +772,15 @@ fn run_rpc(
             return ExitCode::FAILURE;
         }
     };
-    if let Err(error) = plane.attach_rpc_budgets(resources.rpc_budgets()) {
+    if let Err(error) = plane.attach_process_resources(resources.clone()) {
         eprintln!("ariax: RPC budget initialization failed: {error}");
+        return ExitCode::FAILURE;
+    }
+    if let Some(configuration) = configuration
+        && let Err(error) = plane.call("ariax.reloadConfig", configuration)
+    {
+        eprintln!("ariax: configuration was rejected: {error}");
+        let _ = plane.shutdown();
         return ExitCode::FAILURE;
     }
     if let Some(config) = &startup.session_export
@@ -740,54 +842,10 @@ fn run_rpc(
             return ExitCode::FAILURE;
         }
     };
-    runtime.block_on(async move {
+    let outcome = runtime.block_on(async move {
         let backend = Arc::new(HttpControlBackend::new(plane));
-        let dispatcher = Arc::new(RpcDispatcher::new(backend.clone(), auth));
-        let progress_plane = backend.plane();
-        let progress = tokio::spawn(async move {
-            loop {
-                let result = {
-                    let mut plane = progress_plane.lock().await;
-                    plane.poll_once()
-                };
-                if let Err(error) = result
-                    && !matches!(error, ariax_engine::HttpControlError::Busy)
-                {
-                    eprintln!("ariax: control progress failed: {error}");
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(1)).await;
-            }
-        });
-        let transport_result = if let Some(bind) = bind {
-            let mut rpc_shutdown = backend.shutdown_receiver();
-            let shutdown = async move {
-                tokio::select! {
-                    result = tokio::signal::ctrl_c() => result,
-                    result = wait_for_rpc_shutdown(&mut rpc_shutdown) => result,
-                }
-            };
-            if websocket {
-                serve_loopback_websocket_until(bind, dispatcher.clone(), shutdown).await
-            } else {
-                serve_loopback_http_until(bind, dispatcher.clone(), shutdown).await
-            }
-        } else {
-            let mut rpc_shutdown = backend.shutdown_receiver();
-            tokio::select! {
-                result = run_content_length_stdio_with_events(
-                    dispatcher.clone(),
-                    tokio::io::stdin(),
-                    tokio::io::stdout(),
-                ) => result,
-                result = wait_for_rpc_shutdown(&mut rpc_shutdown) => {
-                    result.map_err(ariax_engine::HttpRpcTransportError::from)
-                },
-            }
-        };
-        progress.abort();
-        let _ = progress.await;
-        drop(dispatcher);
+        let transport_result =
+            rpc_service::serve(backend.clone(), auth, bind, transport, startup).await;
         let shutdown_result = shutdown_rpc_backend(backend).await;
         if let Err(error) = &transport_result {
             eprintln!("ariax: RPC transport failed: {error}");
@@ -800,7 +858,11 @@ fn run_rpc(
         } else {
             ExitCode::FAILURE
         }
-    })
+    });
+    // Tokio stdin may still own an OS read after the framed reader is cancelled.
+    // All engine and transport owners have drained before this bounded runtime stop.
+    runtime.shutdown_timeout(Duration::from_millis(100));
+    outcome
 }
 
 async fn wait_for_rpc_shutdown(

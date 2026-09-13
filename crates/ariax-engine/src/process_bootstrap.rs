@@ -97,6 +97,15 @@ impl BootstrappedEngine {
         self.driver.scheduler()
     }
 
+    pub(crate) fn configure_queue_policies(
+        &mut self,
+        retry_wait_holds_slot: bool,
+        slow_readmission_policy: ariax_core::SlowReadmissionPolicy,
+    ) -> Result<(), SchedulerDriverInputError> {
+        self.driver
+            .configure_queue_policies(retry_wait_holds_slot, slow_readmission_policy)
+    }
+
     pub(crate) fn fail_control_publication(&mut self) {
         self.driver.fail_control_publication();
     }
@@ -1061,6 +1070,7 @@ fn session_result_code(result: &SessionCommandResult) -> &'static str {
         SessionCommandResult::JournalFlushed(_) => "journal_flushed",
         SessionCommandResult::JournalsFlushed(_) => "journals_flushed",
         SessionCommandResult::JournalsClosed(_) => "journals_closed",
+        SessionCommandResult::JournalSnapshot(_) => "journal_snapshot",
     }
 }
 

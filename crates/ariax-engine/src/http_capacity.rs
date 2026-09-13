@@ -24,6 +24,7 @@ pub struct HttpProcessResources {
     ingress: HttpIngressBudgets,
     discard: HttpDiscardBudget,
     rpc: RpcBudgets,
+    scheduling: crate::HttpSchedulingPolicy,
 }
 
 impl HttpProcessResources {
@@ -64,6 +65,7 @@ impl HttpProcessResources {
         Ok(Self {
             profile: resolved,
             rpc: RpcBudgets::with_shared_resident(resolved, resident.clone()),
+            scheduling: crate::HttpSchedulingPolicy::default(),
             resident,
             transport,
             ingress,
@@ -90,6 +92,10 @@ impl HttpProcessResources {
     #[must_use]
     pub fn rpc_budgets(&self) -> RpcBudgets {
         self.rpc.clone()
+    }
+
+    pub fn scheduling_policy(&self) -> crate::HttpSchedulingPolicy {
+        self.scheduling.clone()
     }
 
     #[must_use]
@@ -152,6 +158,7 @@ impl HttpProcessResources {
             storage,
             ingress_budget: self.ingress.clone(),
             discard_budget: self.discard.clone(),
+            scheduling: self.scheduling.clone(),
             ..HttpMultiRangeWorkerConfig::default()
         }
     }

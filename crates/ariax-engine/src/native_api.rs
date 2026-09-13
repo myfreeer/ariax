@@ -28,6 +28,165 @@ pub struct DownloadOptions {
     pub split: Option<NonZeroUsize>,
     pub timeout_seconds: Option<u64>,
     pub max_download_limit: Option<u64>,
+    pub max_connections_per_server: Option<NonZeroUsize>,
+    pub min_split_size: Option<u64>,
+    pub piece_length: Option<u64>,
+    pub connect_timeout_seconds: Option<u64>,
+    pub lowest_speed_limit: Option<u64>,
+    pub endgame_max_duplicates: Option<usize>,
+    pub checksum: Option<crate::HttpContentChecksum>,
+    pub mirror_identity: Option<crate::HttpMirrorIdentityPolicy>,
+    pub retry: Option<crate::HttpRetryPolicy>,
+}
+
+impl DownloadOptions {
+    fn input_bytes(&self) -> usize {
+        // Includes canonical retry fields, JSON nodes and bounded conversion scratch.
+        (64 * 1024_usize).saturating_add(self.output.as_ref().map_or(0, String::capacity))
+    }
+
+    fn into_value(self, admission: bool) -> Result<Value, NativeApiError> {
+        if !admission && self.pause {
+            return Err(NativeApiError::InvalidConfiguration(
+                "use pause() to change pause intent",
+            ));
+        }
+        let mut options = serde_json::Map::new();
+        if admission {
+            options.insert("pause".to_owned(), Value::Bool(self.pause));
+        }
+        if let Some(output) = self.output {
+            options.insert("out".to_owned(), Value::String(output));
+        }
+        for (name, value) in [
+            ("split", self.split.map(|value| value.get() as u64)),
+            (
+                "max-connection-per-server",
+                self.max_connections_per_server
+                    .map(|value| value.get() as u64),
+            ),
+            ("min-split-size", self.min_split_size),
+            ("piece-length", self.piece_length),
+            ("connect-timeout", self.connect_timeout_seconds),
+            ("timeout", self.timeout_seconds),
+            ("max-download-limit", self.max_download_limit),
+            ("lowest-speed-limit", self.lowest_speed_limit),
+            (
+                "endgame-max-duplicates",
+                self.endgame_max_duplicates.map(|value| value as u64),
+            ),
+        ] {
+            if let Some(value) = value {
+                options.insert(name.to_owned(), Value::from(value));
+            }
+        }
+        if let Some(checksum) = self.checksum {
+            options.insert("checksum".to_owned(), Value::String(checksum.canonical()));
+        }
+        if let Some(policy) = self.mirror_identity {
+            options.insert(
+                "verify-mirror-identity".to_owned(),
+                Value::String(policy.code().to_owned()),
+            );
+        }
+        if let Some(retry) = self.retry {
+            let canonical = crate::HttpTaskOptions {
+                retry: Some(retry),
+                ..crate::HttpTaskOptions::default()
+            }
+            .sanitized()
+            .map_err(|error| NativeApiError::Control(HttpControlError::TaskSpec(error)))?;
+            options.extend(
+                canonical
+                    .entries()
+                    .filter(|(name, _)| {
+                        name.starts_with("retry-")
+                            || matches!(*name, "max-tries" | "stale-validator-policy")
+                    })
+                    .map(|(name, value)| (name.to_owned(), Value::String(value.to_owned()))),
+            );
+        }
+        Ok(Value::Object(options))
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct GlobalOptions {
+    pub task_defaults: DownloadOptions,
+    pub max_overall_download_limit: Option<u64>,
+    pub scheduling: Option<crate::SlowSlotConfig>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ConfigurationUpdate {
+    pub text: String,
+    pub url_rules: Option<String>,
+    pub expected_generation: Option<u64>,
+    pub allow_known_unsupported: bool,
+}
+
+impl ConfigurationUpdate {
+    fn into_params(self) -> Result<Value, NativeApiError> {
+        if self
+            .text
+            .len()
+            .saturating_add(self.url_rules.as_ref().map_or(0, String::len))
+            > crate::MAX_HTTP_RPC_REQUEST_BYTES
+        {
+            return Err(NativeApiError::InvalidConfiguration(
+                "configuration input exceeds its byte limit",
+            ));
+        }
+        let mut settings = serde_json::Map::new();
+        if let Some(rules) = self.url_rules {
+            settings.insert("urlRules".to_owned(), Value::String(rules));
+        }
+        if let Some(generation) = self.expected_generation {
+            settings.insert("expectedGeneration".to_owned(), Value::from(generation));
+        }
+        settings.insert(
+            "compatibility".to_owned(),
+            json!(if self.allow_known_unsupported {
+                "aria2"
+            } else {
+                "strict"
+            }),
+        );
+        Ok(Value::Array(vec![
+            Value::String(self.text),
+            Value::Object(settings),
+        ]))
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigurationReport {
+    pub config_generation: u64,
+    pub options: usize,
+    pub warnings: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ConfigDumpMode {
+    Defaults,
+    Effective,
+    TaskEffective(Gid),
+    UrlRules,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ConfigDumpFormat {
+    Flat,
+    Json,
+    Toml,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum PositionOrigin {
+    Start,
+    Current,
+    End,
 }
 
 #[derive(Clone, Debug)]
@@ -42,6 +201,89 @@ pub struct TaskStatus {
     pub status: Aria2Status,
     pub total_length: u64,
     pub completed_length: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UriUsage {
+    Used,
+    Waiting,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
+pub struct DownloadUri {
+    pub uri: String,
+    pub status: UriUsage,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadFile {
+    #[serde(deserialize_with = "decimal_u64")]
+    pub index: u64,
+    pub path: String,
+    #[serde(deserialize_with = "decimal_u64")]
+    pub length: u64,
+    #[serde(deserialize_with = "decimal_u64")]
+    pub completed_length: u64,
+    #[serde(deserialize_with = "text_bool")]
+    pub selected: bool,
+    pub uris: Vec<DownloadUri>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadServer {
+    pub uri: String,
+    pub current_uri: String,
+    #[serde(deserialize_with = "decimal_u64")]
+    pub download_speed: u64,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct DownloadServers {
+    #[serde(deserialize_with = "decimal_u64")]
+    pub index: u64,
+    pub servers: Vec<DownloadServer>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GlobalStatistics {
+    #[serde(deserialize_with = "decimal_u64")]
+    pub download_speed: u64,
+    #[serde(deserialize_with = "decimal_u64")]
+    pub upload_speed: u64,
+    #[serde(deserialize_with = "decimal_u64")]
+    pub num_active: u64,
+    #[serde(deserialize_with = "decimal_u64")]
+    pub num_waiting: u64,
+    #[serde(deserialize_with = "decimal_u64")]
+    pub num_stopped: u64,
+    #[serde(deserialize_with = "decimal_u64")]
+    pub completed_length: u64,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineVersion {
+    pub version: String,
+    pub enabled_features: Vec<String>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineSession {
+    pub session_id: String,
+}
+
+fn decimal_u64<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+    let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+    value.parse().map_err(serde::de::Error::custom)
+}
+fn text_bool<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+    value.parse().map_err(serde::de::Error::custom)
 }
 
 #[derive(Debug)]
@@ -155,7 +397,7 @@ impl EngineBuilder {
         )
         .map_err(|error| NativeApiError::Bootstrap(error.to_string()))?;
         plane
-            .attach_rpc_budgets(resources.rpc_budgets())
+            .attach_process_resources(resources.clone())
             .map_err(|error| NativeApiError::Bootstrap(error.to_string()))?;
         if let Some(config) = self.session_export {
             plane
@@ -260,26 +502,13 @@ impl Engine {
             )
             .saturating_add(request.options.output.as_ref().map_or(0, String::capacity));
         lease.reserve(input_bytes).map_err(native_budget_error)?;
-        let mut options = serde_json::Map::new();
-        options.insert("pause".to_owned(), Value::Bool(request.options.pause));
-        if let Some(output) = request.options.output {
-            options.insert("out".to_owned(), Value::String(output));
-        }
-        if let Some(split) = request.options.split {
-            options.insert("split".to_owned(), Value::from(split.get()));
-        }
-        if let Some(timeout) = request.options.timeout_seconds {
-            options.insert("timeout".to_owned(), Value::from(timeout));
-        }
-        if let Some(limit) = request.options.max_download_limit {
-            options.insert("max-download-limit".to_owned(), Value::from(limit));
-        }
+        let options = request.options.into_value(true)?;
         let value = self
             .call_control_admitted(
                 "aria2.addUri",
                 Value::Array(vec![
                     Value::Array(request.uris.into_iter().map(Value::String).collect()),
-                    Value::Object(options),
+                    options,
                 ]),
                 lease,
             )
@@ -297,21 +526,70 @@ impl Engine {
         let value = self
             .call_control("aria2.tellStatus", json!([gid.to_string()]))
             .await?;
-        let status = match value.get("status").and_then(Value::as_str) {
-            Some("active") => Aria2Status::Active,
-            Some("waiting") => Aria2Status::Waiting,
-            Some("paused") => Aria2Status::Paused,
-            Some("complete") => Aria2Status::Complete,
-            Some("error") => Aria2Status::Error,
-            Some("removed") => Aria2Status::Removed,
-            _ => return Err(NativeApiError::InvalidResponse("unknown task status")),
-        };
-        Ok(TaskStatus {
-            gid,
-            status,
-            total_length: decimal_field(&value, "totalLength")?,
-            completed_length: decimal_field(&value, "completedLength")?,
-        })
+        task_status(&value)
+    }
+
+    pub async fn active(&self) -> Result<Vec<TaskStatus>, NativeApiError> {
+        self.status_list("aria2.tellActive", json!([])).await
+    }
+    pub async fn waiting(
+        &self,
+        offset: i64,
+        count: usize,
+    ) -> Result<Vec<TaskStatus>, NativeApiError> {
+        self.status_list("aria2.tellWaiting", json!([offset, count]))
+            .await
+    }
+    pub async fn stopped(
+        &self,
+        offset: i64,
+        count: usize,
+    ) -> Result<Vec<TaskStatus>, NativeApiError> {
+        self.status_list("aria2.tellStopped", json!([offset, count]))
+            .await
+    }
+    async fn status_list(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> Result<Vec<TaskStatus>, NativeApiError> {
+        let result = self.call_control(method, params).await?;
+        result
+            .as_array()
+            .ok_or(NativeApiError::InvalidResponse("expected status list"))?
+            .iter()
+            .map(task_status)
+            .collect()
+    }
+    pub async fn uris(&self, gid: Gid) -> Result<Vec<DownloadUri>, NativeApiError> {
+        self.decode_control("aria2.getUris", json!([gid.to_string()]))
+            .await
+    }
+    pub async fn files(&self, gid: Gid) -> Result<Vec<DownloadFile>, NativeApiError> {
+        self.decode_control("aria2.getFiles", json!([gid.to_string()]))
+            .await
+    }
+    pub async fn servers(&self, gid: Gid) -> Result<Vec<DownloadServers>, NativeApiError> {
+        self.decode_control("aria2.getServers", json!([gid.to_string()]))
+            .await
+    }
+    pub async fn global_statistics(&self) -> Result<GlobalStatistics, NativeApiError> {
+        self.decode_control("aria2.getGlobalStat", json!([])).await
+    }
+    pub async fn version(&self) -> Result<EngineVersion, NativeApiError> {
+        self.decode_control("aria2.getVersion", json!([])).await
+    }
+    pub async fn session_info(&self) -> Result<EngineSession, NativeApiError> {
+        self.decode_control("aria2.getSessionInfo", json!([])).await
+    }
+    async fn decode_control<T: serde::de::DeserializeOwned>(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> Result<T, NativeApiError> {
+        let result = self.call_control(method, params).await?;
+        serde_json::from_value(result.value.clone())
+            .map_err(|_| NativeApiError::InvalidResponse("invalid typed query result"))
     }
 
     pub async fn pause(&self, gid: Gid) -> Result<(), NativeApiError> {
@@ -324,6 +602,245 @@ impl Engine {
 
     pub async fn remove(&self, gid: Gid) -> Result<(), NativeApiError> {
         self.control("aria2.remove", gid).await
+    }
+
+    pub async fn force_pause(&self, gid: Gid) -> Result<(), NativeApiError> {
+        self.control("aria2.forcePause", gid).await
+    }
+    pub async fn force_remove(&self, gid: Gid) -> Result<(), NativeApiError> {
+        self.control("aria2.forceRemove", gid).await
+    }
+    pub async fn remove_result(&self, gid: Gid) -> Result<(), NativeApiError> {
+        self.control("aria2.removeDownloadResult", gid).await
+    }
+
+    pub async fn pause_all(&self, force: bool) -> Result<(), NativeApiError> {
+        self.call_control(
+            if force {
+                "aria2.forcePauseAll"
+            } else {
+                "aria2.pauseAll"
+            },
+            json!([]),
+        )
+        .await?;
+        Ok(())
+    }
+    pub async fn resume_all(&self) -> Result<(), NativeApiError> {
+        self.call_control("aria2.unpauseAll", json!([])).await?;
+        Ok(())
+    }
+    pub async fn purge_results(&self) -> Result<(), NativeApiError> {
+        self.call_control("aria2.purgeDownloadResult", json!([]))
+            .await?;
+        Ok(())
+    }
+
+    pub async fn change_options(
+        &self,
+        gid: Gid,
+        options: DownloadOptions,
+        restart: bool,
+    ) -> Result<(), NativeApiError> {
+        let lease = self
+            .client
+            .try_request(options.input_bytes())
+            .map_err(native_budget_error)?;
+        self.call_control_admitted(
+            "aria2.changeOption",
+            Value::Array(vec![
+                Value::String(gid.to_string()),
+                options.into_value(false)?,
+                json!({"restart":restart}),
+            ]),
+            lease,
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn change_global_options(
+        &self,
+        options: GlobalOptions,
+    ) -> Result<(), NativeApiError> {
+        let lease = self
+            .client
+            .try_request(options.task_defaults.input_bytes())
+            .map_err(native_budget_error)?;
+        let mut values = options.task_defaults.into_value(false)?;
+        if let Some(limit) = options.max_overall_download_limit {
+            values
+                .as_object_mut()
+                .expect("option object")
+                .insert("max-overall-download-limit".to_owned(), Value::from(limit));
+        }
+        if let Some(scheduling) = options.scheduling {
+            scheduling.validate().map_err(NativeApiError::Control)?;
+            values.as_object_mut().expect("option object").extend(
+                scheduling
+                    .options()
+                    .into_iter()
+                    .map(|(name, value)| (name, Value::String(value))),
+            );
+        }
+        self.call_control_admitted(
+            "aria2.changeGlobalOption",
+            Value::Array(vec![values]),
+            lease,
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn replace_sources(&self, gid: Gid, uris: Vec<String>) -> Result<(), NativeApiError> {
+        if uris.is_empty() || uris.len() > crate::MAX_HTTP_TASK_SOURCES {
+            return Err(NativeApiError::InvalidConfiguration(
+                "URI count is outside the supported bound",
+            ));
+        }
+        let bytes = uris.iter().fold(
+            (64 * 1024_usize).saturating_add(
+                uris.capacity()
+                    .saturating_mul(std::mem::size_of::<String>()),
+            ),
+            |bytes, uri| bytes.saturating_add(uri.capacity()).saturating_add(1024),
+        );
+        let lease = self
+            .client
+            .try_request(bytes)
+            .map_err(native_budget_error)?;
+        self.call_control_admitted(
+            "ariax.replaceSources",
+            Value::Array(vec![
+                Value::String(gid.to_string()),
+                Value::Array(uris.into_iter().map(Value::String).collect()),
+            ]),
+            lease,
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn change_position(
+        &self,
+        gid: Gid,
+        offset: i64,
+        origin: PositionOrigin,
+    ) -> Result<usize, NativeApiError> {
+        let mode = match origin {
+            PositionOrigin::Start => "POS_SET",
+            PositionOrigin::Current => "POS_CUR",
+            PositionOrigin::End => "POS_END",
+        };
+        let result = self
+            .call_control(
+                "aria2.changePosition",
+                json!([gid.to_string(), offset, mode]),
+            )
+            .await?;
+        result
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or(NativeApiError::InvalidResponse("invalid queue position"))
+    }
+
+    pub async fn check_config(
+        &self,
+        update: ConfigurationUpdate,
+    ) -> Result<ConfigurationReport, NativeApiError> {
+        self.configuration("ariax.checkConfig", update).await
+    }
+    pub async fn reload_config(
+        &self,
+        update: ConfigurationUpdate,
+    ) -> Result<ConfigurationReport, NativeApiError> {
+        self.configuration("ariax.reloadConfig", update).await
+    }
+    async fn configuration(
+        &self,
+        method: &str,
+        update: ConfigurationUpdate,
+    ) -> Result<ConfigurationReport, NativeApiError> {
+        let bytes = update
+            .text
+            .capacity()
+            .saturating_add(update.url_rules.as_ref().map_or(0, String::capacity))
+            .saturating_add(64 * 1024);
+        let lease = self
+            .client
+            .try_request(bytes)
+            .map_err(native_budget_error)?;
+        let result = self
+            .call_control_admitted(method, update.into_params()?, lease)
+            .await?;
+        serde_json::from_value(result.value.clone())
+            .map_err(|_| NativeApiError::InvalidResponse("invalid configuration report"))
+    }
+
+    pub async fn dump_config(
+        &self,
+        mode: ConfigDumpMode,
+        format: ConfigDumpFormat,
+    ) -> Result<String, NativeApiError> {
+        let (mode, gid) = match mode {
+            ConfigDumpMode::Defaults => ("defaults", None),
+            ConfigDumpMode::Effective => ("effective", None),
+            ConfigDumpMode::TaskEffective(gid) => ("task-effective", Some(gid)),
+            ConfigDumpMode::UrlRules => ("url-rules", None),
+        };
+        let format = match format {
+            ConfigDumpFormat::Flat => "flat",
+            ConfigDumpFormat::Json => "json",
+            ConfigDumpFormat::Toml => "toml",
+        };
+        let mut params = vec![json!(mode), json!(format)];
+        if let Some(gid) = gid {
+            params.push(json!(gid.to_string()));
+        }
+        let result = self
+            .call_control("ariax.dumpConfig", Value::Array(params))
+            .await?;
+        if let Some(text) = result.as_str() {
+            Ok(text.to_owned())
+        } else {
+            serde_json::to_string(&result.value)
+                .map_err(|_| NativeApiError::InvalidResponse("invalid configuration dump"))
+        }
+    }
+
+    pub async fn diagnostics(&self) -> Result<crate::ControlDiagnostics, NativeApiError> {
+        let result = self.call_control("ariax.getDiagnostics", json!([])).await?;
+        serde_json::from_value(result.value.clone())
+            .map_err(|_| NativeApiError::InvalidResponse("invalid diagnostics"))
+    }
+
+    /// Explicit JSON compatibility entry point; returned bytes retain the response permit.
+    pub async fn rpc_json(
+        &self,
+        request: &[u8],
+        compatibility: crate::RpcCompatibility,
+    ) -> Result<bytes::Bytes, NativeApiError> {
+        if request.len() > crate::MAX_HTTP_RPC_REQUEST_BYTES {
+            return Err(NativeApiError::InvalidConfiguration(
+                "RPC request exceeds its byte limit",
+            ));
+        }
+        let lease = self
+            .client
+            .try_request(request.len())
+            .map_err(native_budget_error)?;
+        let backend = crate::HttpControlBackend::from_shared(self.plane.clone()).await;
+        let dispatcher =
+            crate::RpcDispatcher::new(Arc::new(backend), crate::RpcAuthPolicy::default())
+                .with_compatibility(compatibility);
+        Ok(crate::http_rpc::dispatch_admitted_json(
+            &dispatcher,
+            request,
+            &RpcClientContext::default(),
+            &self.client,
+            lease,
+        )
+        .await)
     }
 
     pub async fn options(&self, gid: Gid) -> Result<BTreeMap<String, String>, NativeApiError> {
@@ -396,8 +913,16 @@ impl Engine {
         &self,
         limits: RpcEventLimits,
     ) -> Result<NativeEventSubscription, NativeApiError> {
+        self.subscribe_filtered(limits, crate::RpcEventFilter::default())
+    }
+
+    pub fn subscribe_filtered(
+        &self,
+        limits: RpcEventLimits,
+        filter: crate::RpcEventFilter,
+    ) -> Result<NativeEventSubscription, NativeApiError> {
         self.events
-            .subscribe_with_client(limits, self.client.clone())
+            .subscribe_filtered_with_client(limits, filter, self.client.clone())
             .map(|subscriber| NativeEventSubscription {
                 subscriber,
                 client: self.client.clone(),
@@ -493,6 +1018,12 @@ pub struct NativeEventSubscription {
 }
 
 impl NativeEventSubscription {
+    pub fn set_filter(&mut self, filter: crate::RpcEventFilter) -> Result<(), NativeApiError> {
+        self.subscriber
+            .set_filter(filter)
+            .map_err(NativeApiError::Event)
+    }
+
     pub fn try_next(&mut self) -> Result<Option<Value>, NativeApiError> {
         let response = self.client.response(None).map_err(native_budget_error)?;
         let _workspace = response.workspace().map_err(native_budget_error)?;
@@ -501,6 +1032,29 @@ impl NativeEventSubscription {
             .map(|delivery| delivery.map(|delivery| delivery.into_value()))
             .map_err(NativeApiError::Event)
     }
+}
+
+fn task_status(value: &Value) -> Result<TaskStatus, NativeApiError> {
+    let gid = value
+        .get("gid")
+        .and_then(Value::as_str)
+        .and_then(|value| value.parse().ok())
+        .ok_or(NativeApiError::InvalidResponse("invalid GID"))?;
+    let status = match value.get("status").and_then(Value::as_str) {
+        Some("active") => Aria2Status::Active,
+        Some("waiting") => Aria2Status::Waiting,
+        Some("paused") => Aria2Status::Paused,
+        Some("complete") => Aria2Status::Complete,
+        Some("error") => Aria2Status::Error,
+        Some("removed") => Aria2Status::Removed,
+        _ => return Err(NativeApiError::InvalidResponse("unknown task status")),
+    };
+    Ok(TaskStatus {
+        gid,
+        status,
+        total_length: decimal_field(value, "totalLength")?,
+        completed_length: decimal_field(value, "completedLength")?,
+    })
 }
 
 fn decimal_field(value: &Value, name: &'static str) -> Result<u64, NativeApiError> {
@@ -528,7 +1082,7 @@ fn process_config(
     let runtime_capacity = NonZeroUsize::new(1024).expect("runtime capacity");
     let plan_capacity = NonZeroUsize::new(64).expect("plan capacity");
     let max_wait_ms = NonZeroU64::new(86_400_000).expect("max wait");
-    let scheduler = SchedulerConfig::new(task_capacity, active_capacity, false)
+    let scheduler = SchedulerConfig::new(task_capacity, active_capacity, true)
         .map_err(|_| NativeApiError::InvalidConfiguration("invalid scheduler bounds"))?;
     Ok(ProcessBootstrapConfig {
         session_owner: SessionOwnerConfig::new(database_path),
@@ -587,6 +1141,206 @@ fn create_private_directory(
 mod tests {
     use super::*;
     use std::fs;
+
+    #[tokio::test]
+    async fn typed_configuration_mutations_diagnostics_and_json_share_one_engine() {
+        let root = std::env::temp_dir().join(format!("ariax-native-parity-{}", std::process::id()));
+        let engine = Engine::builder()
+            .output_root(root.join("output"))
+            .profile(RuntimeProfile::Compact)
+            .build()
+            .await
+            .expect("engine");
+        let report = engine
+            .reload_config(ConfigurationUpdate {
+                text: "split=3\n".to_owned(),
+                expected_generation: Some(0),
+                ..ConfigurationUpdate::default()
+            })
+            .await
+            .expect("reload");
+        assert_eq!(report.config_generation, 1);
+        assert!(
+            engine
+                .reload_config(ConfigurationUpdate {
+                    text: "split=0\n".to_owned(),
+                    ..ConfigurationUpdate::default()
+                })
+                .await
+                .is_err()
+        );
+        engine
+            .change_global_options(GlobalOptions {
+                task_defaults: DownloadOptions {
+                    split: NonZeroUsize::new(4),
+                    ..DownloadOptions::default()
+                },
+                max_overall_download_limit: Some(1024 * 1024),
+                scheduling: None,
+            })
+            .await
+            .expect("global");
+        let gid = engine
+            .add_uri(AddUri {
+                uris: vec!["http://example.test/first".to_owned()],
+                options: DownloadOptions {
+                    pause: true,
+                    split: NonZeroUsize::new(6),
+                    retry: Some(crate::HttpRetryPolicy::aggressive()),
+                    ..DownloadOptions::default()
+                },
+            })
+            .await
+            .expect("add");
+        assert_eq!(engine.options(gid).await.expect("options")["split"], "6");
+        assert!(engine.active().await.unwrap().is_empty());
+        assert_eq!(engine.waiting(0, 10).await.unwrap()[0].gid, gid);
+        assert!(engine.stopped(0, 10).await.unwrap().is_empty());
+        assert!(engine.waiting(0, 1001).await.is_err());
+        assert_eq!(engine.uris(gid).await.unwrap()[0].status, UriUsage::Used);
+        let files = engine.files(gid).await.unwrap();
+        assert_eq!(files[0].index, 1);
+        assert!(files[0].selected);
+        assert_eq!(engine.servers(gid).await.unwrap()[0].index, 1);
+        assert_eq!(engine.global_statistics().await.unwrap().num_waiting, 1);
+        assert!(
+            engine
+                .version()
+                .await
+                .unwrap()
+                .enabled_features
+                .contains(&"HTTP".to_owned())
+        );
+        assert!(!engine.session_info().await.unwrap().session_id.is_empty());
+        let missing = Gid::new(u64::MAX).unwrap();
+        assert!(engine.uris(missing).await.is_err());
+        assert!(engine.files(missing).await.is_err());
+        assert!(engine.servers(missing).await.is_err());
+        let held: Vec<_> = (0..crate::MAX_RPC_CLIENT_REQUESTS)
+            .map(|_| engine.client.try_request(0).unwrap())
+            .collect();
+        for result in [
+            engine
+                .change_options(
+                    gid,
+                    DownloadOptions {
+                        output: Some("bounded.bin".to_owned()),
+                        ..DownloadOptions::default()
+                    },
+                    false,
+                )
+                .await,
+            engine.change_global_options(GlobalOptions::default()).await,
+            engine
+                .replace_sources(gid, vec!["http://example.test/rejected".to_owned()])
+                .await,
+            engine
+                .reload_config(ConfigurationUpdate::default())
+                .await
+                .map(|_| ()),
+        ] {
+            assert!(matches!(
+                result,
+                Err(NativeApiError::Control(HttpControlError::Busy))
+            ));
+            assert_eq!(
+                engine.client.outstanding_requests(),
+                crate::MAX_RPC_CLIENT_REQUESTS
+            );
+        }
+        drop(held);
+        assert_eq!(engine.options(gid).await.unwrap()["split"], "6");
+        assert_eq!(
+            engine.options(gid).await.expect("retry")["retry-profile"],
+            "aggressive"
+        );
+        assert!(matches!(
+            engine
+                .change_options(
+                    gid,
+                    DownloadOptions {
+                        timeout_seconds: Some(601),
+                        ..DownloadOptions::default()
+                    },
+                    false
+                )
+                .await,
+            Err(NativeApiError::Control(
+                HttpControlError::OptionPatchRejected(_)
+            ))
+        ));
+        engine
+            .change_options(
+                gid,
+                DownloadOptions {
+                    split: NonZeroUsize::new(2),
+                    max_download_limit: Some(1024),
+                    ..DownloadOptions::default()
+                },
+                false,
+            )
+            .await
+            .expect("change");
+        engine
+            .replace_sources(gid, vec!["http://example.test/second".to_owned()])
+            .await
+            .expect("sources");
+        assert_eq!(
+            engine
+                .change_position(gid, 0, PositionOrigin::Start)
+                .await
+                .expect("position"),
+            0
+        );
+        let dump = engine
+            .dump_config(ConfigDumpMode::TaskEffective(gid), ConfigDumpFormat::Json)
+            .await
+            .expect("dump");
+        assert_eq!(
+            serde_json::from_str::<Value>(&dump).expect("JSON")["options"]["split"],
+            "2"
+        );
+        let diagnostics = engine.diagnostics().await.expect("diagnostics");
+        assert_eq!(diagnostics.profile.as_deref(), Some("compact"));
+        assert_eq!(diagnostics.task_count, 1);
+        assert!(diagnostics.rpc_bytes <= diagnostics.rpc_byte_limit);
+        let response = engine
+            .rpc_json(
+                br#"{"jsonrpc":"2.0","id":1,"method":"system.listMethods"}"#,
+                crate::RpcCompatibility::Strict,
+            )
+            .await
+            .expect("JSON API");
+        let result: Value = serde_json::from_slice(&response).expect("catalog");
+        assert!(
+            result["result"]
+                .as_array()
+                .expect("methods")
+                .contains(&json!("ariax.getDiagnostics"))
+        );
+        assert!(engine.client.outstanding_requests() > 0);
+        drop(response);
+        assert_eq!(engine.client.outstanding_requests(), 0);
+        for (keys, accepted) in [
+            (json!(["gid", "status", "slotState", "wireSpeed"]), true),
+            (json!(["bitfield"]), false),
+            (json!(["unknownField"]), false),
+        ] {
+            let request = serde_json::to_vec(&json!({"jsonrpc":"2.0","id":2,"method":"aria2.tellStatus","params":[gid.to_string(), keys]})).unwrap();
+            let response = engine
+                .rpc_json(&request, crate::RpcCompatibility::Strict)
+                .await
+                .unwrap();
+            let result: Value = serde_json::from_slice(&response).unwrap();
+            assert_eq!(result.get("result").is_some(), accepted, "{result}");
+            if accepted {
+                assert_eq!(result["result"].as_object().unwrap().len(), 4);
+            }
+        }
+        engine.pause_all(false).await.expect("bulk pause");
+        engine.shutdown().await.expect("shutdown");
+        fs::remove_dir_all(root).expect("cleanup");
+    }
 
     #[tokio::test]
     async fn builder_requires_absolute_output_root() {

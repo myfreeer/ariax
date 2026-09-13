@@ -18,8 +18,9 @@ pub use command::{
     MAX_SCHEDULER_EFFECTS, MAX_SCHEDULER_TASKS, NoSpaceProbeOrigin, PendingBarrier, QueueClass,
     QueueOrder, SchedulerCommand, SchedulerCommandHandling, SchedulerCommandKind, SchedulerConfig,
     SchedulerConfigError, SchedulerError, SchedulerOutcome, SlotOwnership, SlowReadmissionDecision,
-    SlowSlotPersistence, TaskEvent, TaskEventEnvelope, TaskEventKind, TaskEventToken,
-    TransitionEffect, TransitionEffectIdentity, TransitionEffectKind, ValidatedOptionPatchKind,
+    SlowReadmissionPolicy, SlowSlotPersistence, TaskEvent, TaskEventEnvelope, TaskEventKind,
+    TaskEventToken, TransitionEffect, TransitionEffectIdentity, TransitionEffectKind,
+    ValidatedOptionPatchKind,
 };
 
 pub use error::{
