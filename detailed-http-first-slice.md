@@ -16,9 +16,10 @@ restart recovery, pre-network descriptor-bound SHA-256 readback of every
 durable piece, exact strong-ETag/resource/length binding for single-source and
 strict-fallback resume, packet-independent live speed sampling, and
 scheduler-owned worker supervision. The original five-method Phase-3B RPC
-slice has expanded into the Phase-4 checkpoint `71acb03`, including loopback
-WebSocket and library NDJSON framing. `apis-and-embedding.md` owns its current
-surface and open repair gates. The older pinned-peer CLI remains a diagnostic
+slice has expanded into the Phase-4B control plane, including loopback HTTP and
+WebSocket, both stdio framings, direct CLI commands and typed Rust APIs.
+`apis-and-embedding.md` owns its current surface and remaining progress gates.
+The older pinned-peer CLI remains a diagnostic
 harness. A persisted user `checksum=sha-256=<64 hex>` now gates
 strict concurrent mirrors, verifies the descriptor-bound assembled file on a
 bounded blocking worker before `TaskComplete`, and permits digest-bound restart
@@ -44,9 +45,10 @@ whole-file verification still require a persisted user SHA-256. `Content-Digest`
 digest parameters/coverage metadata, alternate algorithms, server-advertised
 whole-entity admission, Metalink chunk hashes, Last-Modified and unsafe-
 override resume, HTTP/2, unknown-length or chunked layouts, and non-loopback
-RPC remain outside this checkpoint. The expanded control plane remains subject
-to `P4-01` through `P4-06` in `implementation-readiness.md`; worker-level retry
-coverage does not establish production admission of explicit retry options.
+RPC remain outside this checkpoint. The expanded control plane passes the
+`P4-01` through `P4-10` regressions in `implementation-readiness.md`, including
+production admission and recovery of explicit retry options. `P4-11` retains
+the query/bulk progress requirements and deferred native Linux measurements.
 
 The process-capacity boundary is executable for this HTTP slice. A resolved
 runtime profile creates one process-owned handle budget, one global resident-byte

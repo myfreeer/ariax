@@ -15,10 +15,10 @@ Status: first-slice implementation in progress. Portable NFC path validation,
 persisted root/file identity binding, immutable layout hashing, and global
 offset mapping are implemented. Journal v1 segment/record framing, CRC-32C and
 commit validation, linked rotation, bounded replay, and valid-prefix recovery
-are executable. Exact typed payload codecs cover all 25 v1 records, including
+are executable. Exact typed payload codecs cover all 26 v1 records, including
 bounded option maps, chunked layouts, finalization paths, checkpoint
 `PieceStateChunk` bitmaps/evidence runs, and the bounded `HttpStrongValidator`
-payload. Policy-gated cross-record recovery now
+and `HttpRangeIdentity` payloads. Policy-gated cross-record recovery now
 verifies snapshot/contributor/state hashes, generation promotion, reassembled
 layout/root hashes, lease/piece evidence, finalization pairs, and whole compact
 checkpoints. The native-startup handoff and ordering contract, exact Unix and
@@ -58,10 +58,11 @@ appender construction onto the session owner. A first concrete single-file
 `StorageEngine` now consumes descriptor-backed files, validates piece-aligned
 leases and contiguous blocks, submits bounded pooled buffers to the positional
 disk lane, hashes returned immutable buffers, orders strict data flushes before
-`PieceDurable`, and flushes terminal journal state. Descriptor-revalidated
-recovery reports only the contiguous durable prefix. General multi-file writes,
-overlap groups, balanced/fast durability grouping, resume mutation, checkpoint
-state writing, and native release-matrix evidence remain pending.
+`PieceDurable`, and flushes terminal journal state. HTTP recovery revalidates
+descriptor identity and reads back durable pieces before resuming. Bounded
+cancellation-fenced overlap groups and explicit path/geometry restart mutations
+are executable. General multi-file writes, balanced/fast durability grouping,
+checkpoint state writing and native release-matrix evidence remain pending.
 
 This document defines `SafePathBuilder`, `FileLayout`, `GlobalOffsetMapper`,
 `StorageEngine`, and `ControlJournal` contracts for HTTP sequential/range

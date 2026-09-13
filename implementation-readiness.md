@@ -4,14 +4,17 @@ Status: overall implementation is underway. The P0 contract blockers recorded
 in `final-preimplementation-review.md` are resolved in their normative
 documents, the scoped Phase-3B/3C HTTP(S) downloader milestone is checkpointed
 at `30b70c5`, and the Phase-4 control-plane checkpoint is executable at
-`71acb03`. A 2026-09-06 implementation audit found that the Phase-4
+`71acb03`; Phase-4B implementation and native Windows benchmark evidence are
+checkpointed at `f2f560e`. A 2026-09-06 implementation audit found that the Phase-4
 checkpoint needed multicall authentication ordering, authenticated pushed
 events, complete registry-backed retry admission, active option restart replay,
 active source replacement outcome handling, and per-client RPC budget
 reservation. Phase 4B implements these six repairs and completes the runtime
 option, configuration, session, interface and slow-slot integration gates.
-Native Windows benchmarks pass all four transports. Native Linux benchmark
-acceptance is deferred at the user's request until CI is ready; release matrix
+Query projection outside the control owner and bounded progress for other
+synchronous/bulk mutations remain open under `P4-11`. Native Windows benchmarks
+pass all four transports for status/global-template calls. Native Linux
+benchmark acceptance is deferred at the user's request until CI is ready; release matrix
 work remains governed by the exit criteria below and `implementation-plan.md`.
 
 This document is the handoff checklist from architecture design to detailed
@@ -329,9 +332,16 @@ persistence coverage remain required when implementing these repairs.
 ### Phase 4B Completion Evidence
 
 As of September 13, 2026, `P4-01` through `P4-10` are implemented and tested.
-The native Windows portion of `P4-11` passes. The user explicitly deferred
-native Linux benchmark acceptance until CI is ready; that platform gate stays
+The native Windows measurement portion of `P4-11` passes. The user explicitly
+deferred native Linux benchmark acceptance until CI is ready; that platform gate stays
 deferred and must not be represented as passing WSL evidence.
+
+`P4-11` also retains implementation/progress requirements: query projection
+still holds the control-owner mutex in `call_shared_with_context`, and the
+benchmarks cover status calls and global-template changes rather than other
+synchronous/bulk mutation paths. Moving projection outside the owner and
+establishing bounded progress for those paths remain open. Passing the recorded
+Windows scenarios does not close the entire gate.
 
 The `P4-09` HTTP Basic portion is executable: startup validates the sensitive
 `rpc-secret`/`rpc-user`/`rpc-passwd` CLI and environment settings before bootstrap;
@@ -385,7 +395,7 @@ suites and do not replace longer native CI campaigns.
 | `P4-08` Session compatibility | Closed. Linux/native Windows tests and Linux MSRV checking pass as recorded above. Configured aria2/JSON export, explicit/periodic/shutdown saves, local input and typed Rust operations share bounded sanitized documents. Whole-document validation, atomic batch metadata, disconnect retention and crash tests prevent invalid task prefixes and partial exports. |
 | `P4-09` Public interfaces | Closed. CLI, HTTP, WebSocket, both stdio framings and typed Rust queries/mutations share the dispatcher. `every_advertised_method_executes_or_reports_its_disabled_protocol`, combined-transport/EOF integration tests, native parity and credit exhaustion, authenticated filters, diagnostics, and all compatibility modes pass success/rejection coverage. |
 | `P4-10` Slow-slot scheduling | Closed. Default `off`, demote/pause, queue ordering, cooldown, user precedence, recovery and concurrent local-pressure guards are covered. `slow_remote_workers_free_slots_and_user_controls_override_cooldown` and `retry_wait_slot_policy_uses_real_worker_deadlines` pass. Automatic retry readmission preserves range deadlines and attempt counts under unchanged snapshots; strict generation rejection remains tested. |
-| `P4-11` Performance and platform evidence | Native Windows accepted; native Linux deferred until CI is ready. All four optimized Windows scenarios complete 20,000 calls with 1,000 real active ranges, renewed barriers after warm-up, per-status connection checks and stalled event/response consumers. Worst p99 is 0.542 ms; longest burst is 343 ms; sampled working set is below 129 MiB and all reservations stay bounded. [Reports and limits](performance-profiles.md#native-windows-control-plane-evidence). Local build/test/lint/MSRV/contracts/fuzz evidence passes; the manual Linux workflow still requires a native CI result. |
+| `P4-11` Performance and platform evidence | Open for query projection outside the owner and bounded progress for other synchronous/bulk mutations. Native Windows status/global-template measurements pass; native Linux measurements are deferred until CI is ready. All four optimized Windows scenarios complete 20,000 calls with 1,000 real active ranges, renewed barriers after warm-up, per-status connection checks and stalled event/response consumers. Worst p99 is 0.542 ms; longest burst is 343 ms; sampled working set is below 129 MiB and all reservations stay bounded. [Reports and limits](performance-profiles.md#native-windows-control-plane-evidence). Local build/test/lint/MSRV/contracts/fuzz evidence passes; the manual Linux workflow requires a native CI result. |
 
 The session schema stays at v2 and journal replay remains strict. Native disk
 backend additions, hardware poweroff, release packaging, and tagging remain
@@ -410,15 +420,15 @@ removing generated target outputs; preserve pinned toolchains and archives.
   server-advertised whole-entity admission have explicit bounded contracts.
 - Expand validator support beyond strong ETag and add HTTP/2 only behind its
   separately bounded stream/pool contract.
-- Complete the Phase-4 control plane without widening the default loopback
-  boundary: route `system.multicall` before outer token parsing while checking
+- Preserve the Phase-4 control-plane repairs and default loopback boundary:
+  route `system.multicall` before outer token parsing while checking
   every inner member, gate WebSocket/stdio event subscriptions on successful
   authentication, and enforce per-client/global RPC budget reservations before
   parsing or serializing additional work.
-- Align every accepted retry option with the registry and persisted-option
+- Keep every accepted retry option aligned with the registry and persisted-option
   policy before task admission; an accepted task must round-trip its complete
   retry snapshot through recovery.
-- Make active option patches and active source replacement replayable and
+- Keep active option patches and active source replacement replayable and
   outcome-consistent across cancellation drain, journal, SQLite, catalog, and
   scheduler transitions.
 - Keep the executable minimal shutdown path green and carry the same typed

@@ -2,12 +2,12 @@
 
 Status: reviewed contract with implementation in progress. Portable path
 normalization/rejection, persisted root bindings, and bounded control-journal
-framing/replay plus all 25 bounded typed payload codecs are executable.
+framing/replay plus all 26 bounded typed payload codecs are executable.
 Policy-gated option-secret rejection and typed semantic state recovery are also
 executable, including digest-bound different-identity rebind records. Native
-capability acquisition, safe descendant open/revalidation, and complete startup
-filesystem reconciliation remain pending. The bounded pure cross-store startup
-planner and atomic scheduler reconstruction are executable. Durable journal
+capability acquisition, safe descendant open/revalidation and central-journal
+startup filesystem reconciliation are implemented. The bounded pure cross-store
+startup planner and atomic scheduler reconstruction are executable. Durable journal
 append/flush, latched appender failure, tail/content-validated final-segment
 reopen after portable exact-name preflight, and linked rotation are executable;
 that reopen does not establish native namespace authority. SQLite session schema
@@ -21,8 +21,9 @@ session-store owner thread and exact persistence-effect composition boundary
 are executable. The bounded SQLite-only application stage applies queue repairs
 before terminal repairs, then exact journal-authority repairs, and cannot expose
 the restored scheduler while a command is queued, in flight, failed, or
-unexpectedly acknowledged. Journal-install work, appender recovery, native
-capabilities, and final publication remain pending.
+unexpectedly acknowledged. Native journal-install recovery, appender preparation
+and publication-last process bootstrap complete that HTTP startup path. Broader
+layouts and native disk backends remain roadmap work.
 
 This document turns the safety requirements into enforceable design rules.
 
@@ -403,12 +404,11 @@ crash-durable directory-entry publication. The successful-return path removes
 the temporary name, but a crash or unlink failure at any point from
 destination-link publication until temporary-link removal is durably synced can
 leave or resurrect both names for one inode. Normal unique-link validation then
-rejects the backup until a future recovery step verifies and removes only the
-generated same-file alias. A native atomic no-replace publication primitive is
-also acceptable. This recovery, full crash-point window, and unlink-error
-injection are required before production use or tagging. Backup residue
-recovery and periodic backup/checkpoint scheduling on the dedicated store
-thread remain pending.
+rejects the backup unless descriptor-bound recovery verifies the generated
+same-file alias and its link count before removing only that alias. This
+recovery is implemented with collision, invalid-residue, crash-point and
+unlink-error regression coverage. Periodic backup/checkpoint scheduling on the
+dedicated store thread and the full native release matrix remain pending.
 
 ## Bounded Cross-Store Startup Reconciliation
 

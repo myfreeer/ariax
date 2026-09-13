@@ -1,12 +1,13 @@
 # Configuration And aria2 Compatibility
 
-Status: reviewed contract with first-slice implementation in progress. Typed
-option metadata, bounded values, flat config parsing, and generated compatibility
-coverage exist. Phase 4 adds limited runtime mutation and config diagnostics;
-Phase 4B repairs retry admission alignment (`P4-03`), active option journal
-recovery, and live-rate changes (`P4-04`). Full registry and runtime application
-coverage remain open under `P4-07`. Gates are tracked in
-`implementation-readiness.md`.
+Status: Phase 4B implements bounded values, flat configuration and TOML URL
+rules, versioned atomic reload, redacted dumps and typed runtime/global updates.
+The 50 reviewed registry options declare executable or feature-gated behavior.
+Retry admission/recovery (`P4-03`), active
+option replay and live rates (`P4-04`), and the supported HTTP runtime option
+matrix (`P4-07`) have executable success/rejection coverage. The generated
+inventories distinguish this implemented set from the broader aria2 option
+roadmap; gates are tracked in `implementation-readiness.md`.
 
 Configurability is a product requirement. The implementation must be explicit
 about which aria2 options are implemented, unsupported, unsafe-compat only, or
@@ -269,8 +270,9 @@ allocation. The target defaults and hard maxima are registry data:
 | persisted/displayed safe diagnostic message | 8 KiB | 64 KiB |
 
 Current RPC transports use fixed 2 MiB request, 16 MiB response, 256-member, and
-1,000-item page limits. These constants do not establish configurable registry
-support or the per-client/process budget required by `P4-06`.
+1,000-item page limits. Configurable registry entries for these limits remain
+future work. The separate per-client/process reservations required by `P4-06`
+are implemented, including the shared resident budget and transport-held credit.
 
 The exact public options are `rpc-max-request-size`,
 `rpc-stdio-max-request-size`, `rpc-max-response-size`,
@@ -545,9 +547,10 @@ HTTP/FTP/SFTP:
 - Retry policy: the HTTP worker and option parser implement bounded profiles,
   status-code sets, `Retry-After`, and stale connection/validator behavior.
   Phase 4B aligns parser acceptance with the registry and production persistence
-  policy for per-download admission and recovery. Runtime/global application
-  remains under `P4-07`. `retry-policy.md#registry-and-persistence-boundary` owns
-  the admission/recovery checks.
+  policy for per-download admission and recovery. Runtime/global application,
+  layered profile/alias resolution and atomic rejection also pass under
+  `P4-07`. `retry-policy.md#registry-and-persistence-boundary` owns the
+  admission/recovery checks.
 - HTTP headers/cookies/TLS: `header`, `user-agent`, `referer`,
   `load-cookies`, `save-cookies`, `check-certificate`, `ca-certificate`,
   `certificate`, `private-key`, `min-tls-version`: implemented or

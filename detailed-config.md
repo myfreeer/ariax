@@ -371,8 +371,10 @@ drained, producing `InvalidStagedSnapshotReplacement` on recovery. Phase 4B
 repairs that ordering with a retained snapshot, exact generation/mirror
 promotion, recovery of each durable prefix, and current-generation
 acknowledgements for consecutive patches. Live-only rate patches use the
-validated rate handle and do not stage a restart. Full output-path storage
-application and broader runtime option coverage remain under `P4-07`.
+validated rate handle and do not stage a restart. `P4-07` also covers real
+output-path and piece-geometry application, atomic mixed-patch rejection and
+runtime/global retry settings. Its regression evidence is recorded in
+`implementation-readiness.md`.
 
 All rejected mutations use the same grouped public error; transport adapters do
 not invent per-option error types:

@@ -2,7 +2,8 @@
 
 Status: overall implementation is underway. The scoped Phase-3B/3C HTTP(S)
 downloader milestone is implemented and checkpointed at `f97845d`, and the
-Phase-4 control-plane checkpoint is executable at `71acb03`. Phase 0
+Phase-4 control-plane checkpoint is executable at `71acb03`, with the Phase-4B
+implementation and native Windows benchmark evidence at `f2f560e`. Phase 0
 through the core Phase-1/2
 scheduler, configuration, journal, SQLite session owner, bounded runtime,
 descriptor-safe storage, startup recovery, and platform capability work have
@@ -38,10 +39,12 @@ Versioned configuration reload, bounded URL rules, redacted dumps, real option
 restarts, combined transports, compatibility modes and opt-in slow-slot/retry
 scheduling are implemented and tested. Native Windows benchmarks pass all four
 transports with 1,000 active HTTP ranges and 20,000 measured calls each; worst
-p99 is 0.542 ms and the longest measured burst is 343 ms. Native Linux benchmark
-acceptance is deferred at the user's request until CI is ready. The
+p99 is 0.542 ms and the longest measured burst is 343 ms. Query projection
+outside the control owner and bounded progress for other synchronous/bulk
+mutations remain open `P4-11` requirements. Native Linux benchmark acceptance is
+deferred at the user's request until CI is ready. The
 [recorded evidence](performance-profiles.md#native-windows-control-plane-evidence)
-states the measurement limits and remaining platform gate.
+states the measurement limits and remaining progress/platform gates.
 
 Strict HTTP identity now distinguishes whole-file and exact-range evidence. A
 persisted user SHA-256 admits ordinary concurrent mirrors and final verification;
@@ -56,7 +59,8 @@ hierarchical rate limiter, stall policy, process-owned discard guard, same-origi
 endgame fencing, bounded exact-range cross-origin digest fencing, and local
 capacity benchmarks are executable; HTTP/2, unknown-length/chunked layouts,
 broader RFC 9530/Metalink and `Content-Digest` modes,
-native Linux Phase-4 benchmark acceptance, non-loopback RPC,
+the remaining Phase-4 query/bulk progress gates, native Linux benchmark
+acceptance, non-loopback RPC,
 and the full native release matrix remain
 gated by `implementation-readiness.md`
 and `implementation-plan.md`. Deterministic ENOSPC, permission-denied,

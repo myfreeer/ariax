@@ -7,8 +7,12 @@ completion delivery, the bounded blocking write lane, and the session-owner
 persistence composition sink are implemented. The bounded move-only shutdown
 coordinator, packet-independent bounded stats sampler, bounded scheduler runtime
 effect adapter, and publication-last process bootstrap are also executable.
-Async Tokio protocol lanes, protocol counter producers, native kernel
-cancellation, full runtime topology, and percentile timing remain pending.
+Tokio HTTP/RPC lanes, HTTP counter producers and shared profile/RPC reservations
+are integrated. Native Windows status/global-template latency evidence is
+recorded in `performance-profiles.md`. Native kernel cancellation, the full
+runtime topology, query projection outside the control owner and broader bulk
+control progress remain open; native Linux benchmark acceptance is deferred
+until CI is ready.
 
 This document defines the concrete runtime lanes, bounded queues, buffer leases,
 and cancellation behavior used by HTTP and storage in the first slice.
@@ -344,9 +348,12 @@ projection reservations pass the same Linux, MSRV, and Windows-GNU workspace
 matrix. Scheduler simulations, status drafts, and pending owner lifetimes now
 use pre-admitted reservations, with failure/refund, timeout, unused-plan cleanup,
 and event-retention regressions. The forecast fits 1,000 active scheduler tasks;
-this is an allocation-contract test, not a real-download benchmark. Active-range
-performance, query projection outside the owner, and RSS evidence remain separate
-`P4-11` requirements.
+this is an allocation-contract test, not a real-download benchmark. Separate
+native Windows active-range latency/RSS measurements pass for status calls and
+global-template mutations. Query projection still holds the control-owner mutex;
+moving it outside the owner and establishing bounded progress for other
+synchronous/bulk mutations remain open `P4-11` requirements. Native Linux
+benchmark acceptance is deferred until CI is ready.
 
 ## Queue Wrappers
 

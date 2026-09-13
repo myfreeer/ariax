@@ -5,6 +5,7 @@
   "notes": [
     "Native Windows-GNU, concurrency profile; origin, engine, and client run in separate processes.",
     "Each scenario measures 19000 status calls and 1000 global-template mutations across 20 bursts; setup, warm-up, range barriers, and cleanup are excluded.",
+    "These measurements do not establish query projection outside the control-owner mutex or bounded progress for other synchronous/bulk mutations; those P4-11 requirements remain open.",
     "Every measured status result confirms 1000 connections; the origin pulses all 1000 active responses after every warm-up.",
     "Measured stdio uses OS pipes. The second stalled framed writer uses a loopback socket and shares the production dispatcher and budgets.",
     "Stalled events use 512 KiB coalesced fixture notifications through the production WebSocket event broker.",

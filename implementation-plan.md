@@ -2,7 +2,8 @@
 
 Status: implementation remains underway for the overall roadmap. The scoped
 Phase-3B/3C HTTP(S) downloader milestone is checkpointed at `30b70c5`, and the
-Phase-4 control-plane checkpoint is executable at `71acb03`. Phase 0
+Phase-4 control-plane checkpoint is executable at `71acb03`, with the Phase-4B
+implementation and native Windows benchmark evidence at `f2f560e`. Phase 0
 contracts and the gated Phase-1/2 core, config,
 persistence, recovery, runtime, storage, and native capability work have
 executable checkpoints. The completed HTTP checkpoint covers
@@ -35,8 +36,9 @@ secondary mirrors as endgame-only peers; they do not authorize ordinary
 concurrent pieces or replace the persisted whole-file checksum. `Content-Digest`,
 digest parameters/coverage metadata, alternate algorithms, server-advertised
 whole-entity admission, Metalink chunk hashes, Last-Modified/unsafe-override
-resume, HTTP/2, growing/chunked transfers, native Linux Phase-4 benchmark acceptance,
-and the full release-platform matrix remain phase/tag gates. Hot-backup
+resume, HTTP/2, growing/chunked transfers, the Phase-4 query/bulk progress gates,
+native Linux benchmark acceptance, and the full release-platform matrix remain
+phase/tag gates. Hot-backup
 publication residue is now recovered through
 descriptor-bound same-file/link-count validation with no-clobber collision and
 crash/unlink fault coverage.
@@ -384,8 +386,10 @@ versioned config check/reload/dump and URL rules, bounded JSON/aria2 session
 export/import and configured saves, filtered events, loopback WebSocket,
 Content-Length/NDJSON stdio, combined transports, direct CLI controls, and
 typed Rust embedding are executable. Real option restart and slow-slot/retry
-scheduling tests pass. Native Windows active-download p99 evidence is recorded;
-native Linux measurement is deferred until CI is ready, as requested on
+scheduling tests pass. Native Windows status/global-template p99 evidence is
+recorded; query projection outside the control owner and bounded progress for
+other synchronous/bulk mutations remain open under `P4-11`. Native Linux
+measurement is deferred until CI is ready, as requested on
 September 13, 2026. Release-platform gates remain separate.
 
 - Complete control-plane operations over the Phase-1 scheduler.
@@ -435,14 +439,17 @@ Phase 4B completes the implementation and regression gates `P4-01` through
 `P4-10` in `implementation-readiness.md`:
 authentication and connection-local events; shared RPC accounting; replayable
 option/source changes; registry/configuration completion; sanitized session
-compatibility; CLI/transport/Rust parity; opt-in slow-slot scheduling; and real
-active-download performance plus platform evidence. `P4-11` passes natively on
-Windows-GNU for all four transports: 20,000 calls each, 1,000 active HTTP ranges,
-worst p99 0.542 ms against 50 ms, and bounded memory under stalled consumers.
-Measured bursts last at most 343 ms. Native Linux acceptance remains deferred
-until CI is ready; the manual native Linux workflow preserves the same gates.
-Do not claim that deferred platform evidence or the complete release matrix
-has passed.
+compatibility; CLI/transport/Rust parity; and opt-in slow-slot scheduling.
+Performance and platform evidence belong to `P4-11`. Its measured portion passes
+natively on Windows-GNU for all four transports: 20,000 calls each, 1,000 active
+HTTP ranges, worst p99 0.542 ms against 50 ms, and bounded memory under stalled
+consumers.
+Measured bursts last at most 343 ms. These status/global-template measurements
+do not close query projection outside the control owner or bounded progress for
+other synchronous/bulk mutations. Those implementation/evidence requirements
+remain open. Native Linux acceptance remains deferred until CI is ready; the
+manual native Linux workflow preserves the same measurement gates. Do not claim
+all of `P4-11`, deferred platform evidence or the complete release matrix passed.
 
 ## Phase 5: Metalink, FTP, SFTP
 

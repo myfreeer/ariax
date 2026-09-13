@@ -1,6 +1,8 @@
 # Zero-Copy Policy
 
-Status: reviewed pre-implementation contract. Implementation pending.
+Status: move-only pooled-buffer handoff through storage and the blocking disk
+lane is implemented. Registered kernel buffers and kernel zero-copy transfer
+backends remain deferred optimizations under the contracts below.
 
 Zero-copy is allowed by this design, but only as a backend optimization. It is
 not allowed to bypass the storage engine, checksum rules, recovery journal, rate

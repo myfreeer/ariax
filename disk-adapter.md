@@ -1,10 +1,9 @@
 # Disk Adapter Design
 
-Status: first-slice implementation in progress. The bounded portable write
-lane and its ownership/admission contract are implemented. It consumes opaque
-epoch-bound handles but does not mint them; secure open/reopen, native
-positional-I/O executors, priority/fair scheduling, and adaptive policy remain
-pending.
+Status: the bounded blocking write lane, ownership/admission contract and
+positional file executor are implemented. Secure Unix/Windows capability
+adapters supply verified open/reopen handles to that lane. Native asynchronous
+disk backends, priority/fair scheduling and adaptive policy remain roadmap work.
 
 Decision: build the downloader's disk adapter in-house, but do not hand-roll
 raw platform syscalls when a small, maintained wrapper is enough.

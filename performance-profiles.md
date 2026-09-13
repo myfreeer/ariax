@@ -44,6 +44,12 @@ optimized scenarios and fails on a missing barrier, incomplete call count,
 unreleased stalled-consumer credit, memory overflow or latency-gate failure.
 Its JSON reports must be recorded before closing native Linux acceptance.
 
+These scenarios measure status calls and global-template mutations. They do
+not close the `P4-11` requirement to move query projection outside the control
+owner, or establish bounded progress for other synchronous/bulk mutations.
+The current projection path still holds the control-owner mutex; the full gate
+remains open independently of the deferred native Linux measurement.
+
 ### Native Windows Control Plane Evidence
 
 The September 13, 2026 run uses native Windows-GNU Rust 1.97.1, two Tokio

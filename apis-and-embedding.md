@@ -74,7 +74,7 @@ HTTP, WebSocket, and stdio. Every multicall member authenticates independently.
 The dispatcher accepts JSON-RPC notifications without generating a response.
 The bounded broker publishes scheduler-observed aria2 start/pause/stop/
 complete/error notifications plus coalesced namespaced status updates.
-WebSocket and Content-Length stdio clients receive pushed events; HTTP and
+WebSocket and Content-Length/NDJSON stdio clients receive pushed events; HTTP and
 other request/response clients can use explicit `ariax.subscribe`/
 `ariax.pollEvents`. `--rpc-user` and `--rpc-passwd` (or `ARIAX_RPC_USER` and
 `ARIAX_RPC_PASSWD`) enable HTTP Basic on HTTP requests and WebSocket upgrades.
@@ -299,9 +299,14 @@ shutdown drains accepted work within the supervisor's shutdown allowance before
 taking ownership of the engine for teardown. Failure to drain leaves a dirty
 shutdown that requires recovery. Other synchronous mutation paths and bulk
 operations still require bounded progress under `P4-11`.
-Queries read the published root without first driving persistence. Immutable
-query projection outside the control owner and the real active-range latency
-target remain completion requirements under `P4-11`.
+Queries read the published root without first driving persistence, but result
+projection still executes inside `HttpControlPlane::call_shared_with_context`
+while it holds the control-owner mutex. Moving immutable query projection
+outside that owner remains an open `P4-11` requirement. The native Windows
+active-range benchmark passes for status calls and global-template mutations;
+it does not establish bounded progress for other synchronous or bulk mutations.
+Native Linux benchmark acceptance is deferred until CI is ready. See
+[measurement evidence](performance-profiles.md#native-windows-control-plane-evidence).
 
 `system.multicall` is bounded but not transactional. Inner calls execute in
 order and may have side effects before a later inner call fails or the combined
@@ -352,8 +357,8 @@ does the current-generation SQLite mirror advance and the pending state clear.
 Recovery reuses an existing staged snapshot and appends only the missing
 promotion, as specified in `detailed-storage.md`; it must never append an
 untagged replacement over an accepted patch. Phase 4B implements these `P4-04`
-replay and live-rate repairs. Full runtime option application remains under
-`P4-07`.
+replay and live-rate repairs. `P4-07` also covers supported runtime options,
+including real output-path and piece-geometry restarts and atomic rejection.
 
 `changeUri` and `ariax.replaceSources` validate the complete proposed source set
 and scheduler conflicts before mutation. An active replacement owns a bounded

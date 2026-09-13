@@ -8,15 +8,19 @@ benchmark does not satisfy that requirement.
 
 Status: reviewed contract; the scoped Phase-3B/3C HTTP(S) downloader milestone
 is checkpointed at `30b70c5`, and the bounded Phase-4 control-plane checkpoint
-is executable at `71acb03`. Phase 4B repairs authentication, retry admission,
-active option journal recovery, live-rate changes, and source mutations. Shared
+is executable at `71acb03`; Phase-4B implementation and native Windows benchmark
+evidence are checkpointed at `f2f560e`. Phase 4B repairs authentication, retry
+admission, active option journal recovery, live-rate changes and source mutations. Shared
 RPC reservations, transport ownership, borrowed result preflight, and typed
 input/native projection accounting are implemented. Scheduler simulations and
 status drafts reserve before mutation and retain credit through pending driver
 work. Runtime option application, bounded URL rules, configuration reload/dumps,
 interface parity, sanitized sessions and slow-slot scheduling are implemented
-and tested. Native Windows active-download RPC evidence passes; native Linux
-benchmark acceptance is deferred at the user's request until CI is ready.
+and tested. Native Windows active-download RPC evidence passes for the measured
+status/global-template scenarios. Query projection outside the owner and bounded
+progress for other synchronous/bulk mutations remain open `P4-11` requirements;
+native Linux benchmark acceptance is deferred at the user's request until CI
+is ready.
 Core scheduling,
 bounded persistence/recovery, native storage handoff, runtime ownership,
 packet-independent stats, process bootstrap, and the first public Phase-3B
@@ -107,10 +111,12 @@ active ranges, worst p99 0.542 ms, at most 343 ms per measured burst, 250 ms
 cooldowns, renewed barriers, stalled event/response consumers and bounded memory.
 See the [raw results](performance-evidence/phase-4b-windows-gnu-2026-09-13.json).
 Native Linux measurement is explicitly deferred until CI is ready; the manual
-native Linux workflow preserves the full acceptance checks. Linux/native Windows
+native Linux workflow preserves the benchmark acceptance checks. Linux/native Windows
 builds, workspace tests and strict Clippy, Linux MSRV 1.88, generated contracts,
 formatting and instrumented smoke fuzzing pass. This does not close deferred
-native Linux or broader release-platform gates.
+native Linux or broader release-platform gates. Query projection still holds
+the control-owner mutex; moving it outside the owner and establishing bounded
+progress for other synchronous/bulk mutations also remain open under `P4-11`.
 
 The implemented HTTP discard hierarchy now has deterministic process/task/host
 fault coverage and a standalone bounded fuzz package (`fuzz/`) for HTTP
@@ -368,9 +374,9 @@ Design coverage:
   admission, and the Phase-4 shared dispatcher/control/event checkpoint.
   Broader RFC
   9530/Metalink identity, `Content-Digest`, additional checksum algorithms,
-  Last-Modified/unsafe-override resume, HTTP/2, growing bodies and native Linux
-  Phase-4 benchmark acceptance remain pending. Aria2 text-session compatibility
-  and the Phase-4B implementation gates are covered above.
+  Last-Modified/unsafe-override resume, HTTP/2, growing bodies, Phase-4 query/bulk
+  progress and native Linux benchmark acceptance remain pending. Aria2
+  text-session compatibility and the Phase-4B implementation gates are covered above.
 
 Legacy HTTP Basic RPC now has startup registry/CLI/environment validation,
 HTTP request and WebSocket upgrade gates, independent method tokens, redacted
@@ -605,11 +611,9 @@ Acceptance:
   destination suffix, with Unix parent-directory sync and no equivalent Windows
   directory-entry crash-durability claim; owned temporary backup main/sidecar
   files are cleaned after success and validation failure,
-- the current backup primitive does not yet recover a residue created by a
-  crash or temporary-unlink failure from destination-link publication until
-  removal is durably synced; verified same-file cleanup or a native atomic
-  no-replace primitive, with crash-point and unlink-error injection across that
-  entire window, is required before production use or tagging,
+- the backup primitive recovers generated publication residue only after
+  descriptor-bound same-file/link-count validation; collision and invalid-residue
+  preservation, crash-point and unlink-error tests cover the publication window,
 - journal installation completion/clearing requires the exact
   gid/checkpoint/new-journal token and cannot bypass primary-pointer invariants,
 - every task persists and validates its output-root binding; relocation/rebind

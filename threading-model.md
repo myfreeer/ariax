@@ -1,6 +1,9 @@
 # Threading Model
 
-Status: reviewed pre-implementation contract. Implementation pending.
+Status: Tokio HTTP/RPC execution, the bounded blocking disk lane, a dedicated
+session-owner thread, process budgets and bounded shutdown are implemented.
+The full CPU/BitTorrent lane topology and adaptive worker allocation below
+remain roadmap contracts. Current evidence is in `implementation-readiness.md`.
 
 Decision: use split worker pools by default, coordinated by one global resource
 budget. Do not run event loops, disk I/O, libtorrent, and hashing on one shared

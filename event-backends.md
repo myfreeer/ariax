@@ -1,6 +1,9 @@
 # Event Backend And I/O Selection
 
-Status: reviewed pre-implementation contract. Implementation pending.
+Status: production HTTP/RPC uses Tokio and the bounded blocking disk lane.
+The selection options, native io_uring/IOCP probes and disk failover below remain
+target contracts; those native disk backends are not implemented. Supporting
+native CI remains required before enabling them.
 
 The downloader uses Tokio/Mio as its one network reactor architecture and
 selects disk I/O independently. It must not crash when a preferred disk API is

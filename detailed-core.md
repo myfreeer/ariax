@@ -5,8 +5,10 @@ exhaustive transition matrix, deterministic command/event executor, barriers,
 queues, correlation tokens, bounded effects, effect identities, staged applied
 snapshots, and one-effect-at-a-time dispatch are executable. The bounded
 session-persistence sink and concrete bounded timer, allocation, cancellation,
-option-application, and no-space effect adapters are executable. Protocol
-workers and asynchronous native storage I/O remain pending.
+option-application, and no-space effect adapters are executable. HTTP workers,
+durable runtime option application and slow-slot/retry readmission are wired to
+the scheduler. Other protocol workers and asynchronous native storage backends
+remain later phases.
 
 This document defines the core types and state machines shared by config,
 scheduler, storage, HTTP, RPC, and session persistence.
@@ -659,8 +661,9 @@ restart path are derived from the bounded canonical task-source sets returned
 by the session owner. The ordered SQLite startup repair executor and the native
 startup handoff/coordinator are executable. Descriptor-safe
 capability/install/appender recovery, bounded live timer/no-space and worker
-request adapters, and publication-last process bootstrap are now wired. The
-actual protocol workers and their option application logic remain pending.
+request adapters, and publication-last process bootstrap are now wired. HTTP
+workers and their live/restart option application are implemented and tested;
+other protocol workers remain later phases.
 Explicit credential admissions remain available for a future encrypted
 credential provider.
 

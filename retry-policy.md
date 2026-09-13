@@ -5,11 +5,11 @@ and retry-budget accounting helper, cross-store retry/slow/no-space mapping,
 and scheduler-owned correlated automatic no-space probes are executable. The
 known-length HTTP worker executes bounded per-range aria2, conservative,
 aggressive, and validated custom retry profiles, and the latest bounded
-task-local retry decision is visible through RPC. Registry-backed admission of
-the complete retry option set remains a required fix: the current add-URI
-parser recognizes more retry names than the persistence policy permits. Until
-that alignment is complete, the control-plane checkpoint must not claim that
-all parsed retry options are executable. Nonzero span waits are flushed as
+task-local retry decision is visible through RPC. Phase 4B aligns the accepted
+HTTP retry options with registry-backed admission and persistence, including
+runtime/global updates and exact canonical recovery. Released retry slots retain
+their per-range deadlines and attempt counts across unchanged-snapshot
+readmission. Nonzero span waits are flushed as
 paired piece/source retry decisions before scheduling; restart reconstructs
 bounded monotonic deadlines, generation elapsed budget, attempt caps, and
 visible retry counts while ignoring unrelated task/URI waits and fail-closing
@@ -177,9 +177,9 @@ missing definitions for the HTTP parser's accepted set: `max-tries`,
 bounds, allowed enum values, and cross-field validation; adding a name must not
 advertise an unimplemented runtime scope.
 
-The Phase-4B admission repair registers that complete set for per-download
-admission and exact recovery. Its entries remain partial and do not enable
-runtime/global scopes until the corresponding `P4-07` application paths pass.
+Phase 4B registers that complete set for per-download admission and exact
+recovery. The corresponding `P4-07` runtime/global application paths also pass,
+including profile precedence, alias replacement and atomic mixed rejection.
 The production registry policy is shared by CLI and embedding, retained at
 bootstrap, and checked before creating any admission journal. The canonical
 snapshot must round-trip through the protocol parser before publication.

@@ -9,8 +9,9 @@ reconstruction, exact generation/layout/lease/finalization validation, and
 whole-checkpoint hash validation are also executable. File-backed typed append,
 flush acknowledgement, tail/content reopen validation after portable named-file
 preflight, and durable linked rotation are executable. That portable boundary
-does not establish native namespace authority. Native root identity
-revalidation and checkpoint compaction writing remain pending. The SQLite v2
+does not establish native namespace authority. The native capability adapters
+now provide descriptor-bound root identity revalidation; checkpoint compaction
+writing remains pending. The SQLite v2
 synchronous primitive creates and validates the exact strict schema, preserves
 dense queues across atomic queue/pause/slow-metadata transitions, and enforces
 bounded semantic reads and
@@ -32,8 +33,10 @@ normalizations, terminal retentions, and journal-authority cache/root repairs
 one command at a time through the same bounded owner. Queue-full admission
 retains the exact owned command for retry, and an unexpected completion or any
 accepted persistence failure makes startup fail closed before publication. The
-native filesystem/install/appender executor and restored-driver publication
-remain pending, as does the checkpoint state writer.
+native filesystem/install/appender executor and publication-last restored
+driver are wired through process bootstrap. The checkpoint state writer remains
+pending. Phase 4B also implements sanitized atomic JSON/aria2 session import and
+export, configured destinations, periodic saves and shutdown save/drain.
 
 Decision: use a hybrid persistence model:
 
@@ -991,11 +994,11 @@ SQLite:
   currently claim crash-durable directory-entry publication. A crash or
   temporary-unlink failure at any point from destination-link publication until
   removal is durably synced can leave or resurrect two names for one inode;
-  normal unique-link validation rejects that residue. Verified recovery of only
-  the generated same-file alias, or a native atomic no-replace publication
-  primitive, plus crash-point and unlink-error tests across that entire window
-  is required before production use or tagging. Periodic backup scheduling and
-  bounded generation retention remain pending integration work.
+  normal unique-link validation rejects that residue. The backup primitive now
+  recovers only a verified generated same-file alias using descriptor identity
+  and link-count checks. Collision, invalid-residue, crash-point and unlink-error
+  regressions cover the publication window. Periodic backup scheduling, bounded
+  generation retention and the full native release matrix remain pending.
 
 Control journal:
 

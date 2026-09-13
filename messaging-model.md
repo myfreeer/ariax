@@ -1,9 +1,10 @@
 # Thread Messaging And Queues
 
-Status: bounded ownership primitives implemented; lane integration pending.
-Item+byte queue credit, close-time ownership return, and move-only reserved
-completion delivery are executable. Tokio/crossbeam adapters, control fairness,
-async waits, and shutdown orchestration remain pending.
+Status: item+byte queue credit, close-time ownership return and move-only
+reserved completions are integrated with the session owner, blocking disk lane
+and HTTP/RPC paths. Tokio transport waits and bounded shutdown are executable.
+Specialized hot-lane adapters and the full urgent/bulk control fairness contract
+remain open; `implementation-readiness.md` tracks the control progress gates.
 
 Decision: keep Rust as the implementation language, but do not use one generic
 channel everywhere. The downloader uses bounded, lane-specific queues. Hot data

@@ -1,6 +1,9 @@
 # Split Download Design
 
-Status: reviewed pre-implementation contract. Implementation pending.
+Status: known-length HTTP split downloads, piece-aligned range leases, concurrent
+mirrors, durable resume and bounded cancellation-fenced endgame are implemented.
+Adaptive lease sizing and non-HTTP protocol integration remain roadmap work.
+`detailed-http-first-slice.md` defines the current executable boundary.
 
 Decision: use dynamic non-overlapping range leases, not overlapping
 "connection 1 downloads 0-100%, connection 2 downloads 50-100%" style ranges.
