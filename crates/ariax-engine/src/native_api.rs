@@ -75,6 +75,8 @@ pub struct EngineBuilder {
     control_directory: Option<PathBuf>,
     database_path: Option<PathBuf>,
     profile: RuntimeProfile,
+    session_export: Option<crate::SessionExportConfig>,
+    input_file: Option<(PathBuf, crate::SessionFormat)>,
 }
 
 impl EngineBuilder {
@@ -99,6 +101,18 @@ impl EngineBuilder {
     #[must_use]
     pub fn profile(mut self, profile: RuntimeProfile) -> Self {
         self.profile = profile;
+        self
+    }
+
+    #[must_use]
+    pub fn session_export(mut self, config: crate::SessionExportConfig) -> Self {
+        self.session_export = Some(config);
+        self
+    }
+
+    #[must_use]
+    pub fn input_file(mut self, path: impl Into<PathBuf>, format: crate::SessionFormat) -> Self {
+        self.input_file = Some((path.into(), format));
         self
     }
 
@@ -143,6 +157,16 @@ impl EngineBuilder {
         plane
             .attach_rpc_budgets(resources.rpc_budgets())
             .map_err(|error| NativeApiError::Bootstrap(error.to_string()))?;
+        if let Some(config) = self.session_export {
+            plane
+                .configure_session_export(config)
+                .map_err(NativeApiError::Control)?;
+        }
+        if let Some((path, format)) = self.input_file {
+            plane
+                .import_session_file(&path, format)
+                .map_err(NativeApiError::Control)?;
+        }
         let resolver = HttpResolver::new(HttpResolverConfig::default())
             .map_err(|error| NativeApiError::Bootstrap(error.to_string()))?;
         let cookies = HttpCookieJar::bundled(HttpCookieLimits::default())
@@ -321,6 +345,53 @@ impl Engine {
             })
     }
 
+    pub async fn save_session(&self) -> Result<(), NativeApiError> {
+        self.call_control("aria2.saveSession", json!([])).await?;
+        Ok(())
+    }
+
+    pub async fn export_session(
+        &self,
+        format: crate::SessionFormat,
+    ) -> Result<String, NativeApiError> {
+        let result = self.call_control("ariax.exportSession", json!([])).await?;
+        let _bytes = self
+            .client
+            .charge(crate::MAX_SESSION_DOCUMENT_BYTES)
+            .map_err(native_budget_error)?;
+        let bytes =
+            crate::session_file::render(&result, format).map_err(NativeApiError::Control)?;
+        String::from_utf8(bytes)
+            .map_err(|_| NativeApiError::InvalidResponse("session export is not UTF-8"))
+    }
+
+    pub async fn import_session(
+        &self,
+        document: String,
+        format: crate::SessionFormat,
+    ) -> Result<Vec<Gid>, NativeApiError> {
+        if document.len() > crate::MAX_SESSION_DOCUMENT_BYTES {
+            return Err(NativeApiError::InvalidConfiguration(
+                "session input exceeds its byte limit",
+            ));
+        }
+        let result = self
+            .call_control("ariax.importSession", json!([document, format.as_str()]))
+            .await?;
+        result
+            .as_array()
+            .ok_or(NativeApiError::InvalidResponse(
+                "session import did not return GIDs",
+            ))?
+            .iter()
+            .map(|value| {
+                value.as_str().and_then(|value| value.parse().ok()).ok_or(
+                    NativeApiError::InvalidResponse("session import returned an invalid GID"),
+                )
+            })
+            .collect()
+    }
+
     pub fn subscribe(
         &self,
         limits: RpcEventLimits,
@@ -346,10 +417,15 @@ impl Engine {
             NativeApiError::Shutdown("control plane is still referenced".to_owned())
         })?;
         let plane = plane.into_inner();
-        plane
+        let report = plane
             .shutdown_async()
             .await
             .map_err(|error| NativeApiError::Shutdown(error.to_string()))?;
+        if !report.is_clean() {
+            return Err(NativeApiError::Shutdown(
+                "engine did not complete a clean shutdown".to_owned(),
+            ));
+        }
         Ok(())
     }
 
@@ -488,8 +564,14 @@ fn create_private_directory(
 ) -> Result<(), NativeApiError> {
     #[cfg(windows)]
     {
-        ariax_windows_security::create_private_directory(path)
-            .map_err(|_| NativeApiError::InvalidConfiguration(error))
+        match ariax_windows_security::create_private_directory(path) {
+            Ok(()) => Ok(()),
+            Err(failure) if failure.kind() == std::io::ErrorKind::AlreadyExists => {
+                ariax_windows_security::verify_private_directory(path)
+            }
+            Err(failure) => Err(failure),
+        }
+        .map_err(|_| NativeApiError::InvalidConfiguration(error))
     }
     #[cfg(unix)]
     {
@@ -514,6 +596,72 @@ mod tests {
             .await
             .expect_err("relative output root must reject");
         assert!(matches!(error, NativeApiError::InvalidConfiguration(_)));
+    }
+
+    #[tokio::test]
+    async fn native_session_operations_preserve_atomic_import_and_final_shutdown_save() {
+        let root =
+            std::env::temp_dir().join(format!("ariax-native-session-{}", std::process::id()));
+        fs::create_dir_all(&root).expect("root");
+        let input = root.join("input.txt");
+        let export = root.join("export.json");
+        fs::write(
+            &input,
+            "http://example.test/file\n  pause=true\n  split=3\n",
+        )
+        .expect("input");
+        let engine = Engine::builder()
+            .output_root(root.join("output"))
+            .input_file(&input, crate::SessionFormat::Aria2)
+            .session_export(crate::SessionExportConfig {
+                path: export.clone(),
+                format: crate::SessionFormat::Json,
+                interval: None,
+            })
+            .build()
+            .await
+            .expect("build with import");
+        let document = engine
+            .export_session(crate::SessionFormat::Json)
+            .await
+            .expect("export");
+        let gids = engine
+            .import_session(document, crate::SessionFormat::Json)
+            .await
+            .expect("atomic import");
+        assert_eq!(gids.len(), 1);
+        assert_eq!(
+            engine.status(gids[0]).await.expect("status").status,
+            Aria2Status::Paused
+        );
+        assert!(
+            engine
+                .import_session("{\"tasks\":null}".to_owned(), crate::SessionFormat::Json)
+                .await
+                .is_err()
+        );
+        assert_eq!(engine.plane.lock().await.task_catalog().len(), 2);
+        engine.save_session().await.expect("explicit save");
+        let bytes = fs::read(&export).expect("saved bytes");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&bytes).expect("JSON")["tasks"]
+                .as_array()
+                .expect("tasks")
+                .len(),
+            2
+        );
+        engine.shutdown().await.expect("final save and shutdown");
+        let recovered = Engine::builder()
+            .output_root(root.join("output"))
+            .build()
+            .await
+            .expect("recover");
+        assert_eq!(
+            recovered.status(gids[0]).await.expect("recovered").status,
+            Aria2Status::Paused
+        );
+        recovered.shutdown().await.expect("shutdown recovery");
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[tokio::test]

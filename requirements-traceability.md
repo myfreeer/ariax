@@ -80,6 +80,15 @@ credit release. An allocation-contract test covers 1,000 active scheduler tasks;
 real-download latency/RSS evidence remains under `P4-11`. Complete runtime option
 application under `P4-07` also remains open.
 
+`P4-08` now covers strict whole-document JSON/aria2 parsing, atomic batch task
+metadata with crash recovery, private configured exports, periodic/final saves,
+and CLI/Rust/RPC import/export parity. Tests prove invalid suffixes publish no
+task prefix, disconnected accepted imports finish, and export failures leave
+complete old or new bytes. Linux/native Windows workspace tests and Clippy,
+Linux MSRV 1.88, generated contracts, and a short 2,000-run parser fuzz smoke
+check pass. Native Windows file creation supplies a protected private ACL;
+instrumented fuzz and final performance/platform evidence remain `P4-11` gates.
+
 The implemented HTTP discard hierarchy now has deterministic process/task/host
 fault coverage and a standalone bounded fuzz package (`fuzz/`) for HTTP
 headers, retry specifications, discard accounting, and journal replay. The

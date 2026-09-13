@@ -63,6 +63,73 @@ fn no_arguments_show_help() {
 }
 
 #[test]
+fn local_session_input_and_shutdown_export_round_trip_without_partial_import() {
+    let root = std::env::temp_dir().join(format!("ariax-cli-session-{}", std::process::id()));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+            .expect("private root");
+    }
+    #[cfg(windows)]
+    ariax_windows_security::create_private_directory(&root).expect("private root");
+    let input = root.join("input.txt");
+    let export = root.join("export.json");
+    std::fs::write(
+        &input,
+        "http://example.test/file\n  pause=true\n  split=3\n",
+    )
+    .expect("input");
+    let output = ariax()
+        .arg(format!("--input-file={}", input.display()))
+        .arg(format!("--save-session={}", export.display()))
+        .arg("--save-session-format=json")
+        .arg("--rpc-stdio")
+        .arg(root.join("session.db"))
+        .arg(root.join("control"))
+        .arg(root.join("output"))
+        .output()
+        .expect("run local session CLI");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&export).expect("export")).expect("JSON");
+    assert_eq!(document["tasks"].as_array().expect("tasks").len(), 1);
+    assert_eq!(document["tasks"][0]["options"]["split"], "3");
+    assert_eq!(document["tasks"][0]["options"]["pause"], "true");
+    std::fs::write(
+        &input,
+        "http://example.test/valid\n  pause=true\nhttp://example.test/invalid\n  split=0\n",
+    )
+    .expect("invalid suffix");
+    let rejected = ariax()
+        .arg(format!("--input-file={}", input.display()))
+        .arg(format!("--save-session={}", export.display()))
+        .arg("--save-session-format=json")
+        .arg("--rpc-stdio")
+        .arg(root.join("session.db"))
+        .arg(root.join("control"))
+        .arg(root.join("output"))
+        .output()
+        .expect("reject invalid import");
+    assert!(!rejected.status.success());
+    let document: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(export).expect("last export")).expect("JSON");
+    assert_eq!(
+        document["tasks"]
+            .as_array()
+            .expect("no partial import")
+            .len(),
+        1
+    );
+    std::fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
 fn unknown_argument_is_rejected() {
     let output = ariax().arg("--not-an-option").output().expect("run ariax");
     assert_eq!(output.status.code(), Some(2));

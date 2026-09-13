@@ -54,12 +54,25 @@ pub(crate) enum RpcJsonError {
 }
 
 pub(crate) fn parse(bytes: &[u8], lease: &RpcRequestLease) -> Result<Value, RpcJsonError> {
+    parse_with_policy(bytes, lease, false)
+}
+
+pub(crate) fn parse_strict(bytes: &[u8], lease: &RpcRequestLease) -> Result<Value, RpcJsonError> {
+    parse_with_policy(bytes, lease, true)
+}
+
+fn parse_with_policy(
+    bytes: &[u8],
+    lease: &RpcRequestLease,
+    reject_duplicates: bool,
+) -> Result<Value, RpcJsonError> {
     let mut deserializer = serde_json::Deserializer::from_slice(bytes);
     let exhausted = Cell::new(None);
     let value = Seed {
         lease,
         depth: 0,
         exhausted: &exhausted,
+        reject_duplicates,
     }
     .deserialize(&mut deserializer)
     .map_err(|_| {
@@ -75,6 +88,7 @@ struct Seed<'a> {
     lease: &'a RpcRequestLease,
     depth: usize,
     exhausted: &'a Cell<Option<RpcBudgetError>>,
+    reject_duplicates: bool,
 }
 
 impl Seed<'_> {
@@ -93,6 +107,7 @@ impl Seed<'_> {
             lease: self.lease,
             depth: self.depth + 1,
             exhausted: self.exhausted,
+            reject_duplicates: self.reject_duplicates,
         })
     }
 }
@@ -147,6 +162,9 @@ impl<'de> Visitor<'de> for Seed<'_> {
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
         let mut values = Map::new();
         while let Some(Value::String(key)) = map.next_key_seed(KeySeed(self.child()?))? {
+            if self.reject_duplicates && values.contains_key(&key) {
+                return Err(de::Error::custom("duplicate session field"));
+            }
             let value = map.next_value_seed(self.child()?)?;
             values.insert(key, value);
         }

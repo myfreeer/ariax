@@ -5,7 +5,8 @@ use crate::{
     SessionHostKeyChallengeRecord, SessionHostKeyResolution, SessionJournalCache,
     SessionNoSpaceCondition, SessionQueueState, SessionQueueTransition, SessionRecord,
     SessionStoppedResultRecord, SessionStore, SessionStoreConfig, SessionStoreError,
-    SessionStoreSettings, SessionTaskRecord, SessionTaskSourceRecord, SessionTaskSourceSet,
+    SessionStoreSettings, SessionTaskMetadata, SessionTaskRecord, SessionTaskSourceRecord,
+    SessionTaskSourceSet,
 };
 use ariax_core::{Generation, Gid, HostKeyChallengeId};
 use std::collections::BTreeMap;
@@ -77,6 +78,8 @@ pub enum SessionCommand {
         sources: Vec<SessionTaskSourceRecord>,
         options: SanitizedOptionMap,
     },
+    CreateTaskBatch(Arc<[SessionTaskMetadata]>),
+    ConfirmTaskMetadata(Arc<SessionTaskMetadata>),
     ReadTasks,
     ReadStoppedResults,
     TransitionTaskQueue(SessionQueueTransition),
@@ -843,6 +846,14 @@ fn execute_command(
             .tasks()
             .map(SessionCommandResult::Tasks)
             .map_err(SessionPersistenceError::Store),
+        SessionCommand::CreateTaskBatch(tasks) => {
+            store.create_task_batch(&tasks, policy)?;
+            Ok(SessionCommandResult::Unit)
+        }
+        SessionCommand::ConfirmTaskMetadata(task) => {
+            store.confirm_task_metadata(&task, policy)?;
+            Ok(SessionCommandResult::Unit)
+        }
         SessionCommand::ReadStoppedResults => store
             .stopped_results()
             .map(SessionCommandResult::StoppedResults)

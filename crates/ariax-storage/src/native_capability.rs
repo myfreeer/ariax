@@ -404,6 +404,16 @@ impl JournalDirectoryCapability {
         self.0.link_no_replace(source, destination)
     }
 
+    pub(crate) fn rename_replace(
+        &self,
+        source: &OsStr,
+        destination: &OsStr,
+    ) -> Result<(), NativeCapabilityError> {
+        validate_single_name(source)?;
+        validate_single_name(destination)?;
+        platform::rename_replace(&self.0.native, source, destination)
+    }
+
     pub(crate) fn remove_file(&self, name: &OsStr) -> Result<(), NativeCapabilityError> {
         validate_single_name(name)?;
         self.0.remove_file(name)
@@ -877,6 +887,16 @@ mod platform {
             .map_err(Into::into)
     }
 
+    pub(super) fn rename_replace(
+        directory: &DirectoryHandle,
+        source: &OsStr,
+        destination: &OsStr,
+    ) -> Result<(), NativeCapabilityError> {
+        fs::renameat(directory, source, directory, destination)
+            .map_err(std::io::Error::from)
+            .map_err(Into::into)
+    }
+
     pub(super) fn remove_file(
         directory: &DirectoryHandle,
         name: &OsStr,
@@ -1006,6 +1026,15 @@ mod platform {
         destination: &OsStr,
     ) -> Result<(), NativeCapabilityError> {
         link_relative_no_replace(directory, source, destination).map_err(Into::into)
+    }
+
+    pub(super) fn rename_replace(
+        directory: &DirectoryHandle,
+        source: &OsStr,
+        destination: &OsStr,
+    ) -> Result<(), NativeCapabilityError> {
+        ariax_windows_security::rename_relative_replace(directory, source, destination)
+            .map_err(Into::into)
     }
 
     pub(super) fn remove_file(

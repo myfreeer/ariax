@@ -3,13 +3,17 @@
 use ariax_config::{OptionValue, SecretString, builtin_registry, parse_option_value};
 use ariax_engine::RpcAuthPolicy;
 use ariax_runtime::RuntimeProfile;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::ffi::OsString;
+use std::path::PathBuf;
+use std::time::Duration;
 
 #[derive(Debug, Default)]
 pub(crate) struct StartupOptions {
     pub profile: Option<RuntimeProfile>,
+    pub session_export: Option<ariax_engine::SessionExportConfig>,
+    pub input_file: Option<(PathBuf, ariax_engine::SessionFormat)>,
     credentials: BTreeMap<&'static str, SecretString>,
 }
 
@@ -17,7 +21,39 @@ impl StartupOptions {
     pub fn parse(arguments: &[OsString]) -> Result<(Self, &[OsString]), String> {
         let mut options = Self::default();
         let mut cursor = 0;
+        let mut session = BTreeMap::new();
+        let mut session_names = BTreeSet::new();
         while let Some(argument) = arguments.get(cursor).and_then(|arg| arg.to_str()) {
+            let (local_name, inline) = argument
+                .split_once('=')
+                .map_or((argument, None), |(name, value)| (name, Some(value)));
+            if matches!(
+                local_name,
+                "--save-session"
+                    | "--save-session-format"
+                    | "--save-session-interval"
+                    | "--input-file"
+                    | "--input-file-format"
+            ) {
+                if !session_names.insert(local_name) {
+                    return Err(format!("duplicate {local_name}"));
+                }
+                cursor += 1;
+                let value = match inline {
+                    Some(value) => value,
+                    None => {
+                        let value = arguments
+                            .get(cursor)
+                            .and_then(|arg| arg.to_str())
+                            .filter(|value| !value.starts_with("--"))
+                            .ok_or_else(|| format!("{local_name} requires a value"))?;
+                        cursor += 1;
+                        value
+                    }
+                };
+                session.insert(local_name, value);
+                continue;
+            }
             if let Some(value) = argument.strip_prefix("--profile=") {
                 if options.profile.is_some() {
                     return Err("duplicate --profile".to_owned());
@@ -61,6 +97,49 @@ impl StartupOptions {
             options
                 .credentials
                 .insert(name, parse_credential(name, value)?);
+        }
+        let absolute = |value: &str| -> Result<PathBuf, String> {
+            if value.is_empty() {
+                return Err("session path must not be empty".to_owned());
+            }
+            let path = PathBuf::from(value);
+            if path.is_absolute() {
+                Ok(path)
+            } else {
+                env::current_dir()
+                    .map(|base| base.join(path))
+                    .map_err(|_| "cannot resolve local session path".to_owned())
+            }
+        };
+        let format = |name: &str| -> Result<ariax_engine::SessionFormat, String> {
+            ariax_engine::SessionFormat::parse(session.get(name).copied().unwrap_or("aria2"))
+                .map_err(|_| format!("{name} requires aria2 or json"))
+        };
+        if let Some(path) = session.get("--save-session") {
+            let interval = session
+                .get("--save-session-interval")
+                .copied()
+                .unwrap_or("0")
+                .parse::<u64>()
+                .ok()
+                .filter(|seconds| *seconds <= 86_400)
+                .ok_or_else(|| {
+                    "--save-session-interval must be between 0 and 86400 seconds".to_owned()
+                })?;
+            options.session_export = Some(ariax_engine::SessionExportConfig {
+                path: absolute(path)?,
+                format: format("--save-session-format")?,
+                interval: (interval != 0).then(|| Duration::from_secs(interval)),
+            });
+        } else if session.contains_key("--save-session-format")
+            || session.contains_key("--save-session-interval")
+        {
+            return Err("session format and interval require --save-session".to_owned());
+        }
+        if let Some(path) = session.get("--input-file") {
+            options.input_file = Some((absolute(path)?, format("--input-file-format")?));
+        } else if session.contains_key("--input-file-format") {
+            return Err("input format requires --input-file".to_owned());
         }
         Ok((options, &arguments[cursor..]))
     }
@@ -127,6 +206,42 @@ fn parse_credential(name: &'static str, value: &str) -> Result<SecretString, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_startup_options_validate_formats_intervals_and_required_paths() {
+        let arguments = [
+            "--save-session=export.txt",
+            "--save-session-interval=5",
+            "--input-file=input.txt",
+            "--input-file-format=json",
+            "--rpc-stdio",
+        ]
+        .map(OsString::from);
+        let (options, rest) = StartupOptions::parse(&arguments).expect("session options");
+        let save = options.session_export.expect("export");
+        assert!(save.path.is_absolute());
+        assert_eq!(save.format, ariax_engine::SessionFormat::Aria2);
+        assert_eq!(save.interval, Some(Duration::from_secs(5)));
+        assert_eq!(
+            options.input_file.expect("input").1,
+            ariax_engine::SessionFormat::Json
+        );
+        assert_eq!(rest, &[OsString::from("--rpc-stdio")]);
+        for invalid in [
+            vec!["--input-file-format=json"],
+            vec!["--save-session-format=aria2"],
+            vec!["--save-session-interval=1"],
+            vec!["--input-file="],
+            vec!["--input-file=x", "--input-file-format=yaml"],
+            vec!["--save-session=x", "--save-session-interval=86401"],
+            vec!["--save-session=x", "--save-session=y"],
+        ] {
+            assert!(
+                StartupOptions::parse(&invalid.into_iter().map(OsString::from).collect::<Vec<_>>())
+                    .is_err()
+            );
+        }
+    }
 
     #[test]
     fn rpc_startup_credentials_override_environment_without_exposure() {

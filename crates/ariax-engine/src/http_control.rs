@@ -7,7 +7,7 @@
 use crate::http_first_slice::append_initial_admission_with_options;
 use crate::rpc_result::{
     DisplayValue, OptionMap, PersistedSources, PersistedUris, RESULT_VALUE_BYTES, ResultList,
-    SourceServers, SourceUris,
+    SessionOptions, SourceServers, SourceUris,
 };
 use crate::{
     HttpContentChecksum, HttpRetryAfterPolicy, HttpRetryBackoff, HttpRetryPolicy, HttpRetryProfile,
@@ -33,8 +33,8 @@ use ariax_storage::{
     ControlJournalAppender, GenerationStartReason, JournalPayload, OptionsSnapshotScope,
     PathPlatform, PlatformPath, SafePathBuilder, SanitizedOptionMap, SessionCommand,
     SessionCommandResult, SessionHandle, SessionId, SessionQueueOrder, SessionQueueState,
-    SessionSlowSlotState, SessionStoppedResultRecord, SessionTaskRecord, SessionTerminalStatus,
-    TaskPauseReason, TaskRemoveReason,
+    SessionSlowSlotState, SessionStoppedResultRecord, SessionTaskMetadata, SessionTaskRecord,
+    SessionTerminalStatus, TaskPauseReason, TaskRemoveReason,
 };
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
@@ -61,6 +61,28 @@ pub struct HttpControlPlaneConfig {
     pub journal_root: PathBuf,
     pub task_capacity: NonZeroUsize,
     pub supervisor: HttpWorkerSupervisorConfig,
+}
+
+/// Local-only destination for explicit, periodic, and shutdown session exports.
+#[derive(Clone, Debug)]
+pub struct SessionExportConfig {
+    pub path: PathBuf,
+    pub format: crate::SessionFormat,
+    pub interval: Option<Duration>,
+}
+
+struct ConfiguredSessionExport {
+    destination: ariax_storage::SessionExportDestination,
+    format: crate::SessionFormat,
+    interval: Option<Duration>,
+    next_save: Option<Instant>,
+}
+
+struct PendingSessionExport {
+    completion: oneshot::Receiver<Result<(), HttpControlError>>,
+    reply: Option<oneshot::Sender<Result<Value, HttpControlError>>>,
+    _thread: std::thread::JoinHandle<()>,
+    _request: crate::rpc_budget::RpcRequestLease,
 }
 
 impl HttpControlPlaneConfig {
@@ -136,6 +158,10 @@ enum ControlReply {
 }
 
 enum MutationPublication {
+    Import {
+        remaining: VecDeque<ImportMember>,
+        result: Value,
+    },
     Admission {
         gid: Gid,
         readmission_started: bool,
@@ -147,6 +173,11 @@ enum MutationPublication {
         kind: ValidatedOptionPatchKind,
         live_rate: Option<ariax_runtime::PreparedRateLimit>,
     },
+}
+
+struct ImportMember {
+    command: SchedulerCommand,
+    plan: PersistenceEffectPlan,
 }
 
 struct PendingMutation {
@@ -194,6 +225,10 @@ pub struct HttpControlPlane {
     direct_client: crate::RpcClientBudget,
     pending_work: Option<ControlWorkReservation>,
     pending_mutation: Option<PendingMutation>,
+    session_export: Option<ConfiguredSessionExport>,
+    pending_session_export: Option<PendingSessionExport>,
+    completed_session_exports: u64,
+    last_session_export_failed: bool,
 }
 
 impl fmt::Debug for HttpControlPlane {
@@ -253,6 +288,10 @@ impl HttpControlPlane {
             direct_client,
             pending_work: None,
             pending_mutation: None,
+            session_export: None,
+            pending_session_export: None,
+            completed_session_exports: 0,
+            last_session_export_failed: false,
         };
         plane.restore_catalog()?;
         plane.reset_observed_statuses();
@@ -333,6 +372,7 @@ impl HttpControlPlane {
                 break false;
             }
         };
+        let exports_drained = continuations_drained && self.drain_session_export(deadline);
         let Self {
             engine,
             mut supervisor,
@@ -354,7 +394,7 @@ impl HttpControlPlane {
         } else {
             ProcessDrainOutcome::Drained
         };
-        shutdown.complete_drain(if continuations_drained {
+        shutdown.complete_drain(if continuations_drained && exports_drained {
             drain
         } else {
             ProcessDrainOutcome::Failed
@@ -382,6 +422,8 @@ impl HttpControlPlane {
             }
             tokio::time::sleep(Duration::from_millis(1)).await;
         };
+        let exports_drained =
+            continuations_drained && self.drain_session_export_async(deadline).await;
         let Self {
             engine,
             supervisor,
@@ -400,7 +442,7 @@ impl HttpControlPlane {
             },
             None => ProcessDrainOutcome::Drained,
         };
-        shutdown.complete_drain(if continuations_drained {
+        shutdown.complete_drain(if continuations_drained && exports_drained {
             drain
         } else {
             ProcessDrainOutcome::Failed
@@ -594,6 +636,24 @@ impl HttpControlPlane {
             return;
         };
         let result = match pending.publication {
+            MutationPublication::Import {
+                mut remaining,
+                result,
+            } => {
+                if let Some(next) = remaining.pop_front() {
+                    if let Err(error) = self.prepare_and_begin(next.plan, next.command) {
+                        self.engine.fail_control_publication();
+                        let _ = pending.reply.send(Err(error));
+                        return;
+                    }
+                    self.pending_mutation = Some(PendingMutation {
+                        publication: MutationPublication::Import { remaining, result },
+                        reply: pending.reply,
+                    });
+                    return;
+                }
+                Ok(result)
+            }
             MutationPublication::Admission {
                 gid,
                 readmission_started,
@@ -695,6 +755,7 @@ impl HttpControlPlane {
 
     /// Performs one bounded engine/supervisor progress turn.
     pub fn poll_once(&mut self) -> Result<(), HttpControlError> {
+        self.poll_session_export();
         if !self.engine.is_idle() {
             match self.drive_engine_until(Instant::now() + Duration::from_millis(1)) {
                 Err(HttpControlError::Busy) => return Ok(()),
@@ -768,18 +829,17 @@ impl HttpControlPlane {
         request: Option<crate::rpc_budget::RpcRequestLease>,
     ) -> Result<ControlReply, HttpControlError> {
         let request = self.reserve_command_memory(method, &params, request.as_ref())?;
+        if matches!(method, "aria2.saveSession" | "saveSession") {
+            require_no_params(&params, "saveSession")?;
+            return self.begin_session_export(request.expect("command reservation"), true);
+        }
+        if method == "ariax.importSession" {
+            return self.begin_import_session(params, request.expect("command reservation"));
+        }
         let changes_tasks = changes_scheduler_tasks(method);
         let work = changes_tasks
             .then(|| {
-                let new_tasks = if method == "ariax.importSession" {
-                    params
-                        .get(0)
-                        .and_then(|document| document.get("tasks"))
-                        .and_then(Value::as_array)
-                        .map_or(0, Vec::len)
-                } else {
-                    usize::from(matches!(method, "aria2.addUri" | "addUri"))
-                };
+                let new_tasks = usize::from(matches!(method, "aria2.addUri" | "addUri"));
                 self.reserve_scheduler_work(request.as_ref(), new_tasks)
             })
             .transpose()?;
@@ -836,7 +896,6 @@ impl HttpControlPlane {
             "ariax.reloadConfig" => self.reload_config(params),
             "ariax.dumpConfig" => self.dump_config(params),
             "ariax.exportSession" => self.export_session(params),
-            "ariax.importSession" => self.import_session(params),
             _ => Err(HttpControlError::Unsupported("method not found")),
         };
         if let Ok(value) = &result {
@@ -854,6 +913,7 @@ impl HttpControlPlane {
         mut reply: oneshot::Receiver<Result<Value, HttpControlError>>,
     ) -> Result<Value, HttpControlError> {
         loop {
+            self.poll_session_export();
             match reply.try_recv() {
                 Ok(result) => return result,
                 Err(oneshot::error::TryRecvError::Empty) => {}
@@ -867,6 +927,7 @@ impl HttpControlPlane {
                 Ok(()) | Err(HttpControlError::Busy) => {}
                 Err(error) => return Err(error),
             }
+            std::thread::park_timeout(CONTROL_PROGRESS_POLL);
         }
     }
 
@@ -1037,13 +1098,6 @@ impl HttpControlPlane {
             }
         }
         self.observed_statuses = current;
-    }
-
-    fn add_uri(&mut self, params: Value) -> Result<Value, HttpControlError> {
-        match self.begin_add_uri(params)? {
-            ControlReply::Ready(value) => Ok(value),
-            ControlReply::Deferred(reply) => self.wait_for_mutation(reply),
-        }
     }
 
     fn begin_add_uri(&mut self, params: Value) -> Result<ControlReply, HttpControlError> {
@@ -2123,7 +2177,18 @@ impl HttpControlPlane {
     }
 
     fn export_session(&self, params: Value) -> Result<Value, HttpControlError> {
-        require_no_params(&params, "exportSession")?;
+        let args = params.as_array().filter(|args| args.len() <= 1).ok_or(
+            HttpControlError::InvalidParams("exportSession accepts an optional format"),
+        )?;
+        let format = args
+            .first()
+            .map(|value| {
+                crate::SessionFormat::parse(value.as_str().ok_or(
+                    HttpControlError::InvalidParams("session format must be text"),
+                )?)
+            })
+            .transpose()?
+            .unwrap_or_default();
         let root = self.engine.snapshot_reader().load();
         if root.len() > MAX_RPC_LIST_ITEMS {
             return Err(HttpControlError::Busy);
@@ -2148,14 +2213,17 @@ impl HttpControlPlane {
                 gid: DisplayValue<Gid>,
                 uris: PersistedUris<'a>,
                 sources: PersistedSources<'a>,
-                options: OptionMap<'a>,
+                options: SessionOptions<'a>,
                 state: &'static str,
             }
             tasks.push(&Task {
                 gid: DisplayValue(applied.snapshot.gid),
                 uris: PersistedUris(spec.sources()),
                 sources: PersistedSources(spec.sources()),
-                options: OptionMap(&options),
+                options: SessionOptions {
+                    options: &options,
+                    paused: applied.snapshot.desired_paused,
+                },
                 state: applied.snapshot.state.code(),
             })?;
         }
@@ -2165,31 +2233,399 @@ impl HttpControlPlane {
             Value::String(self.session_id.to_string()),
         );
         result.insert("tasks".to_owned(), tasks.finish());
-        Ok(Value::Object(result))
+        result.insert("formatVersion".to_owned(), Value::from(1));
+        let document = Value::Object(result);
+        if format == crate::SessionFormat::Aria2 {
+            let bytes = crate::session_file::render(&document, format)?;
+            return String::from_utf8(bytes)
+                .map(Value::String)
+                .map_err(|_| HttpControlError::InvalidConfig);
+        }
+        Ok(document)
     }
 
-    fn import_session(&mut self, params: Value) -> Result<Value, HttpControlError> {
-        let values = params.as_array().filter(|values| values.len() == 1).ok_or(
-            HttpControlError::InvalidParams("importSession requires an export object"),
-        )?;
-        let tasks = values[0].get("tasks").and_then(Value::as_array).ok_or(
-            HttpControlError::InvalidParams("session export has no tasks"),
-        )?;
-        if tasks.len() > MAX_RPC_LIST_ITEMS {
-            return Err(HttpControlError::InvalidParams("too many session tasks"));
+    fn begin_import_session(
+        &mut self,
+        params: Value,
+        request: crate::rpc_budget::RpcRequestLease,
+    ) -> Result<ControlReply, HttpControlError> {
+        if !self.engine.is_idle()
+            || self.pending_mutation.is_some()
+            || !self.pending_source_replacements.is_empty()
+        {
+            return Err(HttpControlError::Busy);
         }
-        let mut gids = Vec::with_capacity(tasks.len());
-        for task in tasks {
-            let uris = task
-                .get("uris")
-                .ok_or(HttpControlError::InvalidParams("session task has no URIs"))?;
-            let mut options = task.get("options").cloned().unwrap_or_else(|| json!({}));
-            if let Some(object) = options.as_object_mut() {
-                object.insert("pause".to_owned(), Value::Bool(true));
+        let imported = crate::session_file::parse_import(params, &request)?;
+        if imported.is_empty() {
+            return Ok(ControlReply::Ready(json!([])));
+        }
+        if self.tasks.len().saturating_add(imported.len()) > self.config.task_capacity.get() {
+            return Err(HttpControlError::Busy);
+        }
+        let work = self.reserve_scheduler_work(Some(&request), imported.len())?;
+        let mut simulation = self.engine.scheduler().clone();
+        let mut prepared = Vec::with_capacity(imported.len());
+        let mut next_id = self.next_task_id;
+        let mut gids = Vec::with_capacity(imported.len());
+        for task in imported {
+            let task_id = self.next_available_task_id(next_id)?;
+            next_id = task_id
+                .get()
+                .checked_add(1)
+                .ok_or(HttpControlError::InvalidConfig)?;
+            let gid = derive_http_gid(self.session_id, task_id);
+            let (options, root, output, paused) =
+                parse_add_options(&task.options, &self.config.output_root, &task.uris)?;
+            let spec = match task.sources {
+                Some(sources) => HttpTaskSpec::from_persisted_sources(
+                    task_id, gid, sources, root, output, options,
+                ),
+                None => HttpTaskSpec::new(task_id, gid, task.uris, root, output, options, false),
             }
-            gids.push(self.add_uri(json!([uris, options]))?);
+            .map_err(HttpControlError::TaskSpec)?;
+            let sanitized = spec
+                .persistence_options()
+                .map_err(HttpControlError::TaskSpec)?;
+            if !self.engine.permits_persisted_options(&sanitized)
+                || !HttpTaskOptions::from_sanitized(&sanitized)
+                    .is_ok_and(|value| &value == spec.options())
+                || spec.sources().iter().any(|source| {
+                    source
+                        .persistence_safe_uri()
+                        .is_some_and(|uri| uri.len() > ariax_storage::SESSION_MAX_SAFE_URI_BYTES)
+                })
+            {
+                return Err(HttpControlError::InvalidParams(
+                    "session task cannot be recovered under the persistence policy",
+                ));
+            }
+            let requirement = if spec.sources().iter().any(|source| source.uri().is_some()) {
+                None
+            } else {
+                spec.persistence_sources()
+                    .first()
+                    .map(crate::credential_requirement)
+            };
+            let conditions = TaskConditions {
+                needs_credentials: requirement,
+                no_space: None,
+            };
+            let command = SchedulerCommand::AddValidatedTask {
+                task_id,
+                gid,
+                desired_paused: paused,
+                conditions: conditions.clone(),
+            };
+            let queue = if paused {
+                QueueClass::Paused
+            } else {
+                QueueClass::Waiting
+            };
+            let position = simulation.queue_snapshot(queue).len();
+            simulation
+                .execute_command_at(command.clone(), MonotonicInstant::now())
+                .map_err(|error| HttpControlError::Scheduler(format!("{error:?}")))?;
+            prepared.push((spec, paused, position, conditions, command));
+            gids.push(Value::String(gid.to_string()));
         }
-        Ok(Value::Array(gids))
+        // No journal or catalog entry exists until every document member and
+        // the complete scheduler admission sequence have passed preflight.
+        let mut metadata = Vec::with_capacity(prepared.len());
+        let mut members = VecDeque::with_capacity(prepared.len());
+        let mut catalogs = Vec::with_capacity(prepared.len());
+        let mut appenders = Vec::with_capacity(prepared.len());
+        for (spec, paused, position, conditions, command) in prepared {
+            let (spec, task, plan, appender) =
+                self.build_admission_for_spec(spec, paused, position, conditions)?;
+            let entry = SessionTaskMetadata {
+                task,
+                sources: spec.persistence_sources(),
+                options: spec
+                    .persistence_options()
+                    .map_err(HttpControlError::TaskSpec)?,
+            };
+            let confirm = PersistenceEffectPlan::new(
+                plan.effect().clone(),
+                vec![PersistencePlanStep::ConfirmTaskMetadata(Arc::new(
+                    entry.clone(),
+                ))],
+            )
+            .map_err(|error| HttpControlError::Persistence(format!("{error:?}")))?;
+            metadata.push(entry);
+            appenders.push((spec.gid(), appender));
+            catalogs.push(spec);
+            members.push_back(ImportMember {
+                command,
+                plan: confirm,
+            });
+        }
+        let mut first = members.pop_front().expect("nonempty import");
+        first.plan = PersistenceEffectPlan::new(
+            first.plan.effect().clone(),
+            vec![PersistencePlanStep::CreateTaskBatch(metadata.into())],
+        )
+        .map_err(|error| HttpControlError::Persistence(format!("{error:?}")))?;
+        for (gid, appender) in appenders {
+            self.install_journal(gid, appender)?;
+            self.journal_sequences.insert(gid, 2);
+        }
+        for spec in catalogs {
+            self.tasks.insert(spec).map_err(HttpControlError::Catalog)?;
+        }
+        self.next_task_id = next_id;
+        if let Err(error) = self.prepare_and_begin(first.plan, first.command) {
+            self.engine.fail_control_publication();
+            return Err(error);
+        }
+        let (reply, receiver) = oneshot::channel();
+        self.pending_mutation = Some(PendingMutation {
+            publication: MutationPublication::Import {
+                remaining: members,
+                result: Value::Array(gids),
+            },
+            reply,
+        });
+        self.retain_pending_work(Some(work))?;
+        Ok(ControlReply::Deferred(receiver))
+    }
+
+    pub fn configure_session_export(
+        &mut self,
+        config: SessionExportConfig,
+    ) -> Result<(), HttpControlError> {
+        if self.pending_session_export.is_some()
+            || config.interval.is_some_and(|interval| {
+                interval.is_zero() || interval > Duration::from_secs(86_400)
+            })
+        {
+            return Err(HttpControlError::InvalidConfig);
+        }
+        let destination =
+            ariax_storage::SessionExportDestination::new(&config.path).map_err(|_| {
+                HttpControlError::InvalidParams("invalid local session export destination")
+            })?;
+        let canonical_parent = std::fs::canonicalize(
+            config
+                .path
+                .parent()
+                .ok_or(HttpControlError::InvalidConfig)?,
+        )
+        .map_err(|_| HttpControlError::InvalidConfig)?;
+        let canonical_path = std::fs::canonicalize(&config.path).unwrap_or_else(|_| {
+            canonical_parent.join(config.path.file_name().expect("validated export filename"))
+        });
+        let control = std::fs::canonicalize(self.engine.control_directory())
+            .map_err(|_| HttpControlError::InvalidConfig)?;
+        let database = std::fs::canonicalize(self.engine.session_database_path())
+            .map_err(|_| HttpControlError::InvalidConfig)?;
+        let managed_database = database.parent() == Some(canonical_parent.as_path())
+            && ["", "-wal", "-shm", ".ariax-owner-lock"]
+                .iter()
+                .any(|suffix| {
+                    let mut name = database
+                        .file_name()
+                        .expect("database filename")
+                        .to_os_string();
+                    name.push(suffix);
+                    canonical_path.file_name() == Some(name.as_os_str())
+                });
+        if canonical_path.starts_with(control) || managed_database {
+            return Err(HttpControlError::InvalidParams(
+                "session export overlaps managed persistence",
+            ));
+        }
+        self.session_export = Some(ConfiguredSessionExport {
+            destination,
+            format: config.format,
+            interval: config.interval,
+            next_save: config.interval.map(|interval| Instant::now() + interval),
+        });
+        Ok(())
+    }
+
+    pub fn import_session_file(
+        &mut self,
+        path: &std::path::Path,
+        format: crate::SessionFormat,
+    ) -> Result<Value, HttpControlError> {
+        let request = self
+            .direct_client
+            .try_request(0)
+            .map_err(|_| HttpControlError::Busy)?;
+        request
+            .reserve(crate::MAX_SESSION_DOCUMENT_BYTES + 1)
+            .map_err(|_| HttpControlError::Busy)?;
+        let document = ariax_storage::read_session_document(path).map_err(|_| {
+            HttpControlError::InvalidParams("cannot read bounded local session input")
+        })?;
+        self.call_admitted(
+            "ariax.importSession",
+            json!([document, format.as_str()]),
+            Some(request),
+        )
+    }
+
+    fn begin_session_export(
+        &mut self,
+        request: crate::rpc_budget::RpcRequestLease,
+        reply_requested: bool,
+    ) -> Result<ControlReply, HttpControlError> {
+        if self.pending_session_export.is_some()
+            || !self.engine.is_idle()
+            || self.pending_mutation.is_some()
+            || !self.pending_source_replacements.is_empty()
+        {
+            return Err(HttpControlError::Busy);
+        }
+        let configured = self
+            .session_export
+            .as_ref()
+            .ok_or(HttpControlError::Unsupported(
+                "save-session is not configured",
+            ))?;
+        let destination = configured.destination.clone();
+        let format = configured.format;
+        let work = request
+            .reserve_command(crate::MAX_SESSION_DOCUMENT_BYTES)
+            .map_err(|_| HttpControlError::Busy)?;
+        let workspace = request
+            .client()
+            .charge(crate::rpc_budget::RPC_RESULT_WORKSPACE_BYTES)
+            .map_err(|_| HttpControlError::Busy)?;
+        let document = self.export_session(json!([]))?;
+        let bytes = crate::session_file::render(&document, format)?;
+        drop(document);
+        drop(workspace);
+        let (send, completion) = oneshot::channel();
+        let retained = work.clone();
+        let thread = std::thread::Builder::new()
+            .name("ariax-session-export".to_owned())
+            .spawn(move || {
+                let _work = retained;
+                let result = destination.publish(&bytes).map_err(|_| {
+                    HttpControlError::Persistence("session export publication failed".to_owned())
+                });
+                let _ = send.send(result);
+            })
+            .map_err(|_| HttpControlError::Busy)?;
+        let (reply, receiver) = oneshot::channel();
+        self.pending_session_export = Some(PendingSessionExport {
+            completion,
+            reply: reply_requested.then_some(reply),
+            _thread: thread,
+            _request: work,
+        });
+        if let Some(configured) = self.session_export.as_mut() {
+            configured.next_save = configured
+                .interval
+                .map(|interval| Instant::now() + interval);
+        }
+        Ok(if reply_requested {
+            ControlReply::Deferred(receiver)
+        } else {
+            ControlReply::Ready(Value::Null)
+        })
+    }
+
+    fn poll_session_export(&mut self) {
+        if let Some(mut pending) = self.pending_session_export.take() {
+            match pending.completion.try_recv() {
+                Err(oneshot::error::TryRecvError::Empty) => {
+                    self.pending_session_export = Some(pending)
+                }
+                completion => {
+                    let result = completion.unwrap_or_else(|_| {
+                        Err(HttpControlError::Persistence(
+                            "session export writer stopped".to_owned(),
+                        ))
+                    });
+                    self.last_session_export_failed = result.is_err();
+                    if result.is_ok() {
+                        self.completed_session_exports =
+                            self.completed_session_exports.saturating_add(1);
+                    }
+                    if let Some(reply) = pending.reply.take() {
+                        let _ = reply.send(result.map(|()| Value::String("OK".to_owned())));
+                    }
+                }
+            }
+        }
+        if !self.shutdown_requested
+            && self.pending_session_export.is_none()
+            && self.engine.is_idle()
+            && self.pending_mutation.is_none()
+            && self.pending_source_replacements.is_empty()
+            && self
+                .session_export
+                .as_ref()
+                .and_then(|config| config.next_save)
+                .is_some_and(|at| at <= Instant::now())
+        {
+            let result = self
+                .rpc_budgets
+                .client()
+                .and_then(|client| client.try_request(0))
+                .map_err(|_| HttpControlError::Busy)
+                .and_then(|request| self.begin_session_export(request, false));
+            if result.is_err() {
+                self.last_session_export_failed = true;
+                if let Some(config) = self.session_export.as_mut() {
+                    config.next_save = config.interval.map(|interval| Instant::now() + interval);
+                }
+            }
+        }
+    }
+
+    fn drain_session_export(&mut self, deadline: Instant) -> bool {
+        let mut final_started = self.session_export.is_none();
+        loop {
+            self.poll_session_export();
+            if self.pending_session_export.is_none() {
+                if final_started {
+                    return !self.last_session_export_failed;
+                }
+                let result = self
+                    .rpc_budgets
+                    .client()
+                    .and_then(|client| client.try_request(0))
+                    .map_err(|_| HttpControlError::Busy)
+                    .and_then(|request| self.begin_session_export(request, false));
+                if result.is_err() {
+                    return false;
+                }
+                final_started = true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::park_timeout(CONTROL_PROGRESS_POLL);
+        }
+    }
+
+    async fn drain_session_export_async(&mut self, deadline: Instant) -> bool {
+        let mut final_started = self.session_export.is_none();
+        loop {
+            self.poll_session_export();
+            if self.pending_session_export.is_none() {
+                if final_started {
+                    return !self.last_session_export_failed;
+                }
+                let result = self
+                    .rpc_budgets
+                    .client()
+                    .and_then(|client| client.try_request(0))
+                    .map_err(|_| HttpControlError::Busy)
+                    .and_then(|request| self.begin_session_export(request, false));
+                if result.is_err() {
+                    return false;
+                }
+                final_started = true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
     }
 
     fn resolve_gid_param(&self, params: &Value) -> Result<Gid, HttpControlError> {
@@ -2843,9 +3279,9 @@ impl HttpControlPlane {
         ),
         HttpControlError,
     > {
-        let task_id = TaskId::new(self.next_task_id).ok_or(HttpControlError::InvalidConfig)?;
-        self.next_task_id = self
-            .next_task_id
+        let task_id = self.next_available_task_id(self.next_task_id)?;
+        self.next_task_id = task_id
+            .get()
             .checked_add(1)
             .ok_or(HttpControlError::InvalidConfig)?;
         let gid = derive_http_gid(self.session_id, task_id);
@@ -2861,6 +3297,33 @@ impl HttpControlPlane {
             false,
         )
         .map_err(HttpControlError::TaskSpec)?;
+        let queue = if paused {
+            QueueClass::Paused
+        } else {
+            QueueClass::Waiting
+        };
+        let position = self.engine.scheduler().queue_snapshot(queue).len();
+        self.build_admission_for_spec(spec, paused, position, TaskConditions::default())
+    }
+
+    fn build_admission_for_spec(
+        &self,
+        spec: HttpTaskSpec,
+        paused: bool,
+        position: usize,
+        conditions: TaskConditions,
+    ) -> Result<
+        (
+            HttpTaskSpec,
+            SessionTaskRecord,
+            PersistenceEffectPlan,
+            ControlJournalAppender,
+        ),
+        HttpControlError,
+    > {
+        let task_id = spec.task();
+        let gid = spec.gid();
+        let output_root = spec.output_root();
         let sanitized = spec
             .persistence_options()
             .map_err(HttpControlError::TaskSpec)?;
@@ -2898,7 +3361,6 @@ impl HttpControlPlane {
         } else {
             QueueClass::Waiting
         };
-        let position = self.engine.scheduler().queue_snapshot(queue_class).len();
         let record = SessionTaskRecord {
             gid,
             session_id: self.session_id,
@@ -2912,7 +3374,7 @@ impl HttpControlPlane {
                 .map_err(|error| HttpControlError::Journal(error.to_string()))?,
             replica_journal_path: None,
             replica_sequence: None,
-            root_display: PlatformPath::from_current(&output_root).map_err(|_error| {
+            root_display: PlatformPath::from_current(output_root).map_err(|_error| {
                 HttpControlError::InvalidParams("output root is not representable")
             })?,
             cached_layout_hash: None,
@@ -2929,7 +3391,7 @@ impl HttpControlPlane {
             position,
             desired_paused: paused,
             slow_demotion_count: 0,
-            conditions: TaskConditions::default(),
+            conditions,
         };
         let plan = PersistenceEffectPlan::new(
             effect,
@@ -2941,6 +3403,28 @@ impl HttpControlPlane {
         )
         .map_err(|error| HttpControlError::Persistence(format!("{error:?}")))?;
         Ok((spec, record, plan, appender))
+    }
+
+    fn next_available_task_id(&self, mut candidate: u64) -> Result<TaskId, HttpControlError> {
+        for _ in 0..=ariax_storage::SESSION_MAX_TASKS {
+            let task = TaskId::new(candidate).ok_or(HttpControlError::InvalidConfig)?;
+            let gid = derive_http_gid(self.session_id, task);
+            match std::fs::symlink_metadata(http_journal_directory(&self.config.journal_root, gid))
+            {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(task),
+                Ok(_) => {
+                    candidate = candidate
+                        .checked_add(1)
+                        .ok_or(HttpControlError::InvalidConfig)?
+                }
+                Err(_) => {
+                    return Err(HttpControlError::Journal(
+                        "cannot inspect journal destination".to_owned(),
+                    ));
+                }
+            }
+        }
+        Err(HttpControlError::Busy)
     }
 
     fn install_journal(
@@ -3621,7 +4105,7 @@ fn parse_add_options(
             "verify-mirror-identity" => {
                 parsed.mirror_identity = match value.as_str() {
                     Some("strict") => crate::HttpMirrorIdentityPolicy::RequireSharedDigest,
-                    Some("off") | None => crate::HttpMirrorIdentityPolicy::TrustSubmittedMirrors,
+                    Some("off") => crate::HttpMirrorIdentityPolicy::TrustSubmittedMirrors,
                     _ => {
                         return Err(HttpControlError::InvalidParams(
                             "invalid mirror identity policy",
@@ -4544,6 +5028,114 @@ mod tests {
     }
 
     #[test]
+    fn configured_session_saves_are_bounded_periodic_and_complete_after_disconnect() {
+        for format in [crate::SessionFormat::Json, crate::SessionFormat::Aria2] {
+            let directory = TestDirectory::new();
+            let mut plane = directory.control_plane();
+            assert!(matches!(
+                plane.call("aria2.saveSession", json!([])),
+                Err(HttpControlError::Unsupported(_))
+            ));
+            let gid = add_paused(&mut plane);
+            let path = directory.root.join("export.txt");
+            plane
+                .configure_session_export(SessionExportConfig {
+                    path: path.clone(),
+                    format,
+                    interval: Some(Duration::from_secs(60)),
+                })
+                .expect("configure export");
+            assert!(
+                plane
+                    .call("aria2.saveSession", json!(["remote-path"]))
+                    .is_err()
+            );
+            let client = plane.rpc_budgets.client().expect("client");
+            let request = client.try_request(0).expect("request");
+            let ControlReply::Deferred(reply) = plane
+                .begin_call_admitted("aria2.saveSession", json!([]), Some(request))
+                .expect("begin save")
+            else {
+                panic!("save must be deferred");
+            };
+            assert_eq!(client.outstanding_requests(), 1);
+            assert!(client.request_bytes() >= crate::MAX_SESSION_DOCUMENT_BYTES);
+            assert!(matches!(
+                plane.call("aria2.saveSession", json!([])),
+                Err(HttpControlError::Busy)
+            ));
+            drop(reply);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while plane.pending_session_export.is_some() {
+                plane.poll_session_export();
+                assert!(Instant::now() < deadline);
+                std::thread::park_timeout(CONTROL_PROGRESS_POLL);
+            }
+            assert_eq!(client.outstanding_requests(), 0);
+            assert_eq!(client.request_bytes(), 0);
+            assert_eq!(plane.completed_session_exports, 1);
+            assert!(
+                fs::read_to_string(&path)
+                    .expect("export")
+                    .contains(&gid.to_string())
+            );
+            plane.session_export.as_mut().expect("configured").next_save = Some(Instant::now());
+            plane.poll_session_export();
+            while plane.pending_session_export.is_some() {
+                plane.poll_session_export();
+                assert!(Instant::now() < deadline);
+                std::thread::park_timeout(CONTROL_PROGRESS_POLL);
+            }
+            assert_eq!(plane.completed_session_exports, 2);
+            let last = add_paused(&mut plane);
+            assert!(plane.shutdown().expect("shutdown save").is_clean());
+            assert!(
+                fs::read_to_string(&path)
+                    .expect("final export")
+                    .contains(&last.to_string())
+            );
+            let mut recovered = directory.control_plane();
+            let imported = recovered
+                .import_session_file(&path, format)
+                .expect("local import");
+            assert_eq!(imported.as_array().expect("GIDs").len(), 2);
+            assert_eq!(recovered.tasks.len(), 4);
+            assert!(recovered.shutdown().expect("shutdown import").is_clean());
+        }
+    }
+
+    #[tokio::test]
+    async fn session_export_failure_is_reported_and_prevents_clean_async_shutdown() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        add_paused(&mut plane);
+        let config = |path| SessionExportConfig {
+            path,
+            format: crate::SessionFormat::Json,
+            interval: None,
+        };
+        for path in [
+            directory.root.join("session.db"),
+            directory.root.join("session.db-wal"),
+            directory.control.join("export.json"),
+        ] {
+            assert!(plane.configure_session_export(config(path)).is_err());
+        }
+        let path = directory.root.join("export.json");
+        plane
+            .configure_session_export(config(path.clone()))
+            .expect("configure");
+        fs::create_dir(&path).expect("raced directory");
+        assert!(matches!(
+            plane.call("aria2.saveSession", json!([])),
+            Err(HttpControlError::Persistence(_))
+        ));
+        let report = plane.shutdown_async().await.expect("shutdown report");
+        assert!(!report.is_clean());
+        assert!(path.is_dir());
+    }
+
+    #[test]
     fn accepted_add_and_option_calls_finish_after_expired_progress_and_disconnected_reply() {
         for disconnected in [false, true] {
             let directory = TestDirectory::new();
@@ -4858,6 +5450,218 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn import_document(count: usize) -> Value {
+        json!({"tasks": (0..count).map(|index| json!({
+            "uris": [format!("http://example.test/import-{index}.bin")],
+            "options": {"split": "2"}
+        })).collect::<Vec<_>>()})
+    }
+
+    #[test]
+    fn session_import_validates_every_member_before_journals_or_publication() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        for options in [
+            json!({"out": "../escape"}),
+            json!({"split": "0"}),
+            json!({"pause": "invalid"}),
+            json!({"verify-mirror-identity": true}),
+            json!({"rpc-secret": "secret-canary"}),
+        ] {
+            let mut document = import_document(2);
+            document["tasks"][1]["options"] = options;
+            assert!(
+                plane
+                    .call("ariax.importSession", json!([document]))
+                    .is_err()
+            );
+            assert!(plane.tasks.is_empty());
+            assert!(plane.engine.snapshot_reader().load().is_empty());
+            assert!(
+                fs::read_dir(&directory.journals)
+                    .expect("journal directory")
+                    .next()
+                    .is_none()
+            );
+            assert!(
+                matches!(plane.session.execute(SessionCommand::ReadTasks).expect("tasks"), SessionCommandResult::Tasks(tasks) if tasks.is_empty())
+            );
+        }
+        assert!(
+            plane
+                .call("ariax.importSession", json!([import_document(17)]))
+                .is_err()
+        );
+        assert!(plane.tasks.is_empty());
+        let result = plane
+            .call("ariax.importSession", json!([import_document(3)]))
+            .expect("valid batch after rejection");
+        assert_eq!(result.as_array().expect("gids").len(), 3);
+        for gid in result.as_array().expect("gids") {
+            assert_eq!(
+                plane
+                    .call("aria2.tellStatus", json!([gid]))
+                    .expect("imported status")["status"],
+                "paused"
+            );
+        }
+        plane.shutdown().expect("shutdown");
+        let recovered = directory.control_plane();
+        assert_eq!(recovered.tasks.len(), 3);
+        recovered.shutdown().expect("recovered shutdown");
+    }
+
+    #[test]
+    fn disconnected_import_retains_credit_and_shutdown_completes_every_member() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let client = plane.rpc_budgets.client().expect("client");
+        let request = client.try_request(128).expect("request");
+        let ControlReply::Deferred(reply) = plane
+            .begin_call_admitted(
+                "ariax.importSession",
+                json!([import_document(3)]),
+                Some(request.clone()),
+            )
+            .expect("begin import")
+        else {
+            panic!("deferred import");
+        };
+        assert!(plane.engine.snapshot_reader().load().is_empty());
+        drop(reply);
+        drop(request);
+        assert_eq!(client.outstanding_requests(), 1);
+        assert!(client.request_bytes() > 0);
+        assert!(plane.shutdown().expect("drained import").is_clean());
+        assert_eq!(client.request_bytes(), 0);
+        assert_eq!(client.outstanding_requests(), 0);
+        let recovered = directory.control_plane();
+        assert_eq!(recovered.tasks.len(), 3);
+        assert_eq!(recovered.engine.snapshot_reader().load().len(), 3);
+        recovered.shutdown().expect("shutdown");
+    }
+
+    #[test]
+    fn interrupted_import_recovers_all_committed_metadata_and_skips_orphan_destinations() {
+        for committed in [false, true] {
+            let directory = TestDirectory::new();
+            let status =
+                std::process::Command::new(std::env::current_exe().expect("test executable"))
+                    .args([
+                        "--exact",
+                        "http_control::tests::interrupted_import_child",
+                        "--nocapture",
+                    ])
+                    .env("ARIAX_IMPORT_CONTROL_ROOT", &directory.root)
+                    .env(
+                        "ARIAX_IMPORT_CONTROL_COMMITTED",
+                        if committed { "true" } else { "false" },
+                    )
+                    .status()
+                    .expect("crash child");
+            assert_eq!(status.code(), Some(77));
+            let mut recovered = directory.control_plane();
+            assert_eq!(recovered.tasks.len(), if committed { 3 } else { 0 });
+            let gid = add_paused(&mut recovered);
+            assert!(
+                recovered
+                    .tasks
+                    .get_gid(gid)
+                    .expect("subsequent add")
+                    .task()
+                    .get()
+                    > 3
+            );
+            recovered.shutdown().expect("shutdown");
+        }
+    }
+
+    #[test]
+    fn interrupted_import_child() {
+        let Some(root) = std::env::var_os("ARIAX_IMPORT_CONTROL_ROOT") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        let directory = TestDirectory {
+            control: root.join("control"),
+            output: root.join("output"),
+            journals: root.join("control/http-journals"),
+            root,
+        };
+        let committed =
+            std::env::var("ARIAX_IMPORT_CONTROL_COMMITTED").expect("crash point") == "true";
+        let mut plane = directory.control_plane();
+        let request = plane.direct_client.try_request(128).expect("request");
+        let _reply = plane
+            .begin_call_admitted(
+                "ariax.importSession",
+                json!([import_document(3)]),
+                Some(request),
+            )
+            .expect("begin import");
+        if committed {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !plane.engine.is_idle() {
+                assert!(!matches!(
+                    plane.engine.poll_at(MonotonicInstant::now()),
+                    ariax_runtime::SchedulerDriverPoll::Faulted(_)
+                ));
+                assert!(Instant::now() < deadline);
+                std::thread::park_timeout(Duration::from_micros(50));
+            }
+            assert_eq!(plane.engine.snapshot_reader().load().len(), 1);
+        }
+        assert!(
+            matches!(plane.session.execute(SessionCommand::ReadTasks).expect("atomic metadata"), SessionCommandResult::Tasks(tasks) if tasks.len() == if committed { 3 } else { 0 })
+        );
+        std::process::exit(77);
+    }
+
+    #[test]
+    fn aria2_import_honors_pause_and_json_import_preserves_credential_placeholders() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let result = plane.call("ariax.importSession", json!([
+            "http://example.test/one.bin\n  pause=false\n  split=2\nhttp://example.test/two.bin?token=secret-canary\n  pause=true\n", "aria2"
+        ])).expect("aria2 import");
+        assert_eq!(
+            plane
+                .call("aria2.tellStatus", json!([result[0]]))
+                .expect("waiting status")["status"],
+            "waiting"
+        );
+        assert_eq!(
+            plane
+                .call("aria2.tellStatus", json!([result[1]]))
+                .expect("paused status")["status"],
+            "paused"
+        );
+        let export = plane
+            .call("ariax.exportSession", json!([]))
+            .expect("sanitized export");
+        assert!(!export.to_string().contains("secret-canary"));
+        let imported = plane
+            .call("ariax.importSession", json!([export]))
+            .expect("JSON reimport");
+        let credential_count = imported
+            .as_array()
+            .expect("gids")
+            .iter()
+            .filter(|gid| {
+                let gid: Gid = gid.as_str().expect("gid").parse().expect("gid");
+                plane
+                    .engine
+                    .scheduler()
+                    .task(gid)
+                    .expect("task")
+                    .conditions
+                    .needs_credentials
+            })
+            .count();
+        assert_eq!(credential_count, 1);
+        plane.shutdown().expect("shutdown");
     }
 
     #[test]

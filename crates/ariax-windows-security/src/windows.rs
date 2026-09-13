@@ -12,8 +12,9 @@ use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
     FILE_CREATE, FILE_DIRECTORY_FILE, FILE_DISPOSITION_INFORMATION, FILE_LINK_INFORMATION,
     FILE_NAMES_INFORMATION, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
-    FILE_SYNCHRONOUS_IO_NONALERT, FileDispositionInformation, FileLinkInformation,
-    FileNamesInformation, NtCreateFile, NtQueryDirectoryFile, NtSetInformationFile,
+    FILE_RENAME_INFORMATION, FILE_SYNCHRONOUS_IO_NONALERT, FileDispositionInformation,
+    FileLinkInformation, FileNamesInformation, FileRenameInformation, NtCreateFile,
+    NtQueryDirectoryFile, NtSetInformationFile,
 };
 use windows_sys::Win32::Foundation::{
     GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE, LocalFree, OBJ_CASE_INSENSITIVE,
@@ -338,6 +339,67 @@ pub fn link_relative_no_replace(
             u32::try_from(allocation_bytes)
                 .map_err(|_| invalid_data("hard-link information is too large"))?,
             FileLinkInformation,
+        )
+    };
+    nt_success(status)
+}
+
+/// Atomically replaces one directory-relative name with a verified regular file.
+/// Both names are single components; the held directory supplies path authority.
+pub fn rename_relative_replace(
+    directory: &File,
+    source_name: &OsStr,
+    destination_name: &OsStr,
+) -> io::Result<()> {
+    let source = single_relative_name(source_name)?;
+    let destination = single_relative_name(destination_name)?;
+    let source = nt_open(
+        directory.as_raw_handle(),
+        &source,
+        DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_OPEN,
+        FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+    )?;
+    let source_information = query_native_file_information(&source)?;
+    if source_information.is_directory || source_information.number_of_links != 1 {
+        return Err(permission_denied(
+            "rename source is not a single-link regular file",
+        ));
+    }
+    let byte_length = destination
+        .len()
+        .checked_mul(2)
+        .ok_or_else(|| invalid_data("rename name length overflows"))?;
+    let allocation_bytes = offset_of!(FILE_RENAME_INFORMATION, FileName)
+        .checked_add(byte_length)
+        .ok_or_else(|| invalid_data("rename information length overflows"))?;
+    let word_count = allocation_bytes.div_ceil(size_of::<usize>());
+    let mut storage = vec![0_usize; word_count];
+    let information = storage.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
+    // SAFETY: `storage` is aligned and large enough for the fixed structure and
+    // flexible UTF-16 name written below.
+    unsafe {
+        (*information).Anonymous.ReplaceIfExists = true;
+        (*information).RootDirectory = directory.as_raw_handle();
+        (*information).FileNameLength =
+            u32::try_from(byte_length).map_err(|_| invalid_data("rename name is too long"))?;
+        ptr::copy_nonoverlapping(
+            destination.as_ptr(),
+            (*information).FileName.as_mut_ptr(),
+            destination.len(),
+        );
+    }
+    let mut status_block = IO_STATUS_BLOCK::default();
+    // SAFETY: the source handle and fully initialized variable-sized structure
+    // remain live for the synchronous call.
+    let status = unsafe {
+        NtSetInformationFile(
+            source.as_raw_handle(),
+            &mut status_block,
+            information.cast(),
+            u32::try_from(allocation_bytes)
+                .map_err(|_| invalid_data("rename information is too large"))?,
+            FileRenameInformation,
         )
     };
     nt_success(status)
@@ -743,12 +805,19 @@ fn nt_open(
         MaximumLength: length,
         Buffer: name.as_ptr().cast_mut(),
     };
+    // Create-new files must be private from their first observable instant,
+    // including below export/output parents with inherited ACLs.
+    let descriptor = (disposition == FILE_CREATE)
+        .then(|| PrivateSecurityDescriptor::new(ObjectKind::File))
+        .transpose()?;
     let attributes = OBJECT_ATTRIBUTES {
         Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
         RootDirectory: root,
         ObjectName: &unicode,
         Attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
-        SecurityDescriptor: ptr::null(),
+        SecurityDescriptor: descriptor
+            .as_ref()
+            .map_or(ptr::null(), |value| value.as_ptr().cast()),
         SecurityQualityOfService: ptr::null(),
     };
     let mut handle = ptr::null_mut();
@@ -1386,6 +1455,8 @@ mod tests {
         let mut bytes = Vec::new();
         published.read_to_end(&mut bytes).expect("read published");
         assert_eq!(bytes, b"journal");
+        verify_private_file(&directory.join("segment.arxj"))
+            .expect("private at creation and publication");
 
         assert!(
             open_relative_directory_no_reparse(&capability, Path::new(".."))
@@ -1393,6 +1464,23 @@ mod tests {
                 .kind()
                 == io::ErrorKind::InvalidInput
         );
+    }
+
+    #[test]
+    fn relative_create_installs_private_acl_below_inheriting_parent_and_rejects_collision() {
+        let root = TestDirectory::new();
+        let capability = open_absolute_directory_no_reparse(root.path()).expect("parent");
+        let path = root.path().join("export.tmp");
+        let file = create_relative_file_no_reparse(&capability, OsStr::new("export.tmp"))
+            .expect("private temporary");
+        verify_private_file(&path).expect("protected private ACL before write");
+        assert_eq!(
+            create_relative_file_no_reparse(&capability, OsStr::new("export.tmp"))
+                .expect_err("collision")
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        drop(file);
     }
 
     #[test]

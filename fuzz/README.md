@@ -21,6 +21,8 @@ slice and journal replay path:
   canonical/duplicate Basic authorization headers, response validity, and exact
   budget refunds. Its paused Tokio clock exercises authentication throttling
   without real-time sleeps in the fuzz loop.
+- `session_document`: strict JSON migration documents and aria2 input-file
+  syntax, including bounded metadata comments and exact safe projections.
 
 From the repository root, after installing `cargo-fuzz`, run for example:
 
@@ -28,6 +30,7 @@ From the repository root, after installing `cargo-fuzz`, run for example:
 cargo fuzz run --manifest-path fuzz/Cargo.toml http_response_validator
 cargo fuzz run --manifest-path fuzz/Cargo.toml journal_replay
 cargo fuzz run --manifest-path fuzz/Cargo.toml rpc_json
+cargo fuzz run --manifest-path fuzz/Cargo.toml session_document
 ```
 
 CI should use a fixed corpus/time budget and retain only minimized inputs. The

@@ -11,6 +11,7 @@ dependencies = [
  "ariax-engine",
  "ariax-runtime",
  "ariax-storage",
+ "ariax-windows-security",
  "serde_json",
  "tokio",
 ]

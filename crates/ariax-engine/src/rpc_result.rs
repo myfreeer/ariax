@@ -138,6 +138,20 @@ impl Serialize for OptionMap<'_> {
     }
 }
 
+pub(crate) struct SessionOptions<'a> {
+    pub(crate) options: &'a ariax_storage::SanitizedOptionMap,
+    pub(crate) paused: bool,
+}
+
+impl Serialize for SessionOptions<'_> {
+    fn serialize<S: ser::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_map(self.options.entries().chain(std::iter::once((
+            "pause",
+            if self.paused { "true" } else { "false" },
+        ))))
+    }
+}
+
 pub(crate) struct StringMap<I>(pub(crate) I);
 
 impl<'a, I> Serialize for StringMap<I>

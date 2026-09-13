@@ -12,8 +12,13 @@ mod native_capability;
 mod native_identity;
 mod path;
 mod root_binding;
+mod session_export;
 mod session_owner;
 mod session_store;
+
+pub use session_export::{
+    SESSION_EXPORT_MAX_BYTES, SessionExportDestination, read_session_document,
+};
 
 pub use journal::{
     ALL_HEADER_DECODE_ERRORS, ALL_RECORD_STOP_REASONS, ALL_RECORD_TYPES, ALL_REPLAY_RESOURCES,
@@ -94,10 +99,11 @@ pub use session_store::{
     ALL_SESSION_IO_OPERATIONS, ALL_SESSION_SQLITE_LIMITS, ALL_SESSION_STORE_ERROR_CODES,
     JournalInstallIntent, JournalInstallPhase, JournalInstallToken, SESSION_BUNDLED_SQLITE_FLAGS,
     SESSION_BUSY_TIMEOUT_MS, SESSION_DEFAULT_CACHE_KIB, SESSION_HOST_KEY_PIN_OPTION,
-    SESSION_INSTALL_READ_BUDGET_BYTES, SESSION_MAX_ALGORITHM_BYTES, SESSION_MAX_BT_RESUME_BYTES,
-    SESSION_MAX_CACHE_KIB, SESSION_MAX_HOST_KEY_BYTES, SESSION_MAX_OPTIONS_PER_TASK,
-    SESSION_MAX_SAFE_MESSAGE_BYTES, SESSION_MAX_SAFE_URI_BYTES, SESSION_MAX_SOURCES_PER_TASK,
-    SESSION_MAX_TASKS, SESSION_MIN_CACHE_KIB, SESSION_MMAP_SIZE_BYTES, SESSION_OWNER_LOCK_SUFFIX,
+    SESSION_IMPORT_MAX_BYTES, SESSION_INSTALL_READ_BUDGET_BYTES, SESSION_MAX_ALGORITHM_BYTES,
+    SESSION_MAX_BT_RESUME_BYTES, SESSION_MAX_CACHE_KIB, SESSION_MAX_HOST_KEY_BYTES,
+    SESSION_MAX_IMPORT_TASKS, SESSION_MAX_OPTIONS_PER_TASK, SESSION_MAX_SAFE_MESSAGE_BYTES,
+    SESSION_MAX_SAFE_URI_BYTES, SESSION_MAX_SOURCES_PER_TASK, SESSION_MAX_TASKS,
+    SESSION_MIN_CACHE_KIB, SESSION_MMAP_SIZE_BYTES, SESSION_OWNER_LOCK_SUFFIX,
     SESSION_PAGE_SIZE_BYTES, SESSION_RUSQLITE_FEATURES, SESSION_RUSQLITE_VERSION,
     SESSION_SCHEMA_OBJECTS, SESSION_SCHEMA_VERSION, SESSION_SOURCE_READ_BUDGET_BYTES,
     SESSION_TASK_READ_BUDGET_BYTES, SESSION_WAL_AUTO_CHECKPOINT_PAGES, SessionCacheReconciliation,
@@ -106,6 +112,7 @@ pub use session_store::{
     SessionQueueState, SessionQueueTransition, SessionRecord, SessionSchemaObject,
     SessionSchemaObjectKind, SessionSlowRetryDecision, SessionSlowSlotState, SessionSqliteLimit,
     SessionStoppedResultRecord, SessionStore, SessionStoreConfig, SessionStoreError,
-    SessionStoreSettings, SessionTaskRecord, SessionTaskSourceRecord, SessionTaskSourceSet,
-    SessionTerminalStatus, session_host_key_pin_value, uri_is_safe_to_persist,
+    SessionStoreSettings, SessionTaskMetadata, SessionTaskRecord, SessionTaskSourceRecord,
+    SessionTaskSourceSet, SessionTerminalStatus, session_host_key_pin_value,
+    uri_is_safe_to_persist,
 };

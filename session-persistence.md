@@ -820,6 +820,21 @@ accepted persistence faults the driver for recovery. JSON import retains its
 paused-by-default behavior; aria2 input-file import honors validated per-task
 pause options. Existing progress is never inferred from an exported text file.
 
+One import admits at most 1,000 tasks and 8 MiB of owned batch metadata, also
+subject to the shared RPC and scheduler limits. Its first task-persistence
+effect installs every task, source set, and current option map in one SQLite
+transaction. Subsequent member effects compare the exact committed metadata
+before scheduler publication. The owner retains the complete import and its
+reservations while these effects drain, allowing queries but no interleaved
+queue mutations or worker admissions. A disconnect does not cancel an accepted
+batch. A crash before the transaction publishes no imported metadata; a crash
+after commit recovers the complete batch from SQLite and the prepared journals.
+Prepared journal directories without committed task rows remain unreferenced.
+New HTTP task identities skip existing journal destinations after restart, so
+an interrupted preparation cannot overwrite an orphan or prevent later adds.
+Any mismatch or uncertain accepted write faults the driver instead of retrying
+the import or acknowledging a partial result.
+
 Provide:
 
 ```text
@@ -837,6 +852,33 @@ priority, and the credential-required marker. The legacy `uris` projection
 contains only persistence-safe strings. These are migration hints, and a
 credential placeholder is never converted into a runnable URL. Debug formatting
 of source objects also omits sensitive live URI text.
+JSON files reject duplicate object fields and unknown migration fields. The
+aria2 text form includes a bounded `# ariax-task ` JSON comment per task so
+credential placeholders survive ariax reimport; ordinary aria2 readers ignore
+the comment. Ariax-only options remain in that comment; indented lines contain
+only options advertised by the pinned aria2 registry. When safe URI/option lines
+follow it, ariax requires them to match that projection of the comment exactly.
+A task containing only unavailable sources is comment-only.
+
+Configured exports bind an existing absolute parent directory through the native
+directory capability. A bounded dedicated writer creates a private temporary
+file there, writes and syncs the complete document, atomically renames it over
+the configured regular file, and syncs the parent where supported. No remote
+method accepts a destination path. Before rename, failure leaves the old export
+intact; after rename, a reported sync failure leaves a complete new document and
+does not roll back to a partial file. Only one export writer may run per engine,
+with its request and byte reservations retained until completion. Periodic and
+shutdown saves use the same operation as `aria2.saveSession`.
+Shutdown waits within its existing drain deadline for any pending save and one
+final snapshot; a writer failure or timeout prevents a clean shutdown report.
+The export path must be outside the managed control directory and database.
+Local input files use a held directory and a no-follow regular-file descriptor,
+with the same document limit as RPC input. Reading or parsing failure publishes
+no task. The experimental CLI accepts `--input-file=FILE` and
+`--input-file-format=aria2|json` before an RPC command; the default is `aria2`.
+`EngineBuilder::input_file` uses the same admission path before workers start.
+`EngineBuilder::session_export` configures the local writer, and the typed
+`Engine` exposes explicit import, export, and save operations.
 
 ## aria2 `--save-session` Compatibility
 

@@ -256,6 +256,12 @@ impl<S: SchedulerEffectSink> SchedulerDriver<S> {
         &self.scheduler
     }
 
+    /// Stops mutations when a caller cannot publish an already durable control
+    /// operation. Existing snapshots remain readable; recovery owns resolution.
+    pub fn fail_control_publication(&mut self) {
+        self.fail(SchedulerDriverFault::InternalInvariant);
+    }
+
     #[must_use]
     pub const fn sink(&self) -> &S {
         &self.sink

@@ -1,0 +1,3 @@
+http://example.test/file
+  pause=true
+  split=3

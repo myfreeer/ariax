@@ -97,6 +97,10 @@ impl BootstrappedEngine {
         self.driver.scheduler()
     }
 
+    pub(crate) fn fail_control_publication(&mut self) {
+        self.driver.fail_control_publication();
+    }
+
     #[must_use]
     pub fn snapshot_reader(&self) -> StatusSnapshotReader {
         self.driver.snapshot_reader()
@@ -125,6 +129,10 @@ impl BootstrappedEngine {
     #[must_use]
     pub fn control_directory(&self) -> &std::path::Path {
         &self.control_directory
+    }
+
+    pub(crate) fn session_database_path(&self) -> &std::path::Path {
+        &self.session_database_path
     }
 
     #[must_use]

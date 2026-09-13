@@ -11,11 +11,12 @@ use ariax_storage::{
     SessionCommandResult, SessionCompletion, SessionHandle, SessionHostKeyChallengeRecord,
     SessionHostKeyResolution, SessionNoSpaceCondition, SessionOwnerError, SessionPersistenceError,
     SessionQueueOrder, SessionQueueState, SessionQueueTransition, SessionSlowSlotState,
-    SessionStoppedResultRecord, SessionTaskRecord, SessionTaskSourceRecord, SessionTerminalStatus,
-    TaskPauseReason, session_host_key_pin_value,
+    SessionStoppedResultRecord, SessionTaskMetadata, SessionTaskRecord, SessionTaskSourceRecord,
+    SessionTerminalStatus, TaskPauseReason, session_host_key_pin_value,
 };
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 use std::task::Poll;
 
 /// Hard ceiling for plans retained before their exact scheduler effect appears.
@@ -32,6 +33,8 @@ pub enum PersistencePlanStep {
         sources: Vec<SessionTaskSourceRecord>,
         options: SanitizedOptionMap,
     },
+    CreateTaskBatch(Arc<[SessionTaskMetadata]>),
+    ConfirmTaskMetadata(Arc<SessionTaskMetadata>),
     TransitionTaskQueue(SessionQueueTransition),
     ReplaceTaskSourcesAndQueue {
         transition: SessionQueueTransition,
@@ -570,6 +573,26 @@ fn validate_plan(
     steps: &[PersistencePlanStep],
 ) -> Result<(), PersistencePlanError> {
     match (effect, steps) {
+        (
+            effect @ TransitionEffect::PersistTask { .. },
+            [PersistencePlanStep::CreateTaskBatch(tasks)],
+        ) => {
+            if tasks.is_empty()
+                || tasks.len() > ariax_storage::SESSION_MAX_IMPORT_TASKS
+                || tasks
+                    .iter()
+                    .map(SessionTaskMetadata::owned_bytes)
+                    .fold(0, usize::saturating_add)
+                    > ariax_storage::SESSION_IMPORT_MAX_BYTES
+            {
+                return Err(PersistencePlanError::StateMismatch);
+            }
+            validate_import_member(effect, &tasks[0])
+        }
+        (
+            effect @ TransitionEffect::PersistTask { .. },
+            [PersistencePlanStep::ConfirmTaskMetadata(task)],
+        ) => validate_import_member(effect, task),
         (
             TransitionEffect::PersistTask {
                 gid,
@@ -1221,6 +1244,47 @@ fn validate_terminal(
     }
 }
 
+fn validate_import_member(
+    effect: &TransitionEffect,
+    entry: &SessionTaskMetadata,
+) -> Result<(), PersistencePlanError> {
+    let TransitionEffect::PersistTask {
+        gid,
+        queue,
+        position,
+        desired_paused,
+        slow_demotion_count,
+        conditions,
+        ..
+    } = effect
+    else {
+        return Err(PersistencePlanError::UnsupportedEffect);
+    };
+    if entry.task.gid != *gid
+        || entry.sources.is_empty()
+        || entry.sources.iter().any(|source| {
+            (source.persistence_safe_uri.is_none() && !source.needs_credentials)
+                || source
+                    .persistence_safe_uri
+                    .as_deref()
+                    .is_some_and(|uri| !ariax_storage::uri_is_safe_to_persist(uri))
+        })
+    {
+        return Err(PersistencePlanError::IdentityMismatch);
+    }
+    if entry.task.queue_state != session_queue(*queue)
+        || usize::try_from(entry.task.queue_position).ok() != Some(*position)
+        || entry.task.desired_paused != *desired_paused
+        || entry.task.slow_demotion_count != *slow_demotion_count
+        || entry.task.slow_slot.is_some()
+        || entry.task.no_space.is_some() != conditions.no_space.is_some()
+        || entry.task.cached_snapshot_hash != entry.options.snapshot_hash()
+    {
+        return Err(PersistencePlanError::StateMismatch);
+    }
+    Ok(())
+}
+
 fn session_queue(class: QueueClass) -> SessionQueueState {
     match class {
         QueueClass::Waiting => SessionQueueState::Waiting,
@@ -1307,6 +1371,14 @@ fn validate_dispatched_plan(
 
 fn command_for_step(step: &PersistencePlanStep) -> PendingOwnerCommand {
     let (command, expected) = match step {
+        PersistencePlanStep::CreateTaskBatch(tasks) => (
+            SessionCommand::CreateTaskBatch(Arc::clone(tasks)),
+            ExpectedResult::Unit,
+        ),
+        PersistencePlanStep::ConfirmTaskMetadata(task) => (
+            SessionCommand::ConfirmTaskMetadata(Arc::clone(task)),
+            ExpectedResult::Unit,
+        ),
         PersistencePlanStep::PutTask(record) => (
             SessionCommand::PutTask(record.clone()),
             ExpectedResult::Unit,

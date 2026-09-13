@@ -37,6 +37,8 @@ pub const SESSION_MAX_SAFE_URI_BYTES: usize = 64 * 1024;
 pub const SESSION_MAX_HOST_KEY_BYTES: usize = 16 * 1024;
 pub const SESSION_MAX_ALGORITHM_BYTES: usize = 64;
 pub const SESSION_MAX_TASKS: usize = 100_000;
+pub const SESSION_MAX_IMPORT_TASKS: usize = 1_000;
+pub const SESSION_IMPORT_MAX_BYTES: usize = 8 * 1024 * 1024;
 pub const SESSION_MAX_OPTIONS_PER_TASK: usize = MAX_OPTION_MAP_ENTRIES;
 pub const SESSION_MAX_SOURCES_PER_TASK: usize = 4_096;
 pub const SESSION_SOURCE_READ_BUDGET_BYTES: usize = 4 * 1024 * 1024;
@@ -44,6 +46,60 @@ pub const SESSION_HOST_KEY_PIN_OPTION: &str = "sftp-host-key-sha256";
 pub const SESSION_TASK_READ_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 pub const SESSION_INSTALL_READ_BUDGET_BYTES: usize = 16 * 1024 * 1024;
 pub const SESSION_OWNER_LOCK_SUFFIX: &str = ".ariax-owner-lock";
+
+/// Complete, secret-free metadata for one atomic import member.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionTaskMetadata {
+    pub task: SessionTaskRecord,
+    pub sources: Vec<SessionTaskSourceRecord>,
+    pub options: SanitizedOptionMap,
+}
+
+impl SessionTaskMetadata {
+    #[must_use]
+    pub fn owned_bytes(&self) -> usize {
+        let paths = self
+            .task
+            .primary_journal_path
+            .bytes()
+            .len()
+            .saturating_add(
+                self.task
+                    .replica_journal_path
+                    .as_ref()
+                    .map_or(0, |path| path.bytes().len()),
+            )
+            .saturating_add(self.task.root_display.bytes().len())
+            .saturating_add(
+                self.task
+                    .no_space
+                    .as_ref()
+                    .map_or(0, |condition| condition.target.bytes().len()),
+            );
+        let options = self
+            .options
+            .canonical_bytes()
+            .saturating_add(self.options.entries().len().saturating_mul(128));
+        self.sources.iter().fold(
+            std::mem::size_of::<Self>()
+                .saturating_add(paths)
+                .saturating_add(options)
+                .saturating_add(
+                    self.sources
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<SessionTaskSourceRecord>()),
+                ),
+            |total, source| {
+                total.saturating_add(
+                    source
+                        .persistence_safe_uri
+                        .as_ref()
+                        .map_or(0, String::capacity),
+                )
+            },
+        )
+    }
+}
 
 const PLATFORM_PATH_ENCODING_OVERHEAD: usize = 5;
 const MAX_ENCODED_PLATFORM_PATH_BYTES: usize =
@@ -57,6 +113,7 @@ const BACKUP_TEMP_SUFFIX: &str = ".tmp";
 #[cfg(test)]
 thread_local! {
     static BACKUP_FAIL_NEXT_UNLINK: Cell<bool> = const { Cell::new(false) };
+    static IMPORT_CRASH_POINT: Cell<Option<usize>> = const { Cell::new(None) };
 }
 
 const SESSION_TABLE_SQL: &str = r#"CREATE TABLE session (
@@ -1306,109 +1363,84 @@ impl SessionStore {
         options: &SanitizedOptionMap,
         policy: &impl PersistedOptionPolicy,
     ) -> Result<(), SessionStoreError> {
-        if task.queue_state == SessionQueueState::Stopped {
-            return Err(SessionStoreError::QueueTransitionRequired);
-        }
-        validate_task(task)?;
-        validate_task_sources_for_write(sources)?;
-        validate_options_for_persistence(options, policy)?;
-
-        let primary_path = encode_platform_path(&task.primary_journal_path)?;
-        let replica_path = task
-            .replica_journal_path
-            .as_ref()
-            .map(encode_platform_path)
-            .transpose()?;
-        let replica_sequence = task.replica_sequence.map(encode_u64);
-        let root_display = encode_platform_path(&task.root_display)?;
-        let no_space_target = task
-            .no_space
-            .as_ref()
-            .map(|value| encode_platform_path(&value.target))
-            .transpose()?;
-        let no_space_scheduled = task
-            .no_space
-            .as_ref()
-            .map(|value| time_to_i64(value.scheduled_at_ms, "task.no_space_scheduled_at_ms"))
-            .transpose()?;
-        let no_space_delay = task
-            .no_space
-            .as_ref()
-            .map(|value| encode_u64(value.delay_ms));
-        let slow_original_position = task
-            .slow_slot
-            .as_ref()
-            .map(|value| i64::from(value.original_position));
-        let slow_demotion_count = i64::from(task.slow_demotion_count);
-        let slow_retry_scheduled = task
-            .slow_slot
-            .as_ref()
-            .and_then(|value| value.retry.as_ref())
-            .map(|value| time_to_i64(value.scheduled_at_ms, "task.slow_retry_scheduled_at_ms"))
-            .transpose()?;
-        let slow_retry_delay = task
-            .slow_slot
-            .as_ref()
-            .and_then(|value| value.retry.as_ref())
-            .map(|value| encode_u64(value.delay_ms));
-
+        validate_admission_metadata(task, sources, options, policy)?;
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if task_exists(&transaction, task.gid)? {
-            return Err(SessionStoreError::InvalidRecord("task.gid_exists"));
-        }
-        transaction.execute(
-            "INSERT INTO task(gid, session_id, queue_state, queue_position, desired_paused, slow_original_position, slow_demotion_count, slow_retry_scheduled_at_ms, slow_retry_delay_ms, primary_journal_id, primary_journal_path, replica_journal_path, replica_sequence, root_display, cached_layout_hash, cached_root_binding_hash, cached_snapshot_hash, no_space_target, no_space_scheduled_at_ms, no_space_delay_ms, created_ms, updated_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
-            params![
-                task.gid.to_string(),
-                task.session_id.as_bytes().as_slice(),
-                task.queue_state as i64,
-                i64::from(task.queue_position),
-                bool_to_i64(task.desired_paused),
-                slow_original_position,
-                slow_demotion_count,
-                slow_retry_scheduled,
-                slow_retry_delay,
-                task.primary_journal_id.as_bytes().as_slice(),
-                primary_path,
-                replica_path,
-                replica_sequence,
-                root_display,
-                task.cached_layout_hash.map(|value| value.as_bytes().to_vec()),
-                task.cached_root_binding_hash.map(|value| value.as_bytes().to_vec()),
-                task.cached_snapshot_hash.as_bytes().as_slice(),
-                no_space_target,
-                no_space_scheduled,
-                no_space_delay,
-                time_to_i64(task.created_ms, "task.created_ms")?,
-                time_to_i64(task.updated_ms, "task.updated_ms")?,
-            ],
-        )?;
-        {
-            let mut statement = transaction.prepare(
-                "INSERT INTO task_source(gid, uri_id, persistence_safe_uri, redacted_fingerprint, needs_credentials, priority) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            )?;
-            for source in sources {
-                statement.execute(params![
-                    task.gid.to_string(),
-                    i64::from(source.uri_id),
-                    source.persistence_safe_uri,
-                    source.redacted_fingerprint.as_slice(),
-                    bool_to_i64(source.needs_credentials),
-                    source.priority,
-                ])?;
-            }
-        }
-        replace_task_options_in_transaction(
-            &transaction,
-            task.gid,
-            OptionsSnapshotScope::CurrentGeneration,
-            options,
-        )?;
+        insert_admission_metadata(&transaction, task, sources, options)?;
         validate_dense_queues(&transaction)?;
         validate_stopped_result_pairing(&transaction)?;
         transaction.commit()?;
+        Ok(())
+    }
+
+    /// Installs a fully validated import atomically, including source and option rows.
+    pub fn create_task_batch(
+        &mut self,
+        tasks: &[SessionTaskMetadata],
+        policy: &impl PersistedOptionPolicy,
+    ) -> Result<(), SessionStoreError> {
+        if tasks.is_empty() || tasks.len() > SESSION_MAX_IMPORT_TASKS {
+            return Err(SessionStoreError::InvalidRecord("import.task_count"));
+        }
+        let mut bytes = 0_usize;
+        let mut gids = HashSet::new();
+        for entry in tasks {
+            bytes = bytes.saturating_add(entry.owned_bytes());
+            if bytes > SESSION_IMPORT_MAX_BYTES {
+                return Err(SessionStoreError::InvalidRecord("import.byte_budget"));
+            }
+            if !gids.insert(entry.task.gid) {
+                return Err(SessionStoreError::InvalidRecord("import.duplicate_gid"));
+            }
+            validate_admission_metadata(&entry.task, &entry.sources, &entry.options, policy)?;
+        }
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing: i64 =
+            transaction.query_row("SELECT COUNT(*) FROM task", [], |row| row.get(0))?;
+        if bounded_count(existing, SESSION_MAX_TASKS, "task.count")?.saturating_add(tasks.len())
+            > SESSION_MAX_TASKS
+        {
+            return Err(SessionStoreError::InvalidRecord("import.task_limit"));
+        }
+        for (index, entry) in tasks.iter().enumerate() {
+            insert_admission_metadata(&transaction, &entry.task, &entry.sources, &entry.options)?;
+            #[cfg(test)]
+            import_crash_checkpoint(index);
+            #[cfg(not(test))]
+            let _ = index;
+        }
+        validate_dense_queues(&transaction)?;
+        validate_stopped_result_pairing(&transaction)?;
+        transaction.commit()?;
+        #[cfg(test)]
+        import_crash_checkpoint(usize::MAX);
+        Ok(())
+    }
+
+    /// A later scheduler member may acknowledge only the exact committed import row.
+    pub fn confirm_task_metadata(
+        &self,
+        expected: &SessionTaskMetadata,
+        policy: &impl PersistedOptionPolicy,
+    ) -> Result<(), SessionStoreError> {
+        validate_admission_metadata(&expected.task, &expected.sources, &expected.options, policy)?;
+        let raw = self.connection.query_row(
+            "SELECT gid, session_id, queue_state, queue_position, desired_paused, slow_original_position, slow_demotion_count, slow_retry_scheduled_at_ms, slow_retry_delay_ms, primary_journal_id, primary_journal_path, replica_journal_path, replica_sequence, root_display, cached_layout_hash, cached_root_binding_hash, cached_snapshot_hash, no_space_target, no_space_scheduled_at_ms, no_space_delay_ms, created_ms, updated_ms FROM task WHERE gid = ?1",
+            [expected.task.gid.to_string()], RawTaskRow::from_row,
+        ).optional()?.ok_or(SessionStoreError::NotFound)?;
+        if raw.decode()? != expected.task
+            || self.task_sources(expected.task.gid)? != expected.sources
+            || self.task_options(
+                expected.task.gid,
+                OptionsSnapshotScope::CurrentGeneration,
+                policy,
+            )? != expected.options
+        {
+            return Err(SessionStoreError::InvalidRecord("import.metadata_mismatch"));
+        }
         Ok(())
     }
 
@@ -2646,6 +2678,135 @@ fn read_queue_order(
         return Err(SessionStoreError::InvalidPersistedValue("task.queue_count"));
     }
     Ok(order)
+}
+
+#[cfg(test)]
+fn import_crash_checkpoint(point: usize) {
+    if IMPORT_CRASH_POINT.with(|value| value.get() == Some(point)) {
+        std::process::exit(77);
+    }
+}
+
+fn validate_admission_metadata(
+    task: &SessionTaskRecord,
+    sources: &[SessionTaskSourceRecord],
+    options: &SanitizedOptionMap,
+    policy: &impl PersistedOptionPolicy,
+) -> Result<(), SessionStoreError> {
+    if task.queue_state == SessionQueueState::Stopped {
+        return Err(SessionStoreError::QueueTransitionRequired);
+    }
+    if sources.is_empty() {
+        return Err(SessionStoreError::InvalidRecord("task_source.empty"));
+    }
+    validate_task(task)?;
+    validate_task_sources_for_write(sources)?;
+    validate_options_for_persistence(options, policy)?;
+    if task.cached_snapshot_hash != options.snapshot_hash() {
+        return Err(SessionStoreError::InvalidRecord(
+            "task.option_snapshot_hash",
+        ));
+    }
+    Ok(())
+}
+
+fn insert_admission_metadata(
+    transaction: &rusqlite::Transaction<'_>,
+    task: &SessionTaskRecord,
+    sources: &[SessionTaskSourceRecord],
+    options: &SanitizedOptionMap,
+) -> Result<(), SessionStoreError> {
+    let primary_path = encode_platform_path(&task.primary_journal_path)?;
+    let replica_path = task
+        .replica_journal_path
+        .as_ref()
+        .map(encode_platform_path)
+        .transpose()?;
+    let replica_sequence = task.replica_sequence.map(encode_u64);
+    let root_display = encode_platform_path(&task.root_display)?;
+    let no_space_target = task
+        .no_space
+        .as_ref()
+        .map(|value| encode_platform_path(&value.target))
+        .transpose()?;
+    let no_space_scheduled = task
+        .no_space
+        .as_ref()
+        .map(|value| time_to_i64(value.scheduled_at_ms, "task.no_space_scheduled_at_ms"))
+        .transpose()?;
+    let no_space_delay = task
+        .no_space
+        .as_ref()
+        .map(|value| encode_u64(value.delay_ms));
+    let slow_original_position = task
+        .slow_slot
+        .as_ref()
+        .map(|value| i64::from(value.original_position));
+    let slow_demotion_count = i64::from(task.slow_demotion_count);
+    let slow_retry_scheduled = task
+        .slow_slot
+        .as_ref()
+        .and_then(|value| value.retry.as_ref())
+        .map(|value| time_to_i64(value.scheduled_at_ms, "task.slow_retry_scheduled_at_ms"))
+        .transpose()?;
+    let slow_retry_delay = task
+        .slow_slot
+        .as_ref()
+        .and_then(|value| value.retry.as_ref())
+        .map(|value| encode_u64(value.delay_ms));
+
+    if task_exists(transaction, task.gid)? {
+        return Err(SessionStoreError::InvalidRecord("task.gid_exists"));
+    }
+    transaction.execute(
+        "INSERT INTO task(gid, session_id, queue_state, queue_position, desired_paused, slow_original_position, slow_demotion_count, slow_retry_scheduled_at_ms, slow_retry_delay_ms, primary_journal_id, primary_journal_path, replica_journal_path, replica_sequence, root_display, cached_layout_hash, cached_root_binding_hash, cached_snapshot_hash, no_space_target, no_space_scheduled_at_ms, no_space_delay_ms, created_ms, updated_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+        params![
+            task.gid.to_string(),
+            task.session_id.as_bytes().as_slice(),
+            task.queue_state as i64,
+            i64::from(task.queue_position),
+            bool_to_i64(task.desired_paused),
+            slow_original_position,
+            slow_demotion_count,
+            slow_retry_scheduled,
+            slow_retry_delay,
+            task.primary_journal_id.as_bytes().as_slice(),
+            primary_path,
+            replica_path,
+            replica_sequence,
+            root_display,
+            task.cached_layout_hash.map(|value| value.as_bytes().to_vec()),
+            task.cached_root_binding_hash.map(|value| value.as_bytes().to_vec()),
+            task.cached_snapshot_hash.as_bytes().as_slice(),
+            no_space_target,
+            no_space_scheduled,
+            no_space_delay,
+            time_to_i64(task.created_ms, "task.created_ms")?,
+            time_to_i64(task.updated_ms, "task.updated_ms")?,
+        ],
+    )?;
+    {
+        let mut statement = transaction.prepare(
+            "INSERT INTO task_source(gid, uri_id, persistence_safe_uri, redacted_fingerprint, needs_credentials, priority) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )?;
+        for source in sources {
+            statement.execute(params![
+                task.gid.to_string(),
+                i64::from(source.uri_id),
+                source.persistence_safe_uri,
+                source.redacted_fingerprint.as_slice(),
+                bool_to_i64(source.needs_credentials),
+                source.priority,
+            ])?;
+        }
+    }
+    replace_task_options_in_transaction(
+        transaction,
+        task.gid,
+        OptionsSnapshotScope::CurrentGeneration,
+        options,
+    )?;
+    Ok(())
 }
 
 fn task_exists(connection: &Connection, gid: Gid) -> Result<bool, SessionStoreError> {
@@ -6167,6 +6328,9 @@ mod tests {
         SessionStore, SessionStoreConfig, SessionStoreError, SessionTaskRecord,
         SessionTaskSourceRecord, SessionTerminalStatus,
     };
+    use super::{
+        IMPORT_CRASH_POINT, SESSION_IMPORT_MAX_BYTES, SESSION_MAX_IMPORT_TASKS, SessionTaskMetadata,
+    };
     use crate::{
         CheckpointId, JournalHash, JournalId, OptionsSnapshotScope, PathPlatform, PlatformPath,
         SanitizedOptionMap,
@@ -9379,7 +9543,7 @@ mod tests {
     fn task_creation_persists_sources_and_options_atomically_without_replacement() {
         let directory = TestDirectory::new();
         let mut store = open_store(&directory);
-        let task = task_record(gid(1), 0);
+        let mut task = task_record(gid(1), 0);
         let sources = vec![
             SessionTaskSourceRecord {
                 uri_id: 2,
@@ -9402,6 +9566,8 @@ mod tests {
         ])
         .expect("options");
         let permit_all = |_: &str| true;
+
+        task.cached_snapshot_hash = options.snapshot_hash();
 
         store
             .create_task_with_metadata(&task, &sources, &options, &permit_all)
@@ -9429,12 +9595,17 @@ mod tests {
             needs_credentials: false,
             priority: 0,
         }];
+        let replacement_options =
+            SanitizedOptionMap::new([("split".to_owned(), "1".to_owned())]).expect("options");
+        let replacement_task = SessionTaskRecord {
+            cached_snapshot_hash: replacement_options.snapshot_hash(),
+            ..task.clone()
+        };
         assert!(matches!(
             store.create_task_with_metadata(
-                &task,
+                &replacement_task,
                 &replacement_sources,
-                &SanitizedOptionMap::new([("split".to_owned(), "1".to_owned())])
-                    .expect("replacement options"),
+                &replacement_options,
                 &permit_all,
             ),
             Err(SessionStoreError::InvalidRecord("task.gid_exists"))
@@ -9455,6 +9626,171 @@ mod tests {
             store.task_sources(rejected.gid),
             Err(SessionStoreError::NotFound)
         ));
+    }
+
+    fn import_metadata(id: u64, position: u32) -> SessionTaskMetadata {
+        let options =
+            SanitizedOptionMap::new([("split".to_owned(), "3".to_owned())]).expect("options");
+        SessionTaskMetadata {
+            task: SessionTaskRecord {
+                cached_snapshot_hash: options.snapshot_hash(),
+                ..task_record(gid(id), position)
+            },
+            sources: vec![SessionTaskSourceRecord {
+                uri_id: 0,
+                persistence_safe_uri: Some(format!("https://example.test/{id}")),
+                redacted_fingerprint: [1; 32],
+                needs_credentials: false,
+                priority: 0,
+            }],
+            options,
+        }
+    }
+
+    #[test]
+    fn import_batch_is_atomic_and_member_confirmation_requires_exact_metadata() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        let batch = vec![import_metadata(1, 0), import_metadata(2, 1)];
+        let policy = |_: &str| true;
+        assert!(store.create_task_batch(&[], &policy).is_err());
+        assert!(
+            store
+                .create_task_batch(
+                    &vec![batch[0].clone(); SESSION_MAX_IMPORT_TASKS + 1],
+                    &policy
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .create_task_batch(&[batch[0].clone(), batch[0].clone()], &policy)
+                .is_err()
+        );
+        assert!(store.create_task_batch(&batch, &|_: &str| false).is_err());
+        let mut wrong_hash = batch.clone();
+        wrong_hash[1].task.cached_snapshot_hash = hash(8);
+        assert!(store.create_task_batch(&wrong_hash, &policy).is_err());
+        let mut queue_gap = batch.clone();
+        queue_gap[1].task.queue_position = 3;
+        assert!(store.create_task_batch(&queue_gap, &policy).is_err());
+        let mut oversized = batch[0].clone();
+        oversized
+            .sources
+            .reserve(SESSION_IMPORT_MAX_BYTES / std::mem::size_of::<SessionTaskSourceRecord>() + 1);
+        assert!(matches!(
+            store.create_task_batch(&[oversized], &policy),
+            Err(SessionStoreError::InvalidRecord("import.byte_budget"))
+        ));
+        assert!(store.tasks().expect("no invalid prefix").is_empty());
+        store.connection.execute_batch("CREATE TEMP TRIGGER fail_second_import BEFORE INSERT ON task_source WHEN NEW.gid = '0000000000000002' BEGIN SELECT RAISE(ABORT, 'injected import failure'); END;").expect("fault trigger");
+        assert!(store.create_task_batch(&batch, &policy).is_err());
+        assert!(store.tasks().expect("rolled back task rows").is_empty());
+        assert_eq!(
+            store
+                .connection
+                .query_row("SELECT COUNT(*) FROM task_source", [], |row| row
+                    .get::<_, i64>(0))
+                .expect("source rows"),
+            0
+        );
+        assert_eq!(
+            store
+                .connection
+                .query_row("SELECT COUNT(*) FROM task_option", [], |row| row
+                    .get::<_, i64>(0))
+                .expect("option rows"),
+            0
+        );
+        store
+            .connection
+            .execute_batch("DROP TRIGGER fail_second_import")
+            .expect("clear fault");
+        store
+            .create_task_batch(&batch, &policy)
+            .expect("atomic import");
+        for entry in &batch {
+            store
+                .confirm_task_metadata(entry, &policy)
+                .expect("exact committed member");
+        }
+        let mut altered = batch[1].clone();
+        altered.sources[0].priority = 5;
+        assert!(store.confirm_task_metadata(&altered, &policy).is_err());
+        assert!(
+            store
+                .create_task_batch(&[import_metadata(3, 2), batch[1].clone()], &policy)
+                .is_err()
+        );
+        assert_eq!(
+            store
+                .tasks()
+                .expect("collision did not publish prefix")
+                .len(),
+            2
+        );
+        drop(store);
+        let reopened = SessionStore::open(directory.database(), SessionStoreConfig::default())
+            .expect("reopen import");
+        for entry in &batch {
+            reopened
+                .confirm_task_metadata(entry, &policy)
+                .expect("recovered member");
+        }
+    }
+
+    #[test]
+    fn import_batch_process_exit_recovers_none_or_the_whole_document() {
+        for committed in [false, true] {
+            let directory = TestDirectory::new();
+            drop(open_store(&directory));
+            let status = Command::new(std::env::current_exe().expect("test executable"))
+                .args([
+                    "--exact",
+                    "session_store::tests::import_batch_crash_child",
+                    "--nocapture",
+                ])
+                .env("ARIAX_IMPORT_CRASH_DATABASE", directory.database())
+                .env(
+                    "ARIAX_IMPORT_CRASH_COMMITTED",
+                    if committed { "true" } else { "false" },
+                )
+                .status()
+                .expect("import crash child");
+            assert_eq!(status.code(), Some(77));
+            let store = SessionStore::open(directory.database(), SessionStoreConfig::default())
+                .expect("recover crashed import");
+            assert_eq!(
+                store.tasks().expect("recovered tasks").len(),
+                if committed { 2 } else { 0 }
+            );
+            if committed {
+                for entry in [import_metadata(1, 0), import_metadata(2, 1)] {
+                    store
+                        .confirm_task_metadata(&entry, &|_: &str| true)
+                        .expect("whole metadata recovery");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn import_batch_crash_child() {
+        let Some(database) = std::env::var_os("ARIAX_IMPORT_CRASH_DATABASE") else {
+            return;
+        };
+        let committed =
+            std::env::var("ARIAX_IMPORT_CRASH_COMMITTED").expect("crash point") == "true";
+        let mut store = SessionStore::open(PathBuf::from(database), SessionStoreConfig::default())
+            .expect("child store");
+        IMPORT_CRASH_POINT.with(|point| point.set(Some(if committed { usize::MAX } else { 0 })));
+        store
+            .create_task_batch(
+                &[import_metadata(1, 0), import_metadata(2, 1)],
+                &|_: &str| true,
+            )
+            .expect("crash injection");
+        panic!("import crash checkpoint was not reached");
     }
 
     #[test]

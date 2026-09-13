@@ -54,6 +54,10 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
         eprintln!("ariax: RPC authentication options require an RPC command");
         return ExitCode::from(2);
     }
+    if (startup.session_export.is_some() || startup.input_file.is_some()) && !rpc {
+        eprintln!("ariax: session startup options require an RPC command");
+        return ExitCode::from(2);
+    }
     let auth = if rpc {
         match startup.auth_from_environment() {
             Ok(auth) => auth,
@@ -118,6 +122,7 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
                 profile.unwrap_or_default(),
                 false,
                 auth,
+                &startup,
             )
         }
         [command, database, control, output_root, bind] if command == "--rpc-ws" => {
@@ -136,6 +141,7 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
                 profile.unwrap_or_default(),
                 true,
                 auth,
+                &startup,
             )
         }
         [command, database, control, output_root] if command == "--rpc-stdio" => run_rpc(
@@ -146,6 +152,7 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
             profile.unwrap_or_default(),
             false,
             auth,
+            &startup,
         ),
         [command, database, control, output_root, uris @ ..]
             if command == "--add-uri" && !uris.is_empty() =>
@@ -255,7 +262,7 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
     }
 }
 
-const RPC_STARTUP_HELP: &str = "\nRPC startup options (before the command):\n  --rpc-secret=VALUE   Method token; defaults to ARIAX_RPC_SECRET\n  --rpc-user=VALUE     HTTP Basic user; defaults to ARIAX_RPC_USER\n  --rpc-passwd=VALUE   HTTP Basic password; defaults to ARIAX_RPC_PASSWD\nBoth Basic fields must be configured together. HTTP Basic applies to HTTP and WebSocket; method tokens also apply to stdio.\n";
+const RPC_STARTUP_HELP: &str = "\nRPC startup options (before the command):\n  --rpc-secret=VALUE   Method token; defaults to ARIAX_RPC_SECRET\n  --rpc-user=VALUE     HTTP Basic user; defaults to ARIAX_RPC_USER\n  --rpc-passwd=VALUE   HTTP Basic password; defaults to ARIAX_RPC_PASSWD\nSession startup options:\n  --save-session=FILE  Atomically save unfinished downloads at shutdown\n  --save-session-format=aria2|json  Default aria2\n  --save-session-interval=SECONDS  Periodic saving; 0 disables it\n  --input-file=FILE    Import a complete bounded session before workers start\n  --input-file-format=aria2|json   Default aria2\nBoth Basic fields must be configured together. HTTP Basic applies to HTTP and WebSocket; method tokens also apply to stdio.\n";
 
 enum DirectControl {
     Add(Vec<String>),
@@ -607,6 +614,7 @@ fn process_bootstrap_config(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_rpc(
     database_path: PathBuf,
     control_directory: PathBuf,
@@ -615,6 +623,7 @@ fn run_rpc(
     profile: RuntimeProfile,
     websocket: bool,
     auth: RpcAuthPolicy,
+    startup: &startup::StartupOptions,
 ) -> ExitCode {
     if let Err(error) = std::fs::create_dir_all(&control_directory) {
         eprintln!("ariax: cannot create control directory: {error}");
@@ -670,6 +679,20 @@ fn run_rpc(
     };
     if let Err(error) = plane.attach_rpc_budgets(resources.rpc_budgets()) {
         eprintln!("ariax: RPC budget initialization failed: {error}");
+        return ExitCode::FAILURE;
+    }
+    if let Some(config) = &startup.session_export
+        && let Err(error) = plane.configure_session_export(config.clone())
+    {
+        eprintln!("ariax: session export configuration failed: {error}");
+        let _ = plane.shutdown();
+        return ExitCode::FAILURE;
+    }
+    if let Some((path, format)) = &startup.input_file
+        && let Err(error) = plane.import_session_file(path, *format)
+    {
+        eprintln!("ariax: session import failed: {error}");
+        let _ = plane.shutdown();
         return ExitCode::FAILURE;
     }
     let resolver = match HttpResolver::new(HttpResolverConfig::default()) {

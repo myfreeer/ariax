@@ -375,13 +375,27 @@ restart before/after replacement, and a real range transfer through a recovered
 safe mirror with non-contiguous source IDs. Linux 1.97.1, MSRV 1.88, native
 Windows-GNU workspace tests and strict Linux/native Clippy pass. The Linux
 workspace run uses four test threads after a concurrent-build run exceeded an
-existing cross-mirror test deadline. Atomic document import, configured export,
-and periodic saving remain open below.
+existing cross-mirror test deadline.
+
+The rest of `P4-08` is executable: strict whole-document JSON/aria2 validation,
+atomic SQLite batch admission with exact member confirmation, orphan journal
+identity avoidance, private atomic configured exports, periodic saving, and
+shutdown drain. The CLI accepts local input/export settings, and the typed Rust
+API shares the same import/export/save path. Ariax-only options stay in metadata
+comments instead of invalidating ordinary aria2 option lines. Fault and child
+process tests cover rollback, committed-batch recovery, and complete old/new
+exports at every publication boundary. A native Windows test exposed inherited
+ACLs on descriptor-created files; creation now supplies the protected private
+descriptor before writing any bytes. Linux 1.97.1 and native Windows-GNU workspace
+tests, strict Linux/native Clippy, Linux MSRV 1.88 checking, workspace build,
+formatting, and generated contract verification pass. The session parser also
+passes 2,000 bounded uninstrumented fuzz smoke runs; instrumented fuzz and the
+remaining platform/performance evidence stay under `P4-11`.
 
 | Gate | Required Behavior And Evidence |
 | --- | --- |
 | `P4-07` Configuration and runtime options | Registry-driven admission and atomic typed patches; live, pending, restart, and rejection behavior for every option according to its implemented/feature-gated status. Bounded URL rules, versioned atomic reload, and redacted flat/JSON/TOML dumps pass success, rejection, precedence, and rollback tests. |
-| `P4-08` Session compatibility | Configured aria2/JSON export, `aria2.saveSession`, periodic save, and local import use sanitized sources and options. Complete-document validation precedes publication; atomic batch metadata and crash tests prevent an invalid document from publishing a task prefix. |
+| `P4-08` Session compatibility | Implemented and locally validated on Linux/MSRV/native Windows as recorded above. Configured aria2/JSON export, explicit/periodic/shutdown saves, local input and typed Rust operations share bounded sanitized documents. Whole-document validation, atomic batch metadata, disconnect retention and crash tests prevent invalid task prefixes and partial exports. |
 | `P4-09` Public interfaces | CLI, HTTP, WebSocket, both stdio framings, and typed Rust operations pass parity tests. Basic authentication supplements tokens; combined transports, EOF policies, filtered events, diagnostics, compatibility modes, and every advertised RPC method have executable behavior or explicit protocol-feature rejection. |
 | `P4-10` Slow-slot scheduling | Default `off` preserves queue behavior. Opt-in demote/pause, cooldown, retry-slot policy, queue ordering, user-action precedence, restart recovery, and local-pressure exclusions pass scheduler/worker integration tests. |
 | `P4-11` Performance and platform evidence | Native optimized Linux and Windows-GNU runs maintain 1,000 active HTTP ranges during 20,000 measured status/control calls collected in short bursts with cooldowns, with p99 at most 50 ms and bounded memory under stalled consumers. Each burst reestablishes the active-range barrier after warm-up. Workspace, MSRV, generated contracts, bounded fuzz runs, and relevant native platform CI pass. |

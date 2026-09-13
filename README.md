@@ -32,7 +32,9 @@ Shared RPC reservations, transport ownership, borrowed result preflight, and
 typed input/native projection accounting are implemented. Scheduler simulations
 and status drafts reserve before mutation and retain credit through pending
 driver work. The [repair evidence](implementation-readiness.md#phase-4-repair-gates)
-records these changes; configuration, session and interface completion, slow-slot
+records these changes; sanitized atomic session import/export and configured
+explicit, periodic, and shutdown saves now share the CLI/Rust/RPC control plane.
+Configuration and interface completion, slow-slot
 integration, and real-download performance remain Phase-4B requirements.
 
 Strict HTTP identity now distinguishes whole-file and exact-range evidence. A
@@ -47,8 +49,8 @@ This is still not a complete downloader or release/tag-ready. The first
 hierarchical rate limiter, stall policy, process-owned discard guard, same-origin
 endgame fencing, bounded exact-range cross-origin digest fencing, and local
 capacity benchmarks are executable; HTTP/2, unknown-length/chunked layouts,
-broader RFC 9530/Metalink and `Content-Digest` modes, legacy HTTP Basic RPC,
-aria2 text-session export, the remaining Phase-4 exit matrix, non-loopback RPC,
+broader RFC 9530/Metalink and `Content-Digest` modes,
+the remaining Phase-4 exit matrix, non-loopback RPC,
 and the full native release matrix remain
 gated by `implementation-readiness.md`
 and `implementation-plan.md`. Deterministic ENOSPC, permission-denied,

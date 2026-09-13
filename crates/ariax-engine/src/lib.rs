@@ -33,10 +33,15 @@ mod rpc_events;
 mod rpc_json;
 mod rpc_result;
 mod runtime_effects;
+mod session_file;
 mod startup_executor;
 mod startup_filesystem;
 mod startup_native;
 mod storage_engine;
+
+pub use session_file::{
+    MAX_SESSION_DOCUMENT_BYTES, MAX_SESSION_LINE_BYTES, SessionFormat, validate_session_syntax,
+};
 
 pub use effect_sink::{
     MAX_PERSISTENCE_CATALOG_ENTRIES, MAX_PERSISTENCE_PLAN_STEPS, PersistenceCatalogError,
@@ -62,6 +67,7 @@ pub use http_connector::{
 };
 pub use http_control::{
     HttpControlBackend, HttpControlError, HttpControlPlane, HttpControlPlaneConfig,
+    SessionExportConfig,
 };
 pub use http_cookie::{
     DEFAULT_HTTP_COOKIE_TOTAL_ENTRIES, HTTP_PSL_SHA256, HTTP_PSL_SNAPSHOT_ID, HttpCookieError,

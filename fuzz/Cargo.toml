@@ -58,3 +58,10 @@ path = "fuzz_targets/rpc_json.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "session_document"
+path = "fuzz_targets/session_document.rs"
+test = false
+doc = false
+bench = false
