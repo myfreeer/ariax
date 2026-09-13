@@ -554,10 +554,11 @@ fn parse_retry_duration(value: &str) -> Result<Duration, HttpTaskSpecError> {
         .map_err(|_| HttpTaskSpecError::InvalidOptions)
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct HttpSourceSpec {
     id: UriId,
-    uri: Arc<str>,
+    uri: Option<Arc<str>>,
+    persistence_safe_uri: Option<Arc<str>>,
     redacted_fingerprint: [u8; 32],
     priority: i64,
     needs_credentials: bool,
@@ -570,8 +571,13 @@ impl HttpSourceSpec {
     }
 
     #[must_use]
-    pub fn uri(&self) -> &str {
-        &self.uri
+    pub fn uri(&self) -> Option<&str> {
+        self.uri.as_deref()
+    }
+
+    #[must_use]
+    pub fn persistence_safe_uri(&self) -> Option<&str> {
+        self.persistence_safe_uri.as_deref()
     }
 
     #[must_use]
@@ -593,11 +599,23 @@ impl HttpSourceSpec {
     pub fn persistence_record(&self) -> SessionTaskSourceRecord {
         SessionTaskSourceRecord {
             uri_id: self.id.get(),
-            persistence_safe_uri: Some(self.uri.to_string()),
+            persistence_safe_uri: self.persistence_safe_uri.as_deref().map(str::to_owned),
             redacted_fingerprint: self.redacted_fingerprint,
             needs_credentials: self.needs_credentials,
             priority: self.priority,
         }
+    }
+}
+
+impl fmt::Debug for HttpSourceSpec {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HttpSourceSpec")
+            .field("id", &self.id)
+            .field("persistence_safe_uri", &self.persistence_safe_uri)
+            .field("priority", &self.priority)
+            .field("needs_credentials", &self.needs_credentials)
+            .finish()
     }
 }
 
@@ -650,16 +668,84 @@ impl HttpTaskSpec {
                 .map(UriId::new)
                 .ok_or(HttpTaskSpecError::TooManySources)?;
             let priority = i64::try_from(index).map_err(|_| HttpTaskSpecError::TooManySources)?;
+            let canonical: Arc<str> = canonical.into();
+            let persistence_safe_uri =
+                ariax_storage::uri_is_safe_to_persist(&canonical).then(|| canonical.clone());
             sources.push(HttpSourceSpec {
                 id,
                 redacted_fingerprint: source_fingerprint(&canonical),
-                uri: canonical.into(),
+                uri: Some(canonical),
                 priority,
-                needs_credentials,
+                needs_credentials: needs_credentials || persistence_safe_uri.is_none(),
+                persistence_safe_uri,
             });
         }
         if sources.is_empty() {
             return Err(HttpTaskSpecError::NoSources);
+        }
+        Ok(Self {
+            task,
+            gid,
+            sources: sources.into(),
+            output_root: Arc::new(output_root),
+            output,
+            options,
+        })
+    }
+
+    /// Restores safe mirrors and unavailable credential placeholders without
+    /// inventing a request URI or renumbering persisted source identities.
+    pub fn from_persisted_sources(
+        task: TaskId,
+        gid: Gid,
+        mut records: Vec<SessionTaskSourceRecord>,
+        output_root: PathBuf,
+        output: SafeRelativePath,
+        options: HttpTaskOptions,
+    ) -> Result<Self, HttpTaskSpecError> {
+        options.validate()?;
+        if output_root.as_os_str().is_empty() || !output_root.is_absolute() {
+            return Err(HttpTaskSpecError::InvalidOutputRoot);
+        }
+        if records.is_empty() {
+            return Err(HttpTaskSpecError::NoSources);
+        }
+        if records.len() > MAX_HTTP_TASK_SOURCES {
+            return Err(HttpTaskSpecError::TooManySources);
+        }
+        records.sort_unstable_by_key(|source| (source.priority, source.uri_id));
+        let mut ids = BTreeSet::new();
+        let mut sources = Vec::with_capacity(records.len());
+        for record in records {
+            if !ids.insert(record.uri_id) {
+                return Err(HttpTaskSpecError::DuplicateSource);
+            }
+            if let Some(text) = &record.persistence_safe_uri {
+                if !ariax_storage::uri_is_safe_to_persist(text) {
+                    return Err(HttpTaskSpecError::InvalidUri);
+                }
+                let uri: Uri = text.parse().map_err(|_| HttpTaskSpecError::InvalidUri)?;
+                if !matches!(uri.scheme_str(), Some("http" | "https")) {
+                    return Err(HttpTaskSpecError::UnsupportedScheme);
+                }
+                if uri.authority().is_none() {
+                    return Err(HttpTaskSpecError::MissingAuthority);
+                }
+            } else if !record.needs_credentials {
+                return Err(HttpTaskSpecError::InvalidUri);
+            }
+            let persistence_safe_uri: Option<Arc<str>> =
+                record.persistence_safe_uri.map(Into::into);
+            sources.push(HttpSourceSpec {
+                id: UriId::new(record.uri_id),
+                uri: (!record.needs_credentials)
+                    .then(|| persistence_safe_uri.clone())
+                    .flatten(),
+                persistence_safe_uri,
+                redacted_fingerprint: record.redacted_fingerprint,
+                priority: record.priority,
+                needs_credentials: record.needs_credentials,
+            });
         }
         Ok(Self {
             task,
@@ -926,6 +1012,7 @@ fn write_unpoisoned<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
 }
 
 fn source_fingerprint(uri: &str) -> [u8; 32] {
+    let uri = uri.split(['?', '#']).next().unwrap_or(uri);
     let mut digest = Sha256::new();
     digest.update(HTTP_SOURCE_FINGERPRINT_DOMAIN.as_bytes());
     digest.update((uri.len() as u64).to_le_bytes());
@@ -936,6 +1023,84 @@ fn source_fingerprint(uri: &str) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn query_sources_remain_live_while_persistence_and_debug_keep_only_placeholders() {
+        let uri = "https://example.test/file?token=secret-canary";
+        let task = TaskId::new(1).expect("task");
+        let gid = Gid::new(1).expect("gid");
+        let spec = HttpTaskSpec::new(
+            task,
+            gid,
+            [uri.to_owned(), "https://safe.test/file".to_owned()],
+            std::env::temp_dir(),
+            output(),
+            HttpTaskOptions::default(),
+            false,
+        )
+        .expect("live sources");
+        assert_eq!(spec.sources()[0].uri(), Some(uri));
+        assert!(spec.sources()[0].needs_credentials());
+        assert_eq!(spec.sources()[0].persistence_safe_uri(), None);
+        assert!(!format!("{spec:?}").contains("secret-canary"));
+        let records = spec.persistence_sources();
+        assert_eq!(records[0].persistence_safe_uri, None);
+        assert!(records[0].needs_credentials);
+        assert!(!format!("{records:?}").contains("secret-canary"));
+        assert_eq!(
+            records[0].redacted_fingerprint,
+            source_fingerprint("https://example.test/file?another-secret")
+        );
+        let recovered = HttpTaskSpec::from_persisted_sources(
+            task,
+            gid,
+            records.clone(),
+            std::env::temp_dir(),
+            output(),
+            HttpTaskOptions::default(),
+        )
+        .expect("recovered sources");
+        assert_eq!(recovered.sources()[0].uri(), None);
+        assert_eq!(recovered.sources()[1].uri(), Some("https://safe.test/file"));
+        assert_eq!(recovered.sources()[1].id().get(), 1);
+        assert_eq!(recovered.persistence_sources(), records);
+        let blocked = HttpTaskSpec::from_persisted_sources(
+            task,
+            gid,
+            vec![records[0].clone()],
+            std::env::temp_dir(),
+            output(),
+            HttpTaskOptions::default(),
+        )
+        .expect("blocked task remains cataloged");
+        assert_eq!(blocked.sources()[0].uri(), None);
+        let mut invalid = records[0].clone();
+        invalid.needs_credentials = false;
+        assert!(
+            HttpTaskSpec::from_persisted_sources(
+                task,
+                gid,
+                vec![invalid],
+                std::env::temp_dir(),
+                output(),
+                HttpTaskOptions::default()
+            )
+            .is_err()
+        );
+        let mut invalid = records[1].clone();
+        invalid.persistence_safe_uri = Some(uri.to_owned());
+        assert!(
+            HttpTaskSpec::from_persisted_sources(
+                task,
+                gid,
+                vec![invalid],
+                std::env::temp_dir(),
+                output(),
+                HttpTaskOptions::default()
+            )
+            .is_err()
+        );
+    }
     use ariax_storage::{PathPlatform, SafePathBuilder};
 
     fn task(value: u64) -> TaskId {
@@ -982,7 +1147,7 @@ mod tests {
             spec.with_options(output(), invalid),
             Err(HttpTaskSpecError::InvalidOptions)
         );
-        assert_eq!(spec.sources[0].uri(), "https://example.test/file");
+        assert_eq!(spec.sources[0].uri(), Some("https://example.test/file"));
     }
 
     #[test]

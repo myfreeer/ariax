@@ -429,11 +429,9 @@ fn validate_source_set(source_set: &SessionTaskSourceSet) -> Result<(), Credenti
             ));
         }
         previous = Some(order);
-        if source
-            .persistence_safe_uri
-            .as_ref()
-            .is_some_and(|uri| uri.len() > SESSION_MAX_SAFE_URI_BYTES)
-        {
+        if source.persistence_safe_uri.as_ref().is_some_and(|uri| {
+            uri.len() > SESSION_MAX_SAFE_URI_BYTES || !ariax_storage::uri_is_safe_to_persist(uri)
+        }) {
             return Err(CredentialDerivationError::UnsafeSourceUri(source_set.gid));
         }
         if source.persistence_safe_uri.is_none() && !source.needs_credentials {

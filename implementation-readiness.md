@@ -365,13 +365,26 @@ checks pass. The updated RPC fuzz target passes 2,000 short, uninstrumented
 smoke runs using virtual time for throttle waits. Other `P4-09` interface
 requirements below remain open.
 
+The `P4-08` source sanitization boundary is executable: live query-bearing HTTP
+sources persist and export only credential placeholders, and startup retains
+those tasks in the catalog. Source replacement clears only a matching source
+requirement after durable acknowledgement and preserves user pause intent.
+Storage rejects unsafe source metadata on write and recovery. Tests cover
+secret canaries in every persistence artifact, JSON export, rejected replacement,
+restart before/after replacement, and a real range transfer through a recovered
+safe mirror with non-contiguous source IDs. Linux 1.97.1, MSRV 1.88, native
+Windows-GNU workspace tests and strict Linux/native Clippy pass. The Linux
+workspace run uses four test threads after a concurrent-build run exceeded an
+existing cross-mirror test deadline. Atomic document import, configured export,
+and periodic saving remain open below.
+
 | Gate | Required Behavior And Evidence |
 | --- | --- |
 | `P4-07` Configuration and runtime options | Registry-driven admission and atomic typed patches; live, pending, restart, and rejection behavior for every option according to its implemented/feature-gated status. Bounded URL rules, versioned atomic reload, and redacted flat/JSON/TOML dumps pass success, rejection, precedence, and rollback tests. |
 | `P4-08` Session compatibility | Configured aria2/JSON export, `aria2.saveSession`, periodic save, and local import use sanitized sources and options. Complete-document validation precedes publication; atomic batch metadata and crash tests prevent an invalid document from publishing a task prefix. |
 | `P4-09` Public interfaces | CLI, HTTP, WebSocket, both stdio framings, and typed Rust operations pass parity tests. Basic authentication supplements tokens; combined transports, EOF policies, filtered events, diagnostics, compatibility modes, and every advertised RPC method have executable behavior or explicit protocol-feature rejection. |
 | `P4-10` Slow-slot scheduling | Default `off` preserves queue behavior. Opt-in demote/pause, cooldown, retry-slot policy, queue ordering, user-action precedence, restart recovery, and local-pressure exclusions pass scheduler/worker integration tests. |
-| `P4-11` Performance and platform evidence | Native optimized Linux and Windows-GNU runs maintain 1,000 active HTTP ranges during 20,000 measured status/control calls after warm-up, with p99 at most 50 ms and bounded memory under stalled consumers. Workspace, MSRV, generated contracts, bounded fuzz runs, and relevant native platform CI pass. |
+| `P4-11` Performance and platform evidence | Native optimized Linux and Windows-GNU runs maintain 1,000 active HTTP ranges during 20,000 measured status/control calls collected in short bursts with cooldowns, with p99 at most 50 ms and bounded memory under stalled consumers. Each burst reestablishes the active-range barrier after warm-up. Workspace, MSRV, generated contracts, bounded fuzz runs, and relevant native platform CI pass. |
 
 The session schema stays at v2 and journal replay remains strict. Native disk
 backend additions, hardware poweroff, release packaging, and tagging remain

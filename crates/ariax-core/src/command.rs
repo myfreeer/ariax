@@ -308,6 +308,7 @@ pub enum SchedulerCommand {
     },
     CommitSourceReplacement {
         gid: Gid,
+        satisfies_credentials: Option<CredentialRequirementKey>,
     },
     Remove {
         gid: Gid,

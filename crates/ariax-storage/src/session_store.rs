@@ -2783,6 +2783,21 @@ fn replace_task_sources_in_transaction(
     Ok(())
 }
 
+/// Query fields and userinfo have no non-secret registry classification yet.
+/// This is an allocation-free secrecy check, not a protocol URI validator.
+#[must_use]
+pub fn uri_is_safe_to_persist(uri: &str) -> bool {
+    if uri.is_empty() || uri.contains(['?', '#']) || uri.bytes().any(|byte| byte.is_ascii_control())
+    {
+        return false;
+    }
+    !uri.split_once("://").is_some_and(|(_, rest)| {
+        rest.split('/')
+            .next()
+            .is_some_and(|authority| authority.contains('@'))
+    })
+}
+
 fn validate_task_sources_for_write(
     sources: &[SessionTaskSourceRecord],
 ) -> Result<(), SessionStoreError> {
@@ -2801,11 +2816,9 @@ fn validate_task_sources_for_write(
         if source.persistence_safe_uri.is_none() && !source.needs_credentials {
             return Err(SessionStoreError::InvalidRecord("task_source.credentials"));
         }
-        if source
-            .persistence_safe_uri
-            .as_ref()
-            .is_some_and(|uri| uri.len() > SESSION_MAX_SAFE_URI_BYTES)
-        {
+        if source.persistence_safe_uri.as_ref().is_some_and(|uri| {
+            uri.len() > SESSION_MAX_SAFE_URI_BYTES || !uri_is_safe_to_persist(uri)
+        }) {
             return Err(SessionStoreError::InvalidRecord("task_source.uri"));
         }
         let row_bytes =
@@ -3061,7 +3074,8 @@ fn validate_task_sources(connection: &Connection) -> Result<(), SessionStoreErro
             .map_err(|_| SessionStoreError::InvalidPersistedValue("task_source.uri_id"))?;
         let uri = row.get::<_, Option<Vec<u8>>>(2)?;
         if uri.as_ref().is_some_and(|uri| {
-            uri.len() > SESSION_MAX_SAFE_URI_BYTES || std::str::from_utf8(uri).is_err()
+            uri.len() > SESSION_MAX_SAFE_URI_BYTES
+                || !std::str::from_utf8(uri).is_ok_and(uri_is_safe_to_persist)
         }) {
             return Err(SessionStoreError::InvalidPersistedValue("task_source.uri"));
         }
@@ -9298,6 +9312,67 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn source_uri_secrecy_is_checked_before_writes_and_during_recovery() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        store.put_task(&task_record(gid(1), 0)).expect("task");
+        let safe = SessionTaskSourceRecord {
+            uri_id: 0,
+            persistence_safe_uri: Some("https://example.test/file@version".to_owned()),
+            redacted_fingerprint: [1; 32],
+            needs_credentials: false,
+            priority: 0,
+        };
+        store
+            .replace_task_sources(gid(1), std::slice::from_ref(&safe))
+            .expect("safe source");
+        for uri in [
+            "https://user:secret-canary@example.test/file",
+            "https://example.test/file?token=secret-canary",
+            "https://example.test/file?",
+            "https://example.test/file#secret-canary",
+            "https://example.test/file\nsecret-canary",
+            "",
+        ] {
+            let source = SessionTaskSourceRecord {
+                persistence_safe_uri: Some(uri.to_owned()),
+                ..safe.clone()
+            };
+            let error = store
+                .replace_task_sources(gid(1), &[source])
+                .expect_err("unsafe source");
+            assert!(!format!("{error:?} {error}").contains("secret-canary"));
+            assert_eq!(
+                store.task_sources(gid(1)).expect("unchanged sources"),
+                vec![safe.clone()]
+            );
+        }
+        store
+            .connection
+            .execute(
+                "UPDATE task_source SET persistence_safe_uri = ?1 WHERE gid = ?2",
+                rusqlite::params![
+                    "https://example.test/file?token=secret-canary",
+                    gid(1).to_string()
+                ],
+            )
+            .expect("inject legacy unsafe metadata");
+        assert!(matches!(
+            store.task_sources(gid(1)),
+            Err(SessionStoreError::InvalidPersistedValue("task_source.uri"))
+        ));
+        assert!(matches!(
+            store.task_source_sets(),
+            Err(SessionStoreError::InvalidPersistedValue("task_source.uri"))
+        ));
+        drop(store);
+        let error = SessionStore::open(directory.database(), SessionStoreConfig::default())
+            .err()
+            .expect("unsafe recovery must fail closed");
+        assert!(!format!("{error:?} {error}").contains("secret-canary"));
     }
 
     #[test]

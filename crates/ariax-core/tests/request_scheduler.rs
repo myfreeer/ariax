@@ -2507,7 +2507,10 @@ fn source_replacement_cancels_retry_timer_before_new_source_admission() {
         assert!(scheduler.admit_next_at(later(at, 32)).is_err());
         scheduler
             .execute_command_at(
-                SchedulerCommand::CommitSourceReplacement { gid: task_gid },
+                SchedulerCommand::CommitSourceReplacement {
+                    gid: task_gid,
+                    satisfies_credentials: None,
+                },
                 later(at, 33),
             )
             .expect("commit replacement");
@@ -2541,7 +2544,10 @@ fn source_replacement_requires_drain_and_commit_and_preserves_user_pause() {
         let before = state_fingerprint(&scheduler);
         for command in [
             SchedulerCommand::BeginSourceReplacement { gid: task_gid },
-            SchedulerCommand::CommitSourceReplacement { gid: task_gid },
+            SchedulerCommand::CommitSourceReplacement {
+                gid: task_gid,
+                satisfies_credentials: None,
+            },
             SchedulerCommand::ApplyOptionPatch {
                 gid: task_gid,
                 patch_id: OptionPatchId::new(1).expect("patch"),
@@ -2579,7 +2585,10 @@ fn source_replacement_requires_drain_and_commit_and_preserves_user_pause() {
         ));
         let outcome = scheduler
             .execute_command_at(
-                SchedulerCommand::CommitSourceReplacement { gid: task_gid },
+                SchedulerCommand::CommitSourceReplacement {
+                    gid: task_gid,
+                    satisfies_credentials: None,
+                },
                 later(at, 9),
             )
             .expect("commit source replacement");
@@ -3543,6 +3552,159 @@ fn credential_satisfaction_requires_exact_key_and_clears_only_after_apply_ack() 
             .pending_barrier,
         None
     );
+}
+
+#[test]
+fn source_commit_requires_matching_credential_key_and_preserves_pause() {
+    for paused in [false, true] {
+        let at = MonotonicInstant::now();
+        let task_gid = gid(1);
+        let requirement = CredentialRequirement {
+            kind: CredentialKind::SourceUri,
+            source: Some(ariax_core::UriId::new(0)),
+            safe_description: "source required after restart".to_owned(),
+        };
+        let key = requirement.key();
+        let mut scheduler = new_scheduler(1, 1, false);
+        scheduler
+            .execute_command_at(
+                SchedulerCommand::AddValidatedTask {
+                    task_id: task_id(1),
+                    gid: task_gid,
+                    desired_paused: paused,
+                    conditions: TaskConditions {
+                        needs_credentials: Some(requirement),
+                        no_space: None,
+                    },
+                },
+                at,
+            )
+            .expect("blocked task");
+        assert_eq!(scheduler.credential_requirement_key(task_gid), Some(key));
+        scheduler
+            .execute_command_at(
+                SchedulerCommand::BeginSourceReplacement { gid: task_gid },
+                later(at, 1),
+            )
+            .expect("source replacement");
+        let before = state_fingerprint(&scheduler);
+        let wrong = CredentialRequirement {
+            kind: CredentialKind::ProxyAuthentication,
+            source: None,
+            safe_description: String::new(),
+        }
+        .key();
+        assert_eq!(
+            scheduler.execute_command_at(
+                SchedulerCommand::CommitSourceReplacement {
+                    gid: task_gid,
+                    satisfies_credentials: Some(wrong),
+                },
+                later(at, 2)
+            ),
+            Err(SchedulerError::StaleCredentialRequirement)
+        );
+        assert_eq!(state_fingerprint(&scheduler), before);
+        let mut unsatisfied = scheduler.clone();
+        unsatisfied
+            .execute_command_at(
+                SchedulerCommand::CommitSourceReplacement {
+                    gid: task_gid,
+                    satisfies_credentials: None,
+                },
+                later(at, 2),
+            )
+            .expect("commit without credential assertion");
+        assert!(
+            unsatisfied
+                .task(task_gid)
+                .expect("still blocked")
+                .conditions
+                .needs_credentials
+        );
+        let committed = scheduler
+            .execute_command_at(
+                SchedulerCommand::CommitSourceReplacement {
+                    gid: task_gid,
+                    satisfies_credentials: Some(key),
+                },
+                later(at, 3),
+            )
+            .expect("matching source replacement");
+        assert!(
+            committed
+                .effects
+                .iter()
+                .any(|effect| matches!(effect, TransitionEffect::PersistQueueTransition { .. }))
+        );
+        let view = scheduler.task(task_gid).expect("committed");
+        assert!(!view.conditions.needs_credentials);
+        assert_eq!(view.desired_paused, paused);
+        assert_eq!(
+            view.state,
+            if paused {
+                TaskState::Paused
+            } else {
+                TaskState::Waiting
+            }
+        );
+        assert_eq!(scheduler.credential_requirement_key(task_gid), None);
+    }
+}
+
+#[test]
+fn source_commit_cannot_clear_an_unrelated_matching_credential_requirement() {
+    let at = MonotonicInstant::now();
+    let task_gid = gid(1);
+    let requirement = CredentialRequirement {
+        kind: CredentialKind::ProxyAuthentication,
+        source: None,
+        safe_description: "proxy credentials required".to_owned(),
+    };
+    let key = requirement.key();
+    let mut scheduler = new_scheduler(1, 1, false);
+    scheduler
+        .execute_command_at(
+            SchedulerCommand::AddValidatedTask {
+                task_id: task_id(1),
+                gid: task_gid,
+                desired_paused: true,
+                conditions: TaskConditions {
+                    needs_credentials: Some(requirement),
+                    no_space: None,
+                },
+            },
+            at,
+        )
+        .expect("blocked task");
+    scheduler
+        .execute_command_at(
+            SchedulerCommand::BeginSourceReplacement { gid: task_gid },
+            later(at, 1),
+        )
+        .expect("begin");
+    let before = state_fingerprint(&scheduler);
+    assert_eq!(
+        scheduler.execute_command_at(
+            SchedulerCommand::CommitSourceReplacement {
+                gid: task_gid,
+                satisfies_credentials: Some(key),
+            },
+            later(at, 2)
+        ),
+        Err(SchedulerError::StaleCredentialRequirement)
+    );
+    assert_eq!(state_fingerprint(&scheduler), before);
+    scheduler
+        .execute_command_at(
+            SchedulerCommand::CommitSourceReplacement {
+                gid: task_gid,
+                satisfies_credentials: None,
+            },
+            later(at, 3),
+        )
+        .expect("source-only commit");
+    assert_eq!(scheduler.credential_requirement_key(task_gid), Some(key));
 }
 
 #[test]

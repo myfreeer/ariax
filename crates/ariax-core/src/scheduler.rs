@@ -880,6 +880,16 @@ impl RequestScheduler {
         self.tasks.get(&gid).map(ScheduledTask::view)
     }
 
+    #[must_use]
+    pub fn credential_requirement_key(&self, gid: Gid) -> Option<CredentialRequirementKey> {
+        self.tasks.get(&gid).and_then(|task| {
+            task.conditions
+                .needs_credentials
+                .as_ref()
+                .map(crate::CredentialRequirement::key)
+        })
+    }
+
     /// Returns the last snapshot emitted through `PublishSnapshot`.
     pub fn snapshot(&self, gid: Gid) -> Result<TaskSnapshot, SchedulerError> {
         Ok(self
@@ -1586,9 +1596,10 @@ impl RequestScheduler {
             SchedulerCommand::BeginSourceReplacement { gid } => {
                 self.begin_source_replacement(gid, at)
             }
-            SchedulerCommand::CommitSourceReplacement { gid } => {
-                self.commit_source_replacement(gid, at)
-            }
+            SchedulerCommand::CommitSourceReplacement {
+                gid,
+                satisfies_credentials,
+            } => self.commit_source_replacement(gid, satisfies_credentials, at),
             SchedulerCommand::ApproveHostKey {
                 gid,
                 challenge,
@@ -2044,10 +2055,26 @@ impl RequestScheduler {
     fn commit_source_replacement(
         &mut self,
         gid: Gid,
+        satisfies_credentials: Option<CredentialRequirementKey>,
         at: MonotonicInstant,
     ) -> Result<SchedulerOutcome, SchedulerError> {
         let original = self.task_clone(gid)?;
         Self::reject_pending(&original, "commit_source_replacement")?;
+        if satisfies_credentials.is_some_and(|key| {
+            !matches!(
+                key.kind,
+                crate::CredentialKind::SourceUri | crate::CredentialKind::HttpAuthentication
+            )
+        }) || (satisfies_credentials.is_some()
+            && original
+                .conditions
+                .needs_credentials
+                .as_ref()
+                .map(crate::CredentialRequirement::key)
+                != satisfies_credentials)
+        {
+            return Err(SchedulerError::StaleCredentialRequirement);
+        }
         if !original.pending_source_replacement || original.slot.owns_slot() {
             return Err(SchedulerError::Conflict {
                 state: original.state,
@@ -2060,6 +2087,9 @@ impl RequestScheduler {
         let mut updated = original.clone();
         updated.state = target;
         updated.pending_source_replacement = false;
+        if satisfies_credentials.is_some() {
+            updated.conditions.needs_credentials = None;
+        }
         let queue = original
             .queue_class()
             .ok_or(SchedulerError::InternalInvariant)?;

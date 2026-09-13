@@ -1118,10 +1118,13 @@ impl HttpMultiRangeWorker {
             shared_range_digest: None,
         };
         for source in &task.sources()[..source_limit] {
+            let Some(uri) = source.uri() else {
+                continue;
+            };
             match probe_source(
                 &self.client,
                 source.id(),
-                source.uri(),
+                uri,
                 mirror_identity,
                 task.options().response_body_timeout,
                 cancellation,
@@ -2186,7 +2189,9 @@ impl HttpMultiRangeWorker {
         let fresh = probe_source(
             &self.client,
             submitted.id(),
-            submitted.uri(),
+            submitted
+                .uri()
+                .ok_or(HttpMultiRangeError::NoUsableSources)?,
             mirror_identity,
             task.options().response_body_timeout,
             cancellation,
@@ -3204,8 +3209,9 @@ fn account_checksum_outcome(
     if matches!(&outcome, Err(HttpMultiRangeError::ChecksumMismatch)) {
         let host = task
             .sources()
-            .first()
-            .map(|source| discard_host_key(source.uri()))
+            .iter()
+            .find_map(crate::HttpSourceSpec::uri)
+            .map(discard_host_key)
             .transpose()?
             .unwrap_or_else(|| format!("http-checksum-task-{}", task.task().get()));
         let discard = discard_task
@@ -6243,6 +6249,50 @@ mod tests {
         second_server.abort();
         let _ = first_server.await;
         let _ = second_server.await;
+        assert_eq!(
+            fs::read(root.0.join("output.bin")).expect("output"),
+            expected.as_ref()
+        );
+    }
+
+    #[tokio::test]
+    async fn recovered_worker_skips_unavailable_sources_and_uses_safe_mirror_identity() {
+        let root = TestDirectory::new("credential-mirror-root");
+        let journal = TestDirectory::new("credential-mirror-journal");
+        let expected = data(MIB);
+        let (address, server) = serve_mirror(Arc::clone(&expected), MirrorMode::Valid, 2).await;
+        let original = task(&root, [address], expected.len());
+        let mut safe = original.persistence_sources().remove(0);
+        safe.uri_id = 7;
+        safe.priority = 1;
+        let records = vec![
+            ariax_storage::SessionTaskSourceRecord {
+                uri_id: 3,
+                persistence_safe_uri: None,
+                redacted_fingerprint: [1; 32],
+                needs_credentials: true,
+                priority: 0,
+            },
+            safe,
+        ];
+        let spec = HttpTaskSpec::from_persisted_sources(
+            original.task(),
+            original.gid(),
+            records,
+            original.output_root().clone(),
+            original.output().clone(),
+            original.options().clone(),
+        )
+        .expect("restored mirrors");
+        worker(
+            &journal,
+            SharedHttpTransferStats::new(NonZeroUsize::new(4).expect("stats")),
+            4,
+        )
+        .run_task(Arc::new(spec), Generation::INITIAL, HttpCancellation::new())
+        .await
+        .expect("safe mirror transfer");
+        server.await.expect("mirror finished");
         assert_eq!(
             fs::read(root.0.join("output.bin")).expect("output"),
             expected.as_ref()

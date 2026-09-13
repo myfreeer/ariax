@@ -734,6 +734,23 @@ origin/path fingerprint and source placeholder instead of such a URI. A scheme
 or individual query field may be persisted only when the option/protocol
 registry explicitly classifies it as non-secret.
 
+The HTTP source catalog distinguishes an available in-memory request URI from
+its optional persistence-safe URI. A live signed URL remains usable by the
+current worker, while its persisted source has no URI and retains only a
+fingerprint of the origin/path and `needs_credentials=true`. Recovery retains
+these placeholders in the catalog so status, option queries, and source
+replacement remain available. Workers skip unavailable sources, including when
+a safe mirror lets the task continue. A committed caller-supplied replacement
+clears only the matching credential requirement, after the source transaction
+acknowledges; explicit pause intent remains authoritative.
+Source replacement can satisfy a source-URI or origin-HTTP requirement; it
+cannot clear an unrelated proxy or private-key credential requirement.
+
+Source metadata validation rejects a purported safe URI containing userinfo,
+a query, or a fragment at both write and recovery boundaries. Existing unsafe
+metadata is rejected without echoing its URI or silently rewriting the stored
+record. The session schema remains v2.
+
 Consequences:
 
 - `OptionsSnapshot` is a canonical sanitized map; secret entries are absent,
@@ -814,6 +831,12 @@ Export includes queue/sanitized options/persistence-safe URIs but not necessaril
 hot progress bitmaps unless requested. Sensitive sources are represented by a
 needs-credentials placeholder. It is for migration and debugging, not the
 primary crash recovery path.
+
+JSON source entries include stable source identity, optional sanitized URI,
+priority, and the credential-required marker. The legacy `uris` projection
+contains only persistence-safe strings. These are migration hints, and a
+credential placeholder is never converted into a runnable URL. Debug formatting
+of source objects also omits sensitive live URI text.
 
 ## aria2 `--save-session` Compatibility
 

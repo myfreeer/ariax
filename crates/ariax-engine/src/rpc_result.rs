@@ -34,11 +34,15 @@ impl Serialize for SourceUris<'_> {
         for source in self.sources {
             if self.status {
                 sequence.serialize_element(&Uri {
-                    uri: source.uri(),
-                    status: "used",
+                    uri: source.uri().or(source.persistence_safe_uri()).unwrap_or(""),
+                    status: if source.uri().is_some() {
+                        "used"
+                    } else {
+                        "waiting"
+                    },
                 })?;
             } else {
-                sequence.serialize_element(source.uri())?;
+                sequence.serialize_element(&source.uri().unwrap_or(""))?;
             }
         }
         sequence.end()
@@ -46,6 +50,56 @@ impl Serialize for SourceUris<'_> {
 }
 
 pub(crate) struct SourceServers<'a>(pub(crate) &'a [crate::HttpSourceSpec]);
+
+pub(crate) struct PersistedUris<'a>(pub(crate) &'a [crate::HttpSourceSpec]);
+
+impl Serialize for PersistedUris<'_> {
+    fn serialize<S: ser::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(
+            self.0
+                .iter()
+                .filter_map(crate::HttpSourceSpec::persistence_safe_uri),
+        )
+    }
+}
+
+pub(crate) struct PersistedSources<'a>(pub(crate) &'a [crate::HttpSourceSpec]);
+
+struct SourceFingerprint<'a>(&'a [u8; 32]);
+
+impl fmt::Display for SourceFingerprint<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for byte in self.0 {
+            write!(formatter, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
+
+impl Serialize for PersistedSources<'_> {
+    fn serialize<S: ser::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Source<'a> {
+            uri_id: DisplayValue<u32>,
+            uri: Option<&'a str>,
+            fingerprint: DisplayValue<SourceFingerprint<'a>>,
+            needs_credentials: bool,
+            priority: DisplayValue<i64>,
+        }
+        let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
+        for source in self.0 {
+            sequence.serialize_element(&Source {
+                uri_id: DisplayValue(source.id().get()),
+                uri: source.persistence_safe_uri(),
+                fingerprint: DisplayValue(SourceFingerprint(source.redacted_fingerprint())),
+                needs_credentials: source.needs_credentials(),
+                priority: DisplayValue(source.priority()),
+            })?;
+        }
+        sequence.end()
+    }
+}
 
 impl Serialize for SourceServers<'_> {
     fn serialize<S: ser::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -66,8 +120,8 @@ impl Serialize for SourceServers<'_> {
             sequence.serialize_element(&Row {
                 index: DisplayValue(u64::from(source.id().get()) + 1),
                 servers: [Server {
-                    uri: source.uri(),
-                    current_uri: source.uri(),
+                    uri: source.uri().or(source.persistence_safe_uri()).unwrap_or(""),
+                    current_uri: source.uri().unwrap_or(""),
                     download_speed: "0",
                 }],
             })?;

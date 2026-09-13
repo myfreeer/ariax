@@ -435,6 +435,14 @@ measurement. Administrative import/export and final shutdown drain are timed
 separately from ordinary control acknowledgements. WSL/DrvFS timings remain
 diagnostic rather than native release evidence.
 
+Local collection uses short bursts to avoid CPU-frequency degradation during
+sustained load. Default to at most 1,000 calls or two seconds of measurement per
+burst, with a brief warm-up and at least one second of unloaded cooldown between
+bursts. Reestablish the active-range barrier before every measured burst. The
+20,000-call scenario target is an aggregate across those bursts; retain all
+samples and report actual counts, elapsed load time, and any incomplete scenario.
+A time cap never converts an incomplete run into passing acceptance evidence.
+
 C10k profile success:
 
 - 10,000 concurrent low-activity sockets with bounded memory; no claim to keep

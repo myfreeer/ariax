@@ -107,5 +107,5 @@ pub use session_store::{
     SessionSchemaObjectKind, SessionSlowRetryDecision, SessionSlowSlotState, SessionSqliteLimit,
     SessionStoppedResultRecord, SessionStore, SessionStoreConfig, SessionStoreError,
     SessionStoreSettings, SessionTaskRecord, SessionTaskSourceRecord, SessionTaskSourceSet,
-    SessionTerminalStatus, session_host_key_pin_value,
+    SessionTerminalStatus, session_host_key_pin_value, uri_is_safe_to_persist,
 };

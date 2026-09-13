@@ -6,7 +6,8 @@
 
 use crate::http_first_slice::append_initial_admission_with_options;
 use crate::rpc_result::{
-    DisplayValue, OptionMap, RESULT_VALUE_BYTES, ResultList, SourceServers, SourceUris,
+    DisplayValue, OptionMap, PersistedSources, PersistedUris, RESULT_VALUE_BYTES, ResultList,
+    SourceServers, SourceUris,
 };
 use crate::{
     HttpContentChecksum, HttpRetryAfterPolicy, HttpRetryBackoff, HttpRetryPolicy, HttpRetryProfile,
@@ -447,11 +448,7 @@ impl HttpControlPlane {
                 Ok(SessionCommandResult::TaskSources(sources)) => sources,
                 _ => continue,
             };
-            let uris = sources
-                .into_iter()
-                .filter_map(|source| source.persistence_safe_uri)
-                .collect::<Vec<_>>();
-            if uris.is_empty() {
+            if sources.is_empty() {
                 continue;
             }
             let mut persisted_options =
@@ -533,14 +530,13 @@ impl HttpControlPlane {
             let Ok(output) = output else {
                 continue;
             };
-            let spec = match HttpTaskSpec::new(
+            let spec = match HttpTaskSpec::from_persisted_sources(
                 recovered.task_id,
                 recovered.gid,
-                uris,
+                sources,
                 output_root,
                 output,
                 options,
-                false,
             ) {
                 Ok(spec) => spec,
                 Err(_) => continue,
@@ -1561,7 +1557,7 @@ impl HttpControlPlane {
         let mut uris = spec
             .sources()
             .iter()
-            .map(|source| source.uri().to_owned())
+            .filter_map(|source| source.uri().map(str::to_owned))
             .collect::<Vec<_>>();
         let before = uris.len();
         uris.retain(|uri| !deleted.contains(uri));
@@ -1653,10 +1649,7 @@ impl HttpControlPlane {
             current.output_root().clone(),
             current.output().clone(),
             current.options().clone(),
-            current
-                .sources()
-                .iter()
-                .any(crate::HttpSourceSpec::needs_credentials),
+            false,
         )
         .map_err(HttpControlError::TaskSpec)
     }
@@ -1766,8 +1759,22 @@ impl HttpControlPlane {
                 .get_mut(&gid)
                 .expect("pending source replacement")
                 .committing = true;
+            let satisfies_credentials = self
+                .engine
+                .scheduler()
+                .credential_requirement_key(gid)
+                .filter(|key| {
+                    matches!(
+                        key.kind,
+                        ariax_core::CredentialKind::SourceUri
+                            | ariax_core::CredentialKind::HttpAuthentication
+                    )
+                });
             if let Err(error) =
-                self.prepare_and_begin_command(SchedulerCommand::CommitSourceReplacement { gid })
+                self.prepare_and_begin_command(SchedulerCommand::CommitSourceReplacement {
+                    gid,
+                    satisfies_credentials,
+                })
             {
                 self.pending_source_replacements
                     .get_mut(&gid)
@@ -1885,7 +1892,7 @@ impl HttpControlPlane {
             if let Some(spec) = self.tasks.get_gid(gid) {
                 for source in spec.sources() {
                     bytes = bytes
-                        .saturating_add(source.uri().len().saturating_mul(12))
+                        .saturating_add(source.uri().map_or(0, str::len).saturating_mul(12))
                         .saturating_add(1024);
                 }
             }
@@ -2123,6 +2130,12 @@ impl HttpControlPlane {
         }
         let mut tasks = ResultList::new();
         for applied in root.tasks().values() {
+            if matches!(
+                applied.snapshot.wire_status(),
+                Ok(Aria2Status::Complete | Aria2Status::Removed)
+            ) {
+                continue;
+            }
             let spec = self
                 .tasks
                 .get(applied.task_id)
@@ -2133,16 +2146,15 @@ impl HttpControlPlane {
             #[derive(serde::Serialize)]
             struct Task<'a> {
                 gid: DisplayValue<Gid>,
-                uris: SourceUris<'a>,
+                uris: PersistedUris<'a>,
+                sources: PersistedSources<'a>,
                 options: OptionMap<'a>,
                 state: &'static str,
             }
             tasks.push(&Task {
                 gid: DisplayValue(applied.snapshot.gid),
-                uris: SourceUris {
-                    sources: spec.sources(),
-                    status: false,
-                },
+                uris: PersistedUris(spec.sources()),
+                sources: PersistedSources(spec.sources()),
                 options: OptionMap(&options),
                 state: applied.snapshot.state.code(),
             })?;
@@ -4698,7 +4710,9 @@ mod tests {
             Err(HttpControlError::Busy)
         ));
         assert_eq!(
-            plane.tasks.get_gid(gid).expect("old catalog").sources()[0].uri(),
+            plane.tasks.get_gid(gid).expect("old catalog").sources()[0]
+                .uri()
+                .expect("available source"),
             "http://example.test/file.bin"
         );
         assert_eq!(client.outstanding_requests(), 1);
@@ -4710,7 +4724,9 @@ mod tests {
             .drive_engine()
             .expect("finish commit after disconnect");
         assert_eq!(
-            plane.tasks.get_gid(gid).expect("new catalog").sources()[0].uri(),
+            plane.tasks.get_gid(gid).expect("new catalog").sources()[0]
+                .uri()
+                .expect("available source"),
             "http://new.test/file.bin"
         );
         assert!(plane.pending_source_replacements.is_empty());
@@ -4723,10 +4739,125 @@ mod tests {
                 .get_gid(gid)
                 .expect("recovered sources")
                 .sources()[0]
-                .uri(),
+                .uri()
+                .expect("available source"),
             "http://new.test/file.bin"
         );
         recovered.shutdown().expect("recovery shutdown");
+    }
+
+    #[test]
+    fn signed_sources_export_without_secrets_and_recover_as_manageable_placeholders() {
+        for paused in [false, true] {
+            let directory = TestDirectory::new();
+            let mut plane = directory.control_plane();
+            let value = plane
+                .call(
+                    "aria2.addUri",
+                    json!([
+                        ["http://example.test/file.bin?token=secret-canary"], {"pause": paused}
+                    ]),
+                )
+                .expect("signed source remains usable in memory");
+            let gid: Gid = value.as_str().expect("gid").parse().expect("gid");
+            let live = plane.tasks.get_gid(gid).expect("live task");
+            assert!(
+                live.sources()[0]
+                    .uri()
+                    .expect("live source")
+                    .contains("secret-canary")
+            );
+            let export = plane
+                .call("ariax.exportSession", json!([]))
+                .expect("sanitized export");
+            assert!(!export.to_string().contains("secret-canary"));
+            assert_eq!(export["tasks"][0]["uris"], json!([]));
+            assert_eq!(export["tasks"][0]["sources"][0]["uri"], Value::Null);
+            assert_eq!(export["tasks"][0]["sources"][0]["needsCredentials"], true);
+            assert!(!format!("{live:?}").contains("secret-canary"));
+            plane.shutdown().expect("first shutdown");
+
+            let mut recovered = directory.control_plane();
+            let spec = recovered
+                .tasks
+                .get_gid(gid)
+                .expect("placeholder task remains cataloged");
+            assert_eq!(spec.sources()[0].uri(), None);
+            let view = recovered
+                .engine
+                .scheduler()
+                .task(gid)
+                .expect("blocked task");
+            assert!(view.conditions.needs_credentials);
+            assert_eq!(view.desired_paused, paused);
+            recovered
+                .call("aria2.tellStatus", json!([gid.to_string()]))
+                .expect("status");
+            recovered
+                .call("aria2.getOption", json!([gid.to_string()]))
+                .expect("options");
+            assert!(
+                recovered
+                    .call(
+                        "ariax.replaceSources",
+                        json!([
+                            gid.to_string(),
+                            ["http://user:secret-canary@example.test/file"]
+                        ])
+                    )
+                    .is_err()
+            );
+            assert!(
+                recovered
+                    .engine
+                    .scheduler()
+                    .task(gid)
+                    .expect("still blocked")
+                    .conditions
+                    .needs_credentials
+            );
+            recovered
+                .call(
+                    "ariax.replaceSources",
+                    json!([gid.to_string(), ["http://safe.test/file.bin"]]),
+                )
+                .expect("replace unavailable source");
+            let view = recovered
+                .engine
+                .scheduler()
+                .task(gid)
+                .expect("unblocked task");
+            assert!(!view.conditions.needs_credentials);
+            assert_eq!(view.desired_paused, paused);
+            recovered.shutdown().expect("second shutdown");
+            let restarted = directory.control_plane();
+            let view = restarted
+                .engine
+                .scheduler()
+                .task(gid)
+                .expect("durable source commit");
+            assert!(!view.conditions.needs_credentials);
+            assert_eq!(view.desired_paused, paused);
+            restarted.shutdown().expect("final shutdown");
+
+            let mut paths = vec![directory.root.clone()];
+            while let Some(path) = paths.pop() {
+                if path.is_dir() {
+                    paths.extend(
+                        fs::read_dir(path)
+                            .expect("artifact directory")
+                            .map(|entry| entry.expect("artifact").path()),
+                    );
+                } else {
+                    let bytes = fs::read(path).expect("artifact bytes");
+                    assert!(
+                        !bytes
+                            .windows(b"secret-canary".len())
+                            .any(|window| window == b"secret-canary")
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -4879,12 +5010,8 @@ mod tests {
             let spec = HttpTaskSpec::new(
                 original.task(),
                 gid,
-                (0..count).map(|index| {
-                    format!(
-                        "http://example.test/file?index={index}&padding={}",
-                        "x".repeat(6000)
-                    )
-                }),
+                (0..count)
+                    .map(|index| format!("http://example.test/file/{index}/{}", "x".repeat(6000))),
                 original.output_root().clone(),
                 original.output().clone(),
                 original.options().clone(),
@@ -5375,7 +5502,8 @@ mod tests {
                 .get_gid(gid)
                 .expect("committed catalog")
                 .sources()[0]
-                .uri(),
+                .uri()
+                .expect("available source"),
             "http://new.test/file.bin"
         );
         drain.add_permits(1);
@@ -5433,7 +5561,9 @@ mod tests {
         assert!(reply.await.is_err());
         let recovered = directory.control_plane();
         assert_eq!(
-            recovered.tasks.get_gid(gid).expect("old sources").sources()[0].uri(),
+            recovered.tasks.get_gid(gid).expect("old sources").sources()[0]
+                .uri()
+                .expect("available source"),
             "http://example.test/file.bin"
         );
         let task = recovered
@@ -5538,7 +5668,9 @@ mod tests {
                             .desired_paused
                     );
                     assert_eq!(
-                        owner.tasks.get_gid(gid).expect("old catalog").sources()[0].uri(),
+                        owner.tasks.get_gid(gid).expect("old catalog").sources()[0]
+                            .uri()
+                            .expect("available source"),
                         "http://example.test/file.bin"
                     );
                     assert!(
@@ -5588,7 +5720,9 @@ mod tests {
                     "http://new.test/file.bin"
                 };
                 assert_eq!(
-                    owner.tasks.get_gid(gid).expect("catalog").sources()[0].uri(),
+                    owner.tasks.get_gid(gid).expect("catalog").sources()[0]
+                        .uri()
+                        .expect("available source"),
                     expected_uri
                 );
                 assert!(owner.pending_source_replacements.is_empty());
@@ -5610,7 +5744,8 @@ mod tests {
                         .get_gid(gid)
                         .expect("recovered source set")
                         .sources()[0]
-                        .uri(),
+                        .uri()
+                        .expect("available source"),
                     expected_uri
                 );
                 assert_eq!(
@@ -6320,7 +6455,10 @@ mod tests {
             .get(TaskId::new(1).expect("task id"))
             .expect("recovered HTTP task");
         assert_eq!(task.gid(), gid);
-        assert_eq!(task.sources()[0].uri(), "http://example.test/file.bin");
+        assert_eq!(
+            task.sources()[0].uri().expect("available source"),
+            "http://example.test/file.bin"
+        );
         assert_eq!(task.output().canonical_string(), "file.bin");
 
         let removed = recovered

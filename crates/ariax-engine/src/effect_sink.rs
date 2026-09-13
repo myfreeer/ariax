@@ -611,7 +611,11 @@ fn validate_plan(
             if task.gid != *gid
                 || sources.is_empty()
                 || sources.iter().any(|source| {
-                    source.persistence_safe_uri.is_none() && !source.needs_credentials
+                    (source.persistence_safe_uri.is_none() && !source.needs_credentials)
+                        || source
+                            .persistence_safe_uri
+                            .as_deref()
+                            .is_some_and(|uri| !ariax_storage::uri_is_safe_to_persist(uri))
                 })
             {
                 return Err(PersistencePlanError::IdentityMismatch);
@@ -705,7 +709,11 @@ fn validate_plan(
         ) => {
             if sources.is_empty()
                 || sources.iter().any(|source| {
-                    source.persistence_safe_uri.is_none() && !source.needs_credentials
+                    (source.persistence_safe_uri.is_none() && !source.needs_credentials)
+                        || source
+                            .persistence_safe_uri
+                            .as_deref()
+                            .is_some_and(|uri| !ariax_storage::uri_is_safe_to_persist(uri))
                 })
             {
                 return Err(PersistencePlanError::StateMismatch);
