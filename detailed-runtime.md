@@ -102,6 +102,25 @@ they do not first drive pending persistence or build an event-difference map.
 Ordinary owner progress publishes task events. This keeps queries available
 when command scratch is exhausted, without exposing planned scheduler state.
 
+An accepted public mutation retains a bounded owner continuation when its
+scheduler chain outlives the initiating call. The continuation keeps typed
+input, scheduler scratch, and the catalog publication data until the next owner
+progress turn completes the durable chain. Its reply uses a separate bounded
+channel; a disconnected caller cannot cancel the accepted write. The owner
+registry is drained before normal engine teardown.
+
+Elapsed wait time does not turn an accepted mutation into a `Busy` rejection,
+remove an admitted task's catalog entry, skip option publication, or abandon a
+source replacement. `Busy` remains a pre-admission resource or ownership
+rejection. Synchronous owner calls retain their blocking wrapper, while the
+progress lane completes deferred continuations without exposing planned state.
+Shutdown and genuine owner failure retain their separate dirty-checkpoint and
+uncertain-write rules.
+Shutdown stops new readmission, drains accepted continuation work within the
+existing shutdown allowance, and preserves its permits through owner teardown.
+If that drain cannot finish, shutdown records a dirty checkpoint; it cannot
+report a clean session merely because the worker lane eventually stopped.
+
 `SchedulerDriver` exclusively owns its non-cloneable `StatusSnapshotStore`.
 Callers receive cloneable `StatusSnapshotReader` handles, never a writer lineage
 that can be attached to another driver. Each load returns one immutable

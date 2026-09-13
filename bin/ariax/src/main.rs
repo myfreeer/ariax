@@ -734,7 +734,9 @@ fn run_rpc(
                     let mut plane = progress_plane.lock().await;
                     plane.poll_once()
                 };
-                if let Err(error) = result {
+                if let Err(error) = result
+                    && !matches!(error, ariax_engine::HttpControlError::Busy)
+                {
                     eprintln!("ariax: control progress failed: {error}");
                     break;
                 }

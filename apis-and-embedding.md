@@ -266,6 +266,16 @@ their request leases. Native calls share those client and projection budgets.
 Scheduler simulation and status-draft copies of existing tasks are forecast
 before mutation and retained with the input lease while a driver chain remains
 pending. Idle cleanup discards unused plans before refunding their input.
+After admission, add, option, and source changes retain a bounded owner-held
+continuation independently of the transport's reply wait. It keeps the catalog
+replacement and request credit until the scheduler publishes the accepted
+change. Disconnecting a caller cannot skip that publication or cancel the
+durable mutation. One scheduler chain executes at a time; pending source and
+option intents retain their existing client and profile reservations. Normal
+shutdown drains accepted work within the supervisor's shutdown allowance before
+taking ownership of the engine for teardown. Failure to drain leaves a dirty
+shutdown that requires recovery. Other synchronous mutation paths and bulk
+operations still require bounded progress under `P4-11`.
 Queries read the published root without first driving persistence. Immutable
 query projection outside the control owner and the real active-range latency
 target remain completion requirements under `P4-11`.

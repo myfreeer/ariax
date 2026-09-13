@@ -177,7 +177,7 @@ impl EngineBuilder {
                     let mut plane = progress_plane.lock().await;
                     plane.poll_once()
                 };
-                if result.is_err() {
+                if result.is_err_and(|error| !matches!(error, HttpControlError::Busy)) {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(1)).await;

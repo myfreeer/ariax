@@ -129,6 +129,30 @@ struct PendingOptionSnapshot {
     request: Option<crate::rpc_budget::RpcRequestLease>,
 }
 
+enum ControlReply {
+    Ready(Value),
+    Deferred(oneshot::Receiver<Result<Value, HttpControlError>>),
+}
+
+enum MutationPublication {
+    Admission {
+        gid: Gid,
+        readmission_started: bool,
+    },
+    Options {
+        replacement: Box<HttpTaskSpec>,
+        patch_id: OptionPatchId,
+        previous_generation: Generation,
+        kind: ValidatedOptionPatchKind,
+        live_rate: Option<ariax_runtime::PreparedRateLimit>,
+    },
+}
+
+struct PendingMutation {
+    publication: MutationPublication,
+    reply: oneshot::Sender<Result<Value, HttpControlError>>,
+}
+
 struct PendingSourceReplacement {
     replacement: HttpTaskSpec,
     response: Value,
@@ -168,6 +192,7 @@ pub struct HttpControlPlane {
     owner_client: crate::RpcClientBudget,
     direct_client: crate::RpcClientBudget,
     pending_work: Option<ControlWorkReservation>,
+    pending_mutation: Option<PendingMutation>,
 }
 
 impl fmt::Debug for HttpControlPlane {
@@ -226,6 +251,7 @@ impl HttpControlPlane {
             owner_client,
             direct_client,
             pending_work: None,
+            pending_mutation: None,
         };
         plane.restore_catalog()?;
         plane.reset_observed_statuses();
@@ -292,10 +318,27 @@ impl HttpControlPlane {
         Ok(())
     }
 
-    pub fn shutdown(self) -> Result<crate::ProcessShutdownReport, crate::ProcessShutdownError> {
+    pub fn shutdown(mut self) -> Result<crate::ProcessShutdownReport, crate::ProcessShutdownError> {
+        self.shutdown_requested = true;
+        let deadline = Instant::now() + self.config.supervisor.shutdown_timeout;
+        let continuations_drained = loop {
+            if self.drive_engine_until(deadline).is_err() {
+                break false;
+            }
+            if self.pending_source_replacements.is_empty() {
+                break true;
+            }
+            if self.complete_source_replacements().is_err() || self.engine.is_idle() {
+                break false;
+            }
+        };
         let Self {
             engine,
             mut supervisor,
+            pending_work: _pending_work,
+            pending_mutation: _pending_mutation,
+            pending_source_replacements: _pending_sources,
+            pending_option_snapshots: _pending_options,
             ..
         } = self;
         let mut shutdown = engine.begin_shutdown()?;
@@ -310,19 +353,45 @@ impl HttpControlPlane {
         } else {
             ProcessDrainOutcome::Drained
         };
-        shutdown.complete_drain(drain)?;
+        shutdown.complete_drain(if continuations_drained {
+            drain
+        } else {
+            ProcessDrainOutcome::Failed
+        })?;
         shutdown.finish()
     }
 
     /// Drains live HTTP workers before closing journals and the session owner.
     pub async fn shutdown_async(
-        self,
+        mut self,
     ) -> Result<crate::ProcessShutdownReport, crate::ProcessShutdownError> {
+        self.shutdown_requested = true;
+        let started = Instant::now();
+        let deadline = started + self.config.supervisor.shutdown_timeout;
+        let continuations_drained = loop {
+            if self.engine.is_idle() && self.pending_source_replacements.is_empty() {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                break false;
+            }
+            match self.poll_once() {
+                Ok(()) | Err(HttpControlError::Busy) => {}
+                Err(_) => break false,
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        };
         let Self {
-            engine, supervisor, ..
+            engine,
+            supervisor,
+            pending_work: _pending_work,
+            pending_mutation: _pending_mutation,
+            pending_source_replacements: _pending_sources,
+            pending_option_snapshots: _pending_options,
+            ..
         } = self;
         let mut shutdown = engine.begin_shutdown()?;
-        let drain_timeout = shutdown.drain_timeout();
+        let drain_timeout = shutdown.drain_timeout().saturating_sub(started.elapsed());
         let drain = match supervisor {
             Some(supervisor) => match supervisor.shutdown_with_timeout(drain_timeout).await {
                 HttpWorkerSupervisorShutdown::Drained => ProcessDrainOutcome::Drained,
@@ -330,7 +399,11 @@ impl HttpControlPlane {
             },
             None => ProcessDrainOutcome::Drained,
         };
-        shutdown.complete_drain(drain)?;
+        shutdown.complete_drain(if continuations_drained {
+            drain
+        } else {
+            ProcessDrainOutcome::Failed
+        })?;
         shutdown.finish()
     }
 
@@ -520,6 +593,80 @@ impl HttpControlPlane {
         });
     }
 
+    fn finish_pending_mutation(&mut self) {
+        let Some(pending) = self.pending_mutation.take() else {
+            return;
+        };
+        let result = match pending.publication {
+            MutationPublication::Admission {
+                gid,
+                readmission_started,
+            } => {
+                self.journal_sequences.insert(gid, 2);
+                if !readmission_started {
+                    // Metadata admission is already durable. A temporary
+                    // rate or scheduler backpressure condition only delays
+                    // ordinary readmission; it must not turn the accepted
+                    // add into a failed RPC or lose its catalog entry.
+                    match self.try_admit_one(MonotonicInstant::now()) {
+                        Ok(()) | Err(HttpControlError::Busy) => {}
+                        Err(error) => {
+                            let _ = pending.reply.send(Err(error));
+                            return;
+                        }
+                    }
+                    if !self.engine.is_idle() {
+                        self.pending_mutation = Some(PendingMutation {
+                            publication: MutationPublication::Admission {
+                                gid,
+                                readmission_started: true,
+                            },
+                            reply: pending.reply,
+                        });
+                        return;
+                    }
+                }
+                Ok(Value::String(gid.to_string()))
+            }
+            MutationPublication::Options {
+                replacement,
+                patch_id,
+                previous_generation,
+                kind,
+                live_rate,
+            } => {
+                let gid = replacement.gid();
+                if kind == ValidatedOptionPatchKind::ActiveRestart
+                    && self.engine.scheduler().task(gid).is_some_and(|task| {
+                        task.pending_option_patch.is_none()
+                            && task.pending_barrier.is_none()
+                            && task.generation == previous_generation
+                    })
+                {
+                    self.pending_option_snapshots.remove(&patch_id);
+                    self.pending_restart_patches.remove(&gid);
+                    Err(HttpControlError::Persistence(
+                        "option patch was not persisted".to_owned(),
+                    ))
+                } else {
+                    self.tasks
+                        .replace(*replacement)
+                        .map_err(HttpControlError::Catalog)
+                        .map(|_| {
+                            if let Some(update) = live_rate {
+                                update.apply();
+                            }
+                            Value::String("OK".to_owned())
+                        })
+                }
+            }
+        };
+        if result.is_ok() {
+            self.publish_task_state_events();
+        }
+        let _ = pending.reply.send(result);
+    }
+
     #[must_use]
     pub fn task_catalog(&self) -> SharedHttpTaskCatalog {
         self.tasks.clone()
@@ -553,12 +700,18 @@ impl HttpControlPlane {
     /// Performs one bounded engine/supervisor progress turn.
     pub fn poll_once(&mut self) -> Result<(), HttpControlError> {
         if !self.engine.is_idle() {
-            self.drive_engine()?;
+            match self.drive_engine_until(Instant::now() + Duration::from_millis(1)) {
+                Err(HttpControlError::Busy) => return Ok(()),
+                result => result?,
+            }
         }
         let work = self.reserve_scheduler_work(None, 0)?;
         let result = self.poll_once_reserved();
         self.retain_pending_work(Some(work))?;
-        result
+        match result {
+            Err(HttpControlError::Busy) => Ok(()),
+            result => result,
+        }
     }
 
     fn poll_once_reserved(&mut self) -> Result<(), HttpControlError> {
@@ -575,13 +728,15 @@ impl HttpControlPlane {
             self.engine
                 .handle_event_at(&event, now)
                 .map_err(|error| HttpControlError::Scheduler(format!("{error:?}")))?;
-            self.drive_engine()?;
+            self.drive_engine_until(Instant::now() + Duration::from_millis(1))?;
         }
         if self.engine.is_idle() {
             self.complete_source_replacements()?;
-            self.try_admit_one(now)?;
+            if self.engine.is_idle() {
+                self.try_admit_one(now)?;
+            }
         }
-        self.drive_engine()?;
+        self.drive_engine_until(Instant::now() + Duration::from_millis(1))?;
         self.publish_task_state_events();
         Ok(())
     }
@@ -596,6 +751,26 @@ impl HttpControlPlane {
         params: Value,
         request: Option<crate::rpc_budget::RpcRequestLease>,
     ) -> Result<Value, HttpControlError> {
+        if changes_scheduler_tasks(method) {
+            while !self.engine.is_idle() {
+                match self.drive_engine() {
+                    Ok(()) | Err(HttpControlError::Busy) => {}
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        match self.begin_call_admitted(method, params, request)? {
+            ControlReply::Ready(value) => Ok(value),
+            ControlReply::Deferred(reply) => self.wait_for_mutation(reply),
+        }
+    }
+
+    fn begin_call_admitted(
+        &mut self,
+        method: &str,
+        params: Value,
+        request: Option<crate::rpc_budget::RpcRequestLease>,
+    ) -> Result<ControlReply, HttpControlError> {
         let request = self.reserve_command_memory(method, &params, request.as_ref())?;
         let changes_tasks = changes_scheduler_tasks(method);
         let work = changes_tasks
@@ -612,8 +787,19 @@ impl HttpControlPlane {
                 self.reserve_scheduler_work(request.as_ref(), new_tasks)
             })
             .transpose()?;
+        if matches!(
+            method,
+            "aria2.addUri" | "addUri" | "aria2.changeOption" | "changeOption"
+        ) {
+            let result = if matches!(method, "aria2.addUri" | "addUri") {
+                self.begin_add_uri(params)
+            } else {
+                self.begin_change_option(params, request.clone())
+            };
+            self.retain_pending_work(work)?;
+            return result;
+        }
         let result = match method {
-            "aria2.addUri" | "addUri" => self.add_uri(params),
             "aria2.tellStatus" | "tellStatus" => self.tell_status(params),
             "aria2.tellActive" | "tellActive" => self.tell_active(params),
             "aria2.tellWaiting" | "tellWaiting" => self.tell_waiting(params),
@@ -637,7 +823,6 @@ impl HttpControlPlane {
             "aria2.getFiles" | "getFiles" => self.get_files(params),
             "aria2.getServers" | "getServers" => self.get_servers(params),
             "aria2.getOption" | "getOption" => self.get_option(params),
-            "aria2.changeOption" | "changeOption" => self.change_option(params, request.clone()),
             "aria2.changeUri" | "changeUri" | "ariax.replaceSources" => {
                 self.source_call_sync(method, params)
             }
@@ -665,7 +850,28 @@ impl HttpControlPlane {
             }
         }
         self.retain_pending_work(work)?;
-        result
+        result.map(ControlReply::Ready)
+    }
+
+    fn wait_for_mutation(
+        &mut self,
+        mut reply: oneshot::Receiver<Result<Value, HttpControlError>>,
+    ) -> Result<Value, HttpControlError> {
+        loop {
+            match reply.try_recv() {
+                Ok(result) => return result,
+                Err(oneshot::error::TryRecvError::Empty) => {}
+                Err(oneshot::error::TryRecvError::Closed) => {
+                    return Err(HttpControlError::Persistence(
+                        "mutation owner stopped".to_owned(),
+                    ));
+                }
+            }
+            match self.drive_engine() {
+                Ok(()) | Err(HttpControlError::Busy) => {}
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     fn subscribe_events(&mut self, params: Value) -> Result<Value, HttpControlError> {
@@ -838,6 +1044,13 @@ impl HttpControlPlane {
     }
 
     fn add_uri(&mut self, params: Value) -> Result<Value, HttpControlError> {
+        match self.begin_add_uri(params)? {
+            ControlReply::Ready(value) => Ok(value),
+            ControlReply::Deferred(reply) => self.wait_for_mutation(reply),
+        }
+    }
+
+    fn begin_add_uri(&mut self, params: Value) -> Result<ControlReply, HttpControlError> {
         let array = params.as_array().ok_or(HttpControlError::InvalidParams(
             "addUri params must be an array",
         ))?;
@@ -873,12 +1086,12 @@ impl HttpControlPlane {
 
         // Keep the catalog private to this serialized control call while the
         // journal and SQLite admission are committed in order.
-        let inserted = self.tasks.insert(spec).map_err(HttpControlError::Catalog)?;
+        self.tasks.insert(spec).map_err(HttpControlError::Catalog)?;
         if let Err(error) = self.install_journal(gid, appender) {
             self.tasks.remove(task_id);
             return Err(error);
         }
-        if let Err(error) = self.prepare_and_execute(
+        if let Err(error) = self.prepare_and_begin(
             plan,
             SchedulerCommand::AddValidatedTask {
                 task_id,
@@ -891,10 +1104,15 @@ impl HttpControlPlane {
             let _ = self.session.execute(SessionCommand::CloseJournal { gid });
             return Err(error);
         }
-        self.journal_sequences.insert(gid, 2);
-        self.try_admit_one(MonotonicInstant::now())?;
-        self.drive_engine()?;
-        Ok(Value::String(inserted.gid().to_string()))
+        let (reply, receiver) = oneshot::channel();
+        self.pending_mutation = Some(PendingMutation {
+            publication: MutationPublication::Admission {
+                gid,
+                readmission_started: false,
+            },
+            reply,
+        });
+        Ok(ControlReply::Deferred(receiver))
     }
 
     fn pause(&mut self, params: Value, force: bool) -> Result<Value, HttpControlError> {
@@ -1153,11 +1371,11 @@ impl HttpControlPlane {
         )?)
     }
 
-    fn change_option(
+    fn begin_change_option(
         &mut self,
         params: Value,
         request: Option<crate::rpc_budget::RpcRequestLease>,
-    ) -> Result<Value, HttpControlError> {
+    ) -> Result<ControlReply, HttpControlError> {
         let values = params.as_array().filter(|values| values.len() == 2).ok_or(
             HttpControlError::InvalidParams("changeOption requires GID and option object"),
         )?;
@@ -1173,7 +1391,7 @@ impl HttpControlPlane {
             return Err(HttpControlError::Busy);
         }
         if patch.is_empty() {
-            return Ok(Value::String("OK".to_owned()));
+            return Ok(ControlReply::Ready(Value::String("OK".to_owned())));
         }
         let current = self.tasks.get_gid(gid).ok_or(HttpControlError::NotFound)?;
         let root = self.engine.snapshot_reader().load();
@@ -1299,27 +1517,18 @@ impl HttpControlPlane {
             self.pending_restart_patches.remove(&gid);
             return Err(error);
         }
-        self.drive_engine()?;
-        if kind == ValidatedOptionPatchKind::ActiveRestart
-            && self.engine.scheduler().task(gid).is_some_and(|task| {
-                task.pending_option_patch.is_none()
-                    && task.pending_barrier.is_none()
-                    && task.generation == previous_generation
-            })
-        {
-            self.pending_option_snapshots.remove(&patch_id);
-            self.pending_restart_patches.remove(&gid);
-            return Err(HttpControlError::Persistence(
-                "option patch was not persisted".to_owned(),
-            ));
-        }
-        if let Some(update) = live_rate {
-            update.apply();
-        }
-        self.tasks
-            .replace(replacement)
-            .map_err(HttpControlError::Catalog)?;
-        Ok(Value::String("OK".to_owned()))
+        let (reply, receiver) = oneshot::channel();
+        self.pending_mutation = Some(PendingMutation {
+            publication: MutationPublication::Options {
+                replacement: Box::new(replacement),
+                patch_id,
+                previous_generation,
+                kind,
+                live_rate,
+            },
+            reply,
+        });
+        Ok(ControlReply::Deferred(receiver))
     }
 
     fn change_uri_request(
@@ -1463,8 +1672,22 @@ impl HttpControlPlane {
             return Err(HttpControlError::Busy);
         }
         let mut reply = self.begin_source_plan(replacement, response, None)?;
-        self.complete_source_replacements()?;
-        reply.try_recv().map_err(|_| HttpControlError::Busy)?
+        loop {
+            match reply.try_recv() {
+                Ok(result) => return result,
+                Err(oneshot::error::TryRecvError::Empty) => {}
+                Err(oneshot::error::TryRecvError::Closed) => {
+                    return Err(HttpControlError::Persistence(
+                        "source replacement owner stopped".to_owned(),
+                    ));
+                }
+            }
+            match self.drive_engine() {
+                Ok(()) => self.complete_source_replacements()?,
+                Err(HttpControlError::Busy) => {}
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     fn begin_source_call(
@@ -1485,7 +1708,6 @@ impl HttpControlPlane {
     ) -> Result<oneshot::Receiver<Result<Value, HttpControlError>>, HttpControlError> {
         let gid = replacement.gid();
         let (reply, receiver) = oneshot::channel();
-        self.execute_control_command(SchedulerCommand::BeginSourceReplacement { gid })?;
         self.pending_source_replacements.insert(
             gid,
             PendingSourceReplacement {
@@ -1496,10 +1718,19 @@ impl HttpControlPlane {
                 _request: request,
             },
         );
+        if let Err(error) =
+            self.prepare_and_begin_command(SchedulerCommand::BeginSourceReplacement { gid })
+        {
+            self.pending_source_replacements.remove(&gid);
+            return Err(error);
+        }
         Ok(receiver)
     }
 
     fn complete_source_replacements(&mut self) -> Result<(), HttpControlError> {
+        if !self.engine.is_idle() {
+            return Ok(());
+        }
         let ready = self
             .pending_source_replacements
             .keys()
@@ -1535,24 +1766,41 @@ impl HttpControlPlane {
                 .get_mut(&gid)
                 .expect("pending source replacement")
                 .committing = true;
-            let result =
-                self.execute_control_command(SchedulerCommand::CommitSourceReplacement { gid });
+            if let Err(error) =
+                self.prepare_and_begin_command(SchedulerCommand::CommitSourceReplacement { gid })
+            {
+                self.pending_source_replacements
+                    .get_mut(&gid)
+                    .expect("pending sources")
+                    .committing = false;
+                return Err(error);
+            }
+            return Ok(());
+        }
+        Ok(())
+    }
+
+    fn publish_committed_sources(&mut self) -> Result<(), HttpControlError> {
+        let committed = self
+            .pending_source_replacements
+            .iter()
+            .find_map(|(gid, pending)| pending.committing.then_some(*gid));
+        if let Some(gid) = committed {
             let pending = self
                 .pending_source_replacements
                 .remove(&gid)
-                .expect("pending source replacement");
-            match result {
-                Ok(()) => {
-                    self.tasks
-                        .replace(pending.replacement)
-                        .map_err(HttpControlError::Catalog)?;
-                    let _ = pending.reply.send(Ok(pending.response));
-                }
-                Err(error) => {
-                    let diagnostic = error.to_string();
-                    let _ = pending.reply.send(Err(error));
-                    return Err(HttpControlError::Persistence(diagnostic));
-                }
+                .expect("committed sources");
+            let result = self
+                .tasks
+                .replace(pending.replacement)
+                .map(|_| pending.response)
+                .map_err(HttpControlError::Catalog);
+            let failed = result.is_err();
+            let _ = pending.reply.send(result);
+            if failed {
+                return Err(HttpControlError::Persistence(
+                    "committed source catalog publication failed".to_owned(),
+                ));
             }
         }
         Ok(())
@@ -1591,21 +1839,29 @@ impl HttpControlPlane {
                 method,
                 "aria2.changeUri" | "changeUri" | "ariax.replaceSources"
             ) {
-                return owner.call_admitted(method, params, context.request_lease());
+                match owner.begin_call_admitted(method, params, context.request_lease())? {
+                    ControlReply::Ready(value) => return Ok(value),
+                    ControlReply::Deferred(reply) => reply,
+                }
+            } else {
+                let command = owner.reserve_command_memory(
+                    method,
+                    &params,
+                    context.request_lease().as_ref(),
+                )?;
+                let work = owner.reserve_scheduler_work(command.as_ref(), 0)?;
+                let result = owner.begin_source_call(method, params, command);
+                owner.retain_pending_work(Some(work))?;
+                result?
             }
-            let command =
-                owner.reserve_command_memory(method, &params, context.request_lease().as_ref())?;
-            let work = owner.reserve_scheduler_work(command.as_ref(), 0)?;
-            let result = owner.begin_source_call(method, params, command);
-            owner.retain_pending_work(Some(work))?;
-            result?
         };
         loop {
             tokio::select! {
-                result = &mut reply => return result.map_err(|_| HttpControlError::Persistence("source replacement owner stopped".to_owned()))?,
+                result = &mut reply => return result.map_err(|_| HttpControlError::Persistence("mutation owner stopped".to_owned()))?,
                 () = tokio::time::sleep(Duration::from_millis(1)) => {
-                    if let Err(error) = plane.lock().await.poll_once() {
-                        return reply.try_recv().unwrap_or(Err(error));
+                    match plane.lock().await.poll_once() {
+                        Ok(()) | Err(HttpControlError::Busy) => {}
+                        Err(error) => return reply.try_recv().unwrap_or(Err(error)),
                     }
                 }
             }
@@ -2016,10 +2272,16 @@ impl HttpControlPlane {
         &mut self,
         command: SchedulerCommand,
     ) -> Result<(), HttpControlError> {
-        self.prepare_and_execute_command(command)
+        self.prepare_and_begin_command(command)?;
+        loop {
+            match self.drive_engine() {
+                Err(HttpControlError::Busy) => {}
+                result => return result,
+            }
+        }
     }
 
-    fn prepare_and_execute_command(
+    fn prepare_and_begin_command(
         &mut self,
         command: SchedulerCommand,
     ) -> Result<(), HttpControlError> {
@@ -2031,10 +2293,10 @@ impl HttpControlPlane {
         self.engine
             .execute_command_at(command, MonotonicInstant::now())
             .map_err(|error| HttpControlError::Scheduler(format!("{error:?}")))?;
-        self.drive_engine()
+        Ok(())
     }
 
-    fn prepare_and_execute(
+    fn prepare_and_begin(
         &mut self,
         plan: PersistenceEffectPlan,
         command: SchedulerCommand,
@@ -2045,7 +2307,7 @@ impl HttpControlPlane {
         self.engine
             .execute_command_at(command, MonotonicInstant::now())
             .map_err(|error| HttpControlError::Scheduler(format!("{error:?}")))?;
-        self.drive_engine()
+        Ok(())
     }
 
     fn drive_engine(&mut self) -> Result<(), HttpControlError> {
@@ -2061,15 +2323,24 @@ impl HttpControlPlane {
                         self.engine
                             .discard_prepared_control()
                             .map_err(|error| HttpControlError::Scheduler(format!("{error:?}")))?;
-                        self.pending_work = None;
-                        self.retire_promoted_option_patches();
-                        return Ok(());
+                        self.finish_pending_mutation();
+                        if self.engine.is_idle() {
+                            self.publish_committed_sources()?;
+                            self.pending_work = None;
+                            self.retire_promoted_option_patches();
+                            return Ok(());
+                        }
                     }
                 }
                 ariax_runtime::SchedulerDriverPoll::Progressed
                 | ariax_runtime::SchedulerDriverPoll::WaitingForCompletion { .. }
                 | ariax_runtime::SchedulerDriverPoll::Backpressured { .. } => {}
                 ariax_runtime::SchedulerDriverPoll::Faulted(error) => {
+                    if let Some(pending) = self.pending_mutation.take() {
+                        let _ = pending.reply.send(Err(HttpControlError::Persistence(
+                            "mutation owner failed; recovery is required".to_owned(),
+                        )));
+                    }
                     return Err(HttpControlError::Scheduler(format!("{error:?}")));
                 }
             }
@@ -2081,7 +2352,7 @@ impl HttpControlPlane {
     }
 
     fn try_admit_one(&mut self, now: MonotonicInstant) -> Result<(), HttpControlError> {
-        if self.supervisor.is_none() {
+        if self.supervisor.is_none() || self.shutdown_requested {
             return Ok(());
         }
         let mut simulation = self.engine.scheduler().clone();
@@ -4261,6 +4532,204 @@ mod tests {
     }
 
     #[test]
+    fn accepted_add_and_option_calls_finish_after_expired_progress_and_disconnected_reply() {
+        for disconnected in [false, true] {
+            let directory = TestDirectory::new();
+            let mut plane = directory.control_plane();
+            let client = plane.rpc_budgets.client().expect("client");
+            let request = client.try_request(128).expect("request");
+            let ControlReply::Deferred(mut reply) = plane
+                .begin_call_admitted(
+                    "aria2.addUri",
+                    json!([["http://example.test/file.bin"], {"pause": true}]),
+                    Some(request),
+                )
+                .expect("admitted add")
+            else {
+                panic!("add must retain continuation");
+            };
+            assert!(matches!(
+                plane.drive_engine_until(Instant::now()),
+                Err(HttpControlError::Busy)
+            ));
+            assert!(plane.pending_mutation.is_some());
+            assert_eq!(plane.tasks.len(), 1);
+            assert!(plane.engine.snapshot_reader().load().is_empty());
+            assert_eq!(client.outstanding_requests(), 1);
+            if disconnected {
+                reply.close();
+            }
+            plane.drive_engine().expect("finish admission");
+            let gid = *plane
+                .engine
+                .snapshot_reader()
+                .load()
+                .tasks()
+                .keys()
+                .next()
+                .expect("published gid");
+            if !disconnected {
+                assert_eq!(
+                    reply.try_recv().expect("reply").expect("add"),
+                    gid.to_string()
+                );
+            }
+            assert!(plane.pending_mutation.is_none());
+            assert_eq!(client.request_bytes(), 0);
+            let request = client.try_request(128).expect("option request");
+            let ControlReply::Deferred(mut reply) = plane
+                .begin_call_admitted(
+                    "aria2.changeOption",
+                    json!([gid.to_string(), {"split": 3}]),
+                    Some(request),
+                )
+                .expect("accepted option patch")
+            else {
+                panic!("option continuation");
+            };
+            assert_eq!(
+                plane
+                    .tasks
+                    .get_gid(gid)
+                    .expect("old catalog")
+                    .options()
+                    .split
+                    .get(),
+                crate::DEFAULT_HTTP_SPLIT
+            );
+            assert!(matches!(
+                plane.drive_engine_until(Instant::now()),
+                Err(HttpControlError::Busy)
+            ));
+            if disconnected {
+                reply.close();
+            }
+            plane.drive_engine().expect("publish accepted patch");
+            if !disconnected {
+                assert_eq!(reply.try_recv().expect("reply").expect("patch"), "OK");
+            }
+            assert_eq!(
+                plane
+                    .tasks
+                    .get_gid(gid)
+                    .expect("new catalog")
+                    .options()
+                    .split
+                    .get(),
+                3
+            );
+            assert_eq!(client.outstanding_requests(), 0);
+            assert_eq!(client.request_bytes(), 0);
+            plane.shutdown().expect("shutdown");
+            let mut recovered = directory.control_plane();
+            assert_eq!(
+                recovered
+                    .call("aria2.getOption", json!([gid.to_string()]))
+                    .expect("recovered options")["split"],
+                "3"
+            );
+            recovered.shutdown().expect("recovery shutdown");
+        }
+    }
+
+    #[tokio::test]
+    async fn dropping_async_add_reply_keeps_admission_until_shutdown_drain() {
+        let directory = TestDirectory::new();
+        let plane = directory.control_plane();
+        let client = plane.rpc_budgets.client().expect("client");
+        let request = client.try_request(128).expect("request");
+        let shared = Arc::new(Mutex::new(plane));
+        let mut call = Box::pin(HttpControlPlane::call_shared_with_context(
+            &shared,
+            "aria2.addUri",
+            json!([["http://example.test/file.bin"], {"pause": true}]),
+            crate::RpcClientContext::default().with_request(request),
+        ));
+        assert!(futures_util::poll!(&mut call).is_pending());
+        assert!(shared.lock().await.pending_mutation.is_some());
+        drop(call);
+        assert_eq!(client.outstanding_requests(), 1);
+        let owner = Arc::try_unwrap(shared).expect("sole owner").into_inner();
+        let report = owner
+            .shutdown_async()
+            .await
+            .expect("shutdown drains accepted add");
+        assert!(report.is_clean());
+        assert_eq!(client.outstanding_requests(), 0);
+        assert_eq!(client.request_bytes(), 0);
+        let recovered = directory.control_plane();
+        assert_eq!(recovered.tasks.len(), 1);
+        assert_eq!(recovered.engine.snapshot_reader().load().len(), 1);
+        recovered.shutdown().expect("recovery shutdown");
+    }
+
+    #[test]
+    fn source_commit_remains_pending_until_publication_and_never_dispatches_twice() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let gid = add_paused(&mut plane);
+        let client = plane.rpc_budgets.client().expect("client");
+        let request = client.try_request(128).expect("request");
+        let params = json!([gid.to_string(), ["http://new.test/file.bin"]]);
+        let command = plane
+            .reserve_command_memory("ariax.replaceSources", &params, Some(&request))
+            .expect("input");
+        let work = plane
+            .reserve_scheduler_work(command.as_ref(), 0)
+            .expect("work");
+        let mut reply = plane
+            .begin_source_call("ariax.replaceSources", params, command)
+            .expect("source begin");
+        plane.retain_pending_work(Some(work)).expect("retain begin");
+        drop(request);
+        plane.drive_engine().expect("finish source begin");
+        let work = plane.reserve_scheduler_work(None, 0).expect("commit work");
+        plane.complete_source_replacements().expect("begin commit");
+        plane
+            .retain_pending_work(Some(work))
+            .expect("retain commit");
+        assert!(plane.pending_source_replacements[&gid].committing);
+        assert!(matches!(
+            reply.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            plane.drive_engine_until(Instant::now()),
+            Err(HttpControlError::Busy)
+        ));
+        assert_eq!(
+            plane.tasks.get_gid(gid).expect("old catalog").sources()[0].uri(),
+            "http://example.test/file.bin"
+        );
+        assert_eq!(client.outstanding_requests(), 1);
+        plane
+            .complete_source_replacements()
+            .expect("pending commit is not dispatched twice");
+        reply.close();
+        plane
+            .drive_engine()
+            .expect("finish commit after disconnect");
+        assert_eq!(
+            plane.tasks.get_gid(gid).expect("new catalog").sources()[0].uri(),
+            "http://new.test/file.bin"
+        );
+        assert!(plane.pending_source_replacements.is_empty());
+        assert_eq!(client.request_bytes(), 0);
+        plane.shutdown().expect("shutdown");
+        let recovered = directory.control_plane();
+        assert_eq!(
+            recovered
+                .tasks
+                .get_gid(gid)
+                .expect("recovered sources")
+                .sources()[0]
+                .uri(),
+            "http://new.test/file.bin"
+        );
+        recovered.shutdown().expect("recovery shutdown");
+    }
+
+    #[test]
     fn scheduler_scratch_rejects_before_journal_creation_and_refunds_after_success() {
         let directory = TestDirectory::new();
         let mut plane = directory.control_plane();
@@ -4937,13 +5406,14 @@ mod tests {
         plane.poll_once().expect("start worker");
         started.notified().await;
         poll_until(&mut plane, |plane| {
-            plane
-                .engine
-                .scheduler()
-                .task(gid)
-                .expect("task")
-                .pending_barrier
-                .is_none()
+            plane.engine.is_idle()
+                && plane
+                    .engine
+                    .scheduler()
+                    .task(gid)
+                    .expect("task")
+                    .pending_barrier
+                    .is_none()
         })
         .await;
         let reply = plane
@@ -5026,12 +5496,17 @@ mod tests {
                     HttpControlPlane::call_shared(&caller, method, params).await
                 });
                 let deadline = Instant::now() + Duration::from_secs(2);
-                while !shared
-                    .lock()
-                    .await
-                    .pending_source_replacements
-                    .contains_key(&gid)
-                {
+                loop {
+                    let owner = shared.lock().await;
+                    let quiescing =
+                        owner.pending_source_replacements.contains_key(&gid)
+                            && owner.engine.snapshot_reader().load().task(gid).is_some_and(
+                                |task| task.snapshot.wire_status() == Ok(Aria2Status::Waiting),
+                            );
+                    drop(owner);
+                    if quiescing {
+                        break;
+                    }
                     assert!(
                         !request.is_finished(),
                         "source request rejected before quiescence"

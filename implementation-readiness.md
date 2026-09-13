@@ -321,14 +321,12 @@ coverage includes rejection before journal creation, timeout retention, idle-onl
 unused-plan cleanup, event retention under pressure, and independent direct/owner
 request slots. A 1,000-active-task forecast test is allocation-contract evidence;
 native optimized latency and RSS measurements remain under `P4-11`.
-Accepted-write continuation remains an implementation gap: a synchronous
-control handler can return `Busy` after the driver accepted work but before the
-handler reaches catalog publication or installs its deferred source plan.
-Retaining RPC credit across that timeout does not complete the mutation. The
-remaining phase work must preserve each accepted command's continuation through
-publication and final reply, with delayed-owner and disconnected-caller tests
-for admission, option changes, and source replacement. This also belongs to the
-owner/query separation required by `P4-11`.
+Accepted add, option, and source writes now retain an owner continuation through
+catalog publication and final reply. RPC credit remains held after a delayed or
+disconnected caller, and shutdown drains the continuation before closing the
+journal; a failed drain records a dirty checkpoint. The remaining `P4-11` work
+is to move the other synchronous control and bulk handlers onto the same bounded
+progress lane and to collect native delayed-worker evidence for every transport.
 Passing the existing workspace checks does not substitute for the regression
 evidence below. Tests must use the production authentication and persistence
 composition, including real delayed worker cancellation where relevant.
