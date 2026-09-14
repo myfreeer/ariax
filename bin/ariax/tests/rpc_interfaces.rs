@@ -65,6 +65,13 @@ impl Drop for Process {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
+        if std::thread::panicking()
+            && let Some(stderr) = self.0.stderr.take()
+        {
+            let mut text = String::new();
+            let _ = stderr.take(64 * 1024).read_to_string(&mut text);
+            eprintln!("RPC child stderr: {text}");
+        }
     }
 }
 
@@ -99,7 +106,13 @@ fn http_call(address: SocketAddr, request: Value) -> Value {
     socket
         .take(16 * 1024 * 1024)
         .read_to_end(&mut response)
-        .expect("bounded response");
+        .unwrap_or_else(|error| {
+            panic!(
+                "bounded response for {} after {} bytes: {error}",
+                request["method"],
+                response.len()
+            )
+        });
     let start = response
         .windows(4)
         .position(|window| window == b"\r\n\r\n")

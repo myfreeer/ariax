@@ -4,8 +4,15 @@
 //! scheduler effects, persisted task metadata, and the worker catalog.  RPC
 //! transports never mutate the scheduler directly.
 
+mod admission;
 mod configuration;
+mod control_io;
+mod control_ops;
+pub(crate) mod control_runtime;
+pub(crate) mod query;
 mod scheduling;
+
+pub use control_runtime::ControlRuntimeMetrics;
 
 use crate::http_first_slice::append_initial_admission_with_options;
 use crate::rpc_result::{
@@ -105,7 +112,7 @@ impl HttpControlPlaneConfig {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum HttpControlError {
     InvalidConfig,
     InvalidParams(&'static str),
@@ -190,6 +197,11 @@ enum ControlReply {
 }
 
 enum MutationPublication {
+    Control {
+        response: Value,
+        remove_task: Option<TaskId>,
+        readmit: bool,
+    },
     Import {
         remaining: VecDeque<ImportMember>,
         result: Value,
@@ -225,9 +237,45 @@ struct PendingSourceReplacement {
     _request: Option<crate::rpc_budget::RpcRequestLease>,
 }
 
+#[derive(Clone)]
 struct ControlWorkReservation {
     _input: crate::rpc_budget::RpcRequestLease,
     _copies: crate::rpc_budget::RpcRequestLease,
+}
+
+struct OwnerTurn {
+    remaining: usize,
+    used: usize,
+    deadline: Instant,
+    progressed: bool,
+}
+
+impl OwnerTurn {
+    fn new() -> Self {
+        Self {
+            remaining: 32,
+            used: 0,
+            deadline: Instant::now() + Duration::from_millis(1),
+            progressed: false,
+        }
+    }
+
+    fn take_step(&mut self) -> bool {
+        if self.remaining == 0 || Instant::now() >= self.deadline {
+            return false;
+        }
+        self.remaining -= 1;
+        self.used += 1;
+        true
+    }
+
+    fn stop(&mut self) {
+        self.remaining = 0;
+    }
+
+    fn mark_progress(&mut self) {
+        self.progressed = true;
+    }
 }
 
 /// Shared mutable control plane used by both transports.
@@ -241,9 +289,9 @@ pub struct HttpControlPlane {
     session_id: SessionId,
     journal_sequences: BTreeMap<Gid, u64>,
     next_task_id: u64,
-    global_options: BTreeMap<String, String>,
-    flat_options: BTreeMap<String, String>,
-    rpc_template: BTreeMap<String, String>,
+    global_options: Arc<BTreeMap<String, String>>,
+    flat_options: Arc<BTreeMap<String, String>>,
+    rpc_template: Arc<BTreeMap<String, String>>,
     url_rules: Arc<ariax_config::UrlRules>,
     config_generation: u64,
     config_charge: Option<crate::rpc_budget::RpcByteCharge>,
@@ -255,21 +303,34 @@ pub struct HttpControlPlane {
     force_shutdown_requested: bool,
     events: RpcEventBroker,
     subscriptions: BTreeMap<u64, RpcEventSubscriber>,
-    observed_statuses: BTreeMap<Gid, Aria2Status>,
+    observed_statuses: Arc<ariax_runtime::StatusSnapshotRoot>,
     global_download_rate: Option<RateArbiter>,
     rpc_budgets: crate::RpcBudgets,
     process_resources: Option<crate::HttpProcessResources>,
     scheduling: crate::HttpSchedulingPolicy,
-    slow_observations: BTreeMap<Gid, crate::slow_slots::SlowObservation>,
+    slow_observations: Arc<BTreeMap<Gid, crate::slow_slots::SlowObservation>>,
     next_slow_sample: Option<MonotonicInstant>,
     owner_client: crate::RpcClientBudget,
     direct_client: crate::RpcClientBudget,
     pending_work: Option<ControlWorkReservation>,
     pending_mutation: Option<PendingMutation>,
+    pending_input: Option<control_io::PendingInput>,
+    pending_admission: Option<admission::PendingAdmission>,
+    pending_configuration: Option<configuration::PendingConfiguration>,
+    #[cfg(test)]
+    admission_gate: Option<Arc<admission::PreparationGate>>,
+    pending_bulk: Option<control_ops::PendingBulkControl>,
+    control_order: control_ops::ControlOrdering,
+    dispatch_sequence: Option<u64>,
+    dispatch_bulk: Option<control_ops::PreparedBulk>,
     session_export: Option<ConfiguredSessionExport>,
     pending_session_export: Option<PendingSessionExport>,
     completed_session_exports: u64,
     last_session_export_failed: bool,
+    queries: query::ControlQueryReader,
+    query_publication_charge: Arc<crate::rpc_budget::RpcByteCharge>,
+    turn: OwnerTurn,
+    managed_runtime: Option<Arc<control_runtime::SharedRuntime>>,
 }
 
 impl fmt::Debug for HttpControlPlane {
@@ -303,6 +364,12 @@ impl HttpControlPlane {
         let rpc_budgets = crate::RpcBudgets::process_default();
         let owner_client = rpc_budgets.client().map_err(|_| HttpControlError::Busy)?;
         let direct_client = rpc_budgets.client().map_err(|_| HttpControlError::Busy)?;
+        let query_publication_charge = Arc::new(
+            owner_client
+                .charge(query::publication_bytes(config.task_capacity.get()))
+                .map_err(|_| HttpControlError::Busy)?,
+        );
+        let observed_statuses = engine.snapshot_reader().load();
         let mut plane = Self {
             session: engine.session_handle(),
             session_id: engine.session_id(),
@@ -313,9 +380,9 @@ impl HttpControlPlane {
             supervisor: None,
             journal_sequences: BTreeMap::new(),
             next_task_id,
-            global_options: default_global_options()?,
-            flat_options: BTreeMap::new(),
-            rpc_template: BTreeMap::new(),
+            global_options: Arc::new(default_global_options()?),
+            flat_options: Arc::new(BTreeMap::new()),
+            rpc_template: Arc::new(BTreeMap::new()),
             url_rules: Arc::new(ariax_config::UrlRules::default()),
             config_generation: 0,
             config_charge: None,
@@ -327,21 +394,34 @@ impl HttpControlPlane {
             force_shutdown_requested: false,
             events: RpcEventBroker::new(),
             subscriptions: BTreeMap::new(),
-            observed_statuses: BTreeMap::new(),
+            observed_statuses,
             global_download_rate: None,
             rpc_budgets,
             process_resources: None,
             scheduling: crate::HttpSchedulingPolicy::default(),
-            slow_observations: BTreeMap::new(),
+            slow_observations: Arc::new(BTreeMap::new()),
             next_slow_sample: None,
             owner_client,
             direct_client,
             pending_work: None,
             pending_mutation: None,
+            pending_input: None,
+            pending_admission: None,
+            pending_configuration: None,
+            #[cfg(test)]
+            admission_gate: None,
+            pending_bulk: None,
+            control_order: control_ops::ControlOrdering::default(),
+            dispatch_sequence: None,
+            dispatch_bulk: None,
             session_export: None,
             pending_session_export: None,
             completed_session_exports: 0,
             last_session_export_failed: false,
+            queries: query::ControlQueryReader::new(),
+            query_publication_charge,
+            turn: OwnerTurn::new(),
+            managed_runtime: None,
         };
         plane.restore_catalog()?;
         plane.reset_observed_statuses();
@@ -352,7 +432,8 @@ impl HttpControlPlane {
         &mut self,
         budgets: crate::RpcBudgets,
     ) -> Result<(), HttpControlError> {
-        if self.events.subscriber_count() != 0
+        if self.managed_runtime.is_some()
+            || self.events.subscriber_count() != 0
             || self.pending_session_export.is_some()
             || self.config_charge.is_some()
             || !self.pending_source_replacements.is_empty()
@@ -361,11 +442,19 @@ impl HttpControlPlane {
                 .values()
                 .any(|pending| pending.request.is_some())
             || self.pending_work.is_some()
+            || self.pending_admission.is_some()
+            || self.pending_configuration.is_some()
         {
             return Err(HttpControlError::Busy);
         }
         let owner_client = budgets.client().map_err(|_| HttpControlError::Busy)?;
         let direct_client = budgets.client().map_err(|_| HttpControlError::Busy)?;
+        let query_publication_charge = Arc::new(
+            owner_client
+                .charge(query::publication_bytes(self.config.task_capacity.get()))
+                .map_err(|_| HttpControlError::Busy)?,
+        );
+        self.query_publication_charge = query_publication_charge;
         self.events = RpcEventBroker::with_budgets(budgets.clone());
         self.rpc_budgets = budgets;
         self.process_resources = None;
@@ -465,13 +554,27 @@ impl HttpControlPlane {
         self.shutdown_requested = true;
         let deadline = Instant::now() + self.config.supervisor.shutdown_timeout;
         let continuations_drained = loop {
+            if self.pending_admission.is_some() || self.pending_configuration.is_some() {
+                if Instant::now() >= deadline || self.poll_once().is_err() {
+                    break false;
+                }
+                std::thread::park_timeout(CONTROL_PROGRESS_POLL);
+                continue;
+            }
             if self.drive_engine_until(deadline).is_err() {
                 break false;
+            }
+            if self.pending_bulk.is_some() {
+                self.turn = OwnerTurn::new();
+                if Instant::now() >= deadline || self.poll_bulk_control().is_err() {
+                    break false;
+                }
+                continue;
             }
             if self.pending_source_replacements.is_empty() {
                 break true;
             }
-            if self.complete_source_replacements().is_err() || self.engine.is_idle() {
+            if self.complete_source_replacements().is_err() || self.engine_idle() {
                 break false;
             }
         };
@@ -481,6 +584,10 @@ impl HttpControlPlane {
             mut supervisor,
             pending_work: _pending_work,
             pending_mutation: _pending_mutation,
+            pending_input: _pending_input,
+            pending_admission: _pending_admission,
+            pending_configuration: _pending_configuration,
+            pending_bulk: _pending_bulk,
             pending_source_replacements: _pending_sources,
             pending_option_snapshots: _pending_options,
             ..
@@ -513,7 +620,13 @@ impl HttpControlPlane {
         let started = Instant::now();
         let deadline = started + self.config.supervisor.shutdown_timeout;
         let continuations_drained = loop {
-            if self.engine.is_idle() && self.pending_source_replacements.is_empty() {
+            if self.engine_idle()
+                && self.pending_source_replacements.is_empty()
+                && self.pending_bulk.is_none()
+                && self.pending_admission.is_none()
+                && self.pending_configuration.is_none()
+                && self.pending_mutation.is_none()
+            {
                 break true;
             }
             if Instant::now() >= deadline {
@@ -532,6 +645,10 @@ impl HttpControlPlane {
             supervisor,
             pending_work: _pending_work,
             pending_mutation: _pending_mutation,
+            pending_input: _pending_input,
+            pending_admission: _pending_admission,
+            pending_configuration: _pending_configuration,
+            pending_bulk: _pending_bulk,
             pending_source_replacements: _pending_sources,
             pending_option_snapshots: _pending_options,
             ..
@@ -695,6 +812,7 @@ impl HttpControlPlane {
         Ok(())
     }
 
+    /// Startup repair only; live option changes use a nonblocking session prelude.
     fn replace_option_mirror(
         &self,
         gid: Gid,
@@ -739,6 +857,38 @@ impl HttpControlPlane {
             return;
         };
         let result = match pending.publication {
+            MutationPublication::Control {
+                response,
+                remove_task,
+                readmit,
+            } => {
+                if let Some(task) = remove_task {
+                    self.tasks.remove(task);
+                    self.stats.remove(task);
+                }
+                if readmit {
+                    match self.try_admit_one(MonotonicInstant::now()) {
+                        Ok(()) | Err(HttpControlError::Busy) => {}
+                        Err(error) => {
+                            let _ = pending.reply.send(Err(error));
+                            return;
+                        }
+                    }
+                    if !self.engine_idle() {
+                        self.pending_mutation = Some(PendingMutation {
+                            publication: MutationPublication::Control {
+                                response,
+                                remove_task: None,
+                                readmit: false,
+                            },
+                            reply: pending.reply,
+                        });
+                        return;
+                    }
+                }
+                Ok(response)
+            }
+
             MutationPublication::Import {
                 mut remaining,
                 result,
@@ -774,7 +924,7 @@ impl HttpControlPlane {
                             return;
                         }
                     }
-                    if !self.engine.is_idle() {
+                    if !self.engine_idle() {
                         self.pending_mutation = Some(PendingMutation {
                             publication: MutationPublication::Admission {
                                 gid,
@@ -858,12 +1008,35 @@ impl HttpControlPlane {
 
     /// Performs one bounded engine/supervisor progress turn.
     pub fn poll_once(&mut self) -> Result<(), HttpControlError> {
+        self.turn = OwnerTurn::new();
+        let result = self
+            .poll_once_inner()
+            .and_then(|()| self.poll_bulk_control());
+        self.publish_query();
+        result
+    }
+
+    fn poll_once_inner(&mut self) -> Result<(), HttpControlError> {
+        if !self.turn.take_step() {
+            return Ok(());
+        }
         self.poll_session_export();
-        if !self.engine.is_idle() {
-            match self.drive_engine_until(Instant::now() + Duration::from_millis(1)) {
-                Err(HttpControlError::Busy) => return Ok(()),
-                result => result?,
+        if !self.engine_idle() {
+            self.poll_engine_turn()?;
+            if !self.engine_idle() {
+                return Ok(());
             }
+        }
+        if !self.turn.take_step() {
+            return Ok(());
+        }
+        self.poll_configuration();
+        if !self.turn.take_step()
+            || self.poll_admission()?
+            || self.admission_fenced()
+            || !self.engine_idle()
+        {
+            return Ok(());
         }
         let work = self.reserve_scheduler_work(None, 0)?;
         let result = self.poll_once_reserved();
@@ -876,30 +1049,31 @@ impl HttpControlPlane {
 
     fn poll_once_reserved(&mut self) -> Result<(), HttpControlError> {
         let now = MonotonicInstant::now();
+        if !self.turn.take_step() {
+            return Ok(());
+        }
         if let Some(supervisor) = self.supervisor.as_mut() {
             supervisor
                 .poll_once(now)
                 .map_err(|error| HttpControlError::Scheduler(error.to_string()))?;
         }
-        if self.engine.is_idle()
+        if self.engine_idle()
+            && self.turn.take_step()
             && let Some(event) = self.engine.runtime_handle().poll_event_at(now)
         {
-            self.prepare_runtime_event(&event, now)?;
-            self.engine
-                .handle_event_at(&event, now)
-                .map_err(|error| HttpControlError::Scheduler(format!("{error:?}")))?;
-            self.drive_engine_until(Instant::now() + Duration::from_millis(1))?;
+            self.prepare_and_begin_event(event, now)?;
+            self.poll_engine_turn()?;
         }
-        if self.engine.is_idle() {
+        if self.engine_idle() && self.turn.take_step() {
             self.complete_source_replacements()?;
-            if self.engine.is_idle() {
+            if self.engine_idle() && self.turn.take_step() {
                 self.poll_slow_slots_at(now)?;
             }
-            if self.engine.is_idle() {
+            if self.engine_idle() && self.turn.take_step() {
                 self.try_admit_one(now)?;
             }
         }
-        self.drive_engine_until(Instant::now() + Duration::from_millis(1))?;
+        self.poll_engine_turn()?;
         self.publish_task_state_events();
         Ok(())
     }
@@ -915,7 +1089,7 @@ impl HttpControlPlane {
         request: Option<crate::rpc_budget::RpcRequestLease>,
     ) -> Result<Value, HttpControlError> {
         if changes_scheduler_tasks(method) {
-            while !self.engine.is_idle() {
+            while !self.engine_idle() {
                 match self.drive_engine() {
                     Ok(()) | Err(HttpControlError::Busy) => {}
                     Err(error) => return Err(error),
@@ -939,8 +1113,21 @@ impl HttpControlPlane {
             require_no_params(&params, "saveSession")?;
             return self.begin_session_export(request.expect("command reservation"), true);
         }
-        if method == "ariax.importSession" {
-            return self.begin_import_session(params, request.expect("command reservation"));
+        if matches!(
+            method,
+            "aria2.changeGlobalOption" | "changeGlobalOption" | "ariax.reloadConfig"
+        ) {
+            return self.begin_configuration(method, params, request.expect("command reservation"));
+        }
+        if matches!(method, "ariax.importSession" | "aria2.addUri" | "addUri") {
+            return self.begin_admission(
+                params,
+                request.expect("command reservation"),
+                method == "ariax.importSession",
+            );
+        }
+        if self.admission_fenced() && !query::is_query(method) {
+            return Err(HttpControlError::Busy);
         }
         let changes_tasks = changes_scheduler_tasks(method);
         let work = changes_tasks
@@ -949,15 +1136,19 @@ impl HttpControlPlane {
                 self.reserve_scheduler_work(request.as_ref(), new_tasks)
             })
             .transpose()?;
-        if matches!(
-            method,
-            "aria2.addUri" | "addUri" | "aria2.changeOption" | "changeOption"
-        ) {
-            let result = if matches!(method, "aria2.addUri" | "addUri") {
-                self.begin_add_uri(params)
-            } else {
-                self.begin_change_option(params, request.clone())
-            };
+        if control_ops::is_bulk_control(method) {
+            let result =
+                self.begin_bulk_control(method, params, request.expect("command reservation"));
+            self.retain_pending_work(work)?;
+            return result;
+        }
+        if control_ops::is_task_control(method) {
+            let result = self.begin_task_control(method, params);
+            self.retain_pending_work(work)?;
+            return result;
+        }
+        if matches!(method, "aria2.changeOption" | "changeOption") {
+            let result = self.begin_change_option(params, request.clone());
             self.retain_pending_work(work)?;
             return result;
         }
@@ -966,21 +1157,6 @@ impl HttpControlPlane {
             "aria2.tellActive" | "tellActive" => self.tell_active(params),
             "aria2.tellWaiting" | "tellWaiting" => self.tell_waiting(params),
             "aria2.tellStopped" | "tellStopped" => self.tell_stopped(params),
-            "aria2.pause" | "pause" => self.pause(params, false),
-            "aria2.forcePause" | "forcePause" => self.pause(params, true),
-            "aria2.pauseAll" | "pauseAll" => self.pause_all(params, false),
-            "aria2.forcePauseAll" | "forcePauseAll" => self.pause_all(params, true),
-            "aria2.unpause" | "unpause" => self.unpause(params),
-            "aria2.unpauseAll" | "unpauseAll" => self.unpause_all(params),
-            "aria2.remove" | "remove" => self.remove(params, false),
-            "aria2.forceRemove" | "forceRemove" => self.remove(params, true),
-            "aria2.removeDownloadResult" | "removeDownloadResult" => {
-                self.remove_download_result(params)
-            }
-            "aria2.purgeDownloadResult" | "purgeDownloadResult" => {
-                self.purge_download_result(params)
-            }
-            "aria2.changePosition" | "changePosition" => self.change_position(params),
             "aria2.getUris" | "getUris" => self.get_uris(params),
             "aria2.getFiles" | "getFiles" => self.get_files(params),
             "aria2.getServers" | "getServers" => self.get_servers(params),
@@ -989,7 +1165,6 @@ impl HttpControlPlane {
                 self.source_call_sync(method, params)
             }
             "aria2.getGlobalOption" | "getGlobalOption" => self.get_global_option(params),
-            "aria2.changeGlobalOption" | "changeGlobalOption" => self.change_global_option(params),
             "aria2.getVersion" | "getVersion" => self.get_version(params),
             "aria2.getSessionInfo" | "getSessionInfo" => self.get_session_info(params),
             "aria2.getGlobalStat" | "getGlobalStat" => self.global_stat(params),
@@ -999,7 +1174,6 @@ impl HttpControlPlane {
             "ariax.unsubscribe" => self.unsubscribe_events(params),
             "ariax.pollEvents" => self.poll_events(params),
             "ariax.checkConfig" => self.check_config(params),
-            "ariax.reloadConfig" => self.reload_config(params),
             "ariax.dumpConfig" => self.dump_config(params),
             "ariax.getDiagnostics" => {
                 require_no_params(&params, "getDiagnostics")?;
@@ -1010,6 +1184,7 @@ impl HttpControlPlane {
             _ => Err(HttpControlError::Unsupported("method not found")),
         };
         if let Ok(value) = &result {
+            self.publish_query();
             self.publish_control_event(method, value);
             if changes_tasks {
                 self.publish_task_state_events();
@@ -1034,7 +1209,7 @@ impl HttpControlPlane {
                     ));
                 }
             }
-            match self.drive_engine() {
+            match self.poll_once() {
                 Ok(()) | Err(HttpControlError::Busy) => {}
                 Err(error) => return Err(error),
             }
@@ -1161,34 +1336,33 @@ impl HttpControlPlane {
     }
 
     fn reset_observed_statuses(&mut self) {
-        let root = self.engine.snapshot_reader().load();
-        self.observed_statuses = root
-            .tasks()
-            .values()
-            .filter_map(|task| {
-                task.snapshot
-                    .wire_status()
-                    .ok()
-                    .map(|status| (task.snapshot.gid, status))
-            })
-            .collect();
+        self.observed_statuses = self.engine.snapshot_reader().load();
     }
 
     fn publish_task_state_events(&mut self) {
-        let current = {
-            let root = self.engine.snapshot_reader().load();
-            root.tasks()
-                .values()
-                .filter_map(|task| {
-                    task.snapshot
-                        .wire_status()
-                        .ok()
-                        .map(|status| (task.snapshot.gid, status))
-                })
-                .collect::<BTreeMap<_, _>>()
-        };
-        for (&gid, &status) in &current {
-            let previous = self.observed_statuses.get(&gid).copied();
+        self.publish_query();
+        let current = self.engine.snapshot_reader().load();
+        if Arc::ptr_eq(&current, &self.observed_statuses) {
+            return;
+        }
+        let changes: Box<dyn Iterator<Item = Gid> + '_> =
+            if current.revision() == self.observed_statuses.revision().saturating_add(1) {
+                Box::new(current.changed_tasks().iter().copied())
+            } else {
+                // Startup and explicit low-level driver adapters can skip revisions.
+                Box::new(current.tasks().keys().copied())
+            };
+        for gid in changes {
+            let Some(status) = current
+                .task(gid)
+                .and_then(|task| task.snapshot.wire_status().ok())
+            else {
+                continue;
+            };
+            let previous = self
+                .observed_statuses
+                .task(gid)
+                .and_then(|task| task.snapshot.wire_status().ok());
             if previous == Some(status) {
                 continue;
             }
@@ -1219,327 +1393,36 @@ impl HttpControlPlane {
         self.observed_statuses = current;
     }
 
-    fn begin_add_uri(&mut self, params: Value) -> Result<ControlReply, HttpControlError> {
-        let array = params.as_array().ok_or(HttpControlError::InvalidParams(
-            "addUri params must be an array",
-        ))?;
-        if !(1..=2).contains(&array.len()) {
-            return Err(HttpControlError::InvalidParams(
-                "addUri accepts a URI array and optional options object",
-            ));
-        }
-        let uris =
-            array
-                .first()
-                .and_then(Value::as_array)
-                .ok_or(HttpControlError::InvalidParams(
-                    "addUri requires a URI array",
-                ))?;
-        let uris = uris
-            .iter()
-            .map(|uri| {
-                uri.as_str()
-                    .map(str::to_owned)
-                    .ok_or(HttpControlError::InvalidParams("URI must be a string"))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        if uris.is_empty() {
-            return Err(HttpControlError::InvalidParams(
-                "addUri requires at least one URI",
-            ));
-        }
-        let options = array.get(1).cloned().unwrap_or_else(|| json!({}));
-        let options = self.merged_add_options(options, &uris, false)?;
-        let (spec, record, plan, appender) = self.build_admission(uris, options)?;
-        let task_id = spec.task();
-        let gid = spec.gid();
-
-        // Keep the catalog private to this serialized control call while the
-        // journal and SQLite admission are committed in order.
-        self.tasks.insert(spec).map_err(HttpControlError::Catalog)?;
-        if let Err(error) = self.install_journal(gid, appender) {
-            self.tasks.remove(task_id);
-            return Err(error);
-        }
-        if let Err(error) = self.prepare_and_begin(
-            plan,
-            SchedulerCommand::AddValidatedTask {
-                task_id,
-                gid,
-                desired_paused: record.desired_paused,
-                conditions: TaskConditions::default(),
-            },
-        ) {
-            self.tasks.remove(task_id);
-            let _ = self.session.execute(SessionCommand::CloseJournal { gid });
-            return Err(error);
-        }
-        let (reply, receiver) = oneshot::channel();
-        self.pending_mutation = Some(PendingMutation {
-            publication: MutationPublication::Admission {
-                gid,
-                readmission_started: false,
-            },
-            reply,
-        });
-        Ok(ControlReply::Deferred(receiver))
-    }
-
-    fn pause(&mut self, params: Value, force: bool) -> Result<Value, HttpControlError> {
-        let gid = self.resolve_gid_param(&params)?;
-        self.execute_control_command(SchedulerCommand::Pause { gid, force })?;
-        Ok(Value::String(gid.to_string()))
-    }
-
-    fn unpause(&mut self, params: Value) -> Result<Value, HttpControlError> {
-        let gid = self.resolve_gid_param(&params)?;
-        self.execute_control_command(SchedulerCommand::Resume { gid })?;
-        self.try_admit_one(MonotonicInstant::now())?;
-        self.drive_engine()?;
-        Ok(Value::String(gid.to_string()))
-    }
-
-    fn remove(&mut self, params: Value, force: bool) -> Result<Value, HttpControlError> {
-        let gid = self.resolve_gid_param(&params)?;
-        self.execute_control_command(SchedulerCommand::Remove { gid, force })?;
-        Ok(Value::String(gid.to_string()))
-    }
-
     fn tell_status(&mut self, params: Value) -> Result<Value, HttpControlError> {
-        let (gid, keys) = self.resolve_gid_and_keys(&params)?;
-        let root = self.engine.snapshot_reader().load();
-        let task = root.task(gid).ok_or(HttpControlError::NotFound)?;
-        self.applied_status(task, keys.as_deref())
+        self.capture_query().tell_status(params)
     }
 
     fn tell_active(&self, params: Value) -> Result<Value, HttpControlError> {
-        let keys = parse_optional_keys_only(&params)?;
-        self.list_statuses(
-            &[QueueClass::Active],
-            0,
-            MAX_RPC_LIST_ITEMS,
-            keys.as_deref(),
-        )
+        self.capture_query().tell_active(params)
     }
 
     fn tell_waiting(&self, params: Value) -> Result<Value, HttpControlError> {
-        let (offset, count, keys) = parse_list_params(&params)?;
-        self.list_statuses(
-            &[QueueClass::Waiting, QueueClass::Demoted, QueueClass::Paused],
-            offset,
-            count,
-            keys.as_deref(),
-        )
+        self.capture_query().tell_waiting(params)
     }
 
     fn tell_stopped(&self, params: Value) -> Result<Value, HttpControlError> {
-        let (offset, count, keys) = parse_list_params(&params)?;
-        self.list_statuses(&[QueueClass::Stopped], offset, count, keys.as_deref())
-    }
-
-    fn list_statuses(
-        &self,
-        classes: &[QueueClass],
-        offset: i64,
-        count: usize,
-        keys: Option<&[String]>,
-    ) -> Result<Value, HttpControlError> {
-        let root = self.engine.snapshot_reader().load();
-        let total = classes.iter().map(|class| root.queue(*class).len()).sum();
-        let start = normalized_offset(offset, total);
-        let mut values = ResultList::new();
-        for gid in classes
-            .iter()
-            .flat_map(|class| root.queue(*class))
-            .skip(start)
-            .take(count)
-        {
-            let task = root.task(*gid).ok_or_else(|| {
-                HttpControlError::Scheduler("queue index references a missing task".to_owned())
-            })?;
-            values.push_scratch(self.applied_status(task, keys)?)?;
-        }
-        Ok(values.finish())
-    }
-
-    fn applied_status(
-        &self,
-        task: &ariax_runtime::AppliedTaskSnapshot,
-        keys: Option<&[String]>,
-    ) -> Result<Value, HttpControlError> {
-        let snapshot = &task.snapshot;
-        let status = snapshot
-            .wire_status()
-            .map_err(|_| HttpControlError::Scheduler("invalid public snapshot".to_owned()))?;
-        let stats = self
-            .stats
-            .get(task.task_id)
-            .map(|stats| stats.snapshot())
-            .unwrap_or_default();
-        let mut value = status_value(snapshot, status, stats);
-        self.add_slot_diagnostics(&mut value, snapshot, stats);
-        debug_assert!(crate::rpc_json::owned_value_bytes(&value) < 64 * 1024);
-        Ok(project_status(value, keys))
-    }
-
-    fn pause_all(&mut self, params: Value, force: bool) -> Result<Value, HttpControlError> {
-        require_no_params(&params, "pauseAll")?;
-        let root = self.engine.snapshot_reader().load();
-        let gids = [QueueClass::Active, QueueClass::Waiting, QueueClass::Demoted]
-            .into_iter()
-            .flat_map(|class| root.queue(class).iter().copied())
-            .collect::<Vec<_>>();
-        drop(root);
-        for gid in gids {
-            self.execute_control_command(SchedulerCommand::Pause { gid, force })?;
-        }
-        Ok(Value::String("OK".to_owned()))
-    }
-
-    fn unpause_all(&mut self, params: Value) -> Result<Value, HttpControlError> {
-        require_no_params(&params, "unpauseAll")?;
-        let root = self.engine.snapshot_reader().load();
-        let gids = root.queue(QueueClass::Paused).to_vec();
-        drop(root);
-        for gid in gids {
-            self.execute_control_command(SchedulerCommand::Resume { gid })?;
-        }
-        self.try_admit_one(MonotonicInstant::now())?;
-        self.drive_engine()?;
-        Ok(Value::String("OK".to_owned()))
-    }
-
-    fn remove_download_result(&mut self, params: Value) -> Result<Value, HttpControlError> {
-        let gid = self.resolve_gid_param(&params)?;
-        let root = self.engine.snapshot_reader().load();
-        let task = root.task(gid).ok_or(HttpControlError::NotFound)?.task_id;
-        drop(root);
-        self.execute_control_command(SchedulerCommand::RemoveStoppedResult { gid })?;
-        self.tasks.remove(task);
-        self.stats.remove(task);
-        Ok(Value::String("OK".to_owned()))
-    }
-
-    fn purge_download_result(&mut self, params: Value) -> Result<Value, HttpControlError> {
-        require_no_params(&params, "purgeDownloadResult")?;
-        let root = self.engine.snapshot_reader().load();
-        let gids = root.queue(QueueClass::Stopped).to_vec();
-        drop(root);
-        for gid in gids {
-            self.remove_download_result(json!([gid.to_string()]))?;
-        }
-        Ok(Value::String("OK".to_owned()))
-    }
-
-    fn change_position(&mut self, params: Value) -> Result<Value, HttpControlError> {
-        let values = params.as_array().filter(|values| values.len() == 3).ok_or(
-            HttpControlError::InvalidParams("changePosition requires GID, position, and mode"),
-        )?;
-        let gid = self.resolve_gid_text(
-            values[0]
-                .as_str()
-                .ok_or(HttpControlError::InvalidParams("GID must be a string"))?,
-        )?;
-        let requested = parse_i64(&values[1], "position")?;
-        let mode = values[2].as_str().ok_or(HttpControlError::InvalidParams(
-            "position mode must be a string",
-        ))?;
-        let root = self.engine.snapshot_reader().load();
-        let (order, current) = queue_order_and_position(&root, gid)?;
-        let last = i64::try_from(order.len().saturating_sub(1)).unwrap_or(i64::MAX);
-        let target = match mode {
-            "POS_SET" => requested,
-            "POS_CUR" => i64::try_from(current)
-                .unwrap_or(i64::MAX)
-                .saturating_add(requested),
-            "POS_END" => last.saturating_add(requested),
-            _ => return Err(HttpControlError::InvalidParams("invalid position mode")),
-        }
-        .clamp(0, last);
-        drop(root);
-        let target = usize::try_from(target)
-            .map_err(|_| HttpControlError::InvalidParams("position is out of range"))?;
-        self.execute_control_command(SchedulerCommand::ChangePosition {
-            gid,
-            position: target,
-        })?;
-        Ok(Value::from(target))
+        self.capture_query().tell_stopped(params)
     }
 
     fn get_uris(&self, params: Value) -> Result<Value, HttpControlError> {
-        let gid = self.resolve_gid_param(&params)?;
-        let spec = self.tasks.get_gid(gid).ok_or(HttpControlError::NotFound)?;
-        Ok(crate::rpc_result::to_value(
-            &SourceUris {
-                sources: spec.sources(),
-                status: true,
-            },
-            RESULT_VALUE_BYTES,
-        )?)
+        self.capture_query().get_uris(params)
     }
 
     fn get_files(&self, params: Value) -> Result<Value, HttpControlError> {
-        let gid = self.resolve_gid_param(&params)?;
-        let root = self.engine.snapshot_reader().load();
-        let task = root.task(gid).ok_or(HttpControlError::NotFound)?;
-        let spec = self.tasks.get_gid(gid).ok_or(HttpControlError::NotFound)?;
-        let stats = self
-            .stats
-            .get(task.task_id)
-            .map(|stats| stats.snapshot())
-            .unwrap_or_default();
-        let completed = task.snapshot.completed_length.max(stats.durable_bytes);
-        let total = task
-            .snapshot
-            .total_length
-            .unwrap_or(stats.total_length)
-            .max(completed);
-        let path = spec.output_root().join(spec.output().canonical_string());
-        #[derive(serde::Serialize)]
-        #[serde(rename_all = "camelCase")]
-        struct File<'a> {
-            index: &'static str,
-            path: std::borrow::Cow<'a, str>,
-            length: DisplayValue<u64>,
-            completed_length: DisplayValue<u64>,
-            selected: &'static str,
-            uris: SourceUris<'a>,
-        }
-        Ok(crate::rpc_result::to_value(
-            &[File {
-                index: "1",
-                path: path.to_string_lossy(),
-                length: DisplayValue(total),
-                completed_length: DisplayValue(completed),
-                selected: "true",
-                uris: SourceUris {
-                    sources: spec.sources(),
-                    status: true,
-                },
-            }],
-            RESULT_VALUE_BYTES,
-        )?)
+        self.capture_query().get_files(params)
     }
 
     fn get_servers(&self, params: Value) -> Result<Value, HttpControlError> {
-        let gid = self.resolve_gid_param(&params)?;
-        let spec = self.tasks.get_gid(gid).ok_or(HttpControlError::NotFound)?;
-        Ok(crate::rpc_result::to_value(
-            &SourceServers(spec.sources()),
-            RESULT_VALUE_BYTES,
-        )?)
+        self.capture_query().get_servers(params)
     }
 
     fn get_option(&self, params: Value) -> Result<Value, HttpControlError> {
-        let gid = self.resolve_gid_param(&params)?;
-        let spec = self.tasks.get_gid(gid).ok_or(HttpControlError::NotFound)?;
-        let options = spec
-            .persistence_options()
-            .map_err(HttpControlError::TaskSpec)?;
-        Ok(crate::rpc_result::to_value(
-            &OptionMap(&options),
-            RESULT_VALUE_BYTES,
-        )?)
+        self.capture_query().get_option(params)
     }
 
     fn begin_change_option(
@@ -1715,19 +1598,25 @@ impl HttpControlPlane {
             );
             self.pending_restart_patches.insert(gid, patch_id);
         }
-        if let Err(error) = self.prepare_outcome_plans(&mut simulation, outcome.effects, None) {
-            self.pending_option_snapshots.remove(&patch_id);
-            self.pending_restart_patches.remove(&gid);
-            return Err(error);
-        }
+        let mut writes = match self.prepare_outcome_plans(&mut simulation, outcome.effects, None) {
+            Ok(writes) => writes,
+            Err(error) => {
+                self.pending_option_snapshots.remove(&patch_id);
+                self.pending_restart_patches.remove(&gid);
+                return Err(error);
+            }
+        };
         if kind == ValidatedOptionPatchKind::InPlace {
-            self.replace_option_mirror(gid, OptionsSnapshotScope::CurrentGeneration, options)?;
+            writes.unit(SessionCommand::ReplaceTaskOptions {
+                gid,
+                scope: OptionsSnapshotScope::CurrentGeneration,
+                options,
+            });
         }
-        if let Err(error) = self
-            .engine
-            .execute_command_at(command, MonotonicInstant::now())
-            .map_err(|error| HttpControlError::Scheduler(format!("{error:?}")))
-        {
+        if let Err(error) = self.begin_prepared_input(
+            control_io::PreparedInput::Command(command, MonotonicInstant::now()),
+            writes,
+        ) {
             self.pending_option_snapshots.remove(&patch_id);
             self.pending_restart_patches.remove(&gid);
             return Err(error);
@@ -1940,21 +1829,20 @@ impl HttpControlPlane {
     }
 
     fn complete_source_replacements(&mut self) -> Result<(), HttpControlError> {
-        if !self.engine.is_idle() {
+        if !self.engine_idle() {
             return Ok(());
         }
         let ready = self
             .pending_source_replacements
             .keys()
             .copied()
-            .filter(|gid| {
+            .find(|gid| {
                 self.engine
                     .scheduler()
                     .task(*gid)
                     .is_none_or(|task| task.pending_barrier.is_none() && !task.slot.owns_slot())
-            })
-            .collect::<Vec<_>>();
-        for gid in ready {
+            });
+        if let Some(gid) = ready {
             let terminal = self.engine.scheduler().task(gid).is_none_or(|task| {
                 matches!(
                     task.state,
@@ -1972,7 +1860,7 @@ impl HttpControlPlane {
                 let _ = pending.reply.send(Err(HttpControlError::InvalidParams(
                     "source replacement was cancelled before commit",
                 )));
-                continue;
+                return Ok(());
             }
             self.pending_source_replacements
                 .get_mut(&gid)
@@ -2022,6 +1910,9 @@ impl HttpControlPlane {
                 .map(|_| pending.response)
                 .map_err(HttpControlError::Catalog);
             let failed = result.is_err();
+            if !failed {
+                self.publish_query();
+            }
             let _ = pending.reply.send(result);
             if failed {
                 return Err(HttpControlError::Persistence(
@@ -2032,7 +1923,9 @@ impl HttpControlPlane {
         Ok(())
     }
 
-    /// Drives a deferred control call without holding the owner while awaiting a worker.
+    /// Compatibility adapter that attaches the same managed runtime as native/RPC handles.
+    /// Reuse a `HttpControlBackend` for repeated calls; this adapter briefly locks
+    /// the owner to acquire that handle before projecting or admitting the call.
     pub async fn call_shared(
         plane: &Arc<Mutex<Self>>,
         method: &str,
@@ -2048,50 +1941,9 @@ impl HttpControlPlane {
         params: Value,
         context: crate::RpcClientContext,
     ) -> Result<Value, HttpControlError> {
-        let mut reply = {
-            let mut owner = plane.lock().await;
-            if changes_scheduler_tasks(method) {
-                owner.poll_once()?;
-            }
-            if method == "ariax.subscribe" {
-                let _command = owner.reserve_command_memory(
-                    method,
-                    &params,
-                    context.request_lease().as_ref(),
-                )?;
-                return owner.subscribe_events_with_client(params, context.client_budget());
-            }
-            if !matches!(
-                method,
-                "aria2.changeUri" | "changeUri" | "ariax.replaceSources"
-            ) {
-                match owner.begin_call_admitted(method, params, context.request_lease())? {
-                    ControlReply::Ready(value) => return Ok(value),
-                    ControlReply::Deferred(reply) => reply,
-                }
-            } else {
-                let command = owner.reserve_command_memory(
-                    method,
-                    &params,
-                    context.request_lease().as_ref(),
-                )?;
-                let work = owner.reserve_scheduler_work(command.as_ref(), 0)?;
-                let result = owner.begin_source_call(method, params, command);
-                owner.retain_pending_work(Some(work))?;
-                result?
-            }
-        };
-        loop {
-            tokio::select! {
-                result = &mut reply => return result.map_err(|_| HttpControlError::Persistence("mutation owner stopped".to_owned()))?,
-                () = tokio::time::sleep(Duration::from_millis(1)) => {
-                    match plane.lock().await.poll_once() {
-                        Ok(()) | Err(HttpControlError::Busy) => {}
-                        Err(error) => return reply.try_recv().unwrap_or(Err(error)),
-                    }
-                }
-            }
-        }
+        let backend = HttpControlBackend::from_shared(plane.clone()).await;
+        backend.start_control_runtime()?;
+        backend.control.call(method, params, context).await
     }
 
     fn reserve_command_memory(
@@ -2138,7 +1990,7 @@ impl HttpControlPlane {
         request: Option<&crate::rpc_budget::RpcRequestLease>,
         new_tasks: usize,
     ) -> Result<ControlWorkReservation, HttpControlError> {
-        if !self.engine.is_idle() {
+        if !self.engine_idle() {
             return Err(HttpControlError::Busy);
         }
         let scheduler = self.engine.scheduler();
@@ -2168,7 +2020,7 @@ impl HttpControlPlane {
         &mut self,
         work: Option<ControlWorkReservation>,
     ) -> Result<(), HttpControlError> {
-        if self.engine.is_idle() {
+        if self.engine_idle() {
             if let Err(error) = self.engine.discard_prepared_control() {
                 self.pending_work = work;
                 return Err(HttpControlError::Scheduler(format!("{error:?}")));
@@ -2181,25 +2033,15 @@ impl HttpControlPlane {
     }
 
     fn get_global_option(&self, params: Value) -> Result<Value, HttpControlError> {
-        require_no_params(&params, "getGlobalOption")?;
-        Ok(string_map_value(
-            self.global_options
-                .iter()
-                .map(|(name, value)| (name.as_str(), value.as_str())),
-        )?)
+        self.capture_query().get_global_option(params)
     }
 
     fn get_version(&self, params: Value) -> Result<Value, HttpControlError> {
-        require_no_params(&params, "getVersion")?;
-        Ok(json!({
-            "version": env!("CARGO_PKG_VERSION"),
-            "enabledFeatures": ["HTTP", "HTTPS", "JSON-RPC", "Session", "Async DNS"],
-        }))
+        self.capture_query().get_version(params)
     }
 
     fn get_session_info(&self, params: Value) -> Result<Value, HttpControlError> {
-        require_no_params(&params, "getSessionInfo")?;
-        Ok(json!({"sessionId": self.session_id.to_string()}))
+        self.capture_query().get_session_info(params)
     }
 
     fn request_shutdown(&mut self, params: Value, force: bool) -> Result<Value, HttpControlError> {
@@ -2210,223 +2052,7 @@ impl HttpControlPlane {
     }
 
     fn export_session(&self, params: Value) -> Result<Value, HttpControlError> {
-        let args = params.as_array().filter(|args| args.len() <= 1).ok_or(
-            HttpControlError::InvalidParams("exportSession accepts an optional format"),
-        )?;
-        let format = args
-            .first()
-            .map(|value| {
-                crate::SessionFormat::parse(value.as_str().ok_or(
-                    HttpControlError::InvalidParams("session format must be text"),
-                )?)
-            })
-            .transpose()?
-            .unwrap_or_default();
-        let root = self.engine.snapshot_reader().load();
-        if root.len() > MAX_RPC_LIST_ITEMS {
-            return Err(HttpControlError::Busy);
-        }
-        let mut tasks = ResultList::new();
-        for applied in root.tasks().values() {
-            if matches!(
-                applied.snapshot.wire_status(),
-                Ok(Aria2Status::Complete | Aria2Status::Removed)
-            ) {
-                continue;
-            }
-            let spec = self
-                .tasks
-                .get(applied.task_id)
-                .ok_or(HttpControlError::NotFound)?;
-            let options = spec
-                .persistence_options()
-                .map_err(HttpControlError::TaskSpec)?;
-            #[derive(serde::Serialize)]
-            struct Task<'a> {
-                gid: DisplayValue<Gid>,
-                uris: PersistedUris<'a>,
-                sources: PersistedSources<'a>,
-                options: SessionOptions<'a>,
-                state: &'static str,
-            }
-            tasks.push(&Task {
-                gid: DisplayValue(applied.snapshot.gid),
-                uris: PersistedUris(spec.sources()),
-                sources: PersistedSources(spec.sources()),
-                options: SessionOptions {
-                    options: &options,
-                    paused: applied.snapshot.desired_paused,
-                },
-                state: applied.snapshot.state.code(),
-            })?;
-        }
-        let mut result = serde_json::Map::new();
-        result.insert(
-            "sessionId".to_owned(),
-            Value::String(self.session_id.to_string()),
-        );
-        result.insert("tasks".to_owned(), tasks.finish());
-        result.insert("formatVersion".to_owned(), Value::from(1));
-        let document = Value::Object(result);
-        if format == crate::SessionFormat::Aria2 {
-            let bytes = crate::session_file::render(&document, format)?;
-            return String::from_utf8(bytes)
-                .map(Value::String)
-                .map_err(|_| HttpControlError::InvalidConfig);
-        }
-        Ok(document)
-    }
-
-    fn begin_import_session(
-        &mut self,
-        params: Value,
-        request: crate::rpc_budget::RpcRequestLease,
-    ) -> Result<ControlReply, HttpControlError> {
-        if !self.engine.is_idle()
-            || self.pending_mutation.is_some()
-            || !self.pending_source_replacements.is_empty()
-        {
-            return Err(HttpControlError::Busy);
-        }
-        let imported = crate::session_file::parse_import(params, &request)?;
-        if imported.is_empty() {
-            return Ok(ControlReply::Ready(json!([])));
-        }
-        request
-            .reserve(
-                self.configuration_defaults_bytes()
-                    .saturating_mul(imported.len()),
-            )
-            .map_err(|_| HttpControlError::Busy)?;
-        if self.tasks.len().saturating_add(imported.len()) > self.config.task_capacity.get() {
-            return Err(HttpControlError::Busy);
-        }
-        let work = self.reserve_scheduler_work(Some(&request), imported.len())?;
-        let mut simulation = self.engine.scheduler().clone();
-        let mut prepared = Vec::with_capacity(imported.len());
-        let mut next_id = self.next_task_id;
-        let mut gids = Vec::with_capacity(imported.len());
-        for task in imported {
-            let task_id = self.next_available_task_id(next_id)?;
-            next_id = task_id
-                .get()
-                .checked_add(1)
-                .ok_or(HttpControlError::InvalidConfig)?;
-            let gid = derive_http_gid(self.session_id, task_id);
-            let options = self.merged_add_options(task.options, &task.uris, true)?;
-            let (options, root, output, paused) =
-                parse_add_options(&options, &self.config.output_root, &task.uris)?;
-            let spec = match task.sources {
-                Some(sources) => HttpTaskSpec::from_persisted_sources(
-                    task_id, gid, sources, root, output, options,
-                ),
-                None => HttpTaskSpec::new(task_id, gid, task.uris, root, output, options, false),
-            }
-            .map_err(HttpControlError::TaskSpec)?;
-            let sanitized = spec
-                .persistence_options()
-                .map_err(HttpControlError::TaskSpec)?;
-            if !self.engine.permits_persisted_options(&sanitized)
-                || !HttpTaskOptions::from_sanitized(&sanitized)
-                    .is_ok_and(|value| &value == spec.options())
-                || spec.sources().iter().any(|source| {
-                    source
-                        .persistence_safe_uri()
-                        .is_some_and(|uri| uri.len() > ariax_storage::SESSION_MAX_SAFE_URI_BYTES)
-                })
-            {
-                return Err(HttpControlError::InvalidParams(
-                    "session task cannot be recovered under the persistence policy",
-                ));
-            }
-            let requirement = if spec.sources().iter().any(|source| source.uri().is_some()) {
-                None
-            } else {
-                spec.persistence_sources()
-                    .first()
-                    .map(crate::credential_requirement)
-            };
-            let conditions = TaskConditions {
-                needs_credentials: requirement,
-                no_space: None,
-            };
-            let command = SchedulerCommand::AddValidatedTask {
-                task_id,
-                gid,
-                desired_paused: paused,
-                conditions: conditions.clone(),
-            };
-            let queue = if paused {
-                QueueClass::Paused
-            } else {
-                QueueClass::Waiting
-            };
-            let position = simulation.queue_snapshot(queue).len();
-            simulation
-                .execute_command_at(command.clone(), MonotonicInstant::now())
-                .map_err(|error| HttpControlError::Scheduler(format!("{error:?}")))?;
-            prepared.push((spec, paused, position, conditions, command));
-            gids.push(Value::String(gid.to_string()));
-        }
-        // No journal or catalog entry exists until every document member and
-        // the complete scheduler admission sequence have passed preflight.
-        let mut metadata = Vec::with_capacity(prepared.len());
-        let mut members = VecDeque::with_capacity(prepared.len());
-        let mut catalogs = Vec::with_capacity(prepared.len());
-        let mut appenders = Vec::with_capacity(prepared.len());
-        for (spec, paused, position, conditions, command) in prepared {
-            let (spec, task, plan, appender) =
-                self.build_admission_for_spec(spec, paused, position, conditions)?;
-            let entry = SessionTaskMetadata {
-                task,
-                sources: spec.persistence_sources(),
-                options: spec
-                    .persistence_options()
-                    .map_err(HttpControlError::TaskSpec)?,
-            };
-            let confirm = PersistenceEffectPlan::new(
-                plan.effect().clone(),
-                vec![PersistencePlanStep::ConfirmTaskMetadata(Arc::new(
-                    entry.clone(),
-                ))],
-            )
-            .map_err(|error| HttpControlError::Persistence(format!("{error:?}")))?;
-            metadata.push(entry);
-            appenders.push((spec.gid(), appender));
-            catalogs.push(spec);
-            members.push_back(ImportMember {
-                command,
-                plan: confirm,
-            });
-        }
-        let mut first = members.pop_front().expect("nonempty import");
-        first.plan = PersistenceEffectPlan::new(
-            first.plan.effect().clone(),
-            vec![PersistencePlanStep::CreateTaskBatch(metadata.into())],
-        )
-        .map_err(|error| HttpControlError::Persistence(format!("{error:?}")))?;
-        for (gid, appender) in appenders {
-            self.install_journal(gid, appender)?;
-            self.journal_sequences.insert(gid, 2);
-        }
-        for spec in catalogs {
-            self.tasks.insert(spec).map_err(HttpControlError::Catalog)?;
-        }
-        self.next_task_id = next_id;
-        if let Err(error) = self.prepare_and_begin(first.plan, first.command) {
-            self.engine.fail_control_publication();
-            return Err(error);
-        }
-        let (reply, receiver) = oneshot::channel();
-        self.pending_mutation = Some(PendingMutation {
-            publication: MutationPublication::Import {
-                remaining: members,
-                result: Value::Array(gids),
-            },
-            reply,
-        });
-        self.retain_pending_work(Some(work))?;
-        Ok(ControlReply::Deferred(receiver))
+        self.capture_query().export_session(params)
     }
 
     pub fn configure_session_export(
@@ -2511,7 +2137,7 @@ impl HttpControlPlane {
         reply_requested: bool,
     ) -> Result<ControlReply, HttpControlError> {
         if self.pending_session_export.is_some()
-            || !self.engine.is_idle()
+            || !self.engine_idle()
             || self.pending_mutation.is_some()
             || !self.pending_source_replacements.is_empty()
         {
@@ -2532,19 +2158,32 @@ impl HttpControlPlane {
             .client()
             .charge(crate::rpc_budget::RPC_RESULT_WORKSPACE_BYTES)
             .map_err(|_| HttpControlError::Busy)?;
-        let document = self.export_session(json!([]))?;
-        let bytes = crate::session_file::render(&document, format)?;
-        drop(document);
-        drop(workspace);
+        let root = self.capture_query();
+        let retention = request
+            .client()
+            .charge(root.retained_bytes())
+            .map_err(|_| HttpControlError::Busy)?;
+        let projection = self.queries.reserve_projection()?;
         let (send, completion) = oneshot::channel();
         let retained = work.clone();
         let thread = std::thread::Builder::new()
             .name("ariax-session-export".to_owned())
             .spawn(move || {
                 let _work = retained;
-                let result = destination.publish(&bytes).map_err(|_| {
-                    HttpControlError::Persistence("session export publication failed".to_owned())
-                });
+                let result = (|| {
+                    let document = root.export_session(json!([]))?;
+                    let bytes = crate::session_file::render(&document, format)?;
+                    drop(document);
+                    drop(workspace);
+                    drop(projection);
+                    drop(root);
+                    drop(retention);
+                    destination.publish(&bytes).map_err(|_| {
+                        HttpControlError::Persistence(
+                            "session export publication failed".to_owned(),
+                        )
+                    })
+                })();
                 let _ = send.send(result);
             })
             .map_err(|_| HttpControlError::Busy)?;
@@ -2574,6 +2213,7 @@ impl HttpControlPlane {
                     self.pending_session_export = Some(pending)
                 }
                 completion => {
+                    self.turn.mark_progress();
                     let result = completion.unwrap_or_else(|_| {
                         Err(HttpControlError::Persistence(
                             "session export writer stopped".to_owned(),
@@ -2592,7 +2232,7 @@ impl HttpControlPlane {
         }
         if !self.shutdown_requested
             && self.pending_session_export.is_none()
-            && self.engine.is_idle()
+            && self.engine_idle()
             && self.pending_mutation.is_none()
             && self.pending_source_replacements.is_empty()
             && self
@@ -2678,95 +2318,12 @@ impl HttpControlPlane {
         self.resolve_gid_text(value)
     }
 
-    fn resolve_gid_and_keys(
-        &self,
-        params: &Value,
-    ) -> Result<(Gid, Option<Vec<String>>), HttpControlError> {
-        let values = params
-            .as_array()
-            .filter(|values| (1..=2).contains(&values.len()))
-            .ok_or(HttpControlError::InvalidParams(
-                "tellStatus requires GID and optional key array",
-            ))?;
-        let value = values[0].as_str().ok_or(HttpControlError::InvalidParams(
-            "a hexadecimal GID is required",
-        ))?;
-        let keys = values.get(1).map(parse_keys).transpose()?;
-        Ok((self.resolve_gid_text(value)?, keys))
-    }
-
     fn resolve_gid_text(&self, value: &str) -> Result<Gid, HttpControlError> {
-        if value.is_empty()
-            || value.len() > 16
-            || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
-        {
-            return Err(HttpControlError::InvalidParams("invalid GID"));
-        }
-        let value = value.to_ascii_lowercase();
-        let root = self.engine.snapshot_reader().load();
-        let mut matches = root
-            .tasks()
-            .keys()
-            .copied()
-            .filter(|gid| gid.to_string().starts_with(&value));
-        let gid = matches.next().ok_or(HttpControlError::NotFound)?;
-        if matches.next().is_some() {
-            return Err(HttpControlError::InvalidParams("GID prefix is ambiguous"));
-        }
-        Ok(gid)
+        query::resolve_gid(&self.engine.snapshot_reader().load(), value)
     }
 
     fn global_stat(&mut self, params: Value) -> Result<Value, HttpControlError> {
-        if !params.as_array().is_some_and(Vec::is_empty) {
-            return Err(HttpControlError::InvalidParams(
-                "getGlobalStat takes no params",
-            ));
-        }
-        let root = self.engine.snapshot_reader().load();
-        let mut active = 0_u64;
-        let mut waiting = 0_u64;
-        let mut stopped = 0_u64;
-        let mut download_speed = 0_u64;
-        let mut completed = 0_u64;
-        for applied in root.tasks().values() {
-            match applied.snapshot.wire_status().ok() {
-                Some(Aria2Status::Active) => active += 1,
-                Some(Aria2Status::Waiting | Aria2Status::Paused) => waiting += 1,
-                Some(Aria2Status::Complete | Aria2Status::Error | Aria2Status::Removed) => {
-                    stopped += 1
-                }
-                None => {}
-            }
-            let stats = self
-                .stats
-                .get(applied.task_id)
-                .map(|stats| stats.snapshot())
-                .unwrap_or_default();
-            download_speed = download_speed.saturating_add(stats.current_speed);
-            completed = completed
-                .saturating_add(applied.snapshot.completed_length.max(stats.durable_bytes));
-        }
-        Ok(json!({
-            "downloadSpeed": download_speed.to_string(),
-            "uploadSpeed": "0",
-            "numActive": active.to_string(),
-            "numWaiting": waiting.to_string(),
-            "numStopped": stopped.to_string(),
-            "completedLength": completed.to_string(),
-        }))
-    }
-
-    fn execute_control_command(
-        &mut self,
-        command: SchedulerCommand,
-    ) -> Result<(), HttpControlError> {
-        self.prepare_and_begin_command(command)?;
-        loop {
-            match self.drive_engine() {
-                Err(HttpControlError::Busy) => {}
-                result => return result,
-            }
-        }
+        self.capture_query().global_stat(params)
     }
 
     fn prepare_and_begin_command(
@@ -2777,11 +2334,11 @@ impl HttpControlPlane {
         let outcome = simulation
             .execute_command_at(command.clone(), MonotonicInstant::now())
             .map_err(|error| HttpControlError::Scheduler(error.to_string()))?;
-        self.prepare_outcome_plans(&mut simulation, outcome.effects, None)?;
-        self.engine
-            .execute_command_at(command, MonotonicInstant::now())
-            .map_err(|error| HttpControlError::Scheduler(format!("{error:?}")))?;
-        Ok(())
+        let writes = self.prepare_outcome_plans(&mut simulation, outcome.effects, None)?;
+        self.begin_prepared_input(
+            control_io::PreparedInput::Command(command, MonotonicInstant::now()),
+            writes,
+        )
     }
 
     fn prepare_and_begin(
@@ -2804,38 +2361,78 @@ impl HttpControlPlane {
 
     fn drive_engine_until(&mut self, deadline: Instant) -> Result<(), HttpControlError> {
         loop {
-            match self.engine.poll_at(MonotonicInstant::now()) {
-                ariax_runtime::SchedulerDriverPoll::Idle
-                | ariax_runtime::SchedulerDriverPoll::Completed { .. } => {
-                    if self.engine.is_idle() {
-                        self.engine
-                            .discard_prepared_control()
-                            .map_err(|error| HttpControlError::Scheduler(format!("{error:?}")))?;
-                        self.finish_pending_mutation();
-                        if self.engine.is_idle() {
-                            self.publish_committed_sources()?;
-                            self.pending_work = None;
-                            self.retire_promoted_option_patches();
-                            return Ok(());
-                        }
-                    }
-                }
-                ariax_runtime::SchedulerDriverPoll::Progressed
-                | ariax_runtime::SchedulerDriverPoll::WaitingForCompletion { .. }
-                | ariax_runtime::SchedulerDriverPoll::Backpressured { .. } => {}
-                ariax_runtime::SchedulerDriverPoll::Faulted(error) => {
-                    if let Some(pending) = self.pending_mutation.take() {
-                        let _ = pending.reply.send(Err(HttpControlError::Persistence(
-                            "mutation owner failed; recovery is required".to_owned(),
-                        )));
-                    }
-                    return Err(HttpControlError::Scheduler(format!("{error:?}")));
-                }
+            let progress = self.poll_engine_step()?;
+            if self.engine_idle() {
+                return Ok(());
             }
             if Instant::now() >= deadline {
                 return Err(HttpControlError::Busy);
             }
-            std::thread::park_timeout(CONTROL_PROGRESS_POLL);
+            if !progress {
+                std::thread::park_timeout(CONTROL_PROGRESS_POLL);
+            }
+        }
+    }
+
+    fn poll_engine_turn(&mut self) -> Result<(), HttpControlError> {
+        while self.turn.take_step() {
+            if !self.poll_engine_step()? {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn poll_engine_step(&mut self) -> Result<bool, HttpControlError> {
+        if let Err(error) = self.poll_prepared_input() {
+            if let Some(pending) = self.pending_mutation.take() {
+                let _ = pending.reply.send(Err(error.clone()));
+            }
+            return Err(error);
+        }
+        if self.pending_input.is_some() {
+            return Ok(false);
+        }
+        let poll = self.engine.poll_at(MonotonicInstant::now());
+        let completed = matches!(poll, ariax_runtime::SchedulerDriverPoll::Completed { .. });
+        match poll {
+            ariax_runtime::SchedulerDriverPoll::Idle
+            | ariax_runtime::SchedulerDriverPoll::Completed { .. } => {
+                if self.engine_idle() {
+                    self.engine
+                        .discard_prepared_control()
+                        .map_err(|error| HttpControlError::Scheduler(format!("{error:?}")))?;
+                    if completed || self.pending_mutation.is_some() {
+                        self.turn.mark_progress();
+                        self.finish_pending_mutation();
+                        // One completed command/member ends this owner turn even
+                        // when its continuation has started the next effect chain.
+                        self.turn.stop();
+                        self.publish_task_state_events();
+                    }
+                    if self.engine_idle() {
+                        self.publish_committed_sources()?;
+                        self.pending_work = None;
+                        self.retire_promoted_option_patches();
+                        return Ok(false);
+                    }
+                }
+                Ok(false)
+            }
+            ariax_runtime::SchedulerDriverPoll::Progressed => {
+                self.turn.mark_progress();
+                Ok(true)
+            }
+            ariax_runtime::SchedulerDriverPoll::WaitingForCompletion { .. }
+            | ariax_runtime::SchedulerDriverPoll::Backpressured { .. } => Ok(false),
+            ariax_runtime::SchedulerDriverPoll::Faulted(error) => {
+                if let Some(pending) = self.pending_mutation.take() {
+                    let _ = pending.reply.send(Err(HttpControlError::Persistence(
+                        "mutation owner failed; recovery is required".to_owned(),
+                    )));
+                }
+                Err(HttpControlError::Scheduler(format!("{error:?}")))
+            }
         }
     }
 
@@ -2860,15 +2457,12 @@ impl HttpControlPlane {
                 }
             }
         }
-        self.prepare_outcome_plans(
+        let writes = self.prepare_outcome_plans(
             &mut simulation,
             outcome.effects,
             Some(GenerationStartReason::RetryReadmission),
         )?;
-        self.engine
-            .admit_next_at(now)
-            .map_err(|error| HttpControlError::Scheduler(format!("{error:?}")))?;
-        Ok(())
+        self.begin_prepared_input(control_io::PreparedInput::Admit(now), writes)
     }
 
     fn prepare_outcome_plans(
@@ -2876,7 +2470,8 @@ impl HttpControlPlane {
         simulation: &mut RequestScheduler,
         effects: Vec<TransitionEffect>,
         generation_reason: Option<GenerationStartReason>,
-    ) -> Result<(), HttpControlError> {
+    ) -> Result<control_io::SessionWrites, HttpControlError> {
+        let mut writes = control_io::SessionWrites::default();
         let mut queue = VecDeque::from(effects);
         while let Some(effect) = queue.pop_front() {
             if let TransitionEffect::PublishSnapshot { snapshot, .. } = &effect
@@ -2896,23 +2491,11 @@ impl HttpControlPlane {
                 } else {
                     TaskPauseReason::User
                 };
-                let appended = self.session.execute(SessionCommand::AppendJournal {
-                    gid: task.gid,
-                    generation: task.generation,
-                    payload: JournalPayload::TaskPaused { reason },
-                });
-                if !matches!(appended, Ok(SessionCommandResult::JournalAppended(_)))
-                    || !matches!(
-                        self.session
-                            .execute(SessionCommand::FlushJournalHead { gid: task.gid }),
-                        Ok(SessionCommandResult::JournalFlushed(_))
-                    )
-                {
-                    self.engine.fail_control_publication();
-                    return Err(HttpControlError::Persistence(
-                        "drained pause reason could not be made durable".to_owned(),
-                    ));
-                }
+                writes.journal(
+                    task.gid,
+                    task.generation,
+                    JournalPayload::TaskPaused { reason },
+                );
             }
             if effect.kind().persistence_effect() {
                 self.engine
@@ -2940,17 +2523,17 @@ impl HttpControlPlane {
                     .map_err(|error| HttpControlError::Scheduler(format!("{error:?}")))?;
             }
         }
-        Ok(())
+        Ok(writes)
     }
 
-    fn prepare_runtime_event(
+    fn prepare_and_begin_event(
         &mut self,
-        event: &TaskEventEnvelope,
+        event: TaskEventEnvelope,
         at: MonotonicInstant,
     ) -> Result<(), HttpControlError> {
         let mut simulation = self.engine.scheduler().clone();
         let outcome = simulation
-            .handle_event_at(event, at)
+            .handle_event_at(&event, at)
             .map_err(|error| HttpControlError::Scheduler(error.to_string()))?;
         let generation_reason = match event.event() {
             TaskEvent::RetryReady { .. } => Some(GenerationStartReason::RetryReadmission),
@@ -2959,7 +2542,9 @@ impl HttpControlPlane {
             }
             _ => None,
         };
-        self.prepare_outcome_plans(&mut simulation, outcome.effects, generation_reason)
+        let writes =
+            self.prepare_outcome_plans(&mut simulation, outcome.effects, generation_reason)?;
+        self.begin_prepared_input(control_io::PreparedInput::Event(event, at), writes)
     }
 
     fn plan_for_effect(
@@ -3340,206 +2925,39 @@ impl HttpControlPlane {
         )
         .map_err(|error| HttpControlError::Persistence(format!("{error:?}")))
     }
-
-    fn build_admission(
-        &mut self,
-        uris: Vec<String>,
-        options: Value,
-    ) -> Result<
-        (
-            HttpTaskSpec,
-            SessionTaskRecord,
-            PersistenceEffectPlan,
-            ControlJournalAppender,
-        ),
-        HttpControlError,
-    > {
-        let task_id = self.next_available_task_id(self.next_task_id)?;
-        self.next_task_id = task_id
-            .get()
-            .checked_add(1)
-            .ok_or(HttpControlError::InvalidConfig)?;
-        let gid = derive_http_gid(self.session_id, task_id);
-        let (http_options, output_root, output, paused) =
-            parse_add_options(&options, &self.config.output_root, &uris)?;
-        let spec = HttpTaskSpec::new(
-            task_id,
-            gid,
-            uris,
-            output_root.clone(),
-            output,
-            http_options,
-            false,
-        )
-        .map_err(HttpControlError::TaskSpec)?;
-        let queue = if paused {
-            QueueClass::Paused
-        } else {
-            QueueClass::Waiting
-        };
-        let position = self.engine.scheduler().queue_snapshot(queue).len();
-        self.build_admission_for_spec(spec, paused, position, TaskConditions::default())
-    }
-
-    fn build_admission_for_spec(
-        &self,
-        spec: HttpTaskSpec,
-        paused: bool,
-        position: usize,
-        conditions: TaskConditions,
-    ) -> Result<
-        (
-            HttpTaskSpec,
-            SessionTaskRecord,
-            PersistenceEffectPlan,
-            ControlJournalAppender,
-        ),
-        HttpControlError,
-    > {
-        let task_id = spec.task();
-        let gid = spec.gid();
-        let output_root = spec.output_root();
-        let sanitized = spec
-            .persistence_options()
-            .map_err(HttpControlError::TaskSpec)?;
-        if !self.engine.permits_persisted_options(&sanitized)
-            || !HttpTaskOptions::from_sanitized(&sanitized)
-                .is_ok_and(|recovered| &recovered == spec.options())
-        {
-            return Err(HttpControlError::InvalidParams(
-                "task options cannot be recovered under the persistence policy",
-            ));
-        }
-        let journal_id = derive_http_journal_id(task_id, gid);
-        let journal_directory = http_journal_directory(&self.config.journal_root, gid);
-        let mut appender = ControlJournalAppender::create(
-            &journal_directory,
-            gid,
-            journal_id,
-            Generation::INITIAL,
-            now_unix_ms(),
-        )
-        .map_err(|error| HttpControlError::Journal(error.to_string()))?;
-        append_initial_admission_with_options(
-            &mut appender,
-            Generation::INITIAL,
-            sanitized.clone(),
-        )
-        .map_err(|error| HttpControlError::Journal(error.to_string()))?;
-        let queue = if paused {
-            SessionQueueState::Paused
-        } else {
-            SessionQueueState::Waiting
-        };
-        let queue_class = if paused {
-            QueueClass::Paused
-        } else {
-            QueueClass::Waiting
-        };
-        let record = SessionTaskRecord {
-            gid,
-            session_id: self.session_id,
-            queue_state: queue,
-            queue_position: u32::try_from(position).map_err(|_| HttpControlError::InvalidConfig)?,
-            desired_paused: paused,
-            slow_demotion_count: 0,
-            slow_slot: None,
-            primary_journal_id: journal_id,
-            primary_journal_path: PlatformPath::from_current(&journal_directory)
-                .map_err(|error| HttpControlError::Journal(error.to_string()))?,
-            replica_journal_path: None,
-            replica_sequence: None,
-            root_display: PlatformPath::from_current(output_root).map_err(|_error| {
-                HttpControlError::InvalidParams("output root is not representable")
-            })?,
-            cached_layout_hash: None,
-            cached_root_binding_hash: None,
-            cached_snapshot_hash: sanitized.snapshot_hash(),
-            no_space: None,
-            created_ms: now_unix_ms(),
-            updated_ms: now_unix_ms(),
-        };
-        let effect = TransitionEffect::PersistTask {
-            task_id,
-            gid,
-            queue: queue_class,
-            position,
-            desired_paused: paused,
-            slow_demotion_count: 0,
-            conditions,
-        };
-        let plan = PersistenceEffectPlan::new(
-            effect,
-            vec![PersistencePlanStep::CreateTaskWithMetadata {
-                task: record.clone(),
-                sources: spec.persistence_sources(),
-                options: sanitized,
-            }],
-        )
-        .map_err(|error| HttpControlError::Persistence(format!("{error:?}")))?;
-        Ok((spec, record, plan, appender))
-    }
-
-    fn next_available_task_id(&self, mut candidate: u64) -> Result<TaskId, HttpControlError> {
-        for _ in 0..=ariax_storage::SESSION_MAX_TASKS {
-            let task = TaskId::new(candidate).ok_or(HttpControlError::InvalidConfig)?;
-            let gid = derive_http_gid(self.session_id, task);
-            match std::fs::symlink_metadata(http_journal_directory(&self.config.journal_root, gid))
-            {
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(task),
-                Ok(_) => {
-                    candidate = candidate
-                        .checked_add(1)
-                        .ok_or(HttpControlError::InvalidConfig)?
-                }
-                Err(_) => {
-                    return Err(HttpControlError::Journal(
-                        "cannot inspect journal destination".to_owned(),
-                    ));
-                }
-            }
-        }
-        Err(HttpControlError::Busy)
-    }
-
-    fn install_journal(
-        &self,
-        gid: Gid,
-        appender: ControlJournalAppender,
-    ) -> Result<(), HttpControlError> {
-        match self
-            .session
-            .execute(SessionCommand::InstallJournalAppender { gid, appender })
-        {
-            Ok(SessionCommandResult::Unit) => Ok(()),
-            Ok(_) => Err(HttpControlError::Persistence(
-                "unexpected journal install result".to_owned(),
-            )),
-            Err(error) => Err(HttpControlError::Persistence(error.to_string())),
-        }
-    }
 }
 
-/// Tokio-facing backend handle. Calls are serialized through one bounded
-/// async mutex, while the scheduler remains the sole mutable engine owner.
+/// Tokio-facing handle for shared bounded command admission and immutable queries.
 #[derive(Clone)]
 pub struct HttpControlBackend {
+    control: control_runtime::ControlRuntime,
     plane: Arc<Mutex<HttpControlPlane>>,
-    shutdown: watch::Sender<bool>,
     events: RpcEventBroker,
     rpc_budgets: crate::RpcBudgets,
 }
 
 impl HttpControlBackend {
+    fn attach_runtime(
+        plane: &Arc<Mutex<HttpControlPlane>>,
+        owner: &mut HttpControlPlane,
+    ) -> control_runtime::ControlRuntime {
+        if let Some(shared) = owner.managed_runtime.clone() {
+            return control_runtime::ControlRuntime { shared };
+        }
+        let runtime = control_runtime::ControlRuntime::new(plane, owner);
+        owner.managed_runtime = Some(runtime.shared.clone());
+        runtime
+    }
+
     pub(crate) async fn from_shared(plane: Arc<Mutex<HttpControlPlane>>) -> Self {
-        let (shutdown, _) = watch::channel(false);
-        let owner = plane.lock().await;
+        let mut owner = plane.lock().await;
         let events = owner.events.clone();
         let rpc_budgets = owner.rpc_budgets.clone();
+        let control = Self::attach_runtime(&plane, &mut owner);
         drop(owner);
         Self {
+            control,
             plane,
-            shutdown,
             events,
             rpc_budgets,
         }
@@ -3547,15 +2965,38 @@ impl HttpControlBackend {
 
     #[must_use]
     pub fn new(plane: HttpControlPlane) -> Self {
-        let (shutdown, _) = watch::channel(false);
         let events = plane.event_broker();
         let rpc_budgets = plane.rpc_budgets.clone();
+        let plane = Arc::new(Mutex::new(plane));
+        let control =
+            Self::attach_runtime(&plane, &mut plane.try_lock().expect("new control owner"));
         Self {
-            plane: Arc::new(Mutex::new(plane)),
-            shutdown,
+            control,
+            plane,
             events,
             rpc_budgets,
         }
+    }
+
+    pub(crate) fn control_runtime(&self) -> control_runtime::ControlRuntime {
+        self.control.clone()
+    }
+
+    pub fn start_control_runtime(&self) -> Result<(), HttpControlError> {
+        self.control.start()
+    }
+
+    pub fn control_failure_receiver(&self) -> watch::Receiver<Option<String>> {
+        self.control.failure_receiver()
+    }
+
+    #[must_use]
+    pub fn control_runtime_metrics(&self) -> ControlRuntimeMetrics {
+        self.control.metrics()
+    }
+
+    pub async fn drain_control_runtime(&self) -> Result<(), HttpControlError> {
+        self.control.drain().await
     }
 
     #[must_use]
@@ -3570,17 +3011,16 @@ impl HttpControlBackend {
 
     #[must_use]
     pub fn shutdown_receiver(&self) -> watch::Receiver<bool> {
-        self.shutdown.subscribe()
+        self.control.shutdown_receiver()
     }
 
-    /// Recovers the sole control-plane owner once all transport and progress
-    /// handles have been drained.
+    /// Recover the owner after draining transports and `drain_control_runtime`.
     pub fn try_into_control_plane(self) -> Result<HttpControlPlane, Self> {
         match Arc::try_unwrap(self.plane) {
             Ok(plane) => Ok(plane.into_inner()),
             Err(plane) => Err(Self {
                 plane,
-                shutdown: self.shutdown,
+                control: self.control,
                 events: self.events,
                 rpc_budgets: self.rpc_budgets,
             }),
@@ -3603,18 +3043,15 @@ impl HttpRpcBackend for HttpControlBackend {
         params: Value,
         context: crate::RpcClientContext,
     ) -> crate::RpcFuture {
+        let control = self.control.clone();
         let plane = self.plane.clone();
-        let shutdown = self.shutdown.clone();
         let method = method.to_owned();
         Box::pin(async move {
-            let result =
-                HttpControlPlane::call_shared_with_context(&plane, &method, params, context)
-                    .await
-                    .map_err(control_backend_error);
-            if plane.lock().await.shutdown_requested() {
-                let _ = shutdown.send(true);
-            }
-            result
+            let _plane = plane;
+            control
+                .call(&method, params, context)
+                .await
+                .map_err(control_backend_error)
         })
     }
 }
@@ -3666,7 +3103,7 @@ fn control_backend_error(error: HttpControlError) -> HttpRpcBackendError {
     HttpRpcBackendError::new(code, error.to_string())
 }
 
-fn require_no_params(params: &Value, method: &'static str) -> Result<(), HttpControlError> {
+fn require_no_params(params: &Value, method: &str) -> Result<(), HttpControlError> {
     if params.as_array().is_some_and(Vec::is_empty) {
         Ok(())
     } else {
@@ -4683,7 +4120,7 @@ mod tests {
 
     static TEST_ID: AtomicU64 = AtomicU64::new(1);
 
-    struct TestDirectory {
+    pub(super) struct TestDirectory {
         root: PathBuf,
         control: PathBuf,
         output: PathBuf,
@@ -4691,7 +4128,7 @@ mod tests {
     }
 
     impl TestDirectory {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             let root = std::env::temp_dir().join(format!(
                 "ariax-http-control-{}-{}",
                 std::process::id(),
@@ -4743,8 +4180,26 @@ mod tests {
             }
         }
 
-        fn control_plane(&self) -> HttpControlPlane {
+        pub(super) fn control_plane(&self) -> HttpControlPlane {
             self.control_plane_with_supervisor(HttpWorkerSupervisorConfig::default())
+        }
+
+        fn control_plane_with_capacity(&self, capacity: usize) -> HttpControlPlane {
+            let capacity = NonZeroUsize::new(capacity).expect("capacity");
+            let mut config = self.process_config();
+            config.recovery.scheduler.max_tasks = capacity;
+            let engine = bootstrap_process(config, ariax_config::persisted_option_is_safe)
+                .expect("bootstrap");
+            HttpControlPlane::new(
+                engine,
+                HttpControlPlaneConfig {
+                    output_root: self.output.clone(),
+                    journal_root: self.journals.clone(),
+                    task_capacity: capacity,
+                    supervisor: HttpWorkerSupervisorConfig::default(),
+                },
+            )
+            .expect("control plane")
         }
 
         fn control_plane_with_active_limit(&self, limit: usize) -> HttpControlPlane {
@@ -4889,7 +4344,7 @@ mod tests {
             .expect("create private test directory");
     }
 
-    fn add_paused(plane: &mut HttpControlPlane) -> Gid {
+    pub(super) fn add_paused(plane: &mut HttpControlPlane) -> Gid {
         let result = plane
             .call(
                 "aria2.addUri",
@@ -4901,6 +4356,491 @@ mod tests {
             .expect("GID result")
             .parse()
             .expect("valid GID")
+    }
+
+    #[tokio::test]
+    async fn filesystem_preparation_preserves_queries_urgent_progress_and_import_fencing() {
+        struct Release(Arc<admission::PreparationGate>);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                self.0.release();
+            }
+        }
+        let directory = TestDirectory::new();
+        let mut owner = directory.control_plane();
+        let existing = add_paused(&mut owner);
+        let gate = Arc::new(admission::PreparationGate::default());
+        let release = Release(gate.clone());
+        owner.admission_gate = Some(gate.clone());
+        let queries = owner.query_reader();
+        let query_slots = queries.occupy_execution();
+        let client = owner.rpc_budgets.client().expect("import client");
+        let backend = HttpControlBackend::new(owner);
+        let plane = backend.plane();
+        let import = tokio::spawn(
+            backend.call_with_context(
+                "ariax.importSession",
+                json!([import_document(2)]),
+                crate::RpcClientContext::default()
+                    .with_request(client.try_request(0).expect("import request")),
+            ),
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !gate.entered.load(Ordering::Acquire) {
+            assert!(
+                Instant::now() < deadline,
+                "filesystem preparation has its own slot"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        drop(query_slots);
+        assert_eq!(
+            backend
+                .call("aria2.tellWaiting", json!([0, 1000]))
+                .await
+                .expect("query during preparation")
+                .as_array()
+                .expect("list")
+                .len(),
+            1
+        );
+        assert_eq!(
+            backend
+                .call("aria2.unpause", json!([existing.to_string()]))
+                .await
+                .expect("urgent progress"),
+            existing.to_string()
+        );
+        {
+            let mut owner = plane.lock().await;
+            assert!(matches!(
+                owner.begin_call_admitted(
+                    "aria2.addUri",
+                    json!([["http://example.test/another"], {"pause":true}]),
+                    None
+                ),
+                Err(HttpControlError::Busy)
+            ));
+            assert!(!owner.admission_fenced());
+        }
+        import.abort();
+        let _ = import.await;
+        assert_eq!(client.outstanding_requests(), 1);
+        drop(release);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut saw_fence = false;
+        loop {
+            let mut owner = plane.lock().await;
+            if owner.admission_fenced() {
+                saw_fence = true;
+                assert!(matches!(
+                    owner.begin_task_control("aria2.pause", json!([existing.to_string()])),
+                    Err(HttpControlError::Busy)
+                ));
+                assert!(
+                    queries
+                        .current()
+                        .expect("query root")
+                        .get_version(json!([]))
+                        .is_ok()
+                );
+            }
+            if owner.engine.snapshot_reader().load().len() == 3
+                && owner.pending_admission.is_none()
+                && owner.pending_mutation.is_none()
+            {
+                break;
+            }
+            drop(owner);
+            assert!(Instant::now() < deadline, "disconnected import completes");
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert!(saw_fence);
+        backend
+            .drain_control_runtime()
+            .await
+            .expect("runtime drain");
+        assert_eq!(client.outstanding_requests(), 0);
+        assert_eq!(client.request_bytes(), 0);
+        drop(backend);
+        let owner = Arc::try_unwrap(plane).expect("sole owner").into_inner();
+        let root = owner.engine.snapshot_reader().load();
+        assert_eq!(root.queue(QueueClass::Waiting), &[existing]);
+        assert_eq!(root.queue(QueueClass::Paused).len(), 2);
+        assert!(
+            matches!(owner.session.execute(SessionCommand::ReadQueueOrder { state: SessionQueueState::Paused }).expect("durable order"), SessionCommandResult::QueueOrder(gids) if gids == root.queue(QueueClass::Paused))
+        );
+        owner.shutdown().expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn delayed_sqlite_option_write_keeps_queries_and_owner_turns_available() {
+        let directory = TestDirectory::new();
+        let mut owner = directory.control_plane();
+        let gid = add_paused(&mut owner);
+        let backend = HttpControlBackend::new(owner);
+        let plane = backend.plane();
+        let lock =
+            rusqlite::Connection::open(directory.root.join("session.db")).expect("test writer");
+        lock.execute_batch("BEGIN IMMEDIATE")
+            .expect("hold SQLite writer");
+        let mutation =
+            tokio::spawn(backend.call("aria2.changeOption", json!([gid.to_string(), {"split":3}])));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if plane.lock().await.pending_input.is_some() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "option prelude submitted");
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        let options = tokio::time::timeout(
+            Duration::from_millis(500),
+            backend.call("aria2.getOption", json!([gid.to_string()])),
+        )
+        .await
+        .expect("query does not wait for SQLite")
+        .expect("old options");
+        assert_eq!(options["split"], crate::DEFAULT_HTTP_SPLIT.to_string());
+        assert!(!mutation.is_finished());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(500), plane.lock())
+                .await
+                .is_ok()
+        );
+        lock.execute_batch("ROLLBACK")
+            .expect("release SQLite writer");
+        assert_eq!(
+            mutation.await.expect("caller").expect("durable mutation"),
+            "OK"
+        );
+        assert_eq!(
+            backend
+                .call("aria2.getOption", json!([gid.to_string()]))
+                .await
+                .expect("new options")["split"],
+            "3"
+        );
+        backend.drain_control_runtime().await.expect("drain");
+        drop(backend);
+        Arc::try_unwrap(plane)
+            .expect("sole owner")
+            .into_inner()
+            .shutdown()
+            .expect("shutdown");
+    }
+
+    #[test]
+    fn unavailable_session_rejects_option_prelude_without_publishing_new_metadata() {
+        let directory = TestDirectory::new();
+        let mut owner = directory.control_plane();
+        let gid = add_paused(&mut owner);
+        let ControlReply::Deferred(mut reply) = owner
+            .begin_call_admitted(
+                "aria2.changeOption",
+                json!([gid.to_string(), {"split":3}]),
+                None,
+            )
+            .expect("prepare option")
+        else {
+            panic!("deferred option");
+        };
+        owner.session.shutdown().expect("stop storage owner");
+        assert!(owner.poll_once().is_err());
+        assert!(reply.try_recv().expect("failed reply").is_err());
+        assert_eq!(
+            owner
+                .capture_query()
+                .get_option(json!([gid.to_string()]))
+                .expect("old catalog")["split"],
+            crate::DEFAULT_HTTP_SPLIT.to_string()
+        );
+        assert!(matches!(
+            owner.engine.poll_at(MonotonicInstant::now()),
+            ariax_runtime::SchedulerDriverPoll::Faulted(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn published_queries_complete_while_the_control_owner_is_locked() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let gid = add_paused(&mut plane);
+        let backend = HttpControlBackend::new(plane);
+        let shared = backend.plane();
+        let guard = shared.lock().await;
+        for (method, params) in [
+            ("aria2.tellStatus", json!([gid.to_string()])),
+            ("aria2.tellWaiting", json!([0, 1000])),
+            ("aria2.tellActive", json!([])),
+            ("aria2.tellStopped", json!([0, 1000])),
+            ("aria2.getUris", json!([gid.to_string()])),
+            ("aria2.getFiles", json!([gid.to_string()])),
+            ("aria2.getServers", json!([gid.to_string()])),
+            ("aria2.getOption", json!([gid.to_string()])),
+            ("aria2.getGlobalOption", json!([])),
+            ("aria2.getGlobalStat", json!([])),
+            ("aria2.getSessionInfo", json!([])),
+            ("aria2.getVersion", json!([])),
+            ("ariax.checkConfig", json!(["timeout=30\n"])),
+            (
+                "ariax.dumpConfig",
+                json!(["task-effective", "json", gid.to_string()]),
+            ),
+            ("ariax.exportSession", json!([])),
+            ("ariax.getDiagnostics", json!([])),
+        ] {
+            tokio::time::timeout(Duration::from_secs(2), backend.call(method, params))
+                .await
+                .expect("query must not await owner unlock")
+                .unwrap_or_else(|error| panic!("{method}: {error:?}"));
+        }
+        let invalid = tokio::time::timeout(
+            Duration::from_secs(2),
+            backend.call("aria2.tellStatus", json!(["not-a-gid"])),
+        )
+        .await
+        .expect("rejection must not await owner unlock");
+        assert!(invalid.is_err());
+        drop(guard);
+        drop(shared);
+        backend
+            .try_into_control_plane()
+            .unwrap_or_else(|_| panic!("sole owner"))
+            .shutdown()
+            .expect("shutdown");
+    }
+
+    #[test]
+    fn frozen_query_keeps_metadata_across_replacement_and_removal() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let gid = plane
+            .call(
+                "aria2.addUri",
+                json!([["http://example.test/file?token=query-secret-canary"], {"pause":true}]),
+            )
+            .expect("add")
+            .as_str()
+            .expect("gid")
+            .to_owned();
+        let reader = plane.query_reader();
+        let frozen = reader.current().expect("published root");
+        let before_options = frozen.get_option(json!([gid])).expect("old options");
+        assert_eq!(
+            frozen.get_uris(json!([gid])).expect("live URI")[0]["uri"],
+            "http://example.test/file?token=query-secret-canary"
+        );
+        assert!(
+            !frozen
+                .export_session(json!([]))
+                .expect("safe export")
+                .to_string()
+                .contains("query-secret-canary")
+        );
+        plane
+            .call(
+                "ariax.replaceSources",
+                json!([gid, ["http://example.test/replacement"]]),
+            )
+            .expect("replace source");
+        plane
+            .call("aria2.changeOption", json!([gid, {"timeout":45}]))
+            .expect("change options");
+        let newer = reader.current().expect("replacement root");
+        assert_eq!(
+            newer.get_uris(json!([gid])).expect("new URI")[0]["uri"],
+            "http://example.test/replacement"
+        );
+        assert_eq!(
+            newer.get_option(json!([gid])).expect("new options")["timeout"],
+            "45"
+        );
+        assert_eq!(
+            frozen.get_option(json!([gid])).expect("frozen options"),
+            before_options
+        );
+        plane.call("aria2.remove", json!([gid])).expect("remove");
+        plane
+            .call("aria2.removeDownloadResult", json!([gid]))
+            .expect("forget result");
+        assert!(matches!(
+            reader.current().expect("current").get_files(json!([gid])),
+            Err(HttpControlError::NotFound)
+        ));
+        assert_eq!(
+            frozen.get_files(json!([gid])).expect("frozen file")[0]["uris"][0]["uri"],
+            "http://example.test/file?token=query-secret-canary"
+        );
+        assert_eq!(
+            frozen.tell_status(json!([gid])).expect("frozen status")["status"],
+            "paused"
+        );
+        drop(newer);
+        drop(frozen);
+        drop(reader);
+        plane.shutdown().expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn query_execution_and_failure_refund_admitted_credit() {
+        let directory = TestDirectory::new();
+        let plane = directory.control_plane();
+        let reader = plane.query_reader();
+        let client = plane.rpc_budgets.client().expect("client");
+        let baseline = client.bytes();
+        let held = reader.occupy_execution();
+        let request = client.try_request(0).expect("request");
+        let context = crate::RpcClientContext::default().with_request(request);
+        assert!(matches!(
+            reader.call("aria2.getVersion", json!([]), context).await,
+            Err(HttpControlError::Busy)
+        ));
+        assert_eq!(client.outstanding_requests(), 0);
+        assert_eq!(client.bytes(), baseline);
+        drop(held);
+        for params in [
+            json!(["invalid"]),
+            json!(["0000000000000000"]),
+            json!(["0"]),
+        ] {
+            let request = client.try_request(0).expect("request");
+            let context = crate::RpcClientContext::default().with_request(request);
+            assert!(
+                reader
+                    .call("aria2.tellStatus", params, context)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(client.outstanding_requests(), 0);
+            assert_eq!(client.bytes(), baseline);
+        }
+        reader
+            .call(
+                "aria2.getVersion",
+                json!([]),
+                crate::RpcClientContext::default(),
+            )
+            .await
+            .expect("usable after rejection");
+        drop(reader);
+        plane.shutdown().expect("shutdown");
+    }
+
+    #[test]
+    fn later_pause_and_remove_supersede_unfinished_resume_all() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let first = add_paused(&mut plane);
+        let removed = add_paused(&mut plane);
+        let paused = add_paused(&mut plane);
+        let ControlReply::Deferred(mut reply) = plane
+            .begin_call_admitted("aria2.unpauseAll", json!([]), None)
+            .expect("bulk accepted")
+        else {
+            panic!("bulk continuation");
+        };
+        assert!(matches!(
+            reply.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        assert!(plane.pending_bulk.is_some());
+        plane
+            .call("aria2.pause", json!([paused.to_string()]))
+            .expect("later pause");
+        plane
+            .call("aria2.remove", json!([removed.to_string()]))
+            .expect("later remove");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while plane.pending_bulk.is_some() {
+            assert!(Instant::now() < deadline, "bulk progress");
+            plane.poll_once().expect("progress");
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            reply.try_recv().expect("reply").expect("bulk success"),
+            "OK"
+        );
+        assert_eq!(
+            plane
+                .tell_status(json!([first.to_string()]))
+                .expect("resumed")["status"],
+            "waiting"
+        );
+        assert_eq!(
+            plane
+                .tell_status(json!([paused.to_string()]))
+                .expect("later pause retained")["status"],
+            "paused"
+        );
+        assert_eq!(
+            plane
+                .tell_status(json!([removed.to_string()]))
+                .expect("later remove retained")["status"],
+            "removed"
+        );
+        assert_eq!(plane.control_order.retained_identities(), 0);
+        plane.shutdown().expect("shutdown");
+    }
+
+    #[test]
+    fn accepted_bulk_survives_disconnect_and_refunds_its_credit() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let gids = (0..4).map(|_| add_paused(&mut plane)).collect::<Vec<_>>();
+        let client = plane.rpc_budgets.client().expect("client");
+        let baseline = client.bytes();
+        let request = client.try_request(0).expect("request");
+        let ControlReply::Deferred(reply) = plane
+            .begin_call_admitted("aria2.unpauseAll", json!([]), Some(request))
+            .expect("accept bulk")
+        else {
+            panic!("bulk continuation");
+        };
+        drop(reply);
+        assert_eq!(client.outstanding_requests(), 1);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while plane.pending_bulk.is_some() {
+            assert!(Instant::now() < deadline, "accepted bulk must finish");
+            plane.poll_once().expect("progress");
+            std::thread::yield_now();
+        }
+        for gid in gids {
+            assert_eq!(
+                plane.tell_status(json!([gid.to_string()])).expect("status")["status"],
+                "waiting"
+            );
+        }
+        assert_eq!(client.outstanding_requests(), 0);
+        assert_eq!(client.bytes(), baseline);
+        plane.shutdown().expect("shutdown");
+    }
+
+    #[test]
+    fn rejected_bulk_does_not_replace_the_accepted_continuation() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let gid = add_paused(&mut plane);
+        let ControlReply::Deferred(reply) = plane
+            .begin_call_admitted("aria2.unpauseAll", json!([]), None)
+            .expect("first bulk")
+        else {
+            panic!("bulk continuation");
+        };
+        assert!(matches!(
+            plane.begin_call_admitted("aria2.pauseAll", json!([]), None),
+            Err(HttpControlError::Busy)
+        ));
+        assert!(matches!(
+            plane.begin_call_admitted("aria2.pauseAll", json!([true]), None),
+            Err(HttpControlError::InvalidParams(_))
+        ));
+        plane.wait_for_mutation(reply).expect("first bulk finishes");
+        assert_eq!(
+            plane.tell_status(json!([gid.to_string()])).expect("status")["status"],
+            "waiting"
+        );
+        plane.shutdown().expect("shutdown");
     }
 
     #[test]
@@ -5641,6 +5581,12 @@ mod tests {
             else {
                 panic!("add must retain continuation");
             };
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while plane.pending_admission.is_some() {
+                assert!(Instant::now() < deadline, "admission preparation");
+                plane.poll_admission().expect("stage admission");
+                std::thread::park_timeout(CONTROL_PROGRESS_POLL);
+            }
             assert!(matches!(
                 plane.drive_engine_until(Instant::now()),
                 Err(HttpControlError::Busy)
@@ -5728,7 +5674,9 @@ mod tests {
     #[tokio::test]
     async fn dropping_async_add_reply_keeps_admission_until_shutdown_drain() {
         let directory = TestDirectory::new();
-        let plane = directory.control_plane();
+        let mut plane = directory.control_plane();
+        let gate = Arc::new(admission::PreparationGate::default());
+        plane.admission_gate = Some(gate.clone());
         let client = plane.rpc_budgets.client().expect("client");
         let request = client.try_request(128).expect("request");
         let shared = Arc::new(Mutex::new(plane));
@@ -5739,9 +5687,20 @@ mod tests {
             crate::RpcClientContext::default().with_request(request),
         ));
         assert!(futures_util::poll!(&mut call).is_pending());
-        assert!(shared.lock().await.pending_mutation.is_some());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while shared.lock().await.pending_admission.is_none() {
+            assert!(Instant::now() < deadline, "managed admission starts");
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
         drop(call);
         assert_eq!(client.outstanding_requests(), 1);
+        gate.release();
+        let backend = HttpControlBackend::from_shared(shared.clone()).await;
+        backend
+            .drain_control_runtime()
+            .await
+            .expect("drain admitted work");
+        drop(backend);
         let owner = Arc::try_unwrap(shared).expect("sole owner").into_inner();
         let report = owner
             .shutdown_async()
@@ -5949,6 +5908,110 @@ mod tests {
     }
 
     #[test]
+    fn thousand_task_bulk_progress_is_bounded_and_later_controls_win() {
+        #[cfg(unix)]
+        if ariax_runtime::native_process_handle_limit().is_some_and(|limit| limit < 4096) {
+            let status = std::process::Command::new("bash").args([
+                "-c", "ulimit -n 20000 && exec \"$1\" --exact http_control::tests::thousand_task_bulk_progress_is_bounded_and_later_controls_win --nocapture",
+                "ariax-thousand-task-test",
+            ]).arg(std::env::current_exe().expect("test executable")).status().expect("isolated handle limit");
+            assert!(
+                status.success(),
+                "1,000-task test under sufficient native handle capacity"
+            );
+            return;
+        }
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane_with_capacity(1000);
+        let mut gids = Vec::with_capacity(1000);
+        for _ in 0..10 {
+            gids.extend(
+                plane
+                    .call("ariax.importSession", json!([import_document(100)]))
+                    .expect("bounded import batch")
+                    .as_array()
+                    .expect("gids")
+                    .iter()
+                    .map(|gid| gid.as_str().expect("gid").parse::<Gid>().expect("gid")),
+            );
+        }
+        let ControlReply::Deferred(mut bulk) = plane
+            .begin_call_admitted("aria2.unpauseAll", json!([]), None)
+            .expect("bulk admission")
+        else {
+            panic!("bulk continuation");
+        };
+        assert!(matches!(
+            plane.begin_call_admitted("aria2.pauseAll", json!([]), None),
+            Err(HttpControlError::Busy)
+        ));
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut overridden = false;
+        let mut query_count = 0;
+        let mut turns = 0;
+        loop {
+            let before = plane
+                .engine
+                .snapshot_reader()
+                .load()
+                .queue(QueueClass::Waiting)
+                .len();
+            plane.poll_once().expect("bounded progress");
+            let after = plane
+                .engine
+                .snapshot_reader()
+                .load()
+                .queue(QueueClass::Waiting)
+                .len();
+            assert!(after <= before + 1, "one bulk target per turn");
+            assert!(plane.turn.used <= 32, "one shared owner step budget");
+            if !overridden && after != 0 {
+                plane
+                    .call("aria2.pause", json!([gids[999].to_string()]))
+                    .expect("later pause");
+                plane
+                    .call("aria2.remove", json!([gids[998].to_string()]))
+                    .expect("later remove");
+                overridden = true;
+            }
+            if turns % 64 == 0 {
+                let query = plane.capture_query();
+                let statuses = query
+                    .tell_waiting(json!([0, 1000, ["gid", "status"]]))
+                    .expect("substantial projection between turns");
+                assert_eq!(
+                    statuses.as_array().expect("statuses").len(),
+                    if overridden { 999 } else { 1000 }
+                );
+                query_count += 1;
+            }
+            match bulk.try_recv() {
+                Ok(result) => {
+                    assert_eq!(result.expect("bulk completion"), "OK");
+                    break;
+                }
+                Err(oneshot::error::TryRecvError::Empty) => {}
+                Err(error) => panic!("lost bulk continuation: {error}"),
+            }
+            assert!(
+                Instant::now() < deadline,
+                "bulk progress deadline: waiting={after}, turns={turns}, queries={query_count}"
+            );
+            turns += 1;
+            std::thread::park_timeout(CONTROL_PROGRESS_POLL);
+        }
+        assert!(query_count > 10);
+        let root = plane.engine.snapshot_reader().load();
+        assert_eq!(root.queue(QueueClass::Waiting).len(), 998);
+        assert_eq!(root.queue(QueueClass::Paused), &[gids[999]]);
+        assert_eq!(root.queue(QueueClass::Stopped), &[gids[998]]);
+        assert!(
+            matches!(plane.session.execute(SessionCommand::ReadQueueOrder { state: SessionQueueState::Waiting }).expect("durable order"), SessionCommandResult::QueueOrder(gids) if gids == root.queue(QueueClass::Waiting))
+        );
+        plane.shutdown().expect("shutdown");
+    }
+
+    #[test]
     fn session_import_validates_every_member_before_journals_or_publication() {
         let directory = TestDirectory::new();
         let mut plane = directory.control_plane();
@@ -6090,6 +6153,12 @@ mod tests {
                 Some(request),
             )
             .expect("begin import");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while plane.pending_admission.is_some() {
+            assert!(Instant::now() < deadline, "prepare import crash point");
+            plane.poll_admission().expect("stage import");
+            std::thread::park_timeout(CONTROL_PROGRESS_POLL);
+        }
         if committed {
             let deadline = Instant::now() + Duration::from_secs(5);
             while !plane.engine.is_idle() {
@@ -6240,11 +6309,12 @@ mod tests {
         assert_eq!(client.outstanding_requests(), 1);
         assert!(client.request_bytes() > 128 * 1024);
 
-        let plane = Arc::new(Mutex::new(plane));
-        let status =
-            HttpControlPlane::call_shared(&plane, "aria2.tellStatus", json!([gid.to_string()]))
-                .await
-                .expect("query during pending persistence");
+        let backend = HttpControlBackend::new(plane);
+        let plane = backend.plane();
+        let status = backend
+            .call("aria2.tellStatus", json!([gid.to_string()]))
+            .await
+            .expect("query during pending persistence");
         assert_eq!(status["status"], "paused");
         let mut owner = plane.lock().await;
         assert!(owner.pending_work.is_some());
@@ -6259,6 +6329,7 @@ mod tests {
             "waiting"
         );
         drop(owner);
+        drop(backend);
         let owner = Arc::try_unwrap(plane).expect("sole owner").into_inner();
         owner.shutdown().expect("shutdown");
     }
@@ -6780,14 +6851,16 @@ mod tests {
         );
         assert_eq!(client.outstanding_requests(), 1);
         assert!(client.request_bytes() > 0);
-        let mut plane = Arc::try_unwrap(shared)
+        drain.add_permits(1);
+        let backend = HttpControlBackend::from_shared(shared.clone()).await;
+        backend
+            .drain_control_runtime()
+            .await
+            .expect("finish disconnected source mutation");
+        drop(backend);
+        let plane = Arc::try_unwrap(shared)
             .expect("owner remains available")
             .into_inner();
-        drain.add_permits(1);
-        poll_until(&mut plane, |plane| {
-            plane.pending_source_replacements.is_empty()
-        })
-        .await;
         assert_eq!(client.outstanding_requests(), 0);
         assert_eq!(client.request_bytes(), 0);
         assert_eq!(
@@ -7007,6 +7080,12 @@ mod tests {
                         }
                     );
                 }
+                let backend = HttpControlBackend::from_shared(shared.clone()).await;
+                backend
+                    .drain_control_runtime()
+                    .await
+                    .expect("drain source control runtime");
+                drop(backend);
                 let owner = Arc::try_unwrap(shared).expect("sole owner").into_inner();
                 let expected_uri = if user_control == Some("aria2.remove") {
                     "http://example.test/file.bin"
@@ -8564,7 +8643,7 @@ mod tests {
             let waiter = add_slot_task(&mut plane, &uri, "waiting.bin");
             // Advance only the pure policy clock; the HTTP worker and persistence
             // execute normally. This exercises a sustained interval without a long sleep.
-            plane.slow_observations.clear();
+            Arc::make_mut(&mut plane.slow_observations).clear();
             plane.next_slow_sample = None;
             let start = MonotonicInstant::now();
             for step in 0..=10 {

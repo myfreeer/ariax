@@ -722,16 +722,20 @@ impl Drop for NetworkPhaseGuard {
 #[derive(Clone, Debug)]
 pub struct SharedHttpTransferStats {
     capacity: NonZeroUsize,
-    by_task: Arc<RwLock<BTreeMap<TaskId, HttpTransferStats>>>,
+    by_task: Arc<RwLock<Arc<BTreeMap<TaskId, HttpTransferStats>>>>,
     completed: Arc<RwLock<BTreeMap<TaskId, HttpCompletedEvidence>>>,
 }
 
 impl SharedHttpTransferStats {
+    pub(crate) fn snapshot_handles(&self) -> Arc<BTreeMap<TaskId, HttpTransferStats>> {
+        Arc::clone(&read_unpoisoned(&self.by_task))
+    }
+
     #[must_use]
     pub fn new(capacity: NonZeroUsize) -> Self {
         Self {
             capacity,
-            by_task: Arc::new(RwLock::new(BTreeMap::new())),
+            by_task: Arc::new(RwLock::new(Arc::new(BTreeMap::new()))),
             completed: Arc::new(RwLock::new(BTreeMap::new())),
         }
     }
@@ -748,7 +752,7 @@ impl SharedHttpTransferStats {
             return Err(HttpStatsCatalogError::Full);
         }
         let stats = HttpTransferStats::default();
-        catalog.insert(task, stats.clone());
+        Arc::make_mut(&mut catalog).insert(task, stats.clone());
         Ok(stats)
     }
 
@@ -759,7 +763,7 @@ impl SharedHttpTransferStats {
 
     pub fn remove(&self, task: TaskId) -> Option<HttpTransferStats> {
         write_unpoisoned(&self.completed).remove(&task);
-        write_unpoisoned(&self.by_task).remove(&task)
+        Arc::make_mut(&mut write_unpoisoned(&self.by_task)).remove(&task)
     }
 
     pub fn record_completion(&self, task: TaskId, evidence: HttpCompletedEvidence) {

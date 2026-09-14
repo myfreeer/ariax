@@ -109,27 +109,20 @@ pub(crate) async fn serve(
             (true, result)
         });
     }
-    let progress_plane = backend.plane();
-    let mut progress = tokio::spawn(async move {
-        loop {
-            let result = progress_plane.lock().await.poll_once();
-            if let Err(error) = result
-                && !matches!(error, ariax_engine::HttpControlError::Busy)
-            {
-                return Err::<(), _>(format!("control progress failed: {error}"));
-            }
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    });
-    let mut progress_finished = false;
+    backend
+        .start_control_runtime()
+        .map_err(|error| error.to_string())?;
+    let mut failure = backend.control_failure_receiver();
     let mut shutdown = backend.shutdown_receiver();
     let mut result = loop {
         tokio::select! {
             signal = tokio::signal::ctrl_c() => break signal.map_err(|error| error.to_string()),
             signal = crate::wait_for_rpc_shutdown(&mut shutdown) => break signal.map_err(|error| error.to_string()),
-            joined = &mut progress => {
-                progress_finished = true;
-                break joined.map_err(|error| error.to_string()).and_then(|result| result);
+            changed = failure.changed() => {
+                break Err(failure.borrow().clone().unwrap_or_else(|| match changed {
+                    Ok(()) => "control runtime stopped".to_owned(),
+                    Err(error) => error.to_string(),
+                }));
             }
             joined = transports.join_next(), if !transports.is_empty() => {
                 match joined {
@@ -170,10 +163,6 @@ pub(crate) async fn serve(
         transports.abort_all();
         while transports.join_next().await.is_some() {}
         result = Err("RPC transport drain exceeded its deadline".to_owned());
-    }
-    if !progress_finished {
-        progress.abort();
-        let _ = progress.await;
     }
     drop(dispatcher);
     result

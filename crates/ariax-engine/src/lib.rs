@@ -67,8 +67,8 @@ pub use http_connector::{
     classify_http_address, resolve_http_destination, resolve_http_destination_with_resolver,
 };
 pub use http_control::{
-    ControlDiagnostics, HttpControlBackend, HttpControlError, HttpControlPlane,
-    HttpControlPlaneConfig, OptionPatchRejection, SessionExportConfig,
+    ControlDiagnostics, ControlRuntimeMetrics, HttpControlBackend, HttpControlError,
+    HttpControlPlane, HttpControlPlaneConfig, OptionPatchRejection, SessionExportConfig,
 };
 pub use http_cookie::{
     DEFAULT_HTTP_COOKIE_TOTAL_ENTRIES, HTTP_PSL_SHA256, HTTP_PSL_SNAPSHOT_ID, HttpCookieError,

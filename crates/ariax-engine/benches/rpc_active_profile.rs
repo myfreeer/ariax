@@ -29,6 +29,12 @@ type Result<T> = std::result::Result<T, Failure>;
 const RANGES: usize = 1_000;
 const RANGES_PER_ORIGIN: usize = 8;
 const SAMPLES: usize = 20_000;
+const PROJECTION_TASKS: usize = 128;
+const PROJECTION_SOURCES: usize = 32;
+const BURST_LAUNCH_MS: u64 = 400;
+
+#[path = "rpc_active_profile/admin.rs"]
+mod admin;
 const TOTAL_BYTES: usize = RANGES * 2 * 1024 * 1024;
 const PULSE_BYTES: usize = 1024;
 const EVENT_BYTES: usize = 512 * 1024;
@@ -96,6 +102,13 @@ fn main() {
     let result = runtime.block_on(async {
         match args.first().map(String::as_str) {
             Some("--origin") => origin().await,
+            Some("--administrative")
+                if std::env::var_os("ARIAX_RUN_ACTIVE_RPC_BENCH").is_some() =>
+            {
+                tokio::time::timeout(Duration::from_secs(90), admin::measure())
+                    .await
+                    .map_err(|_| "administrative scenario exceeded its 90-second deadline")?
+            }
             Some("--engine") => {
                 let origins = args[1]
                     .split(',')
@@ -344,6 +357,7 @@ impl HttpRpcBackend for BenchBackend {
             return self.inner.call_with_context(method, params, context);
         }
         let resource = self.resources.clone();
+        let control = self.inner.clone();
         let stats = self.stats.clone();
         Box::pin(async move {
             let first = METRICS_CALLS.fetch_add(1, Ordering::Relaxed) == 0;
@@ -364,7 +378,8 @@ impl HttpRpcBackend for BenchBackend {
                 json!({"connections":stats.active_connections, "network":stats.network_phase,
                 "received":stats.raw_body_bytes, "rss":rss, "resident":budget.resident_bytes,
                 "residentLimit":budget.resident_limit, "rssLimit":resource.profile().limits().resident_target_bytes,
-                "rpc":budget.bytes, "rpcLimit":budget.byte_limit, "items":budget.items}),
+                "rpc":budget.bytes, "rpcLimit":budget.byte_limit, "items":budget.items,
+                "controlRuntime":control.control_runtime_metrics()}),
             )
         })
     }
@@ -387,9 +402,11 @@ async fn stopped(mut receiver: watch::Receiver<bool>) -> io::Result<()> {
     Ok(())
 }
 
-async fn engine(origins: &[SocketAddr], scenario: &str) -> Result<()> {
-    eprintln!("benchmark setup: process bootstrap");
-    let root = Root::new()?;
+fn build_control_plane(
+    root: &Root,
+    resources: &HttpProcessResources,
+    capacity: usize,
+) -> Result<(HttpControlPlane, PathBuf)> {
     let control = root.0.join("control");
     let output = root.0.join("output");
     let journals = control.join("http-journals");
@@ -404,7 +421,7 @@ async fn engine(origins: &[SocketAddr], scenario: &str) -> Result<()> {
         replay_limits: ReplayLimits::default(),
         journal_state_limits: JournalStateLimits::default(),
         recovery: StartupRecoveryConfig {
-            scheduler: SchedulerConfig::new(nz(16), nz(1), true)?,
+            scheduler: SchedulerConfig::new(nz(capacity), nz(1), true)?,
             now_wall_unix_ms: now,
             now_monotonic: MonotonicInstant::now(),
             max_retry_wait_ms: NonZeroU64::new(60000).unwrap(),
@@ -423,17 +440,24 @@ async fn engine(origins: &[SocketAddr], scenario: &str) -> Result<()> {
         updated_ms: now,
         recovery_created_at_unix_ms: now,
     };
-    let resources = HttpProcessResources::for_profile(RuntimeProfile::Concurrency)?;
     let mut plane = HttpControlPlane::new(
         bootstrap_process(config, ariax_config::persisted_option_is_safe)?,
         HttpControlPlaneConfig {
             output_root: output,
             journal_root: journals.clone(),
-            task_capacity: nz(16),
+            task_capacity: nz(capacity),
             supervisor: HttpWorkerSupervisorConfig::default(),
         },
     )?;
     plane.attach_process_resources(resources.clone())?;
+    Ok((plane, journals))
+}
+
+async fn engine(origins: &[SocketAddr], scenario: &str) -> Result<()> {
+    eprintln!("benchmark setup: process bootstrap");
+    let root = Root::new()?;
+    let resources = HttpProcessResources::for_profile(RuntimeProfile::Concurrency)?;
+    let (mut plane, journals) = build_control_plane(&root, &resources, 256)?;
     let mut transport = resources.policy_client_config();
     transport.destination.allow_loopback = true;
     transport.direct.max_connections_per_origin = RANGES_PER_ORIGIN;
@@ -461,6 +485,27 @@ async fn engine(origins: &[SocketAddr], scenario: &str) -> Result<()> {
         "aria2.addUri",
         json!([sources, {"pause":true,"out":"stalled-consumer.bin"}]),
     )?;
+    eprintln!("benchmark setup: query projection and ordinary control tasks");
+    let projection_tasks: Vec<_> = (0..PROJECTION_TASKS)
+        .map(|index| {
+            json!({
+                "uris":[format!("http://example.test/projection/{index}.bin")],
+                "options":{"pause":true,"out":format!("projection-{index}.bin")}
+            })
+        })
+        .collect();
+    plane.call("ariax.importSession", json!([{"tasks":projection_tasks}]))?;
+    let metadata_sources: Vec<_> = (0..PROJECTION_SOURCES)
+        .map(|index| format!("http://example.test/metadata/{index}/{}", "m".repeat(2048)))
+        .collect();
+    let metadata_gid = plane.call(
+        "aria2.addUri",
+        json!([metadata_sources, {"pause":true,"out":"metadata.bin"}]),
+    )?;
+    let auxiliary_gid = plane.call(
+        "aria2.addUri",
+        json!([["http://example.test/auxiliary.bin"], {"pause":true,"out":"auxiliary.bin"}]),
+    )?;
     plane.attach_worker(Arc::new(worker))?;
     eprintln!("benchmark setup: transport listeners");
     let stats = plane.stats_catalog();
@@ -483,7 +528,7 @@ async fn engine(origins: &[SocketAddr], scenario: &str) -> Result<()> {
     let http = TcpListener::bind("127.0.0.1:0").await?;
     let websocket = TcpListener::bind("127.0.0.1:0").await?;
     let slow_stdio = TcpListener::bind("127.0.0.1:0").await?;
-    let info = json!({"http":http.local_addr()?.to_string(),"websocket":websocket.local_addr()?.to_string(),"slowStdio":slow_stdio.local_addr()?.to_string(),"gid":gid,"slowGid":slow_gid});
+    let info = json!({"http":http.local_addr()?.to_string(),"websocket":websocket.local_addr()?.to_string(),"slowStdio":slow_stdio.local_addr()?.to_string(),"gid":gid,"slowGid":slow_gid,"metadataGid":metadata_gid,"auxiliaryGid":auxiliary_gid,"projectionTasks":PROJECTION_TASKS,"metadataSources":PROJECTION_SOURCES});
     let (stop, _) = watch::channel(false);
     let mut transports = tokio::task::JoinSet::new();
     transports.spawn(serve_loopback_http_listener_until(
@@ -533,31 +578,19 @@ async fn engine(origins: &[SocketAddr], scenario: &str) -> Result<()> {
             }
         });
     }
-    let progress_plane = backend.plane();
-    let progress = tokio::spawn(async move {
-        eprintln!("benchmark setup: starting worker progress");
-        progress_plane.lock().await.poll_once()?;
-        eprintln!("benchmark setup: first worker progress turn complete");
-        loop {
-            progress_plane.lock().await.poll_once()?;
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-        #[allow(unreachable_code)]
-        Ok::<(), HttpControlError>(())
-    });
+    backend.start_control_runtime()?;
+    let mut failure = backend.control_failure_receiver();
     eprintln!("{info}");
-    let mut progress = progress;
     let mut shutdown = backend.shutdown_receiver();
     tokio::select! {
         _ = shutdown.changed() => {},
-        result = &mut progress => { result??; return Err("engine progress ended unexpectedly".into()); }
+        result = failure.changed() => { result?; return Err(failure.borrow().clone().unwrap_or_else(|| "engine progress ended unexpectedly".to_owned()).into()); }
     }
     stop.send_replace(true);
     while let Some(result) = transports.join_next().await {
         result??;
     }
-    progress.abort();
-    let _ = progress.await;
+    backend.drain_control_runtime().await?;
     drop(dispatcher);
     drop(metrics);
     let backend = Arc::try_unwrap(backend).map_err(|_| "benchmark retained backend")?;
@@ -725,6 +758,113 @@ impl Client {
 }
 fn request(method: &str, params: Value) -> Vec<u8> {
     serde_json::to_vec(&json!({"jsonrpc":"2.0","id":1,"method":method,"params":params})).unwrap()
+}
+
+fn latency_report(samples: &mut std::collections::BTreeMap<&str, Vec<Duration>>) -> Value {
+    samples.iter_mut().map(|(method, samples)| {
+        samples.sort_unstable();
+        ((*method).to_owned(), json!({"calls":samples.len(), "p50Us":samples[samples.len()/2].as_micros(),
+            "p99Us":samples[(samples.len()*99).div_ceil(100)-1].as_micros(), "maxUs":samples.last().unwrap().as_micros()}))
+    }).collect::<serde_json::Map<_, _>>().into()
+}
+
+struct Auxiliary {
+    gid: Value,
+    uri: String,
+    cycle: usize,
+    phase: usize,
+}
+
+impl Auxiliary {
+    fn request(&self) -> (&'static str, Vec<u8>) {
+        let (method, params) = match self.phase {
+            0 => ("unpause", json!([self.gid])),
+            1 => ("pause", json!([self.gid])),
+            2 => ("changeOption", json!([self.gid, {"split":3}])),
+            3 => ("changePosition", json!([self.gid, 0, "POS_SET"])),
+            4 => (
+                "changeUri",
+                json!([
+                    self.gid,
+                    1,
+                    [self.uri],
+                    [format!("http://example.test/changed-{}.bin", self.cycle)]
+                ]),
+            ),
+            5 => ("remove", json!([self.gid])),
+            6 => ("removeDownloadResult", json!([self.gid])),
+            _ => (
+                "addUri",
+                json!([["http://example.test/auxiliary.bin"], {"pause":true,"out":"auxiliary.bin"}]),
+            ),
+        };
+        (method, request(&format!("aria2.{method}"), params))
+    }
+
+    async fn verify(&mut self, client: &mut Client, result: Value) -> Result<()> {
+        match self.phase {
+            0 | 1 | 5 => {
+                if result != self.gid {
+                    return Err("control GID mismatch".into());
+                }
+            }
+            2 | 6 => {
+                if result != "OK" {
+                    return Err("control acknowledgement mismatch".into());
+                }
+            }
+            3 => {
+                if result != 0 {
+                    return Err("queue move did not reach position zero".into());
+                }
+            }
+            4 => {
+                if result != json!([1, 1]) {
+                    return Err("source change was not applied".into());
+                }
+            }
+            _ => {
+                if !result.is_string() || result == self.gid {
+                    return Err("admission did not create a fresh GID".into());
+                }
+                self.gid = result;
+                self.uri = "http://example.test/auxiliary.bin".to_owned();
+            }
+        }
+        let verification = match self.phase {
+            2 => request("aria2.getOption", json!([self.gid])),
+            3 => request("aria2.tellWaiting", json!([0, 1, ["gid"]])),
+            4 => request("aria2.getUris", json!([self.gid])),
+            6 => request("aria2.tellStopped", json!([0, 1000, ["gid"]])),
+            _ => request("aria2.tellStatus", json!([self.gid, ["gid", "status"]])),
+        };
+        let state = client.call(&verification).await?;
+        let valid = match self.phase {
+            0 => state["status"] == "waiting",
+            1 | 7 => state["status"] == "paused",
+            2 => state["split"] == "3",
+            3 => state[0]["gid"] == self.gid,
+            4 => {
+                self.uri = format!("http://example.test/changed-{}.bin", self.cycle);
+                state[0]["uri"] == self.uri
+            }
+            5 => state["status"] == "removed",
+            6 => state.as_array().is_some_and(Vec::is_empty),
+            _ => false,
+        };
+        if !valid {
+            return Err(format!(
+                "mutation phase {} failed its state check: {state}",
+                self.phase
+            )
+            .into());
+        }
+        self.phase = (self.phase + 1) % 8;
+        if self.phase == 0 {
+            self.cycle += 1;
+        }
+        Ok(())
+    }
 }
 
 async fn origin_metrics(address: SocketAddr, pulse: bool) -> Result<Value> {
@@ -896,10 +1036,32 @@ async fn measure(scenario: &str) -> Result<()> {
             ["gid", "status", "completedLength", "connections"]
         ]),
     );
-    let changes = [
-        request("aria2.changeGlobalOption", json!([{"split":5}])),
-        request("aria2.changeGlobalOption", json!([{"split":6}])),
-    ];
+    let list = request(
+        "aria2.tellWaiting",
+        json!([
+            0,
+            PROJECTION_TASKS,
+            [
+                "gid",
+                "status",
+                "totalLength",
+                "completedLength",
+                "downloadSpeed",
+                "connections",
+                "verifiedLength",
+                "retryCount"
+            ]
+        ]),
+    );
+    let files = request("aria2.getFiles", json!([info["metadataGid"]]));
+    let uris = request("aria2.getUris", json!([info["metadataGid"]]));
+    let options = request("aria2.getOption", json!([info["metadataGid"]]));
+    let mut auxiliary = Auxiliary {
+        gid: info["auxiliaryGid"].clone(),
+        uri: "http://example.test/auxiliary.bin".to_owned(),
+        cycle: 0,
+        phase: 0,
+    };
     let no_fixture_events = request(
         "ariax.setEventFilter",
         json!([{"methods":["aria2.onDownloadError"]}]),
@@ -952,6 +1114,10 @@ async fn measure(scenario: &str) -> Result<()> {
     let mut samples = Vec::with_capacity(SAMPLES);
     let mut bursts = 0;
     let mut controls = 0;
+    let mut verification_calls = 0;
+    let mut per_operation = std::collections::BTreeMap::<&str, Vec<Duration>>::new();
+    let mut response_bytes = std::collections::BTreeMap::<&str, usize>::new();
+    let mut max_burst_calls = 0;
     let mut max_burst = Duration::ZERO;
     let mut measured_bursts = Duration::ZERO;
     let mut max_rss = 0;
@@ -983,28 +1149,75 @@ async fn measure(scenario: &str) -> Result<()> {
         let mut count = 0;
         while samples.len() < SAMPLES
             && count < 1_000
-            && start.elapsed() < Duration::from_millis(500)
+            && start.elapsed() < Duration::from_millis(BURST_LAUNCH_MS)
         {
-            let control = samples.len() % 20 == 19;
-            let payload = if control {
-                &changes[(samples.len() / 20) % 2]
-            } else {
-                &status
+            let index = samples.len() % 20;
+            let (method, payload) = match index {
+                0..=11 => ("tellStatus", status.clone()),
+                12..=15 => ("tellWaiting", list.clone()),
+                16 => ("getFiles", files.clone()),
+                17 => ("getUris", uris.clone()),
+                18 => ("getOption", options.clone()),
+                _ => auxiliary.request(),
             };
+            // A verification call accompanies each real mutation and counts
+            // against the same 1,000-call burst limit.
+            if count + if index == 19 { 2 } else { 1 } > 1_000 {
+                break;
+            }
             let sent = Instant::now();
-            let result = client.call(payload).await?;
-            samples.push(sent.elapsed());
-            if control {
-                controls += 1;
-                if result != "OK" {
-                    return Err("unexpected control result".into());
-                }
-            } else if result["status"] != "active" || result["connections"] != "1000" {
-                return Err(format!("download left active state: {result}").into());
+            let result = client.call(&payload).await?;
+            let elapsed = sent.elapsed();
+            samples.push(elapsed);
+            per_operation.entry(method).or_default().push(elapsed);
+            if let std::collections::btree_map::Entry::Vacant(entry) = response_bytes.entry(method)
+            {
+                entry.insert(serde_json::to_vec(&result)?.len());
             }
             count += 1;
+            match index {
+                0..=11 => {
+                    if result["status"] != "active" || result["connections"] != "1000" {
+                        return Err(format!("download left active state: {result}").into());
+                    }
+                }
+                12..=15 => {
+                    if result.as_array().map(Vec::len) != Some(PROJECTION_TASKS) {
+                        return Err("list projection cardinality changed".into());
+                    }
+                }
+                16 => {
+                    if result[0]["uris"].as_array().map(Vec::len) != Some(PROJECTION_SOURCES) {
+                        return Err("file projection cardinality changed".into());
+                    }
+                }
+                17 => {
+                    if result.as_array().map(Vec::len) != Some(PROJECTION_SOURCES) {
+                        return Err("URI projection cardinality changed".into());
+                    }
+                }
+                18 => {
+                    if !result.is_object() {
+                        return Err("option projection shape changed".into());
+                    }
+                }
+                _ => {
+                    auxiliary.verify(&mut client, result).await?;
+                    controls += 1;
+                    verification_calls += 1;
+                    count += 1;
+                }
+            }
         }
         let elapsed = start.elapsed();
+        if elapsed > Duration::from_millis(500) {
+            return Err(format!(
+                "{scenario} burst exceeded 500 ms: {} us",
+                elapsed.as_micros()
+            )
+            .into());
+        }
+        max_burst_calls = max_burst_calls.max(count);
         max_burst = max_burst.max(elapsed);
         measured_bursts += elapsed;
         observe(&barrier(origin, &mut client, false).await?)?;
@@ -1051,10 +1264,22 @@ async fn measure(scenario: &str) -> Result<()> {
     };
     samples.sort_unstable();
     let p99 = samples[(SAMPLES * 99 / 100) - 1];
+    let operations = latency_report(&mut per_operation);
+    let ordinary_pass = per_operation.values().all(|samples| {
+        samples[(samples.len() * 99).div_ceil(100) - 1] <= Duration::from_millis(50)
+    });
+    if events_released["controlRuntime"]["maxSteps"]
+        .as_u64()
+        .ok_or("owner step metric")?
+        > 32
+    {
+        return Err("owner exceeded its step budget".into());
+    }
     let measured_round_trips: Duration = samples.iter().copied().sum();
     let mut report = json!({"scenario":scenario,"profile":"concurrency","ranges":RANGES,"samples":samples.len(),"controlCalls":controls,"bursts":bursts,"cooldownMs":250,
         "os":std::env::consts::OS,"arch":std::env::consts::ARCH,"origins":RANGES / RANGES_PER_ORIGIN,"workerThreads":2,
-        "burstLimitCalls":1000,"burstLimitMs":500,"measuredBurstUs":measured_bursts.as_micros(),"measuredRoundTripUs":measured_round_trips.as_micros(),
+        "burstLimitCalls":1000,"burstLimitMs":500,"launchCutoffMs":BURST_LAUNCH_MS,"maxBurstCalls":max_burst_calls,"verificationCalls":verification_calls,"operations":operations,"firstResponseBytes":response_bytes,
+        "projectionTasks":PROJECTION_TASKS,"metadataSources":PROJECTION_SOURCES,"auxiliaryMutationTargets":1,"controlRuntime":events_released["controlRuntime"],"measuredBurstUs":measured_bursts.as_micros(),"measuredRoundTripUs":measured_round_trips.as_micros(),
         "p50Us":samples[SAMPLES / 2].as_micros(),"p99Us":p99.as_micros(),"maxBurstMs":max_burst.as_millis(),
         "maxSampledRssBytes":max_rss,"maxRpcBytes":max_rpc,"maxResidentBytes":max_resident,
         "rpcLimit":retained["rpcLimit"],"residentLimit":retained["residentLimit"],"rssLimit":retained["rssLimit"],
@@ -1062,19 +1287,27 @@ async fn measure(scenario: &str) -> Result<()> {
         "stalledEventCreditBytes":released["rpc"].as_u64().unwrap().saturating_sub(events_released["rpc"].as_u64().unwrap()),
         "stalledEvents":"WebSocket; coalesced 512 KiB fixture notifications through production broker",
         "stdioStalledWriter":"loopback socket; measured stdio uses OS pipes","renewedBarrierAfterWarmup":true,"perStatusRangeCheck":true});
+    let shutdown_started = Instant::now();
     client.call(&request("aria2.shutdown", json!([]))).await?;
+    report["shutdownAcknowledgementUs"] = json!(shutdown_started.elapsed().as_micros());
     eprintln!("benchmark {scenario}: shutdown acknowledged");
     drop(client);
     let status = tokio::time::timeout(Duration::from_secs(15), child.wait()).await??;
+    report["shutdownDrainUs"] = json!(shutdown_started.elapsed().as_micros());
+    report["shutdownDrainBoundary"] = json!("engine process exit");
     let stderr = tokio::time::timeout(Duration::from_secs(5), errors).await??;
     if !status.success() {
         return Err(format!("engine shutdown {status}: {stderr}").into());
     }
+    let cleanup_started = Instant::now();
     tokio::time::timeout(Duration::from_secs(5), origin_child.kill()).await??;
     tokio::time::timeout(Duration::from_secs(5), origin_errors).await??;
+    report["fixtureCleanupUs"] = json!(cleanup_started.elapsed().as_micros());
     report["elapsedScenarioMs"] = json!(scenario_started.elapsed().as_millis());
+    report["complete"] = json!(samples.len() == SAMPLES);
+    report["passed"] = json!(ordinary_pass && p99 <= Duration::from_millis(50));
     println!("{report}");
-    if p99 > Duration::from_millis(50) {
+    if !ordinary_pass || p99 > Duration::from_millis(50) {
         return Err("p99 exceeded 50 ms".into());
     }
     Ok(())

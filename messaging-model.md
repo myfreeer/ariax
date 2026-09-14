@@ -2,9 +2,10 @@
 
 Status: item+byte queue credit, close-time ownership return and move-only
 reserved completions are integrated with the session owner, blocking disk lane
-and HTTP/RPC paths. Tokio transport waits and bounded shutdown are executable.
-Specialized hot-lane adapters and the full urgent/bulk control fairness contract
-remain open; `implementation-readiness.md` tracks the control progress gates.
+and HTTP/RPC paths. Tokio transport waits, bounded shutdown, and the managed
+urgent/bulk control runtime are executable. Immutable queries use separate
+bounded projection slots. Specialized hot-lane adapters remain roadmap work;
+`implementation-readiness.md` tracks validation and platform gates.
 
 Decision: keep Rust as the implementation language, but do not use one generic
 channel everywhere. The downloader uses bounded, lane-specific queues. Hot data
@@ -55,23 +56,32 @@ None of the selected queue crates is priority-capable, so control-plane priority
 is achieved structurally rather than by ordering within one channel. The
 scheduler input is three separately bounded sources:
 
-- `control_urgent` (externally produced pause/remove/cancel/position commands),
-- `control_bulk` (adds and long status scans),
+- `control_urgent` (per-task pause/resume/remove/result-removal/position commands),
+- `control_bulk` (adds, configuration/source changes, and bulk controls),
 - internal completion lanes (`CompletionDrain` outcomes and journal/durability
   acknowledgements), which are permit-reserved and are never enqueued by
   external RPC/CLI/API producers.
 
-Externally produced urgent commands have bounded admission: the transport layer
+Externally produced urgent commands have bounded admission: the managed runtime
 coalesces duplicate per-task requests whose semantics allow it (a second
 `pause` of the same gid merges; `remove` supersedes a queued `pause`; `force`
 upgrades a queued non-force twin) and rejects the remainder with a typed
-busy error when the urgent queue is full. Because at most one coalesced
-urgent command per `(gid, kind-class)` plus a small unkeyed reserve is
-admitted, external producers cannot occupy the reserved internal lanes, and
+busy error when the urgent queue is full. Coalescing cannot cross an intervening
+control for the same task; every caller retains separate bounded reply and
+request credit. External producers cannot occupy the reserved internal lanes, and
 internal completions never wait behind an external burst. Admission
 backpressure for task creation applies only to `control_bulk`. Drain fairness
 is bounded-burst, not absolute priority; see `detailed-runtime.md` Queue
 Topology.
+
+The production runtime owns two bounded mailboxes under one short mutex,
+uses `Notify` for wakeups and `oneshot` for replies, and shares one 32-step,
+approximately 1 ms cooperative owner budget across progress helpers. Bulk
+controls capture identities once and advance at most one target per turn.
+Later accepted per-task controls supersede unfinished earlier bulk work.
+Accepted envelopes and pending replies retain the owner through disconnect.
+Queries capture an immutable root through a pointer-only publication lock and
+project outside the owner, using two shared query/configuration execution slots.
 
 Shutdown is not an ordinary queued command: it is delivered through an
 out-of-band `watch`/cancellation signal that every lane observes even when all
@@ -156,7 +166,8 @@ delivery never fails or blocks the reactor indefinitely.
 ## Default Topology
 
 ```text
-control/RPC -> Tokio bounded mpsc -> scheduler
+control/RPC -> bounded urgent/bulk mailboxes + Notify -> scheduler
+queries -> immutable root -> bounded projection jobs
 
 network worker shard -> bounded HotMpscLane -> disk submit lane
 disk workers/backend -> CompletionDrain<DiskWriteOutcome> -> storage/journal ack
@@ -265,7 +276,7 @@ The performance target is not "copy Rust values between threads". It is:
 ## Selection Matrix
 
 ```text
-control async command      tokio::sync::mpsc bounded (split urgent/bulk lanes)
+control async command      bounded urgent/bulk mailboxes + Tokio Notify
 one-shot reply             tokio::sync::oneshot
 state watch                tokio::sync::watch or snapshot atomics
 shutdown/cancel signal     out-of-band watch/cancellation token, never a queued slot

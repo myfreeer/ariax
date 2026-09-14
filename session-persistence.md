@@ -816,7 +816,11 @@ URI strings. Credential placeholders remain explicit and cannot become runnable
 URIs through export/import. Remote callers cannot supply filesystem paths.
 
 Import parses and validates the entire bounded document and reserves admission
-capacity before publishing tasks. New task journals are prepared before one
+capacity before publishing tasks. One bounded filesystem job captures the
+configuration and policy, validates every member, then prepares journals outside
+the mutable owner. Existing tasks and urgent controls can progress during this
+preparation. Publication enters the import fence and revalidates queue positions
+against the current scheduler one member per turn. New task journals are prepared before one
 session-owner transaction installs the batch metadata; scheduler publication
 follows that transaction. Invalid input publishes no task prefix. Uncertain
 accepted persistence faults the driver for recovery. JSON import retains its
@@ -828,7 +832,9 @@ subject to the shared RPC and scheduler limits. Its first task-persistence
 effect installs every task, source set, and current option map in one SQLite
 transaction. Subsequent member effects compare the exact committed metadata
 before scheduler publication. The owner retains the complete import and its
-reservations while these effects drain, allowing queries but no interleaved
+reservations while these effects drain. Journal installation uses nonblocking
+session submissions and completion polling; final batch-plan construction runs
+outside the owner. The publication fence allows immutable queries but no interleaved
 queue mutations or worker admissions. A disconnect does not cancel an accepted
 batch. A crash before the transaction publishes no imported metadata; a crash
 after commit recovers the complete batch from SQLite and the prepared journals.

@@ -297,15 +297,33 @@ durable mutation. One scheduler chain executes at a time; pending source and
 option intents retain their existing client and profile reservations. Normal
 shutdown drains accepted work within the supervisor's shutdown allowance before
 taking ownership of the engine for teardown. Failure to drain leaves a dirty
-shutdown that requires recovery. Other synchronous mutation paths and bulk
-operations still require bounded progress under `P4-11`.
-Queries read the published root without first driving persistence, but result
-projection still executes inside `HttpControlPlane::call_shared_with_context`
-while it holds the control-owner mutex. Moving immutable query projection
-outside that owner remains an open `P4-11` requirement. The native Windows
-active-range benchmark passes for status calls and global-template mutations;
-it does not establish bounded progress for other synchronous or bulk mutations.
-Native Linux benchmark acceptance is deferred until CI is ready. See
+shutdown that requires recovery.
+
+Production RPC, CLI and typed Rust calls share one managed progress runtime.
+Its urgent and bulk mailboxes apply profile capacities, bounded-burst fairness,
+and coalescing that preserves intervening per-task actions. Bulk operations
+capture task identities once and advance at most one target per owner turn;
+later accepted per-task pause, resume or remove supersedes unfinished earlier
+bulk work. The owner shares a 32-step, approximately 1 ms cooperative turn
+budget across completion and mutation helpers. Persistence preludes use owned
+nonblocking submissions and completion polling. Shutdown closes admission under
+the mailbox lock and signals out of band. Accepted envelopes and pending
+replies retain the owner even after the last caller/backend handle disappears.
+
+Queries capture an immutable root through a pointer-only publication lock and
+project outside the mutable owner. Applied identities bind status and membership
+to the matching source, option and configuration snapshots; GID prefix lookup
+uses the ordered index. Two shared query/configuration slots bound execution,
+and query jobs retain snapshot and result-workspace credit through cancellation.
+Live authenticated URI queries retain live URI text; exports use sanitized
+persistence metadata. The compatibility `call_shared` adapter briefly acquires
+the owner to attach the shared backend. Reusing a backend or typed engine handle
+avoids that attachment lock; projection itself never holds it.
+
+Admission/import preparation and configuration validation also execute outside
+the owner. Atomic import revalidates current queue positions and fences mutation
+publication while immutable queries remain available. Native Linux benchmark
+acceptance stays deferred until CI is ready. See
 [measurement evidence](performance-profiles.md#native-windows-control-plane-evidence).
 
 `system.multicall` is bounded but not transactional. Inner calls execute in

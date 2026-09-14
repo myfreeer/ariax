@@ -59,8 +59,7 @@ impl HttpControlPlane {
         }
         let current: std::collections::BTreeSet<_> =
             active.iter().map(|(task, _)| task.gid).collect();
-        self.slow_observations
-            .retain(|gid, _| current.contains(gid));
+        Arc::make_mut(&mut self.slow_observations).retain(|gid, _| current.contains(gid));
         let global_limited = self
             .global_options
             .get("max-overall-download-limit")
@@ -70,8 +69,7 @@ impl HttpControlPlane {
             let Some(spec) = self.tasks.get_gid(task.gid) else {
                 continue;
             };
-            let observation = self
-                .slow_observations
+            let observation = Arc::make_mut(&mut self.slow_observations)
                 .entry(task.gid)
                 .or_insert(SlowObservation {
                     generation: task.generation,
@@ -128,80 +126,7 @@ impl HttpControlPlane {
             },
         }
         .for_task(task.task_id);
-        self.prepare_runtime_event(&event, now)?;
-        self.engine
-            .handle_event_at(&event, now)
-            .map_err(|error| HttpControlError::Scheduler(format!("{error:?}")))?;
-        Ok(())
-    }
-
-    pub(super) fn add_slot_diagnostics(
-        &self,
-        value: &mut Value,
-        snapshot: &TaskSnapshot,
-        stats: HttpTransferStatsSnapshot,
-    ) {
-        let Some(task) =
-            self.engine.scheduler().task(snapshot.gid).filter(|task| {
-                task.generation == snapshot.generation && task.state == snapshot.state
-            })
-        else {
-            return;
-        };
-        let slot_state = match task.state {
-            TaskState::WaitingSlow => "waitingSlow",
-            TaskState::PausedSlow => "pausedSlow",
-            TaskState::Paused => "pausedUser",
-            TaskState::RetryWait => "retryWait",
-            TaskState::Active if stats.retry_wait_until.is_some() => "retryWait",
-            TaskState::Active => "active",
-            TaskState::StoppedResult => "stopped",
-            _ => "waiting",
-        };
-        let reason = if stats.local_pressure
-            || matches!(
-                stats.connection_condition,
-                ConnectionCondition::Backpressured | ConnectionCondition::RateLimited
-            ) {
-            "backpressure"
-        } else if matches!(task.state, TaskState::WaitingSlow | TaskState::PausedSlow) {
-            "remoteSlow"
-        } else if slot_state == "retryWait" {
-            "retryWait"
-        } else if task.desired_paused {
-            "user"
-        } else if stats.connection_condition == ConnectionCondition::Stalled {
-            "stalled"
-        } else {
-            "none"
-        };
-        let now = MonotonicInstant::now();
-        let slow_since = self
-            .slow_observations
-            .get(&task.gid)
-            .and_then(|observation| observation.slow_since)
-            .map_or(0, |since| {
-                now_unix_ms().saturating_sub(now.duration_since(since).as_millis() as u64)
-            });
-        let readmit_after = task.slow_slot.map_or(0, |slot| {
-            slot.decision.readmit_at.duration_since(now).as_millis() as u64
-        });
-        if let Some(object) = value.as_object_mut() {
-            object.extend([
-                ("slotState".to_owned(), json!(slot_state)),
-                ("slotReason".to_owned(), json!(reason)),
-                ("slowSince".to_owned(), json!(slow_since.to_string())),
-                (
-                    "demotionCount".to_owned(),
-                    json!(task.slow_demotion_count.to_string()),
-                ),
-                ("readmitAfter".to_owned(), json!(readmit_after.to_string())),
-                (
-                    "retryWaitConsumesSlot".to_owned(),
-                    json!(task.slot.owns_slot()),
-                ),
-            ]);
-        }
+        self.prepare_and_begin_event(event, now)
     }
 }
 

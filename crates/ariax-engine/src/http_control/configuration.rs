@@ -1,14 +1,363 @@
 use super::*;
-use std::fmt::Write as _;
 
-struct Candidate {
+pub(super) struct Candidate {
     flat: BTreeMap<String, String>,
     rules: Arc<ariax_config::UrlRules>,
     warnings: usize,
 }
 
+struct PreparedConfiguration {
+    flat: Arc<BTreeMap<String, String>>,
+    rpc: Arc<BTreeMap<String, String>>,
+    effective: Arc<BTreeMap<String, String>>,
+    rules: Arc<ariax_config::UrlRules>,
+    scheduling: crate::SlowSlotConfig,
+    previous_generation: u64,
+    result: Value,
+    charge: crate::rpc_budget::RpcByteCharge,
+}
+
+pub(super) struct PendingConfiguration {
+    receiver: std::sync::mpsc::Receiver<Result<PreparedConfiguration, HttpControlError>>,
+    reply: oneshot::Sender<Result<Value, HttpControlError>>,
+    _request: crate::rpc_budget::RpcRequestLease,
+}
+
 impl HttpControlPlane {
-    fn parse_configuration(
+    pub(super) fn begin_configuration(
+        &mut self,
+        method: &str,
+        params: Value,
+        request: crate::rpc_budget::RpcRequestLease,
+    ) -> Result<ControlReply, HttpControlError> {
+        if self.pending_configuration.is_some()
+            || self.pending_admission.is_some()
+            || self.admission_fenced()
+        {
+            return Err(HttpControlError::Busy);
+        }
+        let slot = self.queries.reserve_projection()?;
+        let configuration = self.configuration_snapshot();
+        let owner = self.owner_client.clone();
+        let retained = request.clone();
+        let reload = method == "ariax.reloadConfig";
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        std::thread::Builder::new()
+            .name("ariax-configuration".to_owned())
+            .spawn(move || {
+                let (_slot, _retained) = (slot, retained);
+                let result = configuration.prepare_configuration(params, reload, &owner);
+                let _ = sender.send(result);
+            })
+            .map_err(|_| HttpControlError::Busy)?;
+        let (reply, response) = oneshot::channel();
+        self.pending_configuration = Some(PendingConfiguration {
+            receiver,
+            reply,
+            _request: request,
+        });
+        Ok(ControlReply::Deferred(response))
+    }
+
+    pub(super) fn poll_configuration(&mut self) {
+        if !self.engine_idle() || self.pending_mutation.is_some() || self.admission_fenced() {
+            return;
+        }
+        let Some(pending) = self.pending_configuration.take() else {
+            return;
+        };
+        let prepared = match pending.receiver.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                self.pending_configuration = Some(pending);
+                return;
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(HttpControlError::Persistence(
+                "configuration preparation stopped".to_owned(),
+            )),
+        };
+        let result = prepared.and_then(|prepared| self.publish_configuration(prepared));
+        self.turn.mark_progress();
+        if result.is_ok() {
+            self.publish_query();
+        }
+        let _ = pending.reply.send(result);
+    }
+
+    fn publish_configuration(
+        &mut self,
+        prepared: PreparedConfiguration,
+    ) -> Result<Value, HttpControlError> {
+        if self.config_generation != prepared.previous_generation {
+            return Err(HttpControlError::InvalidParams(
+                "stale configuration generation",
+            ));
+        }
+        if let Some(value) = prepared.effective.get("max-overall-download-limit") {
+            self.apply_global_download_limit(value)?;
+        }
+        self.engine
+            .configure_queue_policies(
+                prepared.scheduling.retry_wait == crate::RetryWaitSlotPolicy::Retain,
+                prepared.scheduling.readmit_policy,
+            )
+            .map_err(|_| HttpControlError::Busy)?;
+        self.scheduling.replace(prepared.scheduling);
+        if prepared.scheduling.policy == crate::SlowSlotPolicy::Off {
+            self.slow_observations = Arc::new(BTreeMap::new());
+        }
+        self.global_options = prepared.effective;
+        self.flat_options = prepared.flat;
+        self.rpc_template = prepared.rpc;
+        self.url_rules = prepared.rules;
+        self.config_generation = prepared.previous_generation + 1;
+        self.config_charge = Some(prepared.charge);
+        Ok(prepared.result)
+    }
+
+    pub(super) fn check_config(&self, params: Value) -> Result<Value, HttpControlError> {
+        self.configuration_snapshot().check_config(params)
+    }
+
+    pub(super) fn apply_global_download_limit(
+        &self,
+        canonical: &str,
+    ) -> Result<(), HttpControlError> {
+        let bytes = canonical
+            .parse::<u64>()
+            .map_err(|_| HttpControlError::InvalidConfig)?;
+        if let Some(rate) = &self.global_download_rate {
+            rate.set_global_limit(RateLimit::per_second(bytes))
+                .map_err(|_| HttpControlError::InvalidConfig)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn configuration_command_bytes(
+        &self,
+        method: &str,
+        params: &Value,
+    ) -> Result<usize, HttpControlError> {
+        self.configuration_snapshot()
+            .configuration_command_bytes(method, params)
+    }
+
+    pub(super) fn dump_config(&self, params: Value) -> Result<Value, HttpControlError> {
+        self.capture_query().dump_config(params)
+    }
+}
+
+pub(super) fn layer_owns_option(layer: &BTreeMap<String, String>, key: &str) -> bool {
+    layer.contains_key(key)
+        || (is_retry_option(key) && layer.contains_key("retry-profile"))
+        || (matches!(key, "max-tries" | "retry-max-attempts")
+            && (layer.contains_key("max-tries") || layer.contains_key("retry-max-attempts")))
+        || (key == "retry-on-http-status"
+            && (layer.contains_key("retry-on-http-status-add")
+                || layer.contains_key("retry-on-http-status-remove")))
+}
+
+pub(super) fn discard_inherited_retry(name: &str, has: impl Fn(&str) -> bool) -> bool {
+    (has("retry-profile") && is_retry_option(name))
+        || (name == "max-tries" && has("retry-max-attempts") && !has("max-tries"))
+        || (name == "retry-max-attempts" && has("max-tries") && !has("retry-max-attempts"))
+}
+
+fn merge_layer(current: &mut BTreeMap<String, String>, next: &BTreeMap<String, String>) {
+    current.retain(|name, _| !discard_inherited_retry(name, |key| next.contains_key(key)));
+    current.extend(next.clone());
+}
+
+fn merge_resolved_layer(
+    current: &mut BTreeMap<String, String>,
+    next: &BTreeMap<String, String>,
+) -> Result<(), HttpControlError> {
+    merge_layer(current, next);
+    if next.keys().any(|name| is_retry_option(name)) {
+        let values = current
+            .iter()
+            .filter(|(name, _)| is_retry_option(name))
+            .map(|(name, value)| (name.clone(), Value::String(value.clone())))
+            .collect();
+        let options = HttpTaskOptions {
+            retry: Some(parse_retry_options(&values)?),
+            ..HttpTaskOptions::default()
+        }
+        .sanitized()
+        .map_err(HttpControlError::TaskSpec)?;
+        current.retain(|name, _| !is_retry_option(name));
+        current.extend(
+            options
+                .entries()
+                .filter(|(name, _)| is_retry_option(name))
+                .map(|(name, value)| (name.to_owned(), value.to_owned())),
+        );
+    }
+    Ok(())
+}
+
+fn map_bytes(values: &BTreeMap<String, String>) -> usize {
+    values
+        .iter()
+        .map(|(name, value)| {
+            name.capacity()
+                .saturating_add(value.capacity())
+                .saturating_add(512)
+        })
+        .sum()
+}
+
+impl super::query::ConfigurationSnapshot {
+    fn prepare_configuration(
+        &self,
+        params: Value,
+        reload: bool,
+        owner: &crate::RpcClientBudget,
+    ) -> Result<PreparedConfiguration, HttpControlError> {
+        let (flat, rpc, rules, result) = if reload {
+            let candidate = self.parse_configuration(&params, true)?;
+            let result = json!({"reloaded":true, "options":candidate.flat.len(), "warnings":candidate.warnings,
+                "configGeneration": self.config_generation.checked_add(1).ok_or(HttpControlError::InvalidConfig)?});
+            (
+                candidate.flat,
+                (*self.rpc_template).clone(),
+                candidate.rules,
+                result,
+            )
+        } else {
+            let values = params.as_array().filter(|values| values.len() == 1).ok_or(
+                HttpControlError::InvalidParams("changeGlobalOption requires one option object"),
+            )?;
+            let patch = parse_registry_options(&values[0], Scope::RpcGlobal)?;
+            let mut rpc = (*self.rpc_template).clone();
+            merge_layer(
+                &mut rpc,
+                &patch
+                    .into_iter()
+                    .map(|(name, entry)| (name, entry.canonical))
+                    .collect(),
+            );
+            (
+                (*self.flat_options).clone(),
+                rpc,
+                self.url_rules.clone(),
+                Value::String("OK".to_owned()),
+            )
+        };
+        let validate = || -> Result<_, HttpControlError> {
+            let mut effective = default_global_options()?;
+            merge_resolved_layer(&mut effective, &flat)?;
+            merge_resolved_layer(&mut effective, &rpc)?;
+            self.validate_template(&effective)?;
+            let scheduling = crate::SlowSlotConfig::from_options(&effective)?;
+            for rule in rules.rules() {
+                let mut candidate = flat.clone();
+                merge_resolved_layer(&mut candidate, rule.options())?;
+                merge_resolved_layer(&mut candidate, &rpc)?;
+                self.validate_template(&candidate)?;
+            }
+            self.config_generation
+                .checked_add(1)
+                .ok_or(HttpControlError::InvalidConfig)?;
+            Ok((effective, scheduling))
+        };
+        let (effective, scheduling) = validate().map_err(|error| {
+            if !reload
+                && matches!(
+                    error,
+                    HttpControlError::InvalidParams(_) | HttpControlError::TaskSpec(_)
+                )
+            {
+                rejected_option_names(
+                    params[0].as_object().expect("validated patch").keys(),
+                    OptionPatchRejectReason::InvalidValue,
+                )
+            } else {
+                error
+            }
+        })?;
+        // Current configuration storage and publication pointers are charged
+        // before installation; readers retaining older generations add their
+        // own conservative retention charge.
+        let bytes = rules
+            .owned_bytes()
+            .saturating_add(map_bytes(&flat))
+            .saturating_add(map_bytes(&rpc))
+            .saturating_add(map_bytes(&effective))
+            .saturating_add(4096)
+            .saturating_add(
+                if scheduling.policy != crate::SlowSlotPolicy::Off
+                    || scheduling.retry_wait == crate::RetryWaitSlotPolicy::Auto
+                {
+                    self.config.task_capacity.get().saturating_mul(512)
+                } else {
+                    0
+                },
+            );
+        let charge = owner.charge(bytes).map_err(|_| HttpControlError::Busy)?;
+        Ok(PreparedConfiguration {
+            flat: Arc::new(flat),
+            rpc: Arc::new(rpc),
+            effective: Arc::new(effective),
+            rules,
+            scheduling,
+            previous_generation: self.config_generation,
+            result,
+            charge,
+        })
+    }
+
+    pub(super) fn merged_add_options(
+        &self,
+        explicit: Value,
+        uris: &[String],
+        input_file: bool,
+    ) -> Result<Value, HttpControlError> {
+        let explicit = explicit.as_object().ok_or(HttpControlError::InvalidParams(
+            "addUri options must be an object",
+        ))?;
+        let explicit = explicit
+            .iter()
+            .map(|(name, value)| Ok((name.clone(), option_input_text(value)?)))
+            .collect::<Result<BTreeMap<_, _>, HttpControlError>>()?;
+        let mut options = BTreeMap::new();
+        let flat = self
+            .flat_options
+            .iter()
+            .filter(|(key, _)| is_executable_download_option(key))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        merge_resolved_layer(&mut options, &flat)?;
+        if let Some(uri) = uris.first() {
+            let rules = self.url_rules.matching_rules(uri).map_err(|_| {
+                HttpControlError::InvalidParams("URL rule matching exceeded its limits")
+            })?;
+            for rule in rules {
+                merge_resolved_layer(&mut options, rule.options())?;
+            }
+        }
+        if input_file {
+            merge_resolved_layer(&mut options, &explicit)?;
+        }
+        let rpc = self
+            .rpc_template
+            .iter()
+            .filter(|(key, _)| is_executable_download_option(key))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        merge_resolved_layer(&mut options, &rpc)?;
+        if !input_file {
+            merge_resolved_layer(&mut options, &explicit)?;
+        }
+        Ok(Value::Object(
+            options
+                .into_iter()
+                .map(|(name, value)| (name, Value::String(value)))
+                .collect(),
+        ))
+    }
+
+    pub(super) fn parse_configuration(
         &self,
         params: &Value,
         reload: bool,
@@ -118,7 +467,10 @@ impl HttpControlPlane {
         })
     }
 
-    fn validate_template(&self, values: &BTreeMap<String, String>) -> Result<(), HttpControlError> {
+    pub(super) fn validate_template(
+        &self,
+        values: &BTreeMap<String, String>,
+    ) -> Result<(), HttpControlError> {
         crate::SlowSlotConfig::from_options(values)?;
         if values.keys().any(|name| !is_executable_global_option(name)) {
             return Err(HttpControlError::InvalidParams(
@@ -138,179 +490,11 @@ impl HttpControlPlane {
         Ok(())
     }
 
-    fn publish_configuration(
-        &mut self,
-        flat: BTreeMap<String, String>,
-        rpc: BTreeMap<String, String>,
-        rules: Arc<ariax_config::UrlRules>,
-    ) -> Result<(), HttpControlError> {
-        let mut effective = default_global_options()?;
-        merge_resolved_layer(&mut effective, &flat)?;
-        merge_resolved_layer(&mut effective, &rpc)?;
-        self.validate_template(&effective)?;
-        let scheduling = crate::SlowSlotConfig::from_options(&effective)?;
-        if !self.engine.is_idle() {
-            return Err(HttpControlError::Busy);
-        }
-        for rule in rules.rules() {
-            let mut candidate = flat.clone();
-            merge_resolved_layer(&mut candidate, rule.options())?;
-            merge_resolved_layer(&mut candidate, &rpc)?;
-            self.validate_template(&candidate)?;
-        }
-        let generation = self
-            .config_generation
-            .checked_add(1)
-            .ok_or(HttpControlError::InvalidConfig)?;
-        let bytes = rules
-            .owned_bytes()
-            .saturating_add(map_bytes(&flat))
-            .saturating_add(map_bytes(&rpc))
-            .saturating_add(map_bytes(&effective))
-            .saturating_add(4096)
-            .saturating_add(
-                if scheduling.policy != crate::SlowSlotPolicy::Off
-                    || scheduling.retry_wait == crate::RetryWaitSlotPolicy::Auto
-                {
-                    self.config.task_capacity.get().saturating_mul(512)
-                } else {
-                    0
-                },
-            );
-        let charge = self
-            .owner_client
-            .charge(bytes)
-            .map_err(|_| HttpControlError::Busy)?;
-        if let Some(value) = effective.get("max-overall-download-limit") {
-            self.apply_global_download_limit(value)?;
-        }
-        self.engine
-            .configure_queue_policies(
-                scheduling.retry_wait == crate::RetryWaitSlotPolicy::Retain,
-                scheduling.readmit_policy,
-            )
-            .map_err(|_| HttpControlError::Busy)?;
-        self.scheduling.replace(scheduling);
-        if scheduling.policy == crate::SlowSlotPolicy::Off {
-            self.slow_observations.clear();
-        }
-        self.global_options = effective;
-        self.flat_options = flat;
-        self.rpc_template = rpc;
-        self.url_rules = rules;
-        self.config_generation = generation;
-        self.config_charge = Some(charge);
-        Ok(())
-    }
-
-    pub(super) fn change_global_option(
-        &mut self,
-        params: Value,
-    ) -> Result<Value, HttpControlError> {
-        let values = params.as_array().filter(|values| values.len() == 1).ok_or(
-            HttpControlError::InvalidParams("changeGlobalOption requires one option object"),
-        )?;
-        let patch = parse_registry_options(&values[0], Scope::RpcGlobal)?;
-        let mut next = self.rpc_template.clone();
-        merge_layer(
-            &mut next,
-            &patch
-                .into_iter()
-                .map(|(name, entry)| (name, entry.canonical))
-                .collect(),
-        );
-        self.publish_configuration(self.flat_options.clone(), next, self.url_rules.clone())
-            .map_err(|error| match error {
-                HttpControlError::InvalidParams(_) | HttpControlError::TaskSpec(_) => {
-                    rejected_option_names(
-                        values[0].as_object().expect("validated patch").keys(),
-                        ariax_core::OptionPatchRejectReason::InvalidValue,
-                    )
-                }
-                other => other,
-            })?;
-        Ok(Value::String("OK".to_owned()))
-    }
-
     pub(super) fn check_config(&self, params: Value) -> Result<Value, HttpControlError> {
         let candidate = self.parse_configuration(&params, false)?;
         Ok(
             json!({"valid":true, "options":candidate.flat.len(), "warnings":candidate.warnings, "configGeneration":self.config_generation}),
         )
-    }
-
-    pub(super) fn reload_config(&mut self, params: Value) -> Result<Value, HttpControlError> {
-        let candidate = self.parse_configuration(&params, true)?;
-        let count = candidate.flat.len();
-        let warnings = candidate.warnings;
-        self.publish_configuration(candidate.flat, self.rpc_template.clone(), candidate.rules)?;
-        Ok(
-            json!({"reloaded":true, "options":count, "warnings":warnings, "configGeneration":self.config_generation}),
-        )
-    }
-
-    pub(super) fn apply_global_download_limit(
-        &self,
-        canonical: &str,
-    ) -> Result<(), HttpControlError> {
-        let bytes = canonical
-            .parse::<u64>()
-            .map_err(|_| HttpControlError::InvalidConfig)?;
-        if let Some(rate) = &self.global_download_rate {
-            rate.set_global_limit(RateLimit::per_second(bytes))
-                .map_err(|_| HttpControlError::InvalidConfig)?;
-        }
-        Ok(())
-    }
-
-    pub(super) fn merged_add_options(
-        &self,
-        explicit: Value,
-        uris: &[String],
-        input_file: bool,
-    ) -> Result<Value, HttpControlError> {
-        let explicit = explicit.as_object().ok_or(HttpControlError::InvalidParams(
-            "addUri options must be an object",
-        ))?;
-        let explicit = explicit
-            .iter()
-            .map(|(name, value)| Ok((name.clone(), option_input_text(value)?)))
-            .collect::<Result<BTreeMap<_, _>, HttpControlError>>()?;
-        let mut options = BTreeMap::new();
-        let flat = self
-            .flat_options
-            .iter()
-            .filter(|(key, _)| is_executable_download_option(key))
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect();
-        merge_resolved_layer(&mut options, &flat)?;
-        if let Some(uri) = uris.first() {
-            let rules = self.url_rules.matching_rules(uri).map_err(|_| {
-                HttpControlError::InvalidParams("URL rule matching exceeded its limits")
-            })?;
-            for rule in rules {
-                merge_resolved_layer(&mut options, rule.options())?;
-            }
-        }
-        if input_file {
-            merge_resolved_layer(&mut options, &explicit)?;
-        }
-        let rpc = self
-            .rpc_template
-            .iter()
-            .filter(|(key, _)| is_executable_download_option(key))
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect();
-        merge_resolved_layer(&mut options, &rpc)?;
-        if !input_file {
-            merge_resolved_layer(&mut options, &explicit)?;
-        }
-        Ok(Value::Object(
-            options
-                .into_iter()
-                .map(|(name, value)| (name, Value::String(value)))
-                .collect(),
-        ))
     }
 
     pub(super) fn configuration_command_bytes(
@@ -363,185 +547,6 @@ impl HttpControlPlane {
             .saturating_add(self.url_rules.max_options_bytes())
             .saturating_mul(12)
     }
-
-    pub(super) fn dump_config(&self, params: Value) -> Result<Value, HttpControlError> {
-        let args = params.as_array().filter(|args| args.len() <= 3).ok_or(
-            HttpControlError::InvalidParams("dumpConfig accepts mode, format, and optional GID"),
-        )?;
-        let mode = args
-            .first()
-            .map(|value| {
-                value
-                    .as_str()
-                    .ok_or(HttpControlError::InvalidParams("dump mode must be text"))
-            })
-            .transpose()?
-            .unwrap_or("effective");
-        let format = args
-            .get(1)
-            .map(|value| {
-                value
-                    .as_str()
-                    .ok_or(HttpControlError::InvalidParams("dump format must be text"))
-            })
-            .transpose()?
-            .unwrap_or("legacy");
-        if !matches!(format, "legacy" | "flat" | "json" | "toml") {
-            return Err(HttpControlError::InvalidParams("unknown dump format"));
-        }
-        if mode == "url-rules" {
-            return match format {
-                "json" | "legacy" => {
-                    crate::rpc_result::to_value(self.url_rules.as_ref(), RESULT_VALUE_BYTES)
-                        .map_err(Into::into)
-                }
-                "toml" => self
-                    .url_rules
-                    .to_toml()
-                    .map(Value::String)
-                    .map_err(|_| HttpControlError::InvalidConfig),
-                _ => Err(HttpControlError::InvalidParams(
-                    "URL rules require JSON or TOML format",
-                )),
-            };
-        }
-        let options =
-            match mode {
-                "effective" => self.global_options.clone(),
-                "defaults" => default_global_options()?,
-                "task-effective" => {
-                    let gid = args.get(2).and_then(Value::as_str).ok_or(
-                        HttpControlError::InvalidParams("task-effective dump requires a GID"),
-                    )?;
-                    let gid = self.resolve_gid_text(gid)?;
-                    let spec = self.tasks.get_gid(gid).ok_or(HttpControlError::NotFound)?;
-                    spec.persistence_options()
-                        .map_err(HttpControlError::TaskSpec)?
-                        .entries()
-                        .map(|(name, value)| (name.to_owned(), value.to_owned()))
-                        .collect()
-                }
-                _ => return Err(HttpControlError::InvalidParams("unknown dump mode")),
-            };
-        if format == "legacy" {
-            return string_map_value(
-                options
-                    .iter()
-                    .map(|(key, value)| (key.as_str(), value.as_str())),
-            )
-            .map_err(Into::into);
-        }
-        let sources = options
-            .keys()
-            .map(|key| {
-                (
-                    key.clone(),
-                    if mode == "task-effective" {
-                        "task"
-                    } else if mode == "defaults" {
-                        "default"
-                    } else if layer_owns_option(&self.rpc_template, key) {
-                        "rpc"
-                    } else if layer_owns_option(&self.flat_options, key) {
-                        "config"
-                    } else {
-                        "default"
-                    },
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-        if format == "json" {
-            return Ok(
-                json!({"configGeneration":self.config_generation, "options":options, "sources":sources}),
-            );
-        }
-        let mut output = String::from("# Generated Ariax configuration\n");
-        if format == "toml" {
-            writeln!(
-                output,
-                "configGeneration = {}\n[options]",
-                self.config_generation
-            )
-            .expect("string");
-        }
-        for (name, value) in &options {
-            if format == "toml" {
-                writeln!(output, "{} = {}", json!(name), json!(value)).expect("string");
-            } else {
-                writeln!(output, "{name}={value}").expect("string");
-            }
-        }
-        if format == "toml" {
-            output.push_str("[sources]\n");
-            for (name, source) in sources {
-                writeln!(output, "{} = {}", json!(name), json!(source)).expect("string");
-            }
-        }
-        if output.len() > crate::MAX_HTTP_RPC_RESPONSE_BYTES {
-            return Err(HttpControlError::ResponseTooLarge);
-        }
-        Ok(Value::String(output))
-    }
-}
-
-fn layer_owns_option(layer: &BTreeMap<String, String>, key: &str) -> bool {
-    layer.contains_key(key)
-        || (is_retry_option(key) && layer.contains_key("retry-profile"))
-        || (matches!(key, "max-tries" | "retry-max-attempts")
-            && (layer.contains_key("max-tries") || layer.contains_key("retry-max-attempts")))
-        || (key == "retry-on-http-status"
-            && (layer.contains_key("retry-on-http-status-add")
-                || layer.contains_key("retry-on-http-status-remove")))
-}
-
-pub(super) fn discard_inherited_retry(name: &str, has: impl Fn(&str) -> bool) -> bool {
-    (has("retry-profile") && is_retry_option(name))
-        || (name == "max-tries" && has("retry-max-attempts") && !has("max-tries"))
-        || (name == "retry-max-attempts" && has("max-tries") && !has("retry-max-attempts"))
-}
-
-fn merge_layer(current: &mut BTreeMap<String, String>, next: &BTreeMap<String, String>) {
-    current.retain(|name, _| !discard_inherited_retry(name, |key| next.contains_key(key)));
-    current.extend(next.clone());
-}
-
-fn merge_resolved_layer(
-    current: &mut BTreeMap<String, String>,
-    next: &BTreeMap<String, String>,
-) -> Result<(), HttpControlError> {
-    merge_layer(current, next);
-    if next.keys().any(|name| is_retry_option(name)) {
-        let values = current
-            .iter()
-            .filter(|(name, _)| is_retry_option(name))
-            .map(|(name, value)| (name.clone(), Value::String(value.clone())))
-            .collect();
-        let options = HttpTaskOptions {
-            retry: Some(parse_retry_options(&values)?),
-            ..HttpTaskOptions::default()
-        }
-        .sanitized()
-        .map_err(HttpControlError::TaskSpec)?;
-        current.retain(|name, _| !is_retry_option(name));
-        current.extend(
-            options
-                .entries()
-                .filter(|(name, _)| is_retry_option(name))
-                .map(|(name, value)| (name.to_owned(), value.to_owned())),
-        );
-    }
-    Ok(())
-}
-
-fn map_bytes(values: &BTreeMap<String, String>) -> usize {
-    values
-        .iter()
-        .map(|(name, value)| {
-            name.capacity()
-                .saturating_add(value.capacity())
-                .saturating_add(512)
-        })
-        .sum()
 }
 
 #[cfg(test)]

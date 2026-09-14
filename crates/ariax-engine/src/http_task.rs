@@ -630,6 +630,28 @@ pub struct HttpTaskSpec {
 }
 
 impl HttpTaskSpec {
+    fn retained_bytes(&self) -> usize {
+        let paths = self
+            .output_root
+            .as_os_str()
+            .len()
+            .saturating_mul(2)
+            .saturating_add(
+                self.output
+                    .components()
+                    .map(|part| part.len().saturating_add(128))
+                    .sum::<usize>(),
+            );
+        self.sources
+            .iter()
+            .fold(paths.saturating_add(2048), |bytes, source| {
+                bytes
+                    .saturating_add(256)
+                    .saturating_add(source.uri().map_or(0, str::len))
+                    .saturating_add(source.persistence_safe_uri().map_or(0, str::len))
+            })
+    }
+
     pub fn new(
         task: TaskId,
         gid: Gid,
@@ -871,20 +893,26 @@ impl fmt::Display for HttpTaskSpecError {
 
 impl Error for HttpTaskSpecError {}
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct HttpTaskCatalog {
     capacity: NonZeroUsize,
     by_task: BTreeMap<TaskId, Arc<HttpTaskSpec>>,
     by_gid: BTreeMap<Gid, TaskId>,
+    retained_bytes: usize,
 }
 
 impl HttpTaskCatalog {
+    pub(crate) const fn retained_bytes(&self) -> usize {
+        self.retained_bytes
+    }
+
     #[must_use]
     pub fn new(capacity: NonZeroUsize) -> Self {
         Self {
             capacity,
             by_task: BTreeMap::new(),
             by_gid: BTreeMap::new(),
+            retained_bytes: 0,
         }
     }
 
@@ -898,6 +926,7 @@ impl HttpTaskCatalog {
         if self.by_task.contains_key(&spec.task) || self.by_gid.contains_key(&spec.gid) {
             return Err(HttpTaskCatalogError::Collision);
         }
+        self.retained_bytes = self.retained_bytes.saturating_add(spec.retained_bytes());
         let spec = Arc::new(spec);
         self.by_gid.insert(spec.gid, spec.task);
         self.by_task.insert(spec.task, Arc::clone(&spec));
@@ -917,6 +946,7 @@ impl HttpTaskCatalog {
     pub fn remove(&mut self, task: TaskId) -> Option<Arc<HttpTaskSpec>> {
         let spec = self.by_task.remove(&task)?;
         self.by_gid.remove(&spec.gid);
+        self.retained_bytes = self.retained_bytes.saturating_sub(spec.retained_bytes());
         Some(spec)
     }
 
@@ -928,6 +958,10 @@ impl HttpTaskCatalog {
         {
             return Err(HttpTaskCatalogError::Collision);
         }
+        self.retained_bytes = self
+            .retained_bytes
+            .saturating_sub(self.by_task[&spec.task].retained_bytes())
+            .saturating_add(spec.retained_bytes());
         let spec = Arc::new(spec);
         self.by_task.insert(spec.task, Arc::clone(&spec));
         Ok(spec)
@@ -957,19 +991,24 @@ pub enum HttpTaskCatalogError {
 /// persisted for its task/GID pair.
 #[derive(Clone, Debug)]
 pub struct SharedHttpTaskCatalog {
-    inner: Arc<RwLock<HttpTaskCatalog>>,
+    inner: Arc<RwLock<Arc<HttpTaskCatalog>>>,
 }
 
 impl SharedHttpTaskCatalog {
+    /// Captures immutable metadata without copying task payloads.
+    pub(crate) fn snapshot(&self) -> Arc<HttpTaskCatalog> {
+        Arc::clone(&read_unpoisoned(&self.inner))
+    }
+
     #[must_use]
     pub fn new(capacity: NonZeroUsize) -> Self {
         Self {
-            inner: Arc::new(RwLock::new(HttpTaskCatalog::new(capacity))),
+            inner: Arc::new(RwLock::new(Arc::new(HttpTaskCatalog::new(capacity)))),
         }
     }
 
     pub fn insert(&self, spec: HttpTaskSpec) -> Result<Arc<HttpTaskSpec>, HttpTaskCatalogError> {
-        write_unpoisoned(&self.inner).insert(spec)
+        Arc::make_mut(&mut write_unpoisoned(&self.inner)).insert(spec)
     }
 
     #[must_use]
@@ -983,11 +1022,11 @@ impl SharedHttpTaskCatalog {
     }
 
     pub fn remove(&self, task: TaskId) -> Option<Arc<HttpTaskSpec>> {
-        write_unpoisoned(&self.inner).remove(task)
+        Arc::make_mut(&mut write_unpoisoned(&self.inner)).remove(task)
     }
 
     pub fn replace(&self, spec: HttpTaskSpec) -> Result<Arc<HttpTaskSpec>, HttpTaskCatalogError> {
-        write_unpoisoned(&self.inner).replace(spec)
+        Arc::make_mut(&mut write_unpoisoned(&self.inner)).replace(spec)
     }
 
     #[must_use]

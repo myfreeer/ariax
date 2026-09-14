@@ -78,6 +78,10 @@ pub struct BootstrappedEngine {
 }
 
 impl BootstrappedEngine {
+    pub(crate) fn persisted_option_policy(&self) -> Arc<dyn PersistedOptionPolicy + Send + Sync> {
+        self.option_policy.clone()
+    }
+
     /// Reuses the owner's exact policy before a caller creates admission artifacts.
     #[must_use]
     pub fn permits_persisted_options(&self, options: &ariax_storage::SanitizedOptionMap) -> bool {

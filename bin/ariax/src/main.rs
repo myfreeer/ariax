@@ -884,8 +884,12 @@ async fn wait_for_rpc_shutdown(
 async fn shutdown_rpc_backend(backend: Arc<HttpControlBackend>) -> Result<(), String> {
     let backend = Arc::try_unwrap(backend)
         .map_err(|_| "RPC transport retained a backend reference after drain".to_owned())?;
+    let drained = backend
+        .drain_control_runtime()
+        .await
+        .map_err(|error| error.to_string());
     let plane = backend.try_into_control_plane().map_err(|_| {
-        "RPC progress loop retained a control-plane reference after drain".to_owned()
+        "RPC control runtime retained a control-plane reference after drain".to_owned()
     })?;
     plane
         .shutdown_async()
@@ -893,7 +897,7 @@ async fn shutdown_rpc_backend(backend: Arc<HttpControlBackend>) -> Result<(), St
         .map_err(|error| error.to_string())
         .and_then(|report| {
             if report.is_clean() {
-                Ok(())
+                drained
             } else {
                 let failure = report
                     .shutdown()

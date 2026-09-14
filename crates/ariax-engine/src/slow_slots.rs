@@ -208,6 +208,7 @@ impl HttpSchedulingPolicy {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct SlowObservation {
     pub generation: Generation,
     pub active_since: MonotonicInstant,

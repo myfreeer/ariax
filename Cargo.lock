@@ -53,6 +53,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "publicsuffix",
+ "rusqlite",
  "rustix",
  "rustls",
  "rustls-native-certs",

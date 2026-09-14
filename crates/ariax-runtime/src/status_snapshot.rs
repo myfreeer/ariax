@@ -1,5 +1,6 @@
 use ariax_core::{
-    ALL_QUEUE_CLASSES, Gid, QueueClass, RequestScheduler, TaskId, TaskSnapshot, TaskState,
+    ALL_QUEUE_CLASSES, Gid, QueueClass, RequestScheduler, SchedulerTaskView, TaskId, TaskSnapshot,
+    TaskState,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -12,6 +13,15 @@ const QUEUE_COUNT: usize = 5;
 pub struct AppliedTaskSnapshot {
     pub task_id: TaskId,
     pub snapshot: TaskSnapshot,
+    scheduler: Option<SchedulerTaskView>,
+}
+
+impl AppliedTaskSnapshot {
+    /// Scheduler metadata captured at the same applied publication boundary.
+    #[must_use]
+    pub const fn scheduler(&self) -> Option<SchedulerTaskView> {
+        self.scheduler
+    }
 }
 
 /// One immutable, internally consistent status view.
@@ -20,6 +30,7 @@ pub struct StatusSnapshotRoot {
     revision: u64,
     tasks: BTreeMap<Gid, AppliedTaskSnapshot>,
     queues: [Arc<[Gid]>; QUEUE_COUNT],
+    changed_tasks: BTreeSet<Gid>,
 }
 
 impl StatusSnapshotRoot {
@@ -28,6 +39,7 @@ impl StatusSnapshotRoot {
             revision: 0,
             tasks: BTreeMap::new(),
             queues: std::array::from_fn(|_| Arc::from([])),
+            changed_tasks: BTreeSet::new(),
         }
     }
 
@@ -54,6 +66,12 @@ impl StatusSnapshotRoot {
     #[must_use]
     pub fn tasks(&self) -> &BTreeMap<Gid, AppliedTaskSnapshot> {
         &self.tasks
+    }
+
+    /// Identities changed by the immediately preceding revision, including deletions.
+    #[must_use]
+    pub fn changed_tasks(&self) -> &BTreeSet<Gid> {
+        &self.changed_tasks
     }
 
     #[must_use]
@@ -170,11 +188,17 @@ impl StatusSnapshotStore {
             .revision
             .checked_add(1)
             .ok_or(StatusSnapshotError::RevisionExhausted)?;
-        *current = Arc::new(StatusSnapshotRoot {
-            revision,
-            tasks: draft.tasks,
-            queues: draft.queues,
-        });
+        let previous = std::mem::replace(
+            &mut *current,
+            Arc::new(StatusSnapshotRoot {
+                revision,
+                tasks: draft.tasks,
+                queues: draft.queues,
+                changed_tasks: draft.changed_tasks,
+            }),
+        );
+        drop(current);
+        drop(previous);
         Ok(StatusPublication {
             revision,
             changed: true,
@@ -194,6 +218,7 @@ pub(crate) struct StatusSnapshotDraft {
     tasks: BTreeMap<Gid, AppliedTaskSnapshot>,
     queues: [Arc<[Gid]>; QUEUE_COUNT],
     dirty: bool,
+    changed_tasks: BTreeSet<Gid>,
 }
 
 impl StatusSnapshotDraft {
@@ -203,22 +228,48 @@ impl StatusSnapshotDraft {
             tasks: root.tasks.clone(),
             queues: root.queues.clone(),
             dirty: false,
+            changed_tasks: BTreeSet::new(),
         }
     }
 
+    #[cfg(test)]
     pub fn insert_task(
         &mut self,
         task_id: TaskId,
         snapshot: TaskSnapshot,
     ) -> Result<(), StatusSnapshotError> {
+        self.insert_task_with_view(task_id, snapshot, None)
+    }
+
+    pub fn insert_task_with_view(
+        &mut self,
+        task_id: TaskId,
+        snapshot: TaskSnapshot,
+        scheduler: Option<SchedulerTaskView>,
+    ) -> Result<(), StatusSnapshotError> {
         snapshot
             .validate()
             .map_err(StatusSnapshotError::InvalidTaskSnapshot)?;
         let gid = snapshot.gid;
-        let applied = AppliedTaskSnapshot { task_id, snapshot };
+        if scheduler.is_some_and(|view| {
+            view.task_id != task_id
+                || view.gid != gid
+                || view.generation != snapshot.generation
+                || view.state != snapshot.state
+        }) {
+            return Err(StatusSnapshotError::InvalidTaskSnapshot(
+                "scheduler metadata does not match applied identity",
+            ));
+        }
+        let applied = AppliedTaskSnapshot {
+            task_id,
+            snapshot,
+            scheduler,
+        };
         if self.tasks.get(&gid) != Some(&applied) {
             self.tasks.insert(gid, applied);
             self.dirty = true;
+            self.changed_tasks.insert(gid);
         }
         Ok(())
     }
@@ -231,6 +282,7 @@ impl StatusSnapshotDraft {
         {
             self.tasks.remove(&gid);
             self.dirty = true;
+            self.changed_tasks.insert(gid);
         }
     }
 
@@ -424,6 +476,60 @@ mod tests {
 
     fn task_id(value: u64) -> TaskId {
         TaskId::new(value).expect("nonzero task id")
+    }
+
+    #[test]
+    fn applied_scheduler_metadata_and_change_identity_are_bound_to_the_snapshot() {
+        let config = SchedulerConfig::new(
+            NonZeroUsize::new(4).unwrap(),
+            NonZeroUsize::new(1).unwrap(),
+            false,
+        )
+        .unwrap();
+        let mut scheduler = RequestScheduler::new(config);
+        let outcome = scheduler
+            .execute_command_at(
+                ariax_core::SchedulerCommand::AddValidatedTask {
+                    task_id: task_id(1),
+                    gid: gid(1),
+                    desired_paused: true,
+                    conditions: ariax_core::TaskConditions::default(),
+                },
+                ariax_core::MonotonicInstant::now(),
+            )
+            .expect("admission");
+        let snapshot = outcome
+            .effects
+            .into_iter()
+            .find_map(|effect| match effect {
+                ariax_core::TransitionEffect::PublishSnapshot { snapshot, .. } => Some(snapshot),
+                _ => None,
+            })
+            .expect("published snapshot");
+        let view = scheduler.task(gid(1)).expect("scheduler view");
+        let store = StatusSnapshotStore::new();
+        let mut draft = store.draft();
+        let mut wrong = view;
+        wrong.task_id = task_id(2);
+        assert!(
+            draft
+                .insert_task_with_view(task_id(1), snapshot.clone(), Some(wrong))
+                .is_err()
+        );
+        assert!(draft.tasks.is_empty());
+        draft
+            .insert_task_with_view(task_id(1), snapshot, Some(view))
+            .expect("matching applied view");
+        assert_eq!(draft.tasks[&gid(1)].scheduler(), Some(view));
+        assert_eq!(
+            draft.changed_tasks.iter().copied().collect::<Vec<_>>(),
+            [gid(1)]
+        );
+        draft.remove_task(task_id(1), gid(1));
+        assert_eq!(
+            draft.changed_tasks.iter().copied().collect::<Vec<_>>(),
+            [gid(1)]
+        );
     }
 
     fn snapshot(task_gid: Gid) -> TaskSnapshot {

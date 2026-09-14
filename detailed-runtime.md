@@ -8,11 +8,12 @@ persistence composition sink are implemented. The bounded move-only shutdown
 coordinator, packet-independent bounded stats sampler, bounded scheduler runtime
 effect adapter, and publication-last process bootstrap are also executable.
 Tokio HTTP/RPC lanes, HTTP counter producers and shared profile/RPC reservations
-are integrated. Native Windows status/global-template latency evidence is
-recorded in `performance-profiles.md`. Native kernel cancellation, the full
-runtime topology, query projection outside the control owner and broader bulk
-control progress remain open; native Linux benchmark acceptance is deferred
-until CI is ready.
+are integrated. Immutable query projection outside the owner, the managed
+urgent/bulk runtime, and bounded mutation continuations are implemented under
+`P4-11`. Validation and native Windows evidence are recorded in
+`implementation-readiness.md` and `performance-profiles.md`. Native kernel
+cancellation and the full runtime topology remain roadmap work; native Linux
+benchmark acceptance stays deferred until CI is ready.
 
 This document defines the concrete runtime lanes, bounded queues, buffer leases,
 and cancellation behavior used by HTTP and storage in the first slice.
@@ -348,12 +349,62 @@ projection reservations pass the same Linux, MSRV, and Windows-GNU workspace
 matrix. Scheduler simulations, status drafts, and pending owner lifetimes now
 use pre-admitted reservations, with failure/refund, timeout, unused-plan cleanup,
 and event-retention regressions. The forecast fits 1,000 active scheduler tasks;
-this is an allocation-contract test, not a real-download benchmark. Separate
-native Windows active-range latency/RSS measurements pass for status calls and
-global-template mutations. Query projection still holds the control-owner mutex;
-moving it outside the owner and establishing bounded progress for other
-synchronous/bulk mutations remain open `P4-11` requirements. Native Linux
-benchmark acceptance is deferred until CI is ready.
+this is an allocation-contract test, not a real-download benchmark. The P4-11
+implementation below extends these guarantees to immutable query generations,
+managed control admission, filesystem preparation, and bulk continuations.
+The historical Windows status/global-template report does not validate these
+changes; current validation and the expanded campaign are tracked separately
+in `implementation-readiness.md` and `performance-profiles.md`. Native Linux
+benchmark acceptance stays deferred until CI is ready.
+
+### P4-11 Control Progress Contract
+
+Production native and RPC entry points share one managed control runtime. Read
+calls capture an immutable query root through a pointer-only publication lock;
+projection, prefix lookup, configuration checking, and export rendering do not
+acquire the mutable control owner. The root binds applied membership and status
+to matching task identities, source/options metadata, and configuration
+generation. Retained generations and projection work remain budgeted. Live
+authenticated URI queries and persistence-safe exports keep their separate
+source views. Publication precedes successful mutation replies and events.
+
+Urgent and bulk admission use the existing profile capacities and bounded-burst
+fairness below. Accepted command state and reply fan-out are bounded, including
+coalesced callers. Internal completions have reserved progress and shutdown is
+out of band. An owner turn performs at most 32 nonblocking progress steps or
+approximately 1 ms before yielding; this is a cooperative scheduling budget,
+not permission for one step to block on I/O or process an entire batch. Ordinary
+bulk continuations advance at most one target per turn. Filesystem preparation
+has one bounded execution slot; query/configuration projection has two separate
+slots so a filesystem stall cannot consume query execution capacity.
+Productive turns yield cooperatively and resume without a timer delay. Idle
+turns and unready I/O completions use the wake signal or short polling backoff;
+backpressure must not create a busy loop.
+
+Admission preparation captures the configuration and persistence policy, validates
+the complete input before creating journals, and runs outside the owner. Existing
+tasks continue to progress during that work. Publication revalidates queue
+positions against current state and stages one member per turn under the atomic
+import fence. Journal installation, drained-pause records, and in-place option
+mirrors use owned nonblocking session submissions and completion polling. Their
+input, scratch, and reply ownership survive caller cancellation; an uncertain
+accepted write faults the control owner for recovery before public success.
+
+Bulk controls capture task identities once. Admission sequence numbers order
+conflicting actions: a later accepted per-task pause, resume, or remove
+supersedes unfinished earlier bulk work for that task. Already accepted durable
+effects finish before the newer action is applied; completed members are not
+rolled back. Duplicate pause coalesces, remove supersedes queued pause, and
+force upgrades a queued non-force twin. Coalescing retains bounded ownership
+for every caller and cannot move a later action ahead of an intervening control
+for the same task. Overflow returns Busy. Atomic session import retains its
+documented mutation/admission fence while allowing queries.
+
+Deterministic tests cover 1,000-task progress, later per-task precedence,
+coalescing barriers, queue saturation, stalled filesystem/SQLite work,
+cancellation ownership, and import fencing. The explicit synchronous facade
+and startup repair may drive blocking work; production callers use the managed
+runtime. Native Linux benchmark acceptance remains deferred until CI is ready.
 
 ## Queue Wrappers
 
@@ -409,17 +460,19 @@ cpu pool -> ControlQueue<VerificationEvent> -> scheduler/storage
 stats timer -> snapshot store
 ```
 
-The control plane uses two bounded external channels plus reserved internal
+The control plane uses two bounded external mailboxes plus reserved internal
 lanes rather than a priority-ordered primitive (none of the selected queue
 crates is priority-capable):
 
-- `control_urgent` carries externally produced pause, remove, cancel, and
+- `control_urgent` carries per-task pause, resume, remove, result-removal, and
   position commands. Its capacity is a reserve that bulk commands cannot
   consume; duplicate per-task commands are coalesced at admission and overflow
   is rejected with a typed busy error.
-- `control_bulk` carries `addUri`/`addTorrent` and long status-scan commands.
+- `control_bulk` carries adds, configuration/source changes, and bulk controls.
   Admission backpressure (`backpressure.md` "reject new RPC adds") applies only
   to `control_bulk`.
+- Read queries capture an immutable root and use separate bounded projection
+  jobs. Large status scans do not occupy either mutable mailbox or the owner.
 - Internal completion/journal acknowledgement lanes are permit-reserved
   (`CompletionPermit`) and carry only outcomes for already accepted work.
   External producers cannot enqueue into them, so journal-critical progress
@@ -431,7 +484,7 @@ The scheduler drains external urgent work in bounded bursts (up to
 `urgent_burst`, default 32 commands) and then services at least one
 `control_bulk` command when one is queued, so `pause`/`remove` are serviced
 promptly even during an add burst while sustained urgent traffic cannot starve
-adds and status scans. Internal completion lanes are polled independently of
+adds and bulk continuations. Internal completion lanes are polled independently of
 this fairness quota: hard completion progress (disk outcomes, journal
 durability acks) does not wait behind either external queue. This is the
 mechanism behind the "control/journal priority" requirement in

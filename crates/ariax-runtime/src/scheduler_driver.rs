@@ -478,7 +478,8 @@ impl<S: SchedulerEffectSink> SchedulerDriver<S> {
             let Some(draft) = self.draft.as_mut() else {
                 return self.fail(SchedulerDriverFault::InternalInvariant);
             };
-            let result = draft.insert_task(task_id, snapshot);
+            let view = self.scheduler.task(snapshot.gid);
+            let result = draft.insert_task_with_view(task_id, snapshot, view);
             if let Err(error) = result {
                 return self.fail(SchedulerDriverFault::Snapshot(error));
             }

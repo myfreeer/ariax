@@ -19,7 +19,6 @@ use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tokio::task::JoinHandle;
 
 #[derive(Clone, Debug, Default)]
 pub struct DownloadOptions {
@@ -435,34 +434,24 @@ impl EngineBuilder {
             .rpc_budgets()
             .client()
             .map_err(|_| NativeApiError::Control(HttpControlError::Busy))?;
-        let plane = Arc::new(Mutex::new(plane));
-        let progress_plane = plane.clone();
-        let progress = tokio::spawn(async move {
-            loop {
-                let result = {
-                    let mut plane = progress_plane.lock().await;
-                    plane.poll_once()
-                };
-                if result.is_err_and(|error| !matches!(error, HttpControlError::Busy)) {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-            }
-        });
+        let backend = crate::HttpControlBackend::new(plane);
+        let plane = backend.plane();
+        let control = backend.control_runtime();
+        control.start().map_err(NativeApiError::Control)?;
         Ok(Engine {
+            control,
             plane,
             events,
             client,
-            progress: Mutex::new(Some(progress)),
         })
     }
 }
 
 pub struct Engine {
+    control: crate::http_control::control_runtime::ControlRuntime,
     plane: Arc<Mutex<HttpControlPlane>>,
     events: RpcEventBroker,
     client: RpcClientBudget,
-    progress: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl fmt::Debug for Engine {
@@ -934,10 +923,7 @@ impl Engine {
         let _ = self
             .call_control("aria2.shutdown", Value::Array(Vec::new()))
             .await;
-        if let Some(progress) = self.progress.lock().await.take() {
-            progress.abort();
-            let _ = progress.await;
-        }
+        let drained = self.control.drain().await;
         let plane = Arc::try_unwrap(self.plane).map_err(|_| {
             NativeApiError::Shutdown("control plane is still referenced".to_owned())
         })?;
@@ -946,6 +932,7 @@ impl Engine {
             .shutdown_async()
             .await
             .map_err(|error| NativeApiError::Shutdown(error.to_string()))?;
+        drained.map_err(NativeApiError::Control)?;
         if !report.is_clean() {
             return Err(NativeApiError::Shutdown(
                 "engine did not complete a clean shutdown".to_owned(),
@@ -983,10 +970,11 @@ impl Engine {
             .map_err(native_budget_error)?;
         let workspace = response.workspace().map_err(native_budget_error)?;
         let context = RpcClientContext::default().with_request(lease);
-        let value =
-            HttpControlPlane::call_shared_with_context(&self.plane, method, params, context)
-                .await
-                .map_err(NativeApiError::Control)?;
+        let value = self
+            .control
+            .call(method, params, context)
+            .await
+            .map_err(NativeApiError::Control)?;
         Ok(NativeResult {
             value,
             _response: response,

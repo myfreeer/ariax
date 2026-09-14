@@ -34,6 +34,7 @@ tower-service.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+rusqlite.workspace = true
 tokio = { workspace = true, features = ["test-util", "fs", "io-std", "rt-multi-thread"] }
 
 [target.'cfg(unix)'.dependencies]
