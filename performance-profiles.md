@@ -11,8 +11,18 @@ loopback origins, with eight connections per origin, 1,000-way splitting and
 per-origin ceiling and the unchanged concurrency-profile process limits.
 
 Each HTTP, WebSocket, Content-Length stdio and NDJSON scenario collects exactly
-20,000 round trips, including a global-template mutation every twentieth call.
+20,000 measured round trips: 12,000 status queries; 4,000 list projections of
+128 tasks; 1,000 each of file, URI and option queries; and 1,000 actual mutations
+of a separate auxiliary task. Mutations cycle through resume, pause, option
+change, queue move, URI change, remove, result removal and fresh admission
+(125 calls each). File and URI queries project 32 sources of about 2 KiB each.
+Every mutation gets an additional state-verification call, counted against
+the same burst limit. Reports include per-operation latency and actual response
+sizes. List requests use supported status fields.
+
 Runs use at most 1,000 calls or 500 ms per burst, followed by a 250 ms cooldown.
+No new measured request starts after 400 ms, leaving time for its response and
+any paired verification before the hard 500 ms limit.
 Each scenario has a 90-second overall deadline; setup, barrier queries and
 shutdown also have deadlines so a failed fixture cannot run indefinitely.
 After each warm-up the origin pulses every open response and the harness waits
@@ -20,7 +30,8 @@ for both its 1,000-response acknowledgement and the engine's received-byte and
 connection barriers before timing calls. The barrier is checked again afterward.
 Every measured status response must also report 1,000 connections. Reports
 separate total measured burst time, round-trip time and whole-scenario time.
-The p99 gate is 50 ms; missing range, RSS or budget evidence fails the run.
+The aggregate and every ordinary operation's p99 gate is 50 ms; missing range,
+RSS or budget evidence fails the run. Incomplete runs remain failures.
 
 A second consumer stops reading large source-list replies throughout the
 measured bursts. A separate WebSocket consumer stops reading 512 KiB coalesced
@@ -33,6 +44,15 @@ fixture from a second process-stdio handle, and record retained-credit growth,
 release after disconnect, and the maximum sampled engine RSS and reservations.
 Enable with `ARIAX_RUN_ACTIVE_RPC_BENCH=1`; select one bounded scenario with
 `--scenario=http|websocket|content-length|ndjson`.
+The separate `--administrative` scenario uses the production in-process backend
+to import 128 tasks, resume/pause them in bulk, export/save, create 128 real
+stopped results, purge them, and shut down. It reports zero active ranges.
+Concurrent queries and urgent probes follow observed bulk progress; final
+state checks establish captured membership and later-action precedence.
+Concurrent query p99 and urgent acknowledgement must stay within 50 ms.
+Total operation and shutdown durations are reported separately from those
+acknowledgements. Administrative calls retain the burst, cooldown and
+90-second scenario limits.
 On Linux, run in a shell with a 20,000-file-descriptor soft limit, as for the
 capacity harness; the default 1,024 limit cannot hold the origin listeners and
 1,000 live responses. This changes only the benchmark shell and its children.
@@ -40,19 +60,61 @@ capacity harness; the default 1,024 limit cannot hold the origin listeners and
 Native Linux acceptance is deferred at the user's request on September 13,
 2026, until CI is ready. WSL 1 timings do not close that platform gate. The
 manually dispatched `native-linux-rpc-benchmarks.yml` workflow runs the same four
-optimized scenarios and fails on a missing barrier, incomplete call count,
+optimized transport scenarios plus the administrative scenario, and fails on a missing barrier, incomplete call count,
 unreleased stalled-consumer credit, memory overflow or latency-gate failure.
-Its JSON reports must be recorded before closing native Linux acceptance.
-
-These scenarios measure status calls and global-template mutations. They do
-not close the `P4-11` requirement to move query projection outside the control
-owner, or establish bounded progress for other synchronous/bulk mutations.
-The current projection path still holds the control-owner mutex; the full gate
-remains open independently of the deferred native Linux measurement.
+It preserves JSON reports and failed-run diagnostics as artifacts. A successful
+native CI result must be recorded before closing native Linux acceptance.
+The current implementation moves projection outside the owner and runs bounded
+mutation continuations through the managed runtime; deterministic tests and the
+expanded campaign validate those changes separately from the older results.
 
 ### Native Windows Control Plane Evidence
 
-The September 13, 2026 run uses native Windows-GNU Rust 1.97.1, two Tokio
+The September 14, 2026 campaign passes all four transports on the P4-11
+implementation with native Windows-GNU Rust 1.97.1, two Tokio workers per
+process, the concurrency profile and `BlockingDiskLane`. Each transport completes
+20,000 measured calls and 1,000 additional mutation-verification calls. Every
+ordinary operation's p99 meets the 50 ms limit. Stalled response/event credits
+release, range barriers remain satisfied, and all engine shutdowns are clean.
+
+| Transport | Measured Calls | Aggregate p99 (ms) | Worst Operation p99 (ms) | Longest Burst (ms) | Scenario Time (s) | Peak Sampled Working Set (MiB) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| HTTP | 20,000 | 17.403 | 30.318 | 421 | 43.995 | 138.44 |
+| WebSocket | 20,000 | 17.682 | 37.543 | 420 | 48.252 | 139.57 |
+| Content-Length stdio | 20,000 | 17.444 | 26.032 | 419 | 50.213 | 139.25 |
+| NDJSON stdio | 20,000 | 17.282 | 27.704 | 420 | 43.800 | 139.04 |
+
+The worst operation is `addUri` in each scenario. The 128-row list response is
+20,609 bytes; the 32-source file and URI responses are 67,561 and 67,415 bytes.
+The largest sampled RPC reservation is 37.77 MiB against 64 MiB, and resident
+reservation is 192.97 MiB against 896 MiB. Owner lock wait peaks at 19 microseconds;
+transport owner turns use at most 12 steps. The largest observed turn is
+1.815 ms: the approximately 1 ms scheduling budget is cooperative, not a hard
+wall-clock deadline. Productive turns yield without an added timer wait;
+unready completions retain polling backoff.
+
+The separate administrative scenario completes in 8.988 seconds with zero active
+ranges. It imports/exports/saves 128 tasks, preserves later per-task intent during
+resume-all and pause-all, creates and purges 128 real stopped results, and shuts
+down cleanly. Import takes 1.979 seconds; resume-all 0.733 seconds; pause-all
+1.444 seconds; export 1.942 ms; configured save 8.660 ms; and purge 0.535 seconds.
+Concurrent query p99 peaks at 1.523 ms and urgent acknowledgement at 16.631 ms.
+Its longest query burst is 401.048 ms, owner turns use at most 13 steps, and
+shutdown acknowledgement/drain take 0.010/38.849 ms.
+
+The [raw reports](performance-evidence/p4-11-windows-gnu-2026-09-14.json) record
+per-operation counts, response sizes, runtime metrics, budgets, shutdown
+boundaries and binary identity. They also retain the earlier failed HTTP run:
+it completed all samples but `addUri` p99 was 55.507 ms. Removing timer delays
+between ready continuation turns produced the passing campaign above; the
+latency, burst and scenario limits were unchanged. The
+[validation record](performance-evidence/p4-11-validation-2026-09-14.md) covers
+tests, toolchains, fuzzing and deferred coverage. Native Linux acceptance remains
+deferred until CI is ready.
+
+### Historical September 13 Evidence
+
+The historical September 13, 2026 run used native Windows-GNU Rust 1.97.1, two Tokio
 workers per process, the concurrency profile and `BlockingDiskLane` storage.
 Each scenario completed 19,000 status calls and 1,000 global-template mutations
 in 20 bursts, with 250 ms cooldowns and renewed barriers after warm-up. All
@@ -74,6 +136,7 @@ maxima, with admission limits enforced independently by permits. The
 all limits, retained-credit release, elapsed times, toolchain identity and
 the tested binary hash. Stdio's second stalled writer uses the socket fixture
 described above; the measured stdio round trips use native OS pipes.
+This report predates the P4-11 progress implementation and does not validate it.
 
 ## Profile Implementation
 
@@ -521,6 +584,23 @@ bursts. Reestablish the active-range barrier before every measured burst. The
 20,000-call scenario target is an aggregate across those bursts; retain all
 samples and report actual counts, elapsed load time, and any incomplete scenario.
 A time cap never converts an incomplete run into passing acceptance evidence.
+
+The P4-11 campaign includes substantial list/metadata projection
+and real per-task mutations, with per-operation counts and latency summaries.
+Keep ordinary mutation targets separate from the task owning the active-range
+fixture. Measure pause-all/resume-all/purge and administrative import/export or
+shutdown separately: bulk operations may change the active population and must
+not claim a continuously maintained 1,000-active-range barrier. Report their
+actual task cardinalities, completion counts, and total durations, as well as
+concurrent query and urgent-command progress. Keep native Linux acceptance
+deferred until CI is ready.
+
+Administrative urgent probes follow observed bulk progress so their ordering
+is established by published state. Concurrent query p99 and urgent probe
+acknowledgements use the same 50 ms limit. Measure engine shutdown through
+process exit separately from origin-fixture cleanup. List projections request
+supported status fields; file and URI metadata projections report their actual
+source counts and response sizes.
 
 C10k profile success:
 

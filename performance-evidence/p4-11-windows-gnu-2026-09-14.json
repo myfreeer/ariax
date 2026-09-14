@@ -1,0 +1,1251 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-09-14",
+  "sourceCommit": "d13547b20e4cf527da0ea3dd22c1ed501a740dfb",
+  "sourceFileSha256": {
+    "Cargo.lock": "50589d5887cf36c5bf9556ce12bd035566d977a9c61e207272157cf9f61a2673",
+    "bin/ariax/src/main.rs": "50deb58f793d24412206cd0bc91e8a2b19ddeb64b7ce3818853fee31674d6d36",
+    "bin/ariax/src/rpc_service.rs": "70a7b36d6cf01916eaa46e570f8651afc706a766d95c52a84c64f7a60addbd59",
+    "bin/ariax/tests/rpc_interfaces.rs": "2c1b5ab217e1200ef9eb97349fa73d7195d4e1cdbe5fcf6267fc15a1bba2fc3b",
+    "crates/ariax-engine/Cargo.toml": "fc09dc5e10a482c3dff4354d03ab8375fb0e07f18832a8cb4a79784cba42d36d",
+    "crates/ariax-engine/benches/rpc_active_profile.rs": "647dca1d390966daa815470d3566000b3c61747ee4712de21bb5e61f6461e94c",
+    "crates/ariax-engine/benches/rpc_active_profile/admin.rs": "fcb2736f9b47733b43828c2d2a8a8b3a0c0bd7d34633b65e456e024b26f7f60b",
+    "crates/ariax-engine/src/http_control.rs": "55d187002cfd1c790fa22e13dffd37350bcf8d8528d1931522fc08bbbbe15d0b",
+    "crates/ariax-engine/src/http_control/admission.rs": "f0354ddaa998d105666a42f3bc537ff418775781eb80ad50055db082ddcdff60",
+    "crates/ariax-engine/src/http_control/configuration.rs": "c126c278b72aa0eb83ad0907237e83c560748d230cc527f7267eaf6ab7df18f7",
+    "crates/ariax-engine/src/http_control/control_io.rs": "7a7a38c6f7c9e10ade01e13d4315800ac7bae22bb09d539b1a785476c84a4aed",
+    "crates/ariax-engine/src/http_control/control_ops.rs": "82762286011a920f0d87e95d4b18511236f757d3eed421fae6d52536c848a224",
+    "crates/ariax-engine/src/http_control/control_runtime.rs": "909f37244d05b53b25122a6f2af08c8026410e3415266ee0fef9e4915f6ee6ab",
+    "crates/ariax-engine/src/http_control/query.rs": "adb3124573d12e9b6e31b367d2acfb9727c1856a03460b983c22ea45d92ba4f2",
+    "crates/ariax-engine/src/http_control/scheduling.rs": "819cc98cd077dcfde2288e7b0a56e8d397e91043905d2e4fe1986dcd8f94a49c",
+    "crates/ariax-engine/src/http_multi.rs": "293d79020587a13712318b0cf4f3bfc59c239c5a1cf13d9b532f0afb4695c1b7",
+    "crates/ariax-engine/src/http_task.rs": "666641d2d1a21269404e5d4d55e09d284a99b74ad0e8e82a55308e0bf3e1c0f1",
+    "crates/ariax-engine/src/lib.rs": "705d083f75e5b17278158a44a6022bd5966960142a6d8f16e082555f0af0fb42",
+    "crates/ariax-engine/src/native_api.rs": "49843f885a284151a004daab2cca3bb34a0c38e6664ca15a9e0e0f974b2743ab",
+    "crates/ariax-engine/src/process_bootstrap.rs": "0266c22ff876665794a59c35ed5b005f99274efb83b2c4d20499a67eff6a762b",
+    "crates/ariax-engine/src/slow_slots.rs": "4e913830587e1c5eee433d1db740d5055a6dedd1c9297dc6dd0d34a70368feb1",
+    "crates/ariax-runtime/src/scheduler_driver.rs": "66a232a0851668fda8bf0c57df72a2a4560feb06539a182d909d1e3f4a8d2732",
+    "crates/ariax-runtime/src/status_snapshot.rs": "a0cab6cae5700d27a910c8fe9271ab00176690ad9b1ba6df268bae9e78f2e1ce"
+  },
+  "binarySha256": "11124ee71e5cf2e925ced852baccf6dc189252d2d05433dc8b312072d0941ddb",
+  "toolchain": "1.97.1-x86_64-pc-windows-gnu",
+  "rustcCommit": "8bab26f4f68e0e26f0bb7960be334d5b520ea452",
+  "llvmVersion": "22.1.6",
+  "storageBackend": "BlockingDiskLane",
+  "host": {
+    "cpuNames": [
+      "Intel(R) Core(TM) i7-4700HQ CPU @ 2.40GHz"
+    ],
+    "logicalProcessors": 8,
+    "osCaption": "Microsoft Windows 10 企业版 LTSC",
+    "osVersion": "10.0.17763",
+    "osBuild": "17763"
+  },
+  "nativeLinuxAcceptance": "deferred until CI is ready",
+  "notes": [
+    "All five final scenarios passed. Each transport completed 20000 measured calls and 1000 additional mutation-verification calls; every operation p99 is at most 50 ms.",
+    "Collection was sequential and isolated from compiler and test jobs. No frequency pinning was applied; bursts have a 400 ms launch cutoff, a 500 ms/1000-call hard limit and at least 250 ms cooldown. Each scenario has a 90-second deadline.",
+    "Ordinary transport scenarios run origin, engine and client in separate native processes, with one fixture task maintaining 1000 active ranges. Eight actual mutation types use a separate auxiliary task.",
+    "List calls project 128 rows; file and URI calls project 32 sources of about 2 KiB each. firstResponseBytes records the first response for each operation.",
+    "Measured stdio uses OS pipes; its stalled second writer uses a loopback socket. Stalled events use 512 KiB coalesced fixture notifications through the production WebSocket broker.",
+    "Memory values are sampled maxima; hard RPC and resident limits are enforced by permits. Windows RSS reports working set. Control metrics span the engine runtime and are not latency percentiles.",
+    "The approximately 1 ms owner budget is cooperative. The largest observed transport owner turn was 1.815 ms; the maximum step count was 12, below the limit of 32.",
+    "Administrative measurements use the production in-process backend with zero active ranges. Urgent probes follow observed bulk progress. Import/export/save/purge cardinalities and separate shutdown durations are reported.",
+    "Transport shutdownDrainUs ends at engine process exit; fixtureCleanupUs measures origin cleanup separately. Administrative shutdownDrainUs includes owner/session shutdown in process.",
+    "supersededRuns retains the preliminary HTTP failure and administrative result from the earlier binary. They are excluded from final acceptance. The HTTP failure prompted productive-turn yielding; no latency, burst or scenario gate was relaxed.",
+    "Native Linux acceptance remains explicitly deferred until CI is ready. The historical September 13 status/global-template report does not validate this implementation."
+  ],
+  "scenarios": [
+    {
+      "arch": "x86_64",
+      "auxiliaryMutationTargets": 1,
+      "burstLimitCalls": 1000,
+      "burstLimitMs": 500,
+      "bursts": 53,
+      "complete": true,
+      "controlCalls": 1000,
+      "controlRuntime": {
+        "maxLockWaitUs": 15,
+        "maxSteps": 12,
+        "maxTurnUs": 473,
+        "totalLockWaitUs": 596,
+        "turns": 23263
+      },
+      "cooldownMs": 250,
+      "elapsedScenarioMs": 43995,
+      "firstResponseBytes": {
+        "addUri": 18,
+        "changeOption": 4,
+        "changePosition": 1,
+        "changeUri": 5,
+        "getFiles": 67561,
+        "getOption": 267,
+        "getUris": 67415,
+        "pause": 18,
+        "remove": 18,
+        "removeDownloadResult": 4,
+        "tellStatus": 87,
+        "tellWaiting": 20609,
+        "unpause": 18
+      },
+      "fixtureCleanupUs": 21069,
+      "launchCutoffMs": 400,
+      "maxBurstCalls": 439,
+      "maxBurstMs": 421,
+      "maxResidentBytes": 184361418,
+      "maxRpcBytes": 20521418,
+      "maxSampledRssBytes": 145162240,
+      "measuredBurstUs": 21074269,
+      "measuredRoundTripUs": 20529360,
+      "metadataSources": 32,
+      "operations": {
+        "addUri": {
+          "calls": 125,
+          "maxUs": 32156,
+          "p50Us": 18616,
+          "p99Us": 30318
+        },
+        "changeOption": {
+          "calls": 125,
+          "maxUs": 9188,
+          "p50Us": 3703,
+          "p99Us": 8436
+        },
+        "changePosition": {
+          "calls": 125,
+          "maxUs": 13160,
+          "p50Us": 5383,
+          "p99Us": 11028
+        },
+        "changeUri": {
+          "calls": 125,
+          "maxUs": 31525,
+          "p50Us": 18745,
+          "p99Us": 30273
+        },
+        "getFiles": {
+          "calls": 1000,
+          "maxUs": 1436,
+          "p50Us": 409,
+          "p99Us": 547
+        },
+        "getOption": {
+          "calls": 1000,
+          "maxUs": 667,
+          "p50Us": 160,
+          "p99Us": 263
+        },
+        "getUris": {
+          "calls": 1000,
+          "maxUs": 1218,
+          "p50Us": 361,
+          "p99Us": 486
+        },
+        "pause": {
+          "calls": 125,
+          "maxUs": 21567,
+          "p50Us": 11815,
+          "p99Us": 17830
+        },
+        "remove": {
+          "calls": 125,
+          "maxUs": 26431,
+          "p50Us": 11826,
+          "p99Us": 23655
+        },
+        "removeDownloadResult": {
+          "calls": 125,
+          "maxUs": 10923,
+          "p50Us": 4320,
+          "p99Us": 10102
+        },
+        "tellStatus": {
+          "calls": 12000,
+          "maxUs": 326,
+          "p50Us": 116,
+          "p99Us": 256
+        },
+        "tellWaiting": {
+          "calls": 4000,
+          "maxUs": 3655,
+          "p50Us": 1909,
+          "p99Us": 3072
+        },
+        "unpause": {
+          "calls": 125,
+          "maxUs": 17133,
+          "p50Us": 5261,
+          "p99Us": 12848
+        }
+      },
+      "origins": 125,
+      "os": "windows",
+      "p50Us": 152,
+      "p99Us": 17403,
+      "passed": true,
+      "perStatusRangeCheck": true,
+      "profile": "concurrency",
+      "projectionTasks": 128,
+      "ranges": 1000,
+      "renewedBarrierAfterWarmup": true,
+      "residentLimit": 939524096,
+      "rpcLimit": 67108864,
+      "rssLimit": 1073741824,
+      "samples": 20000,
+      "scenario": "http",
+      "shutdownAcknowledgementUs": 145,
+      "shutdownDrainBoundary": "engine process exit",
+      "shutdownDrainUs": 1779959,
+      "stalledCreditBytes": 603136,
+      "stalledEventCreditBytes": 11107530,
+      "stalledEvents": "WebSocket; coalesced 512 KiB fixture notifications through production broker",
+      "stdioStalledWriter": "loopback socket; measured stdio uses OS pipes",
+      "verificationCalls": 1000,
+      "workerThreads": 2
+    },
+    {
+      "arch": "x86_64",
+      "auxiliaryMutationTargets": 1,
+      "burstLimitCalls": 1000,
+      "burstLimitMs": 500,
+      "bursts": 59,
+      "complete": true,
+      "controlCalls": 1000,
+      "controlRuntime": {
+        "maxLockWaitUs": 19,
+        "maxSteps": 12,
+        "maxTurnUs": 1815,
+        "totalLockWaitUs": 771,
+        "turns": 24636
+      },
+      "cooldownMs": 250,
+      "elapsedScenarioMs": 48252,
+      "firstResponseBytes": {
+        "addUri": 18,
+        "changeOption": 4,
+        "changePosition": 1,
+        "changeUri": 5,
+        "getFiles": 67562,
+        "getOption": 267,
+        "getUris": 67415,
+        "pause": 18,
+        "remove": 18,
+        "removeDownloadResult": 4,
+        "tellStatus": 87,
+        "tellWaiting": 20609,
+        "unpause": 18
+      },
+      "fixtureCleanupUs": 21064,
+      "launchCutoffMs": 400,
+      "maxBurstCalls": 420,
+      "maxBurstMs": 420,
+      "maxResidentBytes": 202340094,
+      "maxRpcBytes": 39606526,
+      "maxSampledRssBytes": 146350080,
+      "measuredBurstUs": 23733837,
+      "measuredRoundTripUs": 23104526,
+      "metadataSources": 32,
+      "operations": {
+        "addUri": {
+          "calls": 125,
+          "maxUs": 38534,
+          "p50Us": 19203,
+          "p99Us": 37543
+        },
+        "changeOption": {
+          "calls": 125,
+          "maxUs": 13778,
+          "p50Us": 3912,
+          "p99Us": 9413
+        },
+        "changePosition": {
+          "calls": 125,
+          "maxUs": 14486,
+          "p50Us": 5487,
+          "p99Us": 11239
+        },
+        "changeUri": {
+          "calls": 125,
+          "maxUs": 27764,
+          "p50Us": 18622,
+          "p99Us": 27198
+        },
+        "getFiles": {
+          "calls": 1000,
+          "maxUs": 2821,
+          "p50Us": 448,
+          "p99Us": 799
+        },
+        "getOption": {
+          "calls": 1000,
+          "maxUs": 2799,
+          "p50Us": 156,
+          "p99Us": 273
+        },
+        "getUris": {
+          "calls": 1000,
+          "maxUs": 2379,
+          "p50Us": 377,
+          "p99Us": 643
+        },
+        "pause": {
+          "calls": 125,
+          "maxUs": 23800,
+          "p50Us": 12315,
+          "p99Us": 22262
+        },
+        "remove": {
+          "calls": 125,
+          "maxUs": 25190,
+          "p50Us": 12166,
+          "p99Us": 23763
+        },
+        "removeDownloadResult": {
+          "calls": 125,
+          "maxUs": 9903,
+          "p50Us": 4102,
+          "p99Us": 8913
+        },
+        "tellStatus": {
+          "calls": 12000,
+          "maxUs": 2169,
+          "p50Us": 127,
+          "p99Us": 262
+        },
+        "tellWaiting": {
+          "calls": 4000,
+          "maxUs": 7457,
+          "p50Us": 2007,
+          "p99Us": 3967
+        },
+        "unpause": {
+          "calls": 125,
+          "maxUs": 10384,
+          "p50Us": 5645,
+          "p99Us": 9380
+        }
+      },
+      "origins": 125,
+      "os": "windows",
+      "p50Us": 149,
+      "p99Us": 17682,
+      "passed": true,
+      "perStatusRangeCheck": true,
+      "profile": "concurrency",
+      "projectionTasks": 128,
+      "ranges": 1000,
+      "renewedBarrierAfterWarmup": true,
+      "residentLimit": 939524096,
+      "rpcLimit": 67108864,
+      "rssLimit": 1073741824,
+      "samples": 20000,
+      "scenario": "websocket",
+      "shutdownAcknowledgementUs": 128,
+      "shutdownDrainBoundary": "engine process exit",
+      "shutdownDrainUs": 1829012,
+      "stalledCreditBytes": 10040103,
+      "stalledEventCreditBytes": 11107530,
+      "stalledEvents": "WebSocket; coalesced 512 KiB fixture notifications through production broker",
+      "stdioStalledWriter": "loopback socket; measured stdio uses OS pipes",
+      "verificationCalls": 1000,
+      "workerThreads": 2
+    },
+    {
+      "arch": "x86_64",
+      "auxiliaryMutationTargets": 1,
+      "burstLimitCalls": 1000,
+      "burstLimitMs": 500,
+      "bursts": 61,
+      "complete": true,
+      "controlCalls": 1000,
+      "controlRuntime": {
+        "maxLockWaitUs": 15,
+        "maxSteps": 12,
+        "maxTurnUs": 406,
+        "totalLockWaitUs": 412,
+        "turns": 26384
+      },
+      "cooldownMs": 250,
+      "elapsedScenarioMs": 50213,
+      "firstResponseBytes": {
+        "addUri": 18,
+        "changeOption": 4,
+        "changePosition": 1,
+        "changeUri": 5,
+        "getFiles": 67561,
+        "getOption": 267,
+        "getUris": 67415,
+        "pause": 18,
+        "remove": 18,
+        "removeDownloadResult": 4,
+        "tellStatus": 87,
+        "tellWaiting": 20609,
+        "unpause": 18
+      },
+      "fixtureCleanupUs": 21949,
+      "launchCutoffMs": 400,
+      "maxBurstCalls": 363,
+      "maxBurstMs": 419,
+      "maxResidentBytes": 185518026,
+      "maxRpcBytes": 21678026,
+      "maxSampledRssBytes": 146014208,
+      "measuredBurstUs": 24501924,
+      "measuredRoundTripUs": 23587254,
+      "metadataSources": 32,
+      "operations": {
+        "addUri": {
+          "calls": 125,
+          "maxUs": 36071,
+          "p50Us": 18724,
+          "p99Us": 26032
+        },
+        "changeOption": {
+          "calls": 125,
+          "maxUs": 8770,
+          "p50Us": 3695,
+          "p99Us": 8599
+        },
+        "changePosition": {
+          "calls": 125,
+          "maxUs": 10005,
+          "p50Us": 5379,
+          "p99Us": 9238
+        },
+        "changeUri": {
+          "calls": 125,
+          "maxUs": 29391,
+          "p50Us": 18646,
+          "p99Us": 25857
+        },
+        "getFiles": {
+          "calls": 1000,
+          "maxUs": 1691,
+          "p50Us": 521,
+          "p99Us": 955
+        },
+        "getOption": {
+          "calls": 1000,
+          "maxUs": 636,
+          "p50Us": 293,
+          "p99Us": 436
+        },
+        "getUris": {
+          "calls": 1000,
+          "maxUs": 883,
+          "p50Us": 460,
+          "p99Us": 709
+        },
+        "pause": {
+          "calls": 125,
+          "maxUs": 24714,
+          "p50Us": 11734,
+          "p99Us": 19250
+        },
+        "remove": {
+          "calls": 125,
+          "maxUs": 21957,
+          "p50Us": 11939,
+          "p99Us": 17444
+        },
+        "removeDownloadResult": {
+          "calls": 125,
+          "maxUs": 9815,
+          "p50Us": 3942,
+          "p99Us": 9626
+        },
+        "tellStatus": {
+          "calls": 12000,
+          "maxUs": 1078,
+          "p50Us": 285,
+          "p99Us": 526
+        },
+        "tellWaiting": {
+          "calls": 4000,
+          "maxUs": 3880,
+          "p50Us": 2057,
+          "p99Us": 3002
+        },
+        "unpause": {
+          "calls": 125,
+          "maxUs": 10982,
+          "p50Us": 5490,
+          "p99Us": 10007
+        }
+      },
+      "origins": 125,
+      "os": "windows",
+      "p50Us": 331,
+      "p99Us": 17444,
+      "passed": true,
+      "perStatusRangeCheck": true,
+      "profile": "concurrency",
+      "projectionTasks": 128,
+      "ranges": 1000,
+      "renewedBarrierAfterWarmup": true,
+      "residentLimit": 939524096,
+      "rpcLimit": 67108864,
+      "rssLimit": 1073741824,
+      "samples": 20000,
+      "scenario": "content-length",
+      "shutdownAcknowledgementUs": 328,
+      "shutdownDrainBoundary": "engine process exit",
+      "shutdownDrainUs": 1797886,
+      "stalledCreditBytes": 632576,
+      "stalledEventCreditBytes": 11107530,
+      "stalledEvents": "WebSocket; coalesced 512 KiB fixture notifications through production broker",
+      "stdioStalledWriter": "loopback socket; measured stdio uses OS pipes",
+      "verificationCalls": 1000,
+      "workerThreads": 2
+    },
+    {
+      "arch": "x86_64",
+      "auxiliaryMutationTargets": 1,
+      "burstLimitCalls": 1000,
+      "burstLimitMs": 500,
+      "bursts": 53,
+      "complete": true,
+      "controlCalls": 1000,
+      "controlRuntime": {
+        "maxLockWaitUs": 13,
+        "maxSteps": 12,
+        "maxTurnUs": 1215,
+        "totalLockWaitUs": 268,
+        "turns": 23484
+      },
+      "cooldownMs": 250,
+      "elapsedScenarioMs": 43800,
+      "firstResponseBytes": {
+        "addUri": 18,
+        "changeOption": 4,
+        "changePosition": 1,
+        "changeUri": 5,
+        "getFiles": 67561,
+        "getOption": 267,
+        "getUris": 67415,
+        "pause": 18,
+        "remove": 18,
+        "removeDownloadResult": 4,
+        "tellStatus": 87,
+        "tellWaiting": 20609,
+        "unpause": 18
+      },
+      "fixtureCleanupUs": 20782,
+      "launchCutoffMs": 400,
+      "maxBurstCalls": 426,
+      "maxBurstMs": 420,
+      "maxResidentBytes": 184420298,
+      "maxRpcBytes": 20580298,
+      "maxSampledRssBytes": 145797120,
+      "measuredBurstUs": 21421354,
+      "measuredRoundTripUs": 20846691,
+      "metadataSources": 32,
+      "operations": {
+        "addUri": {
+          "calls": 125,
+          "maxUs": 36257,
+          "p50Us": 18710,
+          "p99Us": 27704
+        },
+        "changeOption": {
+          "calls": 125,
+          "maxUs": 9575,
+          "p50Us": 3716,
+          "p99Us": 8647
+        },
+        "changePosition": {
+          "calls": 125,
+          "maxUs": 17282,
+          "p50Us": 5141,
+          "p99Us": 10425
+        },
+        "changeUri": {
+          "calls": 125,
+          "maxUs": 34846,
+          "p50Us": 18595,
+          "p99Us": 27611
+        },
+        "getFiles": {
+          "calls": 1000,
+          "maxUs": 1440,
+          "p50Us": 529,
+          "p99Us": 1027
+        },
+        "getOption": {
+          "calls": 1000,
+          "maxUs": 313,
+          "p50Us": 144,
+          "p99Us": 258
+        },
+        "getUris": {
+          "calls": 1000,
+          "maxUs": 989,
+          "p50Us": 451,
+          "p99Us": 734
+        },
+        "pause": {
+          "calls": 125,
+          "maxUs": 17524,
+          "p50Us": 11511,
+          "p99Us": 17338
+        },
+        "remove": {
+          "calls": 125,
+          "maxUs": 27331,
+          "p50Us": 11705,
+          "p99Us": 18490
+        },
+        "removeDownloadResult": {
+          "calls": 125,
+          "maxUs": 9452,
+          "p50Us": 4040,
+          "p99Us": 8834
+        },
+        "tellStatus": {
+          "calls": 12000,
+          "maxUs": 503,
+          "p50Us": 118,
+          "p99Us": 302
+        },
+        "tellWaiting": {
+          "calls": 4000,
+          "maxUs": 4491,
+          "p50Us": 1966,
+          "p99Us": 2816
+        },
+        "unpause": {
+          "calls": 125,
+          "maxUs": 10154,
+          "p50Us": 5011,
+          "p99Us": 10139
+        }
+      },
+      "origins": 125,
+      "os": "windows",
+      "p50Us": 148,
+      "p99Us": 17282,
+      "passed": true,
+      "perStatusRangeCheck": true,
+      "profile": "concurrency",
+      "projectionTasks": 128,
+      "ranges": 1000,
+      "renewedBarrierAfterWarmup": true,
+      "residentLimit": 939524096,
+      "rpcLimit": 67108864,
+      "rssLimit": 1073741824,
+      "samples": 20000,
+      "scenario": "ndjson",
+      "shutdownAcknowledgementUs": 163,
+      "shutdownDrainBoundary": "engine process exit",
+      "shutdownDrainUs": 1822856,
+      "stalledCreditBytes": 636928,
+      "stalledEventCreditBytes": 5798724,
+      "stalledEvents": "WebSocket; coalesced 512 KiB fixture notifications through production broker",
+      "stdioStalledWriter": "loopback socket; measured stdio uses OS pipes",
+      "verificationCalls": 1000,
+      "workerThreads": 2
+    },
+    {
+      "activeRanges": 0,
+      "arch": "x86_64",
+      "complete": true,
+      "controlRuntime": {
+        "maxLockWaitUs": 12,
+        "maxSteps": 13,
+        "maxTurnUs": 392,
+        "totalLockWaitUs": 203,
+        "turns": 6337
+      },
+      "elapsedScenarioMs": 8988,
+      "operations": [
+        {
+          "completed": true,
+          "cooldownMs": 250,
+          "durationUs": 1978890,
+          "maxQueryBurstUs": 183253,
+          "method": "ariax.importSession",
+          "publishedTasks": 128,
+          "queries": {
+            "aria2.tellWaiting": {
+              "calls": 7238,
+              "maxUs": 1615,
+              "p50Us": 4,
+              "p99Us": 821
+            }
+          },
+          "queryBursts": 8,
+          "queryCompletionsWhilePending": 7237,
+          "targets": 128,
+          "urgentAfterObservedProgress": false,
+          "urgentCalls": 0,
+          "urgentUs": null
+        },
+        {
+          "completed": true,
+          "cooldownMs": 250,
+          "durationUs": 733082,
+          "laterPausePreserved": true,
+          "maxQueryBurstUs": 400882,
+          "method": "aria2.unpauseAll",
+          "queries": {
+            "aria2.tellWaiting": {
+              "calls": 444,
+              "maxUs": 1997,
+              "p50Us": 1007,
+              "p99Us": 1342
+            }
+          },
+          "queryBursts": 2,
+          "queryCompletionsWhilePending": 443,
+          "resumedTasks": 127,
+          "targets": 128,
+          "urgentAfterObservedProgress": true,
+          "urgentCalls": 1,
+          "urgentUs": 9943
+        },
+        {
+          "completed": true,
+          "cooldownMs": 250,
+          "durationUs": 1444378,
+          "laterResumePreserved": true,
+          "maxQueryBurstUs": 401048,
+          "method": "aria2.pauseAll",
+          "pausedTasks": 127,
+          "queries": {
+            "aria2.tellWaiting": {
+              "calls": 874,
+              "maxUs": 2025,
+              "p50Us": 1006,
+              "p99Us": 1523
+            }
+          },
+          "queryBursts": 3,
+          "queryCompletionsWhilePending": 873,
+          "targets": 127,
+          "urgentAfterObservedProgress": true,
+          "urgentCalls": 1,
+          "urgentUs": 16631
+        },
+        {
+          "bytes": 72964,
+          "completed": true,
+          "cooldownMs": 250,
+          "durationUs": 1942,
+          "exportedTasks": 128,
+          "maxQueryBurstUs": 2347,
+          "method": "ariax.exportSession",
+          "queries": {
+            "aria2.tellWaiting": {
+              "calls": 2,
+              "maxUs": 1220,
+              "p50Us": 1220,
+              "p99Us": 1220
+            }
+          },
+          "queryBursts": 1,
+          "queryCompletionsWhilePending": 1,
+          "targets": 128,
+          "urgentAfterObservedProgress": false,
+          "urgentCalls": 0,
+          "urgentUs": null
+        },
+        {
+          "completed": true,
+          "cooldownMs": 250,
+          "durationUs": 8660,
+          "exportedTasks": 128,
+          "maxQueryBurstUs": 9616,
+          "method": "aria2.saveSession",
+          "queries": {
+            "aria2.tellWaiting": {
+              "calls": 9,
+              "maxUs": 1170,
+              "p50Us": 1037,
+              "p99Us": 1170
+            }
+          },
+          "queryBursts": 1,
+          "queryCompletionsWhilePending": 8,
+          "targets": 128,
+          "urgentAfterObservedProgress": false,
+          "urgentCalls": 0,
+          "urgentUs": null
+        },
+        {
+          "completed": true,
+          "cooldownMs": 250,
+          "deletedTasks": 128,
+          "durationUs": 535285,
+          "maxQueryBurstUs": 400200,
+          "method": "aria2.purgeDownloadResult",
+          "queries": {
+            "aria2.tellStopped": {
+              "calls": 635,
+              "maxUs": 1632,
+              "p50Us": 587,
+              "p99Us": 1107
+            }
+          },
+          "queryBursts": 1,
+          "queryCompletionsWhilePending": 635,
+          "targets": 128,
+          "urgentAfterObservedProgress": true,
+          "urgentCalls": 1,
+          "urgentUs": 6071
+        }
+      ],
+      "os": "windows",
+      "passed": true,
+      "profile": "concurrency",
+      "residentBytes": 275040,
+      "resultSetupBursts": 4,
+      "resultSetupRemovals": 128,
+      "rpcBytes": 275040,
+      "sampledRssBytes": 14897152,
+      "scenario": "administrative",
+      "shutdownAcknowledgementUs": 10,
+      "shutdownDrainUs": 38849,
+      "transport": "in-process backend using the production control runtime"
+    }
+  ],
+  "supersededRuns": {
+    "binarySha256": "632bf46ce58ee106f9884b04606183892c1486effeac3edfd9990db1fdc0c859",
+    "acceptance": false,
+    "reason": "Preliminary HTTP addUri p99 was 55507 us, exceeding the unchanged 50000 us limit. Productive continuation turns previously waited for a timer.",
+    "scenarios": [
+      {
+        "arch": "x86_64",
+        "auxiliaryMutationTargets": 1,
+        "burstLimitCalls": 1000,
+        "burstLimitMs": 500,
+        "bursts": 71,
+        "complete": true,
+        "controlCalls": 1000,
+        "controlRuntime": {
+          "maxLockWaitUs": 13,
+          "maxSteps": 12,
+          "maxTurnUs": 437,
+          "totalLockWaitUs": 716,
+          "turns": 22788
+        },
+        "cooldownMs": 250,
+        "elapsedScenarioMs": 56939,
+        "firstResponseBytes": {
+          "addUri": 18,
+          "changeOption": 4,
+          "changePosition": 1,
+          "changeUri": 5,
+          "getFiles": 67561,
+          "getOption": 267,
+          "getUris": 67415,
+          "pause": 18,
+          "remove": 18,
+          "removeDownloadResult": 4,
+          "tellStatus": 87,
+          "tellWaiting": 20609,
+          "unpause": 18
+        },
+        "fixtureCleanupUs": 21985,
+        "launchCutoffMs": 400,
+        "maxBurstCalls": 322,
+        "maxBurstMs": 439,
+        "maxResidentBytes": 185467850,
+        "maxRpcBytes": 21627850,
+        "maxSampledRssBytes": 146628608,
+        "measuredBurstUs": 28904888,
+        "measuredRoundTripUs": 28354181,
+        "metadataSources": 32,
+        "operations": {
+          "addUri": {
+            "calls": 125,
+            "maxUs": 59657,
+            "p50Us": 38596,
+            "p99Us": 55507
+          },
+          "changeOption": {
+            "calls": 125,
+            "maxUs": 17472,
+            "p50Us": 10443,
+            "p99Us": 16434
+          },
+          "changePosition": {
+            "calls": 125,
+            "maxUs": 16604,
+            "p50Us": 9451,
+            "p99Us": 14950
+          },
+          "changeUri": {
+            "calls": 125,
+            "maxUs": 52850,
+            "p50Us": 31348,
+            "p99Us": 40431
+          },
+          "getFiles": {
+            "calls": 1000,
+            "maxUs": 724,
+            "p50Us": 402,
+            "p99Us": 537
+          },
+          "getOption": {
+            "calls": 1000,
+            "maxUs": 332,
+            "p50Us": 158,
+            "p99Us": 280
+          },
+          "getUris": {
+            "calls": 1000,
+            "maxUs": 674,
+            "p50Us": 334,
+            "p99Us": 480
+          },
+          "pause": {
+            "calls": 125,
+            "maxUs": 27010,
+            "p50Us": 18778,
+            "p99Us": 25059
+          },
+          "remove": {
+            "calls": 125,
+            "maxUs": 22643,
+            "p50Us": 17262,
+            "p99Us": 21303
+          },
+          "removeDownloadResult": {
+            "calls": 125,
+            "maxUs": 14136,
+            "p50Us": 8622,
+            "p99Us": 11705
+          },
+          "tellStatus": {
+            "calls": 12000,
+            "maxUs": 358,
+            "p50Us": 117,
+            "p99Us": 287
+          },
+          "tellWaiting": {
+            "calls": 4000,
+            "maxUs": 3937,
+            "p50Us": 1890,
+            "p99Us": 2987
+          },
+          "unpause": {
+            "calls": 125,
+            "maxUs": 15977,
+            "p50Us": 10109,
+            "p99Us": 15641
+          }
+        },
+        "origins": 125,
+        "os": "windows",
+        "p50Us": 158,
+        "p99Us": 30541,
+        "passed": false,
+        "perStatusRangeCheck": true,
+        "profile": "concurrency",
+        "projectionTasks": 128,
+        "ranges": 1000,
+        "renewedBarrierAfterWarmup": true,
+        "residentLimit": 939524096,
+        "rpcLimit": 67108864,
+        "rssLimit": 1073741824,
+        "samples": 20000,
+        "scenario": "http",
+        "shutdownAcknowledgementUs": 113,
+        "shutdownDrainBoundary": "engine process exit",
+        "shutdownDrainUs": 1821259,
+        "stalledCreditBytes": 603136,
+        "stalledEventCreditBytes": 10001098,
+        "stalledEvents": "WebSocket; coalesced 512 KiB fixture notifications through production broker",
+        "stdioStalledWriter": "loopback socket; measured stdio uses OS pipes",
+        "verificationCalls": 1000,
+        "workerThreads": 2
+      },
+      {
+        "activeRanges": 0,
+        "arch": "x86_64",
+        "complete": true,
+        "controlRuntime": {
+          "maxLockWaitUs": 14,
+          "maxSteps": 13,
+          "maxTurnUs": 440,
+          "totalLockWaitUs": 201,
+          "turns": 5972
+        },
+        "elapsedScenarioMs": 15134,
+        "operations": [
+          {
+            "completed": true,
+            "cooldownMs": 250,
+            "durationUs": 3319888,
+            "maxQueryBurstUs": 400552,
+            "method": "ariax.importSession",
+            "publishedTasks": 128,
+            "queries": {
+              "aria2.tellWaiting": {
+                "calls": 11660,
+                "maxUs": 1431,
+                "p50Us": 7,
+                "p99Us": 762
+              }
+            },
+            "queryBursts": 12,
+            "queryCompletionsWhilePending": 11660,
+            "targets": 128,
+            "urgentAfterObservedProgress": false,
+            "urgentCalls": 0,
+            "urgentUs": null
+          },
+          {
+            "completed": true,
+            "cooldownMs": 250,
+            "durationUs": 1692373,
+            "laterPausePreserved": true,
+            "maxQueryBurstUs": 400852,
+            "method": "aria2.unpauseAll",
+            "queries": {
+              "aria2.tellWaiting": {
+                "calls": 1104,
+                "maxUs": 1982,
+                "p50Us": 1015,
+                "p99Us": 1339
+              }
+            },
+            "queryBursts": 3,
+            "queryCompletionsWhilePending": 1103,
+            "resumedTasks": 127,
+            "targets": 128,
+            "urgentAfterObservedProgress": true,
+            "urgentCalls": 1,
+            "urgentUs": 12840
+          },
+          {
+            "completed": true,
+            "cooldownMs": 250,
+            "durationUs": 2824047,
+            "laterResumePreserved": true,
+            "maxQueryBurstUs": 400672,
+            "method": "aria2.pauseAll",
+            "pausedTasks": 127,
+            "queries": {
+              "aria2.tellWaiting": {
+                "calls": 1718,
+                "maxUs": 1923,
+                "p50Us": 1003,
+                "p99Us": 1319
+              }
+            },
+            "queryBursts": 5,
+            "queryCompletionsWhilePending": 1717,
+            "targets": 127,
+            "urgentAfterObservedProgress": true,
+            "urgentCalls": 1,
+            "urgentUs": 11176
+          },
+          {
+            "bytes": 72964,
+            "completed": true,
+            "cooldownMs": 250,
+            "durationUs": 1849,
+            "exportedTasks": 128,
+            "maxQueryBurstUs": 2162,
+            "method": "ariax.exportSession",
+            "queries": {
+              "aria2.tellWaiting": {
+                "calls": 2,
+                "maxUs": 1074,
+                "p50Us": 1074,
+                "p99Us": 1074
+              }
+            },
+            "queryBursts": 1,
+            "queryCompletionsWhilePending": 1,
+            "targets": 128,
+            "urgentAfterObservedProgress": false,
+            "urgentCalls": 0,
+            "urgentUs": null
+          },
+          {
+            "completed": true,
+            "cooldownMs": 250,
+            "durationUs": 7619,
+            "exportedTasks": 128,
+            "maxQueryBurstUs": 8071,
+            "method": "aria2.saveSession",
+            "queries": {
+              "aria2.tellWaiting": {
+                "calls": 7,
+                "maxUs": 1400,
+                "p50Us": 1072,
+                "p99Us": 1400
+              }
+            },
+            "queryBursts": 1,
+            "queryCompletionsWhilePending": 6,
+            "targets": 128,
+            "urgentAfterObservedProgress": false,
+            "urgentCalls": 0,
+            "urgentUs": null
+          },
+          {
+            "completed": true,
+            "cooldownMs": 250,
+            "deletedTasks": 128,
+            "durationUs": 1555014,
+            "maxQueryBurstUs": 400456,
+            "method": "aria2.purgeDownloadResult",
+            "queries": {
+              "aria2.tellStopped": {
+                "calls": 2184,
+                "maxUs": 1339,
+                "p50Us": 392,
+                "p99Us": 1092
+              }
+            },
+            "queryBursts": 3,
+            "queryCompletionsWhilePending": 2184,
+            "targets": 128,
+            "urgentAfterObservedProgress": true,
+            "urgentCalls": 1,
+            "urgentUs": 7974
+          }
+        ],
+        "os": "windows",
+        "passed": true,
+        "profile": "concurrency",
+        "residentBytes": 275040,
+        "resultSetupBursts": 6,
+        "resultSetupRemovals": 128,
+        "rpcBytes": 275040,
+        "sampledRssBytes": 15257600,
+        "scenario": "administrative",
+        "shutdownAcknowledgementUs": 20,
+        "shutdownDrainUs": 38862,
+        "transport": "in-process backend using the production control runtime"
+      }
+    ]
+  },
+  "fuzzSmoke": {
+    "host": "Linux under WSL 1",
+    "toolchain": "1.97.1-x86_64-unknown-linux-gnu",
+    "cargoFuzzVersion": "0.13.2",
+    "sanitizer": "address",
+    "instrumentation": [
+      "sancov-module",
+      "inline-8bit-counters",
+      "pc-table",
+      "trace-compares",
+      "stack-depth"
+    ],
+    "rustcBootstrap": true,
+    "cooldownMs": 250,
+    "bursts": [
+      {
+        "target": "rpc_json",
+        "burst": 1,
+        "runs": 500,
+        "elapsedMs": 729.272,
+        "inline8BitCounters": 45471,
+        "summary": "#500\tDONE   cov: 2679 ft: 4684 corp: 51/8775b lim: 264 exec/s: 0 rss: 89Mb",
+        "passed": true
+      },
+      {
+        "target": "rpc_json",
+        "burst": 2,
+        "runs": 500,
+        "elapsedMs": 576.698,
+        "inline8BitCounters": 45471,
+        "summary": "#500\tDONE   cov: 2706 ft: 4993 corp: 72/11708b lim: 264 exec/s: 0 rss: 90Mb",
+        "passed": true
+      },
+      {
+        "target": "rpc_json",
+        "burst": 3,
+        "runs": 500,
+        "elapsedMs": 576.288,
+        "inline8BitCounters": 45471,
+        "summary": "#500\tDONE   cov: 2733 ft: 5128 corp: 80/12380b lim: 264 exec/s: 0 rss: 90Mb",
+        "passed": true
+      },
+      {
+        "target": "rpc_json",
+        "burst": 4,
+        "runs": 500,
+        "elapsedMs": 675.698,
+        "inline8BitCounters": 45471,
+        "summary": "#500\tDONE   cov: 2757 ft: 5652 corp: 91/12828b lim: 264 exec/s: 0 rss: 91Mb",
+        "passed": true
+      },
+      {
+        "target": "session_document",
+        "burst": 1,
+        "runs": 500,
+        "elapsedMs": 327.859,
+        "inline8BitCounters": 12092,
+        "summary": "#500\tDONE   cov: 994 ft: 2330 corp: 76/2843b lim: 61 exec/s: 0 rss: 47Mb",
+        "passed": true
+      },
+      {
+        "target": "session_document",
+        "burst": 2,
+        "runs": 500,
+        "elapsedMs": 171.054,
+        "inline8BitCounters": 12092,
+        "summary": "#500\tDONE   cov: 1020 ft: 2539 corp: 78/2722b lim: 61 exec/s: 0 rss: 47Mb",
+        "passed": true
+      },
+      {
+        "target": "session_document",
+        "burst": 3,
+        "runs": 500,
+        "elapsedMs": 171.414,
+        "inline8BitCounters": 12092,
+        "summary": "#500\tDONE   cov: 1029 ft: 2654 corp: 91/3014b lim: 61 exec/s: 0 rss: 48Mb",
+        "passed": true
+      },
+      {
+        "target": "session_document",
+        "burst": 4,
+        "runs": 500,
+        "elapsedMs": 171.962,
+        "inline8BitCounters": 12092,
+        "summary": "#500\tDONE   cov: 1035 ft: 2674 corp: 98/3102b lim: 61 exec/s: 0 rss: 49Mb",
+        "passed": true
+      },
+      {
+        "target": "url_rules",
+        "burst": 1,
+        "runs": 500,
+        "elapsedMs": 322.996,
+        "inline8BitCounters": 39878,
+        "summary": "#500\tDONE   cov: 3615 ft: 7242 corp: 121/10983b lim: 172 exec/s: 0 rss: 53Mb",
+        "passed": true
+      },
+      {
+        "target": "url_rules",
+        "burst": 2,
+        "runs": 500,
+        "elapsedMs": 321.04,
+        "inline8BitCounters": 39878,
+        "summary": "#500\tDONE   cov: 3718 ft: 7770 corp: 158/13737b lim: 172 exec/s: 0 rss: 54Mb",
+        "passed": true
+      },
+      {
+        "target": "url_rules",
+        "burst": 3,
+        "runs": 500,
+        "elapsedMs": 222.536,
+        "inline8BitCounters": 39878,
+        "summary": "#500\tDONE   cov: 3720 ft: 7813 corp: 165/13934b lim: 172 exec/s: 0 rss: 53Mb",
+        "passed": true
+      },
+      {
+        "target": "url_rules",
+        "burst": 4,
+        "runs": 500,
+        "elapsedMs": 324.885,
+        "inline8BitCounters": 39878,
+        "summary": "#500\tDONE   cov: 3742 ft: 7925 corp: 182/15259b lim: 172 exec/s: 0 rss: 54Mb",
+        "passed": true
+      }
+    ]
+  }
+}

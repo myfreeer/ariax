@@ -25,9 +25,27 @@ jobs:
         run: |
           set -euo pipefail
           ulimit -n 20000
+          mkdir -p benchmark-reports
+          rustc +1.97.1 --version --verbose > benchmark-reports/toolchain.txt
           for scenario in http websocket content-length ndjson; do
             ARIAX_RUN_ACTIVE_RPC_BENCH=1 cargo +1.97.1 bench \
               --locked -p ariax-engine --bench rpc_active_profile -- \
-              --scenario="$scenario"
+              --scenario="$scenario" 2>"benchmark-reports/$scenario.stderr.log" \
+              | tee "benchmark-reports/$scenario.jsonl"
             sleep 2
           done
+      - name: Measure administrative progress separately
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARIAX_RUN_ACTIVE_RPC_BENCH=1 cargo +1.97.1 bench \
+            --locked -p ariax-engine --bench rpc_active_profile -- \
+            --administrative 2>benchmark-reports/administrative.stderr.log \
+            | tee benchmark-reports/administrative.jsonl
+      - name: Preserve complete reports and failed-run diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-linux-rpc-benchmarks
+          path: benchmark-reports/
+          if-no-files-found: warn

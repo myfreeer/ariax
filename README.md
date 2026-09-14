@@ -37,14 +37,19 @@ records these changes; sanitized atomic session import/export and configured
 explicit, periodic, and shutdown saves now share the CLI/Rust/RPC control plane.
 Versioned configuration reload, bounded URL rules, redacted dumps, real option
 restarts, combined transports, compatibility modes and opt-in slow-slot/retry
-scheduling are implemented and tested. Native Windows benchmarks pass all four
-transports with 1,000 active HTTP ranges and 20,000 measured calls each; worst
-p99 is 0.542 ms and the longest measured burst is 343 ms. Query projection
-outside the control owner and bounded progress for other synchronous/bulk
-mutations remain open `P4-11` requirements. Native Linux benchmark acceptance is
-deferred at the user's request until CI is ready. The
+scheduling are implemented and tested. P4-11 control progress at `d13547b` adds
+immutable query projection outside the control owner, one managed
+native/transport runtime, nonblocking
+persistence and admission preparation, and bounded bulk continuations with
+later per-task controls taking precedence. Queries, queued commands and
+accepted durable work retain their budgets through cancellation and disconnect.
+Native Linux benchmark acceptance stays deferred at the user's request until
+CI is ready. The expanded Windows campaign passes 20,000 calls per transport
+under 1,000 active ranges plus separate administrative measurements; worst
+operation p99 is 37.543 ms and the longest burst is 421 ms. The
 [recorded evidence](performance-profiles.md#native-windows-control-plane-evidence)
-states the measurement limits and remaining progress/platform gates.
+separates the expanded Windows campaign from historical results and the
+remaining platform gates.
 
 Strict HTTP identity now distinguishes whole-file and exact-range evidence. A
 persisted user SHA-256 admits ordinary concurrent mirrors and final verification;
@@ -59,8 +64,7 @@ hierarchical rate limiter, stall policy, process-owned discard guard, same-origi
 endgame fencing, bounded exact-range cross-origin digest fencing, and local
 capacity benchmarks are executable; HTTP/2, unknown-length/chunked layouts,
 broader RFC 9530/Metalink and `Content-Digest` modes,
-the remaining Phase-4 query/bulk progress gates, native Linux benchmark
-acceptance, non-loopback RPC,
+native Linux benchmark acceptance, non-loopback RPC,
 and the full native release matrix remain
 gated by `implementation-readiness.md`
 and `implementation-plan.md`. Deterministic ENOSPC, permission-denied,

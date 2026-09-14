@@ -386,9 +386,10 @@ versioned config check/reload/dump and URL rules, bounded JSON/aria2 session
 export/import and configured saves, filtered events, loopback WebSocket,
 Content-Length/NDJSON stdio, combined transports, direct CLI controls, and
 typed Rust embedding are executable. Real option restart and slow-slot/retry
-scheduling tests pass. Native Windows status/global-template p99 evidence is
-recorded; query projection outside the control owner and bounded progress for
-other synchronous/bulk mutations remain open under `P4-11`. Native Linux
+scheduling tests pass. P4-11 now implements immutable query projection outside
+the control owner, the managed control runtime, and bounded nonblocking
+mutation and bulk progress. Expanded Windows validation is recorded separately
+from the historical status/global-template report. Native Linux
 measurement is deferred until CI is ready, as requested on
 September 13, 2026. Release-platform gates remain separate.
 
@@ -440,16 +441,38 @@ Phase 4B completes the implementation and regression gates `P4-01` through
 authentication and connection-local events; shared RPC accounting; replayable
 option/source changes; registry/configuration completion; sanitized session
 compatibility; CLI/transport/Rust parity; and opt-in slow-slot scheduling.
-Performance and platform evidence belong to `P4-11`. Its measured portion passes
-natively on Windows-GNU for all four transports: 20,000 calls each, 1,000 active
-HTTP ranges, worst p99 0.542 ms against 50 ms, and bounded memory under stalled
-consumers.
-Measured bursts last at most 343 ms. These status/global-template measurements
-do not close query projection outside the control owner or bounded progress for
-other synchronous/bulk mutations. Those implementation/evidence requirements
-remain open. Native Linux acceptance remains deferred until CI is ready; the
-manual native Linux workflow preserves the same measurement gates. Do not claim
-all of `P4-11`, deferred platform evidence or the complete release matrix passed.
+Performance and platform evidence belong to `P4-11`. The September 13 Windows
+status/global-template measurements are historical. The expanded campaign
+below measures the current control implementation; the full gate still requires
+native Linux acceptance, deferred until CI is ready. The manual native Linux
+workflow preserves the same measurement gates and retains JSON reports and
+failure diagnostics. Deferred platform evidence and the complete release matrix
+must not be represented as passing local WSL results.
+
+### P4-11 Control Progress Milestone
+
+The control progress contract in `detailed-runtime.md` is implemented:
+consistent immutable query roots, one managed native/transport runtime,
+nonblocking mutation continuations, and resumable bulk controls with later
+per-task actions taking precedence. It preserves atomic import, durable accepted
+work after disconnect, response compatibility, and shared resource budgets.
+
+Validation covers deterministic 1,000-task progress and rejection tests,
+Linux-under-WSL and native Windows build/test/lint checks, MSRV and generated
+contracts, and relevant short fuzz smoke tests. The expanded native Windows
+campaign covers substantial query projection and actual task mutations. Ordinary controls
+use auxiliary tasks while the 1,000-range fixture stays active; bulk controls,
+import/export, and shutdown are measured separately with actual cardinalities.
+Runs retain the short-burst limits and never count incomplete scenarios as
+passing. Readiness and traceability track implementation, Windows evidence,
+and the deferred native Linux gate separately. Phase 5 is outside this milestone.
+
+The September 14 Windows campaign passes all four 20,000-call transport scenarios
+and the separate 128-task administrative scenario. Worst ordinary operation p99
+is 37.543 ms, the longest burst is 421 ms, and sampled working set stays below
+140 MiB. [Validation and remaining coverage](performance-evidence/p4-11-validation-2026-09-14.md)
+record the completed local work. The next P4-11 acceptance action is to run and
+retain the expanded native Linux CI campaign once CI is ready; it remains deferred.
 
 ## Phase 5: Metalink, FTP, SFTP
 

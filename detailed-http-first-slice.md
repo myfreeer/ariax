@@ -47,8 +47,10 @@ whole-entity admission, Metalink chunk hashes, Last-Modified and unsafe-
 override resume, HTTP/2, unknown-length or chunked layouts, and non-loopback
 RPC remain outside this checkpoint. The expanded control plane passes the
 `P4-01` through `P4-10` regressions in `implementation-readiness.md`, including
-production admission and recovery of explicit retry options. `P4-11` retains
-the query/bulk progress requirements and deferred native Linux measurements.
+production admission and recovery of explicit retry options. P4-11 implements
+immutable query projection and bounded control/bulk progress; the expanded
+native Windows campaign passes. Native Linux benchmark acceptance remains
+deferred until CI is ready.
 
 The process-capacity boundary is executable for this HTTP slice. A resolved
 runtime profile creates one process-owned handle budget, one global resident-byte

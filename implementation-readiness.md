@@ -11,11 +11,13 @@ events, complete registry-backed retry admission, active option restart replay,
 active source replacement outcome handling, and per-client RPC budget
 reservation. Phase 4B implements these six repairs and completes the runtime
 option, configuration, session, interface and slow-slot integration gates.
-Query projection outside the control owner and bounded progress for other
-synchronous/bulk mutations remain open under `P4-11`. Native Windows benchmarks
-pass all four transports for status/global-template calls. Native Linux
-benchmark acceptance is deferred at the user's request until CI is ready; release matrix
-work remains governed by the exit criteria below and `implementation-plan.md`.
+P4-11 control progress at `d13547b` adds immutable query projection outside
+the control owner, one managed runtime, nonblocking mutation/admission continuations, and
+bounded bulk progress with later per-task intent taking precedence. The expanded
+Windows campaign is tracked separately from the historical status/global-template
+report. Native Linux benchmark acceptance stays deferred at the user's request
+until CI is ready; release matrix work remains governed by the exit criteria
+below and `implementation-plan.md`.
 
 This document is the handoff checklist from architecture design to detailed
 module design and implementation.
@@ -331,17 +333,22 @@ persistence coverage remain required when implementing these repairs.
 
 ### Phase 4B Completion Evidence
 
-As of September 13, 2026, `P4-01` through `P4-10` are implemented and tested.
-The native Windows measurement portion of `P4-11` passes. The user explicitly
+`P4-01` through `P4-10` are implemented and tested. The P4-11 control-progress
+implementation adds immutable query roots, two bounded projection slots, one
+managed urgent/bulk runtime, nonblocking persistence preludes, filesystem
+preparation outside the owner, and resumable bulk controls. The user explicitly
 deferred native Linux benchmark acceptance until CI is ready; that platform gate stays
 deferred and must not be represented as passing WSL evidence.
 
-`P4-11` also retains implementation/progress requirements: query projection
-still holds the control-owner mutex in `call_shared_with_context`, and the
-benchmarks cover status calls and global-template changes rather than other
-synchronous/bulk mutation paths. Moving projection outside the owner and
-establishing bounded progress for those paths remain open. Passing the recorded
-Windows scenarios does not close the entire gate.
+Deterministic regressions cover queries with the owner locked, stalled filesystem
+and SQLite work, import queue revalidation/fencing, snapshot identity and
+retention, saturation and refund paths, accepted work after the last backend
+handle, and 1,000-task bulk progress with later pause/remove taking precedence.
+Coalescing preserves intervening task actions and rejects overflow instead of
+reordering a later pause ahead of a resume. The expanded Windows campaign adds
+128-row projections, 32-source metadata queries, eight real auxiliary-task
+mutations, and separately timed administrative operations. The September 13
+report is historical and does not validate the current implementation.
 
 The `P4-09` HTTP Basic portion is executable: startup validates the sensitive
 `rpc-secret`/`rpc-user`/`rpc-passwd` CLI and environment settings before bootstrap;
@@ -379,15 +386,25 @@ tests, strict Linux/native Clippy, Linux MSRV 1.88 checking, workspace build,
 formatting, and generated contract verification pass. The session parser also
 passes 2,000 bounded instrumented fuzz smoke runs.
 
-The final workspace run passes 330 engine tests on Linux and 328 on native
-Windows-GNU, together with the core, configuration, runtime, storage, CLI and
-xtask suites and doctests. The ignored child entrypoints are exercised by their
-parent crash tests. Linux/native Windows workspace builds and strict all-target,
-all-feature Clippy, Linux MSRV 1.88 checking, formatting and generated contract
-verification pass. Generated inventories cover 50 reviewed options. All eight
-fuzz targets pass 2,000-run AddressSanitizer/coverage smoke checks each; coverage
-counters were loaded. These bounded runs complement the regression and crash
-suites and do not replace longer native CI campaigns.
+Linux-under-WSL and native Windows workspace builds, tests and strict all-target,
+all-feature Clippy cover the implementation, with the 1,000-task stress case
+run separately. The final workspace runs pass 348 engine tests on Linux and
+346 on Windows; adding the separately passing stress case gives 349 and 347.
+Linux MSRV 1.88 checking, formatting, generated contracts and
+the exact rusqlite feature graph also pass. Generated inventories still cover
+50 reviewed options. The current RPC JSON, session-document and URL-rule fuzz
+targets each pass 2,000 AddressSanitizer/coverage smoke runs in four 500-run
+bursts with 250 ms cooldowns; counters were loaded. The prior September 13
+checkpoint records the broader eight-target smoke campaign. These bounded
+runs complement the regression and crash suites and do not replace longer
+native CI campaigns.
+
+The expanded native Windows campaign passes all four 20,000-call transport
+scenarios and the 128-task administrative scenario. Worst ordinary operation p99
+is 37.543 ms; the longest measured burst is 421 ms; sampled working set stays
+below 140 MiB. The [validation record](performance-evidence/p4-11-validation-2026-09-14.md)
+separates passing evidence, the retained failed preliminary run, and the native
+Linux acceptance gate deferred until CI is ready.
 
 | Gate | Status And Evidence |
 | --- | --- |
@@ -395,7 +412,7 @@ suites and do not replace longer native CI campaigns.
 | `P4-08` Session compatibility | Closed. Linux/native Windows tests and Linux MSRV checking pass as recorded above. Configured aria2/JSON export, explicit/periodic/shutdown saves, local input and typed Rust operations share bounded sanitized documents. Whole-document validation, atomic batch metadata, disconnect retention and crash tests prevent invalid task prefixes and partial exports. |
 | `P4-09` Public interfaces | Closed. CLI, HTTP, WebSocket, both stdio framings and typed Rust queries/mutations share the dispatcher. `every_advertised_method_executes_or_reports_its_disabled_protocol`, combined-transport/EOF integration tests, native parity and credit exhaustion, authenticated filters, diagnostics, and all compatibility modes pass success/rejection coverage. |
 | `P4-10` Slow-slot scheduling | Closed. Default `off`, demote/pause, queue ordering, cooldown, user precedence, recovery and concurrent local-pressure guards are covered. `slow_remote_workers_free_slots_and_user_controls_override_cooldown` and `retry_wait_slot_policy_uses_real_worker_deadlines` pass. Automatic retry readmission preserves range deadlines and attempt counts under unchanged snapshots; strict generation rejection remains tested. |
-| `P4-11` Performance and platform evidence | Open for query projection outside the owner and bounded progress for other synchronous/bulk mutations. Native Windows status/global-template measurements pass; native Linux measurements are deferred until CI is ready. All four optimized Windows scenarios complete 20,000 calls with 1,000 real active ranges, renewed barriers after warm-up, per-status connection checks and stalled event/response consumers. Worst p99 is 0.542 ms; longest burst is 343 ms; sampled working set is below 129 MiB and all reservations stay bounded. [Reports and limits](performance-profiles.md#native-windows-control-plane-evidence). Local build/test/lint/MSRV/contracts/fuzz evidence passes; the manual Linux workflow requires a native CI result. |
+| `P4-11` Performance and platform evidence | Implementation and expanded native Windows campaign pass: immutable queries outside the owner, one managed runtime, nonblocking mutation/admission work, bounded bulk continuation, later-action precedence, and cancellation ownership. Four transports each complete 20,000 measured calls under 1,000 active ranges; worst operation p99 is 37.543 ms and longest burst 421 ms. The separate 128-task administrative scenario also passes. [Reports and limits](performance-profiles.md#native-windows-control-plane-evidence). Native Linux acceptance stays deferred until CI is ready; the full platform gate remains open. |
 
 The session schema stays at v2 and journal replay remains strict. Native disk
 backend additions, hardware poweroff, release packaging, and tagging remain
