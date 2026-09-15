@@ -1,5 +1,22 @@
 # Detailed Storage And Journal Design
 
+Phase 5 adds immutable verification manifests before any dependent lease.
+Required record numbers 27/28 carry a canonical manifest and bounded
+continuations; 29 binds FTP/SFTP source validators; 30 records successful
+whole-file verification. Existing record numbers and v1 framing retain their
+meanings. Manifests bind length, verification geometry and every required
+digest. A missing, incomplete or mismatched manifest cannot authorize recovery
+or network writes. Contributors cover the complete chunk without overlap;
+`PieceFailed` invalidates its contributor set as well as verification evidence.
+Implementation and acceptance are tracked in `detailed-protocol-transfers.md`.
+
+Required records 31/32 carry `HostKeyState` and `MetadataComplete`. A trust
+decision must match an earlier pending challenge in the drained generation;
+a generic pause cannot authorize a pin. Metadata completion binds the original
+option snapshot, document digest and ordered children, and requires the
+recorded layout when XML is retained. Invalid transitions stop semantic replay
+at the preceding valid record.
+
 Managed HTTP workers keep the journal appender on the native session owner
 throughout a transfer. Storage appends and flushes use its bounded typed command
 queue, so an active option snapshot and piece evidence share one serialized
@@ -15,7 +32,7 @@ Status: first-slice implementation in progress. Portable NFC path validation,
 persisted root/file identity binding, immutable layout hashing, and global
 offset mapping are implemented. Journal v1 segment/record framing, CRC-32C and
 commit validation, linked rotation, bounded replay, and valid-prefix recovery
-are executable. Exact typed payload codecs cover all 26 v1 records, including
+are executable. Exact typed payload codecs cover all 32 v1 records, including
 bounded option maps, chunked layouts, finalization paths, checkpoint
 `PieceStateChunk` bitmaps/evidence runs, and the bounded `HttpStrongValidator`
 and `HttpRangeIdentity` payloads. Policy-gated cross-record recovery now
@@ -594,8 +611,10 @@ DurableEvidenceRun first_piece_delta:u32, piece_count:u32,
                  digest_value_len:u16, digest_values:Bytes
 ```
 
-Version-1 enum tags are 1-based and closed; zero and unlisted values are
-invalid. The executable mapping is generated in `generated/journal_v1.json`:
+The original version-1 enum tags below are 1-based and closed; zero and unlisted
+values are invalid. The executable mapping is generated in
+`generated/journal_v1.json`. The new `HostKeyState.decision` field explicitly
+uses `0=pending`, `1=approved`, and `2=rejected`:
 
 - `durability`: `1=fast`, `2=balanced`, `3=strict`;
 - `OptionsSnapshot.scope`: `1=current_generation`, `2=next_admission`;
@@ -674,6 +693,12 @@ Record types (first slice; the number is the version-1 `record_type` value):
 24  PieceStateChunk     (checkpoint-only compact durable-piece state)
 25  HttpStrongValidator (strong ETag/resource binding for HTTP resume)
 26  HttpRangeIdentity   (bounded digest/length binding for HTTP resume)
+27  VerificationManifest (first part of the immutable checksum manifest)
+28  VerificationManifestChunk (ordered manifest continuation)
+29  ProtocolValidator   (source-local FTP/FTPS/SFTP resume evidence)
+30  WholeFileVerified   (all required whole-file checksums matched)
+31  HostKeyState        (exact pending challenge and trust decision)
+32  MetadataComplete    (atomic Metalink parent/child expansion completed)
 ```
 
 The payload of every first-version record is normative:
@@ -706,6 +731,35 @@ The payload of every first-version record is normative:
 | `PieceStateChunk` | `layout_hash:Hash32`, `root_binding_hash:Hash32`, `chunk_index:u32`, `chunk_count:u32`, `first_piece_id:Id`, `covered_piece_count:u32`, `durable_bitmap:Bytes`, `evidence_run_count:u32`, repeated `DurableEvidenceRun` |
 | `HttpStrongValidator` | `resource_fingerprint:Hash32`, `validator_fingerprint:Hash32`, `total_length:u64`, `etag:Bytes` (bounded strong ETag; exact bytes are retained for `If-Range`) |
 | `HttpRangeIdentity` | `identity_fingerprint:Hash32`, `total_length:u64`, `representation_digest:Digest` (SHA-256 only; the fingerprint is domain-separated over the digest and exact length) |
+| `VerificationManifest` | `fingerprint:Hash32`, `total_bytes:u32`, `chunk_count:u32`, `bytes:Bytes` |
+| `VerificationManifestChunk` | `fingerprint:Hash32`, `chunk_index:u32`, `chunk_count:u32`, `bytes:Bytes` |
+| `ProtocolValidator` | `protocol:u8`, `source:Hash32`, `total_length:u64`, `modified_unix_seconds:OptionalU64`, `host_key_present:u8`, optional `host_key:Hash32` |
+| `WholeFileVerified` | `fingerprint:Hash32`, `digest_count:u8`, repeated `Digest` (at most two) |
+| `HostKeyState` | `decision:u8`, `challenge_id:[u8;16]`, `canonical_host:Bytes`, `port:u16`, `algorithm:Bytes`, `fingerprint_sha256:[u8;32]`, `presented_public_key:Bytes`, `created_ms:u64` |
+| `MetadataComplete` | `expansion:Bytes` (canonical UTF-8 expansion, at most 64 KiB), `completed_at_unix_ms:u64` |
+
+Manifest parts carry at most 64 KiB each and reassemble to at most 64 MiB.
+The canonical manifest encodes `version:u8=1`, `total_length:u64`,
+`chunk_length:u64`, `chunk_digest_count:u32`, `whole_digest_count:u8`, then
+chunk digests followed by whole-file digests. Each digest has an algorithm byte
+(`1=md5`, `2=sha-1`, `3=sha-256`, `4=sha-512`) and its exact fixed-length value.
+There are at most 1,048,576 chunk digests and two whole-file requirements.
+`fingerprint` is SHA-256 over `ariax/verification-manifest/v1\0` followed by
+these canonical bytes. Replay completes the ordered manifest and checks its
+fingerprint before accepting dependent leases or verification evidence.
+
+`ProtocolValidator.protocol` uses `1=ftp`, `2=ftps`, `3=sftp`. Only SFTP has
+the required host-key hash. The source hash and modification time are
+source-local resume evidence, not cross-mirror content identity.
+
+The expansion text is
+`1|parent_gid|generation|snapshot_hash|document_hash|document_bytes|retained|child_gids`.
+Hashes are hexadecimal, `retained` is `0` or `1`, and child GIDs form an ordered
+comma-separated list of 1–1,000 distinct IDs excluding the parent. Replay binds
+the expansion to the exact parent generation and option snapshot. Retained XML
+also requires its matching layout; metadata-only completion cannot manufacture
+file durability. Approved or rejected trust requires the exact retained pending
+challenge, including its bounded public key.
 
 `validator_fingerprint` is a fixed hash of the canonical validator tuple, not a
 raw cookie, credential, or header block. `contributors_hash` covers the sorted

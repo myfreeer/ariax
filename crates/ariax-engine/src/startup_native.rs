@@ -239,7 +239,9 @@ where
         updated_ms: u64,
         recovery_created_at_unix_ms: u64,
     ) -> Self {
-        let initial_fault = if !reconciliation.queue_session_repairs.is_empty()
+        let initial_fault = if !reconciliation.host_key_resolutions.is_empty()
+            || !reconciliation.host_key_challenge_repairs.is_empty()
+            || !reconciliation.queue_session_repairs.is_empty()
             || !reconciliation.terminal_session_repairs.is_empty()
             || !reconciliation.authority_repairs.is_empty()
         {
@@ -845,6 +847,8 @@ mod tests {
 
     fn empty_reconciliation() -> StartupReconciliation {
         StartupReconciliation {
+            host_key_resolutions: Vec::new(),
+            host_key_challenge_repairs: Vec::new(),
             scheduler_batch: SchedulerRestoreBatch::new(
                 Vec::new(),
                 ALL_QUEUE_CLASSES

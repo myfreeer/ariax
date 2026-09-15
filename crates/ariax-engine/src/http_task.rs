@@ -1,4 +1,4 @@
-//! Immutable public HTTP task specifications and their bounded process catalog.
+//! Immutable shared transfer specifications; historical HTTP names are retained.
 
 use crate::http_retry::{
     HttpRetryAfterPolicy, HttpRetryBackoff, HttpRetryPolicy, HttpRetryProfile, HttpRetryStatusSet,
@@ -154,6 +154,7 @@ impl HttpMirrorIdentityPolicy {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HttpTaskOptions {
+    pub transfer: crate::TransferOptions,
     pub split: NonZeroUsize,
     pub max_connections_per_server: NonZeroUsize,
     pub min_split_size: u64,
@@ -182,6 +183,7 @@ pub struct HttpTaskOptions {
 impl Default for HttpTaskOptions {
     fn default() -> Self {
         Self {
+            transfer: crate::TransferOptions::default(),
             split: NonZeroUsize::new(DEFAULT_HTTP_SPLIT).expect("default split is nonzero"),
             max_connections_per_server: NonZeroUsize::new(DEFAULT_HTTP_MAX_CONNECTIONS_PER_SERVER)
                 .expect("default per-server connection count is nonzero"),
@@ -202,12 +204,16 @@ impl Default for HttpTaskOptions {
 
 impl HttpTaskOptions {
     fn validate(&self) -> Result<(), HttpTaskSpecError> {
+        self.transfer.validate()?;
         if self.split.get() > MAX_HTTP_TASK_SOURCES
             || self.max_connections_per_server.get() > MAX_HTTP_TASK_SOURCES
             || self.min_split_size < DEFAULT_HTTP_PIECE_LENGTH
-            || self.piece_length < DEFAULT_HTTP_PIECE_LENGTH
+            || self.piece_length == 0
+            || (self.transfer.verification_fingerprint.is_none()
+                && self.piece_length < DEFAULT_HTTP_PIECE_LENGTH)
             || self.piece_length > MAX_HTTP_PIECE_LENGTH
-            || !self.piece_length.is_power_of_two()
+            || (self.transfer.verification_fingerprint.is_none()
+                && !self.piece_length.is_power_of_two())
             || self.connect_timeout.is_zero()
             || self.response_head_timeout.is_zero()
             || self.response_body_timeout.is_zero()
@@ -262,9 +268,10 @@ impl HttpTaskOptions {
         if let Some(retry) = &self.retry {
             entries.extend(retry_sanitized_entries(retry));
         }
-        if let Some(checksum) = self.checksum {
+        if let Some(checksum) = self.content_checksum() {
             entries.push(("checksum".to_owned(), checksum.canonical()));
         }
+        entries.extend(self.transfer.persisted());
         SanitizedOptionMap::new(entries).map_err(|_| HttpTaskSpecError::InvalidOptions)
     }
 
@@ -342,15 +349,20 @@ impl HttpTaskOptions {
                     };
                 }
                 "checksum" => {
-                    value.checksum = Some(
-                        HttpContentChecksum::parse(setting)
-                            .map_err(|_| HttpTaskSpecError::InvalidOptions)?,
-                    );
+                    value.set_content_checksum(setting)?;
                 }
                 // Task placement is persisted in the same atomic option
                 // snapshot but is owned by `HttpTaskSpec`, not this protocol
                 // tuning structure.
-                "out" => {}
+                "out" | "metalink-file-index" => {}
+                // Shared trust recovery can install this safe, typed pin even
+                // when this build cannot start SFTP connections.
+                "sftp-host-key-sha256" => value.transfer.set(name, setting)?,
+                _ if crate::TransferOptions::handles(name)
+                    || matches!(name, "verification-manifest" | "metalink-expansion") =>
+                {
+                    value.transfer.set(name, setting)?
+                }
                 _ => return Err(HttpTaskSpecError::InvalidOptions),
             }
         }
@@ -556,6 +568,8 @@ fn parse_retry_duration(value: &str) -> Result<Duration, HttpTaskSpecError> {
 
 #[derive(Clone, Eq, PartialEq)]
 pub struct HttpSourceSpec {
+    protocol: crate::TransferProtocol,
+    credentials: Option<crate::TransferCredentials>,
     id: UriId,
     uri: Option<Arc<str>>,
     persistence_safe_uri: Option<Arc<str>>,
@@ -565,6 +579,12 @@ pub struct HttpSourceSpec {
 }
 
 impl HttpSourceSpec {
+    pub const fn protocol(&self) -> crate::TransferProtocol {
+        self.protocol
+    }
+    pub fn credentials(&self) -> Option<&crate::TransferCredentials> {
+        self.credentials.as_ref()
+    }
     #[must_use]
     pub const fn id(&self) -> UriId {
         self.id
@@ -612,6 +632,7 @@ impl fmt::Debug for HttpSourceSpec {
         formatter
             .debug_struct("HttpSourceSpec")
             .field("id", &self.id)
+            .field("protocol", &self.protocol)
             .field("persistence_safe_uri", &self.persistence_safe_uri)
             .field("priority", &self.priority)
             .field("needs_credentials", &self.needs_credentials)
@@ -619,7 +640,7 @@ impl fmt::Debug for HttpSourceSpec {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct HttpTaskSpec {
     task: TaskId,
     gid: Gid,
@@ -627,7 +648,23 @@ pub struct HttpTaskSpec {
     output_root: Arc<PathBuf>,
     output: SafeRelativePath,
     options: HttpTaskOptions,
+    verification: Option<Arc<crate::VerificationManifest>>,
+    metalink_index: Option<u32>,
+    metadata_charge: Option<Arc<crate::HttpIngressPermit>>,
 }
+impl PartialEq for HttpTaskSpec {
+    fn eq(&self, other: &Self) -> bool {
+        self.task == other.task
+            && self.gid == other.gid
+            && self.sources == other.sources
+            && self.output_root == other.output_root
+            && self.output == other.output
+            && self.options == other.options
+            && self.verification == other.verification
+            && self.metalink_index == other.metalink_index
+    }
+}
+impl Eq for HttpTaskSpec {}
 
 impl HttpTaskSpec {
     fn retained_bytes(&self) -> usize {
@@ -642,14 +679,31 @@ impl HttpTaskSpec {
                     .map(|part| part.len().saturating_add(128))
                     .sum::<usize>(),
             );
-        self.sources
-            .iter()
-            .fold(paths.saturating_add(2048), |bytes, source| {
+        self.sources.iter().fold(
+            paths
+                .saturating_add(2048)
+                .saturating_add(self.options.transfer.retained_bytes())
+                .saturating_add(
+                    self.verification
+                        .as_ref()
+                        .map_or(0, |manifest| manifest.retained_bytes()),
+                ),
+            |bytes, source| {
                 bytes
                     .saturating_add(256)
+                    .saturating_add(source.credentials().map_or(0, |credentials| {
+                        credentials
+                            .username
+                            .len()
+                            .saturating_add(
+                                credentials.password.as_ref().map_or(0, |value| value.len()),
+                            )
+                            .saturating_add(64)
+                    }))
                     .saturating_add(source.uri().map_or(0, str::len))
                     .saturating_add(source.persistence_safe_uri().map_or(0, str::len))
-            })
+            },
+        )
     }
 
     pub fn new(
@@ -671,12 +725,47 @@ impl HttpTaskSpec {
             if sources.len() == MAX_HTTP_TASK_SOURCES {
                 return Err(HttpTaskSpecError::TooManySources);
             }
+            let mut uri_text = uri_text;
+            let initial: Uri = uri_text
+                .parse()
+                .map_err(|_| HttpTaskSpecError::InvalidUri)?;
+            let protocol = crate::TransferProtocol::parse(
+                initial
+                    .scheme_str()
+                    .ok_or(HttpTaskSpecError::UnsupportedScheme)?,
+            )?;
+            if !protocol.enabled() {
+                return Err(HttpTaskSpecError::UnsupportedScheme);
+            }
+            let credentials = if !protocol.is_http() {
+                let mut url =
+                    url::Url::parse(&uri_text).map_err(|_| HttpTaskSpecError::InvalidUri)?;
+                if url.query().is_some() || url.fragment().is_some() {
+                    return Err(HttpTaskSpecError::InvalidUri);
+                }
+                crate::transfer_task::decode_uri_component(url.path())?;
+                let credentials = if !url.username().is_empty() || url.password().is_some() {
+                    Some(crate::TransferCredentials::new(
+                        crate::transfer_task::decode_uri_component(url.username())?,
+                        url.password()
+                            .map(crate::transfer_task::decode_uri_component)
+                            .transpose()?,
+                    )?)
+                } else {
+                    None
+                };
+                url.set_username("")
+                    .map_err(|_| HttpTaskSpecError::InvalidUri)?;
+                url.set_password(None)
+                    .map_err(|_| HttpTaskSpecError::InvalidUri)?;
+                uri_text = url.to_string();
+                credentials
+            } else {
+                None
+            };
             let uri: Uri = uri_text
                 .parse()
                 .map_err(|_| HttpTaskSpecError::InvalidUri)?;
-            if !matches!(uri.scheme_str(), Some("http" | "https")) {
-                return Err(HttpTaskSpecError::UnsupportedScheme);
-            }
             let authority = uri.authority().ok_or(HttpTaskSpecError::MissingAuthority)?;
             if authority.as_str().contains('@') {
                 return Err(HttpTaskSpecError::UserInfoForbidden);
@@ -694,11 +783,20 @@ impl HttpTaskSpec {
             let persistence_safe_uri =
                 ariax_storage::uri_is_safe_to_persist(&canonical).then(|| canonical.clone());
             sources.push(HttpSourceSpec {
+                protocol,
                 id,
                 redacted_fingerprint: source_fingerprint(&canonical),
                 uri: Some(canonical),
                 priority,
-                needs_credentials: needs_credentials || persistence_safe_uri.is_none(),
+                needs_credentials: needs_credentials
+                    || persistence_safe_uri.is_none()
+                    || credentials.is_some()
+                    || (!protocol.is_http()
+                        && (options.transfer.credentials.is_some()
+                            || options.transfer.netrc_path.is_some()
+                            || options.transfer.sftp_private_key.is_some()
+                            || options.transfer.sftp_use_agent)),
+                credentials,
                 persistence_safe_uri,
             });
         }
@@ -712,6 +810,9 @@ impl HttpTaskSpec {
             output_root: Arc::new(output_root),
             output,
             options,
+            verification: None,
+            metalink_index: None,
+            metadata_charge: None,
         })
     }
 
@@ -739,6 +840,7 @@ impl HttpTaskSpec {
         let mut ids = BTreeSet::new();
         let mut sources = Vec::with_capacity(records.len());
         for record in records {
+            let mut protocol = crate::TransferProtocol::Http;
             if !ids.insert(record.uri_id) {
                 return Err(HttpTaskSpecError::DuplicateSource);
             }
@@ -747,7 +849,11 @@ impl HttpTaskSpec {
                     return Err(HttpTaskSpecError::InvalidUri);
                 }
                 let uri: Uri = text.parse().map_err(|_| HttpTaskSpecError::InvalidUri)?;
-                if !matches!(uri.scheme_str(), Some("http" | "https")) {
+                protocol = crate::TransferProtocol::parse(
+                    uri.scheme_str()
+                        .ok_or(HttpTaskSpecError::UnsupportedScheme)?,
+                )?;
+                if !protocol.enabled() {
                     return Err(HttpTaskSpecError::UnsupportedScheme);
                 }
                 if uri.authority().is_none() {
@@ -759,6 +865,8 @@ impl HttpTaskSpec {
             let persistence_safe_uri: Option<Arc<str>> =
                 record.persistence_safe_uri.map(Into::into);
             sources.push(HttpSourceSpec {
+                protocol,
+                credentials: None,
                 id: UriId::new(record.uri_id),
                 uri: (!record.needs_credentials)
                     .then(|| persistence_safe_uri.clone())
@@ -776,6 +884,9 @@ impl HttpTaskSpec {
             output_root: Arc::new(output_root),
             output,
             options,
+            verification: None,
+            metalink_index: None,
+            metadata_charge: None,
         })
     }
 
@@ -809,12 +920,75 @@ impl HttpTaskSpec {
         &self.options
     }
 
+    pub fn verification(&self) -> Option<&Arc<crate::VerificationManifest>> {
+        self.verification.as_ref()
+    }
+    pub(crate) fn has_strict_content_identity(&self) -> bool {
+        self.verification()
+            .is_some_and(|manifest| manifest.proves_strict_identity())
+            || self.options().content_checksum().is_some_and(|checksum| {
+                matches!(
+                    checksum,
+                    crate::ContentChecksum::Sha256(_) | crate::ContentChecksum::Sha512(_)
+                )
+            })
+    }
+    pub const fn metalink_index(&self) -> Option<u32> {
+        self.metalink_index
+    }
+    pub fn with_verification(
+        mut self,
+        manifest: Arc<crate::VerificationManifest>,
+        index: Option<u32>,
+    ) -> Result<Self, HttpTaskSpecError> {
+        if self
+            .options
+            .transfer
+            .verification_fingerprint
+            .is_some_and(|hash| hash != manifest.fingerprint())
+        {
+            return Err(HttpTaskSpecError::InvalidOptions);
+        }
+        self.options.transfer.verification_fingerprint = Some(manifest.fingerprint());
+        self.options.piece_length = manifest.chunk_length();
+        self.metadata_charge = None;
+        self.verification = Some(manifest);
+        self.metalink_index = index;
+        self.options.validate()?;
+        Ok(self)
+    }
+
+    pub(crate) fn with_source_priorities(
+        mut self,
+        priorities: &[i64],
+    ) -> Result<Self, HttpTaskSpecError> {
+        if priorities.len() != self.sources.len() {
+            return Err(HttpTaskSpecError::InvalidOptions);
+        }
+        for (source, priority) in Arc::make_mut(&mut self.sources).iter_mut().zip(priorities) {
+            source.priority = *priority;
+        }
+        Ok(self)
+    }
+
+    pub fn requires_protocol_dispatch(&self) -> bool {
+        self.verification.is_some()
+            || self.options.transfer.checksum.is_some()
+            || self.sources.iter().any(|source| !source.protocol.is_http())
+    }
+
     pub(crate) fn with_options(
         &self,
         output: SafeRelativePath,
         options: HttpTaskOptions,
     ) -> Result<Self, HttpTaskSpecError> {
         options.validate()?;
+        if self.verification.is_some()
+            && (options.piece_length != self.options.piece_length
+                || options.content_checksum() != self.options.content_checksum())
+        {
+            return Err(HttpTaskSpecError::InvalidOptions);
+        }
         Ok(Self {
             task: self.task,
             gid: self.gid,
@@ -822,6 +996,9 @@ impl HttpTaskSpec {
             output_root: self.output_root.clone(),
             output,
             options,
+            verification: self.verification.clone(),
+            metalink_index: self.metalink_index,
+            metadata_charge: None,
         })
     }
 
@@ -838,7 +1015,11 @@ impl HttpTaskSpec {
         SanitizedOptionMap::new(
             base.entries()
                 .map(|(name, value)| (name.to_owned(), value.to_owned()))
-                .chain([("out".to_owned(), self.output.canonical_string())]),
+                .chain([("out".to_owned(), self.output.canonical_string())])
+                .chain(
+                    self.metalink_index
+                        .map(|index| ("metalink-file-index".to_owned(), index.to_string())),
+                ),
         )
         .map_err(|_| HttpTaskSpecError::InvalidOptions)
     }
@@ -899,9 +1080,44 @@ pub struct HttpTaskCatalog {
     by_task: BTreeMap<TaskId, Arc<HttpTaskSpec>>,
     by_gid: BTreeMap<Gid, TaskId>,
     retained_bytes: usize,
+    metadata_budget: crate::HttpIngressBudgets,
 }
 
 impl HttpTaskCatalog {
+    pub(crate) fn reserve_spec(
+        &self,
+        mut spec: HttpTaskSpec,
+    ) -> Result<HttpTaskSpec, HttpTaskCatalogError> {
+        if spec.metadata_charge.is_none() {
+            spec.metadata_charge = Some(Arc::new(
+                self.metadata_budget
+                    .try_acquire(spec.retained_bytes())
+                    .map_err(|_| HttpTaskCatalogError::Full)?,
+            ));
+        }
+        Ok(spec)
+    }
+    fn set_metadata_budget(
+        &mut self,
+        budget: crate::HttpIngressBudgets,
+    ) -> Result<(), HttpTaskCatalogError> {
+        let mut tasks = BTreeMap::new();
+        for (id, spec) in &self.by_task {
+            let mut replacement = spec.as_ref().clone();
+            replacement.metadata_charge = Some(Arc::new(
+                budget
+                    .try_acquire(spec.retained_bytes())
+                    .map_err(|_| HttpTaskCatalogError::Full)?,
+            ));
+            tasks.insert(*id, Arc::new(replacement));
+        }
+        self.metadata_budget = budget;
+        self.by_task = tasks;
+        Ok(())
+    }
+    pub(crate) fn entries(&self) -> impl Iterator<Item = &Arc<HttpTaskSpec>> {
+        self.by_task.values()
+    }
     pub(crate) const fn retained_bytes(&self) -> usize {
         self.retained_bytes
     }
@@ -913,6 +1129,7 @@ impl HttpTaskCatalog {
             by_task: BTreeMap::new(),
             by_gid: BTreeMap::new(),
             retained_bytes: 0,
+            metadata_budget: crate::HttpIngressBudgets::new(64 * 1024 * 1024),
         }
     }
 
@@ -926,6 +1143,7 @@ impl HttpTaskCatalog {
         if self.by_task.contains_key(&spec.task) || self.by_gid.contains_key(&spec.gid) {
             return Err(HttpTaskCatalogError::Collision);
         }
+        let spec = self.reserve_spec(spec)?;
         self.retained_bytes = self.retained_bytes.saturating_add(spec.retained_bytes());
         let spec = Arc::new(spec);
         self.by_gid.insert(spec.gid, spec.task);
@@ -958,6 +1176,7 @@ impl HttpTaskCatalog {
         {
             return Err(HttpTaskCatalogError::Collision);
         }
+        let spec = self.reserve_spec(spec)?;
         self.retained_bytes = self
             .retained_bytes
             .saturating_sub(self.by_task[&spec.task].retained_bytes())
@@ -995,6 +1214,12 @@ pub struct SharedHttpTaskCatalog {
 }
 
 impl SharedHttpTaskCatalog {
+    pub(crate) fn set_metadata_budget(
+        &self,
+        budget: crate::HttpIngressBudgets,
+    ) -> Result<(), HttpTaskCatalogError> {
+        Arc::make_mut(&mut write_unpoisoned(&self.inner)).set_metadata_budget(budget)
+    }
     /// Captures immutable metadata without copying task payloads.
     pub(crate) fn snapshot(&self) -> Arc<HttpTaskCatalog> {
         Arc::clone(&read_unpoisoned(&self.inner))
@@ -1062,6 +1287,57 @@ fn source_fingerprint(uri: &str) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn persisted_host_pin_restores_in_every_feature_bundle_and_rejects_malformed_values() {
+        let pin = "05".repeat(32);
+        let snapshot =
+            SanitizedOptionMap::new([("sftp-host-key-sha256".to_owned(), pin.clone())]).unwrap();
+        let restored = HttpTaskOptions::from_sanitized(&snapshot).unwrap();
+        assert_eq!(restored.transfer.sftp_host_key_sha256, Some(pin));
+        assert!(restored.transfer.sftp_check_host_key);
+        for pin in ["05".repeat(31), "zz".repeat(32), "05".repeat(33)] {
+            let snapshot =
+                SanitizedOptionMap::new([("sftp-host-key-sha256".to_owned(), pin)]).unwrap();
+            assert!(HttpTaskOptions::from_sanitized(&snapshot).is_err());
+        }
+        if !cfg!(feature = "sftp") {
+            assert!(!crate::TransferOptions::handles("sftp-host-key-sha256"));
+        }
+    }
+
+    #[test]
+    fn catalog_reservations_include_live_authority_and_survive_removal() {
+        let mut options = HttpTaskOptions::default();
+        options.transfer.credentials = Some(
+            crate::TransferCredentials::new("user".into(), Some("secret".repeat(512))).unwrap(),
+        );
+        options.transfer.sftp_private_key = Some("private-key".repeat(300).into());
+        options.transfer.sftp_host_key = Some("key".repeat(1000));
+        let spec = HttpTaskSpec::new(
+            task(1),
+            gid(1),
+            ["https://example.test/file".to_owned()],
+            std::env::current_dir().unwrap(),
+            output(),
+            options,
+            false,
+        )
+        .unwrap();
+        assert!(spec.retained_bytes() > 15_000);
+        let budget = crate::HttpIngressBudgets::new(spec.retained_bytes());
+        let catalog = SharedHttpTaskCatalog::new(NonZeroUsize::new(2).unwrap());
+        catalog.set_metadata_budget(budget.clone()).unwrap();
+        let held = catalog.insert(spec.clone()).unwrap();
+        assert_eq!(budget.used(), budget.limit());
+        let replacement = spec.with_options(output(), spec.options.clone()).unwrap();
+        assert!(catalog.replace(replacement).is_err());
+        assert_eq!(catalog.get(task(1)).unwrap().options(), held.options());
+        catalog.remove(task(1));
+        assert_eq!(budget.used(), budget.limit());
+        drop(held);
+        assert_eq!(budget.used(), 0);
+    }
 
     #[test]
     fn query_sources_remain_live_while_persistence_and_debug_keep_only_placeholders() {
@@ -1322,7 +1598,7 @@ mod tests {
         for (sources, expected) in [
             (Vec::new(), HttpTaskSpecError::NoSources),
             (
-                vec!["ftp://example.com/file".to_owned()],
+                vec!["gopher://example.com/file".to_owned()],
                 HttpTaskSpecError::UnsupportedScheme,
             ),
             (

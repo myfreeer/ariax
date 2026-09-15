@@ -310,6 +310,245 @@ pub fn persisted_option_is_safe(name: &str) -> bool {
 
 /// The first reviewed registry slice. It grows until every upstream and extension option is covered.
 pub const BUILTIN_OPTIONS: &[OptionDef] = &[
+    protocol_option(
+        "realtime-chunk-checksum",
+        ValueType::Bool,
+        Some("true"),
+        "metalink",
+    ),
+    protocol_option(
+        "metalink-chunk-alignment",
+        ValueType::Enum {
+            values: &["auto", "strict", "relaxed"],
+        },
+        Some("auto"),
+        "metalink",
+    ),
+    protocol_option(
+        "follow-metalink",
+        ValueType::Enum {
+            values: &["true", "false", "mem"],
+        },
+        Some("true"),
+        "metalink",
+    ),
+    protocol_option(
+        "uri-selector",
+        ValueType::Enum {
+            values: &["inorder", "feedback", "adaptive"],
+        },
+        Some("feedback"),
+        "transfer",
+    ),
+    protocol_option(
+        "server-stat-timeout",
+        ValueType::Integer {
+            min: 0,
+            max: 31_536_000,
+        },
+        Some("86400"),
+        "transfer",
+    ),
+    protocol_option(
+        "metalink-expansion",
+        ValueType::String { max_len: 65536 },
+        None,
+        "metalink",
+    ),
+    protocol_option(
+        "verification-manifest",
+        ValueType::String { max_len: 64 },
+        None,
+        "verification",
+    ),
+    protocol_option(
+        "metalink-file-index",
+        ValueType::Integer {
+            min: 1,
+            max: 262144,
+        },
+        None,
+        "metalink",
+    ),
+    protocol_option("ftp-pasv", ValueType::Bool, Some("true"), "ftp"),
+    protocol_option("ftp-reuse-connection", ValueType::Bool, Some("true"), "ftp"),
+    protocol_option(
+        "ftp-type",
+        ValueType::Enum {
+            values: &["binary", "ascii"],
+        },
+        Some("binary"),
+        "ftp",
+    ),
+    protocol_option("ftp-ssl", ValueType::Bool, Some("false"), "ftp"),
+    protected_protocol_option(
+        "ftp-user",
+        ValueType::SecretString { max_len: 1024 },
+        "transfer",
+        SecurityClass::Sensitive,
+    ),
+    protected_protocol_option(
+        "ftp-passwd",
+        ValueType::SecretString { max_len: 4096 },
+        "transfer",
+        SecurityClass::Sensitive,
+    ),
+    protected_protocol_option(
+        "netrc-path",
+        ValueType::String { max_len: 4096 },
+        "transfer",
+        SecurityClass::LocalAdmin,
+    ),
+    protocol_option("no-netrc", ValueType::Bool, Some("false"), "transfer"),
+    protected_protocol_option(
+        "ftp-pasv-address",
+        ValueType::Enum {
+            values: &["control-peer", "server"],
+        },
+        "ftp",
+        SecurityClass::LocalAdmin,
+    ),
+    protected_protocol_option(
+        "sftp-known-hosts",
+        ValueType::String { max_len: 4096 },
+        "sftp",
+        SecurityClass::LocalAdmin,
+    ),
+    protected_protocol_option(
+        "sftp-private-key",
+        ValueType::String { max_len: 4096 },
+        "sftp",
+        SecurityClass::LocalAdmin,
+    ),
+    protected_protocol_option(
+        "sftp-private-key-passphrase",
+        ValueType::SecretString { max_len: 4096 },
+        "sftp",
+        SecurityClass::Sensitive,
+    ),
+    protected_protocol_option(
+        "sftp-use-agent",
+        ValueType::Bool,
+        "sftp",
+        SecurityClass::LocalAdmin,
+    ),
+    protocol_option(
+        "sftp-max-outstanding-reads",
+        ValueType::Integer { min: 1, max: 64 },
+        Some("8"),
+        "sftp",
+    ),
+    protocol_option(
+        "sftp-max-read-size",
+        ValueType::SizeBytes {
+            min: 1,
+            max: 1_048_576,
+        },
+        Some("65536"),
+        "sftp",
+    ),
+    protocol_option(
+        "sftp-max-packet-size",
+        ValueType::SizeBytes {
+            min: 1024,
+            max: 1_048_576,
+        },
+        Some("131072"),
+        "sftp",
+    ),
+    protocol_option("sftp-check-host-key", ValueType::Bool, Some("true"), "sftp"),
+    protocol_option(
+        "sftp-host-key",
+        ValueType::String { max_len: 16384 },
+        None,
+        "sftp",
+    ),
+    protocol_option(
+        "sftp-host-key-sha256",
+        ValueType::String { max_len: 64 },
+        None,
+        "sftp",
+    ),
+    protocol_option(
+        "ssh-host-key-md",
+        ValueType::String { max_len: 136 },
+        None,
+        "sftp",
+    ),
+    protocol_option(
+        "metalink-base-uri",
+        ValueType::String { max_len: 16384 },
+        None,
+        "metalink",
+    ),
+    protocol_option(
+        "metalink-language",
+        ValueType::String { max_len: 1024 },
+        None,
+        "metalink",
+    ),
+    protocol_option(
+        "metalink-location",
+        ValueType::String { max_len: 1024 },
+        None,
+        "metalink",
+    ),
+    protocol_option(
+        "metalink-os",
+        ValueType::String { max_len: 1024 },
+        None,
+        "metalink",
+    ),
+    protocol_option(
+        "metalink-version",
+        ValueType::String { max_len: 1024 },
+        None,
+        "metalink",
+    ),
+    protocol_option(
+        "metalink-preferred-protocol",
+        ValueType::Enum {
+            values: &["http", "https", "ftp", "ftps", "sftp"],
+        },
+        None,
+        "metalink",
+    ),
+    protocol_option(
+        "metalink-enable-unique-protocol",
+        ValueType::Bool,
+        Some("true"),
+        "metalink",
+    ),
+    protocol_option(
+        "select-file",
+        ValueType::String { max_len: 65536 },
+        None,
+        "metalink",
+    ),
+    protocol_option(
+        "metadata-max-document-size",
+        ValueType::SizeBytes {
+            min: 1,
+            max: 268435456,
+        },
+        Some("67108864"),
+        "metalink",
+    ),
+    protocol_option(
+        "metadata-max-files",
+        ValueType::Integer {
+            min: 1,
+            max: 262144,
+        },
+        Some("262144"),
+        "metalink",
+    ),
+    protocol_option(
+        "metadata-max-sources",
+        ValueType::Integer { min: 1, max: 1024 },
+        Some("1024"),
+        "metalink",
+    ),
     scheduling_option(
         "slow-slot-policy",
         ValueType::Enum {
@@ -930,7 +1169,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
     OptionDef {
         name: "checksum",
         short: None,
-        value_type: ValueType::String { max_len: 72 },
+        value_type: ValueType::String { max_len: 136 },
         default: None,
         category: "integrity",
         scopes: DOWNLOAD_SCOPES,
@@ -1166,6 +1405,45 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
     },
 ];
 
+const fn protocol_option(
+    name: &'static str,
+    value_type: ValueType,
+    default: Option<&'static str>,
+    owner: &'static str,
+) -> OptionDef {
+    OptionDef {
+        name,
+        short: None,
+        value_type,
+        default,
+        category: "transfer",
+        scopes: DOWNLOAD_SCOPES,
+        runtime_update: RuntimeUpdate::WaitingOnly,
+        owner,
+        build_features: MINIMAL,
+        security: SecurityClass::Normal,
+        compat: PARTIAL,
+        aria2_available: false,
+        aria2_runtime_update: RuntimeUpdate::None,
+        compatibility_difference: CompatibilityDifference::Intentional,
+        docs: "detailed-protocol-transfers.md#scope-and-checkpoints",
+        behavior_tests: NONE,
+    }
+}
+
+const fn protected_protocol_option(
+    name: &'static str,
+    value_type: ValueType,
+    owner: &'static str,
+    security: SecurityClass,
+) -> OptionDef {
+    OptionDef {
+        security,
+        scopes: ScopeSet::one(Scope::Startup).with(Scope::PerDownload),
+        ..protocol_option(name, value_type, None, owner)
+    }
+}
+
 const fn scheduling_option(
     name: &'static str,
     value_type: ValueType,
@@ -1319,7 +1597,7 @@ mod tests {
         assert_eq!(registry.find("split").expect("split").short, Some('s'));
         assert_eq!(
             registry.find("checksum").expect("checksum").value_type,
-            ValueType::String { max_len: 72 }
+            ValueType::String { max_len: 136 }
         );
         assert!(registry.find("missing").is_none());
     }

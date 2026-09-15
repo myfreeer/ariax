@@ -23,11 +23,13 @@ pub const DEFAULT_HTTP_SUPERVISOR_POLL_INTERVAL: Duration = Duration::from_milli
 pub const DEFAULT_HTTP_SUPERVISOR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Successful completion metadata returned by one public HTTP worker.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct HttpWorkerSuccess {
     pub seed: bool,
     /// All ranges are settled and the journal is flushed; retry may release its slot.
     pub retry_at: Option<MonotonicInstant>,
+    /// The worker has drained before yielding this pre-authentication challenge.
+    pub host_key_challenge: Option<ariax_core::PresentedHostKeyChallenge>,
 }
 
 pub type HttpWorkerFuture =
@@ -36,6 +38,9 @@ pub type HttpWorkerFuture =
 /// Factory for one transfer generation. The supervisor owns scheduler event
 /// authorities; workers own only immutable task metadata and cancellation.
 pub trait HttpTaskWorker: Send + Sync + 'static {
+    fn metalink_follow_queue(&self) -> Option<crate::MetalinkFollowQueue> {
+        None
+    }
     fn start(
         &self,
         task: Arc<HttpTaskSpec>,
@@ -492,6 +497,10 @@ impl HttpWorkerSupervisor {
                 |completion| completion.result,
             );
         match result {
+            Ok(HttpWorkerSuccess {
+                host_key_challenge: Some(challenge),
+                ..
+            }) => self.enqueue_event(worker.authority.host_key_challenge(challenge)),
             Ok(HttpWorkerSuccess {
                 retry_at: Some(deadline),
                 ..

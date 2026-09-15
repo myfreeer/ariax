@@ -45,6 +45,12 @@ impl From<ControlJournalAppender> for StorageJournal {
 }
 
 impl StorageJournal {
+    pub(crate) fn last_sequence(&self) -> u64 {
+        match self {
+            Self::Local(journal) => journal.appended_sequence(),
+            Self::Managed { sequence, .. } => *sequence,
+        }
+    }
     pub(crate) fn attached(session: SessionHandle, gid: Gid, sequence: u64) -> Self {
         Self::Managed {
             session,

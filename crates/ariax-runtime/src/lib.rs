@@ -5,6 +5,7 @@
 mod blocking_disk;
 mod budget;
 mod buffer;
+mod cpu;
 mod handle;
 mod profile;
 mod queue;
@@ -32,6 +33,7 @@ pub use buffer::{
     BufferPoolMetrics, BufferState, BufferTransitionError, OwnerTag, PoolError, ReleaseError,
     SizeClass, SizeClassConfig,
 };
+pub use cpu::{CpuError, CpuOutput, CpuPool, CpuPoolConfig, CpuReservation, CpuTask};
 pub use handle::{
     HandleBudgetError, HandleBudgetLimits, HandleBudgets, HandleDomain, HandlePermit,
 };

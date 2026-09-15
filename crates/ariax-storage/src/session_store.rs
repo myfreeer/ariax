@@ -1380,6 +1380,15 @@ impl SessionStore {
         tasks: &[SessionTaskMetadata],
         policy: &impl PersistedOptionPolicy,
     ) -> Result<(), SessionStoreError> {
+        self.create_task_batch_following(tasks, None, policy)
+    }
+
+    pub fn create_task_batch_following(
+        &mut self,
+        tasks: &[SessionTaskMetadata],
+        parent: Option<crate::MetalinkParent>,
+        policy: &impl PersistedOptionPolicy,
+    ) -> Result<(), SessionStoreError> {
         if tasks.is_empty() || tasks.len() > SESSION_MAX_IMPORT_TASKS {
             return Err(SessionStoreError::InvalidRecord("import.task_count"));
         }
@@ -1404,6 +1413,44 @@ impl SessionStore {
             > SESSION_MAX_TASKS
         {
             return Err(SessionStoreError::InvalidRecord("import.task_limit"));
+        }
+        if let Some(parent) = parent {
+            let options = read_task_options(
+                &transaction,
+                parent.gid,
+                OptionsSnapshotScope::CurrentGeneration,
+                policy,
+            )?;
+            let queue: i64 = transaction.query_row(
+                "SELECT queue_state FROM task WHERE gid = ?1",
+                [parent.gid.to_string()],
+                |row| row.get(0),
+            )?;
+            if queue != SessionQueueState::Active as i64
+                || options.snapshot_hash() != parent.snapshot_hash
+                || options
+                    .entries()
+                    .any(|(name, _)| name == crate::METALINK_EXPANSION_OPTION)
+            {
+                return Err(SessionStoreError::InvalidRecord("metalink.parent_changed"));
+            }
+            let expansion = crate::MetalinkExpansion {
+                parent,
+                children: tasks.iter().map(|entry| entry.task.gid).collect(),
+            };
+            if !expansion.validate() {
+                return Err(SessionStoreError::InvalidRecord("metalink.expansion"));
+            }
+            let options = expansion
+                .with_options(&options)
+                .map_err(|_| SessionStoreError::InvalidRecord("metalink.expansion"))?;
+            validate_options_for_persistence(&options, policy)?;
+            replace_task_options_in_transaction(
+                &transaction,
+                parent.gid,
+                OptionsSnapshotScope::CurrentGeneration,
+                &options,
+            )?;
         }
         for (index, entry) in tasks.iter().enumerate() {
             insert_admission_metadata(&transaction, &entry.task, &entry.sources, &entry.options)?;
@@ -2758,6 +2805,15 @@ fn insert_admission_metadata(
     if task_exists(transaction, task.gid)? {
         return Err(SessionStoreError::InvalidRecord("task.gid_exists"));
     }
+    let queue_len: i64 = transaction.query_row(
+        "SELECT COUNT(*) FROM task WHERE queue_state = ?1",
+        [task.queue_state as i64],
+        |row| row.get(0),
+    )?;
+    if i64::from(task.queue_position) > queue_len {
+        return Err(SessionStoreError::InvalidRecord("task.queue_position"));
+    }
+    transaction.execute("UPDATE task SET queue_position = queue_position + 1 WHERE queue_state = ?1 AND queue_position >= ?2", params![task.queue_state as i64, i64::from(task.queue_position)])?;
     transaction.execute(
         "INSERT INTO task(gid, session_id, queue_state, queue_position, desired_paused, slow_original_position, slow_demotion_count, slow_retry_scheduled_at_ms, slow_retry_delay_ms, primary_journal_id, primary_journal_path, replica_journal_path, replica_sequence, root_display, cached_layout_hash, cached_root_binding_hash, cached_snapshot_hash, no_space_target, no_space_scheduled_at_ms, no_space_delay_ms, created_ms, updated_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
         params![

@@ -82,7 +82,9 @@ impl Error for StartupSessionRepairFinishError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RepairPhase {
+    HostKeyResolution,
     Queue,
+    HostKeyChallenge,
     Terminal,
     Authority,
     Complete,
@@ -236,11 +238,16 @@ impl StartupSessionRepairExecutor {
         reconciliation: StartupReconciliation,
         scheduler_config: SchedulerConfig,
     ) -> Self {
+        let phase = if reconciliation.host_key_resolutions.is_empty() {
+            RepairPhase::Queue
+        } else {
+            RepairPhase::HostKeyResolution
+        };
         Self {
             endpoint,
             reconciliation: Some(reconciliation),
             scheduler_config,
-            phase: RepairPhase::Queue,
+            phase,
             index: 0,
             offered: None,
             completion: None,
@@ -329,6 +336,8 @@ impl StartupSessionRepairExecutor {
             .reconciliation
             .take()
             .ok_or(StartupSessionRepairFinishError::NotComplete)?;
+        reconciliation.host_key_resolutions.clear();
+        reconciliation.host_key_challenge_repairs.clear();
         reconciliation.queue_session_repairs.clear();
         reconciliation.terminal_session_repairs.clear();
         reconciliation.authority_repairs.clear();
@@ -348,6 +357,23 @@ impl StartupSessionRepairExecutor {
             .as_ref()
             .ok_or(StartupSessionRepairError::InternalInvariant)?;
         let command = match self.phase {
+            RepairPhase::HostKeyResolution => reconciliation
+                .host_key_resolutions
+                .get(self.index)
+                .cloned()
+                .map(|repair| match repair {
+                    crate::HostKeySessionResolution::Approve(resolution) => {
+                        SessionCommand::ResolveHostKeyChallenge(resolution)
+                    }
+                    crate::HostKeySessionResolution::Reject { gid, challenge_id } => {
+                        SessionCommand::RejectHostKeyChallenge { gid, challenge_id }
+                    }
+                }),
+            RepairPhase::HostKeyChallenge => reconciliation
+                .host_key_challenge_repairs
+                .get(self.index)
+                .cloned()
+                .map(SessionCommand::PutHostKeyChallenge),
             RepairPhase::Queue => reconciliation
                 .queue_session_repairs
                 .get(self.index)
@@ -378,7 +404,9 @@ impl StartupSessionRepairExecutor {
             return Ok(command);
         }
         self.phase = match self.phase {
-            RepairPhase::Queue => RepairPhase::Terminal,
+            RepairPhase::HostKeyResolution => RepairPhase::Queue,
+            RepairPhase::Queue => RepairPhase::HostKeyChallenge,
+            RepairPhase::HostKeyChallenge => RepairPhase::Terminal,
             RepairPhase::Terminal => RepairPhase::Authority,
             RepairPhase::Authority => RepairPhase::Complete,
             RepairPhase::Complete => return Ok(None),
@@ -500,6 +528,8 @@ mod tests {
             updated_ms: 20,
         };
         StartupReconciliation {
+            host_key_resolutions: Vec::new(),
+            host_key_challenge_repairs: Vec::new(),
             scheduler_batch: SchedulerRestoreBatch::new(
                 Vec::new(),
                 [

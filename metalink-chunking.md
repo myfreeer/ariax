@@ -1,6 +1,8 @@
 # Metalink Chunking And Checksums
 
-Status: reviewed pre-implementation contract. Implementation pending.
+Status: implementation is underway under the Phase-5
+[shared transfer gates](detailed-protocol-transfers.md). Verification and parser
+acceptance remain pending until their executable evidence is recorded.
 
 Decision: when Metalink chunk hashes are present and enabled, verification
 chunks are fixed by the Metalink checksum ranges. Network range leases should

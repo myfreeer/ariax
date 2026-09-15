@@ -528,6 +528,20 @@ pub struct ActiveTransferRequest {
 }
 
 impl ActiveTransferRequest {
+    /// The supervisor may consume this only after the worker has joined.
+    pub fn host_key_challenge(
+        self,
+        challenge: PresentedHostKeyChallenge,
+    ) -> RuntimeEventSubmission {
+        RuntimeEventSubmission {
+            event: TaskEvent::ActiveHostKeyChallenge {
+                gid: self.identity.gid,
+                generation: self.identity.generation,
+                challenge,
+            }
+            .for_task(self.identity.task_id),
+        }
+    }
     #[must_use]
     pub const fn task_id(&self) -> TaskId {
         self.identity.task_id

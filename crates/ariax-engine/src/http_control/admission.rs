@@ -5,12 +5,22 @@ use control_io::SessionWrites;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::task::Poll;
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum AdmissionKind {
+    Uri,
+    Session,
+    Metalink,
+    Follow(ariax_storage::MetalinkParent),
+}
+
 struct Preparation {
     configuration: Arc<query::ConfigurationSnapshot>,
     policy: Arc<dyn ariax_storage::PersistedOptionPolicy + Send + Sync>,
     session_id: SessionId,
     next_id: u64,
     scheduler: RequestScheduler,
+    local_admin: bool,
+    tasks: Arc<crate::HttpTaskCatalog>,
 }
 
 struct Member {
@@ -18,11 +28,14 @@ struct Member {
     metadata: SessionTaskMetadata,
     conditions: TaskConditions,
     appender: ControlJournalAppender,
+    requested_position: Option<usize>,
 }
 
 struct Prepared {
     members: Vec<Member>,
     next_id: u64,
+    parent: Option<ariax_storage::MetalinkParent>,
+    parent_spec: Option<Box<HttpTaskSpec>>,
 }
 
 struct Revalidation {
@@ -37,6 +50,7 @@ struct Finalized {
     remaining: VecDeque<ImportMember>,
     result: Value,
     next_id: u64,
+    parent_spec: Option<Box<HttpTaskSpec>>,
 }
 
 enum Stage {
@@ -55,6 +69,7 @@ pub(super) struct PendingAdmission {
     request: crate::rpc_budget::RpcRequestLease,
     writes: SessionWrites,
     installing: Option<HttpTaskSpec>,
+    installing_sequence: u64,
     installation_started: bool,
 }
 
@@ -77,18 +92,19 @@ fn receive<T>(
 }
 
 fn spawn<T: Send + 'static>(
+    pool: &ariax_runtime::CpuPool,
     work: ControlWorkReservation,
     operation: impl FnOnce() -> Result<T, HttpControlError> + Send + 'static,
 ) -> Result<Receiver<Result<T, HttpControlError>>, HttpControlError> {
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-    std::thread::Builder::new()
-        .name("ariax-admission".to_owned())
-        .spawn(move || {
-            let _work = work;
-            let result = operation();
-            let _ = sender.send(result);
-        })
+    let reservation = pool
+        .reserve(64 * 1024)
         .map_err(|_| HttpControlError::Busy)?;
+    drop(reservation.spawn(move || {
+        let _work = work;
+        let result = operation();
+        let _ = sender.send(result);
+    }));
     Ok(receiver)
 }
 
@@ -97,8 +113,10 @@ impl HttpControlPlane {
         &mut self,
         params: Value,
         request: crate::rpc_budget::RpcRequestLease,
-        import: bool,
+        kind: AdmissionKind,
+        local_admin: bool,
     ) -> Result<ControlReply, HttpControlError> {
+        let import = kind != AdmissionKind::Uri;
         if self.pending_admission.is_some()
             || self.pending_configuration.is_some()
             || !self.engine_idle()
@@ -114,16 +132,18 @@ impl HttpControlPlane {
             session_id: self.session_id,
             next_id: self.next_task_id,
             scheduler: self.engine.scheduler().clone(),
+            local_admin,
+            tasks: self.tasks.snapshot(),
         };
         let retained_request = request.clone();
         #[cfg(test)]
         let gate = self.admission_gate.clone();
-        let receiver = spawn(work.clone(), move || {
+        let receiver = spawn(&self.cpu_pool, work.clone(), move || {
             #[cfg(test)]
             if let Some(gate) = gate {
                 gate.wait();
             }
-            preparation.prepare(params, &retained_request, import)
+            preparation.prepare(params, &retained_request, kind)
         })?;
         let (reply, receiver_reply) = oneshot::channel();
         self.pending_admission = Some(PendingAdmission {
@@ -134,6 +154,7 @@ impl HttpControlPlane {
             request,
             writes: SessionWrites::default(),
             installing: None,
+            installing_sequence: 0,
             installation_started: false,
         });
         Ok(ControlReply::Deferred(receiver_reply))
@@ -196,6 +217,15 @@ impl HttpControlPlane {
                 {
                     return Ok(false);
                 }
+                if let Some(parent) = prepared.parent
+                    && self.engine.scheduler().task(parent.gid).is_none_or(|task| {
+                        task.generation != parent.generation
+                            || task.state != ariax_core::TaskState::Active
+                            || task.pending_barrier.is_some()
+                    })
+                {
+                    return Err(HttpControlError::Busy);
+                }
                 if prepared.members.is_empty() {
                     self.turn.mark_progress();
                     let _ = pending
@@ -218,6 +248,8 @@ impl HttpControlPlane {
                     Prepared {
                         members: Vec::new(),
                         next_id: 0,
+                        parent: None,
+                        parent_spec: None,
                     },
                 );
                 pending.stage = Stage::Revalidating(Box::new(Revalidation {
@@ -234,9 +266,13 @@ impl HttpControlPlane {
                     } else {
                         QueueClass::Waiting
                     };
-                    member.metadata.task.queue_position =
-                        u32::try_from(validation.scheduler.queue_snapshot(queue).len())
-                            .map_err(|_| HttpControlError::InvalidConfig)?;
+                    member.metadata.task.queue_position = u32::try_from(
+                        member
+                            .requested_position
+                            .unwrap_or(usize::MAX)
+                            .min(validation.scheduler.queue_snapshot(queue).len()),
+                    )
+                    .map_err(|_| HttpControlError::InvalidConfig)?;
                     validation
                         .scheduler
                         .execute_command_at(command(member), MonotonicInstant::now())
@@ -250,14 +286,29 @@ impl HttpControlPlane {
                     Prepared {
                         members: Vec::new(),
                         next_id: 0,
+                        parent: None,
+                        parent_spec: None,
                     },
                 );
                 if pending.import {
                     // Complete batch plan validation and materialization can
                     // visit all members; it also executes outside the owner.
-                    pending.stage = Stage::Finalizing(spawn(pending.work.clone(), move || {
-                        finalize(prepared, true)
-                    })?);
+                    let tasks = self.tasks.snapshot();
+                    pending.stage = Stage::Finalizing(spawn(
+                        &self.cpu_pool,
+                        pending.work.clone(),
+                        move || {
+                            for member in &prepared.members {
+                                if member.spec.verification().is_some() {
+                                    preflight_output(
+                                        &member.spec,
+                                        tasks.entries().map(Arc::as_ref),
+                                    )?;
+                                }
+                            }
+                            finalize(prepared, true)
+                        },
+                    )?);
                 } else {
                     pending.stage = Stage::Installing(Box::new(finalize(prepared, false)?));
                 }
@@ -276,13 +327,15 @@ impl HttpControlPlane {
                         Poll::Ready(result) => result?,
                     }
                     let spec = pending.installing.take().expect("installed journal task");
-                    self.journal_sequences.insert(spec.gid(), 2);
+                    self.journal_sequences
+                        .insert(spec.gid(), pending.installing_sequence);
                     self.tasks.insert(spec).map_err(HttpControlError::Catalog)?;
                     self.turn.mark_progress();
                     return Ok(false);
                 }
                 if let Some((spec, appender)) = finalized.catalogs.pop_front() {
                     pending.installation_started = true;
+                    pending.installing_sequence = appender.appended_sequence();
                     pending.writes.unit(SessionCommand::InstallJournalAppender {
                         gid: spec.gid(),
                         appender,
@@ -300,6 +353,7 @@ impl HttpControlPlane {
                     MutationPublication::Import {
                         remaining: std::mem::take(&mut finalized.remaining),
                         result: std::mem::take(&mut finalized.result),
+                        parent_spec: finalized.parent_spec.take(),
                     }
                 } else {
                     let SchedulerCommand::AddValidatedTask { gid, .. } = finalized.first.command
@@ -327,6 +381,15 @@ impl HttpControlPlane {
 }
 
 fn command(member: &Member) -> SchedulerCommand {
+    if member.requested_position.is_some() {
+        return SchedulerCommand::AddValidatedTaskAt {
+            task_id: member.spec.task(),
+            gid: member.spec.gid(),
+            desired_paused: member.metadata.task.desired_paused,
+            conditions: member.conditions.clone(),
+            position: member.metadata.task.queue_position as usize,
+        };
+    }
     SchedulerCommand::AddValidatedTask {
         task_id: member.spec.task(),
         gid: member.spec.gid(),
@@ -352,6 +415,7 @@ fn effect(member: &Member) -> TransitionEffect {
 }
 
 fn finalize(prepared: Prepared, import: bool) -> Result<Finalized, HttpControlError> {
+    let parent = prepared.parent;
     let mut metadata = Vec::with_capacity(prepared.members.len());
     let mut members = VecDeque::with_capacity(prepared.members.len());
     let mut catalogs = VecDeque::with_capacity(prepared.members.len());
@@ -380,7 +444,13 @@ fn finalize(prepared: Prepared, import: bool) -> Result<Finalized, HttpControlEr
     if import {
         first.plan = PersistenceEffectPlan::new(
             first.plan.effect().clone(),
-            vec![PersistencePlanStep::CreateTaskBatch(metadata.into())],
+            vec![match parent {
+                Some(parent) => PersistencePlanStep::CreateFollowedMetalink {
+                    tasks: metadata.into(),
+                    parent,
+                },
+                None => PersistencePlanStep::CreateTaskBatch(metadata.into()),
+            }],
         )
         .map_err(|error| HttpControlError::Persistence(format!("{error:?}")))?;
     }
@@ -390,6 +460,7 @@ fn finalize(prepared: Prepared, import: bool) -> Result<Finalized, HttpControlEr
         remaining: members,
         result: Value::Array(gids),
         next_id: prepared.next_id,
+        parent_spec: prepared.parent_spec,
     })
 }
 
@@ -398,9 +469,36 @@ impl Preparation {
         mut self,
         params: Value,
         request: &crate::rpc_budget::RpcRequestLease,
-        import: bool,
+        kind: AdmissionKind,
     ) -> Result<Prepared, HttpControlError> {
-        let imported = if import {
+        let import = kind == AdmissionKind::Session;
+        let insertion = if matches!(kind, AdmissionKind::Metalink | AdmissionKind::Follow(_)) {
+            params
+                .get(2)
+                .map(|value| parse_i64(value, "position"))
+                .transpose()?
+                .filter(|position| *position >= 0)
+                .map(|position| {
+                    usize::try_from(position).map_err(|_| {
+                        HttpControlError::InvalidParams("position exceeds platform limit")
+                    })
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        let imported = if matches!(kind, AdmissionKind::Metalink | AdmissionKind::Follow(_)) {
+            #[cfg(feature = "metalink")]
+            {
+                super::metalink_admission::parse_upload(params, request)?
+            }
+            #[cfg(not(feature = "metalink"))]
+            {
+                return Err(HttpControlError::Unsupported(
+                    "Metalink feature unavailable",
+                ));
+            }
+        } else if import {
             crate::session_file::parse_import(params, request)?
         } else {
             let values = params
@@ -413,6 +511,7 @@ impl Preparation {
                 uris: parse_uri_array(&values[0])?,
                 sources: None,
                 options: values.get(1).cloned().unwrap_or_else(|| json!({})),
+                ..Default::default()
             }]
         };
         if self.scheduler.len().saturating_add(imported.len())
@@ -429,7 +528,7 @@ impl Preparation {
             )
             .map_err(|_| HttpControlError::Busy)?;
         let mut validated = Vec::with_capacity(imported.len());
-        for task in imported {
+        for (index, task) in imported.into_iter().enumerate() {
             let task_id = self.next_available_task_id()?;
             self.next_id = task_id
                 .get()
@@ -439,8 +538,16 @@ impl Preparation {
             let options =
                 self.configuration
                     .merged_add_options(task.options, &task.uris, import)?;
-            let (options, root, output, paused) =
-                parse_add_options(&options, &self.configuration.config.output_root, &task.uris)?;
+            let (mut options, root, output, paused) = parse_add_options_authorized(
+                &options,
+                &self.configuration.config.output_root,
+                &task.uris,
+                self.local_admin,
+            )?;
+            if let Some(manifest) = &task.verification {
+                options.transfer.verification_fingerprint = Some(manifest.fingerprint());
+                options.piece_length = manifest.chunk_length();
+            }
             let spec = match task.sources {
                 Some(sources) => HttpTaskSpec::from_persisted_sources(
                     task_id, gid, sources, root, output, options,
@@ -448,6 +555,40 @@ impl Preparation {
                 None => HttpTaskSpec::new(task_id, gid, task.uris, root, output, options, false),
             }
             .map_err(HttpControlError::TaskSpec)?;
+            let spec = if let Some(manifest) = task.verification {
+                spec.with_verification(manifest, task.metalink_index)
+                    .map_err(HttpControlError::TaskSpec)?
+            } else {
+                spec
+            };
+            let spec = if let Some(priorities) = task.priorities {
+                spec.with_source_priorities(&priorities)
+                    .map_err(HttpControlError::TaskSpec)?
+            } else {
+                spec
+            };
+            let spec = self
+                .tasks
+                .reserve_spec(spec)
+                .map_err(|_| HttpControlError::Busy)?;
+            if spec.verification().is_some() {
+                preflight_output(
+                    &spec,
+                    self.tasks
+                        .entries()
+                        .map(Arc::as_ref)
+                        .chain(validated.iter().map(
+                            |entry: &(
+                                HttpTaskSpec,
+                                SanitizedOptionMap,
+                                bool,
+                                usize,
+                                TaskConditions,
+                                Option<usize>,
+                            )| &entry.0,
+                        )),
+                )?;
+            }
             let sanitized = spec
                 .persistence_options()
                 .map_err(HttpControlError::TaskSpec)?;
@@ -456,7 +597,7 @@ impl Preparation {
                     .entries()
                     .all(|(name, _)| self.policy.permits(name))
                 || !HttpTaskOptions::from_sanitized(&sanitized)
-                    .is_ok_and(|value| &value == spec.options())
+                    .is_ok_and(|value| value == spec.options().without_live_authority())
                 || spec.sources().iter().any(|source| {
                     source
                         .persistence_safe_uri()
@@ -483,6 +624,7 @@ impl Preparation {
                 QueueClass::Waiting
             };
             let position = self.scheduler.queue_snapshot(queue).len();
+            let requested_position = insertion.map(|position| position.saturating_add(index));
             self.scheduler
                 .execute_command_at(
                     SchedulerCommand::AddValidatedTask {
@@ -494,12 +636,49 @@ impl Preparation {
                     MonotonicInstant::now(),
                 )
                 .map_err(|error| HttpControlError::Scheduler(error.to_string()))?;
-            validated.push((spec, sanitized, paused, position, conditions));
+            validated.push((
+                spec,
+                sanitized,
+                paused,
+                position,
+                conditions,
+                requested_position,
+            ));
         }
+        let parent_spec = if let AdmissionKind::Follow(parent) = kind {
+            let spec = self
+                .tasks
+                .get_gid(parent.gid)
+                .ok_or(HttpControlError::NotFound)?;
+            if spec
+                .persistence_options()
+                .map_err(HttpControlError::TaskSpec)?
+                .snapshot_hash()
+                != parent.snapshot_hash
+                || spec.options().transfer.metalink_expansion.is_some()
+            {
+                return Err(HttpControlError::Busy);
+            }
+            let mut options = spec.options().clone();
+            options.transfer.metalink_expansion = Some(ariax_storage::MetalinkExpansion {
+                parent,
+                children: validated.iter().map(|entry| entry.0.gid()).collect(),
+            });
+            let replacement = spec
+                .with_options(spec.output().clone(), options)
+                .map_err(HttpControlError::TaskSpec)?;
+            Some(Box::new(
+                self.tasks
+                    .reserve_spec(replacement)
+                    .map_err(|_| HttpControlError::Busy)?,
+            ))
+        } else {
+            None
+        };
         // No journal exists until syntax, all task policies, and the complete
         // provisional scheduler sequence have passed preflight.
         let mut members = Vec::with_capacity(validated.len());
-        for (spec, sanitized, paused, position, conditions) in validated {
+        for (spec, sanitized, paused, position, conditions, requested_position) in validated {
             let gid = spec.gid();
             let journal_id = derive_http_journal_id(spec.task(), gid);
             let directory = http_journal_directory(&self.configuration.config.journal_root, gid);
@@ -517,6 +696,16 @@ impl Preparation {
                 sanitized.clone(),
             )
             .map_err(|error| HttpControlError::Journal(error.to_string()))?;
+            if let Some(manifest) = spec.verification() {
+                for payload in manifest.journal_payloads() {
+                    let appended = appender
+                        .append_payload(Generation::INITIAL, &payload)
+                        .map_err(|error| HttpControlError::Journal(error.to_string()))?;
+                    appender
+                        .flush(appended.sequence())
+                        .map_err(|error| HttpControlError::Journal(error.to_string()))?;
+                }
+            }
             let task = SessionTaskRecord {
                 gid,
                 session_id: self.session_id,
@@ -555,11 +744,17 @@ impl Preparation {
                 metadata,
                 conditions,
                 appender,
+                requested_position,
             });
         }
         Ok(Prepared {
             members,
             next_id: self.next_id,
+            parent: match kind {
+                AdmissionKind::Follow(parent) => Some(parent),
+                _ => None,
+            },
+            parent_spec,
         })
     }
 
@@ -587,6 +782,62 @@ impl Preparation {
         }
         Err(HttpControlError::Busy)
     }
+}
+
+fn preflight_output<'a>(
+    spec: &HttpTaskSpec,
+    existing: impl Iterator<Item = &'a HttpTaskSpec>,
+) -> Result<(), HttpControlError> {
+    let name = spec.output().canonical_string().to_lowercase();
+    for other in existing {
+        if spec.output_root() == other.output_root() {
+            let other = other.output().canonical_string().to_lowercase();
+            if name == other
+                || name.starts_with(&(other.clone() + "/"))
+                || other.starts_with(&(name.clone() + "/"))
+            {
+                return Err(HttpControlError::InvalidParams(
+                    "Metalink output collides with another task",
+                ));
+            }
+        }
+    }
+    let mut path = spec.output_root().clone();
+    let parts = spec.output().canonical_string();
+    let mut parts = parts.split('/').peekable();
+    while let Some(part) = parts.next() {
+        // Check each existing directory component using portable case folding.
+        match std::fs::read_dir(&path) {
+            Ok(entries) => {
+                for (index, entry) in entries.enumerate() {
+                    if index >= 262_144 {
+                        return Err(HttpControlError::Busy);
+                    }
+                    let entry = entry.map_err(|_| {
+                        HttpControlError::InvalidParams("cannot inspect output directory")
+                    })?;
+                    if entry.file_name().to_string_lossy().to_lowercase() == part.to_lowercase() {
+                        let kind = entry.file_type().map_err(|_| {
+                            HttpControlError::InvalidParams("cannot inspect output entry")
+                        })?;
+                        if parts.peek().is_none() || !kind.is_dir() || entry.file_name() != part {
+                            return Err(HttpControlError::InvalidParams(
+                                "Metalink output already exists or collides",
+                            ));
+                        }
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(_) => {
+                return Err(HttpControlError::InvalidParams(
+                    "cannot inspect output directory",
+                ));
+            }
+        }
+        path.push(part);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

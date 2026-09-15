@@ -44,6 +44,10 @@ fn nz(value: usize) -> NonZeroUsize {
     NonZeroUsize::new(value).unwrap()
 }
 
+fn phase5_metalink() -> bool {
+    std::env::var("ARIAX_BENCH_METALINK").as_deref() == Ok("1")
+}
+
 // Keep process-pipe reads on the blocking pool, separate from the socket
 // reactor, matching the standard-I/O adapter used by the engine.
 #[cfg(unix)]
@@ -474,9 +478,35 @@ async fn engine(origins: &[SocketAddr], scenario: &str) -> Result<()> {
         .iter()
         .map(|origin| format!("http://{origin}/work.bin"))
         .collect();
-    let gid = plane.call("aria2.addUri", json!([sources, {
+    let options = json!({
         "split":RANGES, "max-connection-per-server":RANGES_PER_ORIGIN, "min-split-size":"1M", "piece-length":"1M", "timeout":600, "endgame-max-duplicates":0
-    }]))?;
+    });
+    let gid = if phase5_metalink() {
+        if !cfg!(feature = "metalink") {
+            return Err("Phase 5 benchmark requires the metalink feature".into());
+        }
+        use base64ct::Encoding;
+        let chunk = 1024 * 1024;
+        let mut hash = ContentHasher::new(ariax_storage::JournalDigestAlgorithm::Sha256);
+        hash.update(&vec![0; chunk]);
+        let checksum = hash.finalize().canonical();
+        let digest = checksum.split_once('=').unwrap().1;
+        let pieces = format!("<hash>{digest}</hash>").repeat(TOTAL_BYTES.div_ceil(chunk));
+        let urls = sources
+            .iter()
+            .map(|uri| format!("<url>{uri}</url>"))
+            .collect::<String>();
+        let xml = format!(
+            "<metalink xmlns='urn:ietf:params:xml:ns:metalink'><file name='work.bin'><size>{TOTAL_BYTES}</size><pieces type='sha-256' length='{chunk}'>{pieces}</pieces>{urls}</file></metalink>"
+        );
+        plane.call(
+            "aria2.addMetalink",
+            json!([base64ct::Base64::encode_string(xml.as_bytes()), options]),
+        )?[0]
+            .clone()
+    } else {
+        plane.call("aria2.addUri", json!([sources, options]))?
+    };
     eprintln!("benchmark setup: stalled-consumer source admission");
     let sources: Vec<_> = (0..64)
         .map(|index| format!("http://example.test/{index}/{}", "x".repeat(8000)))
@@ -1276,7 +1306,7 @@ async fn measure(scenario: &str) -> Result<()> {
         return Err("owner exceeded its step budget".into());
     }
     let measured_round_trips: Duration = samples.iter().copied().sum();
-    let mut report = json!({"scenario":scenario,"profile":"concurrency","ranges":RANGES,"samples":samples.len(),"controlCalls":controls,"bursts":bursts,"cooldownMs":250,
+    let mut report = json!({"scenario":scenario,"profile":"concurrency","rangeAdmission":if phase5_metalink() {"metalink"} else {"addUri"},"ranges":RANGES,"samples":samples.len(),"controlCalls":controls,"bursts":bursts,"cooldownMs":250,
         "os":std::env::consts::OS,"arch":std::env::consts::ARCH,"origins":RANGES / RANGES_PER_ORIGIN,"workerThreads":2,
         "burstLimitCalls":1000,"burstLimitMs":500,"launchCutoffMs":BURST_LAUNCH_MS,"maxBurstCalls":max_burst_calls,"verificationCalls":verification_calls,"operations":operations,"firstResponseBytes":response_bytes,
         "projectionTasks":PROJECTION_TASKS,"metadataSources":PROJECTION_SOURCES,"auxiliaryMutationTargets":1,"controlRuntime":events_released["controlRuntime"],"measuredBurstUs":measured_bursts.as_micros(),"measuredRoundTripUs":measured_round_trips.as_micros(),

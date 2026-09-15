@@ -128,6 +128,20 @@ pub struct HttpProxyPolicy {
 }
 
 impl HttpProxyPolicy {
+    #[cfg(any(feature = "ftp", feature = "sftp"))]
+    pub(crate) fn route_protocol(
+        &self,
+        target_uri: &str,
+        pinned_address: IpAddr,
+    ) -> Result<HttpProxyRoute, HttpProxyPolicyError> {
+        Self {
+            http_proxy: None,
+            https_proxy: None,
+            all_proxy: self.all_proxy.clone(),
+            no_proxy: self.no_proxy.clone(),
+        }
+        .route(target_uri, pinned_address)
+    }
     pub fn new(
         http_proxy: Option<HttpProxyEndpoint>,
         https_proxy: Option<HttpProxyEndpoint>,

@@ -1,0 +1,6 @@
+# Protocol provenance hashes cover exact upstream and patched bytes.
+vendor/** -text
+# Preserve upstream whitespace and patch context without reformatting copies.
+vendor/suppaftp/** -whitespace
+vendor/russh-sftp/** -whitespace
+vendor/*.patch -whitespace

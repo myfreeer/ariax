@@ -1,5 +1,10 @@
 # Downloader Design
 
+Phase 5 implements Metalink v3/v4, FTP/FTPS, SFTP, four content digests and
+self-contained Metalink JSON migration through the shared scheduler and public
+interfaces. The [shared protocol transfer gates](detailed-protocol-transfers.md)
+track validation. Native Linux acceptance remains deferred until CI is ready.
+
 Status: overall implementation is underway. The scoped Phase-3B/3C HTTP(S)
 downloader milestone is implemented and checkpointed at `f97845d`, and the
 Phase-4 control-plane checkpoint is executable at `71acb03`, with the Phase-4B
@@ -63,7 +68,7 @@ This is still not a complete downloader or release/tag-ready. The first
 hierarchical rate limiter, stall policy, process-owned discard guard, same-origin
 endgame fencing, bounded exact-range cross-origin digest fencing, and local
 capacity benchmarks are executable; HTTP/2, unknown-length/chunked layouts,
-broader RFC 9530/Metalink and `Content-Digest` modes,
+broader RFC 9530 and `Content-Digest` modes,
 native Linux benchmark acceptance, non-loopback RPC,
 and the full native release matrix remain
 gated by `implementation-readiness.md`
@@ -236,13 +241,18 @@ Selected community components:
 - rusqlite on a dedicated bounded session-store thread and a dedicated Rayon
   pool for CPU-heavy work.
 
-Build profiles:
+Current feature bundles:
 
+- The unnamed default retains the HTTP(S)/RPC checkpoint.
 - `minimal`: HTTP(S), Metalink, JSON-RPC, no BitTorrent, rustls only.
-- `standard`: HTTP(S), FTP, SFTP, Metalink, JSON-RPC/WebSocket.
-- `full`: standard plus BitTorrent through libtorrent.
-- `compat`: full plus explicitly unsafe compatibility features such as shell
-  hooks, disabled by default and rejected over unauthenticated or remote RPC.
+- `standard`: HTTP(S), FTP/FTPS, SFTP, Metalink, JSON-RPC/WebSocket.
+- `full` and `compat` currently inherit `standard`; BitTorrent and shell hooks
+  remain unimplemented and reject explicitly.
+
+Select `--features standard` when building the CLI for all Phase-5 protocols.
+`--add-metalink SESSION_DB CONTROL_DIR OUTPUT_ROOT FILE` accepts trailing
+download options such as `--select-file=1,3` and `--metalink-base-uri=URL`.
+JSON migration retains selected verification metadata without the original XML.
 
 Binary-size rules:
 

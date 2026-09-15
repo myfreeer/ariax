@@ -315,8 +315,9 @@ valid segmented-read abstraction while requests are outstanding.
 
 The library choice does not supply the security policy. Host-key verification,
 known-hosts handling, authentication ordering, algorithm policy, secrets, proxy
-behavior, and rekey/timeouts must be specified in `detailed-ftp-sftp.md` before
-Phase 5 begins.
+behavior, and rekey/timeouts are specified in `detailed-ftp-sftp.md` and exercised
+by the Phase-5 adapter tests. [Fork provenance](vendor/README.md) records the
+upstream archives, patches, licenses and source/feature assertions.
 
 ## FTP And FTPS
 

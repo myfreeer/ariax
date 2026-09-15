@@ -8,6 +8,7 @@ pub struct RpcClientContext {
     state: Arc<Mutex<ClientState>>,
     request: Option<crate::rpc_budget::RpcRequestLease>,
     retained_results: Option<Arc<Mutex<crate::rpc_budget::RpcAllocation>>>,
+    local_admin: bool,
 }
 
 #[derive(Default)]
@@ -19,6 +20,17 @@ struct ClientState {
 }
 
 impl RpcClientContext {
+    pub(crate) fn local() -> Self {
+        Self {
+            local_admin: true,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn is_local_admin(&self) -> bool {
+        self.local_admin
+    }
+
     #[cfg(test)]
     pub(crate) fn with_events(
         events: RpcEventBroker,
@@ -41,6 +53,7 @@ impl RpcClientContext {
             })),
             request: None,
             retained_results: None,
+            local_admin: false,
         };
         if !authentication_required {
             context.authorize()?;
@@ -56,6 +69,7 @@ impl RpcClientContext {
                 false,
             )))),
             request: Some(request),
+            local_admin: self.local_admin,
         }
     }
 

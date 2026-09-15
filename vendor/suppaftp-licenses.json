@@ -1,0 +1,12 @@
+[
+  {
+    "path": "LICENSE-MIT",
+    "url": "https://raw.githubusercontent.com/veeso/suppaftp/b3f990f07a3b87d7f4630ef908846612c80ac112/LICENSE-MIT",
+    "sha256": "4e883a0c89656afe3aaa559b3d4096a8aaa7534f00937f1c0054e231b2928078"
+  },
+  {
+    "path": "LICENSE-APACHE",
+    "url": "https://raw.githubusercontent.com/veeso/suppaftp/b3f990f07a3b87d7f4630ef908846612c80ac112/LICENSE-APACHE",
+    "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08"
+  }
+]

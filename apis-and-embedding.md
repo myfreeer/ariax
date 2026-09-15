@@ -5,7 +5,10 @@ durable option/source mutation, configuration and session operations, filtered
 events, loopback HTTP/WebSocket, both stdio framings, combined transports, direct
 CLI controls and typed Rust embedding. Repair and completion evidence is tracked in
 [implementation-readiness.md](implementation-readiness.md#phase-4-repair-gates).
-The C ABI and additional download protocols remain later work. Optional legacy
+Phase 5 adds Metalink admission, FTP/FTPS/SFTP sources, exact host-key approval
+and self-contained JSON v2 migration through that same control plane; its
+validation is tracked by the [shared transfer gates](detailed-protocol-transfers.md).
+The C ABI and BitTorrent remain later work. Optional legacy
 HTTP Basic authentication supplements method tokens at the HTTP request and
 WebSocket upgrade boundaries.
 
@@ -59,7 +62,8 @@ EOF by default, Ctrl-C, or RPC shutdown, transport/progress handles drain, live 
 workers are cancelled and joined, and process bootstrap closes journals and the
 session owner.
 
-Implemented aria2-compatible operations cover HTTP `addUri`; status, queue,
+Implemented aria2-compatible operations cover `addUri` for enabled protocols,
+`addMetalink` for bounded base64 v3/v4 documents; status, queue,
 URI/file/server, option/global-option, version/session/global-stat queries;
 pause/resume/remove/bulk controls; result removal/purge; position/source
 changes; shutdown; and `system.listMethods`, `system.listNotifications`, and
@@ -68,6 +72,12 @@ subscriptions/polling, source replacement, config check/reload/dump, and bounded
 JSON session export/import. They operate on the real scheduler and persisted
 session rather than placeholder state. GID lookup accepts unique hexadecimal
 prefixes from one through sixteen digits.
+
+`aria2.addMetalink([base64, options?, position?])` returns the selected child
+GIDs in document order. CLI `--add-metalink` and Rust `AddMetalink` use the same
+atomic admission, selection filters and portable output-name checks. A disabled
+protocol or Metalink feature rejects explicitly. `minimal` enables Metalink;
+`standard` also enables FTP/FTPS and SFTP.
 
 `ARIAX_RPC_SECRET` enables the aria2 `token:<secret>` first-parameter policy on
 HTTP, WebSocket, and stdio. Every multicall member authenticates independently.
@@ -593,8 +603,9 @@ closed with `SlowConsumer` and can recover by querying a snapshot and creating a
 new subscription.  Library callbacks must not run on scheduler or storage
 actor threads.
 
-The typed facade accepts the complete implemented HTTP option family on add
-and change, typed retry/checksum/mirror policies, future-task global defaults,
+The typed facade accepts the complete implemented transfer option family on add
+and change, typed retry/checksum/mirror policies, `DownloadOptions::from_pairs`,
+Metalink byte input and exact host-key approval, future-task global defaults,
 versioned configuration checks/reloads/dumps, source replacement, queue
 position, bulk controls, diagnostics, and filtered subscriptions. Explicit
 `Engine::rpc_json` is available for compatibility clients that choose JSON;

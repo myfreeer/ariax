@@ -1,3 +1,5 @@
+mod verification;
+
 use crate::storage_journal::{JournalWrite, StorageJournal};
 use ariax_core::{
     ErrorKind, FileId, Generation, LeaseId, OverlapGroupId, PieceId, TaskId, TransferAttemptId,
@@ -26,7 +28,6 @@ use std::time::Duration;
 
 #[cfg(test)]
 use ariax_runtime::{BlockingDiskExecutor, BlockingDiskIoError, BlockingDiskIoErrorKind};
-#[cfg(test)]
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -49,6 +50,7 @@ pub struct StorageEngineConfig {
     /// registered with the blocking disk lane.
     pub handle_budgets: Option<HandleBudgets>,
     pub shutdown_timeout: Duration,
+    pub cpu_pool: Option<ariax_runtime::CpuPool>,
     #[cfg(test)]
     pub disk_fault: Option<StorageEngineDiskFault>,
     #[cfg(test)]
@@ -135,6 +137,7 @@ impl Default for StorageEngineConfig {
             resident_budget: ByteBudget::new(buffer_pool_bytes),
             handle_budgets: None,
             shutdown_timeout: Duration::from_secs(5),
+            cpu_pool: None,
             #[cfg(test)]
             disk_fault: None,
             #[cfg(test)]
@@ -244,6 +247,8 @@ pub enum WriteReject {
     NativeFile,
     IdentifierExhausted,
     Shutdown,
+    Verification,
+    ChecksumMismatch,
 }
 
 impl WriteReject {
@@ -268,6 +273,8 @@ impl WriteReject {
             Self::NativeFile => "native_file",
             Self::IdentifierExhausted => "identifier_exhausted",
             Self::Shutdown => "shutdown",
+            Self::Verification => "verification",
+            Self::ChecksumMismatch => "checksum_mismatch",
         }
     }
 }
@@ -382,6 +389,11 @@ pub struct StorageEngine {
     seen_leases: BTreeSet<LeaseId>,
     next_operation_id: u64,
     journal: StorageJournal,
+    verification: Option<crate::ChunkHashCoordinator>,
+    whole_file_verified: bool,
+    cpu_pool: Option<ariax_runtime::CpuPool>,
+    handle_budgets: Option<HandleBudgets>,
+    resident_budget: ByteBudget,
     shutdown_timeout: Duration,
     #[cfg(test)]
     crash_point: Option<StorageEngineCrashPoint>,
@@ -493,6 +505,18 @@ impl StorageEngine {
             return Err(StorageEngineError::bare(WriteReject::NativeFile));
         }
         let lane_result = {
+            fn start<E: ariax_runtime::BlockingDiskExecutor>(
+                config: BlockingDiskLaneConfig,
+                epoch: BlockingBackendEpoch,
+                executor: E,
+                cpu: Option<&ariax_runtime::CpuPool>,
+            ) -> Result<BlockingDiskLane, BlockingDiskLaneStartError> {
+                if let Some(cpu) = cpu.filter(|cpu| cpu.shared_disk()) {
+                    BlockingDiskLane::with_cpu_pool(config, epoch, executor, cpu.clone())
+                } else {
+                    BlockingDiskLane::new(config, epoch, executor)
+                }
+            }
             let lane_config = BlockingDiskLaneConfig {
                 worker_count: config.disk_workers,
                 queue_capacity: config.disk_queue_capacity,
@@ -502,15 +526,28 @@ impl StorageEngine {
             #[cfg(test)]
             {
                 match config.disk_fault {
-                    Some(fault) => {
-                        BlockingDiskLane::new(lane_config, epoch, FaultInjectingExecutor { fault })
-                    }
-                    None => BlockingDiskLane::new(lane_config, epoch, registry.clone()),
+                    Some(fault) => start(
+                        lane_config,
+                        epoch,
+                        FaultInjectingExecutor { fault },
+                        config.cpu_pool.as_ref(),
+                    ),
+                    None => start(
+                        lane_config,
+                        epoch,
+                        registry.clone(),
+                        config.cpu_pool.as_ref(),
+                    ),
                 }
             }
             #[cfg(not(test))]
             {
-                BlockingDiskLane::new(lane_config, epoch, registry.clone())
+                start(
+                    lane_config,
+                    epoch,
+                    registry.clone(),
+                    config.cpu_pool.as_ref(),
+                )
             }
         };
         let lane = lane_result.map_err(|error| {
@@ -533,6 +570,11 @@ impl StorageEngine {
             seen_leases: BTreeSet::new(),
             next_operation_id: 1,
             journal,
+            verification: None,
+            whole_file_verified: false,
+            cpu_pool: config.cpu_pool,
+            handle_budgets: config.handle_budgets,
+            resident_budget: config.resident_budget,
             shutdown_timeout: config.shutdown_timeout,
             #[cfg(test)]
             crash_point: config.crash_point,
@@ -596,15 +638,24 @@ impl StorageEngine {
         }
         let piece = PieceId::new(plan.span.offset / self.layout.piece_length());
         let expected = self.piece_span(piece)?;
-        if expected.offset() != plan.span.offset
-            || usize::try_from(expected.len()).ok() != Some(plan.span.len)
+        if self.verification.is_none()
+            && (expected.offset() != plan.span.offset
+                || usize::try_from(expected.len()).ok() != Some(plan.span.len))
         {
             return Err(StorageEngineError::bare(WriteReject::NonPieceAlignedLease));
         }
         let overlapping = self
             .active
             .iter()
-            .filter(|(_, active)| active.piece == piece)
+            .filter(|(_, active)| {
+                active.plan.span.offset < plan.span.offset.saturating_add(plan.span.len as u64)
+                    && plan.span.offset
+                        < active
+                            .plan
+                            .span
+                            .offset
+                            .saturating_add(active.plan.span.len as u64)
+            })
             .map(|(&lease, _)| lease)
             .collect::<Vec<_>>();
         match plan.overlap_group {
@@ -639,7 +690,20 @@ impl StorageEngine {
                 }
             }
         }
-        let persisted = expected;
+        let persisted = PersistedSpan::new(plan.span.offset, plan.span.len as u64)
+            .map_err(|_| StorageEngineError::bare(WriteReject::Mapping))?;
+        if let Some(coordinator) = self.verification.as_mut() {
+            if plan.overlap_group.is_none() {
+                coordinator
+                    .begin(plan.lease, persisted, plan.validator)
+                    .map_err(verification::hash_error)?;
+            } else {
+                let last = (persisted.offset() + persisted.len() - 1) / self.layout.piece_length();
+                for index in piece.get()..=last {
+                    coordinator.require_readback(PieceId::new(index));
+                }
+            }
+        }
         self.journal
             .append_payload(
                 self.generation,
@@ -651,16 +715,19 @@ impl StorageEngine {
                 },
             )
             .map_err(journal_error)?;
-        self.journal
-            .append_payload(
-                self.generation,
-                &JournalPayload::PieceStarted {
-                    lease_id: plan.lease,
-                    piece_id: piece,
-                    piece_span: persisted,
-                },
-            )
-            .map_err(journal_error)?;
+        let last_piece = (persisted.offset() + persisted.len() - 1) / self.layout.piece_length();
+        for index in piece.get()..=last_piece {
+            self.journal
+                .append_payload(
+                    self.generation,
+                    &JournalPayload::PieceStarted {
+                        lease_id: plan.lease,
+                        piece_id: PieceId::new(index),
+                        piece_span: self.piece_span(PieceId::new(index))?,
+                    },
+                )
+                .map_err(journal_error)?;
+        }
         self.seen_leases.insert(plan.lease);
         self.active.insert(
             plan.lease,
@@ -874,7 +941,16 @@ impl StorageEngine {
             active.written_len +=
                 u64::try_from(block.expected_len).expect("buffer length fits u64");
         }
-        self.release_buffer(lease)?;
+        if self
+            .verification
+            .as_ref()
+            .is_some_and(|coordinator| coordinator.contains_lease(block.lease))
+        {
+            self.feed_verification(block.lease, block.global_offset, lease)
+                .await?;
+        } else {
+            self.release_buffer(lease)?;
+        }
         Ok(WriteAck::ProvisionalAccepted {
             lease: block.lease,
             span: GlobalSpan {
@@ -935,6 +1011,9 @@ impl StorageEngine {
     }
 
     fn commit_active(&mut self, commit: LeaseCommit) -> Result<Vec<WriteAck>, StorageEngineError> {
+        if self.verification.is_some() {
+            return self.commit_verified_lease(commit);
+        }
         let active = self
             .active
             .get(&commit.lease)
@@ -1051,6 +1130,11 @@ impl StorageEngine {
             .ok_or_else(|| StorageEngineError::bare(WriteReject::UnknownLease))?;
         let Some(group_id) = active.plan.overlap_group else {
             self.active.remove(&lease);
+            if let Some(coordinator) = self.verification.as_mut()
+                && coordinator.contains_lease(lease)
+            {
+                coordinator.abort(lease).map_err(verification::hash_error)?;
+            }
             let sequence = self.append_lease_abort(lease, reason)?;
             self.journal.flush(sequence).map_err(journal_error)?;
             return Ok(vec![WriteAck::LeaseAborted { lease }]);
@@ -1072,6 +1156,11 @@ impl StorageEngine {
             return self.rollback_overlap(group_id, reason);
         }
         self.active.remove(&lease);
+        if let Some(coordinator) = self.verification.as_mut()
+            && coordinator.contains_lease(lease)
+        {
+            coordinator.abort(lease).map_err(verification::hash_error)?;
+        }
         let abort_sequence = self.append_lease_abort(lease, reason)?;
         let mut group = self
             .overlap_groups
@@ -1118,6 +1207,14 @@ impl StorageEngine {
         }
         let sequence =
             last_sequence.ok_or_else(|| StorageEngineError::bare(WriteReject::OverlapPolicy))?;
+        if let Some(coordinator) = self.verification.as_mut() {
+            let last = (group.span.offset + group.span.len as u64 - 1) / self.layout.piece_length();
+            for index in group.piece.get()..=last {
+                coordinator
+                    .invalidate(PieceId::new(index))
+                    .map_err(verification::hash_error)?;
+            }
+        }
         self.journal.flush(sequence).map_err(journal_error)?;
         acknowledgements.push(WriteAck::SpanRolledBack {
             group: group_id,
@@ -1144,7 +1241,7 @@ impl StorageEngine {
     }
 
     pub fn record_retry_state(&mut self, retry: RetryStateWrite) -> Result<(), StorageEngineError> {
-        if retry.attempt == 0 || retry.delay_ms == 0 {
+        if retry.attempt == 0 || (retry.delay_ms == 0 && retry.scope != RetryScope::Uri) {
             return Err(StorageEngineError::bare(WriteReject::Journal));
         }
         let appended = self
@@ -1203,6 +1300,12 @@ impl StorageEngine {
         final_digest: Option<JournalDigest>,
         completed_at_unix_ms: u64,
     ) -> Result<u64, StorageEngineError> {
+        if self.verification.as_ref().is_some_and(|coordinator| {
+            !coordinator.is_complete()
+                || (!coordinator.manifest().whole().is_empty() && !self.whole_file_verified)
+        }) {
+            return Err(StorageEngineError::bare(WriteReject::Verification));
+        }
         if !self.active.is_empty() || !self.overlap_groups.is_empty() {
             return Err(StorageEngineError::bare(WriteReject::LeaseMismatch));
         }
@@ -1276,7 +1379,12 @@ impl StorageEngine {
         }) {
             return Err(StorageEngineError::bare(WriteReject::OverlapPolicy));
         }
-        if active.piece != block.piece {
+        let expected_piece = if self.verification.is_some() {
+            PieceId::new(block.global_offset / self.layout.piece_length())
+        } else {
+            active.piece
+        };
+        if expected_piece != block.piece {
             return Err(StorageEngineError::bare(WriteReject::PieceMismatch));
         }
         if active.next_offset != block.global_offset {
@@ -1563,6 +1671,178 @@ mod tests {
             replay_limits: Default::default(),
             state_limits: Default::default(),
         }
+    }
+
+    async fn manifest_span(engine: &mut StorageEngine, lease_value: u64, offset: u64, data: &[u8]) {
+        let lease = LeaseId::new(lease_value).unwrap();
+        let validator = JournalHash::new([9; 32]).unwrap();
+        engine
+            .begin_lease(lease_plan(
+                lease,
+                1,
+                GlobalSpan {
+                    offset,
+                    len: data.len(),
+                },
+                validator,
+                None,
+            ))
+            .unwrap();
+        let mut buffer = engine.reserve_network_buffer(data.len()).unwrap();
+        buffer.writable().unwrap()[..data.len()].copy_from_slice(data);
+        buffer.mark_filled(data.len(), OwnerTag::Storage).unwrap();
+        engine
+            .write_block(WriteBlock {
+                task: TaskId::new(1).unwrap(),
+                generation: Generation::INITIAL,
+                lease,
+                global_offset: offset,
+                expected_len: data.len(),
+                buffer,
+                piece: PieceId::new(0),
+            })
+            .await
+            .unwrap();
+        let acknowledgements = engine
+            .commit_lease(LeaseCommit {
+                task: TaskId::new(1).unwrap(),
+                generation: Generation::INITIAL,
+                lease,
+                validator,
+                received_len: data.len() as u64,
+                response_digest: None,
+            })
+            .unwrap();
+        assert!(
+            !acknowledgements
+                .iter()
+                .any(|ack| matches!(ack, WriteAck::PieceDurable { .. }))
+        );
+    }
+
+    fn four_byte_manifest() -> Arc<crate::VerificationManifest> {
+        let mut digest = crate::ContentHasher::new(JournalDigestAlgorithm::Sha256);
+        digest.update(b"abcd");
+        let digest = digest.finalize().journal_digest();
+        Arc::new(
+            crate::VerificationManifest::new(4, 4, vec![digest.clone()], vec![digest]).unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn manifest_two_leases_require_both_commits_and_the_expected_digest() {
+        for budget in [0, 64 * 1024] {
+            let directory = TestDirectory::new();
+            let mut engine = crash_engine(&directory.0, None);
+            engine
+                .install_verification(four_byte_manifest(), crate::ChunkAlignment::Relaxed, budget)
+                .unwrap();
+            manifest_span(&mut engine, 1, 2, b"cd").await;
+            assert!(engine.finish_verification().await.unwrap().is_empty());
+            assert!(engine.complete(None, 1).is_err());
+            manifest_span(&mut engine, 2, 0, b"ab").await;
+            assert!(matches!(
+                engine.finish_verification().await.unwrap().as_slice(),
+                [WriteAck::PieceDurable { .. }]
+            ));
+            let digest = engine.verify_whole_file().await.unwrap();
+            engine.complete(digest, 2).unwrap();
+            engine.close().unwrap();
+            let recovered =
+                recover_known_length_http(&crash_recovery_request(&directory.0)).unwrap();
+            assert_eq!(recovered.replay.stop, JournalStateStop::CleanEnd);
+            assert_eq!(recovered.durable_prefix, 4);
+        }
+    }
+
+    #[tokio::test]
+    async fn manifest_mismatch_invalidates_contributors_before_redownload() {
+        let directory = TestDirectory::new();
+        let mut engine = crash_engine(&directory.0, None);
+        engine
+            .install_verification(four_byte_manifest(), crate::ChunkAlignment::Auto, 0)
+            .unwrap();
+        manifest_span(&mut engine, 1, 0, b"bad!").await;
+        assert_eq!(
+            engine.finish_verification().await.unwrap_err().reject(),
+            WriteReject::ChecksumMismatch
+        );
+        manifest_span(&mut engine, 2, 0, b"abcd").await;
+        assert_eq!(engine.finish_verification().await.unwrap().len(), 1);
+        let digest = engine.verify_whole_file().await.unwrap();
+        engine.complete(digest, 2).unwrap();
+        engine.close().unwrap();
+        assert_eq!(
+            recover_known_length_http(&crash_recovery_request(&directory.0))
+                .unwrap()
+                .durable_prefix,
+            4
+        );
+    }
+
+    #[tokio::test]
+    async fn committed_manifest_spans_without_durability_recover_through_readback() {
+        let directory = TestDirectory::new();
+        let mut engine = crash_engine(&directory.0, None);
+        engine
+            .install_verification(four_byte_manifest(), crate::ChunkAlignment::Auto, 0)
+            .unwrap();
+        manifest_span(&mut engine, 1, 0, b"abcd").await;
+        engine.close().unwrap();
+        let recovered = recover_known_length_http(&crash_recovery_request(&directory.0)).unwrap();
+        assert_eq!(recovered.durable_prefix, 0);
+        let state = recovered.replay.state.unwrap();
+        assert_eq!(state.committed_spans().len(), 1);
+        assert_eq!(
+            state.verification_manifest().unwrap().as_ref(),
+            four_byte_manifest().as_ref()
+        );
+        let journal_root = directory.0.join("journal");
+        let (journal, _) = ControlJournalAppender::open_recovered(
+            &journal_root,
+            &[journal_segment_path(&journal_root, 0)],
+            Gid::new(1).unwrap(),
+            crash_journal_id(),
+            ReplayLimits::default(),
+            Generation::INITIAL,
+            2,
+        )
+        .unwrap();
+        let layout = state.layout().unwrap().layout().clone();
+        let root = RootDirectoryCapability::open_trusted(directory.0.join("output")).unwrap();
+        let entry = &layout.files()[0];
+        let output = root
+            .open_existing_file(entry.safe_path(), entry.identity().unwrap())
+            .unwrap();
+        let mut engine = StorageEngine::open_layout(
+            layout,
+            [(FileId::new(0), output)],
+            journal,
+            StorageEngineConfig::default(),
+        )
+        .unwrap();
+        engine
+            .configure_verification(
+                four_byte_manifest(),
+                crate::ChunkAlignment::Auto,
+                0,
+                true,
+                &[],
+            )
+            .unwrap();
+        engine
+            .restore_verified_contributors(state.committed_spans().values().copied())
+            .unwrap();
+        assert_eq!(engine.finish_verification().await.unwrap().len(), 1);
+        let digest = engine.verify_whole_file().await.unwrap();
+        engine.complete(digest, 3).unwrap();
+        engine.close().unwrap();
+        assert_eq!(
+            recover_known_length_http(&crash_recovery_request(&directory.0))
+                .unwrap()
+                .durable_prefix,
+            4
+        );
     }
 
     fn crash_engine(

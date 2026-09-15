@@ -350,6 +350,10 @@ fail. Admission initializes the bucket before starting a worker; worker launch
 installs its initial limit synchronously before returning the transfer future,
 so later live updates cannot be overwritten by delayed first polling. An
 unregistered bucket returns busy before option persistence.
+An allocating generation already owns its worker and uses the same live-update,
+restart and waiting-only rejection rules as an active generation. Its aria2
+wire status remains `waiting`; that compatibility projection does not authorize
+an in-place change to options already captured by the worker.
 Mixed restart patches publish the accepted live rate while
 the remaining options wait for their generation admission.
 

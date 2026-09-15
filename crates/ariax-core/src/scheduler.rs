@@ -887,8 +887,15 @@ impl RequestScheduler {
         bytes
     }
 
-    /// Returns the scheduler's current planned state, which may be ahead of
-    /// persistence acknowledgements and must not be exposed as a public snapshot.
+    /// Exact non-secret key retained for a challenge-bound persistence record.
+    #[must_use]
+    pub fn presented_host_key(&self, gid: Gid) -> Option<&PresentedHostKeyChallenge> {
+        self.tasks
+            .get(&gid)
+            .and_then(|task| task.host_key_challenge.as_ref())
+    }
+
+    /// Returns planned state, which may precede durable publication.
     #[must_use]
     pub fn task(&self, gid: Gid) -> Option<SchedulerTaskView> {
         self.tasks.get(&gid).map(ScheduledTask::view)
@@ -1087,7 +1094,24 @@ impl RequestScheduler {
 
         let old_class = original_present.then(|| original.queue_class()).flatten();
         let new_class = updated.as_ref().and_then(ScheduledTask::queue_class);
-        let queue_updates = self.queue_updates(original.gid, old_class, new_class)?;
+        let mut queue_updates = self.queue_updates(original.gid, old_class, new_class)?;
+        if !original_present {
+            for effect in &effects {
+                if let TransitionEffect::PersistTask {
+                    queue, position, ..
+                } = effect
+                {
+                    let update = queue_updates
+                        .iter_mut()
+                        .find(|update| update.class == *queue)
+                        .ok_or(SchedulerError::InternalInvariant)?;
+                    if update.order.pop() != Some(original.gid) || *position > update.order.len() {
+                        return Err(SchedulerError::InternalInvariant);
+                    }
+                    update.order.insert(*position, original.gid);
+                }
+            }
+        }
         if action != SchedulerAction::StoppedResultDeletionSucceeded
             && queue_updates
                 .iter()
@@ -1184,7 +1208,12 @@ impl RequestScheduler {
                 slow_slot: updated.as_ref().and_then(|task| task.slow_slot),
                 orders,
             };
-            if action == SchedulerAction::ExplicitNoSpaceProbeRequested {
+            if matches!(
+                action,
+                SchedulerAction::ExplicitNoSpaceProbeRequested
+                    | SchedulerAction::HostKeyChallengeRequired
+                    | SchedulerAction::ActiveHostKeyChallengeRequired
+            ) {
                 effects.insert(0, queue_effect);
             } else {
                 effects.push(queue_effect);
@@ -1604,7 +1633,21 @@ impl RequestScheduler {
                 gid,
                 desired_paused,
                 conditions,
-            } => self.add_validated_task(task_id, gid, desired_paused, conditions, at),
+            } => self.add_validated_task(task_id, gid, desired_paused, conditions, None, at),
+            SchedulerCommand::AddValidatedTaskAt {
+                task_id,
+                gid,
+                desired_paused,
+                conditions,
+                position,
+            } => self.add_validated_task(
+                task_id,
+                gid,
+                desired_paused,
+                conditions,
+                Some(position),
+                at,
+            ),
             SchedulerCommand::Pause { gid, force } => self.pause(gid, force, at),
             SchedulerCommand::Resume { gid } => self.resume(gid, at),
             SchedulerCommand::BeginSourceReplacement { gid } => {
@@ -1654,6 +1697,7 @@ impl RequestScheduler {
         gid: Gid,
         desired_paused: bool,
         conditions: TaskConditions,
+        position: Option<usize>,
         at: MonotonicInstant,
     ) -> Result<SchedulerOutcome, SchedulerError> {
         conditions
@@ -1686,14 +1730,15 @@ impl RequestScheduler {
             queue: updated
                 .queue_class()
                 .ok_or(SchedulerError::InternalInvariant)?,
-            position: self
-                .queues
-                .get(
-                    updated
-                        .queue_class()
-                        .ok_or(SchedulerError::InternalInvariant)?,
-                )
-                .len(),
+            position: position.unwrap_or(usize::MAX).min(
+                self.queues
+                    .get(
+                        updated
+                            .queue_class()
+                            .ok_or(SchedulerError::InternalInvariant)?,
+                    )
+                    .len(),
+            ),
             desired_paused,
             slow_demotion_count: 0,
             conditions,
@@ -2738,7 +2783,10 @@ impl RequestScheduler {
                 self.allocation_retryable(original, retry_at, at)
             }
             TaskEvent::AllocationHostKeyChallenge { challenge, .. } => {
-                self.allocation_host_key_challenge(original, challenge, at)
+                self.allocation_host_key_challenge(original, challenge, false, at)
+            }
+            TaskEvent::ActiveHostKeyChallenge { challenge, .. } => {
+                self.allocation_host_key_challenge(original, challenge, true, at)
             }
             TaskEvent::AllocationFailed { error, .. } => {
                 self.allocation_failed(original, error, at)
@@ -3207,9 +3255,14 @@ impl RequestScheduler {
         &mut self,
         original: ScheduledTask,
         challenge: PresentedHostKeyChallenge,
+        active: bool,
         at: MonotonicInstant,
     ) -> Result<SchedulerOutcome, SchedulerError> {
-        let action = SchedulerAction::HostKeyChallengeRequired;
+        let action = if active {
+            SchedulerAction::ActiveHostKeyChallengeRequired
+        } else {
+            SchedulerAction::HostKeyChallengeRequired
+        };
         if let Some(outcome) = Self::stale_if_rejected_event(&original, action, at)? {
             return Ok(outcome);
         }
@@ -3223,7 +3276,14 @@ impl RequestScheduler {
             challenge,
         }];
         Self::release_slot(&mut updated, &mut effects);
-        Self::mark_non_token_event(&mut updated, TaskEventKind::AllocationHostKeyChallenge);
+        Self::mark_non_token_event(
+            &mut updated,
+            if active {
+                TaskEventKind::ActiveHostKeyChallenge
+            } else {
+                TaskEventKind::AllocationHostKeyChallenge
+            },
+        );
         self.finish_action(
             original,
             Some(updated),

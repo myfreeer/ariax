@@ -1,0 +1,5969 @@
+--- a/examples/server.rs
++++ b/examples/server.rs
+@@ -128,7 +128,7 @@
+         Ok(Version::new())
+     }
+ 
+-    async fn close(&mut self, id: u32, _handle: String) -> Result<Status, Self::Error> {
++    async fn close(&mut self, id: u32, _handle: Vec<u8>) -> Result<Status, Self::Error> {
+         Ok(Status {
+             id,
+             status_code: StatusCode::Ok,
+@@ -140,12 +140,12 @@
+     async fn opendir(&mut self, id: u32, path: String) -> Result<Handle, Self::Error> {
+         info!("opendir: {}", path);
+         self.root_dir_read_done = false;
+-        Ok(Handle { id, handle: path })
++        Ok(Handle { id, handle: path.into_bytes() })
+     }
+ 
+-    async fn readdir(&mut self, id: u32, handle: String) -> Result<Name, Self::Error> {
+-        info!("readdir handle: {}", handle);
+-        if handle == "/" && !self.root_dir_read_done {
++    async fn readdir(&mut self, id: u32, handle: Vec<u8>) -> Result<Name, Self::Error> {
++        info!("readdir handle bytes: {}", handle.len());
++        if handle == b"/" && !self.root_dir_read_done {
+             self.root_dir_read_done = true;
+             return Ok(Name {
+                 id,
+--- a/src/buf.rs
++++ b/src/buf.rs
+@@ -1,27 +1,26 @@
+-use bytes::Buf;
+-
+-use crate::error::Error;
+-
+-pub trait TryBuf: Buf {
+-    fn try_get_bytes(&mut self) -> Result<Vec<u8>, Error>;
+-    fn try_get_string(&mut self) -> Result<String, Error>;
+-}
+-
+-impl<T: Buf> TryBuf for T {
+-    fn try_get_bytes(&mut self) -> Result<Vec<u8>, Error> {
+-        let len = self
+-            .try_get_u32()
+-            .map_err(|e| Error::UnexpectedBehavior(e.to_string()))? as usize;
+-        if self.remaining() < len {
+-            return Err(Error::BadMessage("no remaining for vec".to_owned()));
+-        }
+-
+-        Ok(self.copy_to_bytes(len).to_vec())
+-    }
+-
+-    fn try_get_string(&mut self) -> Result<String, Error> {
+-        let bytes = self.try_get_bytes()?;
+-        //String::from_utf8(bytes).map_err(|_| Error::BadMessage("unable to parse str".to_owned()))
+-        Ok(String::from_utf8_lossy(&bytes).into())
+-    }
+-}
++use bytes::Buf;
++
++use crate::error::Error;
++
++pub trait TryBuf: Buf {
++    fn try_get_bytes(&mut self) -> Result<Vec<u8>, Error>;
++    fn try_get_string(&mut self) -> Result<String, Error>;
++}
++
++impl<T: Buf> TryBuf for T {
++    fn try_get_bytes(&mut self) -> Result<Vec<u8>, Error> {
++        let len = self
++            .try_get_u32()
++            .map_err(|e| Error::UnexpectedBehavior(e.to_string()))? as usize;
++        if self.remaining() < len {
++            return Err(Error::BadMessage("no remaining for vec".to_owned()));
++        }
++
++        Ok(self.copy_to_bytes(len).to_vec())
++    }
++
++    fn try_get_string(&mut self) -> Result<String, Error> {
++        let bytes = self.try_get_bytes()?;
++        String::from_utf8(bytes).map_err(|_| Error::BadMessage("invalid UTF-8".to_owned()))
++    }
++}
+--- /dev/null
++++ b/src/client/bounded_tests.rs
+@@ -0,0 +1,75 @@
++use super::*;
++use std::sync::Arc;
++use tokio::io::{AsyncReadExt, AsyncWriteExt};
++
++#[tokio::test]
++async fn over_cap_prefix_does_not_wait_for_payload() {
++    let (client, mut server) = tokio::io::duplex(16);
++    let raw = RawSftpSession::new_with_config(client, Config { max_packet_len: 64, ..Config::default() });
++    let response = tokio::spawn(async move { raw.init().await });
++    // Only the prefix is sent. A payload read would stall until the test deadline.
++    server.write_u32(65).await.unwrap();
++    let error = tokio::time::timeout(std::time::Duration::from_secs(1), response)
++        .await.unwrap().unwrap().unwrap_err();
++    assert!(matches!(error, error::Error::PacketTooLarge));
++}
++
++#[tokio::test]
++async fn trailing_or_malformed_frames_close_and_drain_every_request() {
++    for bytes in [vec![0xff], vec![2, 0, 0, 0, 3, 1], vec![]] {
++        let (client, mut server) = tokio::io::duplex(128);
++        let raw = RawSftpSession::new(client);
++        let response = tokio::spawn(async move { raw.init().await });
++        server.write_u32(bytes.len() as u32).await.unwrap();
++        server.write_all(&bytes).await.unwrap();
++        assert!(tokio::time::timeout(std::time::Duration::from_secs(1), response)
++            .await.unwrap().unwrap().is_err());
++    }
++}
++
++#[tokio::test]
++async fn request_admission_is_bounded_and_close_drains() {
++    let (client, mut server) = tokio::io::duplex(8192);
++    let raw = Arc::new(RawSftpSession::new(client));
++    let init = { let raw = raw.clone(); tokio::spawn(async move { raw.init().await }) };
++    let length = server.read_u32().await.unwrap();
++    let mut request = vec![0; length as usize];
++    server.read_exact(&mut request).await.unwrap();
++    server.write_all(&[0, 0, 0, 5, 2, 0, 0, 0, 3]).await.unwrap();
++    init.await.unwrap().unwrap();
++    let mut tasks = tokio::task::JoinSet::new();
++    for _ in 0..MAX_PENDING_REQUESTS + 1 {
++        let raw = raw.clone();
++        tasks.spawn(async move { raw.fstat("handle").await });
++    }
++    let error = tasks.join_next().await.unwrap().unwrap().unwrap_err();
++    assert!(matches!(error, error::Error::RequestLimit));
++    assert_eq!(raw.pending_requests(), MAX_PENDING_REQUESTS);
++    raw.close_session().unwrap();
++    while let Some(result) = tasks.join_next().await {
++        assert!(matches!(result.unwrap(), Err(error::Error::SessionClosed)));
++    }
++    assert_eq!(raw.pending_requests(), 0);
++    assert!(matches!(raw.fstat("handle").await, Err(error::Error::SessionClosed)));
++}
++
++#[tokio::test]
++async fn request_timeout_closes_session_and_negotiation_only_lowers_cap() {
++    let (client, _server) = tokio::io::duplex(64);
++    let mut raw = RawSftpSession::new_with_config(client, Config { request_timeout_secs: 0, ..Config::default() });
++    raw.set_limits(rawsession::Limits { packet_len: Some(64), ..Default::default() });
++    raw.set_limits(rawsession::Limits { packet_len: Some(u64::MAX), ..Default::default() });
++    assert_eq!(raw.packet_cap(), 64);
++    assert!(matches!(raw.init().await, Err(error::Error::Timeout)));
++    assert_eq!(raw.pending_requests(), 0);
++    assert!(raw.init().await.is_err());
++}
++
++#[test]
++fn decoder_rejects_hostile_counts_trailing_data_and_invalid_utf8() {
++    // NAME request id=1, count=u32::MAX and no entries.
++    assert!(Packet::try_from(&mut Bytes::from_static(&[104, 0, 0, 0, 1, 255, 255, 255, 255])).is_err());
++    assert!(Packet::try_from(&mut Bytes::from_static(&[103, 0, 0, 0, 1, 0, 0, 0, 1, 42, 42])).is_err());
++    use crate::buf::TryBuf;
++    assert!(Bytes::from_static(&[0, 0, 0, 1, 255]).try_get_string().is_err());
++}
+--- a/src/client/error.rs
++++ b/src/client/error.rs
+@@ -1,59 +1,67 @@
+-use std::io;
+-use thiserror::Error;
+-use tokio::sync::mpsc::error::SendError as MpscSendError;
+-use tokio::sync::oneshot::error::RecvError as OneshotRecvError;
+-
+-use crate::{error, protocol::Status};
+-
+-/// Enum for client errors
+-#[derive(Debug, Clone, Error)]
+-pub enum Error {
+-    /// Contains an error status packet
+-    #[error("{}: {}", .0.status_code, .0.error_message)]
+-    Status(Status),
+-    /// Any errors related to I/O
+-    #[error("I/O: {0}")]
+-    IO(String),
+-    /// Time limit for receiving response packet exceeded
+-    #[error("Timeout")]
+-    Timeout,
+-    /// Occurs due to exceeding the limits set by the `limits@openssh.com` extension
+-    #[error("Limit exceeded: {0}")]
+-    Limited(String),
+-    /// Occurs when an unexpected packet is sent
+-    #[error("Unexpected packet")]
+-    UnexpectedPacket,
+-    /// Occurs when unexpected server behavior differs from the protocol specifition
+-    #[error("{0}")]
+-    UnexpectedBehavior(String),
+-}
+-
+-impl From<Status> for Error {
+-    fn from(status: Status) -> Self {
+-        Self::Status(status)
+-    }
+-}
+-
+-impl From<io::Error> for Error {
+-    fn from(error: io::Error) -> Self {
+-        Self::IO(error.to_string())
+-    }
+-}
+-
+-impl<T> From<MpscSendError<T>> for Error {
+-    fn from(err: MpscSendError<T>) -> Self {
+-        Self::UnexpectedBehavior(format!("SendError: {}", err))
+-    }
+-}
+-
+-impl From<OneshotRecvError> for Error {
+-    fn from(err: OneshotRecvError) -> Self {
+-        Self::UnexpectedBehavior(format!("RecvError: {}", err))
+-    }
+-}
+-
+-impl From<error::Error> for Error {
+-    fn from(error: error::Error) -> Self {
+-        Self::UnexpectedBehavior(error.to_string())
+-    }
+-}
++use std::io;
++use thiserror::Error;
++use tokio::sync::mpsc::error::SendError as MpscSendError;
++use tokio::sync::oneshot::error::RecvError as OneshotRecvError;
++
++use crate::{error, protocol::Status};
++
++/// Enum for client errors
++#[derive(Debug, Clone, Error)]
++pub enum Error {
++    #[error("SFTP session closed")]
++    SessionClosed,
++    #[error("SFTP packet exceeds configured bound")]
++    PacketTooLarge,
++    #[error("Malformed SFTP packet")]
++    MalformedPacket,
++    #[error("SFTP pending request limit reached")]
++    RequestLimit,
++    /// Contains an error status packet
++    #[error("{}: {}", .0.status_code, .0.error_message)]
++    Status(Status),
++    /// Any errors related to I/O
++    #[error("I/O: {0}")]
++    IO(String),
++    /// Time limit for receiving response packet exceeded
++    #[error("Timeout")]
++    Timeout,
++    /// Occurs due to exceeding the limits set by the `limits@openssh.com` extension
++    #[error("Limit exceeded: {0}")]
++    Limited(String),
++    /// Occurs when an unexpected packet is sent
++    #[error("Unexpected packet")]
++    UnexpectedPacket,
++    /// Occurs when unexpected server behavior differs from the protocol specifition
++    #[error("{0}")]
++    UnexpectedBehavior(String),
++}
++
++impl From<Status> for Error {
++    fn from(status: Status) -> Self {
++        Self::Status(status)
++    }
++}
++
++impl From<io::Error> for Error {
++    fn from(error: io::Error) -> Self {
++        Self::IO(error.to_string())
++    }
++}
++
++impl<T> From<MpscSendError<T>> for Error {
++    fn from(err: MpscSendError<T>) -> Self {
++        Self::UnexpectedBehavior(format!("SendError: {}", err))
++    }
++}
++
++impl From<OneshotRecvError> for Error {
++    fn from(err: OneshotRecvError) -> Self {
++        Self::UnexpectedBehavior(format!("RecvError: {}", err))
++    }
++}
++
++impl From<error::Error> for Error {
++    fn from(error: error::Error) -> Self {
++        Self::UnexpectedBehavior(error.to_string())
++    }
++}
+--- a/src/client/fs/file.rs
++++ b/src/client/fs/file.rs
+@@ -1,357 +1,357 @@
+-use std::{
+-    collections::VecDeque,
+-    future::{self, Future},
+-    io::{self, SeekFrom},
+-    pin::Pin,
+-    sync::Arc,
+-    task::{ready, Context, Poll},
+-};
+-use tokio::{
+-    io::{AsyncRead, AsyncSeek, AsyncWrite, ReadBuf},
+-    sync::oneshot,
+-};
+-
+-use super::Metadata;
+-use crate::{
+-    client::{error::Error, rawsession::SftpResult, session::Features, RawSftpSession},
+-    protocol::{Packet, StatusCode},
+-};
+-
+-type StateFn<T> = Option<Pin<Box<dyn Future<Output = io::Result<T>> + Send + Sync + 'static>>>;
+-
+-// read packet overhead: type(1) + id(4) + data_len(4)
+-const READ_OVERHEAD_LENGTH: u32 = 9;
+-// write packet overhead excluding handle: type(1) + id(4) + handle_len(4) + offset(8) + data_len(4)
+-const WRITE_OVERHEAD_LENGTH: u32 = 21;
+-
+-struct FileState {
+-    f_read: StateFn<Option<Vec<u8>>>,
+-    f_seek: StateFn<u64>,
+-    f_flush: StateFn<()>,
+-    f_shutdown: StateFn<()>,
+-    write_acks: VecDeque<oneshot::Receiver<SftpResult<Packet>>>,
+-}
+-
+-/// Provides high-level methods for interaction with a remote file.
+-///
+-/// In order to properly close the handle, [`shutdown`] on a file should be called.
+-/// Also implement [`AsyncSeek`] and other async i/o implementations.
+-///
+-/// # Weakness
+-/// Using [`SeekFrom::End`] is costly and time-consuming because we need to
+-/// request the actual file size from the remote server.
+-pub struct File {
+-    session: Arc<RawSftpSession>,
+-    handle: String,
+-    state: FileState,
+-    pos: u64,
+-    closed: bool,
+-    features: Features,
+-}
+-
+-impl File {
+-    pub(crate) fn new(session: Arc<RawSftpSession>, handle: String, features: Features) -> Self {
+-        Self {
+-            session,
+-            handle,
+-            state: FileState {
+-                f_read: None,
+-                f_seek: None,
+-                f_flush: None,
+-                f_shutdown: None,
+-                write_acks: VecDeque::with_capacity(features.max_concurrent_writes),
+-            },
+-            pos: 0,
+-            closed: false,
+-            features,
+-        }
+-    }
+-
+-    /// Queries metadata about the remote file.
+-    pub async fn metadata(&self) -> SftpResult<Metadata> {
+-        Ok(self.session.fstat(self.handle.as_str()).await?.attrs)
+-    }
+-
+-    /// Sets metadata for a remote file.
+-    pub async fn set_metadata(&self, metadata: Metadata) -> SftpResult<()> {
+-        self.session
+-            .fsetstat(self.handle.as_str(), metadata)
+-            .await
+-            .map(|_| ())
+-    }
+-
+-    /// Attempts to sync all data.
+-    ///
+-    /// If the server does not support `fsync@openssh.com` sending the request will
+-    /// be omitted, but will still pseudo-successfully
+-    pub async fn sync_all(&self) -> SftpResult<()> {
+-        if !self.features.fsync {
+-            return Ok(());
+-        }
+-
+-        self.session.fsync(self.handle.as_str()).await.map(|_| ())
+-    }
+-}
+-
+-fn check_write_result(
+-    result: Result<SftpResult<Packet>, oneshot::error::RecvError>,
+-) -> io::Result<()> {
+-    match result {
+-        Err(_) => Err(io::Error::new(
+-            io::ErrorKind::BrokenPipe,
+-            "write channel closed",
+-        )),
+-        Ok(Ok(Packet::Status(s))) if s.status_code == StatusCode::Ok => Ok(()),
+-        Ok(Ok(Packet::Status(s))) => Err(io::Error::other(s.error_message)),
+-        Ok(Ok(_)) => Err(io::Error::other("unexpected response packet")),
+-        Ok(Err(e)) => Err(io::Error::other(e.to_string())),
+-    }
+-}
+-
+-fn poll_oldest_write(
+-    pending: &mut VecDeque<oneshot::Receiver<SftpResult<Packet>>>,
+-    cx: &mut Context<'_>,
+-) -> Option<Poll<io::Result<()>>> {
+-    let rx = pending.front_mut()?;
+-    Some(match Pin::new(rx).poll(cx) {
+-        Poll::Pending => Poll::Pending,
+-        Poll::Ready(r) => {
+-            pending.pop_front();
+-            Poll::Ready(check_write_result(r))
+-        }
+-    })
+-}
+-
+-fn poll_drain_writes(
+-    pending: &mut VecDeque<oneshot::Receiver<SftpResult<Packet>>>,
+-    cx: &mut Context<'_>,
+-) -> Poll<io::Result<()>> {
+-    while let Some(poll) = poll_oldest_write(pending, cx) {
+-        ready!(poll)?;
+-    }
+-    Poll::Ready(Ok(()))
+-}
+-
+-impl Drop for File {
+-    fn drop(&mut self) {
+-        if self.closed {
+-            return;
+-        }
+-
+-        let _ = self.session.close_nowait(std::mem::take(&mut self.handle));
+-    }
+-}
+-
+-impl AsyncRead for File {
+-    fn poll_read(
+-        mut self: Pin<&mut Self>,
+-        cx: &mut Context<'_>,
+-        buf: &mut ReadBuf<'_>,
+-    ) -> Poll<io::Result<()>> {
+-        let poll = Pin::new(match self.state.f_read.as_mut() {
+-            Some(f) => f,
+-            None => {
+-                let session = self.session.clone();
+-                let max_read_len = self
+-                    .features
+-                    .limits
+-                    .and_then(|l| l.read_len)
+-                    .unwrap_or_else(|| {
+-                        self.features
+-                            .max_packet_len
+-                            .saturating_sub(READ_OVERHEAD_LENGTH) as u64
+-                    }) as usize;
+-
+-                let file_handle = self.handle.clone();
+-
+-                let offset = self.pos;
+-                let len = usize::min(buf.remaining(), max_read_len);
+-
+-                self.state.f_read.get_or_insert(Box::pin(async move {
+-                    let result = session.read(file_handle, offset, len as u32).await;
+-                    match result {
+-                        Ok(data) => Ok(Some(data.data)),
+-                        Err(Error::Status(status)) if status.status_code == StatusCode::Eof => {
+-                            Ok(None)
+-                        }
+-                        Err(e) => Err(io::Error::other(e.to_string())),
+-                    }
+-                }))
+-            }
+-        })
+-        .poll(cx);
+-
+-        if poll.is_ready() {
+-            self.state.f_read = None;
+-        }
+-
+-        match poll {
+-            Poll::Pending => Poll::Pending,
+-            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+-            Poll::Ready(Ok(None)) => Poll::Ready(Ok(())),
+-            Poll::Ready(Ok(Some(data))) => {
+-                self.pos += data.len() as u64;
+-                buf.put_slice(&data[..]);
+-                Poll::Ready(Ok(()))
+-            }
+-        }
+-    }
+-}
+-
+-impl AsyncSeek for File {
+-    fn start_seek(mut self: Pin<&mut Self>, position: io::SeekFrom) -> io::Result<()> {
+-        if self.state.f_seek.is_some() {
+-            return Err(io::Error::other(
+-                "other file operation is pending, call poll_complete before start_seek",
+-            ));
+-        }
+-
+-        self.state.f_seek = Some(match position {
+-            SeekFrom::Start(pos) => Box::pin(future::ready(Ok(pos))),
+-            SeekFrom::Current(pos) => {
+-                let new_pos = self.pos as i64 + pos;
+-                if new_pos < 0 {
+-                    return Err(io::Error::other(
+-                        "cannot move file pointer before the beginning",
+-                    ));
+-                }
+-                Box::pin(future::ready(Ok(new_pos as u64)))
+-            }
+-            SeekFrom::End(pos) => {
+-                let session = self.session.clone();
+-                let file_handle = self.handle.clone();
+-
+-                Box::pin(async move {
+-                    let result = session
+-                        .fstat(file_handle)
+-                        .await
+-                        .map_err(|e| io::Error::other(e.to_string()))?;
+-                    match result.attrs.size {
+-                        Some(size) => {
+-                            let new_pos = size as i64 + pos;
+-                            if new_pos < 0 {
+-                                return Err(io::Error::other(
+-                                    "cannot move file pointer before the beginning",
+-                                ));
+-                            }
+-                            Ok(new_pos as u64)
+-                        }
+-                        None => Err(io::Error::other("file size unknown")),
+-                    }
+-                })
+-            }
+-        });
+-
+-        Ok(())
+-    }
+-
+-    fn poll_complete(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<u64>> {
+-        match self.state.f_seek.as_mut() {
+-            None => Poll::Ready(Ok(self.pos)),
+-            Some(f) => {
+-                self.pos = ready!(Pin::new(f).poll(cx))?;
+-                self.state.f_seek = None;
+-                Poll::Ready(Ok(self.pos))
+-            }
+-        }
+-    }
+-}
+-
+-impl AsyncWrite for File {
+-    fn poll_write(
+-        mut self: Pin<&mut Self>,
+-        cx: &mut Context<'_>,
+-        buf: &[u8],
+-    ) -> Poll<Result<usize, io::Error>> {
+-        if self.state.write_acks.len() >= self.features.max_concurrent_writes {
+-            if let Some(poll) = poll_oldest_write(&mut self.state.write_acks, cx) {
+-                ready!(poll)?;
+-            }
+-        }
+-
+-        let max_write_len = self
+-            .features
+-            .limits
+-            .and_then(|l| l.write_len)
+-            .unwrap_or_else(|| {
+-                let overhead = WRITE_OVERHEAD_LENGTH + self.handle.len() as u32;
+-                self.features.max_packet_len.saturating_sub(overhead) as u64
+-            }) as usize;
+-
+-        let len = usize::min(buf.len(), max_write_len);
+-        let data = buf[..len].to_vec();
+-        let handle = self.handle.clone();
+-        let offset = self.pos;
+-
+-        match self.session.write_nowait(handle, offset, data) {
+-            Ok(rx) => {
+-                self.pos += len as u64;
+-                self.state.write_acks.push_back(rx);
+-                Poll::Ready(Ok(len))
+-            }
+-            Err(e) => Poll::Ready(Err(io::Error::other(e.to_string()))),
+-        }
+-    }
+-
+-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+-        ready!(poll_drain_writes(&mut self.state.write_acks, cx))?;
+-
+-        if !self.features.fsync {
+-            return Poll::Ready(Ok(()));
+-        }
+-
+-        let poll = Pin::new(match self.state.f_flush.as_mut() {
+-            Some(f) => f,
+-            None => {
+-                let session = self.session.clone();
+-                let file_handle = self.handle.clone();
+-
+-                self.state.f_flush.get_or_insert(Box::pin(async move {
+-                    session
+-                        .fsync(file_handle)
+-                        .await
+-                        .map(|_| ())
+-                        .map_err(|e| io::Error::other(e.to_string()))
+-                }))
+-            }
+-        })
+-        .poll(cx);
+-
+-        if poll.is_ready() {
+-            self.state.f_flush = None;
+-        }
+-
+-        poll
+-    }
+-
+-    fn poll_shutdown(
+-        mut self: Pin<&mut Self>,
+-        cx: &mut Context<'_>,
+-    ) -> Poll<Result<(), io::Error>> {
+-        ready!(poll_drain_writes(&mut self.state.write_acks, cx))?;
+-
+-        let poll = Pin::new(match self.state.f_shutdown.as_mut() {
+-            Some(f) => f,
+-            None => {
+-                let session = self.session.clone();
+-                let file_handle = self.handle.clone();
+-
+-                self.state.f_shutdown.get_or_insert(Box::pin(async move {
+-                    session
+-                        .close(file_handle)
+-                        .await
+-                        .map_err(|e| io::Error::other(e.to_string()))?;
+-                    Ok(())
+-                }))
+-            }
+-        })
+-        .poll(cx);
+-
+-        if poll.is_ready() {
+-            self.state.f_shutdown = None;
+-            self.closed = true;
+-        }
+-
+-        poll
+-    }
+-}
++use std::{
++    collections::VecDeque,
++    future::{self, Future},
++    io::{self, SeekFrom},
++    pin::Pin,
++    sync::Arc,
++    task::{ready, Context, Poll},
++};
++use tokio::{
++    io::{AsyncRead, AsyncSeek, AsyncWrite, ReadBuf},
++    sync::oneshot,
++};
++
++use super::Metadata;
++use crate::{
++    client::{error::Error, rawsession::SftpResult, session::Features, RawSftpSession},
++    protocol::{Packet, StatusCode},
++};
++
++type StateFn<T> = Option<Pin<Box<dyn Future<Output = io::Result<T>> + Send + Sync + 'static>>>;
++
++// read packet overhead: type(1) + id(4) + data_len(4)
++const READ_OVERHEAD_LENGTH: u32 = 9;
++// write packet overhead excluding handle: type(1) + id(4) + handle_len(4) + offset(8) + data_len(4)
++const WRITE_OVERHEAD_LENGTH: u32 = 21;
++
++struct FileState {
++    f_read: StateFn<Option<Vec<u8>>>,
++    f_seek: StateFn<u64>,
++    f_flush: StateFn<()>,
++    f_shutdown: StateFn<()>,
++    write_acks: VecDeque<oneshot::Receiver<SftpResult<Packet>>>,
++}
++
++/// Provides high-level methods for interaction with a remote file.
++///
++/// In order to properly close the handle, [`shutdown`] on a file should be called.
++/// Also implement [`AsyncSeek`] and other async i/o implementations.
++///
++/// # Weakness
++/// Using [`SeekFrom::End`] is costly and time-consuming because we need to
++/// request the actual file size from the remote server.
++pub struct File {
++    session: Arc<RawSftpSession>,
++    handle: Vec<u8>,
++    state: FileState,
++    pos: u64,
++    closed: bool,
++    features: Features,
++}
++
++impl File {
++    pub(crate) fn new(session: Arc<RawSftpSession>, handle: Vec<u8>, features: Features) -> Self {
++        Self {
++            session,
++            handle,
++            state: FileState {
++                f_read: None,
++                f_seek: None,
++                f_flush: None,
++                f_shutdown: None,
++                write_acks: VecDeque::with_capacity(features.max_concurrent_writes),
++            },
++            pos: 0,
++            closed: false,
++            features,
++        }
++    }
++
++    /// Queries metadata about the remote file.
++    pub async fn metadata(&self) -> SftpResult<Metadata> {
++        Ok(self.session.fstat(self.handle.as_slice()).await?.attrs)
++    }
++
++    /// Sets metadata for a remote file.
++    pub async fn set_metadata(&self, metadata: Metadata) -> SftpResult<()> {
++        self.session
++            .fsetstat(self.handle.as_slice(), metadata)
++            .await
++            .map(|_| ())
++    }
++
++    /// Attempts to sync all data.
++    ///
++    /// If the server does not support `fsync@openssh.com` sending the request will
++    /// be omitted, but will still pseudo-successfully
++    pub async fn sync_all(&self) -> SftpResult<()> {
++        if !self.features.fsync {
++            return Ok(());
++        }
++
++        self.session.fsync(self.handle.as_slice()).await.map(|_| ())
++    }
++}
++
++fn check_write_result(
++    result: Result<SftpResult<Packet>, oneshot::error::RecvError>,
++) -> io::Result<()> {
++    match result {
++        Err(_) => Err(io::Error::new(
++            io::ErrorKind::BrokenPipe,
++            "write channel closed",
++        )),
++        Ok(Ok(Packet::Status(s))) if s.status_code == StatusCode::Ok => Ok(()),
++        Ok(Ok(Packet::Status(s))) => Err(io::Error::other(s.error_message)),
++        Ok(Ok(_)) => Err(io::Error::other("unexpected response packet")),
++        Ok(Err(e)) => Err(io::Error::other(e.to_string())),
++    }
++}
++
++fn poll_oldest_write(
++    pending: &mut VecDeque<oneshot::Receiver<SftpResult<Packet>>>,
++    cx: &mut Context<'_>,
++) -> Option<Poll<io::Result<()>>> {
++    let rx = pending.front_mut()?;
++    Some(match Pin::new(rx).poll(cx) {
++        Poll::Pending => Poll::Pending,
++        Poll::Ready(r) => {
++            pending.pop_front();
++            Poll::Ready(check_write_result(r))
++        }
++    })
++}
++
++fn poll_drain_writes(
++    pending: &mut VecDeque<oneshot::Receiver<SftpResult<Packet>>>,
++    cx: &mut Context<'_>,
++) -> Poll<io::Result<()>> {
++    while let Some(poll) = poll_oldest_write(pending, cx) {
++        ready!(poll)?;
++    }
++    Poll::Ready(Ok(()))
++}
++
++impl Drop for File {
++    fn drop(&mut self) {
++        if self.closed {
++            return;
++        }
++
++        let _ = self.session.close_nowait(std::mem::take(&mut self.handle));
++    }
++}
++
++impl AsyncRead for File {
++    fn poll_read(
++        mut self: Pin<&mut Self>,
++        cx: &mut Context<'_>,
++        buf: &mut ReadBuf<'_>,
++    ) -> Poll<io::Result<()>> {
++        let poll = Pin::new(match self.state.f_read.as_mut() {
++            Some(f) => f,
++            None => {
++                let session = self.session.clone();
++                let max_read_len = self
++                    .features
++                    .limits
++                    .and_then(|l| l.read_len)
++                    .unwrap_or_else(|| {
++                        self.features
++                            .max_packet_len
++                            .saturating_sub(READ_OVERHEAD_LENGTH) as u64
++                    }) as usize;
++
++                let file_handle = self.handle.clone();
++
++                let offset = self.pos;
++                let len = usize::min(buf.remaining(), max_read_len);
++
++                self.state.f_read.get_or_insert(Box::pin(async move {
++                    let result = session.read(file_handle, offset, len as u32).await;
++                    match result {
++                        Ok(data) => Ok(Some(data.data)),
++                        Err(Error::Status(status)) if status.status_code == StatusCode::Eof => {
++                            Ok(None)
++                        }
++                        Err(e) => Err(io::Error::other(e.to_string())),
++                    }
++                }))
++            }
++        })
++        .poll(cx);
++
++        if poll.is_ready() {
++            self.state.f_read = None;
++        }
++
++        match poll {
++            Poll::Pending => Poll::Pending,
++            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
++            Poll::Ready(Ok(None)) => Poll::Ready(Ok(())),
++            Poll::Ready(Ok(Some(data))) => {
++                self.pos += data.len() as u64;
++                buf.put_slice(&data[..]);
++                Poll::Ready(Ok(()))
++            }
++        }
++    }
++}
++
++impl AsyncSeek for File {
++    fn start_seek(mut self: Pin<&mut Self>, position: io::SeekFrom) -> io::Result<()> {
++        if self.state.f_seek.is_some() {
++            return Err(io::Error::other(
++                "other file operation is pending, call poll_complete before start_seek",
++            ));
++        }
++
++        self.state.f_seek = Some(match position {
++            SeekFrom::Start(pos) => Box::pin(future::ready(Ok(pos))),
++            SeekFrom::Current(pos) => {
++                let new_pos = self.pos as i64 + pos;
++                if new_pos < 0 {
++                    return Err(io::Error::other(
++                        "cannot move file pointer before the beginning",
++                    ));
++                }
++                Box::pin(future::ready(Ok(new_pos as u64)))
++            }
++            SeekFrom::End(pos) => {
++                let session = self.session.clone();
++                let file_handle = self.handle.clone();
++
++                Box::pin(async move {
++                    let result = session
++                        .fstat(file_handle)
++                        .await
++                        .map_err(|e| io::Error::other(e.to_string()))?;
++                    match result.attrs.size {
++                        Some(size) => {
++                            let new_pos = size as i64 + pos;
++                            if new_pos < 0 {
++                                return Err(io::Error::other(
++                                    "cannot move file pointer before the beginning",
++                                ));
++                            }
++                            Ok(new_pos as u64)
++                        }
++                        None => Err(io::Error::other("file size unknown")),
++                    }
++                })
++            }
++        });
++
++        Ok(())
++    }
++
++    fn poll_complete(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<u64>> {
++        match self.state.f_seek.as_mut() {
++            None => Poll::Ready(Ok(self.pos)),
++            Some(f) => {
++                self.pos = ready!(Pin::new(f).poll(cx))?;
++                self.state.f_seek = None;
++                Poll::Ready(Ok(self.pos))
++            }
++        }
++    }
++}
++
++impl AsyncWrite for File {
++    fn poll_write(
++        mut self: Pin<&mut Self>,
++        cx: &mut Context<'_>,
++        buf: &[u8],
++    ) -> Poll<Result<usize, io::Error>> {
++        if self.state.write_acks.len() >= self.features.max_concurrent_writes {
++            if let Some(poll) = poll_oldest_write(&mut self.state.write_acks, cx) {
++                ready!(poll)?;
++            }
++        }
++
++        let max_write_len = self
++            .features
++            .limits
++            .and_then(|l| l.write_len)
++            .unwrap_or_else(|| {
++                let overhead = WRITE_OVERHEAD_LENGTH + self.handle.len() as u32;
++                self.features.max_packet_len.saturating_sub(overhead) as u64
++            }) as usize;
++
++        let len = usize::min(buf.len(), max_write_len);
++        let data = buf[..len].to_vec();
++        let handle = self.handle.clone();
++        let offset = self.pos;
++
++        match self.session.write_nowait(handle, offset, data) {
++            Ok(rx) => {
++                self.pos += len as u64;
++                self.state.write_acks.push_back(rx);
++                Poll::Ready(Ok(len))
++            }
++            Err(e) => Poll::Ready(Err(io::Error::other(e.to_string()))),
++        }
++    }
++
++    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
++        ready!(poll_drain_writes(&mut self.state.write_acks, cx))?;
++
++        if !self.features.fsync {
++            return Poll::Ready(Ok(()));
++        }
++
++        let poll = Pin::new(match self.state.f_flush.as_mut() {
++            Some(f) => f,
++            None => {
++                let session = self.session.clone();
++                let file_handle = self.handle.clone();
++
++                self.state.f_flush.get_or_insert(Box::pin(async move {
++                    session
++                        .fsync(file_handle)
++                        .await
++                        .map(|_| ())
++                        .map_err(|e| io::Error::other(e.to_string()))
++                }))
++            }
++        })
++        .poll(cx);
++
++        if poll.is_ready() {
++            self.state.f_flush = None;
++        }
++
++        poll
++    }
++
++    fn poll_shutdown(
++        mut self: Pin<&mut Self>,
++        cx: &mut Context<'_>,
++    ) -> Poll<Result<(), io::Error>> {
++        ready!(poll_drain_writes(&mut self.state.write_acks, cx))?;
++
++        let poll = Pin::new(match self.state.f_shutdown.as_mut() {
++            Some(f) => f,
++            None => {
++                let session = self.session.clone();
++                let file_handle = self.handle.clone();
++
++                self.state.f_shutdown.get_or_insert(Box::pin(async move {
++                    session
++                        .close(file_handle)
++                        .await
++                        .map_err(|e| io::Error::other(e.to_string()))?;
++                    Ok(())
++                }))
++            }
++        })
++        .poll(cx);
++
++        if poll.is_ready() {
++            self.state.f_shutdown = None;
++            self.closed = true;
++        }
++
++        poll
++    }
++}
+--- a/src/client/handler.rs
++++ b/src/client/handler.rs
+@@ -1,58 +1,64 @@
+-use std::future::Future;
+-
+-use super::error::Error;
+-use crate::protocol::{Attrs, Data, ExtendedReply, Handle, Name, Status, Version};
+-
+-/// Client stream handler. This is `async_trait`
+-#[cfg_attr(feature = "async-trait", async_trait::async_trait)]
+-pub trait Handler: Sized {
+-    type Error: Into<Error>;
+-
+-    /// Called on SSH_FXP_VERSION.
+-    #[allow(unused_variables)]
+-    fn version(
+-        &mut self,
+-        version: Version,
+-    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+-        async { Ok(()) }
+-    }
+-
+-    /// Called on SSH_FXP_STATUS.
+-    #[allow(unused_variables)]
+-    fn status(&mut self, status: Status) -> impl Future<Output = Result<(), Self::Error>> + Send {
+-        async { Ok(()) }
+-    }
+-
+-    /// Called on SSH_FXP_HANDLE.
+-    #[allow(unused_variables)]
+-    fn handle(&mut self, handle: Handle) -> impl Future<Output = Result<(), Self::Error>> + Send {
+-        async { Ok(()) }
+-    }
+-
+-    /// Called on SSH_FXP_DATA.
+-    #[allow(unused_variables)]
+-    fn data(&mut self, data: Data) -> impl Future<Output = Result<(), Self::Error>> + Send {
+-        async { Ok(()) }
+-    }
+-
+-    /// Called on SSH_FXP_NAME.
+-    #[allow(unused_variables)]
+-    fn name(&mut self, name: Name) -> impl Future<Output = Result<(), Self::Error>> + Send {
+-        async { Ok(()) }
+-    }
+-
+-    /// Called on SSH_FXP_ATTRS.
+-    #[allow(unused_variables)]
+-    fn attrs(&mut self, attrs: Attrs) -> impl Future<Output = Result<(), Self::Error>> + Send {
+-        async { Ok(()) }
+-    }
+-
+-    /// Called on SSH_EXTENDED_REPLY.
+-    #[allow(unused_variables)]
+-    fn extended_reply(
+-        &mut self,
+-        reply: ExtendedReply,
+-    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+-        async { Ok(()) }
+-    }
+-}
++use std::future::Future;
++
++use super::error::Error;
++use crate::protocol::{Attrs, Data, ExtendedReply, Handle, Name, Status, Version};
++
++/// Client stream handler. This is `async_trait`
++#[cfg_attr(feature = "async-trait", async_trait::async_trait)]
++pub trait Handler: Sized {
++    type Error: Into<Error>;
++
++    /// Terminal notification after the decoder has stopped and dropped its buffers.
++    fn closed(&mut self, _error: Error) -> impl Future<Output = ()> + Send {
++        async {}
++    }
++
++
++    /// Called on SSH_FXP_VERSION.
++    #[allow(unused_variables)]
++    fn version(
++        &mut self,
++        version: Version,
++    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
++        async { Ok(()) }
++    }
++
++    /// Called on SSH_FXP_STATUS.
++    #[allow(unused_variables)]
++    fn status(&mut self, status: Status) -> impl Future<Output = Result<(), Self::Error>> + Send {
++        async { Ok(()) }
++    }
++
++    /// Called on SSH_FXP_HANDLE.
++    #[allow(unused_variables)]
++    fn handle(&mut self, handle: Handle) -> impl Future<Output = Result<(), Self::Error>> + Send {
++        async { Ok(()) }
++    }
++
++    /// Called on SSH_FXP_DATA.
++    #[allow(unused_variables)]
++    fn data(&mut self, data: Data) -> impl Future<Output = Result<(), Self::Error>> + Send {
++        async { Ok(()) }
++    }
++
++    /// Called on SSH_FXP_NAME.
++    #[allow(unused_variables)]
++    fn name(&mut self, name: Name) -> impl Future<Output = Result<(), Self::Error>> + Send {
++        async { Ok(()) }
++    }
++
++    /// Called on SSH_FXP_ATTRS.
++    #[allow(unused_variables)]
++    fn attrs(&mut self, attrs: Attrs) -> impl Future<Output = Result<(), Self::Error>> + Send {
++        async { Ok(()) }
++    }
++
++    /// Called on SSH_EXTENDED_REPLY.
++    #[allow(unused_variables)]
++    fn extended_reply(
++        &mut self,
++        reply: ExtendedReply,
++    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
++        async { Ok(()) }
++    }
++}
+--- a/src/client/mod.rs
++++ b/src/client/mod.rs
+@@ -1,130 +1,158 @@
+-pub mod error;
+-pub mod fs;
+-mod handler;
+-pub mod rawsession;
+-pub(crate) mod runtime;
+-mod session;
+-
+-pub use handler::Handler;
+-pub use rawsession::RawSftpSession;
+-pub use session::SftpSession;
+-
+-use bytes::Bytes;
+-use tokio::{
+-    io::{self, AsyncRead, AsyncWrite, AsyncWriteExt},
+-    select,
+-    sync::mpsc,
+-};
+-use tokio_util::sync::CancellationToken;
+-
+-use crate::{error::Error, protocol::Packet, utils::read_packet};
+-
+-macro_rules! into_wrap {
+-    ($handler:expr) => {
+-        match $handler.await {
+-            Err(error) => Err(error.into()),
+-            Ok(()) => Ok(()),
+-        }
+-    };
+-}
+-
+-#[derive(Clone, Debug)]
+-pub struct Config {
+-    /// Maximum size of a single packet in bytes. Default: 256 KiB.
+-    pub max_packet_len: u32,
+-    /// Maximum number of concurrent in-flight write requests. Default: 8.
+-    pub max_concurrent_writes: usize,
+-    /// Timeout in seconds for each request. Default: 10.
+-    pub request_timeout_secs: u64,
+-}
+-
+-impl Default for Config {
+-    fn default() -> Self {
+-        Self {
+-            max_packet_len: 262144,
+-            max_concurrent_writes: 8,
+-            request_timeout_secs: 10,
+-        }
+-    }
+-}
+-
+-async fn execute_handler<H>(bytes: &mut Bytes, handler: &mut H) -> Result<(), error::Error>
+-where
+-    H: Handler + Send,
+-{
+-    match Packet::try_from(bytes)? {
+-        Packet::Version(p) => into_wrap!(handler.version(p)),
+-        Packet::Status(p) => into_wrap!(handler.status(p)),
+-        Packet::Handle(p) => into_wrap!(handler.handle(p)),
+-        Packet::Data(p) => into_wrap!(handler.data(p)),
+-        Packet::Name(p) => into_wrap!(handler.name(p)),
+-        Packet::Attrs(p) => into_wrap!(handler.attrs(p)),
+-        Packet::ExtendedReply(p) => into_wrap!(handler.extended_reply(p)),
+-        _ => Err(error::Error::UnexpectedBehavior(
+-            "A packet was received that could not be processed.".to_owned(),
+-        )),
+-    }
+-}
+-
+-async fn process_handler<S, H>(stream: &mut S, handler: &mut H) -> Result<(), Error>
+-where
+-    S: AsyncRead + Unpin,
+-    H: Handler + Send,
+-{
+-    let mut bytes = read_packet(stream, u32::MAX).await?;
+-    Ok(execute_handler(&mut bytes, handler).await?)
+-}
+-
+-/// Run processing stream as SFTP client. Is a simple handler of incoming
+-/// and outgoing packets. Can be used for non-standard implementations
+-pub fn run<S, H>(stream: S, mut handler: H) -> mpsc::UnboundedSender<Bytes>
+-where
+-    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+-    H: Handler + Send + 'static,
+-{
+-    let (tx, mut rx) = mpsc::unbounded_channel::<Bytes>();
+-    let (mut rd, mut wr) = io::split(stream);
+-
+-    let rc = CancellationToken::new();
+-    let wc = rc.clone();
+-    {
+-        runtime::spawn(async move {
+-            loop {
+-                select! {
+-                    result = process_handler(&mut rd, &mut handler) => {
+-                        match result {
+-                            Err(Error::UnexpectedEof) => break,
+-                            Err(err) => warn!("{}", err),
+-                            Ok(_) => (),
+-                        }
+-                    },
+-                    _ = rc.cancelled() => break,
+-                }
+-            }
+-
+-            rc.cancel();
+-            debug!("read half of sftp stream ended");
+-        });
+-    }
+-
+-    runtime::spawn(async move {
+-        loop {
+-            select! {
+-                Some(data) = rx.recv() => {
+-                    if data.is_empty() {
+-                        let _ = wr.shutdown().await;
+-                        break;
+-                    }
+-
+-                    let _ = wr.write_all(&data[..]).await;
+-                },
+-                _ = wc.cancelled() => break,
+-            }
+-        }
+-
+-        wc.cancel();
+-        debug!("write half of sftp stream ended");
+-    });
+-
+-    tx
+-}
++pub mod error;
++pub mod fs;
++mod handler;
++pub mod rawsession;
++pub(crate) mod runtime;
++mod session;
++
++pub use handler::Handler;
++pub use rawsession::RawSftpSession;
++pub use session::SftpSession;
++
++use bytes::Bytes;
++use tokio::{
++    io::{self, AsyncRead, AsyncWrite, AsyncWriteExt},
++    select,
++    sync::mpsc,
++};
++use tokio_util::sync::CancellationToken;
++
++use crate::{error::Error, protocol::Packet, utils::read_packet};
++
++macro_rules! into_wrap {
++    ($handler:expr) => {
++        match $handler.await {
++            Err(error) => Err(error.into()),
++            Ok(()) => Ok(()),
++        }
++    };
++}
++
++#[derive(Clone, Debug)]
++pub struct Config {
++    /// Maximum size of a single packet in bytes. Default: 128 KiB; hard maximum: 1 MiB.
++    pub max_packet_len: u32,
++    /// Maximum number of concurrent in-flight write requests. Default: 8.
++    pub max_concurrent_writes: usize,
++    /// Timeout in seconds for each request. Default: 10.
++    pub request_timeout_secs: u64,
++}
++
++impl Default for Config {
++    fn default() -> Self {
++        Self {
++            max_packet_len: 131072,
++            max_concurrent_writes: 8,
++            request_timeout_secs: 10,
++        }
++    }
++}
++
++async fn execute_handler<H>(bytes: &mut Bytes, handler: &mut H) -> Result<(), error::Error>
++where
++    H: Handler + Send,
++{
++    match Packet::try_from(bytes)? {
++        Packet::Version(p) => into_wrap!(handler.version(p)),
++        Packet::Status(p) => into_wrap!(handler.status(p)),
++        Packet::Handle(p) => into_wrap!(handler.handle(p)),
++        Packet::Data(p) => into_wrap!(handler.data(p)),
++        Packet::Name(p) => into_wrap!(handler.name(p)),
++        Packet::Attrs(p) => into_wrap!(handler.attrs(p)),
++        Packet::ExtendedReply(p) => into_wrap!(handler.extended_reply(p)),
++        _ => Err(error::Error::UnexpectedBehavior(
++            "A packet was received that could not be processed.".to_owned(),
++        )),
++    }
++}
++
++/// Ariax framing/admission patch. Checked against vendored source provenance.
++pub const ARIAX_BOUNDED_PROTOCOL_REVISION: u32 = 1;
++pub const MAX_PENDING_REQUESTS: usize = 65;
++pub const MAX_PACKET_LENGTH: u32 = 1024 * 1024;
++
++/// Run a bounded client with the default receive cap.
++pub fn run<S, H>(stream: S, handler: H) -> mpsc::Sender<Bytes>
++where
++    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
++    H: Handler + Send + 'static,
++{
++    run_bounded(stream, handler,
++        std::sync::Arc::new(std::sync::atomic::AtomicU32::new(Config::default().max_packet_len)),
++        CancellationToken::new())
++}
++
++fn run_bounded<S, H>(stream: S, handler: H,
++    cap: std::sync::Arc<std::sync::atomic::AtomicU32>, cancel: CancellationToken) -> mpsc::Sender<Bytes>
++where
++    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
++    H: Handler + Send + 'static,
++{
++    run_bounded_tracked(stream,handler,cap,cancel).0
++}
++
++struct DrainGuard(std::sync::Arc<(std::sync::atomic::AtomicUsize,tokio::sync::watch::Sender<bool>)>);
++impl Drop for DrainGuard {
++    fn drop(&mut self) {
++        if self.0.0.fetch_sub(1,std::sync::atomic::Ordering::AcqRel) == 1 { self.0.1.send_replace(true); }
++    }
++}
++
++fn run_bounded_tracked<S,H>(stream:S,mut handler:H,
++    cap:std::sync::Arc<std::sync::atomic::AtomicU32>,cancel:CancellationToken)->(mpsc::Sender<Bytes>,tokio::sync::watch::Receiver<bool>)
++where S:AsyncRead+AsyncWrite+Unpin+Send+'static,H:Handler+Send+'static {
++    let (drained,receiver) = tokio::sync::watch::channel(false);
++    let remaining = std::sync::Arc::new((std::sync::atomic::AtomicUsize::new(2),drained));
++    let read_guard = DrainGuard(remaining.clone()); let write_guard = DrainGuard(remaining);
++    let (tx, mut rx) = mpsc::channel::<Bytes>(MAX_PENDING_REQUESTS);
++    let (mut rd, mut wr) = io::split(stream);
++    let rc = cancel.clone();
++    runtime::spawn(async move {
++        let _drain = read_guard;
++        let failure = loop {
++            let limit = cap.load(std::sync::atomic::Ordering::Acquire).clamp(1, MAX_PACKET_LENGTH);
++            let result = select! {
++                biased;
++                _ = rc.cancelled() => break error::Error::SessionClosed,
++                result = read_packet(&mut rd, limit) => result,
++            };
++            match result {
++                Ok(mut bytes) => if let Err(error) = execute_handler(&mut bytes, &mut handler).await {
++                    break error;
++                },
++                Err(Error::PacketTooLarge) => break error::Error::PacketTooLarge,
++                Err(Error::UnexpectedEof) => break error::Error::SessionClosed,
++                Err(_) => break error::Error::MalformedPacket,
++            }
++        };
++        // Drop decoder buffers before completing reservations retained by callers.
++        drop(rd);
++        rc.cancel();
++        handler.closed(failure).await;
++    });
++    runtime::spawn(async move {
++        let _drain = write_guard;
++        loop {
++            let data = select! {
++                biased;
++                _ = cancel.cancelled() => break,
++                data = rx.recv() => match data { Some(data) => data, None => break },
++            };
++            if data.is_empty() { break; }
++            let result = select! {
++                biased;
++                _ = cancel.cancelled() => break,
++                result = wr.write_all(&data) => result,
++            };
++            if result.is_err() { break; }
++        }
++        rx.close();
++        drop(rx);
++        cancel.cancel();
++        drop(wr);
++    });
++    (tx,receiver)
++}
++
++#[cfg(test)]
++mod bounded_tests;
+--- a/src/client/rawsession.rs
++++ b/src/client/rawsession.rs
+@@ -1,749 +1,813 @@
+-use bytes::Bytes;
+-use dashmap::DashMap as HashMap;
+-use std::{
+-    sync::{
+-        atomic::{AtomicU32, AtomicU64, Ordering},
+-        Arc,
+-    },
+-    time::Duration,
+-};
+-use tokio::{
+-    io::{AsyncRead, AsyncWrite},
+-    sync::{mpsc, oneshot},
+-};
+-
+-use super::{error::Error, runtime, Handler};
+-use crate::{
+-    client::{run, Config},
+-    de,
+-    extensions::{
+-        self, FsyncExtension, HardlinkExtension, LimitsExtension, Statvfs, StatvfsExtension,
+-    },
+-    protocol::{
+-        Attrs, Close, Data, Extended, ExtendedReply, FSetStat, FileAttributes, Fstat, Handle, Init,
+-        Lstat, MkDir, Name, Open, OpenDir, OpenFlags, Packet, Read, ReadDir, ReadLink, RealPath,
+-        Remove, Rename, RmDir, SetStat, Stat, Status, StatusCode, Symlink, Version, Write,
+-    },
+-};
+-
+-pub type SftpResult<T> = Result<T, Error>;
+-type SharedRequests = HashMap<Option<u32>, oneshot::Sender<SftpResult<Packet>>>;
+-
+-pub(crate) struct SessionInner {
+-    version: Option<u32>,
+-    requests: Arc<SharedRequests>,
+-}
+-
+-impl SessionInner {
+-    pub fn reply(&mut self, id: Option<u32>, packet: Packet) -> SftpResult<()> {
+-        if let Some((_, sender)) = self.requests.remove(&id) {
+-            let validate = if id.is_some() && self.version.is_none() {
+-                Err(Error::UnexpectedPacket)
+-            } else if id.is_none() && self.version.is_some() {
+-                Err(Error::UnexpectedBehavior("Duplicate version".to_owned()))
+-            } else {
+-                Ok(())
+-            };
+-
+-            // Ignore send error: receiver was dropped (request timed out).
+-            let _ = sender.send(validate.clone().map(|_| packet));
+-
+-            return validate;
+-        }
+-
+-        Err(Error::UnexpectedBehavior(format!(
+-            "Packet {:?} for unknown recipient",
+-            id
+-        )))
+-    }
+-}
+-
+-impl Handler for SessionInner {
+-    type Error = Error;
+-
+-    async fn version(&mut self, packet: Version) -> Result<(), Self::Error> {
+-        let version = packet.version;
+-        self.reply(None, packet.into())?;
+-        self.version = Some(version);
+-        Ok(())
+-    }
+-
+-    async fn name(&mut self, name: Name) -> Result<(), Self::Error> {
+-        self.reply(Some(name.id), name.into())
+-    }
+-
+-    async fn status(&mut self, status: Status) -> Result<(), Self::Error> {
+-        self.reply(Some(status.id), status.into())
+-    }
+-
+-    async fn handle(&mut self, handle: Handle) -> Result<(), Self::Error> {
+-        self.reply(Some(handle.id), handle.into())
+-    }
+-
+-    async fn data(&mut self, data: Data) -> Result<(), Self::Error> {
+-        self.reply(Some(data.id), data.into())
+-    }
+-
+-    async fn attrs(&mut self, attrs: Attrs) -> Result<(), Self::Error> {
+-        self.reply(Some(attrs.id), attrs.into())
+-    }
+-
+-    async fn extended_reply(&mut self, reply: ExtendedReply) -> Result<(), Self::Error> {
+-        self.reply(Some(reply.id), reply.into())
+-    }
+-}
+-
+-#[derive(Debug, Clone, Copy, Default)]
+-pub struct Limits {
+-    pub packet_len: Option<u64>,
+-    pub read_len: Option<u64>,
+-    pub write_len: Option<u64>,
+-    pub open_handles: Option<u64>,
+-}
+-
+-impl From<LimitsExtension> for Limits {
+-    fn from(limits: LimitsExtension) -> Self {
+-        Self {
+-            packet_len: (limits.max_packet_len > 0).then_some(limits.max_packet_len),
+-            read_len: (limits.max_read_len > 0).then_some(limits.max_read_len),
+-            write_len: (limits.max_write_len > 0).then_some(limits.max_write_len),
+-            open_handles: (limits.max_open_handles > 0).then_some(limits.max_open_handles),
+-        }
+-    }
+-}
+-
+-/// Implements raw work with the protocol in request-response format.
+-/// If the server returns a `Status` packet and it has the code Ok
+-/// then the packet is returned as Ok in other error cases
+-/// the packet is stored as Err.
+-pub struct RawSftpSession {
+-    tx: mpsc::UnboundedSender<Bytes>,
+-    requests: Arc<SharedRequests>,
+-    next_req_id: AtomicU32,
+-    handles: AtomicU64,
+-    timeout: AtomicU64,
+-    limits: Limits,
+-}
+-
+-macro_rules! into_with_status {
+-    ($result:ident, $packet:ident) => {
+-        match $result {
+-            Packet::$packet(p) => Ok(p),
+-            Packet::Status(p) => Err(p.into()),
+-            _ => Err(Error::UnexpectedPacket),
+-        }
+-    };
+-}
+-
+-macro_rules! into_status {
+-    ($result:ident) => {
+-        match $result {
+-            Packet::Status(status) if status.status_code == StatusCode::Ok => Ok(status),
+-            Packet::Status(status) => Err(status.into()),
+-            _ => Err(Error::UnexpectedPacket),
+-        }
+-    };
+-}
+-
+-impl RawSftpSession {
+-    pub fn new<S>(stream: S) -> Self
+-    where
+-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+-    {
+-        Self::new_with_config(stream, Config::default())
+-    }
+-
+-    pub fn new_with_config<S>(stream: S, cfg: Config) -> Self
+-    where
+-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+-    {
+-        let req_map = Arc::new(HashMap::new());
+-        let inner = SessionInner {
+-            version: None,
+-            requests: req_map.clone(),
+-        };
+-
+-        Self {
+-            tx: run(stream, inner),
+-            requests: req_map,
+-            next_req_id: AtomicU32::new(1),
+-            handles: AtomicU64::new(0),
+-            timeout: AtomicU64::new(cfg.request_timeout_secs),
+-            limits: Limits::default(),
+-        }
+-    }
+-
+-    /// Set the maximum response time in seconds.
+-    /// Default: 10 seconds
+-    pub fn set_timeout(&self, secs: u64) {
+-        self.timeout.store(secs, Ordering::Relaxed);
+-    }
+-
+-    /// Setting limits. For the `limits@openssh.com` extension
+-    pub fn set_limits(&mut self, limits: Limits) {
+-        self.limits = limits;
+-    }
+-
+-    fn send(
+-        &self,
+-        id: Option<u32>,
+-        packet: Packet,
+-    ) -> SftpResult<oneshot::Receiver<SftpResult<Packet>>> {
+-        if self.tx.is_closed() {
+-            return Err(Error::UnexpectedBehavior("session closed".into()));
+-        }
+-
+-        let bytes = Bytes::try_from(packet)?;
+-
+-        if let Some(max_len) = self.limits.packet_len {
+-            if bytes.len() as u64 > max_len {
+-                return Err(Error::Limited("packet exceeds server limit".to_owned()));
+-            }
+-        }
+-
+-        let (tx, rx) = oneshot::channel();
+-        self.requests.insert(id, tx);
+-        self.tx.send(bytes)?;
+-
+-        Ok(rx)
+-    }
+-
+-    async fn request(&self, id: Option<u32>, packet: Packet) -> SftpResult<Packet> {
+-        let rx = self.send(id, packet)?;
+-        let timeout = self.timeout.load(Ordering::Relaxed);
+-
+-        match runtime::timeout(Duration::from_secs(timeout), rx).await {
+-            Ok(Ok(result)) => result,
+-            Ok(Err(_)) => Err(Error::UnexpectedBehavior("sender dropped".into())),
+-            Err(error) => {
+-                self.requests.remove(&id);
+-                Err(error)
+-            }
+-        }
+-    }
+-
+-    fn use_next_id(&self) -> u32 {
+-        self.next_req_id.fetch_add(1, Ordering::Relaxed)
+-    }
+-
+-    /// Closes the inner channel stream. Called by [`Drop`]
+-    pub fn close_session(&self) -> SftpResult<()> {
+-        if self.tx.is_closed() {
+-            return Ok(());
+-        }
+-
+-        Ok(self.tx.send(Bytes::new())?)
+-    }
+-
+-    pub async fn init(&self) -> SftpResult<Version> {
+-        let result = self.request(None, Init::default().into()).await?;
+-        if let Packet::Version(version) = result {
+-            Ok(version)
+-        } else {
+-            Err(Error::UnexpectedPacket)
+-        }
+-    }
+-
+-    pub async fn open<T: Into<String>>(
+-        &self,
+-        filename: T,
+-        flags: OpenFlags,
+-        attrs: FileAttributes,
+-    ) -> SftpResult<Handle> {
+-        if self
+-            .limits
+-            .open_handles
+-            .is_some_and(|h| self.handles.load(Ordering::SeqCst) >= h)
+-        {
+-            return Err(Error::Limited("handle limit reached".to_owned()));
+-        }
+-
+-        let id = self.use_next_id();
+-        let result = self
+-            .request(
+-                Some(id),
+-                Open {
+-                    id,
+-                    filename: filename.into(),
+-                    pflags: flags,
+-                    attrs,
+-                }
+-                .into(),
+-            )
+-            .await?;
+-
+-        if let Packet::Handle(_) = result {
+-            self.handles.fetch_add(1, Ordering::SeqCst);
+-        }
+-
+-        into_with_status!(result, Handle)
+-    }
+-
+-    pub async fn close<H: Into<String>>(&self, handle: H) -> SftpResult<Status> {
+-        let id = self.use_next_id();
+-        let result = self
+-            .request(
+-                Some(id),
+-                Close {
+-                    id,
+-                    handle: handle.into(),
+-                }
+-                .into(),
+-            )
+-            .await?;
+-
+-        if let Packet::Status(status) = &result {
+-            if status.status_code == StatusCode::Ok
+-                && self
+-                    .handles
+-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |h| {
+-                        if h > 0 {
+-                            Some(h - 1)
+-                        } else {
+-                            None
+-                        }
+-                    })
+-                    .is_err()
+-            {
+-                warn!("attempt to close more handles than exist");
+-            }
+-        }
+-
+-        into_status!(result)
+-    }
+-
+-    /// Sends a close packet without awaiting the server's acknowledgement.
+-    pub(crate) fn close_nowait(
+-        &self,
+-        handle: String,
+-    ) -> SftpResult<oneshot::Receiver<SftpResult<Packet>>> {
+-        let id = self.use_next_id();
+-        self.send(Some(id), Close { id, handle }.into())
+-    }
+-
+-    pub async fn read<H: Into<String>>(
+-        &self,
+-        handle: H,
+-        offset: u64,
+-        len: u32,
+-    ) -> SftpResult<Data> {
+-        if self.limits.read_len.is_some_and(|r| len as u64 > r) {
+-            return Err(Error::Limited("read limit reached".to_owned()));
+-        }
+-
+-        let id = self.use_next_id();
+-        let result = self
+-            .request(
+-                Some(id),
+-                Read {
+-                    id,
+-                    handle: handle.into(),
+-                    offset,
+-                    len,
+-                }
+-                .into(),
+-            )
+-            .await?;
+-
+-        into_with_status!(result, Data)
+-    }
+-
+-    pub async fn write<H: Into<String>>(
+-        &self,
+-        handle: H,
+-        offset: u64,
+-        data: Vec<u8>,
+-    ) -> SftpResult<Status> {
+-        if self.limits.write_len.is_some_and(|w| data.len() as u64 > w) {
+-            return Err(Error::Limited("write limit reached".to_owned()));
+-        }
+-
+-        let id = self.use_next_id();
+-        let result = self
+-            .request(
+-                Some(id),
+-                Write {
+-                    id,
+-                    handle: handle.into(),
+-                    offset,
+-                    data,
+-                }
+-                .into(),
+-            )
+-            .await?;
+-
+-        into_status!(result)
+-    }
+-
+-    /// Sends a write packet without awaiting the server's acknowledgement.
+-    pub(crate) fn write_nowait(
+-        &self,
+-        handle: String,
+-        offset: u64,
+-        data: Vec<u8>,
+-    ) -> SftpResult<oneshot::Receiver<SftpResult<Packet>>> {
+-        if self.limits.write_len.is_some_and(|w| data.len() as u64 > w) {
+-            return Err(Error::Limited("write limit reached".to_owned()));
+-        }
+-
+-        let id = self.use_next_id();
+-        self.send(
+-            Some(id),
+-            Write {
+-                id,
+-                handle,
+-                offset,
+-                data,
+-            }
+-            .into(),
+-        )
+-    }
+-
+-    pub async fn lstat<P: Into<String>>(&self, path: P) -> SftpResult<Attrs> {
+-        let id = self.use_next_id();
+-        let result = self
+-            .request(
+-                Some(id),
+-                Lstat {
+-                    id,
+-                    path: path.into(),
+-                }
+-                .into(),
+-            )
+-            .await?;
+-
+-        into_with_status!(result, Attrs)
+-    }
+-
+-    pub async fn fstat<H: Into<String>>(&self, handle: H) -> SftpResult<Attrs> {
+-        let id = self.use_next_id();
+-        let result = self
+-            .request(
+-                Some(id),
+-                Fstat {
+-                    id,
+-                    handle: handle.into(),
+-                }
+-                .into(),
+-            )
+-            .await?;
+-
+-        into_with_status!(result, Attrs)
+-    }
+-
+-    pub async fn setstat<P: Into<String>>(
+-        &self,
+-        path: P,
+-        attrs: FileAttributes,
+-    ) -> SftpResult<Status> {
+-        let id = self.use_next_id();
+-        let result = self
+-            .request(
+-                Some(id),
+-                SetStat {
+-                    id,
+-                    path: path.into(),
+-                    attrs,
+-                }
+-                .into(),
+-            )
+-            .await?;
+-
+-        into_status!(result)
+-    }
+-
+-    pub async fn fsetstat<H: Into<String>>(
+-        &self,
+-        handle: H,
+-        attrs: FileAttributes,
+-    ) -> SftpResult<Status> {
+-        let id = self.use_next_id();
+-        let result = self
+-            .request(
+-                Some(id),
+-                FSetStat {
+-                    id,
+-                    handle: handle.into(),
+-                    attrs,
+-                }
+-                .into(),
+-            )
+-            .await?;
+-
+-        into_status!(result)
+-    }
+-
+-    pub async fn opendir<P: Into<String>>(&self, path: P) -> SftpResult<Handle> {
+-        if self
+-            .limits
+-            .open_handles
+-            .is_some_and(|h| self.handles.load(Ordering::SeqCst) >= h)
+-        {
+-            return Err(Error::Limited("Handle limit reached".to_owned()));
+-        }
+-
+-        let id = self.use_next_id();
+-        let result = self
+-            .request(
+-                Some(id),
+-                OpenDir {
+-                    id,
+-                    path: path.into(),
+-                }
+-                .into(),
+-            )
+-            .await?;
+-
+-        if let Packet::Handle(_) = result {
+-            self.handles.fetch_add(1, Ordering::SeqCst);
+-        }
+-
+-        into_with_status!(result, Handle)
+-    }
+-
+-    pub async fn readdir<H: Into<String>>(&self, handle: H) -> SftpResult<Name> {
+-        let id = self.use_next_id();
+-        let result = self
+-            .request(
+-                Some(id),
+-                ReadDir {
+-                    id,
+-                    handle: handle.into(),
+-                }
+-                .into(),
+-            )
+-            .await?;
+-
+-        into_with_status!(result, Name)
+-    }
+-
+-    pub async fn remove<T: Into<String>>(&self, filename: T) -> SftpResult<Status> {
+-        let id = self.use_next_id();
+-        let result = self
+-            .request(
+-                Some(id),
+-                Remove {
+-                    id,
+-                    filename: filename.into(),
+-                }
+-                .into(),
+-            )
+-            .await?;
+-
+-        into_status!(result)
+-    }
+-
+-    pub async fn mkdir<P: Into<String>>(
+-        &self,
+-        path: P,
+-        attrs: FileAttributes,
+-    ) -> SftpResult<Status> {
+-        let id = self.use_next_id();
+-        let result = self
+-            .request(
+-                Some(id),
+-                MkDir {
+-                    id,
+-                    path: path.into(),
+-                    attrs,
+-                }
+-                .into(),
+-            )
+-            .await?;
+-
+-        into_status!(result)
+-    }
+-
+-    pub async fn rmdir<P: Into<String>>(&self, path: P) -> SftpResult<Status> {
+-        let id = self.use_next_id();
+-        let result = self
+-            .request(
+-                Some(id),
+-                RmDir {
+-                    id,
+-                    path: path.into(),
+-                }
+-                .into(),
+-            )
+-            .await?;
+-
+-        into_status!(result)
+-    }
+-
+-    pub async fn realpath<P: Into<String>>(&self, path: P) -> SftpResult<Name> {
+-        let id = self.use_next_id();
+-        let result = self
+-            .request(
+-                Some(id),
+-                RealPath {
+-                    id,
+-                    path: path.into(),
+-                }
+-                .into(),
+-            )
+-            .await?;
+-
+-        into_with_status!(result, Name)
+-    }
+-
+-    pub async fn stat<P: Into<String>>(&self, path: P) -> SftpResult<Attrs> {
+-        let id = self.use_next_id();
+-        let result = self
+-            .request(
+-                Some(id),
+-                Stat {
+-                    id,
+-                    path: path.into(),
+-                }
+-                .into(),
+-            )
+-            .await?;
+-
+-        into_with_status!(result, Attrs)
+-    }
+-
+-    pub async fn rename<O, N>(&self, oldpath: O, newpath: N) -> SftpResult<Status>
+-    where
+-        O: Into<String>,
+-        N: Into<String>,
+-    {
+-        let id = self.use_next_id();
+-        let result = self
+-            .request(
+-                Some(id),
+-                Rename {
+-                    id,
+-                    oldpath: oldpath.into(),
+-                    newpath: newpath.into(),
+-                }
+-                .into(),
+-            )
+-            .await?;
+-
+-        into_status!(result)
+-    }
+-
+-    pub async fn readlink<P: Into<String>>(&self, path: P) -> SftpResult<Name> {
+-        let id = self.use_next_id();
+-        let result = self
+-            .request(
+-                Some(id),
+-                ReadLink {
+-                    id,
+-                    path: path.into(),
+-                }
+-                .into(),
+-            )
+-            .await?;
+-
+-        into_with_status!(result, Name)
+-    }
+-
+-    pub async fn symlink<P, T>(&self, path: P, target: T) -> SftpResult<Status>
+-    where
+-        P: Into<String>,
+-        T: Into<String>,
+-    {
+-        let id = self.use_next_id();
+-        let result = self
+-            .request(
+-                Some(id),
+-                Symlink {
+-                    id,
+-                    linkpath: path.into(),
+-                    targetpath: target.into(),
+-                }
+-                .into(),
+-            )
+-            .await?;
+-
+-        into_status!(result)
+-    }
+-
+-    /// Equivalent to `SSH_FXP_EXTENDED`. Allows protocol expansion.
+-    /// The extension can return any packet, so it's not specific
+-    pub async fn extended<R: Into<String>>(&self, request: R, data: Vec<u8>) -> SftpResult<Packet> {
+-        let id = self.use_next_id();
+-        self.request(
+-            Some(id),
+-            Extended {
+-                id,
+-                request: request.into(),
+-                data,
+-            }
+-            .into(),
+-        )
+-        .await
+-    }
+-
+-    pub async fn limits(&self) -> SftpResult<LimitsExtension> {
+-        match self.extended(extensions::LIMITS, vec![]).await? {
+-            Packet::ExtendedReply(reply) => {
+-                Ok(de::from_bytes::<LimitsExtension>(&mut reply.data.into())?)
+-            }
+-            Packet::Status(status) if status.status_code != StatusCode::Ok => {
+-                Err(Error::Status(status))
+-            }
+-            _ => Err(Error::UnexpectedPacket),
+-        }
+-    }
+-
+-    pub async fn hardlink<O, N>(&self, oldpath: O, newpath: N) -> SftpResult<Status>
+-    where
+-        O: Into<String>,
+-        N: Into<String>,
+-    {
+-        let result = self
+-            .extended(
+-                extensions::HARDLINK,
+-                HardlinkExtension {
+-                    oldpath: oldpath.into(),
+-                    newpath: newpath.into(),
+-                }
+-                .try_into()?,
+-            )
+-            .await?;
+-
+-        into_status!(result)
+-    }
+-
+-    pub async fn fsync<H: Into<String>>(&self, handle: H) -> SftpResult<Status> {
+-        let result = self
+-            .extended(
+-                extensions::FSYNC,
+-                FsyncExtension {
+-                    handle: handle.into(),
+-                }
+-                .try_into()?,
+-            )
+-            .await?;
+-
+-        into_status!(result)
+-    }
+-
+-    pub async fn statvfs<P>(&self, path: P) -> SftpResult<Statvfs>
+-    where
+-        P: Into<String>,
+-    {
+-        let result = self
+-            .extended(
+-                extensions::STATVFS,
+-                StatvfsExtension { path: path.into() }.try_into()?,
+-            )
+-            .await?;
+-
+-        match result {
+-            Packet::ExtendedReply(reply) => Ok(de::from_bytes::<Statvfs>(&mut reply.data.into())?),
+-            Packet::Status(status) if status.status_code != StatusCode::Ok => {
+-                Err(Error::Status(status))
+-            }
+-            _ => Err(Error::UnexpectedPacket),
+-        }
+-    }
+-}
+-
+-impl Drop for RawSftpSession {
+-    fn drop(&mut self) {
+-        let _ = self.close_session();
+-    }
+-}
++use bytes::Bytes;
++use std::collections::BTreeMap;
++use std::sync::Mutex;
++use tokio_util::sync::CancellationToken;
++use std::{
++    sync::{
++        atomic::{AtomicU32, AtomicU64, Ordering},
++        Arc,
++    },
++    time::Duration,
++};
++use tokio::{
++    io::{AsyncRead, AsyncWrite},
++    sync::{mpsc, oneshot},
++};
++
++use super::{error::Error, runtime, Handler};
++use crate::{
++    client::{run_bounded_tracked, Config, MAX_PACKET_LENGTH, MAX_PENDING_REQUESTS},
++    de,
++    extensions::{
++        self, FsyncExtension, HardlinkExtension, LimitsExtension, Statvfs, StatvfsExtension,
++    },
++    protocol::{
++        Attrs, Close, Data, Extended, ExtendedReply, FSetStat, FileAttributes, Fstat, Handle, Init,
++        Lstat, MkDir, Name, Open, OpenDir, OpenFlags, Packet, Read, ReadDir, ReadLink, RealPath,
++        Remove, Rename, RmDir, SetStat, Stat, Status, StatusCode, Symlink, Version, Write,
++    },
++};
++
++pub type SftpResult<T> = Result<T, Error>;
++#[derive(Default)]
++struct RequestState {
++    closing: Option<Error>,
++    pending: BTreeMap<Option<u32>, oneshot::Sender<SftpResult<Packet>>>,
++}
++#[derive(Default)]
++struct SharedRequests(Mutex<RequestState>);
++impl SharedRequests {
++    fn lock(&self) -> std::sync::MutexGuard<'_, RequestState> {
++        self.0.lock().unwrap_or_else(|error| error.into_inner())
++    }
++    fn stop(&self, error: Error) {
++        self.lock().closing.get_or_insert(error);
++    }
++    fn drain(&self, error: Error) {
++        let mut state = self.lock();
++        let error = state.closing.get_or_insert(error).clone();
++        for (_, sender) in std::mem::take(&mut state.pending) {
++            let _ = sender.send(Err(error.clone()));
++        }
++    }
++}
++
++pub(crate) struct SessionInner {
++    version: Option<u32>,
++    requests: Arc<SharedRequests>,
++}
++
++impl SessionInner {
++    pub fn reply(&mut self, id: Option<u32>, packet: Packet) -> SftpResult<()> {
++        if let Some(sender) = self.requests.lock().pending.remove(&id) {
++            let validate = if id.is_some() && self.version.is_none() {
++                Err(Error::UnexpectedPacket)
++            } else if id.is_none() && self.version.is_some() {
++                Err(Error::UnexpectedBehavior("Duplicate version".to_owned()))
++            } else {
++                Ok(())
++            };
++
++            // Ignore send error: receiver was dropped (request timed out).
++            let _ = sender.send(validate.clone().map(|_| packet));
++
++            return validate;
++        }
++
++        Err(Error::UnexpectedBehavior(format!(
++            "Packet {:?} for unknown recipient",
++            id
++        )))
++    }
++}
++
++impl Handler for SessionInner {
++    type Error = Error;
++
++    async fn closed(&mut self, error: Error) {
++        self.requests.drain(error);
++    }
++
++    async fn version(&mut self, packet: Version) -> Result<(), Self::Error> {
++        let version = packet.version;
++        self.reply(None, packet.into())?;
++        self.version = Some(version);
++        Ok(())
++    }
++
++    async fn name(&mut self, name: Name) -> Result<(), Self::Error> {
++        self.reply(Some(name.id), name.into())
++    }
++
++    async fn status(&mut self, status: Status) -> Result<(), Self::Error> {
++        self.reply(Some(status.id), status.into())
++    }
++
++    async fn handle(&mut self, handle: Handle) -> Result<(), Self::Error> {
++        self.reply(Some(handle.id), handle.into())
++    }
++
++    async fn data(&mut self, data: Data) -> Result<(), Self::Error> {
++        self.reply(Some(data.id), data.into())
++    }
++
++    async fn attrs(&mut self, attrs: Attrs) -> Result<(), Self::Error> {
++        self.reply(Some(attrs.id), attrs.into())
++    }
++
++    async fn extended_reply(&mut self, reply: ExtendedReply) -> Result<(), Self::Error> {
++        self.reply(Some(reply.id), reply.into())
++    }
++}
++
++#[derive(Debug, Clone, Copy, Default)]
++pub struct Limits {
++    pub packet_len: Option<u64>,
++    pub read_len: Option<u64>,
++    pub write_len: Option<u64>,
++    pub open_handles: Option<u64>,
++}
++
++impl From<LimitsExtension> for Limits {
++    fn from(limits: LimitsExtension) -> Self {
++        Self {
++            packet_len: (limits.max_packet_len > 0).then_some(limits.max_packet_len),
++            read_len: (limits.max_read_len > 0).then_some(limits.max_read_len),
++            write_len: (limits.max_write_len > 0).then_some(limits.max_write_len),
++            open_handles: (limits.max_open_handles > 0).then_some(limits.max_open_handles),
++        }
++    }
++}
++
++/// Implements raw work with the protocol in request-response format.
++/// If the server returns a `Status` packet and it has the code Ok
++/// then the packet is returned as Ok in other error cases
++/// the packet is stored as Err.
++pub struct RawSftpSession {
++    drained: tokio::sync::watch::Receiver<bool>,
++    tx: mpsc::Sender<Bytes>,
++    cancel: CancellationToken,
++    packet_cap: Arc<AtomicU32>,
++    requests: Arc<SharedRequests>,
++    next_req_id: AtomicU32,
++    handles: AtomicU64,
++    timeout: AtomicU64,
++    limits: Limits,
++}
++
++macro_rules! into_with_status {
++    ($result:ident, $packet:ident) => {
++        match $result {
++            Packet::$packet(p) => Ok(p),
++            Packet::Status(p) => Err(p.into()),
++            _ => Err(Error::UnexpectedPacket),
++        }
++    };
++}
++
++macro_rules! into_status {
++    ($result:ident) => {
++        match $result {
++            Packet::Status(status) if status.status_code == StatusCode::Ok => Ok(status),
++            Packet::Status(status) => Err(status.into()),
++            _ => Err(Error::UnexpectedPacket),
++        }
++    };
++}
++
++impl RawSftpSession {
++    pub fn new<S>(stream: S) -> Self
++    where
++        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
++    {
++        Self::new_with_config(stream, Config::default())
++    }
++
++    pub fn new_with_config<S>(stream: S, cfg: Config) -> Self
++    where
++        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
++    {
++        let req_map = Arc::new(SharedRequests::default());
++        let cancel = CancellationToken::new();
++        let packet_cap = Arc::new(AtomicU32::new(cfg.max_packet_len.clamp(1, MAX_PACKET_LENGTH)));
++        let inner = SessionInner {
++            version: None,
++            requests: req_map.clone(),
++        };
++
++        let (tx,drained) = run_bounded_tracked(stream,inner,packet_cap.clone(),cancel.clone());
++        Self {
++            tx,drained,
++            cancel,
++            packet_cap,
++            requests: req_map,
++            next_req_id: AtomicU32::new(1),
++            handles: AtomicU64::new(0),
++            timeout: AtomicU64::new(cfg.request_timeout_secs),
++            limits: Limits::default(),
++        }
++    }
++
++    /// Set the maximum response time in seconds.
++    /// Default: 10 seconds
++    pub fn set_timeout(&self, secs: u64) {
++        self.timeout.store(secs, Ordering::Relaxed);
++    }
++
++    /// Setting limits. For the `limits@openssh.com` extension
++    pub fn set_limits(&mut self, limits: Limits) {
++        if let Some(cap) = limits.packet_len {
++            self.packet_cap.fetch_min(cap.clamp(1, MAX_PACKET_LENGTH as u64) as u32, Ordering::AcqRel);
++        }
++        self.limits = limits;
++    }
++
++    pub fn packet_cap(&self) -> u32 {
++        self.packet_cap.load(Ordering::Acquire)
++    }
++
++    pub fn pending_requests(&self) -> usize {
++        self.requests.lock().pending.len()
++    }
++
++    /// Closing is sticky; reconnect only after draining this session.
++    pub fn is_closed(&self) -> bool {
++        self.cancel.is_cancelled() || self.tx.is_closed() || self.requests.lock().closing.is_some()
++    }
++
++    /// Close the channel and wait until both protocol tasks released buffers.
++    pub async fn drain(&self) {
++        self.stop(Error::SessionClosed);
++        let mut drained = self.drained.clone();
++        while !*drained.borrow_and_update() {
++            if drained.changed().await.is_err() { break; }
++        }
++    }
++
++    fn stop(&self, error: Error) {
++        self.requests.stop(error);
++        self.cancel.cancel();
++    }
++
++    fn send(
++        &self,
++        id: Option<u32>,
++        packet: Packet,
++    ) -> SftpResult<oneshot::Receiver<SftpResult<Packet>>> {
++        let mut state = self.requests.lock();
++        if let Some(error) = &state.closing { return Err(error.clone()); }
++        if self.tx.is_closed() { return Err(Error::SessionClosed); }
++        if state.pending.len() >= MAX_PENDING_REQUESTS { return Err(Error::RequestLimit); }
++        if state.pending.contains_key(&id) { return Err(Error::RequestLimit); }
++        let bytes = Bytes::try_from(packet)?;
++        let max_len = self.limits.packet_len.unwrap_or(MAX_PACKET_LENGTH as u64)
++            .min(MAX_PACKET_LENGTH as u64);
++        if bytes.len() as u64 > max_len { return Err(Error::PacketTooLarge); }
++        let (tx, rx) = oneshot::channel();
++        // Serialize admission with close and reply. A sent request always owns a slot.
++        self.tx.try_send(bytes).map_err(|error| match error {
++            mpsc::error::TrySendError::Full(_) => Error::RequestLimit,
++            mpsc::error::TrySendError::Closed(_) => Error::SessionClosed,
++        })?;
++        state.pending.insert(id, tx);
++
++        Ok(rx)
++    }
++
++    async fn request(&self, id: Option<u32>, packet: Packet) -> SftpResult<Packet> {
++        let mut rx = self.send(id, packet)?;
++        let timeout = self.timeout.load(Ordering::Relaxed);
++        match runtime::timeout(Duration::from_secs(timeout), &mut rx).await {
++            Ok(Ok(result)) => result,
++            Ok(Err(_)) => Err(Error::SessionClosed),
++            Err(error) => {
++                self.stop(error.clone());
++                // Keep the request alive until the decoder has dropped all buffers.
++                let _ = rx.await;
++                Err(error)
++            }
++        }
++    }
++
++    fn use_next_id(&self) -> u32 {
++        self.next_req_id.fetch_add(1, Ordering::Relaxed)
++    }
++
++    /// Closes the inner channel stream. Called by [`Drop`]
++    pub fn close_session(&self) -> SftpResult<()> {
++        self.stop(Error::SessionClosed);
++        Ok(())
++    }
++
++    pub async fn init(&self) -> SftpResult<Version> {
++        let result = self.request(None, Init::default().into()).await?;
++        if let Packet::Version(version) = result {
++            Ok(version)
++        } else {
++            Err(Error::UnexpectedPacket)
++        }
++    }
++
++    pub async fn open<T: Into<String>>(
++        &self,
++        filename: T,
++        flags: OpenFlags,
++        attrs: FileAttributes,
++    ) -> SftpResult<Handle> {
++        if self
++            .limits
++            .open_handles
++            .is_some_and(|h| self.handles.load(Ordering::SeqCst) >= h)
++        {
++            return Err(Error::Limited("handle limit reached".to_owned()));
++        }
++
++        let id = self.use_next_id();
++        let result = self
++            .request(
++                Some(id),
++                Open {
++                    id,
++                    filename: filename.into(),
++                    pflags: flags,
++                    attrs,
++                }
++                .into(),
++            )
++            .await?;
++
++        if let Packet::Handle(_) = result {
++            self.handles.fetch_add(1, Ordering::SeqCst);
++        }
++
++        into_with_status!(result, Handle)
++    }
++
++    pub async fn close<H: Into<Vec<u8>>>(&self, handle: H) -> SftpResult<Status> {
++        let id = self.use_next_id();
++        let result = self
++            .request(
++                Some(id),
++                Close {
++                    id,
++                    handle: handle.into(),
++                }
++                .into(),
++            )
++            .await?;
++
++        if let Packet::Status(status) = &result {
++            if status.status_code == StatusCode::Ok
++                && self
++                    .handles
++                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |h| {
++                        if h > 0 {
++                            Some(h - 1)
++                        } else {
++                            None
++                        }
++                    })
++                    .is_err()
++            {
++                warn!("attempt to close more handles than exist");
++            }
++        }
++
++        into_status!(result)
++    }
++
++    /// Sends a close packet without awaiting the server's acknowledgement.
++    pub(crate) fn close_nowait(
++        &self,
++        handle: Vec<u8>,
++    ) -> SftpResult<oneshot::Receiver<SftpResult<Packet>>> {
++        let id = self.use_next_id();
++        self.send(Some(id), Close { id, handle }.into())
++    }
++
++    pub async fn read<H: Into<Vec<u8>>>(
++        &self,
++        handle: H,
++        offset: u64,
++        len: u32,
++    ) -> SftpResult<Data> {
++        if self.limits.read_len.is_some_and(|r| len as u64 > r) {
++            return Err(Error::Limited("read limit reached".to_owned()));
++        }
++
++        let id = self.use_next_id();
++        let result = self
++            .request(
++                Some(id),
++                Read {
++                    id,
++                    handle: handle.into(),
++                    offset,
++                    len,
++                }
++                .into(),
++            )
++            .await?;
++
++        into_with_status!(result, Data)
++    }
++
++    pub async fn write<H: Into<Vec<u8>>>(
++        &self,
++        handle: H,
++        offset: u64,
++        data: Vec<u8>,
++    ) -> SftpResult<Status> {
++        if self.limits.write_len.is_some_and(|w| data.len() as u64 > w) {
++            return Err(Error::Limited("write limit reached".to_owned()));
++        }
++
++        let id = self.use_next_id();
++        let result = self
++            .request(
++                Some(id),
++                Write {
++                    id,
++                    handle: handle.into(),
++                    offset,
++                    data,
++                }
++                .into(),
++            )
++            .await?;
++
++        into_status!(result)
++    }
++
++    /// Sends a write packet without awaiting the server's acknowledgement.
++    pub(crate) fn write_nowait(
++        &self,
++        handle: Vec<u8>,
++        offset: u64,
++        data: Vec<u8>,
++    ) -> SftpResult<oneshot::Receiver<SftpResult<Packet>>> {
++        if self.limits.write_len.is_some_and(|w| data.len() as u64 > w) {
++            return Err(Error::Limited("write limit reached".to_owned()));
++        }
++
++        let id = self.use_next_id();
++        self.send(
++            Some(id),
++            Write {
++                id,
++                handle,
++                offset,
++                data,
++            }
++            .into(),
++        )
++    }
++
++    pub async fn lstat<P: Into<String>>(&self, path: P) -> SftpResult<Attrs> {
++        let id = self.use_next_id();
++        let result = self
++            .request(
++                Some(id),
++                Lstat {
++                    id,
++                    path: path.into(),
++                }
++                .into(),
++            )
++            .await?;
++
++        into_with_status!(result, Attrs)
++    }
++
++    pub async fn fstat<H: Into<Vec<u8>>>(&self, handle: H) -> SftpResult<Attrs> {
++        let id = self.use_next_id();
++        let result = self
++            .request(
++                Some(id),
++                Fstat {
++                    id,
++                    handle: handle.into(),
++                }
++                .into(),
++            )
++            .await?;
++
++        into_with_status!(result, Attrs)
++    }
++
++    pub async fn setstat<P: Into<String>>(
++        &self,
++        path: P,
++        attrs: FileAttributes,
++    ) -> SftpResult<Status> {
++        let id = self.use_next_id();
++        let result = self
++            .request(
++                Some(id),
++                SetStat {
++                    id,
++                    path: path.into(),
++                    attrs,
++                }
++                .into(),
++            )
++            .await?;
++
++        into_status!(result)
++    }
++
++    pub async fn fsetstat<H: Into<Vec<u8>>>(
++        &self,
++        handle: H,
++        attrs: FileAttributes,
++    ) -> SftpResult<Status> {
++        let id = self.use_next_id();
++        let result = self
++            .request(
++                Some(id),
++                FSetStat {
++                    id,
++                    handle: handle.into(),
++                    attrs,
++                }
++                .into(),
++            )
++            .await?;
++
++        into_status!(result)
++    }
++
++    pub async fn opendir<P: Into<String>>(&self, path: P) -> SftpResult<Handle> {
++        if self
++            .limits
++            .open_handles
++            .is_some_and(|h| self.handles.load(Ordering::SeqCst) >= h)
++        {
++            return Err(Error::Limited("Handle limit reached".to_owned()));
++        }
++
++        let id = self.use_next_id();
++        let result = self
++            .request(
++                Some(id),
++                OpenDir {
++                    id,
++                    path: path.into(),
++                }
++                .into(),
++            )
++            .await?;
++
++        if let Packet::Handle(_) = result {
++            self.handles.fetch_add(1, Ordering::SeqCst);
++        }
++
++        into_with_status!(result, Handle)
++    }
++
++    pub async fn readdir<H: Into<Vec<u8>>>(&self, handle: H) -> SftpResult<Name> {
++        let id = self.use_next_id();
++        let result = self
++            .request(
++                Some(id),
++                ReadDir {
++                    id,
++                    handle: handle.into(),
++                }
++                .into(),
++            )
++            .await?;
++
++        into_with_status!(result, Name)
++    }
++
++    pub async fn remove<T: Into<String>>(&self, filename: T) -> SftpResult<Status> {
++        let id = self.use_next_id();
++        let result = self
++            .request(
++                Some(id),
++                Remove {
++                    id,
++                    filename: filename.into(),
++                }
++                .into(),
++            )
++            .await?;
++
++        into_status!(result)
++    }
++
++    pub async fn mkdir<P: Into<String>>(
++        &self,
++        path: P,
++        attrs: FileAttributes,
++    ) -> SftpResult<Status> {
++        let id = self.use_next_id();
++        let result = self
++            .request(
++                Some(id),
++                MkDir {
++                    id,
++                    path: path.into(),
++                    attrs,
++                }
++                .into(),
++            )
++            .await?;
++
++        into_status!(result)
++    }
++
++    pub async fn rmdir<P: Into<String>>(&self, path: P) -> SftpResult<Status> {
++        let id = self.use_next_id();
++        let result = self
++            .request(
++                Some(id),
++                RmDir {
++                    id,
++                    path: path.into(),
++                }
++                .into(),
++            )
++            .await?;
++
++        into_status!(result)
++    }
++
++    pub async fn realpath<P: Into<String>>(&self, path: P) -> SftpResult<Name> {
++        let id = self.use_next_id();
++        let result = self
++            .request(
++                Some(id),
++                RealPath {
++                    id,
++                    path: path.into(),
++                }
++                .into(),
++            )
++            .await?;
++
++        into_with_status!(result, Name)
++    }
++
++    pub async fn stat<P: Into<String>>(&self, path: P) -> SftpResult<Attrs> {
++        let id = self.use_next_id();
++        let result = self
++            .request(
++                Some(id),
++                Stat {
++                    id,
++                    path: path.into(),
++                }
++                .into(),
++            )
++            .await?;
++
++        into_with_status!(result, Attrs)
++    }
++
++    pub async fn rename<O, N>(&self, oldpath: O, newpath: N) -> SftpResult<Status>
++    where
++        O: Into<String>,
++        N: Into<String>,
++    {
++        let id = self.use_next_id();
++        let result = self
++            .request(
++                Some(id),
++                Rename {
++                    id,
++                    oldpath: oldpath.into(),
++                    newpath: newpath.into(),
++                }
++                .into(),
++            )
++            .await?;
++
++        into_status!(result)
++    }
++
++    pub async fn readlink<P: Into<String>>(&self, path: P) -> SftpResult<Name> {
++        let id = self.use_next_id();
++        let result = self
++            .request(
++                Some(id),
++                ReadLink {
++                    id,
++                    path: path.into(),
++                }
++                .into(),
++            )
++            .await?;
++
++        into_with_status!(result, Name)
++    }
++
++    pub async fn symlink<P, T>(&self, path: P, target: T) -> SftpResult<Status>
++    where
++        P: Into<String>,
++        T: Into<String>,
++    {
++        let id = self.use_next_id();
++        let result = self
++            .request(
++                Some(id),
++                Symlink {
++                    id,
++                    linkpath: path.into(),
++                    targetpath: target.into(),
++                }
++                .into(),
++            )
++            .await?;
++
++        into_status!(result)
++    }
++
++    /// Equivalent to `SSH_FXP_EXTENDED`. Allows protocol expansion.
++    /// The extension can return any packet, so it's not specific
++    pub async fn extended<R: Into<String>>(&self, request: R, data: Vec<u8>) -> SftpResult<Packet> {
++        let id = self.use_next_id();
++        self.request(
++            Some(id),
++            Extended {
++                id,
++                request: request.into(),
++                data,
++            }
++            .into(),
++        )
++        .await
++    }
++
++    pub async fn limits(&self) -> SftpResult<LimitsExtension> {
++        match self.extended(extensions::LIMITS, vec![]).await? {
++            Packet::ExtendedReply(reply) => {
++                Ok(de::from_bytes::<LimitsExtension>(&mut reply.data.into())?)
++            }
++            Packet::Status(status) if status.status_code != StatusCode::Ok => {
++                Err(Error::Status(status))
++            }
++            _ => Err(Error::UnexpectedPacket),
++        }
++    }
++
++    pub async fn hardlink<O, N>(&self, oldpath: O, newpath: N) -> SftpResult<Status>
++    where
++        O: Into<String>,
++        N: Into<String>,
++    {
++        let result = self
++            .extended(
++                extensions::HARDLINK,
++                HardlinkExtension {
++                    oldpath: oldpath.into(),
++                    newpath: newpath.into(),
++                }
++                .try_into()?,
++            )
++            .await?;
++
++        into_status!(result)
++    }
++
++    pub async fn fsync<H: Into<Vec<u8>>>(&self, handle: H) -> SftpResult<Status> {
++        let result = self
++            .extended(
++                extensions::FSYNC,
++                FsyncExtension {
++                    handle: handle.into(),
++                }
++                .try_into()?,
++            )
++            .await?;
++
++        into_status!(result)
++    }
++
++    pub async fn statvfs<P>(&self, path: P) -> SftpResult<Statvfs>
++    where
++        P: Into<String>,
++    {
++        let result = self
++            .extended(
++                extensions::STATVFS,
++                StatvfsExtension { path: path.into() }.try_into()?,
++            )
++            .await?;
++
++        match result {
++            Packet::ExtendedReply(reply) => Ok(de::from_bytes::<Statvfs>(&mut reply.data.into())?),
++            Packet::Status(status) if status.status_code != StatusCode::Ok => {
++                Err(Error::Status(status))
++            }
++            _ => Err(Error::UnexpectedPacket),
++        }
++    }
++}
++
++impl Drop for RawSftpSession {
++    fn drop(&mut self) {
++        let _ = self.close_session();
++    }
++}
+--- a/src/client/session.rs
++++ b/src/client/session.rs
+@@ -1,276 +1,276 @@
+-use std::sync::Arc;
+-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+-
+-use super::{
+-    error::Error,
+-    fs::{File, Metadata, ReadDir},
+-    rawsession::{Limits, SftpResult},
+-    RawSftpSession,
+-};
+-use crate::{
+-    client::Config,
+-    extensions::{self, Statvfs},
+-    protocol::{FileAttributes, OpenFlags, StatusCode},
+-};
+-
+-#[derive(Debug, Clone, Copy)]
+-pub(crate) struct Features {
+-    pub hardlink: bool,
+-    pub fsync: bool,
+-    pub statvfs: bool,
+-    pub limits: Option<Limits>,
+-    pub max_concurrent_writes: usize,
+-    pub max_packet_len: u32,
+-}
+-
+-/// High-level SFTP implementation for easy interaction with a remote file system.
+-/// Contains most methods similar to the native [filesystem](std::fs)
+-pub struct SftpSession {
+-    session: Arc<RawSftpSession>,
+-    features: Features,
+-}
+-
+-impl SftpSession {
+-    /// Creates a new session by initializing the protocol and extensions
+-    pub async fn new<S>(stream: S) -> SftpResult<Self>
+-    where
+-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+-    {
+-        Self::new_with_config(stream, Config::default()).await
+-    }
+-
+-    /// Creates a new session with custom configuration
+-    pub async fn new_with_config<S>(stream: S, cfg: Config) -> SftpResult<Self>
+-    where
+-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+-    {
+-        let max_concurrent_writes = cfg.max_concurrent_writes;
+-        let max_packet_len = cfg.max_packet_len;
+-        let mut session = RawSftpSession::new_with_config(stream, cfg);
+-
+-        let version = session.init().await?;
+-        let has_extension = |name, ver| version.extensions.get(name).is_some_and(|v| v == ver);
+-
+-        let mut features = Features {
+-            hardlink: has_extension(extensions::HARDLINK, "1"),
+-            fsync: has_extension(extensions::FSYNC, "1"),
+-            statvfs: has_extension(extensions::STATVFS, "2"),
+-            limits: None,
+-            max_concurrent_writes,
+-            max_packet_len,
+-        };
+-
+-        if has_extension(extensions::LIMITS, "1") {
+-            let limits = Limits::from(session.limits().await?);
+-            session.set_limits(limits);
+-            features.limits = Some(limits);
+-            if let Some(plen) = limits.packet_len {
+-                features.max_packet_len = (plen as u32).min(max_packet_len);
+-            }
+-        }
+-
+-        Ok(Self {
+-            session: Arc::new(session),
+-            features,
+-        })
+-    }
+-
+-    /// Set the maximum response time in seconds.
+-    /// Default: 10 seconds
+-    pub fn set_timeout(&self, secs: u64) {
+-        self.session.set_timeout(secs);
+-    }
+-
+-    /// Closes the inner channel stream.
+-    pub async fn close(&self) -> SftpResult<()> {
+-        self.session.close_session()
+-    }
+-
+-    /// Attempts to open a file in read-only mode.
+-    pub async fn open<T: Into<String>>(&self, filename: T) -> SftpResult<File> {
+-        self.open_with_flags(filename, OpenFlags::READ).await
+-    }
+-
+-    /// Opens a file in write-only mode.
+-    ///
+-    /// This function will create a file if it does not exist, and will truncate it if it does.
+-    pub async fn create<T: Into<String>>(&self, filename: T) -> SftpResult<File> {
+-        self.open_with_flags(
+-            filename,
+-            OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
+-        )
+-        .await
+-    }
+-
+-    /// Attempts to open or create the file in the specified mode
+-    pub async fn open_with_flags<T: Into<String>>(
+-        &self,
+-        filename: T,
+-        flags: OpenFlags,
+-    ) -> SftpResult<File> {
+-        self.open_with_flags_and_attributes(filename, flags, FileAttributes::empty())
+-            .await
+-    }
+-
+-    /// Attempts to open or create the file in the specified mode and with specified file attributes
+-    pub async fn open_with_flags_and_attributes<T: Into<String>>(
+-        &self,
+-        filename: T,
+-        flags: OpenFlags,
+-        attributes: FileAttributes,
+-    ) -> SftpResult<File> {
+-        let handle = self.session.open(filename, flags, attributes).await?.handle;
+-        Ok(File::new(self.session.clone(), handle, self.features))
+-    }
+-
+-    /// Requests the remote party for the absolute from the relative path.
+-    pub async fn canonicalize<T: Into<String>>(&self, path: T) -> SftpResult<String> {
+-        let name = self.session.realpath(path).await?;
+-        match name.files.first() {
+-            Some(file) => Ok(file.filename.to_owned()),
+-            None => Err(Error::UnexpectedBehavior("no file".to_owned())),
+-        }
+-    }
+-
+-    /// Creates a new empty directory.
+-    pub async fn create_dir<T: Into<String>>(&self, path: T) -> SftpResult<()> {
+-        self.session
+-            .mkdir(path, FileAttributes::empty())
+-            .await
+-            .map(|_| ())
+-    }
+-
+-    /// Reads the contents of a file located at the specified path to the end.
+-    pub async fn read<P: Into<String>>(&self, path: P) -> SftpResult<Vec<u8>> {
+-        let mut file = self.open(path).await?;
+-        let mut buffer = Vec::new();
+-
+-        file.read_to_end(&mut buffer).await?;
+-
+-        Ok(buffer)
+-    }
+-
+-    /// Writes the contents to a file whose path is specified.
+-    pub async fn write<P: Into<String>>(&self, path: P, data: &[u8]) -> SftpResult<()> {
+-        let mut file = self.open_with_flags(path, OpenFlags::WRITE).await?;
+-        file.write_all(data).await?;
+-        Ok(())
+-    }
+-
+-    /// Checks a file or folder exists at the specified path
+-    pub async fn try_exists<P: Into<String>>(&self, path: P) -> SftpResult<bool> {
+-        match self.metadata(path).await {
+-            Ok(_) => Ok(true),
+-            Err(Error::Status(status)) if status.status_code == StatusCode::NoSuchFile => Ok(false),
+-            Err(error) => Err(error),
+-        }
+-    }
+-
+-    /// Returns an iterator over the entries within a directory.
+-    pub async fn read_dir<P: Into<String>>(&self, path: P) -> SftpResult<ReadDir> {
+-        let path: String = path.into();
+-        let parent = Arc::from(path.as_str());
+-
+-        let handle = self.session.opendir(path).await?.handle;
+-        let mut files = vec![];
+-
+-        loop {
+-            match self.session.readdir(handle.as_str()).await {
+-                Ok(name) => {
+-                    files = name
+-                        .files
+-                        .into_iter()
+-                        .map(|f| (f.filename, f.attrs))
+-                        .chain(files)
+-                        .collect();
+-                }
+-                Err(Error::Status(status)) if status.status_code == StatusCode::Eof => break,
+-                Err(err) => return Err(err),
+-            }
+-        }
+-
+-        self.session.close(handle).await?;
+-
+-        Ok(ReadDir {
+-            parent,
+-            entries: files.into(),
+-        })
+-    }
+-
+-    /// Reads a symbolic link, returning the file that the link points to.
+-    pub async fn read_link<P: Into<String>>(&self, path: P) -> SftpResult<String> {
+-        let name = self.session.readlink(path).await?;
+-        match name.files.first() {
+-            Some(file) => Ok(file.filename.to_owned()),
+-            None => Err(Error::UnexpectedBehavior("no file".to_owned())),
+-        }
+-    }
+-
+-    /// Removes the specified folder.
+-    pub async fn remove_dir<P: Into<String>>(&self, path: P) -> SftpResult<()> {
+-        self.session.rmdir(path).await.map(|_| ())
+-    }
+-
+-    /// Removes the specified file.
+-    pub async fn remove_file<T: Into<String>>(&self, filename: T) -> SftpResult<()> {
+-        self.session.remove(filename).await.map(|_| ())
+-    }
+-
+-    /// Rename a file or directory to a new name.
+-    pub async fn rename<O, N>(&self, oldpath: O, newpath: N) -> SftpResult<()>
+-    where
+-        O: Into<String>,
+-        N: Into<String>,
+-    {
+-        self.session.rename(oldpath, newpath).await.map(|_| ())
+-    }
+-
+-    /// Creates a symlink of the specified target.
+-    pub async fn symlink<P, T>(&self, path: P, target: T) -> SftpResult<()>
+-    where
+-        P: Into<String>,
+-        T: Into<String>,
+-    {
+-        self.session.symlink(path, target).await.map(|_| ())
+-    }
+-
+-    /// Queries metadata about the remote file.
+-    pub async fn metadata<P: Into<String>>(&self, path: P) -> SftpResult<Metadata> {
+-        Ok(self.session.stat(path).await?.attrs)
+-    }
+-
+-    /// Sets metadata for a remote file.
+-    pub async fn set_metadata<P: Into<String>>(
+-        &self,
+-        path: P,
+-        metadata: Metadata,
+-    ) -> Result<(), Error> {
+-        self.session.setstat(path, metadata).await.map(|_| ())
+-    }
+-
+-    pub async fn symlink_metadata<P: Into<String>>(&self, path: P) -> SftpResult<Metadata> {
+-        Ok(self.session.lstat(path).await?.attrs)
+-    }
+-
+-    pub async fn hardlink<O, N>(&self, oldpath: O, newpath: N) -> SftpResult<bool>
+-    where
+-        O: Into<String>,
+-        N: Into<String>,
+-    {
+-        if !self.features.hardlink {
+-            return Ok(false);
+-        }
+-
+-        self.session.hardlink(oldpath, newpath).await.map(|_| true)
+-    }
+-
+-    /// Performs a statvfs on the remote file system path.
+-    /// Returns [`Ok(None)`] if the remote SFTP server does not support `statvfs@openssh.com` extension v2.
+-    pub async fn fs_info<P: Into<String>>(&self, path: P) -> SftpResult<Option<Statvfs>> {
+-        if !self.features.statvfs {
+-            return Ok(None);
+-        }
+-
+-        self.session.statvfs(path).await.map(Some)
+-    }
+-}
++use std::sync::Arc;
++use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
++
++use super::{
++    error::Error,
++    fs::{File, Metadata, ReadDir},
++    rawsession::{Limits, SftpResult},
++    RawSftpSession,
++};
++use crate::{
++    client::Config,
++    extensions::{self, Statvfs},
++    protocol::{FileAttributes, OpenFlags, StatusCode},
++};
++
++#[derive(Debug, Clone, Copy)]
++pub(crate) struct Features {
++    pub hardlink: bool,
++    pub fsync: bool,
++    pub statvfs: bool,
++    pub limits: Option<Limits>,
++    pub max_concurrent_writes: usize,
++    pub max_packet_len: u32,
++}
++
++/// High-level SFTP implementation for easy interaction with a remote file system.
++/// Contains most methods similar to the native [filesystem](std::fs)
++pub struct SftpSession {
++    session: Arc<RawSftpSession>,
++    features: Features,
++}
++
++impl SftpSession {
++    /// Creates a new session by initializing the protocol and extensions
++    pub async fn new<S>(stream: S) -> SftpResult<Self>
++    where
++        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
++    {
++        Self::new_with_config(stream, Config::default()).await
++    }
++
++    /// Creates a new session with custom configuration
++    pub async fn new_with_config<S>(stream: S, cfg: Config) -> SftpResult<Self>
++    where
++        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
++    {
++        let max_concurrent_writes = cfg.max_concurrent_writes;
++        let max_packet_len = cfg.max_packet_len;
++        let mut session = RawSftpSession::new_with_config(stream, cfg);
++
++        let version = session.init().await?;
++        let has_extension = |name, ver| version.extensions.get(name).is_some_and(|v| v == ver);
++
++        let mut features = Features {
++            hardlink: has_extension(extensions::HARDLINK, "1"),
++            fsync: has_extension(extensions::FSYNC, "1"),
++            statvfs: has_extension(extensions::STATVFS, "2"),
++            limits: None,
++            max_concurrent_writes,
++            max_packet_len,
++        };
++
++        if has_extension(extensions::LIMITS, "1") {
++            let limits = Limits::from(session.limits().await?);
++            session.set_limits(limits);
++            features.limits = Some(limits);
++            if let Some(plen) = limits.packet_len {
++                features.max_packet_len = (plen as u32).min(max_packet_len);
++            }
++        }
++
++        Ok(Self {
++            session: Arc::new(session),
++            features,
++        })
++    }
++
++    /// Set the maximum response time in seconds.
++    /// Default: 10 seconds
++    pub fn set_timeout(&self, secs: u64) {
++        self.session.set_timeout(secs);
++    }
++
++    /// Closes the inner channel stream.
++    pub async fn close(&self) -> SftpResult<()> {
++        self.session.close_session()
++    }
++
++    /// Attempts to open a file in read-only mode.
++    pub async fn open<T: Into<String>>(&self, filename: T) -> SftpResult<File> {
++        self.open_with_flags(filename, OpenFlags::READ).await
++    }
++
++    /// Opens a file in write-only mode.
++    ///
++    /// This function will create a file if it does not exist, and will truncate it if it does.
++    pub async fn create<T: Into<String>>(&self, filename: T) -> SftpResult<File> {
++        self.open_with_flags(
++            filename,
++            OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
++        )
++        .await
++    }
++
++    /// Attempts to open or create the file in the specified mode
++    pub async fn open_with_flags<T: Into<String>>(
++        &self,
++        filename: T,
++        flags: OpenFlags,
++    ) -> SftpResult<File> {
++        self.open_with_flags_and_attributes(filename, flags, FileAttributes::empty())
++            .await
++    }
++
++    /// Attempts to open or create the file in the specified mode and with specified file attributes
++    pub async fn open_with_flags_and_attributes<T: Into<String>>(
++        &self,
++        filename: T,
++        flags: OpenFlags,
++        attributes: FileAttributes,
++    ) -> SftpResult<File> {
++        let handle = self.session.open(filename, flags, attributes).await?.handle;
++        Ok(File::new(self.session.clone(), handle, self.features))
++    }
++
++    /// Requests the remote party for the absolute from the relative path.
++    pub async fn canonicalize<T: Into<String>>(&self, path: T) -> SftpResult<String> {
++        let name = self.session.realpath(path).await?;
++        match name.files.first() {
++            Some(file) => Ok(file.filename.to_owned()),
++            None => Err(Error::UnexpectedBehavior("no file".to_owned())),
++        }
++    }
++
++    /// Creates a new empty directory.
++    pub async fn create_dir<T: Into<String>>(&self, path: T) -> SftpResult<()> {
++        self.session
++            .mkdir(path, FileAttributes::empty())
++            .await
++            .map(|_| ())
++    }
++
++    /// Reads the contents of a file located at the specified path to the end.
++    pub async fn read<P: Into<String>>(&self, path: P) -> SftpResult<Vec<u8>> {
++        let mut file = self.open(path).await?;
++        let mut buffer = Vec::new();
++
++        file.read_to_end(&mut buffer).await?;
++
++        Ok(buffer)
++    }
++
++    /// Writes the contents to a file whose path is specified.
++    pub async fn write<P: Into<String>>(&self, path: P, data: &[u8]) -> SftpResult<()> {
++        let mut file = self.open_with_flags(path, OpenFlags::WRITE).await?;
++        file.write_all(data).await?;
++        Ok(())
++    }
++
++    /// Checks a file or folder exists at the specified path
++    pub async fn try_exists<P: Into<String>>(&self, path: P) -> SftpResult<bool> {
++        match self.metadata(path).await {
++            Ok(_) => Ok(true),
++            Err(Error::Status(status)) if status.status_code == StatusCode::NoSuchFile => Ok(false),
++            Err(error) => Err(error),
++        }
++    }
++
++    /// Returns an iterator over the entries within a directory.
++    pub async fn read_dir<P: Into<String>>(&self, path: P) -> SftpResult<ReadDir> {
++        let path: String = path.into();
++        let parent = Arc::from(path.as_str());
++
++        let handle = self.session.opendir(path).await?.handle;
++        let mut files = vec![];
++
++        loop {
++            match self.session.readdir(handle.as_slice()).await {
++                Ok(name) => {
++                    files = name
++                        .files
++                        .into_iter()
++                        .map(|f| (f.filename, f.attrs))
++                        .chain(files)
++                        .collect();
++                }
++                Err(Error::Status(status)) if status.status_code == StatusCode::Eof => break,
++                Err(err) => return Err(err),
++            }
++        }
++
++        self.session.close(handle).await?;
++
++        Ok(ReadDir {
++            parent,
++            entries: files.into(),
++        })
++    }
++
++    /// Reads a symbolic link, returning the file that the link points to.
++    pub async fn read_link<P: Into<String>>(&self, path: P) -> SftpResult<String> {
++        let name = self.session.readlink(path).await?;
++        match name.files.first() {
++            Some(file) => Ok(file.filename.to_owned()),
++            None => Err(Error::UnexpectedBehavior("no file".to_owned())),
++        }
++    }
++
++    /// Removes the specified folder.
++    pub async fn remove_dir<P: Into<String>>(&self, path: P) -> SftpResult<()> {
++        self.session.rmdir(path).await.map(|_| ())
++    }
++
++    /// Removes the specified file.
++    pub async fn remove_file<T: Into<String>>(&self, filename: T) -> SftpResult<()> {
++        self.session.remove(filename).await.map(|_| ())
++    }
++
++    /// Rename a file or directory to a new name.
++    pub async fn rename<O, N>(&self, oldpath: O, newpath: N) -> SftpResult<()>
++    where
++        O: Into<String>,
++        N: Into<String>,
++    {
++        self.session.rename(oldpath, newpath).await.map(|_| ())
++    }
++
++    /// Creates a symlink of the specified target.
++    pub async fn symlink<P, T>(&self, path: P, target: T) -> SftpResult<()>
++    where
++        P: Into<String>,
++        T: Into<String>,
++    {
++        self.session.symlink(path, target).await.map(|_| ())
++    }
++
++    /// Queries metadata about the remote file.
++    pub async fn metadata<P: Into<String>>(&self, path: P) -> SftpResult<Metadata> {
++        Ok(self.session.stat(path).await?.attrs)
++    }
++
++    /// Sets metadata for a remote file.
++    pub async fn set_metadata<P: Into<String>>(
++        &self,
++        path: P,
++        metadata: Metadata,
++    ) -> Result<(), Error> {
++        self.session.setstat(path, metadata).await.map(|_| ())
++    }
++
++    pub async fn symlink_metadata<P: Into<String>>(&self, path: P) -> SftpResult<Metadata> {
++        Ok(self.session.lstat(path).await?.attrs)
++    }
++
++    pub async fn hardlink<O, N>(&self, oldpath: O, newpath: N) -> SftpResult<bool>
++    where
++        O: Into<String>,
++        N: Into<String>,
++    {
++        if !self.features.hardlink {
++            return Ok(false);
++        }
++
++        self.session.hardlink(oldpath, newpath).await.map(|_| true)
++    }
++
++    /// Performs a statvfs on the remote file system path.
++    /// Returns [`Ok(None)`] if the remote SFTP server does not support `statvfs@openssh.com` extension v2.
++    pub async fn fs_info<P: Into<String>>(&self, path: P) -> SftpResult<Option<Statvfs>> {
++        if !self.features.statvfs {
++            return Ok(None);
++        }
++
++        self.session.statvfs(path).await.map(Some)
++    }
++}
+--- a/src/de.rs
++++ b/src/de.rs
+@@ -1,395 +1,399 @@
+-use bytes::{Buf, BufMut, Bytes};
+-use serde::de::{EnumAccess, IntoDeserializer, MapAccess, SeqAccess, VariantAccess, Visitor};
+-use std::fmt;
+-
+-use crate::{buf::TryBuf, error::Error};
+-
+-pub struct Deserializer<'a> {
+-    input: &'a mut Bytes,
+-}
+-
+-/// Converting bytes to protocol-compliant type
+-pub fn from_bytes<'a, T>(bytes: &'a mut Bytes) -> Result<T, Error>
+-where
+-    T: serde::Deserialize<'a>,
+-{
+-    let mut deserializer = Deserializer { input: bytes };
+-    T::deserialize(&mut deserializer)
+-}
+-
+-/// Deserilization of a [`Vec`] without length. Usually reads until the end byte
+-/// or end of the packet because the size is unknown.
+-pub fn data_deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+-where
+-    D: serde::Deserializer<'de>,
+-{
+-    struct DataVisitor;
+-
+-    impl<'de> Visitor<'de> for DataVisitor {
+-        type Value = Vec<u8>;
+-
+-        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+-            formatter.write_str("data")
+-        }
+-
+-        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+-        where
+-            A: serde::de::SeqAccess<'de>,
+-        {
+-            let mut data = Vec::new();
+-            while let Some(byte) = seq.next_element::<u8>()? {
+-                data.put_u8(byte);
+-            }
+-            Ok(data)
+-        }
+-    }
+-
+-    deserializer.deserialize_any(DataVisitor)
+-}
+-
+-impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
+-    type Error = Error;
+-
+-    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        let len = self.input.len();
+-        visitor.visit_seq(SeqDeserializer {
+-            de: self,
+-            len: Some(len),
+-        })
+-    }
+-
+-    fn deserialize_bool<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        Err(Error::BadMessage("bool not supported".to_owned()))
+-    }
+-
+-    fn deserialize_i8<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        Err(Error::BadMessage("i8 not supported".to_owned()))
+-    }
+-
+-    fn deserialize_i16<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        Err(Error::BadMessage("i16 not supported".to_owned()))
+-    }
+-
+-    fn deserialize_i32<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        Err(Error::BadMessage("i32 not supported".to_owned()))
+-    }
+-
+-    fn deserialize_i64<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        Err(Error::BadMessage("i64 not supported".to_owned()))
+-    }
+-
+-    fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        visitor.visit_u8(self.input.try_get_u8()?)
+-    }
+-
+-    fn deserialize_u16<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        Err(Error::BadMessage("u16 not supported".to_owned()))
+-    }
+-
+-    fn deserialize_u32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        visitor.visit_u32(self.input.try_get_u32()?)
+-    }
+-
+-    fn deserialize_u64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        visitor.visit_u64(self.input.try_get_u64()?)
+-    }
+-
+-    fn deserialize_f32<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        Err(Error::BadMessage("f32 not supported".to_owned()))
+-    }
+-
+-    fn deserialize_f64<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        Err(Error::BadMessage("f64 not supported".to_owned()))
+-    }
+-
+-    fn deserialize_char<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        Err(Error::BadMessage("char not supported".to_owned()))
+-    }
+-
+-    fn deserialize_str<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        visitor.visit_str(&self.input.try_get_string()?)
+-    }
+-
+-    fn deserialize_string<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        self.deserialize_str(visitor)
+-    }
+-
+-    fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        visitor.visit_bytes(&self.input.try_get_bytes()?)
+-    }
+-
+-    fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        self.deserialize_bytes(visitor)
+-    }
+-
+-    fn deserialize_option<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        Err(Error::BadMessage("option not supported".to_owned()))
+-    }
+-
+-    fn deserialize_unit<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        visitor.visit_unit()
+-    }
+-
+-    fn deserialize_unit_struct<V>(
+-        self,
+-        _name: &'static str,
+-        visitor: V,
+-    ) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        visitor.visit_unit()
+-    }
+-
+-    fn deserialize_newtype_struct<V>(
+-        self,
+-        _name: &'static str,
+-        visitor: V,
+-    ) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        visitor.visit_newtype_struct(self)
+-    }
+-
+-    fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        let len = self.input.try_get_u32()? as usize;
+-        visitor.visit_seq(SeqDeserializer {
+-            de: self,
+-            len: Some(len),
+-        })
+-    }
+-
+-    fn deserialize_tuple<V>(self, len: usize, visitor: V) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        visitor.visit_seq(SeqDeserializer {
+-            de: self,
+-            len: Some(len),
+-        })
+-    }
+-
+-    fn deserialize_tuple_struct<V>(
+-        self,
+-        _name: &'static str,
+-        len: usize,
+-        visitor: V,
+-    ) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        self.deserialize_tuple(len, visitor)
+-    }
+-
+-    fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        visitor.visit_map(MapDeserializer { de: self })
+-    }
+-
+-    fn deserialize_struct<V>(
+-        self,
+-        _name: &'static str,
+-        fields: &'static [&'static str],
+-        visitor: V,
+-    ) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        self.deserialize_tuple(fields.len(), visitor)
+-    }
+-
+-    fn deserialize_enum<V>(
+-        self,
+-        _name: &'static str,
+-        _variants: &'static [&'static str],
+-        visitor: V,
+-    ) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        visitor.visit_enum(self)
+-    }
+-
+-    fn deserialize_identifier<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        Err(Error::BadMessage("identifier not supported".to_owned()))
+-    }
+-
+-    fn deserialize_ignored_any<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        Err(Error::BadMessage("ignored any not supported".to_owned()))
+-    }
+-
+-    fn is_human_readable(&self) -> bool {
+-        false
+-    }
+-}
+-
+-struct SeqDeserializer<'a, 'de: 'a> {
+-    de: &'a mut Deserializer<'de>,
+-    len: Option<usize>,
+-}
+-
+-impl<'de> SeqAccess<'de> for SeqDeserializer<'_, 'de> {
+-    type Error = Error;
+-
+-    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
+-    where
+-        T: serde::de::DeserializeSeed<'de>,
+-    {
+-        if self.len == Some(0) {
+-            return Ok(None);
+-        }
+-
+-        if let Some(len) = self.len.as_mut() {
+-            *len -= 1;
+-        }
+-
+-        seed.deserialize(&mut *self.de).map(Some)
+-    }
+-
+-    fn size_hint(&self) -> Option<usize> {
+-        self.len
+-    }
+-}
+-
+-struct MapDeserializer<'a, 'de: 'a> {
+-    de: &'a mut Deserializer<'de>,
+-}
+-
+-impl<'de> MapAccess<'de> for MapDeserializer<'_, 'de> {
+-    type Error = Error;
+-
+-    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
+-    where
+-        K: serde::de::DeserializeSeed<'de>,
+-    {
+-        if self.de.input.remaining() == 0 {
+-            return Ok(None);
+-        }
+-
+-        seed.deserialize(&mut *self.de).map(Some)
+-    }
+-
+-    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::DeserializeSeed<'de>,
+-    {
+-        seed.deserialize(&mut *self.de)
+-    }
+-}
+-
+-impl<'de> VariantAccess<'de> for &mut Deserializer<'de> {
+-    type Error = Error;
+-
+-    fn unit_variant(self) -> Result<(), Self::Error> {
+-        Ok(())
+-    }
+-
+-    fn newtype_variant_seed<T>(self, seed: T) -> Result<T::Value, Self::Error>
+-    where
+-        T: serde::de::DeserializeSeed<'de>,
+-    {
+-        seed.deserialize(self)
+-    }
+-
+-    fn tuple_variant<V>(self, len: usize, visitor: V) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        use serde::Deserializer;
+-        self.deserialize_tuple(len, visitor)
+-    }
+-
+-    fn struct_variant<V>(
+-        self,
+-        fields: &'static [&'static str],
+-        visitor: V,
+-    ) -> Result<V::Value, Self::Error>
+-    where
+-        V: serde::de::Visitor<'de>,
+-    {
+-        use crate::serde::Deserializer;
+-        self.deserialize_tuple(fields.len(), visitor)
+-    }
+-}
+-
+-impl<'de> EnumAccess<'de> for &mut Deserializer<'de> {
+-    type Error = Error;
+-    type Variant = Self;
+-
+-    fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant), Self::Error>
+-    where
+-        V: serde::de::DeserializeSeed<'de>,
+-    {
+-        let v = IntoDeserializer::<Self::Error>::into_deserializer(self.input.try_get_u32()?);
+-        Ok((seed.deserialize(v)?, self))
+-    }
+-}
++use bytes::{Buf, BufMut, Bytes};
++use serde::de::{EnumAccess, IntoDeserializer, MapAccess, SeqAccess, VariantAccess, Visitor};
++use std::fmt;
++
++use crate::{buf::TryBuf, error::Error};
++
++pub struct Deserializer<'a> {
++    input: &'a mut Bytes,
++}
++
++/// Converting bytes to protocol-compliant type
++pub fn from_bytes<'a, T>(bytes: &'a mut Bytes) -> Result<T, Error>
++where
++    T: serde::Deserialize<'a>,
++{
++    let mut deserializer = Deserializer { input: bytes };
++    T::deserialize(&mut deserializer)
++}
++
++/// Deserilization of a [`Vec`] without length. Usually reads until the end byte
++/// or end of the packet because the size is unknown.
++pub fn data_deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
++where
++    D: serde::Deserializer<'de>,
++{
++    struct DataVisitor;
++
++    impl<'de> Visitor<'de> for DataVisitor {
++        type Value = Vec<u8>;
++
++        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
++            formatter.write_str("data")
++        }
++
++        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
++        where
++            A: serde::de::SeqAccess<'de>,
++        {
++            let mut data = Vec::new();
++            while let Some(byte) = seq.next_element::<u8>()? {
++                data.put_u8(byte);
++            }
++            Ok(data)
++        }
++    }
++
++    deserializer.deserialize_any(DataVisitor)
++}
++
++impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
++    type Error = Error;
++
++    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        let len = self.input.len();
++        visitor.visit_seq(SeqDeserializer {
++            de: self,
++            len: Some(len),
++        })
++    }
++
++    fn deserialize_bool<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        Err(Error::BadMessage("bool not supported".to_owned()))
++    }
++
++    fn deserialize_i8<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        Err(Error::BadMessage("i8 not supported".to_owned()))
++    }
++
++    fn deserialize_i16<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        Err(Error::BadMessage("i16 not supported".to_owned()))
++    }
++
++    fn deserialize_i32<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        Err(Error::BadMessage("i32 not supported".to_owned()))
++    }
++
++    fn deserialize_i64<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        Err(Error::BadMessage("i64 not supported".to_owned()))
++    }
++
++    fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        visitor.visit_u8(self.input.try_get_u8()?)
++    }
++
++    fn deserialize_u16<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        Err(Error::BadMessage("u16 not supported".to_owned()))
++    }
++
++    fn deserialize_u32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        visitor.visit_u32(self.input.try_get_u32()?)
++    }
++
++    fn deserialize_u64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        visitor.visit_u64(self.input.try_get_u64()?)
++    }
++
++    fn deserialize_f32<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        Err(Error::BadMessage("f32 not supported".to_owned()))
++    }
++
++    fn deserialize_f64<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        Err(Error::BadMessage("f64 not supported".to_owned()))
++    }
++
++    fn deserialize_char<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        Err(Error::BadMessage("char not supported".to_owned()))
++    }
++
++    fn deserialize_str<V>(self, visitor: V) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        visitor.visit_str(&self.input.try_get_string()?)
++    }
++
++    fn deserialize_string<V>(self, visitor: V) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        self.deserialize_str(visitor)
++    }
++
++    fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        visitor.visit_bytes(&self.input.try_get_bytes()?)
++    }
++
++    fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        self.deserialize_bytes(visitor)
++    }
++
++    fn deserialize_option<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        Err(Error::BadMessage("option not supported".to_owned()))
++    }
++
++    fn deserialize_unit<V>(self, visitor: V) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        visitor.visit_unit()
++    }
++
++    fn deserialize_unit_struct<V>(
++        self,
++        _name: &'static str,
++        visitor: V,
++    ) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        visitor.visit_unit()
++    }
++
++    fn deserialize_newtype_struct<V>(
++        self,
++        _name: &'static str,
++        visitor: V,
++    ) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        visitor.visit_newtype_struct(self)
++    }
++
++    fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        let len = self.input.try_get_u32()? as usize;
++        if len > self.input.remaining() {
++            return Err(Error::BadMessage("sequence count exceeds frame".to_owned()));
++        }
++        visitor.visit_seq(SeqDeserializer {
++            de: self,
++            len: Some(len),
++        })
++    }
++
++    fn deserialize_tuple<V>(self, len: usize, visitor: V) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        visitor.visit_seq(SeqDeserializer {
++            de: self,
++            len: Some(len),
++        })
++    }
++
++    fn deserialize_tuple_struct<V>(
++        self,
++        _name: &'static str,
++        len: usize,
++        visitor: V,
++    ) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        self.deserialize_tuple(len, visitor)
++    }
++
++    fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        visitor.visit_map(MapDeserializer { de: self })
++    }
++
++    fn deserialize_struct<V>(
++        self,
++        _name: &'static str,
++        fields: &'static [&'static str],
++        visitor: V,
++    ) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        self.deserialize_tuple(fields.len(), visitor)
++    }
++
++    fn deserialize_enum<V>(
++        self,
++        _name: &'static str,
++        _variants: &'static [&'static str],
++        visitor: V,
++    ) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        visitor.visit_enum(self)
++    }
++
++    fn deserialize_identifier<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        Err(Error::BadMessage("identifier not supported".to_owned()))
++    }
++
++    fn deserialize_ignored_any<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        Err(Error::BadMessage("ignored any not supported".to_owned()))
++    }
++
++    fn is_human_readable(&self) -> bool {
++        false
++    }
++}
++
++struct SeqDeserializer<'a, 'de: 'a> {
++    de: &'a mut Deserializer<'de>,
++    len: Option<usize>,
++}
++
++impl<'de> SeqAccess<'de> for SeqDeserializer<'_, 'de> {
++    type Error = Error;
++
++    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
++    where
++        T: serde::de::DeserializeSeed<'de>,
++    {
++        if self.len == Some(0) {
++            return Ok(None);
++        }
++
++        if let Some(len) = self.len.as_mut() {
++            *len -= 1;
++        }
++
++        seed.deserialize(&mut *self.de).map(Some)
++    }
++
++    fn size_hint(&self) -> Option<usize> {
++        // Never allocate in proportion to an untrusted element count.
++        self.len.map(|len| len.min(32))
++    }
++}
++
++struct MapDeserializer<'a, 'de: 'a> {
++    de: &'a mut Deserializer<'de>,
++}
++
++impl<'de> MapAccess<'de> for MapDeserializer<'_, 'de> {
++    type Error = Error;
++
++    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
++    where
++        K: serde::de::DeserializeSeed<'de>,
++    {
++        if self.de.input.remaining() == 0 {
++            return Ok(None);
++        }
++
++        seed.deserialize(&mut *self.de).map(Some)
++    }
++
++    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::DeserializeSeed<'de>,
++    {
++        seed.deserialize(&mut *self.de)
++    }
++}
++
++impl<'de> VariantAccess<'de> for &mut Deserializer<'de> {
++    type Error = Error;
++
++    fn unit_variant(self) -> Result<(), Self::Error> {
++        Ok(())
++    }
++
++    fn newtype_variant_seed<T>(self, seed: T) -> Result<T::Value, Self::Error>
++    where
++        T: serde::de::DeserializeSeed<'de>,
++    {
++        seed.deserialize(self)
++    }
++
++    fn tuple_variant<V>(self, len: usize, visitor: V) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        use serde::Deserializer;
++        self.deserialize_tuple(len, visitor)
++    }
++
++    fn struct_variant<V>(
++        self,
++        fields: &'static [&'static str],
++        visitor: V,
++    ) -> Result<V::Value, Self::Error>
++    where
++        V: serde::de::Visitor<'de>,
++    {
++        use crate::serde::Deserializer;
++        self.deserialize_tuple(fields.len(), visitor)
++    }
++}
++
++impl<'de> EnumAccess<'de> for &mut Deserializer<'de> {
++    type Error = Error;
++    type Variant = Self;
++
++    fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant), Self::Error>
++    where
++        V: serde::de::DeserializeSeed<'de>,
++    {
++        let v = IntoDeserializer::<Self::Error>::into_deserializer(self.input.try_get_u32()?);
++        Ok((seed.deserialize(v)?, self))
++    }
++}
+--- a/src/error.rs
++++ b/src/error.rs
+@@ -1,64 +1,66 @@
+-use bytes::TryGetError;
+-use std::{fmt, io};
+-use thiserror::Error;
+-
+-use crate::client;
+-
+-#[derive(Debug, Clone, Error)]
+-pub enum Error {
+-    #[error("I/O: {0}")]
+-    IO(String),
+-    #[error("Unexpected EOF on stream")]
+-    UnexpectedEof,
+-    #[error("Bad message: {0}")]
+-    BadMessage(String),
+-    #[error("Client error. ({0})")]
+-    Client(String),
+-    #[error("Unexpected behavior: {0}")]
+-    UnexpectedBehavior(String),
+-}
+-
+-impl From<client::error::Error> for Error {
+-    fn from(error: client::error::Error) -> Self {
+-        Self::Client(error.to_string())
+-    }
+-}
+-
+-impl From<io::Error> for Error {
+-    fn from(err: io::Error) -> Self {
+-        let kind = err.kind();
+-        let msg = err.into_inner().map_or("".to_string(), |m| format!("{m}"));
+-        match kind {
+-            io::ErrorKind::UnexpectedEof => Self::UnexpectedEof,
+-            io::ErrorKind::Other if msg == "EOF" => Self::UnexpectedEof,
+-            e => Self::IO(e.to_string()),
+-        }
+-    }
+-}
+-
+-impl From<TryGetError> for Error {
+-    fn from(err: TryGetError) -> Self {
+-        Self::BadMessage(format!(
+-            "only {} bytes remaining, but {} requested",
+-            err.available, err.requested
+-        ))
+-    }
+-}
+-
+-impl serde::ser::Error for Error {
+-    fn custom<T>(msg: T) -> Self
+-    where
+-        T: fmt::Display,
+-    {
+-        Self::BadMessage(msg.to_string())
+-    }
+-}
+-
+-impl serde::de::Error for Error {
+-    fn custom<T>(msg: T) -> Self
+-    where
+-        T: fmt::Display,
+-    {
+-        Self::BadMessage(msg.to_string())
+-    }
+-}
++use bytes::TryGetError;
++use std::{fmt, io};
++use thiserror::Error;
++
++use crate::client;
++
++#[derive(Debug, Clone, Error)]
++pub enum Error {
++    #[error("SFTP packet exceeds configured bound")]
++    PacketTooLarge,
++    #[error("I/O: {0}")]
++    IO(String),
++    #[error("Unexpected EOF on stream")]
++    UnexpectedEof,
++    #[error("Bad message: {0}")]
++    BadMessage(String),
++    #[error("Client error. ({0})")]
++    Client(String),
++    #[error("Unexpected behavior: {0}")]
++    UnexpectedBehavior(String),
++}
++
++impl From<client::error::Error> for Error {
++    fn from(error: client::error::Error) -> Self {
++        Self::Client(error.to_string())
++    }
++}
++
++impl From<io::Error> for Error {
++    fn from(err: io::Error) -> Self {
++        let kind = err.kind();
++        let msg = err.into_inner().map_or("".to_string(), |m| format!("{m}"));
++        match kind {
++            io::ErrorKind::UnexpectedEof => Self::UnexpectedEof,
++            io::ErrorKind::Other if msg == "EOF" => Self::UnexpectedEof,
++            e => Self::IO(e.to_string()),
++        }
++    }
++}
++
++impl From<TryGetError> for Error {
++    fn from(err: TryGetError) -> Self {
++        Self::BadMessage(format!(
++            "only {} bytes remaining, but {} requested",
++            err.available, err.requested
++        ))
++    }
++}
++
++impl serde::ser::Error for Error {
++    fn custom<T>(msg: T) -> Self
++    where
++        T: fmt::Display,
++    {
++        Self::BadMessage(msg.to_string())
++    }
++}
++
++impl serde::de::Error for Error {
++    fn custom<T>(msg: T) -> Self
++    where
++        T: fmt::Display,
++    {
++        Self::BadMessage(msg.to_string())
++    }
++}
+--- a/src/extensions.rs
++++ b/src/extensions.rs
+@@ -1,76 +1,77 @@
+-use crate::{error::Error, ser};
+-
+-pub const LIMITS: &str = "limits@openssh.com";
+-pub const HARDLINK: &str = "hardlink@openssh.com";
+-pub const FSYNC: &str = "fsync@openssh.com";
+-pub const STATVFS: &str = "statvfs@openssh.com";
+-
+-macro_rules! impl_try_into_bytes {
+-    ($struct:ty) => {
+-        impl TryInto<Vec<u8>> for $struct {
+-            type Error = Error;
+-
+-            fn try_into(self) -> Result<Vec<u8>, Self::Error> {
+-                ser::to_bytes(&self).map(|b| b.to_vec())
+-            }
+-        }
+-    };
+-}
+-
+-#[derive(Debug, Serialize, Deserialize)]
+-pub struct LimitsExtension {
+-    pub max_packet_len: u64,
+-    pub max_read_len: u64,
+-    pub max_write_len: u64,
+-    pub max_open_handles: u64,
+-}
+-
+-#[derive(Debug, Serialize, Deserialize)]
+-pub struct HardlinkExtension {
+-    pub oldpath: String,
+-    pub newpath: String,
+-}
+-
+-impl_try_into_bytes!(HardlinkExtension);
+-
+-#[derive(Debug, Serialize, Deserialize)]
+-pub struct FsyncExtension {
+-    pub handle: String,
+-}
+-
+-impl_try_into_bytes!(FsyncExtension);
+-
+-#[derive(Debug, Serialize, Deserialize)]
+-pub struct StatvfsExtension {
+-    pub path: String,
+-}
+-
+-impl_try_into_bytes!(StatvfsExtension);
+-
+-#[derive(Debug, Serialize, Deserialize)]
+-pub struct Statvfs {
+-    /// The file system block size
+-    pub block_size: u64,
+-    /// The fundamental file system block size
+-    pub fragment_size: u64,
+-    /// The number of blocks.
+-    ///
+-    /// Units are in units of `fragment_size`
+-    pub blocks: u64,
+-    /// The number of free blocks in the file system
+-    pub blocks_free: u64,
+-    /// The number of free blocks for unprivileged users
+-    pub blocks_avail: u64,
+-    /// The total number of file inodes
+-    pub inodes: u64,
+-    /// The number of free file inodes
+-    pub inodes_free: u64,
+-    /// The number of free file inodes for unprivileged users
+-    pub inodes_avail: u64,
+-    /// The file system id
+-    pub fs_id: u64,
+-    /// The mount flags
+-    pub flags: u64,
+-    /// The maximum filename length
+-    pub name_max: u64,
+-}
++use crate::{error::Error, ser};
++
++pub const LIMITS: &str = "limits@openssh.com";
++pub const HARDLINK: &str = "hardlink@openssh.com";
++pub const FSYNC: &str = "fsync@openssh.com";
++pub const STATVFS: &str = "statvfs@openssh.com";
++
++macro_rules! impl_try_into_bytes {
++    ($struct:ty) => {
++        impl TryInto<Vec<u8>> for $struct {
++            type Error = Error;
++
++            fn try_into(self) -> Result<Vec<u8>, Self::Error> {
++                ser::to_bytes(&self).map(|b| b.to_vec())
++            }
++        }
++    };
++}
++
++#[derive(Debug, Serialize, Deserialize)]
++pub struct LimitsExtension {
++    pub max_packet_len: u64,
++    pub max_read_len: u64,
++    pub max_write_len: u64,
++    pub max_open_handles: u64,
++}
++
++#[derive(Debug, Serialize, Deserialize)]
++pub struct HardlinkExtension {
++    pub oldpath: String,
++    pub newpath: String,
++}
++
++impl_try_into_bytes!(HardlinkExtension);
++
++#[derive(Debug, Serialize, Deserialize)]
++pub struct FsyncExtension {
++    #[serde(with = "serde_bytes")]
++    pub handle: Vec<u8>,
++}
++
++impl_try_into_bytes!(FsyncExtension);
++
++#[derive(Debug, Serialize, Deserialize)]
++pub struct StatvfsExtension {
++    pub path: String,
++}
++
++impl_try_into_bytes!(StatvfsExtension);
++
++#[derive(Debug, Serialize, Deserialize)]
++pub struct Statvfs {
++    /// The file system block size
++    pub block_size: u64,
++    /// The fundamental file system block size
++    pub fragment_size: u64,
++    /// The number of blocks.
++    ///
++    /// Units are in units of `fragment_size`
++    pub blocks: u64,
++    /// The number of free blocks in the file system
++    pub blocks_free: u64,
++    /// The number of free blocks for unprivileged users
++    pub blocks_avail: u64,
++    /// The total number of file inodes
++    pub inodes: u64,
++    /// The number of free file inodes
++    pub inodes_free: u64,
++    /// The number of free file inodes for unprivileged users
++    pub inodes_avail: u64,
++    /// The file system id
++    pub fs_id: u64,
++    /// The mount flags
++    pub flags: u64,
++    /// The maximum filename length
++    pub name_max: u64,
++}
+--- a/src/protocol/close.rs
++++ b/src/protocol/close.rs
+@@ -1,11 +1,12 @@
+-use super::{impl_packet_for, impl_request_id, Packet, RequestId};
+-
+-/// Implementation for `SSH_FXP_CLOSE`
+-#[derive(Debug, Serialize, Deserialize)]
+-pub struct Close {
+-    pub id: u32,
+-    pub handle: String,
+-}
+-
+-impl_request_id!(Close);
+-impl_packet_for!(Close);
++use super::{impl_packet_for, impl_request_id, Packet, RequestId};
++
++/// Implementation for `SSH_FXP_CLOSE`
++#[derive(Debug, Serialize, Deserialize)]
++pub struct Close {
++    pub id: u32,
++    #[serde(with = "serde_bytes")]
++    pub handle: Vec<u8>,
++}
++
++impl_request_id!(Close);
++impl_packet_for!(Close);
+--- a/src/protocol/fsetstat.rs
++++ b/src/protocol/fsetstat.rs
+@@ -1,12 +1,13 @@
+-use super::{impl_packet_for, impl_request_id, FileAttributes, Packet, RequestId};
+-
+-/// Implementation for `SSH_FXP_FSETSTAT`
+-#[derive(Debug, Serialize, Deserialize)]
+-pub struct FSetStat {
+-    pub id: u32,
+-    pub handle: String,
+-    pub attrs: FileAttributes,
+-}
+-
+-impl_request_id!(FSetStat);
+-impl_packet_for!(FSetStat);
++use super::{impl_packet_for, impl_request_id, FileAttributes, Packet, RequestId};
++
++/// Implementation for `SSH_FXP_FSETSTAT`
++#[derive(Debug, Serialize, Deserialize)]
++pub struct FSetStat {
++    pub id: u32,
++    #[serde(with = "serde_bytes")]
++    pub handle: Vec<u8>,
++    pub attrs: FileAttributes,
++}
++
++impl_request_id!(FSetStat);
++impl_packet_for!(FSetStat);
+--- a/src/protocol/fstat.rs
++++ b/src/protocol/fstat.rs
+@@ -1,11 +1,12 @@
+-use super::{impl_packet_for, impl_request_id, Packet, RequestId};
+-
+-/// Implementation for `SSH_FXP_FSTAT`
+-#[derive(Debug, Serialize, Deserialize)]
+-pub struct Fstat {
+-    pub id: u32,
+-    pub handle: String,
+-}
+-
+-impl_request_id!(Fstat);
+-impl_packet_for!(Fstat);
++use super::{impl_packet_for, impl_request_id, Packet, RequestId};
++
++/// Implementation for `SSH_FXP_FSTAT`
++#[derive(Debug, Serialize, Deserialize)]
++pub struct Fstat {
++    pub id: u32,
++    #[serde(with = "serde_bytes")]
++    pub handle: Vec<u8>,
++}
++
++impl_request_id!(Fstat);
++impl_packet_for!(Fstat);
+--- a/src/protocol/handle.rs
++++ b/src/protocol/handle.rs
+@@ -1,11 +1,12 @@
+-use super::{impl_packet_for, impl_request_id, Packet, RequestId};
+-
+-/// Implementation for `SSH_FXP_HANDLE`
+-#[derive(Debug, Serialize, Deserialize)]
+-pub struct Handle {
+-    pub id: u32,
+-    pub handle: String,
+-}
+-
+-impl_request_id!(Handle);
+-impl_packet_for!(Handle);
++use super::{impl_packet_for, impl_request_id, Packet, RequestId};
++
++/// Implementation for `SSH_FXP_HANDLE`
++#[derive(Debug, Serialize, Deserialize)]
++pub struct Handle {
++    pub id: u32,
++    #[serde(with = "serde_bytes")]
++    pub handle: Vec<u8>,
++}
++
++impl_request_id!(Handle);
++impl_packet_for!(Handle);
+--- a/src/protocol/mod.rs
++++ b/src/protocol/mod.rs
+@@ -1,280 +1,283 @@
+-mod attrs;
+-mod close;
+-mod data;
+-mod extended;
+-mod file;
+-mod file_attrs;
+-mod fsetstat;
+-mod fstat;
+-mod handle;
+-mod init;
+-mod lstat;
+-mod mkdir;
+-mod name;
+-mod open;
+-mod opendir;
+-mod read;
+-mod readdir;
+-mod readlink;
+-mod realpath;
+-mod remove;
+-mod rename;
+-mod rmdir;
+-mod setstat;
+-mod stat;
+-mod status;
+-mod symlink;
+-mod version;
+-mod write;
+-
+-use bytes::{Buf, BufMut, Bytes, BytesMut};
+-
+-use crate::{de, error::Error, ser};
+-
+-pub use self::{
+-    attrs::Attrs,
+-    close::Close,
+-    data::Data,
+-    extended::{Extended, ExtendedReply},
+-    file::File,
+-    file_attrs::{
+-        FileAttr, FileAttributes, FileMode, FilePermissionFlags, FilePermissions, FileType,
+-    },
+-    fsetstat::FSetStat,
+-    fstat::Fstat,
+-    handle::Handle,
+-    init::Init,
+-    lstat::Lstat,
+-    mkdir::MkDir,
+-    name::Name,
+-    open::{Open, OpenFlags},
+-    opendir::OpenDir,
+-    read::Read,
+-    readdir::ReadDir,
+-    readlink::ReadLink,
+-    realpath::RealPath,
+-    remove::Remove,
+-    rename::Rename,
+-    rmdir::RmDir,
+-    setstat::SetStat,
+-    stat::Stat,
+-    status::{Status, StatusCode},
+-    symlink::Symlink,
+-    version::Version,
+-    write::Write,
+-};
+-
+-pub const VERSION: u32 = 3;
+-
+-const SSH_FXP_INIT: u8 = 1;
+-const SSH_FXP_VERSION: u8 = 2;
+-const SSH_FXP_OPEN: u8 = 3;
+-const SSH_FXP_CLOSE: u8 = 4;
+-const SSH_FXP_READ: u8 = 5;
+-const SSH_FXP_WRITE: u8 = 6;
+-const SSH_FXP_LSTAT: u8 = 7;
+-const SSH_FXP_FSTAT: u8 = 8;
+-const SSH_FXP_SETSTAT: u8 = 9;
+-const SSH_FXP_FSETSTAT: u8 = 10;
+-const SSH_FXP_OPENDIR: u8 = 11;
+-const SSH_FXP_READDIR: u8 = 12;
+-const SSH_FXP_REMOVE: u8 = 13;
+-const SSH_FXP_MKDIR: u8 = 14;
+-const SSH_FXP_RMDIR: u8 = 15;
+-const SSH_FXP_REALPATH: u8 = 16;
+-const SSH_FXP_STAT: u8 = 17;
+-const SSH_FXP_RENAME: u8 = 18;
+-const SSH_FXP_READLINK: u8 = 19;
+-const SSH_FXP_SYMLINK: u8 = 20;
+-
+-const SSH_FXP_STATUS: u8 = 101;
+-const SSH_FXP_HANDLE: u8 = 102;
+-const SSH_FXP_DATA: u8 = 103;
+-const SSH_FXP_NAME: u8 = 104;
+-const SSH_FXP_ATTRS: u8 = 105;
+-
+-const SSH_FXP_EXTENDED: u8 = 200;
+-const SSH_FXP_EXTENDED_REPLY: u8 = 201;
+-
+-pub(crate) trait RequestId: Sized {
+-    fn get_request_id(&self) -> u32;
+-}
+-
+-macro_rules! impl_request_id {
+-    ($packet:ty) => {
+-        impl RequestId for $packet {
+-            fn get_request_id(&self) -> u32 {
+-                self.id
+-            }
+-        }
+-    };
+-}
+-
+-macro_rules! impl_packet_for {
+-    ($name:ident) => {
+-        impl From<$name> for Packet {
+-            fn from(input: $name) -> Self {
+-                Self::$name(input)
+-            }
+-        }
+-    };
+-}
+-
+-pub(crate) use impl_packet_for;
+-pub(crate) use impl_request_id;
+-
+-#[derive(Debug)]
+-pub enum Packet {
+-    Init(Init),
+-    Version(Version),
+-    Open(Open),
+-    Close(Close),
+-    Read(Read),
+-    Write(Write),
+-    Lstat(Lstat),
+-    Fstat(Fstat),
+-    SetStat(SetStat),
+-    FSetStat(FSetStat),
+-    OpenDir(OpenDir),
+-    ReadDir(ReadDir),
+-    Remove(Remove),
+-    MkDir(MkDir),
+-    RmDir(RmDir),
+-    RealPath(RealPath),
+-    Stat(Stat),
+-    Rename(Rename),
+-    ReadLink(ReadLink),
+-    Symlink(Symlink),
+-    Status(Status),
+-    Handle(Handle),
+-    Data(Data),
+-    Name(Name),
+-    Attrs(Attrs),
+-    Extended(Extended),
+-    ExtendedReply(ExtendedReply),
+-}
+-
+-impl Packet {
+-    pub fn get_request_id(&self) -> u32 {
+-        match self {
+-            Self::Open(open) => open.get_request_id(),
+-            Self::Close(close) => close.get_request_id(),
+-            Self::Read(read) => read.get_request_id(),
+-            Self::Write(write) => write.get_request_id(),
+-            Self::Lstat(lstat) => lstat.get_request_id(),
+-            Self::Fstat(fstat) => fstat.get_request_id(),
+-            Self::SetStat(setstat) => setstat.get_request_id(),
+-            Self::FSetStat(fsetstat) => fsetstat.get_request_id(),
+-            Self::OpenDir(opendir) => opendir.get_request_id(),
+-            Self::ReadDir(readdir) => readdir.get_request_id(),
+-            Self::Remove(remove) => remove.get_request_id(),
+-            Self::MkDir(mkdir) => mkdir.get_request_id(),
+-            Self::RmDir(rmdir) => rmdir.get_request_id(),
+-            Self::RealPath(realpath) => realpath.get_request_id(),
+-            Self::Stat(stat) => stat.get_request_id(),
+-            Self::Rename(rename) => rename.get_request_id(),
+-            Self::ReadLink(readlink) => readlink.get_request_id(),
+-            Self::Symlink(symlink) => symlink.get_request_id(),
+-            Self::Extended(extended) => extended.get_request_id(),
+-            _ => 0,
+-        }
+-    }
+-
+-    pub fn status(id: u32, status_code: StatusCode, msg: &str, tag: &str) -> Self {
+-        Packet::Status(Status {
+-            id,
+-            status_code,
+-            error_message: msg.to_string(),
+-            language_tag: tag.to_string(),
+-        })
+-    }
+-
+-    pub fn error(id: u32, status_code: StatusCode) -> Self {
+-        Self::status(id, status_code, &status_code.to_string(), "en-US")
+-    }
+-}
+-
+-impl TryFrom<&mut Bytes> for Packet {
+-    type Error = Error;
+-
+-    fn try_from(bytes: &mut Bytes) -> Result<Self, Self::Error> {
+-        let r#type = bytes.try_get_u8()?;
+-        debug!("packet type {}", r#type);
+-
+-        let request = match r#type {
+-            SSH_FXP_INIT => Self::Init(de::from_bytes(bytes)?),
+-            SSH_FXP_VERSION => Self::Version(de::from_bytes(bytes)?),
+-            SSH_FXP_OPEN => Self::Open(de::from_bytes(bytes)?),
+-            SSH_FXP_CLOSE => Self::Close(de::from_bytes(bytes)?),
+-            SSH_FXP_READ => Self::Read(de::from_bytes(bytes)?),
+-            SSH_FXP_WRITE => Self::Write(de::from_bytes(bytes)?),
+-            SSH_FXP_LSTAT => Self::Lstat(de::from_bytes(bytes)?),
+-            SSH_FXP_FSTAT => Self::Fstat(de::from_bytes(bytes)?),
+-            SSH_FXP_SETSTAT => Self::SetStat(de::from_bytes(bytes)?),
+-            SSH_FXP_FSETSTAT => Self::FSetStat(de::from_bytes(bytes)?),
+-            SSH_FXP_OPENDIR => Self::OpenDir(de::from_bytes(bytes)?),
+-            SSH_FXP_READDIR => Self::ReadDir(de::from_bytes(bytes)?),
+-            SSH_FXP_REMOVE => Self::Remove(de::from_bytes(bytes)?),
+-            SSH_FXP_MKDIR => Self::MkDir(de::from_bytes(bytes)?),
+-            SSH_FXP_RMDIR => Self::RmDir(de::from_bytes(bytes)?),
+-            SSH_FXP_REALPATH => Self::RealPath(de::from_bytes(bytes)?),
+-            SSH_FXP_STAT => Self::Stat(de::from_bytes(bytes)?),
+-            SSH_FXP_RENAME => Self::Rename(de::from_bytes(bytes)?),
+-            SSH_FXP_READLINK => Self::ReadLink(de::from_bytes(bytes)?),
+-            SSH_FXP_SYMLINK => Self::Symlink(de::from_bytes(bytes)?),
+-            SSH_FXP_STATUS => Self::Status(de::from_bytes(bytes)?),
+-            SSH_FXP_HANDLE => Self::Handle(de::from_bytes(bytes)?),
+-            SSH_FXP_DATA => Self::Data(de::from_bytes(bytes)?),
+-            SSH_FXP_NAME => Self::Name(de::from_bytes(bytes)?),
+-            SSH_FXP_ATTRS => Self::Attrs(de::from_bytes(bytes)?),
+-            SSH_FXP_EXTENDED => Self::Extended(de::from_bytes(bytes)?),
+-            SSH_FXP_EXTENDED_REPLY => Self::ExtendedReply(de::from_bytes(bytes)?),
+-            _ => return Err(Error::BadMessage("unknown type".to_owned())),
+-        };
+-
+-        Ok(request)
+-    }
+-}
+-
+-impl TryFrom<Packet> for Bytes {
+-    type Error = Error;
+-
+-    fn try_from(packet: Packet) -> Result<Self, Self::Error> {
+-        let (r#type, payload): (u8, Bytes) = match packet {
+-            Packet::Init(init) => (SSH_FXP_INIT, ser::to_bytes(&init)?),
+-            Packet::Version(version) => (SSH_FXP_VERSION, ser::to_bytes(&version)?),
+-            Packet::Open(open) => (SSH_FXP_OPEN, ser::to_bytes(&open)?),
+-            Packet::Close(close) => (SSH_FXP_CLOSE, ser::to_bytes(&close)?),
+-            Packet::Read(read) => (SSH_FXP_READ, ser::to_bytes(&read)?),
+-            Packet::Write(write) => (SSH_FXP_WRITE, ser::to_bytes(&write)?),
+-            Packet::Lstat(stat) => (SSH_FXP_LSTAT, ser::to_bytes(&stat)?),
+-            Packet::Fstat(stat) => (SSH_FXP_FSTAT, ser::to_bytes(&stat)?),
+-            Packet::SetStat(setstat) => (SSH_FXP_SETSTAT, ser::to_bytes(&setstat)?),
+-            Packet::FSetStat(setstat) => (SSH_FXP_FSETSTAT, ser::to_bytes(&setstat)?),
+-            Packet::OpenDir(opendir) => (SSH_FXP_OPENDIR, ser::to_bytes(&opendir)?),
+-            Packet::ReadDir(readdir) => (SSH_FXP_READDIR, ser::to_bytes(&readdir)?),
+-            Packet::Remove(remove) => (SSH_FXP_REMOVE, ser::to_bytes(&remove)?),
+-            Packet::MkDir(mkdir) => (SSH_FXP_MKDIR, ser::to_bytes(&mkdir)?),
+-            Packet::RmDir(rmdir) => (SSH_FXP_RMDIR, ser::to_bytes(&rmdir)?),
+-            Packet::RealPath(realpath) => (SSH_FXP_REALPATH, ser::to_bytes(&realpath)?),
+-            Packet::Stat(stat) => (SSH_FXP_STAT, ser::to_bytes(&stat)?),
+-            Packet::Rename(rename) => (SSH_FXP_RENAME, ser::to_bytes(&rename)?),
+-            Packet::ReadLink(readlink) => (SSH_FXP_READLINK, ser::to_bytes(&readlink)?),
+-            Packet::Symlink(symlink) => (SSH_FXP_SYMLINK, ser::to_bytes(&symlink)?),
+-            Packet::Status(status) => (SSH_FXP_STATUS, ser::to_bytes(&status)?),
+-            Packet::Handle(handle) => (SSH_FXP_HANDLE, ser::to_bytes(&handle)?),
+-            Packet::Data(data) => (SSH_FXP_DATA, ser::to_bytes(&data)?),
+-            Packet::Name(name) => (SSH_FXP_NAME, ser::to_bytes(&name)?),
+-            Packet::Attrs(attrs) => (SSH_FXP_ATTRS, ser::to_bytes(&attrs)?),
+-            Packet::Extended(extended) => (SSH_FXP_EXTENDED, ser::to_bytes(&extended)?),
+-            Packet::ExtendedReply(reply) => (SSH_FXP_EXTENDED_REPLY, ser::to_bytes(&reply)?),
+-        };
+-
+-        let length = payload.len() as u32 + 1;
+-        let mut bytes = BytesMut::new();
+-        bytes.put_u32(length);
+-        bytes.put_u8(r#type);
+-        bytes.put_slice(&payload);
+-        Ok(bytes.freeze())
+-    }
+-}
++mod attrs;
++mod close;
++mod data;
++mod extended;
++mod file;
++mod file_attrs;
++mod fsetstat;
++mod fstat;
++mod handle;
++mod init;
++mod lstat;
++mod mkdir;
++mod name;
++mod open;
++mod opendir;
++mod read;
++mod readdir;
++mod readlink;
++mod realpath;
++mod remove;
++mod rename;
++mod rmdir;
++mod setstat;
++mod stat;
++mod status;
++mod symlink;
++mod version;
++mod write;
++
++use bytes::{Buf, BufMut, Bytes, BytesMut};
++
++use crate::{de, error::Error, ser};
++
++pub use self::{
++    attrs::Attrs,
++    close::Close,
++    data::Data,
++    extended::{Extended, ExtendedReply},
++    file::File,
++    file_attrs::{
++        FileAttr, FileAttributes, FileMode, FilePermissionFlags, FilePermissions, FileType,
++    },
++    fsetstat::FSetStat,
++    fstat::Fstat,
++    handle::Handle,
++    init::Init,
++    lstat::Lstat,
++    mkdir::MkDir,
++    name::Name,
++    open::{Open, OpenFlags},
++    opendir::OpenDir,
++    read::Read,
++    readdir::ReadDir,
++    readlink::ReadLink,
++    realpath::RealPath,
++    remove::Remove,
++    rename::Rename,
++    rmdir::RmDir,
++    setstat::SetStat,
++    stat::Stat,
++    status::{Status, StatusCode},
++    symlink::Symlink,
++    version::Version,
++    write::Write,
++};
++
++pub const VERSION: u32 = 3;
++
++const SSH_FXP_INIT: u8 = 1;
++const SSH_FXP_VERSION: u8 = 2;
++const SSH_FXP_OPEN: u8 = 3;
++const SSH_FXP_CLOSE: u8 = 4;
++const SSH_FXP_READ: u8 = 5;
++const SSH_FXP_WRITE: u8 = 6;
++const SSH_FXP_LSTAT: u8 = 7;
++const SSH_FXP_FSTAT: u8 = 8;
++const SSH_FXP_SETSTAT: u8 = 9;
++const SSH_FXP_FSETSTAT: u8 = 10;
++const SSH_FXP_OPENDIR: u8 = 11;
++const SSH_FXP_READDIR: u8 = 12;
++const SSH_FXP_REMOVE: u8 = 13;
++const SSH_FXP_MKDIR: u8 = 14;
++const SSH_FXP_RMDIR: u8 = 15;
++const SSH_FXP_REALPATH: u8 = 16;
++const SSH_FXP_STAT: u8 = 17;
++const SSH_FXP_RENAME: u8 = 18;
++const SSH_FXP_READLINK: u8 = 19;
++const SSH_FXP_SYMLINK: u8 = 20;
++
++const SSH_FXP_STATUS: u8 = 101;
++const SSH_FXP_HANDLE: u8 = 102;
++const SSH_FXP_DATA: u8 = 103;
++const SSH_FXP_NAME: u8 = 104;
++const SSH_FXP_ATTRS: u8 = 105;
++
++const SSH_FXP_EXTENDED: u8 = 200;
++const SSH_FXP_EXTENDED_REPLY: u8 = 201;
++
++pub(crate) trait RequestId: Sized {
++    fn get_request_id(&self) -> u32;
++}
++
++macro_rules! impl_request_id {
++    ($packet:ty) => {
++        impl RequestId for $packet {
++            fn get_request_id(&self) -> u32 {
++                self.id
++            }
++        }
++    };
++}
++
++macro_rules! impl_packet_for {
++    ($name:ident) => {
++        impl From<$name> for Packet {
++            fn from(input: $name) -> Self {
++                Self::$name(input)
++            }
++        }
++    };
++}
++
++pub(crate) use impl_packet_for;
++pub(crate) use impl_request_id;
++
++#[derive(Debug)]
++pub enum Packet {
++    Init(Init),
++    Version(Version),
++    Open(Open),
++    Close(Close),
++    Read(Read),
++    Write(Write),
++    Lstat(Lstat),
++    Fstat(Fstat),
++    SetStat(SetStat),
++    FSetStat(FSetStat),
++    OpenDir(OpenDir),
++    ReadDir(ReadDir),
++    Remove(Remove),
++    MkDir(MkDir),
++    RmDir(RmDir),
++    RealPath(RealPath),
++    Stat(Stat),
++    Rename(Rename),
++    ReadLink(ReadLink),
++    Symlink(Symlink),
++    Status(Status),
++    Handle(Handle),
++    Data(Data),
++    Name(Name),
++    Attrs(Attrs),
++    Extended(Extended),
++    ExtendedReply(ExtendedReply),
++}
++
++impl Packet {
++    pub fn get_request_id(&self) -> u32 {
++        match self {
++            Self::Open(open) => open.get_request_id(),
++            Self::Close(close) => close.get_request_id(),
++            Self::Read(read) => read.get_request_id(),
++            Self::Write(write) => write.get_request_id(),
++            Self::Lstat(lstat) => lstat.get_request_id(),
++            Self::Fstat(fstat) => fstat.get_request_id(),
++            Self::SetStat(setstat) => setstat.get_request_id(),
++            Self::FSetStat(fsetstat) => fsetstat.get_request_id(),
++            Self::OpenDir(opendir) => opendir.get_request_id(),
++            Self::ReadDir(readdir) => readdir.get_request_id(),
++            Self::Remove(remove) => remove.get_request_id(),
++            Self::MkDir(mkdir) => mkdir.get_request_id(),
++            Self::RmDir(rmdir) => rmdir.get_request_id(),
++            Self::RealPath(realpath) => realpath.get_request_id(),
++            Self::Stat(stat) => stat.get_request_id(),
++            Self::Rename(rename) => rename.get_request_id(),
++            Self::ReadLink(readlink) => readlink.get_request_id(),
++            Self::Symlink(symlink) => symlink.get_request_id(),
++            Self::Extended(extended) => extended.get_request_id(),
++            _ => 0,
++        }
++    }
++
++    pub fn status(id: u32, status_code: StatusCode, msg: &str, tag: &str) -> Self {
++        Packet::Status(Status {
++            id,
++            status_code,
++            error_message: msg.to_string(),
++            language_tag: tag.to_string(),
++        })
++    }
++
++    pub fn error(id: u32, status_code: StatusCode) -> Self {
++        Self::status(id, status_code, &status_code.to_string(), "en-US")
++    }
++}
++
++impl TryFrom<&mut Bytes> for Packet {
++    type Error = Error;
++
++    fn try_from(bytes: &mut Bytes) -> Result<Self, Self::Error> {
++        let r#type = bytes.try_get_u8()?;
++        debug!("packet type {}", r#type);
++
++        let request = match r#type {
++            SSH_FXP_INIT => Self::Init(de::from_bytes(bytes)?),
++            SSH_FXP_VERSION => Self::Version(de::from_bytes(bytes)?),
++            SSH_FXP_OPEN => Self::Open(de::from_bytes(bytes)?),
++            SSH_FXP_CLOSE => Self::Close(de::from_bytes(bytes)?),
++            SSH_FXP_READ => Self::Read(de::from_bytes(bytes)?),
++            SSH_FXP_WRITE => Self::Write(de::from_bytes(bytes)?),
++            SSH_FXP_LSTAT => Self::Lstat(de::from_bytes(bytes)?),
++            SSH_FXP_FSTAT => Self::Fstat(de::from_bytes(bytes)?),
++            SSH_FXP_SETSTAT => Self::SetStat(de::from_bytes(bytes)?),
++            SSH_FXP_FSETSTAT => Self::FSetStat(de::from_bytes(bytes)?),
++            SSH_FXP_OPENDIR => Self::OpenDir(de::from_bytes(bytes)?),
++            SSH_FXP_READDIR => Self::ReadDir(de::from_bytes(bytes)?),
++            SSH_FXP_REMOVE => Self::Remove(de::from_bytes(bytes)?),
++            SSH_FXP_MKDIR => Self::MkDir(de::from_bytes(bytes)?),
++            SSH_FXP_RMDIR => Self::RmDir(de::from_bytes(bytes)?),
++            SSH_FXP_REALPATH => Self::RealPath(de::from_bytes(bytes)?),
++            SSH_FXP_STAT => Self::Stat(de::from_bytes(bytes)?),
++            SSH_FXP_RENAME => Self::Rename(de::from_bytes(bytes)?),
++            SSH_FXP_READLINK => Self::ReadLink(de::from_bytes(bytes)?),
++            SSH_FXP_SYMLINK => Self::Symlink(de::from_bytes(bytes)?),
++            SSH_FXP_STATUS => Self::Status(de::from_bytes(bytes)?),
++            SSH_FXP_HANDLE => Self::Handle(de::from_bytes(bytes)?),
++            SSH_FXP_DATA => Self::Data(de::from_bytes(bytes)?),
++            SSH_FXP_NAME => Self::Name(de::from_bytes(bytes)?),
++            SSH_FXP_ATTRS => Self::Attrs(de::from_bytes(bytes)?),
++            SSH_FXP_EXTENDED => Self::Extended(de::from_bytes(bytes)?),
++            SSH_FXP_EXTENDED_REPLY => Self::ExtendedReply(de::from_bytes(bytes)?),
++            _ => return Err(Error::BadMessage("unknown type".to_owned())),
++        };
++
++        if !bytes.is_empty() {
++            return Err(Error::BadMessage("trailing packet bytes".to_owned()));
++        }
++        Ok(request)
++    }
++}
++
++impl TryFrom<Packet> for Bytes {
++    type Error = Error;
++
++    fn try_from(packet: Packet) -> Result<Self, Self::Error> {
++        let (r#type, payload): (u8, Bytes) = match packet {
++            Packet::Init(init) => (SSH_FXP_INIT, ser::to_bytes(&init)?),
++            Packet::Version(version) => (SSH_FXP_VERSION, ser::to_bytes(&version)?),
++            Packet::Open(open) => (SSH_FXP_OPEN, ser::to_bytes(&open)?),
++            Packet::Close(close) => (SSH_FXP_CLOSE, ser::to_bytes(&close)?),
++            Packet::Read(read) => (SSH_FXP_READ, ser::to_bytes(&read)?),
++            Packet::Write(write) => (SSH_FXP_WRITE, ser::to_bytes(&write)?),
++            Packet::Lstat(stat) => (SSH_FXP_LSTAT, ser::to_bytes(&stat)?),
++            Packet::Fstat(stat) => (SSH_FXP_FSTAT, ser::to_bytes(&stat)?),
++            Packet::SetStat(setstat) => (SSH_FXP_SETSTAT, ser::to_bytes(&setstat)?),
++            Packet::FSetStat(setstat) => (SSH_FXP_FSETSTAT, ser::to_bytes(&setstat)?),
++            Packet::OpenDir(opendir) => (SSH_FXP_OPENDIR, ser::to_bytes(&opendir)?),
++            Packet::ReadDir(readdir) => (SSH_FXP_READDIR, ser::to_bytes(&readdir)?),
++            Packet::Remove(remove) => (SSH_FXP_REMOVE, ser::to_bytes(&remove)?),
++            Packet::MkDir(mkdir) => (SSH_FXP_MKDIR, ser::to_bytes(&mkdir)?),
++            Packet::RmDir(rmdir) => (SSH_FXP_RMDIR, ser::to_bytes(&rmdir)?),
++            Packet::RealPath(realpath) => (SSH_FXP_REALPATH, ser::to_bytes(&realpath)?),
++            Packet::Stat(stat) => (SSH_FXP_STAT, ser::to_bytes(&stat)?),
++            Packet::Rename(rename) => (SSH_FXP_RENAME, ser::to_bytes(&rename)?),
++            Packet::ReadLink(readlink) => (SSH_FXP_READLINK, ser::to_bytes(&readlink)?),
++            Packet::Symlink(symlink) => (SSH_FXP_SYMLINK, ser::to_bytes(&symlink)?),
++            Packet::Status(status) => (SSH_FXP_STATUS, ser::to_bytes(&status)?),
++            Packet::Handle(handle) => (SSH_FXP_HANDLE, ser::to_bytes(&handle)?),
++            Packet::Data(data) => (SSH_FXP_DATA, ser::to_bytes(&data)?),
++            Packet::Name(name) => (SSH_FXP_NAME, ser::to_bytes(&name)?),
++            Packet::Attrs(attrs) => (SSH_FXP_ATTRS, ser::to_bytes(&attrs)?),
++            Packet::Extended(extended) => (SSH_FXP_EXTENDED, ser::to_bytes(&extended)?),
++            Packet::ExtendedReply(reply) => (SSH_FXP_EXTENDED_REPLY, ser::to_bytes(&reply)?),
++        };
++
++        let length = payload.len() as u32 + 1;
++        let mut bytes = BytesMut::new();
++        bytes.put_u32(length);
++        bytes.put_u8(r#type);
++        bytes.put_slice(&payload);
++        Ok(bytes.freeze())
++    }
++}
+--- a/src/protocol/read.rs
++++ b/src/protocol/read.rs
+@@ -1,13 +1,14 @@
+-use super::{impl_packet_for, impl_request_id, Packet, RequestId};
+-
+-/// Implementation for `SSH_FXP_READ`
+-#[derive(Debug, Serialize, Deserialize)]
+-pub struct Read {
+-    pub id: u32,
+-    pub handle: String,
+-    pub offset: u64,
+-    pub len: u32,
+-}
+-
+-impl_request_id!(Read);
+-impl_packet_for!(Read);
++use super::{impl_packet_for, impl_request_id, Packet, RequestId};
++
++/// Implementation for `SSH_FXP_READ`
++#[derive(Debug, Serialize, Deserialize)]
++pub struct Read {
++    pub id: u32,
++    #[serde(with = "serde_bytes")]
++    pub handle: Vec<u8>,
++    pub offset: u64,
++    pub len: u32,
++}
++
++impl_request_id!(Read);
++impl_packet_for!(Read);
+--- a/src/protocol/readdir.rs
++++ b/src/protocol/readdir.rs
+@@ -1,11 +1,12 @@
+-use super::{impl_packet_for, impl_request_id, Packet, RequestId};
+-
+-/// Implementation for `SSH_FXP_READDIR`
+-#[derive(Debug, Serialize, Deserialize)]
+-pub struct ReadDir {
+-    pub id: u32,
+-    pub handle: String,
+-}
+-
+-impl_request_id!(ReadDir);
+-impl_packet_for!(ReadDir);
++use super::{impl_packet_for, impl_request_id, Packet, RequestId};
++
++/// Implementation for `SSH_FXP_READDIR`
++#[derive(Debug, Serialize, Deserialize)]
++pub struct ReadDir {
++    pub id: u32,
++    #[serde(with = "serde_bytes")]
++    pub handle: Vec<u8>,
++}
++
++impl_request_id!(ReadDir);
++impl_packet_for!(ReadDir);
+--- a/src/protocol/write.rs
++++ b/src/protocol/write.rs
+@@ -1,14 +1,15 @@
+-use super::{impl_packet_for, impl_request_id, Packet, RequestId};
+-
+-/// Implementation for `SSH_FXP_WRITE`
+-#[derive(Debug, Serialize, Deserialize)]
+-pub struct Write {
+-    pub id: u32,
+-    pub handle: String,
+-    pub offset: u64,
+-    #[serde(with = "serde_bytes")]
+-    pub data: Vec<u8>,
+-}
+-
+-impl_request_id!(Write);
+-impl_packet_for!(Write);
++use super::{impl_packet_for, impl_request_id, Packet, RequestId};
++
++/// Implementation for `SSH_FXP_WRITE`
++#[derive(Debug, Serialize, Deserialize)]
++pub struct Write {
++    pub id: u32,
++    #[serde(with = "serde_bytes")]
++    pub handle: Vec<u8>,
++    pub offset: u64,
++    #[serde(with = "serde_bytes")]
++    pub data: Vec<u8>,
++}
++
++impl_request_id!(Write);
++impl_packet_for!(Write);
+--- a/src/server/handler.rs
++++ b/src/server/handler.rs
+@@ -1,260 +1,260 @@
+-use std::{collections::HashMap, future::Future};
+-
+-use crate::{
+-    protocol::{Attrs, Data, FileAttributes, Handle, Name, OpenFlags, Packet, Status, Version},
+-    server::StatusReply,
+-};
+-
+-/// Server handler for each client. This is `async_trait`
+-#[cfg_attr(feature = "async-trait", async_trait::async_trait)]
+-pub trait Handler: Sized {
+-    /// The type must have an `Into<StatusReply>`
+-    /// implementation because a response must be sent
+-    /// to any request, even if completed by error.
+-    type Error: Into<StatusReply> + Send;
+-
+-    /// Called by the handler when the packet is not implemented
+-    fn unimplemented(&self) -> Self::Error;
+-
+-    /// The default is to send an SSH_FXP_VERSION response with
+-    /// the protocol version and ignore any extensions.
+-    #[allow(unused_variables)]
+-    fn init(
+-        &mut self,
+-        version: u32,
+-        extensions: HashMap<String, String>,
+-    ) -> impl Future<Output = Result<Version, Self::Error>> + Send {
+-        async { Ok(Version::new()) }
+-    }
+-
+-    /// Called on SSH_FXP_OPEN
+-    #[allow(unused_variables)]
+-    fn open(
+-        &mut self,
+-        id: u32,
+-        filename: String,
+-        pflags: OpenFlags,
+-        attrs: FileAttributes,
+-    ) -> impl Future<Output = Result<Handle, Self::Error>> + Send {
+-        let err = self.unimplemented();
+-        async { Err(err) }
+-    }
+-
+-    /// Called on SSH_FXP_CLOSE.
+-    /// The status can be returned as Ok or as Err
+-    #[allow(unused_variables)]
+-    fn close(
+-        &mut self,
+-        id: u32,
+-        handle: String,
+-    ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
+-        let err = self.unimplemented();
+-        async { Err(err) }
+-    }
+-
+-    /// Called on SSH_FXP_READ
+-    #[allow(unused_variables)]
+-    fn read(
+-        &mut self,
+-        id: u32,
+-        handle: String,
+-        offset: u64,
+-        len: u32,
+-    ) -> impl Future<Output = Result<Data, Self::Error>> + Send {
+-        let err = self.unimplemented();
+-        async { Err(err) }
+-    }
+-
+-    /// Called on SSH_FXP_WRITE
+-    #[allow(unused_variables)]
+-    fn write(
+-        &mut self,
+-        id: u32,
+-        handle: String,
+-        offset: u64,
+-        data: Vec<u8>,
+-    ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
+-        let err = self.unimplemented();
+-        async { Err(err) }
+-    }
+-
+-    /// Called on SSH_FXP_LSTAT
+-    #[allow(unused_variables)]
+-    fn lstat(
+-        &mut self,
+-        id: u32,
+-        path: String,
+-    ) -> impl Future<Output = Result<Attrs, Self::Error>> + Send {
+-        let err = self.unimplemented();
+-        async { Err(err) }
+-    }
+-
+-    /// Called on SSH_FXP_FSTAT
+-    #[allow(unused_variables)]
+-    fn fstat(
+-        &mut self,
+-        id: u32,
+-        handle: String,
+-    ) -> impl Future<Output = Result<Attrs, Self::Error>> + Send {
+-        let err = self.unimplemented();
+-        async { Err(err) }
+-    }
+-
+-    /// Called on SSH_FXP_SETSTAT
+-    #[allow(unused_variables)]
+-    fn setstat(
+-        &mut self,
+-        id: u32,
+-        path: String,
+-        attrs: FileAttributes,
+-    ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
+-        let err = self.unimplemented();
+-        async { Err(err) }
+-    }
+-
+-    /// Called on SSH_FXP_FSETSTAT
+-    #[allow(unused_variables)]
+-    fn fsetstat(
+-        &mut self,
+-        id: u32,
+-        handle: String,
+-        attrs: FileAttributes,
+-    ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
+-        let err = self.unimplemented();
+-        async { Err(err) }
+-    }
+-
+-    /// Called on SSH_FXP_OPENDIR
+-    #[allow(unused_variables)]
+-    fn opendir(
+-        &mut self,
+-        id: u32,
+-        path: String,
+-    ) -> impl Future<Output = Result<Handle, Self::Error>> + Send {
+-        let err = self.unimplemented();
+-        async { Err(err) }
+-    }
+-
+-    /// Called on SSH_FXP_READDIR.
+-    /// EOF error should be returned at the end of reading the directory
+-    #[allow(unused_variables)]
+-    fn readdir(
+-        &mut self,
+-        id: u32,
+-        handle: String,
+-    ) -> impl Future<Output = Result<Name, Self::Error>> + Send {
+-        let err = self.unimplemented();
+-        async { Err(err) }
+-    }
+-
+-    /// Called on SSH_FXP_REMOVE.
+-    /// The status can be returned as Ok or as Err
+-    #[allow(unused_variables)]
+-    fn remove(
+-        &mut self,
+-        id: u32,
+-        filename: String,
+-    ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
+-        let err = self.unimplemented();
+-        async { Err(err) }
+-    }
+-
+-    /// Called on SSH_FXP_MKDIR
+-    #[allow(unused_variables)]
+-    fn mkdir(
+-        &mut self,
+-        id: u32,
+-        path: String,
+-        attrs: FileAttributes,
+-    ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
+-        let err = self.unimplemented();
+-        async { Err(err) }
+-    }
+-
+-    /// Called on SSH_FXP_RMDIR.
+-    /// The status can be returned as Ok or as Err
+-    #[allow(unused_variables)]
+-    fn rmdir(
+-        &mut self,
+-        id: u32,
+-        path: String,
+-    ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
+-        let err = self.unimplemented();
+-        async { Err(err) }
+-    }
+-
+-    /// Called on SSH_FXP_REALPATH.
+-    /// Must contain only one name and a dummy attributes
+-    #[allow(unused_variables)]
+-    fn realpath(
+-        &mut self,
+-        id: u32,
+-        path: String,
+-    ) -> impl Future<Output = Result<Name, Self::Error>> + Send {
+-        let err = self.unimplemented();
+-        async { Err(err) }
+-    }
+-
+-    /// Called on SSH_FXP_STAT
+-    #[allow(unused_variables)]
+-    fn stat(
+-        &mut self,
+-        id: u32,
+-        path: String,
+-    ) -> impl Future<Output = Result<Attrs, Self::Error>> + Send {
+-        let err = self.unimplemented();
+-        async { Err(err) }
+-    }
+-
+-    /// Called on SSH_FXP_RENAME.
+-    /// The status can be returned as Ok or as Err
+-    #[allow(unused_variables)]
+-    fn rename(
+-        &mut self,
+-        id: u32,
+-        oldpath: String,
+-        newpath: String,
+-    ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
+-        let err = self.unimplemented();
+-        async { Err(err) }
+-    }
+-
+-    /// Called on SSH_FXP_READLINK
+-    #[allow(unused_variables)]
+-    fn readlink(
+-        &mut self,
+-        id: u32,
+-        path: String,
+-    ) -> impl Future<Output = Result<Name, Self::Error>> + Send {
+-        let err = self.unimplemented();
+-        async { Err(err) }
+-    }
+-
+-    /// Called on SSH_FXP_SYMLINK.
+-    /// The status can be returned as Ok or as Err
+-    #[allow(unused_variables)]
+-    fn symlink(
+-        &mut self,
+-        id: u32,
+-        linkpath: String,
+-        targetpath: String,
+-    ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
+-        let err = self.unimplemented();
+-        async { Err(err) }
+-    }
+-
+-    /// Called on SSH_FXP_EXTENDED.
+-    /// The extension can return any packet, so it's not specific.
+-    /// If the server does not recognize the `request' name
+-    /// the server must respond with an SSH_FX_OP_UNSUPPORTED error
+-    #[allow(unused_variables)]
+-    fn extended(
+-        &mut self,
+-        id: u32,
+-        request: String,
+-        data: Vec<u8>,
+-    ) -> impl Future<Output = Result<Packet, Self::Error>> + Send {
+-        let err = self.unimplemented();
+-        async { Err(err) }
+-    }
+-}
++use std::{collections::HashMap, future::Future};
++
++use crate::{
++    protocol::{Attrs, Data, FileAttributes, Handle, Name, OpenFlags, Packet, Status, Version},
++    server::StatusReply,
++};
++
++/// Server handler for each client. This is `async_trait`
++#[cfg_attr(feature = "async-trait", async_trait::async_trait)]
++pub trait Handler: Sized {
++    /// The type must have an `Into<StatusReply>`
++    /// implementation because a response must be sent
++    /// to any request, even if completed by error.
++    type Error: Into<StatusReply> + Send;
++
++    /// Called by the handler when the packet is not implemented
++    fn unimplemented(&self) -> Self::Error;
++
++    /// The default is to send an SSH_FXP_VERSION response with
++    /// the protocol version and ignore any extensions.
++    #[allow(unused_variables)]
++    fn init(
++        &mut self,
++        version: u32,
++        extensions: HashMap<String, String>,
++    ) -> impl Future<Output = Result<Version, Self::Error>> + Send {
++        async { Ok(Version::new()) }
++    }
++
++    /// Called on SSH_FXP_OPEN
++    #[allow(unused_variables)]
++    fn open(
++        &mut self,
++        id: u32,
++        filename: String,
++        pflags: OpenFlags,
++        attrs: FileAttributes,
++    ) -> impl Future<Output = Result<Handle, Self::Error>> + Send {
++        let err = self.unimplemented();
++        async { Err(err) }
++    }
++
++    /// Called on SSH_FXP_CLOSE.
++    /// The status can be returned as Ok or as Err
++    #[allow(unused_variables)]
++    fn close(
++        &mut self,
++        id: u32,
++        handle: Vec<u8>,
++    ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
++        let err = self.unimplemented();
++        async { Err(err) }
++    }
++
++    /// Called on SSH_FXP_READ
++    #[allow(unused_variables)]
++    fn read(
++        &mut self,
++        id: u32,
++        handle: Vec<u8>,
++        offset: u64,
++        len: u32,
++    ) -> impl Future<Output = Result<Data, Self::Error>> + Send {
++        let err = self.unimplemented();
++        async { Err(err) }
++    }
++
++    /// Called on SSH_FXP_WRITE
++    #[allow(unused_variables)]
++    fn write(
++        &mut self,
++        id: u32,
++        handle: Vec<u8>,
++        offset: u64,
++        data: Vec<u8>,
++    ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
++        let err = self.unimplemented();
++        async { Err(err) }
++    }
++
++    /// Called on SSH_FXP_LSTAT
++    #[allow(unused_variables)]
++    fn lstat(
++        &mut self,
++        id: u32,
++        path: String,
++    ) -> impl Future<Output = Result<Attrs, Self::Error>> + Send {
++        let err = self.unimplemented();
++        async { Err(err) }
++    }
++
++    /// Called on SSH_FXP_FSTAT
++    #[allow(unused_variables)]
++    fn fstat(
++        &mut self,
++        id: u32,
++        handle: Vec<u8>,
++    ) -> impl Future<Output = Result<Attrs, Self::Error>> + Send {
++        let err = self.unimplemented();
++        async { Err(err) }
++    }
++
++    /// Called on SSH_FXP_SETSTAT
++    #[allow(unused_variables)]
++    fn setstat(
++        &mut self,
++        id: u32,
++        path: String,
++        attrs: FileAttributes,
++    ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
++        let err = self.unimplemented();
++        async { Err(err) }
++    }
++
++    /// Called on SSH_FXP_FSETSTAT
++    #[allow(unused_variables)]
++    fn fsetstat(
++        &mut self,
++        id: u32,
++        handle: Vec<u8>,
++        attrs: FileAttributes,
++    ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
++        let err = self.unimplemented();
++        async { Err(err) }
++    }
++
++    /// Called on SSH_FXP_OPENDIR
++    #[allow(unused_variables)]
++    fn opendir(
++        &mut self,
++        id: u32,
++        path: String,
++    ) -> impl Future<Output = Result<Handle, Self::Error>> + Send {
++        let err = self.unimplemented();
++        async { Err(err) }
++    }
++
++    /// Called on SSH_FXP_READDIR.
++    /// EOF error should be returned at the end of reading the directory
++    #[allow(unused_variables)]
++    fn readdir(
++        &mut self,
++        id: u32,
++        handle: Vec<u8>,
++    ) -> impl Future<Output = Result<Name, Self::Error>> + Send {
++        let err = self.unimplemented();
++        async { Err(err) }
++    }
++
++    /// Called on SSH_FXP_REMOVE.
++    /// The status can be returned as Ok or as Err
++    #[allow(unused_variables)]
++    fn remove(
++        &mut self,
++        id: u32,
++        filename: String,
++    ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
++        let err = self.unimplemented();
++        async { Err(err) }
++    }
++
++    /// Called on SSH_FXP_MKDIR
++    #[allow(unused_variables)]
++    fn mkdir(
++        &mut self,
++        id: u32,
++        path: String,
++        attrs: FileAttributes,
++    ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
++        let err = self.unimplemented();
++        async { Err(err) }
++    }
++
++    /// Called on SSH_FXP_RMDIR.
++    /// The status can be returned as Ok or as Err
++    #[allow(unused_variables)]
++    fn rmdir(
++        &mut self,
++        id: u32,
++        path: String,
++    ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
++        let err = self.unimplemented();
++        async { Err(err) }
++    }
++
++    /// Called on SSH_FXP_REALPATH.
++    /// Must contain only one name and a dummy attributes
++    #[allow(unused_variables)]
++    fn realpath(
++        &mut self,
++        id: u32,
++        path: String,
++    ) -> impl Future<Output = Result<Name, Self::Error>> + Send {
++        let err = self.unimplemented();
++        async { Err(err) }
++    }
++
++    /// Called on SSH_FXP_STAT
++    #[allow(unused_variables)]
++    fn stat(
++        &mut self,
++        id: u32,
++        path: String,
++    ) -> impl Future<Output = Result<Attrs, Self::Error>> + Send {
++        let err = self.unimplemented();
++        async { Err(err) }
++    }
++
++    /// Called on SSH_FXP_RENAME.
++    /// The status can be returned as Ok or as Err
++    #[allow(unused_variables)]
++    fn rename(
++        &mut self,
++        id: u32,
++        oldpath: String,
++        newpath: String,
++    ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
++        let err = self.unimplemented();
++        async { Err(err) }
++    }
++
++    /// Called on SSH_FXP_READLINK
++    #[allow(unused_variables)]
++    fn readlink(
++        &mut self,
++        id: u32,
++        path: String,
++    ) -> impl Future<Output = Result<Name, Self::Error>> + Send {
++        let err = self.unimplemented();
++        async { Err(err) }
++    }
++
++    /// Called on SSH_FXP_SYMLINK.
++    /// The status can be returned as Ok or as Err
++    #[allow(unused_variables)]
++    fn symlink(
++        &mut self,
++        id: u32,
++        linkpath: String,
++        targetpath: String,
++    ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
++        let err = self.unimplemented();
++        async { Err(err) }
++    }
++
++    /// Called on SSH_FXP_EXTENDED.
++    /// The extension can return any packet, so it's not specific.
++    /// If the server does not recognize the `request' name
++    /// the server must respond with an SSH_FX_OP_UNSUPPORTED error
++    #[allow(unused_variables)]
++    fn extended(
++        &mut self,
++        id: u32,
++        request: String,
++        data: Vec<u8>,
++    ) -> impl Future<Output = Result<Packet, Self::Error>> + Send {
++        let err = self.unimplemented();
++        async { Err(err) }
++    }
++}
+--- a/src/utils.rs
++++ b/src/utils.rs
+@@ -1,25 +1,28 @@
+-use bytes::Bytes;
+-use chrono::{DateTime, Utc};
+-use std::time::SystemTime;
+-use tokio::io::{AsyncRead, AsyncReadExt};
+-
+-use crate::error::Error;
+-
+-pub(crate) fn unix(time: SystemTime) -> u32 {
+-    DateTime::<Utc>::from(time).timestamp() as u32
+-}
+-
+-pub(crate) async fn read_packet<S: AsyncRead + Unpin>(
+-    stream: &mut S,
+-    max_length: u32,
+-) -> Result<Bytes, Error> {
+-    let length = stream.read_u32().await?;
+-    if length > max_length {
+-        return Err(Error::BadMessage("packet length limit exceeded".to_owned()));
+-    }
+-
+-    let mut buf = vec![0; length as usize];
+-    stream.read_exact(&mut buf).await?;
+-
+-    Ok(Bytes::from(buf))
+-}
++use bytes::Bytes;
++use chrono::{DateTime, Utc};
++use std::time::SystemTime;
++use tokio::io::{AsyncRead, AsyncReadExt};
++
++use crate::error::Error;
++
++pub(crate) fn unix(time: SystemTime) -> u32 {
++    DateTime::<Utc>::from(time).timestamp() as u32
++}
++
++pub(crate) async fn read_packet<S: AsyncRead + Unpin>(
++    stream: &mut S,
++    max_length: u32,
++) -> Result<Bytes, Error> {
++    let length = stream.read_u32().await?;
++    if length > max_length {
++        return Err(Error::PacketTooLarge);
++    }
++
++    if length == 0 {
++        return Err(Error::BadMessage("empty packet".to_owned()));
++    }
++    let mut buf = vec![0; length as usize];
++    stream.read_exact(&mut buf).await?;
++
++    Ok(Bytes::from(buf))
++}

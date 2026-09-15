@@ -505,6 +505,16 @@ impl HttpRetryPolicy {
     #[must_use]
     pub fn is_retriable(&self, cause: HttpRetryCause) -> bool {
         match cause {
+            HttpRetryCause::Protocol(failure) => {
+                failure.retryable()
+                    && self.retry_on.contains(
+                        if matches!(failure, crate::ProtocolFailure::Timeout) {
+                            HttpRetryTrigger::Timeout
+                        } else {
+                            HttpRetryTrigger::Reset
+                        },
+                    )
+            }
             HttpRetryCause::Transport(failure) => self.retry_on.contains(failure.trigger()),
             HttpRetryCause::HttpStatus(status) => {
                 self.retryable_statuses.contains(status)
@@ -574,6 +584,7 @@ impl HttpRetryTransportFailure {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HttpRetryCause {
+    Protocol(crate::ProtocolFailure),
     Transport(HttpRetryTransportFailure),
     HttpStatus(u16),
     Authentication,
@@ -589,6 +600,7 @@ impl HttpRetryCause {
     #[must_use]
     pub const fn code(self) -> &'static str {
         match self {
+            Self::Protocol(failure) => failure.code(),
             Self::Transport(failure) => failure.code(),
             Self::HttpStatus(_) => "http-status",
             Self::Authentication => "authentication",
@@ -612,6 +624,7 @@ impl HttpRetryCause {
     #[must_use]
     pub const fn retriable(self) -> bool {
         match self {
+            Self::Protocol(failure) => failure.retryable(),
             Self::Transport(_) => true,
             Self::HttpStatus(status) => {
                 matches!(status, 408 | 425 | 429 | 500 | 502 | 503 | 504)

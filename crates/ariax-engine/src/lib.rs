@@ -2,6 +2,24 @@
 
 //! Cross-crate composition for bounded startup reconciliation.
 
+mod content_checksum;
+mod protocol_transport;
+mod transfer_task;
+pub use protocol_transport::ProtocolFailure;
+#[cfg(feature = "ftp")]
+mod ftp;
+#[cfg(feature = "metalink")]
+mod metalink;
+#[cfg(feature = "sftp")]
+mod sftp;
+#[cfg(feature = "sftp")]
+mod sftp_trust;
+mod verification_document;
+#[cfg(feature = "metalink")]
+pub use metalink::{
+    MetalinkDocument, MetalinkError, MetalinkFile, MetalinkOptions, MetalinkSource, parse_metalink,
+};
+mod chunk_hash;
 mod effect_sink;
 mod http_auth;
 mod http_capacity;
@@ -17,6 +35,10 @@ mod http_proxy;
 mod http_proxy_client;
 mod http_proxy_io;
 mod http_range;
+mod metalink_follow;
+mod server_stats;
+pub use metalink_follow::MetalinkFollowQueue;
+pub use server_stats::{ServerFeedback, ServerStatistics};
 mod http_redirect;
 mod http_request;
 mod http_resolver;
@@ -43,6 +65,25 @@ mod storage_journal;
 pub use session_file::{
     MAX_SESSION_DOCUMENT_BYTES, MAX_SESSION_LINE_BYTES, SessionFormat, validate_session_syntax,
 };
+
+pub use ariax_storage::{ProtocolValidator, VerificationManifest, VerificationManifestError};
+pub use chunk_hash::{
+    ChunkAlignment, ChunkHashCoordinator, ChunkHashError, MAX_HASH_COORDINATOR_LEASES,
+};
+pub use content_checksum::{
+    CONTENT_IDENTITY_DOMAIN, ContentChecksum, ContentChecksumError, ContentHasher,
+    MAX_CONTENT_CHECKSUM_TEXT_BYTES,
+};
+pub use transfer_task::{
+    FollowMetalink, ProtocolSecret, TransferCredentials, TransferOptions, TransferProtocol,
+    UriSelector,
+};
+/// Protocol-neutral names; historical HTTP names remain source compatible.
+pub type TransferTaskSpec = HttpTaskSpec;
+pub type TransferSourceSpec = HttpSourceSpec;
+pub type TransferTaskOptions = HttpTaskOptions;
+pub type SharedTransferTaskCatalog = SharedHttpTaskCatalog;
+pub const MAX_METALINK_DOCUMENT_BYTES: usize = 256 * 1024 * 1024;
 
 pub use effect_sink::{
     MAX_PERSISTENCE_CATALOG_ENTRIES, MAX_PERSISTENCE_PLAN_STEPS, PersistenceCatalogError,
@@ -107,8 +148,8 @@ pub use http_multi::{
     HttpMultiRangeWorkerConfig, HttpRetryDelayDiagnostic, HttpRetryDiagnosticCause,
     HttpRetryDiagnosticSnapshot, HttpRetryLeaseDisposition, HttpRetryNextAction,
     HttpStatsCatalogError, HttpTransferStats, HttpTransferStatsSnapshot, MAX_HTTP_DIGEST_WORKERS,
-    MAX_HTTP_RANGE_EVENT_CAPACITY, SharedHttpTransferStats, derive_http_journal_id,
-    http_journal_directory,
+    MAX_HTTP_RANGE_EVENT_CAPACITY, SharedHttpTransferStats, SshConnectionDiagnostic,
+    derive_http_journal_id, http_journal_directory,
 };
 pub use http_proxy::{
     HttpProxyEndpoint, HttpProxyKind, HttpProxyNameResolution, HttpProxyPolicy,
@@ -203,10 +244,11 @@ pub use http_transport::{
     MAX_HTTP_TLS_BUNDLE_BYTES, MAX_HTTP_TLS_BUNDLE_CERTIFICATES,
 };
 pub use native_api::{
-    AddUri, ConfigDumpFormat, ConfigDumpMode, ConfigurationReport, ConfigurationUpdate,
-    DownloadFile, DownloadOptions, DownloadServer, DownloadServers, DownloadUri, Engine,
-    EngineBuilder, EngineSession, EngineVersion, GlobalOptions, GlobalStatistics, NativeApiError,
-    NativeEventSubscription, PositionOrigin, TaskStatus, UriUsage,
+    AddMetalink, AddUri, ApproveHostKey, ConfigDumpFormat, ConfigDumpMode, ConfigurationReport,
+    ConfigurationUpdate, DownloadFile, DownloadOptions, DownloadServer, DownloadServers,
+    DownloadUri, Engine, EngineBuilder, EngineSession, EngineVersion, GlobalOptions,
+    GlobalStatistics, MetalinkSelection, NativeApiError, NativeEventSubscription, PositionOrigin,
+    SshConnectionStatus, TaskStatus, UriUsage,
 };
 pub(crate) use process_bootstrap::ProcessDrainOutcome;
 pub use process_bootstrap::{
@@ -747,6 +789,16 @@ pub struct RecoveredEngineTask {
     pub recovered_retry_budget_elapsed_ms: Option<u64>,
 }
 
+/// Exact trust repair authorized by a durable journal decision.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HostKeySessionResolution {
+    Approve(ariax_storage::SessionHostKeyResolution),
+    Reject {
+        gid: Gid,
+        challenge_id: ariax_core::HostKeyChallengeId,
+    },
+}
+
 /// Pure output produced before the scheduler is constructed.
 ///
 /// `queue_session_repairs` must be durably applied in order before
@@ -758,6 +810,8 @@ pub struct StartupReconciliation {
     pub scheduler_batch: SchedulerRestoreBatch,
     pub tasks: Vec<RecoveredEngineTask>,
     pub authority_repairs: Vec<SessionAuthorityRepair>,
+    pub host_key_resolutions: Vec<HostKeySessionResolution>,
+    pub host_key_challenge_repairs: Vec<SessionHostKeyChallengeRecord>,
     pub appender_recoveries: Vec<DeferredAppenderRecovery>,
     pub journal_install_recoveries: Vec<DeferredJournalInstallRecovery>,
     pub no_space_probe_targets: NoSpaceProbeTargetCatalog,
@@ -777,6 +831,8 @@ pub struct EngineStartup {
     pub restore_plan: SchedulerRestorePlan,
     pub tasks: Vec<RecoveredEngineTask>,
     pub authority_repairs: Vec<SessionAuthorityRepair>,
+    pub host_key_resolutions: Vec<HostKeySessionResolution>,
+    pub host_key_challenge_repairs: Vec<SessionHostKeyChallengeRecord>,
     pub appender_recoveries: Vec<DeferredAppenderRecovery>,
     pub journal_install_recoveries: Vec<DeferredJournalInstallRecovery>,
     pub no_space_probe_targets: NoSpaceProbeTargetCatalog,
@@ -1186,6 +1242,8 @@ pub fn reconcile_startup(
     let mut scheduler_tasks = Vec::new();
     let mut engine_tasks = Vec::new();
     let mut authority_repairs = Vec::new();
+    let mut host_key_resolutions = Vec::new();
+    let mut host_key_challenge_repairs = Vec::new();
     let mut appender_recoveries = Vec::new();
     let mut no_space_probe_targets = Vec::new();
     let mut queue_repair_candidates = Vec::new();
@@ -1290,8 +1348,14 @@ pub fn reconcile_startup(
                 updated_ms: repair_updated_ms,
             });
         }
-        let challenge =
-            reconcile_host_key(gid, &session_task, &journal.state, challenges.remove(&gid))?;
+        let challenge = reconcile_host_key(
+            gid,
+            &session_task,
+            &journal.state,
+            challenges.remove(&gid),
+            &mut host_key_resolutions,
+            &mut host_key_challenge_repairs,
+        )?;
         let task_retry = if terminal.is_some() {
             None
         } else {
@@ -1431,6 +1495,8 @@ pub fn reconcile_startup(
         scheduler_batch: SchedulerRestoreBatch::new(scheduler_tasks, queues),
         tasks: engine_tasks,
         authority_repairs,
+        host_key_resolutions,
+        host_key_challenge_repairs,
         appender_recoveries,
         journal_install_recoveries: install_recoveries,
         no_space_probe_targets: NoSpaceProbeTargetCatalog::new(no_space_probe_targets),
@@ -1461,6 +1527,8 @@ fn restore_reconciliation(
         restore_plan,
         tasks: reconciliation.tasks,
         authority_repairs: reconciliation.authority_repairs,
+        host_key_resolutions: reconciliation.host_key_resolutions,
+        host_key_challenge_repairs: reconciliation.host_key_challenge_repairs,
         appender_recoveries: reconciliation.appender_recoveries,
         journal_install_recoveries: reconciliation.journal_install_recoveries,
         no_space_probe_targets: reconciliation.no_space_probe_targets,
@@ -1720,7 +1788,71 @@ fn reconcile_host_key(
     task: &SessionTaskRecord,
     journal: &RecoveredJournalState,
     challenge: Option<SessionHostKeyChallengeRecord>,
+    resolutions: &mut Vec<HostKeySessionResolution>,
+    pending: &mut Vec<SessionHostKeyChallengeRecord>,
 ) -> Result<Option<PresentedHostKeyChallenge>, StartupRecoveryError> {
+    if let Some(trust) = journal.host_key_state() {
+        use ariax_storage::HostKeyDecision;
+        let summary = trust.challenge.summary();
+        if challenge.as_ref().is_some_and(|value| {
+            value.challenge_id != summary.id
+                || value.canonical_host != summary.canonical_host
+                || value.port != summary.port
+                || value.algorithm != summary.algorithm
+                || value.fingerprint_sha256 != summary.fingerprint_sha256
+                || value.presented_public_key != trust.challenge.presented_public_key()
+        }) {
+            return Err(StartupRecoveryError::HostKeyChallengeMismatch(gid));
+        }
+        match trust.decision {
+            HostKeyDecision::Pending if journal.terminal().is_none() => {
+                if journal.paused() != Some(TaskPauseReason::HostKeyApproval) {
+                    return Err(StartupRecoveryError::HostKeyChallengeMismatch(gid));
+                }
+                if challenge.is_none() {
+                    pending.push(SessionHostKeyChallengeRecord {
+                        gid,
+                        challenge_id: summary.id,
+                        canonical_host: summary.canonical_host.clone(),
+                        port: summary.port,
+                        algorithm: summary.algorithm.clone(),
+                        presented_public_key: trust.challenge.presented_public_key().to_vec(),
+                        fingerprint_sha256: summary.fingerprint_sha256,
+                        created_ms: trust.created_ms,
+                    });
+                }
+                return Ok(Some(trust.challenge.clone()));
+            }
+            HostKeyDecision::Approved if journal.terminal().is_none() => {
+                if challenge.is_some() {
+                    resolutions.push(HostKeySessionResolution::Approve(
+                        ariax_storage::SessionHostKeyResolution {
+                            gid,
+                            challenge_id: summary.id,
+                            fingerprint_sha256: summary.fingerprint_sha256,
+                            presented_public_key: trust.challenge.presented_public_key().to_vec(),
+                            scope: ariax_storage::OptionsSnapshotScope::CurrentGeneration,
+                            pinned_options: journal
+                                .current_options()
+                                .ok_or(StartupRecoveryError::MissingCurrentOptions(gid))?
+                                .options()
+                                .clone(),
+                        },
+                    ));
+                }
+            }
+            _ => {
+                if challenge.is_some() {
+                    resolutions.push(HostKeySessionResolution::Reject {
+                        gid,
+                        challenge_id: summary.id,
+                    });
+                }
+            }
+        }
+        return Ok(None);
+    }
+
     if journal.terminal().is_some() {
         return if challenge.is_some() {
             Err(StartupRecoveryError::HostKeyChallengeMismatch(gid))
@@ -1942,6 +2074,29 @@ fn normalize_task(
             error: None,
             stopped_status: None,
         });
+    }
+    if let Some(trust) = journal.host_key_state() {
+        let state = match trust.decision {
+            ariax_storage::HostKeyDecision::Approved if !task.desired_paused => {
+                Some((TaskState::Waiting, QueueClass::Waiting))
+            }
+            ariax_storage::HostKeyDecision::Rejected => {
+                Some((TaskState::Paused, QueueClass::Paused))
+            }
+            _ => None,
+        };
+        if let Some((state, queue)) = state {
+            return Ok(NormalizedTask {
+                state,
+                queue,
+                conditions,
+                slow_slot: None,
+                retry_at: None,
+                challenge: None,
+                error: None,
+                stopped_status: None,
+            });
+        }
     }
     if task.desired_paused {
         return Ok(NormalizedTask {

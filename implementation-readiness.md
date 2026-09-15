@@ -49,7 +49,7 @@ profile selection in RPC startup, and the local C10k/active-range harness are
 covered. HTTP discarded payload is also bounded by a process-owned atomic
 process/host/task/attempt guard, including probe, retry/cancel, checksum, and
 endgame cleanup paths, with separate RPC diagnostics. The broader evictable
-file-handle LRU and non-HTTP consumers remain pending. The latest retry
+file-handle LRU remains pending; Phase 5 adds the FTP/SFTP consumers. The latest retry
 decision is now a bounded `tellStatus` object with exact live cause/status,
 attempt credit, wait policy, numeric source/piece/lease correlation, prior
 lease disposition, and next action. Restart reconstructs only journaled
@@ -94,8 +94,8 @@ library facade all reach the same process-owned control plane. Content-Length
 and NDJSON stdio use the same bounded pushed event broker. Optional HTTP Basic,
 aria2 text-session compatibility, combined transports, EOF policies, event
 filters and compatibility modes have executable success/rejection coverage.
-This remains a phase checkpoint, not a release/tag: broader RFC 9530/Metalink
-identity, `Content-Digest`, alternate digest algorithms, broader validators,
+This remains a phase checkpoint, not a release/tag: broader RFC 9530
+identity, `Content-Digest`, alternate HTTP digest negotiation, broader validators,
 growing/chunked transfers, HTTP/2, broader RPC, adaptive profile tuning, and the
 complete release matrix remain gates. Optimized
 Linux and native Windows-GNU capacity evidence, including mandatory process
@@ -386,13 +386,13 @@ tests, strict Linux/native Clippy, Linux MSRV 1.88 checking, workspace build,
 formatting, and generated contract verification pass. The session parser also
 passes 2,000 bounded instrumented fuzz smoke runs.
 
-Linux-under-WSL and native Windows workspace builds, tests and strict all-target,
+The P4-11 Linux-under-WSL and native Windows workspace builds, tests and strict all-target,
 all-feature Clippy cover the implementation, with the 1,000-task stress case
 run separately. The final workspace runs pass 348 engine tests on Linux and
 346 on Windows; adding the separately passing stress case gives 349 and 347.
 Linux MSRV 1.88 checking, formatting, generated contracts and
-the exact rusqlite feature graph also pass. Generated inventories still cover
-50 reviewed options. The current RPC JSON, session-document and URL-rule fuzz
+the exact rusqlite feature graph also pass. That checkpoint's generated inventories cover
+50 reviewed options. Its RPC JSON, session-document and URL-rule fuzz
 targets each pass 2,000 AddressSanitizer/coverage smoke runs in four 500-run
 bursts with 250 ms cooldowns; counters were loaded. The prior September 13
 checkpoint records the broader eight-target smoke campaign. These bounded
@@ -458,6 +458,11 @@ removing generated target outputs; preserve pinned toolchains and archives.
   before any tag; configured workflow jobs alone are not completion evidence.
 
 ## Deferred But Tracked
+
+Phase 5 is now being implemented under the separate `P5-01` through `P5-06`
+[shared transfer gates](detailed-protocol-transfers.md#scope-and-checkpoints).
+Those gates remain open until their implementation, regression and platform
+evidence is recorded. This does not close the deferred P4-11 native Linux gate.
 
 These are intentionally not first-slice blockers, but their registry and
 feature-gate status must exist from the start:

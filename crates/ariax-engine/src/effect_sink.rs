@@ -34,6 +34,10 @@ pub enum PersistencePlanStep {
         options: SanitizedOptionMap,
     },
     CreateTaskBatch(Arc<[SessionTaskMetadata]>),
+    CreateFollowedMetalink {
+        tasks: Arc<[SessionTaskMetadata]>,
+        parent: ariax_storage::MetalinkParent,
+    },
     ConfirmTaskMetadata(Arc<SessionTaskMetadata>),
     TransitionTaskQueue(SessionQueueTransition),
     ReplaceTaskSourcesAndQueue {
@@ -575,7 +579,10 @@ fn validate_plan(
     match (effect, steps) {
         (
             effect @ TransitionEffect::PersistTask { .. },
-            [PersistencePlanStep::CreateTaskBatch(tasks)],
+            [
+                PersistencePlanStep::CreateTaskBatch(tasks)
+                | PersistencePlanStep::CreateFollowedMetalink { tasks, .. },
+            ],
         ) => {
             if tasks.is_empty()
                 || tasks.len() > ariax_storage::SESSION_MAX_IMPORT_TASKS
@@ -1371,6 +1378,13 @@ fn validate_dispatched_plan(
 
 fn command_for_step(step: &PersistencePlanStep) -> PendingOwnerCommand {
     let (command, expected) = match step {
+        PersistencePlanStep::CreateFollowedMetalink { tasks, parent } => (
+            SessionCommand::CreateFollowedMetalink {
+                tasks: Arc::clone(tasks),
+                parent: *parent,
+            },
+            ExpectedResult::Unit,
+        ),
         PersistencePlanStep::CreateTaskBatch(tasks) => (
             SessionCommand::CreateTaskBatch(Arc::clone(tasks)),
             ExpectedResult::Unit,

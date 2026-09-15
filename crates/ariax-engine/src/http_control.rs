@@ -9,6 +9,9 @@ mod configuration;
 mod control_io;
 mod control_ops;
 pub(crate) mod control_runtime;
+#[cfg(feature = "metalink")]
+mod metalink_admission;
+mod metalink_follow;
 pub(crate) mod query;
 mod scheduling;
 
@@ -20,14 +23,14 @@ use crate::rpc_result::{
     SessionOptions, SourceServers, SourceUris,
 };
 use crate::{
-    HttpContentChecksum, HttpRetryAfterPolicy, HttpRetryBackoff, HttpRetryPolicy, HttpRetryProfile,
-    HttpRetryStatusSet, HttpRetryTriggerSet, HttpRpcBackend, HttpRpcBackendError,
-    HttpTaskCatalogError, HttpTaskOptions, HttpTaskSpec, HttpTaskSpecError, HttpTaskWorker,
-    HttpTransferStatsSnapshot, HttpWorkerSupervisor, HttpWorkerSupervisorConfig,
-    HttpWorkerSupervisorShutdown, MAX_HTTP_ENDGAME_MAX_DUPLICATES, PersistenceEffectPlan,
-    PersistencePlanStep, ProcessDrainOutcome, RpcEvent, RpcEventBroker, RpcEventClass,
-    RpcEventError, RpcEventKey, RpcEventLimits, RpcEventSubscriber, SharedHttpTaskCatalog,
-    SharedHttpTransferStats, derive_http_journal_id, http_journal_directory,
+    HttpRetryAfterPolicy, HttpRetryBackoff, HttpRetryPolicy, HttpRetryProfile, HttpRetryStatusSet,
+    HttpRetryTriggerSet, HttpRpcBackend, HttpRpcBackendError, HttpTaskCatalogError,
+    HttpTaskOptions, HttpTaskSpec, HttpTaskSpecError, HttpTaskWorker, HttpTransferStatsSnapshot,
+    HttpWorkerSupervisor, HttpWorkerSupervisorConfig, HttpWorkerSupervisorShutdown,
+    MAX_HTTP_ENDGAME_MAX_DUPLICATES, PersistenceEffectPlan, PersistencePlanStep,
+    ProcessDrainOutcome, RpcEvent, RpcEventBroker, RpcEventClass, RpcEventError, RpcEventKey,
+    RpcEventLimits, RpcEventSubscriber, SharedHttpTaskCatalog, SharedHttpTransferStats,
+    derive_http_journal_id, http_journal_directory,
 };
 use ariax_config::{
     CompatStatus, FlatConfigLimits, OptionValue, RuntimeUpdate, Scope, SecurityClass,
@@ -201,10 +204,12 @@ enum MutationPublication {
         response: Value,
         remove_task: Option<TaskId>,
         readmit: bool,
+        replacement: Option<Box<HttpTaskSpec>>,
     },
     Import {
         remaining: VecDeque<ImportMember>,
         result: Value,
+        parent_spec: Option<Box<HttpTaskSpec>>,
     },
     Admission {
         gid: Gid,
@@ -285,6 +290,8 @@ pub struct HttpControlPlane {
     tasks: SharedHttpTaskCatalog,
     stats: SharedHttpTransferStats,
     supervisor: Option<HttpWorkerSupervisor>,
+    metalink_follow: Option<crate::MetalinkFollowQueue>,
+    pending_follow: Option<metalink_follow::PendingFollow>,
     session: SessionHandle,
     session_id: SessionId,
     journal_sequences: BTreeMap<Gid, u64>,
@@ -331,6 +338,7 @@ pub struct HttpControlPlane {
     query_publication_charge: Arc<crate::rpc_budget::RpcByteCharge>,
     turn: OwnerTurn,
     managed_runtime: Option<Arc<control_runtime::SharedRuntime>>,
+    cpu_pool: ariax_runtime::CpuPool,
 }
 
 impl fmt::Debug for HttpControlPlane {
@@ -370,7 +378,16 @@ impl HttpControlPlane {
                 .map_err(|_| HttpControlError::Busy)?,
         );
         let observed_statuses = engine.snapshot_reader().load();
+        let cpu_pool = ariax_runtime::CpuPool::new(ariax_runtime::CpuPoolConfig {
+            workers: 1,
+            jobs: 32,
+            bytes: 32 * 1024 * 1024,
+            resident: ariax_runtime::ByteBudget::new(32 * 1024 * 1024),
+            shared_disk: false,
+        })
+        .map_err(|_| HttpControlError::InvalidConfig)?;
         let mut plane = Self {
+            cpu_pool,
             session: engine.session_handle(),
             session_id: engine.session_id(),
             engine,
@@ -378,6 +395,8 @@ impl HttpControlPlane {
             tasks,
             stats,
             supervisor: None,
+            metalink_follow: None,
+            pending_follow: None,
             journal_sequences: BTreeMap::new(),
             next_task_id,
             global_options: Arc::new(default_global_options()?),
@@ -467,7 +486,11 @@ impl HttpControlPlane {
         &mut self,
         resources: crate::HttpProcessResources,
     ) -> Result<(), HttpControlError> {
+        self.tasks
+            .set_metadata_budget(resources.metadata_budget())
+            .map_err(|_| HttpControlError::Busy)?;
         self.attach_rpc_budgets(resources.rpc_budgets())?;
+        self.cpu_pool = resources.cpu_pool();
         self.scheduling = resources.scheduling_policy();
         self.process_resources = Some(resources);
         Ok(())
@@ -522,6 +545,7 @@ impl HttpControlPlane {
         if self.supervisor.is_some() {
             return Err(HttpControlError::InvalidConfig);
         }
+        self.metalink_follow = worker.metalink_follow_queue();
         let supervisor = HttpWorkerSupervisor::new(
             self.engine.runtime_handle(),
             self.tasks.clone(),
@@ -552,9 +576,15 @@ impl HttpControlPlane {
 
     pub fn shutdown(mut self) -> Result<crate::ProcessShutdownReport, crate::ProcessShutdownError> {
         self.shutdown_requested = true;
+        if let Some(queue) = &self.metalink_follow {
+            queue.close();
+        }
         let deadline = Instant::now() + self.config.supervisor.shutdown_timeout;
         let continuations_drained = loop {
-            if self.pending_admission.is_some() || self.pending_configuration.is_some() {
+            if self.pending_admission.is_some()
+                || self.pending_configuration.is_some()
+                || self.pending_follow.is_some()
+            {
                 if Instant::now() >= deadline || self.poll_once().is_err() {
                     break false;
                 }
@@ -586,6 +616,7 @@ impl HttpControlPlane {
             pending_mutation: _pending_mutation,
             pending_input: _pending_input,
             pending_admission: _pending_admission,
+            pending_follow: _pending_follow,
             pending_configuration: _pending_configuration,
             pending_bulk: _pending_bulk,
             pending_source_replacements: _pending_sources,
@@ -617,6 +648,9 @@ impl HttpControlPlane {
         mut self,
     ) -> Result<crate::ProcessShutdownReport, crate::ProcessShutdownError> {
         self.shutdown_requested = true;
+        if let Some(queue) = &self.metalink_follow {
+            queue.close();
+        }
         let started = Instant::now();
         let deadline = started + self.config.supervisor.shutdown_timeout;
         let continuations_drained = loop {
@@ -624,6 +658,7 @@ impl HttpControlPlane {
                 && self.pending_source_replacements.is_empty()
                 && self.pending_bulk.is_none()
                 && self.pending_admission.is_none()
+                && self.pending_follow.is_none()
                 && self.pending_configuration.is_none()
                 && self.pending_mutation.is_none()
             {
@@ -647,6 +682,7 @@ impl HttpControlPlane {
             pending_mutation: _pending_mutation,
             pending_input: _pending_input,
             pending_admission: _pending_admission,
+            pending_follow: _pending_follow,
             pending_configuration: _pending_configuration,
             pending_bulk: _pending_bulk,
             pending_source_replacements: _pending_sources,
@@ -772,6 +808,19 @@ impl HttpControlPlane {
                     }
                 }
             }
+            if recovered
+                .journal
+                .host_key_state()
+                .is_some_and(|state| state.decision == ariax_storage::HostKeyDecision::Approved)
+                && recovered
+                    .journal
+                    .current_options()
+                    .is_none_or(|current| current.options() != &persisted_options)
+            {
+                return Err(HttpControlError::Persistence(
+                    "approved host-key option mirror does not match the journal".to_owned(),
+                ));
+            }
             let options = match HttpTaskOptions::from_sanitized(&persisted_options) {
                 Ok(options) => options,
                 Err(_) if !self.pending_restart_patches.contains_key(&recovered.gid) => continue,
@@ -792,7 +841,7 @@ impl HttpControlPlane {
             let Ok(output) = output else {
                 continue;
             };
-            let spec = match HttpTaskSpec::from_persisted_sources(
+            let mut spec = match HttpTaskSpec::from_persisted_sources(
                 recovered.task_id,
                 recovered.gid,
                 sources,
@@ -803,6 +852,20 @@ impl HttpControlPlane {
                 Ok(spec) => spec,
                 Err(_) => continue,
             };
+            if let Some(manifest) = recovered.journal.verification_manifest() {
+                let index = persisted_options.entries().find_map(|(name, value)| {
+                    (name == "metalink-file-index")
+                        .then(|| value.parse().ok())
+                        .flatten()
+                });
+                spec = spec
+                    .with_verification(manifest.clone(), index)
+                    .map_err(HttpControlError::TaskSpec)?;
+            } else if spec.options().transfer.verification_fingerprint.is_some() {
+                return Err(HttpControlError::Persistence(
+                    "required verification manifest is incomplete".to_owned(),
+                ));
+            }
             if self.tasks.insert(spec).is_ok() {
                 self.journal_sequences
                     .insert(recovered.gid, recovered.journal.last_sequence());
@@ -861,7 +924,15 @@ impl HttpControlPlane {
                 response,
                 remove_task,
                 readmit,
+                replacement,
             } => {
+                if let Some(replacement) = replacement
+                    && let Err(error) = self.tasks.replace(*replacement)
+                {
+                    self.engine.fail_control_publication();
+                    let _ = pending.reply.send(Err(HttpControlError::Catalog(error)));
+                    return;
+                }
                 if let Some(task) = remove_task {
                     self.tasks.remove(task);
                     self.stats.remove(task);
@@ -880,6 +951,7 @@ impl HttpControlPlane {
                                 response,
                                 remove_task: None,
                                 readmit: false,
+                                replacement: None,
                             },
                             reply: pending.reply,
                         });
@@ -892,6 +964,7 @@ impl HttpControlPlane {
             MutationPublication::Import {
                 mut remaining,
                 result,
+                parent_spec,
             } => {
                 if let Some(next) = remaining.pop_front() {
                     if let Err(error) = self.prepare_and_begin(next.plan, next.command) {
@@ -900,9 +973,20 @@ impl HttpControlPlane {
                         return;
                     }
                     self.pending_mutation = Some(PendingMutation {
-                        publication: MutationPublication::Import { remaining, result },
+                        publication: MutationPublication::Import {
+                            remaining,
+                            result,
+                            parent_spec,
+                        },
                         reply: pending.reply,
                     });
+                    return;
+                }
+                if let Some(spec) = parent_spec
+                    && let Err(error) = self.tasks.replace(*spec)
+                {
+                    self.engine.fail_control_publication();
+                    let _ = pending.reply.send(Err(HttpControlError::Catalog(error)));
                     return;
                 }
                 Ok(result)
@@ -911,7 +995,7 @@ impl HttpControlPlane {
                 gid,
                 readmission_started,
             } => {
-                self.journal_sequences.insert(gid, 2);
+                self.journal_sequences.entry(gid).or_insert(2);
                 if !readmission_started {
                     // Metadata admission is already durable. A temporary
                     // rate or scheduler backpressure condition only delays
@@ -1031,6 +1115,7 @@ impl HttpControlPlane {
             return Ok(());
         }
         self.poll_configuration();
+        self.poll_metalink_follow()?;
         if !self.turn.take_step()
             || self.poll_admission()?
             || self.admission_fenced()
@@ -1108,6 +1193,16 @@ impl HttpControlPlane {
         params: Value,
         request: Option<crate::rpc_budget::RpcRequestLease>,
     ) -> Result<ControlReply, HttpControlError> {
+        self.begin_call_authorized(method, params, request, false)
+    }
+
+    fn begin_call_authorized(
+        &mut self,
+        method: &str,
+        params: Value,
+        request: Option<crate::rpc_budget::RpcRequestLease>,
+        local_admin: bool,
+    ) -> Result<ControlReply, HttpControlError> {
         let request = self.reserve_command_memory(method, &params, request.as_ref())?;
         if matches!(method, "aria2.saveSession" | "saveSession") {
             require_no_params(&params, "saveSession")?;
@@ -1119,11 +1214,21 @@ impl HttpControlPlane {
         ) {
             return self.begin_configuration(method, params, request.expect("command reservation"));
         }
-        if matches!(method, "ariax.importSession" | "aria2.addUri" | "addUri") {
+        if matches!(
+            method,
+            "ariax.importSession" | "aria2.addUri" | "addUri" | "aria2.addMetalink" | "addMetalink"
+        ) {
             return self.begin_admission(
                 params,
                 request.expect("command reservation"),
-                method == "ariax.importSession",
+                if method == "ariax.importSession" {
+                    admission::AdmissionKind::Session
+                } else if matches!(method, "aria2.addMetalink" | "addMetalink") {
+                    admission::AdmissionKind::Metalink
+                } else {
+                    admission::AdmissionKind::Uri
+                },
+                local_admin,
             );
         }
         if self.admission_fenced() && !query::is_query(method) {
@@ -1479,6 +1584,10 @@ impl HttpControlPlane {
             .snapshot
             .wire_status()
             .map_err(|_| HttpControlError::Scheduler("invalid public snapshot".to_owned()))?;
+        // Allocating projects as aria2 "waiting", but its worker already owns
+        // this generation's options and rate bucket.
+        let active_generation = status == Aria2Status::Active
+            || task.snapshot.state == ariax_core::TaskState::Allocating;
         if matches!(
             status,
             Aria2Status::Complete | Aria2Status::Error | Aria2Status::Removed
@@ -1488,7 +1597,7 @@ impl HttpControlPlane {
                 OptionPatchRejectReason::NotRuntimeMutable,
             ));
         }
-        if status == Aria2Status::Active {
+        if active_generation {
             let rejected: Vec<_> = patch
                 .iter()
                 .filter_map(|(name, entry)| {
@@ -1539,6 +1648,11 @@ impl HttpControlPlane {
         let replacement = current.with_options(output, http_options).map_err(|_| {
             rejected_option_names(patch.keys(), OptionPatchRejectReason::InvalidValue)
         })?;
+        let replacement = self
+            .tasks
+            .snapshot()
+            .reserve_spec(replacement)
+            .map_err(|_| HttpControlError::Busy)?;
         let options = replacement
             .persistence_options()
             .map_err(HttpControlError::TaskSpec)?;
@@ -1552,13 +1666,12 @@ impl HttpControlPlane {
         let live_only = patch
             .values()
             .all(|entry| entry.runtime_update == RuntimeUpdate::Live);
-        let kind = if status == Aria2Status::Active && !live_only {
+        let kind = if active_generation && !live_only {
             ValidatedOptionPatchKind::ActiveRestart
         } else {
             ValidatedOptionPatchKind::InPlace
         };
-        let live_rate = if status == Aria2Status::Active && patch.contains_key("max-download-limit")
-        {
+        let live_rate = if active_generation && patch.contains_key("max-download-limit") {
             match &self.global_download_rate {
                 Some(rate) => Some(
                     rate.prepare_scoped_limit(
@@ -1750,7 +1863,7 @@ impl HttpControlPlane {
             ));
         }
         drop(root);
-        HttpTaskSpec::new(
+        let replacement = HttpTaskSpec::new(
             current.task(),
             current.gid(),
             uris,
@@ -1759,7 +1872,13 @@ impl HttpControlPlane {
             current.options().clone(),
             false,
         )
-        .map_err(HttpControlError::TaskSpec)
+        .map_err(HttpControlError::TaskSpec)?;
+        match current.verification() {
+            Some(manifest) => replacement
+                .with_verification(manifest.clone(), current.metalink_index())
+                .map_err(HttpControlError::TaskSpec),
+            None => Ok(replacement),
+        }
     }
 
     fn source_call_sync(&mut self, method: &str, params: Value) -> Result<Value, HttpControlError> {
@@ -1807,6 +1926,11 @@ impl HttpControlPlane {
         response: Value,
         request: Option<crate::rpc_budget::RpcRequestLease>,
     ) -> Result<oneshot::Receiver<Result<Value, HttpControlError>>, HttpControlError> {
+        let replacement = self
+            .tasks
+            .snapshot()
+            .reserve_spec(replacement)
+            .map_err(|_| HttpControlError::Busy)?;
         let gid = replacement.gid();
         let (reply, receiver) = oneshot::channel();
         self.pending_source_replacements.insert(
@@ -2474,13 +2598,55 @@ impl HttpControlPlane {
         let mut writes = control_io::SessionWrites::default();
         let mut queue = VecDeque::from(effects);
         while let Some(effect) = queue.pop_front() {
+            let host_state = match &effect {
+                TransitionEffect::PersistHostKeyChallenge { challenge, .. } => {
+                    Some((challenge.clone(), ariax_storage::HostKeyDecision::Pending))
+                }
+                TransitionEffect::PersistHostKeyPinAndClearChallenge { gid, .. }
+                | TransitionEffect::PersistHostKeyChallengeRejected { gid, .. } => {
+                    let challenge = self
+                        .engine
+                        .scheduler()
+                        .presented_host_key(*gid)
+                        .cloned()
+                        .ok_or(HttpControlError::NotFound)?;
+                    let decision = if matches!(
+                        effect,
+                        TransitionEffect::PersistHostKeyPinAndClearChallenge { .. }
+                    ) {
+                        ariax_storage::HostKeyDecision::Approved
+                    } else {
+                        ariax_storage::HostKeyDecision::Rejected
+                    };
+                    Some((challenge, decision))
+                }
+                _ => None,
+            };
+            if let Some((challenge, decision)) = host_state {
+                let generation = simulation
+                    .task(effect.gid())
+                    .map_or(Generation::INITIAL, |task| task.generation);
+                writes.journal(
+                    effect.gid(),
+                    generation,
+                    JournalPayload::HostKeyState {
+                        state: ariax_storage::JournalHostKeyState {
+                            challenge,
+                            decision,
+                            created_ms: now_unix_ms(),
+                        },
+                    },
+                );
+            }
             if let TransitionEffect::PublishSnapshot { snapshot, .. } = &effect
                 && let Some(task) = simulation.task(snapshot.gid)
                 && self.engine.scheduler().task(snapshot.gid).is_some()
                 && task.pending_barrier.is_none()
                 && matches!(
                     task.state,
-                    ariax_core::TaskState::Paused | ariax_core::TaskState::PausedSlow
+                    ariax_core::TaskState::Paused
+                        | ariax_core::TaskState::PausedSlow
+                        | ariax_core::TaskState::PausedHostKey
                 )
             {
                 // TaskPaused requires an empty lease set. The supervisor's
@@ -2488,6 +2654,8 @@ impl HttpControlPlane {
                 // cancellation still owns the generation's worker.
                 let reason = if task.state == ariax_core::TaskState::PausedSlow {
                     TaskPauseReason::SlowSlot
+                } else if task.state == ariax_core::TaskState::PausedHostKey {
+                    TaskPauseReason::HostKeyApproval
                 } else {
                     TaskPauseReason::User
                 };
@@ -2800,6 +2968,60 @@ impl HttpControlPlane {
                 }],
             )
             .map_err(|error| HttpControlError::Persistence(format!("{error:?}"))),
+            TransitionEffect::PersistHostKeyChallenge { gid, challenge, .. } => {
+                let summary = challenge.summary();
+                PersistenceEffectPlan::new(
+                    effect.clone(),
+                    vec![PersistencePlanStep::PutHostKeyChallenge(
+                        ariax_storage::SessionHostKeyChallengeRecord {
+                            gid: *gid,
+                            challenge_id: summary.id,
+                            canonical_host: summary.canonical_host.clone(),
+                            port: summary.port,
+                            algorithm: summary.algorithm.clone(),
+                            presented_public_key: challenge.presented_public_key().to_vec(),
+                            fingerprint_sha256: summary.fingerprint_sha256,
+                            created_ms: now_unix_ms(),
+                        },
+                    )],
+                )
+                .map_err(|error| HttpControlError::Persistence(format!("{error:?}")))
+            }
+            TransitionEffect::PersistHostKeyPinAndClearChallenge {
+                gid,
+                challenge,
+                fingerprint_sha256,
+                presented_public_key,
+                ..
+            } => {
+                let spec = self.pinned_host_key_spec(*gid, *fingerprint_sha256)?;
+                PersistenceEffectPlan::new(
+                    effect.clone(),
+                    vec![PersistencePlanStep::ResolveHostKeyChallenge(
+                        ariax_storage::SessionHostKeyResolution {
+                            gid: *gid,
+                            challenge_id: *challenge,
+                            fingerprint_sha256: *fingerprint_sha256,
+                            presented_public_key: presented_public_key.clone(),
+                            scope: OptionsSnapshotScope::CurrentGeneration,
+                            pinned_options: spec
+                                .persistence_options()
+                                .map_err(HttpControlError::TaskSpec)?,
+                        },
+                    )],
+                )
+                .map_err(|error| HttpControlError::Persistence(format!("{error:?}")))
+            }
+            TransitionEffect::PersistHostKeyChallengeRejected { gid, challenge, .. } => {
+                PersistenceEffectPlan::new(
+                    effect.clone(),
+                    vec![PersistencePlanStep::RejectHostKeyChallenge {
+                        gid: *gid,
+                        challenge_id: *challenge,
+                    }],
+                )
+                .map_err(|error| HttpControlError::Persistence(format!("{error:?}")))
+            }
             _ => Err(HttpControlError::Unsupported(
                 "HTTP control effect is not implemented",
             )),
@@ -3066,6 +3288,7 @@ fn changes_scheduler_tasks(method: &str) -> bool {
     matches!(
         method.strip_prefix("aria2.").unwrap_or(method),
         "addUri"
+            | "addMetalink"
             | "pause"
             | "forcePause"
             | "pauseAll"
@@ -3081,8 +3304,13 @@ fn changes_scheduler_tasks(method: &str) -> bool {
             | "changeUri"
             | "ariax.replaceSources"
             | "ariax.importSession"
+            | "ariax.approveHostKey"
     )
 }
+
+#[cfg(test)]
+#[path = "http_control/phase5_tests.rs"]
+mod phase5_tests;
 
 fn control_backend_error(error: HttpControlError) -> HttpRpcBackendError {
     if let HttpControlError::OptionPatchRejected(rejected) = &error {
@@ -3296,6 +3524,7 @@ fn is_executable_download_option(name: &str) -> bool {
             | "checksum"
             | "verify-mirror-identity"
     ) || is_retry_option(name)
+        || crate::TransferOptions::handles(name)
 }
 
 fn is_executable_global_option(name: &str) -> bool {
@@ -3365,6 +3594,9 @@ fn parse_registry_options(
                 .map_err(|_| OptionPatchRejectReason::InvalidValue)?;
             let canonical = canonical_option_value(&value)
                 .map_err(|_| OptionPatchRejectReason::InvalidValue)?;
+            if name == "sftp-check-host-key" && canonical != "true" {
+                return Err(OptionPatchRejectReason::NotRuntimeMutable);
+            }
             Ok(ParsedRegistryOption {
                 canonical,
                 runtime_update: definition.runtime_update,
@@ -3528,6 +3760,18 @@ fn status_value(
         "errorMessage": snapshot.error.as_ref().map_or_else(String::new, |error| error.safe_message().to_owned()),
     });
     if let Some(object) = value.as_object_mut() {
+        if let Some(diagnostic) = stats.ssh_connection {
+            object.insert("sshConnection".to_owned(), json!(diagnostic));
+        }
+        if let Some(challenge) = &snapshot.host_key_challenge {
+            use base64ct::Encoding;
+            object.insert("hostKeyChallenge".to_owned(), json!({
+                "id": crate::transfer_task::hex_bytes(challenge.id.as_bytes()),
+                "host": challenge.canonical_host, "port": challenge.port,
+                "algorithm": challenge.algorithm,
+                "fingerprintSha256": format!("SHA256:{}", base64ct::Base64Unpadded::encode_string(challenge.fingerprint_sha256.as_bytes())),
+            }));
+        }
         object.insert(
             "verifiedLength".to_owned(),
             Value::String(stats.durable_bytes.to_string()),
@@ -3640,6 +3884,23 @@ fn parse_add_options(
     ),
     HttpControlError,
 > {
+    parse_add_options_authorized(options, default_root, uris, false)
+}
+
+pub(crate) fn parse_add_options_authorized(
+    options: &Value,
+    default_root: &Path,
+    uris: &[String],
+    local_admin: bool,
+) -> Result<
+    (
+        HttpTaskOptions,
+        PathBuf,
+        ariax_storage::SafeRelativePath,
+        bool,
+    ),
+    HttpControlError,
+> {
     let object = options.as_object().ok_or(HttpControlError::InvalidParams(
         "addUri options must be an object",
     ))?;
@@ -3655,7 +3916,10 @@ fn parse_add_options(
             .find(name)
             .ok_or(HttpControlError::InvalidParams("unsupported addUri option"))?;
         if !definition.scopes.contains(Scope::PerDownload)
-            || definition.security != SecurityClass::Normal
+            || !(matches!(
+                definition.security,
+                SecurityClass::Normal | SecurityClass::Sensitive
+            ) || (definition.security == SecurityClass::LocalAdmin && local_admin))
             || !is_executable_download_option(name)
         {
             return Err(HttpControlError::InvalidParams("unsupported addUri option"));
@@ -3672,6 +3936,7 @@ fn parse_add_options(
             continue;
         }
         match name.as_str() {
+            "ftp-user" | "ftp-passwd" => {}
             "dir" => {
                 let requested = PathBuf::from(
                     value
@@ -3729,14 +3994,13 @@ fn parse_add_options(
                 }
             }
             "checksum" => {
-                parsed.checksum = Some(
-                    HttpContentChecksum::parse(
+                parsed
+                    .set_content_checksum(
                         value
                             .as_str()
                             .ok_or(HttpControlError::InvalidParams("checksum must be a string"))?,
                     )
-                    .map_err(|_| HttpControlError::InvalidParams("invalid checksum"))?,
-                );
+                    .map_err(|_| HttpControlError::InvalidParams("invalid checksum"))?;
             }
             "verify-mirror-identity" => {
                 parsed.mirror_identity = match value.as_str() {
@@ -3749,11 +4013,49 @@ fn parse_add_options(
                     }
                 }
             }
+            _ if crate::TransferOptions::handles(name) => {
+                let definition = registry.find(name).expect("validated definition");
+                let input = option_input_text(value)?;
+                let value = parse_option_value(definition, &input, None)
+                    .map_err(|_| HttpControlError::InvalidParams("invalid option value"))?;
+                let canonical = if definition.security == SecurityClass::Sensitive {
+                    input
+                } else {
+                    canonical_option_value(&value)?
+                };
+                parsed
+                    .transfer
+                    .set(name, &canonical)
+                    .map_err(HttpControlError::TaskSpec)?;
+                if !parsed.transfer.sftp_check_host_key && !local_admin {
+                    return Err(HttpControlError::InvalidParams(
+                        "host key bypass requires local administrator authority",
+                    ));
+                }
+            }
             _ => return Err(HttpControlError::InvalidParams("unsupported addUri option")),
         }
     }
     if object.keys().any(|name| is_retry_option(name)) {
         parsed.retry = Some(parse_retry_options(object)?);
+    }
+    if object.contains_key("ftp-user") || object.contains_key("ftp-passwd") {
+        let user = object.get("ftp-user").and_then(Value::as_str).ok_or(
+            HttpControlError::InvalidParams("ftp-user is required with ftp-passwd"),
+        )?;
+        let password = object
+            .get("ftp-passwd")
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or(HttpControlError::InvalidParams("ftp-passwd must be text"))
+            })
+            .transpose()?;
+        parsed.transfer.credentials = Some(
+            crate::TransferCredentials::new(user.to_owned(), password)
+                .map_err(HttpControlError::TaskSpec)?,
+        );
     }
     if !root.is_absolute() {
         return Err(HttpControlError::InvalidParams("dir must be absolute"));
@@ -4056,6 +4358,13 @@ fn persistence_ack(
             generation,
             patch_id: *patch_id,
         },
+        TransitionEffect::PersistHostKeyPinAndClearChallenge { resolution_id, .. } => {
+            TaskEvent::HostKeyResolutionPersisted {
+                gid,
+                generation,
+                resolution_id: *resolution_id,
+            }
+        }
         TransitionEffect::PersistTerminal { status, .. } => TaskEvent::TerminalPersisted {
             gid,
             generation,
@@ -4121,13 +4430,22 @@ mod tests {
     static TEST_ID: AtomicU64 = AtomicU64::new(1);
 
     pub(super) struct TestDirectory {
-        root: PathBuf,
+        pub(super) root: PathBuf,
         control: PathBuf,
-        output: PathBuf,
+        pub(super) output: PathBuf,
         journals: PathBuf,
     }
 
     impl TestDirectory {
+        #[cfg(feature = "metalink")]
+        pub(super) fn at(root: PathBuf) -> Self {
+            Self {
+                control: root.join("control"),
+                output: root.join("output"),
+                journals: root.join("control/http-journals"),
+                root,
+            }
+        }
         pub(super) fn new() -> Self {
             let root = std::env::temp_dir().join(format!(
                 "ariax-http-control-{}-{}",
@@ -4977,7 +5295,7 @@ mod tests {
         assert!(matches!(
             plane.call(
                 "ariax.replaceSources",
-                json!([gid.to_string(), ["ftp://example.test/file"]]),
+                json!([gid.to_string(), ["gopher://example.test/file"]]),
             ),
             Err(HttpControlError::TaskSpec(
                 HttpTaskSpecError::UnsupportedScheme
@@ -6660,7 +6978,7 @@ mod tests {
         (format!("http://{address}/restart.bin"), task)
     }
 
-    fn attach_loopback_worker(plane: &mut HttpControlPlane, directory: &TestDirectory) {
+    pub(super) fn attach_loopback_worker(plane: &mut HttpControlPlane, directory: &TestDirectory) {
         let resolver = HttpResolver::new(HttpResolverConfig::default()).expect("resolver");
         let client = HttpPolicyClient::new(
             resolver,
@@ -7137,6 +7455,17 @@ mod tests {
 
     #[tokio::test]
     async fn live_only_rate_patch_changes_credit_without_restarting_and_recovers() {
+        rate_patch_changes_credit_without_restarting_and_recovers(false).await;
+    }
+
+    #[tokio::test]
+    async fn allocating_rate_patch_updates_worker_credit_before_allocation_acknowledgement() {
+        rate_patch_changes_credit_without_restarting_and_recovers(true).await;
+    }
+
+    async fn rate_patch_changes_credit_without_restarting_and_recovers(
+        before_allocation_acknowledgement: bool,
+    ) {
         let directory = TestDirectory::new();
         let mut plane = directory.control_plane();
         let rate = RateArbiter::new(
@@ -7165,24 +7494,43 @@ mod tests {
             .expect("gid")
             .parse()
             .expect("gid");
-        plane.poll_once().expect("start worker");
+        plane
+            .supervisor
+            .as_mut()
+            .expect("supervisor")
+            .poll_once(MonotonicInstant::now())
+            .expect("start worker without consuming its allocation acknowledgement");
         started.notified().await;
-        poll_until(&mut plane, |plane| {
-            plane
-                .engine
-                .scheduler()
-                .task(gid)
-                .expect("task")
-                .pending_barrier
-                .is_none()
-        })
-        .await;
+        if before_allocation_acknowledgement {
+            assert_eq!(
+                plane.engine.scheduler().task(gid).expect("task").state,
+                ariax_core::TaskState::Allocating
+            );
+            assert_eq!(
+                plane
+                    .engine
+                    .snapshot_reader()
+                    .load()
+                    .task(gid)
+                    .expect("published task")
+                    .snapshot
+                    .wire_status(),
+                Ok(Aria2Status::Waiting)
+            );
+        } else {
+            poll_until(&mut plane, |plane| {
+                let task = plane.engine.scheduler().task(gid).expect("task");
+                task.state == ariax_core::TaskState::Active && task.pending_barrier.is_none()
+            })
+            .await;
+        }
+        let task_id = plane.tasks.get_gid(gid).expect("task").task();
         let path = ariax_runtime::RatePath {
             host: 1,
-            task: 1,
+            task: task_id.get(),
             stream: 1,
         };
-        let requested = NonZeroUsize::new(4).expect("quantum");
+        let requested = NonZeroUsize::new(8).expect("quantum");
         let permit = rate
             .try_acquire(path, requested)
             .expect("old rate")
@@ -7192,6 +7540,16 @@ mod tests {
         let before = plane
             .call("aria2.getOption", json!([gid.to_string()]))
             .expect("options");
+        for patch in [
+            json!({"piece-length": "1M"}),
+            json!({"out": "renamed.bin"}),
+            json!({"allow-overwrite": true}),
+        ] {
+            assert!(matches!(
+                plane.call("aria2.changeOption", json!([gid.to_string(), patch])),
+                Err(HttpControlError::OptionPatchRejected(_))
+            ));
+        }
         assert!(
             plane
                 .call(
@@ -7228,6 +7586,10 @@ mod tests {
         assert_eq!(permit.reserved_bytes(), 1);
         drop(permit);
         assert!(plane.pending_restart_patches.is_empty());
+        poll_until(&mut plane, |plane| {
+            plane.engine.scheduler().task(gid).expect("task").state == ariax_core::TaskState::Active
+        })
+        .await;
         assert_eq!(
             plane.engine.scheduler().task(gid).expect("task").generation,
             Generation::INITIAL
@@ -7256,12 +7618,7 @@ mod tests {
             expected
         );
         recovered.shutdown().expect("shutdown recovery");
-        let payloads = replay_journal_payloads(
-            &directory,
-            TaskId::new(1).expect("task"),
-            gid,
-            Generation::INITIAL,
-        );
+        let payloads = replay_journal_payloads(&directory, task_id, gid, Generation::INITIAL);
         assert!(!payloads.iter().any(|payload| matches!(
             payload,
             JournalPayload::GenerationStarted { .. }
@@ -7437,6 +7794,17 @@ mod tests {
 
     #[tokio::test]
     async fn active_option_patch_survives_delayed_drain_and_promotes_exactly_once() {
+        option_patch_survives_delayed_drain_and_promotes_exactly_once(false).await;
+    }
+
+    #[tokio::test]
+    async fn allocating_option_patch_survives_delayed_drain_and_promotes_exactly_once() {
+        option_patch_survives_delayed_drain_and_promotes_exactly_once(true).await;
+    }
+
+    async fn option_patch_survives_delayed_drain_and_promotes_exactly_once(
+        before_allocation_acknowledgement: bool,
+    ) {
         for patch in [
             json!({"split": 3}),
             json!({"out": "renamed.bin"}),
@@ -7468,10 +7836,27 @@ mod tests {
                 .expect("gid")
                 .parse()
                 .expect("gid");
-            plane.poll_once().expect("start worker");
+            plane
+                .supervisor
+                .as_mut()
+                .expect("supervisor")
+                .poll_once(MonotonicInstant::now())
+                .expect("start worker without consuming its allocation acknowledgement");
             tokio::time::timeout(Duration::from_secs(1), started.notified())
                 .await
                 .expect("worker started");
+            if before_allocation_acknowledgement {
+                assert_eq!(
+                    plane.engine.scheduler().task(gid).expect("task").state,
+                    ariax_core::TaskState::Allocating
+                );
+            } else {
+                poll_until(&mut plane, |plane| {
+                    let task = plane.engine.scheduler().task(gid).expect("task");
+                    task.state == ariax_core::TaskState::Active && task.pending_barrier.is_none()
+                })
+                .await;
+            }
             let old = option_mirror(&plane, gid, OptionsSnapshotScope::CurrentGeneration);
             let client = plane.rpc_budgets.client().expect("RPC client");
             let request = client.try_request(512).expect("option command request");
@@ -8133,7 +8518,7 @@ mod tests {
         assert_eq!(options.endgame_max_duplicates, 8);
         assert_eq!(
             options.checksum,
-            Some(HttpContentChecksum::sha256([0xab; 32]))
+            Some(crate::HttpContentChecksum::sha256([0xab; 32]))
         );
         let retry = options.retry.expect("resolved retry policy");
         assert_eq!(retry.profile, HttpRetryProfile::Custom);
@@ -8507,10 +8892,9 @@ mod tests {
                 .call_with_context(method, json!([{"invalidArgument":true}]), context.clone())
                 .await
                 .expect_err("bad arguments must reject");
-            if matches!(
-                *method,
-                "aria2.addTorrent" | "aria2.addMetalink" | "aria2.getPeers"
-            ) {
+            if matches!(*method, "aria2.addTorrent" | "aria2.getPeers")
+                || (*method == "aria2.addMetalink" && !cfg!(feature = "metalink"))
+            {
                 assert_eq!(error.data.unwrap()["code"], "ProtocolFeatureUnavailable");
                 covered.insert(*method);
             } else {
@@ -8529,6 +8913,26 @@ mod tests {
                     .unwrap_or_else(|error| panic!("{}: {error}", $method))
             }};
         }
+        #[cfg(feature = "metalink")]
+        {
+            use base64ct::Encoding;
+            let xml=b"<metalink xmlns='urn:ietf:params:xml:ns:metalink'><file name='catalog-metalink'><size>0</size><url>http://example.test/empty</url></file></metalink>";
+            call!(
+                "aria2.addMetalink",
+                json!([base64ct::Base64::encode_string(xml),{"pause":true}])
+            );
+        }
+        assert!(
+            dispatcher
+                .call_with_context(
+                    "ariax.approveHostKey",
+                    json!([gid, "00".repeat(16), "00".repeat(32)]),
+                    context.clone()
+                )
+                .await
+                .is_err()
+        );
+        covered.insert("ariax.approveHostKey");
         for method in [
             "system.listMethods",
             "system.listNotifications",
@@ -8586,7 +8990,16 @@ mod tests {
         );
         call!("ariax.unsubscribe", json!([subscription["subscriptionId"]]));
         call!("ariax.setEventFilter", json!([{"gids":[gid]}]));
-        let exported = call!("ariax.exportSession", json!([]));
+        let mut exported = call!("ariax.exportSession", json!([]));
+        // Importing into this same root must choose fresh safe output names.
+        for (index, task) in exported["tasks"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .enumerate()
+        {
+            task["options"]["out"] = json!(format!("catalog-import-{index}"));
+        }
         call!("ariax.importSession", json!([exported]));
         call!("aria2.saveSession", json!([]));
         call!("aria2.remove", json!([gid]));
@@ -8805,7 +9218,7 @@ mod tests {
         let mut plane = directory.control_plane();
         attach_loopback_worker(&mut plane, &directory);
         let checksum =
-            HttpContentChecksum::sha256(Sha256::digest(data.as_ref()).into()).canonical();
+            crate::HttpContentChecksum::sha256(Sha256::digest(data.as_ref()).into()).canonical();
         let gid = plane
             .call(
                 "aria2.addUri",

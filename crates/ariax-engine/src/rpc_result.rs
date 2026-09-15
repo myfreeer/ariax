@@ -145,10 +145,17 @@ pub(crate) struct SessionOptions<'a> {
 
 impl Serialize for SessionOptions<'_> {
     fn serialize<S: ser::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_map(self.options.entries().chain(std::iter::once((
-            "pause",
-            if self.paused { "true" } else { "false" },
-        ))))
+        serializer.collect_map(
+            self.options
+                .entries()
+                .filter(|(name, _)| {
+                    !matches!(*name, "verification-manifest" | "metalink-file-index")
+                })
+                .chain(std::iter::once((
+                    "pause",
+                    if self.paused { "true" } else { "false" },
+                ))),
+        )
     }
 }
 

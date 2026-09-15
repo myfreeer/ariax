@@ -394,7 +394,19 @@ impl ControlQueryRoot {
             .unwrap_or_default();
         let mut value = status_value(snapshot, status, stats);
         self.add_slot_diagnostics(&mut value, snapshot, stats);
-        debug_assert!(crate::rpc_json::owned_value_bytes(&value) < 64 * 1024);
+        if let Some(expansion) = self
+            .task_spec(snapshot.gid)
+            .and_then(|spec| spec.options().transfer.metalink_expansion.as_ref().cloned())
+        {
+            value["followedBy"] = json!(
+                expansion
+                    .children
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            );
+        }
+        debug_assert!(crate::rpc_json::owned_value_bytes(&value) < 256 * 1024);
         Ok(project_status(value, keys))
     }
 
@@ -514,6 +526,7 @@ impl ControlQueryRoot {
             return Err(HttpControlError::Busy);
         }
         let mut tasks = ResultList::new();
+        let mut format_version = 1;
         for applied in root.tasks().values() {
             if matches!(
                 applied.snapshot.wire_status(),
@@ -525,6 +538,9 @@ impl ControlQueryRoot {
                 .tasks
                 .get(applied.task_id)
                 .ok_or(HttpControlError::NotFound)?;
+            if spec.options().transfer.metalink_expansion.is_some() {
+                continue;
+            }
             let options = spec
                 .persistence_options()
                 .map_err(HttpControlError::TaskSpec)?;
@@ -535,6 +551,8 @@ impl ControlQueryRoot {
                 sources: PersistedSources<'a>,
                 options: SessionOptions<'a>,
                 state: &'static str,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                verification: Option<crate::verification_document::VerificationView<'a>>,
             }
             tasks.push(&Task {
                 gid: DisplayValue(applied.snapshot.gid),
@@ -545,6 +563,13 @@ impl ControlQueryRoot {
                     paused: applied.snapshot.desired_paused,
                 },
                 state: applied.snapshot.state.code(),
+                verification: spec.verification().map(|manifest| {
+                    format_version = 2;
+                    crate::verification_document::VerificationView {
+                        manifest,
+                        index: spec.metalink_index(),
+                    }
+                }),
             })?;
         }
         let mut result = serde_json::Map::new();
@@ -553,7 +578,7 @@ impl ControlQueryRoot {
             Value::String(self.session_id.to_string()),
         );
         result.insert("tasks".to_owned(), tasks.finish());
-        result.insert("formatVersion".to_owned(), Value::from(1));
+        result.insert("formatVersion".to_owned(), Value::from(format_version));
         let document = Value::Object(result);
         if format == crate::SessionFormat::Aria2 {
             let bytes = crate::session_file::render(&document, format)?;

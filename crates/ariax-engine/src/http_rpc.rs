@@ -44,6 +44,7 @@ const MAX_MULTICALL_RESULT_BYTES: usize =
 /// the shared control dispatcher. Keeping the catalog here ensures every
 /// transport reports the same vocabulary.
 pub const RPC_METHODS: &[&str] = &[
+    "ariax.approveHostKey",
     "aria2.addUri",
     "aria2.addTorrent",
     "aria2.getPeers",
@@ -338,33 +339,50 @@ async fn dispatch_authorized<B: HttpRpcBackend>(
     crate::rpc_compat::validate(compatibility, method, &params)?;
     let explicit_keys = crate::rpc_compat::has_explicit_keys(method, &params);
     let mut result = match method {
-                "system.listMethods" => {
-                    require_empty_params(&params, "listMethods")?;
-                    Ok(Value::Array(
-                        RPC_METHODS
-                            .iter()
-                            .map(|method| Value::String((*method).to_owned()))
-                            .collect(),
-                    ))
-                }
-                "system.listNotifications" => {
-                    require_empty_params(&params, "listNotifications")?;
-                    Ok(Value::Array(
-                        RPC_NOTIFICATIONS
-                            .iter()
-                            .map(|method| Value::String((*method).to_owned()))
-                            .collect(),
-                    ))
-                }
-                "ariax.setEventFilter" => {
-                    let values = params.as_array().filter(|values| values.len() == 1).ok_or_else(|| HttpRpcBackendError::new(-32602, "setEventFilter requires one filter"))?;
-                    let filter = crate::RpcEventFilter::from_rpc(&values[0]).map_err(|_| HttpRpcBackendError::new(-32602, "invalid event filter"))?;
-                    context.set_event_filter(filter).map_err(|_| HttpRpcBackendError::new(-32602, "event filter requires a pushed event transport"))?;
-                    Ok(json!("OK"))
-                }
-                "aria2.addTorrent" | "aria2.getPeers" | "aria2.addMetalink" => Err(HttpRpcBackendError::new(-32601, "ProtocolFeatureUnavailable").with_data(json!({"code":"ProtocolFeatureUnavailable", "feature": if method == "aria2.addMetalink" { "metalink" } else { "bittorrent" }}))),
-                _ => backend.call_with_context(method, params, context).await,
-            }?;
+        "system.listMethods" => {
+            require_empty_params(&params, "listMethods")?;
+            Ok(Value::Array(
+                RPC_METHODS
+                    .iter()
+                    .map(|method| Value::String((*method).to_owned()))
+                    .collect(),
+            ))
+        }
+        "system.listNotifications" => {
+            require_empty_params(&params, "listNotifications")?;
+            Ok(Value::Array(
+                RPC_NOTIFICATIONS
+                    .iter()
+                    .map(|method| Value::String((*method).to_owned()))
+                    .collect(),
+            ))
+        }
+        "ariax.setEventFilter" => {
+            let values = params
+                .as_array()
+                .filter(|values| values.len() == 1)
+                .ok_or_else(|| {
+                    HttpRpcBackendError::new(-32602, "setEventFilter requires one filter")
+                })?;
+            let filter = crate::RpcEventFilter::from_rpc(&values[0])
+                .map_err(|_| HttpRpcBackendError::new(-32602, "invalid event filter"))?;
+            context.set_event_filter(filter).map_err(|_| {
+                HttpRpcBackendError::new(-32602, "event filter requires a pushed event transport")
+            })?;
+            Ok(json!("OK"))
+        }
+        "aria2.addTorrent" | "aria2.getPeers" => Err(HttpRpcBackendError::new(
+            -32601,
+            "ProtocolFeatureUnavailable",
+        )
+        .with_data(json!({"code":"ProtocolFeatureUnavailable", "feature":"bittorrent"}))),
+        "aria2.addMetalink" if !cfg!(feature = "metalink") => Err(HttpRpcBackendError::new(
+            -32601,
+            "ProtocolFeatureUnavailable",
+        )
+        .with_data(json!({"code":"ProtocolFeatureUnavailable", "feature":"metalink"}))),
+        _ => backend.call_with_context(method, params, context).await,
+    }?;
     crate::rpc_compat::project(compatibility, method, explicit_keys, &mut result);
     Ok(result)
 }

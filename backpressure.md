@@ -1,9 +1,10 @@
 # Backpressure Design
 
-Status: HTTP ingress, pooled storage writes and RPC use bounded shared resource
+Status: HTTP/FTP/SFTP ingress, pooled storage writes and RPC use bounded shared resource
 reservations. Workers wait for capacity before further reads, and slow-slot
 classification excludes local pressure. Adaptive window tuning from disk/CPU
-feedback and non-HTTP lane integration remain roadmap work.
+feedback and BitTorrent lane integration remain roadmap work. Phase-5 CPU and
+protocol ingress permits remain owned through completion or acknowledged drain.
 
 Backpressure means the downloader responds to actual network, disk, CPU, and
 memory conditions. It is not just a fixed rate limit.

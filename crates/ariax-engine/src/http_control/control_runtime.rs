@@ -672,7 +672,12 @@ fn progress(
             result
         })()
     } else {
-        owner.begin_call_admitted(&method, params, context.request_lease())
+        owner.begin_call_authorized(
+            &method,
+            params,
+            context.request_lease(),
+            context.is_local_admin(),
+        )
     };
     owner.dispatch_sequence = None;
     owner.dispatch_bulk = None;

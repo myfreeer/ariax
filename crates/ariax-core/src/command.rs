@@ -295,6 +295,13 @@ pub enum SchedulerCommand {
         desired_paused: bool,
         conditions: TaskConditions,
     },
+    AddValidatedTaskAt {
+        task_id: TaskId,
+        gid: Gid,
+        desired_paused: bool,
+        conditions: TaskConditions,
+        position: usize,
+    },
     Pause {
         gid: Gid,
         force: bool,
@@ -430,7 +437,9 @@ impl SchedulerCommand {
     #[must_use]
     pub const fn kind(&self) -> SchedulerCommandKind {
         match self {
-            Self::AddValidatedTask { .. } => SchedulerCommandKind::AddValidatedTask,
+            Self::AddValidatedTask { .. } | Self::AddValidatedTaskAt { .. } => {
+                SchedulerCommandKind::AddValidatedTask
+            }
             Self::Pause { .. } => SchedulerCommandKind::Pause,
             Self::Resume { .. } => SchedulerCommandKind::Resume,
             Self::ApproveHostKey { .. } => SchedulerCommandKind::ApproveHostKey,
@@ -486,6 +495,11 @@ pub enum TaskEvent {
         gid: Gid,
         generation: Generation,
         retry_at: MonotonicInstant,
+    },
+    ActiveHostKeyChallenge {
+        gid: Gid,
+        generation: Generation,
+        challenge: PresentedHostKeyChallenge,
     },
     AllocationHostKeyChallenge {
         gid: Gid,
@@ -673,6 +687,7 @@ pub enum TaskEventKind {
     OptionPatchApplicationFailed,
     AllocationSucceeded,
     AllocationRetryable,
+    ActiveHostKeyChallenge,
     AllocationHostKeyChallenge,
     AllocationFailed,
     RetryReady,
@@ -707,6 +722,7 @@ pub const ALL_TASK_EVENT_KINDS: &[TaskEventKind] = &[
     TaskEventKind::OptionPatchApplicationFailed,
     TaskEventKind::AllocationSucceeded,
     TaskEventKind::AllocationRetryable,
+    TaskEventKind::ActiveHostKeyChallenge,
     TaskEventKind::AllocationHostKeyChallenge,
     TaskEventKind::AllocationFailed,
     TaskEventKind::RetryReady,
@@ -744,6 +760,7 @@ impl TaskEventKind {
             Self::OptionPatchApplicationFailed => "option_patch_application_failed",
             Self::AllocationSucceeded => "allocation_succeeded",
             Self::AllocationRetryable => "allocation_retryable",
+            Self::ActiveHostKeyChallenge => "active_host_key_challenge",
             Self::AllocationHostKeyChallenge => "allocation_host_key_challenge",
             Self::AllocationFailed => "allocation_failed",
             Self::RetryReady => "retry_ready",
@@ -792,6 +809,7 @@ impl TaskEvent {
             | Self::OptionPatchApplicationFailed { gid, .. }
             | Self::AllocationSucceeded { gid, .. }
             | Self::AllocationRetryable { gid, .. }
+            | Self::ActiveHostKeyChallenge { gid, .. }
             | Self::AllocationHostKeyChallenge { gid, .. }
             | Self::AllocationFailed { gid, .. }
             | Self::RetryReady { gid, .. }
@@ -828,6 +846,7 @@ impl TaskEvent {
             | Self::OptionPatchApplicationFailed { generation, .. }
             | Self::AllocationSucceeded { generation, .. }
             | Self::AllocationRetryable { generation, .. }
+            | Self::ActiveHostKeyChallenge { generation, .. }
             | Self::AllocationHostKeyChallenge { generation, .. }
             | Self::AllocationFailed { generation, .. }
             | Self::RetryReady { generation, .. }
@@ -868,6 +887,7 @@ impl TaskEvent {
             }
             Self::AllocationSucceeded { .. } => TaskEventKind::AllocationSucceeded,
             Self::AllocationRetryable { .. } => TaskEventKind::AllocationRetryable,
+            Self::ActiveHostKeyChallenge { .. } => TaskEventKind::ActiveHostKeyChallenge,
             Self::AllocationHostKeyChallenge { .. } => TaskEventKind::AllocationHostKeyChallenge,
             Self::AllocationFailed { .. } => TaskEventKind::AllocationFailed,
             Self::RetryReady { .. } => TaskEventKind::RetryReady,
@@ -1517,7 +1537,7 @@ mod tests {
         assert_eq!(drain_targets.len(), ALL_DRAIN_TARGETS.len());
         assert_eq!(effects.len(), ALL_TRANSITION_EFFECT_KINDS.len());
         assert_eq!(ALL_SCHEDULER_COMMAND_KINDS.len(), 11);
-        assert_eq!(ALL_TASK_EVENT_KINDS.len(), 31);
+        assert_eq!(ALL_TASK_EVENT_KINDS.len(), 32);
         assert_eq!(ALL_NO_SPACE_PROBE_ORIGINS.len(), 2);
         assert_eq!(ALL_SCHEDULER_COMMAND_HANDLINGS.len(), 3);
         assert_eq!(ALL_DRAIN_TARGETS.len(), 7);

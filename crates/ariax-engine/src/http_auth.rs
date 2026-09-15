@@ -41,6 +41,13 @@ impl HttpBasicCredentials {
     pub fn username(&self) -> &str {
         &self.username
     }
+    #[cfg(any(feature = "ftp", feature = "sftp"))]
+    pub(crate) fn protocol_credentials(&self) -> crate::TransferCredentials {
+        crate::TransferCredentials {
+            username: self.username.clone(),
+            password: Some(self.password.clone()),
+        }
+    }
 
     pub fn authorization_header(&self) -> Result<HttpAuthorization, HttpAuthError> {
         let mut plaintext = Vec::new();
@@ -284,7 +291,7 @@ impl fmt::Display for HttpAuthError {
 impl Error for HttpAuthError {}
 
 #[cfg(unix)]
-fn open_private_netrc(path: &Path) -> Result<File, HttpAuthError> {
+pub(crate) fn open_private_netrc(path: &Path) -> Result<File, HttpAuthError> {
     use rustix::fs::{Mode, OFlags, open};
     use std::os::unix::fs::PermissionsExt as _;
 
@@ -303,14 +310,14 @@ fn open_private_netrc(path: &Path) -> Result<File, HttpAuthError> {
 }
 
 #[cfg(windows)]
-fn open_private_netrc(path: &Path) -> Result<File, HttpAuthError> {
+pub(crate) fn open_private_netrc(path: &Path) -> Result<File, HttpAuthError> {
     ariax_windows_security::verify_private_file(path)
         .map_err(|_| HttpAuthError::NetrcInsecurePermissions)?;
     File::open(path).map_err(|_| HttpAuthError::NetrcIo)
 }
 
 #[cfg(not(any(unix, windows)))]
-fn open_private_netrc(_path: &Path) -> Result<File, HttpAuthError> {
+pub(crate) fn open_private_netrc(_path: &Path) -> Result<File, HttpAuthError> {
     Err(HttpAuthError::NetrcInsecurePermissions)
 }
 

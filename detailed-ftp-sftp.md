@@ -1,6 +1,8 @@
 # Detailed FTP And SFTP Design
 
-Status: reviewed pre-implementation contract. Implementation pending.
+Status: implementation is underway under the Phase-5
+[shared transfer gates](detailed-protocol-transfers.md). FTP/SFTP adapter and
+security acceptance remain pending until their executable evidence is recorded.
 
 The HTTP-centric resume/validation model (`EntityValidator` with
 ETag/Last-Modified, the HTTP `StaleValidator` classification, and
@@ -198,6 +200,13 @@ Resolution order:
 An explicit pin or known-host entry that mismatches is terminal
 `HostKeyMismatch`; it is not converted into an approval prompt.
 
+The managed worker reports an unknown key only after its SSH connection and
+all outstanding protocol work have drained. Its supervisor consumes the active
+generation authority to emit `ActiveHostKeyChallenge`; the scheduler persists
+the bounded challenge and releases the slot. Stale generations and cancellation
+barriers reject that event. This active event shares the allocation challenge's
+approval rules without treating ordinary resume as trust approval.
+
 The `known_hosts` reader uses the exact `russh::keys::ssh_key` parser pinned and
 re-exported by the selected russh version, behind an owned matcher. It supports
 canonical host and `[host]:port` patterns, negation, wildcards, and OpenSSH
@@ -209,6 +218,10 @@ entries, and 64 KiB per line. A malformed matching entry fails closed; malformed
 unrelated lines produce one bounded diagnostic and are skipped. Matching uses
 the original canonical hostname/port, never a reverse-DNS name invented from
 the selected address.
+Known-host files pass the native private-file authority check before reading;
+the adapter does not change permissions on a user's existing SSH files. Protocol
+tests supply an isolated private known-host file so user configuration cannot
+grant trust or cause a fixture rejection.
 
 The paused challenge contains a challenge id, canonical host and port, key
 algorithm, and SHA-256 fingerprint. Host/algorithm display strings are at most
@@ -226,6 +239,18 @@ challenge fails without sending credentials; if reconnect presents another
 key, the task remains paused with a new challenge. Approval is task-scoped and
 does not silently edit a global `known_hosts` file.
 
+The required `HostKeyState` journal record carries the bounded presented key,
+challenge id and pending/approved/rejected decision. It is flushed before the
+SQLite challenge transaction or scheduler publication. Approval may change only
+the exact task pin while the generation is drained. Recovery compares any
+retained SQLite challenge byte-for-byte, completes a matching resolution before
+queue repair, and restores a missing pending challenge after queue repair.
+Conflicting keys or decisions fail closed. An approved task awaiting a slot can
+therefore restart without losing its pin; a rejected task never gains trust.
+The sanitized pin remains readable when the current binary has SFTP disabled:
+feature selection cannot erase an accepted trust decision during recovery.
+This does not enable new SFTP sources or protocol options in that binary.
+
 Interactive CLI mode prints host/port, algorithm, and SHA-256 fingerprint and
 asks the user to allow or stop. Allow invokes the explicit challenge-bound
 approval operation; stop removes the task with a host-key-rejected diagnostic.
@@ -235,6 +260,16 @@ and prints the fingerprint plus the explicit approve/bypass/pin choices.
 Approval state and the accepted task pin are not secrets and may be persisted.
 Logs/events include the fingerprint but never authentication credentials or
 private-key material.
+
+Native embedding and direct CLI calls carry explicit local authority. Network
+and framed RPC authentication does not grant that authority. File-based
+credentials, SSH-agent access, host-key bypass and PASV server-address mode
+require local authority at admission. Live passwords and administrative paths
+are omitted from persisted options; affected sources recover as credential
+placeholders until credentials are supplied again. Matching known-host keys
+also obey a 1 MiB retained-metadata limit within the SSH session reservation;
+the reader still streams at most 8 MiB of input. Without an explicit file it
+checks the process user's private `.ssh/known_hosts`, when present.
 
 ## SFTP Authentication, Algorithms, And Session Policy
 
@@ -249,6 +284,13 @@ credentials; exhaustion is terminal `AuthFailure`. Passphrases and passwords
 follow the `Secret<T>` and secrets-at-rest rules; decrypted key material lives
 only for the handshake.
 
+The initial `none` authentication request discovers the offered method set.
+Each rejection replaces that set before another method is considered. The
+password-equivalent keyboard-interactive path accepts exactly one non-echoing
+`Password:` prompt, sends one response, and rejects another challenge round.
+Agent framing has a pinned 256 KiB cap; its frame, decoded identities, and
+request workspace are included in the live SSH reservation.
+
 Algorithm policy follows russh defaults minus legacy algorithms: no SHA-1 KEX
 (`diffie-hellman-group14-sha1` and older), no `ssh-rsa` (SHA-1 signature) host
 keys or client keys, no CBC ciphers, no `hmac-md5`/`hmac-sha1-96`. The
@@ -261,6 +303,9 @@ Session behavior:
 
 - `connect-timeout`/`timeout` apply to TCP+handshake and per-request
   inactivity; rekeying follows russh's RFC 4253 data/time limits,
+- subsystem startup accepts bounded channel-window updates before its success
+  acknowledgement, as OpenSSH sends them in this order. Failure, premature data,
+  close, or more than 64 messages rejects startup within `connect-timeout`,
 - SFTP connections honor the same proxy option surface as other protocols
   where a tunnel applies (`all-proxy` CONNECT/SOCKS with the SSRF
   destination-pinning rules); SSH-level jump hosts are out of scope,
@@ -307,6 +352,13 @@ from HTTP status codes:
 - `REST` unsupported for a nonzero durable prefix (resume-unsupported source),
 - transient transfer errors (retryable per policy),
 - authentication failure (terminal unless credentials change).
+
+Connection/probe attempts and sequential FTP attempts persist per-URI attempt
+counts before network activity. Their sum bounds the shared total attempt
+budget. Selected waits and elapsed credit survive restart; source changes do
+not refund attempts. A new generation resets this admission credit under the
+existing generation rules. Range retries retain their separate durable
+piece/span budgets.
 
 ## Tests
 

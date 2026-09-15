@@ -2,6 +2,11 @@ name: Native Linux RPC Benchmarks
 
 on:
   workflow_dispatch:
+    inputs:
+      phase5:
+        description: Admit the active range fixture through Metalink
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -14,12 +19,14 @@ jobs:
   active-ranges:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      ARIAX_BENCH_METALINK: ${{ inputs.phase5 && '1' || '0' }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
       - name: Install the pinned toolchain
         run: rustup toolchain install 1.97.1 --profile minimal
       - name: Build the optimized harness
-        run: cargo +1.97.1 bench --locked -p ariax-engine --bench rpc_active_profile --no-run
+        run: cargo +1.97.1 bench --locked -p ariax-engine --all-features --bench rpc_active_profile --no-run
       - name: Measure all four transports in bounded bursts
         shell: bash
         run: |
@@ -29,7 +36,7 @@ jobs:
           rustc +1.97.1 --version --verbose > benchmark-reports/toolchain.txt
           for scenario in http websocket content-length ndjson; do
             ARIAX_RUN_ACTIVE_RPC_BENCH=1 cargo +1.97.1 bench \
-              --locked -p ariax-engine --bench rpc_active_profile -- \
+              --locked -p ariax-engine --all-features --bench rpc_active_profile -- \
               --scenario="$scenario" 2>"benchmark-reports/$scenario.stderr.log" \
               | tee "benchmark-reports/$scenario.jsonl"
             sleep 2
@@ -39,7 +46,7 @@ jobs:
         run: |
           set -euo pipefail
           ARIAX_RUN_ACTIVE_RPC_BENCH=1 cargo +1.97.1 bench \
-            --locked -p ariax-engine --bench rpc_active_profile -- \
+            --locked -p ariax-engine --all-features --bench rpc_active_profile -- \
             --administrative 2>benchmark-reports/administrative.stderr.log \
             | tee benchmark-reports/administrative.jsonl
       - name: Preserve complete reports and failed-run diagnostics

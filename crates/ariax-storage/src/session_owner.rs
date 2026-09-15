@@ -79,6 +79,10 @@ pub enum SessionCommand {
         options: SanitizedOptionMap,
     },
     CreateTaskBatch(Arc<[SessionTaskMetadata]>),
+    CreateFollowedMetalink {
+        tasks: Arc<[SessionTaskMetadata]>,
+        parent: crate::MetalinkParent,
+    },
     ConfirmTaskMetadata(Arc<SessionTaskMetadata>),
     ReadTasks,
     ReadStoppedResults,
@@ -853,6 +857,10 @@ fn execute_command(
             .tasks()
             .map(SessionCommandResult::Tasks)
             .map_err(SessionPersistenceError::Store),
+        SessionCommand::CreateFollowedMetalink { tasks, parent } => {
+            store.create_task_batch_following(&tasks, Some(parent), policy)?;
+            Ok(SessionCommandResult::Unit)
+        }
         SessionCommand::CreateTaskBatch(tasks) => {
             store.create_task_batch(&tasks, policy)?;
             Ok(SessionCommandResult::Unit)

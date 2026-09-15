@@ -31,8 +31,23 @@ pub const HTTP_STRONG_VALIDATOR_HASH_DOMAIN: &str = "ariax/http-strong-validator
 /// lease authority for an already-created journal.
 pub const HTTP_RANGE_IDENTITY_HASH_DOMAIN: &str = "ariax/http-shared-range-digest/v1\0";
 
+/// Durable trust decision; a resolution is bound to the exact presented key.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostKeyDecision {
+    Pending,
+    Approved,
+    Rejected,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JournalHostKeyState {
+    pub challenge: ariax_core::PresentedHostKeyChallenge,
+    pub decision: HostKeyDecision,
+    pub created_ms: u64,
+}
+
 /// Every record payload with a complete version-1 typed codec.
-pub const PAYLOAD_CODEC_RECORD_TYPES: [RecordType; 26] = crate::ALL_RECORD_TYPES;
+pub const PAYLOAD_CODEC_RECORD_TYPES: [RecordType; 32] = crate::ALL_RECORD_TYPES;
 
 /// Hashes the exact strong ETag and settled representation length used by
 /// HTTP resume leases. The raw ETag remains separately persisted so `If-Range`
@@ -671,6 +686,32 @@ pub enum JournalPayload {
         total_length: u64,
         representation_digest: JournalDigest,
     },
+    VerificationManifest {
+        fingerprint: JournalHash,
+        total_bytes: u32,
+        chunk_count: u32,
+        bytes: Box<[u8]>,
+    },
+    VerificationManifestChunk {
+        fingerprint: JournalHash,
+        chunk_index: u32,
+        chunk_count: u32,
+        bytes: Box<[u8]>,
+    },
+    ProtocolValidator {
+        validator: crate::ProtocolValidator,
+    },
+    WholeFileVerified {
+        fingerprint: JournalHash,
+        digests: Box<[JournalDigest]>,
+    },
+    HostKeyState {
+        state: JournalHostKeyState,
+    },
+    MetadataComplete {
+        expansion: crate::MetalinkExpansion,
+        completed_at_unix_ms: u64,
+    },
 }
 
 impl JournalPayload {
@@ -703,6 +744,12 @@ impl JournalPayload {
             Self::PieceStateChunk { .. } => RecordType::PieceStateChunk,
             Self::HttpStrongValidator { .. } => RecordType::HttpStrongValidator,
             Self::HttpRangeIdentity { .. } => RecordType::HttpRangeIdentity,
+            Self::VerificationManifest { .. } => RecordType::VerificationManifest,
+            Self::VerificationManifestChunk { .. } => RecordType::VerificationManifestChunk,
+            Self::ProtocolValidator { .. } => RecordType::ProtocolValidator,
+            Self::WholeFileVerified { .. } => RecordType::WholeFileVerified,
+            Self::HostKeyState { .. } => RecordType::HostKeyState,
+            Self::MetadataComplete { .. } => RecordType::MetadataComplete,
         }
     }
 
@@ -1005,6 +1052,73 @@ impl JournalPayload {
                 encoder.u64(*total_length)?;
                 encoder.digest(representation_digest)?;
             }
+            Self::VerificationManifest {
+                fingerprint,
+                total_bytes,
+                chunk_count,
+                bytes,
+            } => {
+                encoder.hash(*fingerprint)?;
+                encoder.u32(*total_bytes)?;
+                encoder.u32(*chunk_count)?;
+                encoder.bytes(bytes)?;
+            }
+            Self::VerificationManifestChunk {
+                fingerprint,
+                chunk_index,
+                chunk_count,
+                bytes,
+            } => {
+                encoder.hash(*fingerprint)?;
+                encoder.u32(*chunk_index)?;
+                encoder.u32(*chunk_count)?;
+                encoder.bytes(bytes)?;
+            }
+            Self::ProtocolValidator { validator } => {
+                encoder.u8(validator.protocol)?;
+                encoder.hash(validator.source)?;
+                encoder.u64(validator.total_length)?;
+                encoder.optional_u64(validator.modified_unix_seconds)?;
+                encoder.u8(u8::from(validator.host_key.is_some()))?;
+                if let Some(key) = validator.host_key {
+                    encoder.hash(key)?;
+                }
+            }
+            Self::MetadataComplete {
+                expansion,
+                completed_at_unix_ms,
+            } => {
+                if !expansion.validate() {
+                    return Err(PayloadCodecError::InvalidVerificationManifest);
+                }
+                encoder.bytes(expansion.canonical().as_bytes())?;
+                encoder.u64(*completed_at_unix_ms)?;
+            }
+            Self::HostKeyState { state } => {
+                encoder.u8(match state.decision {
+                    HostKeyDecision::Pending => 0,
+                    HostKeyDecision::Approved => 1,
+                    HostKeyDecision::Rejected => 2,
+                })?;
+                let key = state.challenge.summary();
+                encoder.fixed(key.id.as_bytes())?;
+                encoder.bytes(key.canonical_host.as_bytes())?;
+                encoder.u16(key.port)?;
+                encoder.bytes(key.algorithm.as_bytes())?;
+                encoder.fixed(key.fingerprint_sha256.as_bytes())?;
+                encoder.bytes(state.challenge.presented_public_key())?;
+                encoder.u64(state.created_ms)?;
+            }
+            Self::WholeFileVerified {
+                fingerprint,
+                digests,
+            } => {
+                encoder.hash(*fingerprint)?;
+                encoder.u8(digests.len() as u8)?;
+                for digest in digests {
+                    encoder.digest(digest)?;
+                }
+            }
         }
         encoder.finish()
     }
@@ -1224,6 +1338,106 @@ impl JournalPayload {
                 total_length: decoder.u64()?,
                 representation_digest: decoder.digest()?,
             },
+            RecordType::VerificationManifest => Self::VerificationManifest {
+                fingerprint: decoder.hash()?,
+                total_bytes: decoder.u32()?,
+                chunk_count: decoder.u32()?,
+                bytes: decoder.bytes(crate::VERIFICATION_MANIFEST_PART_BYTES)?,
+            },
+            RecordType::VerificationManifestChunk => Self::VerificationManifestChunk {
+                fingerprint: decoder.hash()?,
+                chunk_index: decoder.u32()?,
+                chunk_count: decoder.u32()?,
+                bytes: decoder.bytes(crate::VERIFICATION_MANIFEST_PART_BYTES)?,
+            },
+            RecordType::ProtocolValidator => Self::ProtocolValidator {
+                validator: crate::ProtocolValidator {
+                    protocol: decoder.u8()?,
+                    source: decoder.hash()?,
+                    total_length: decoder.u64()?,
+                    modified_unix_seconds: decoder.optional_u64()?,
+                    host_key: match decoder.u8()? {
+                        0 => None,
+                        1 => Some(decoder.hash()?),
+                        value => return Err(PayloadCodecError::InvalidPresence(value)),
+                    },
+                },
+            },
+            RecordType::MetadataComplete => {
+                let bytes = decoder.bytes(64 * 1024)?;
+                let expansion = str::from_utf8(&bytes)
+                    .ok()
+                    .and_then(crate::MetalinkExpansion::parse)
+                    .ok_or(PayloadCodecError::InvalidVerificationManifest)?;
+                Self::MetadataComplete {
+                    expansion,
+                    completed_at_unix_ms: decoder.u64()?,
+                }
+            }
+            RecordType::HostKeyState => {
+                let decision = match decoder.u8()? {
+                    0 => HostKeyDecision::Pending,
+                    1 => HostKeyDecision::Approved,
+                    2 => HostKeyDecision::Rejected,
+                    _ => return Err(PayloadCodecError::InvalidHostKeyState),
+                };
+                let id = ariax_core::HostKeyChallengeId::new(
+                    decoder.take(16)?.try_into().expect("fixed length"),
+                );
+                let canonical_host = String::from_utf8(
+                    decoder
+                        .bytes(ariax_core::MAX_HOST_KEY_CANONICAL_HOST_BYTES)?
+                        .into_vec(),
+                )
+                .map_err(|_| PayloadCodecError::InvalidUtf8)?;
+                let port = decoder.u16()?;
+                let algorithm = String::from_utf8(
+                    decoder
+                        .bytes(ariax_core::MAX_HOST_KEY_ALGORITHM_BYTES)?
+                        .into_vec(),
+                )
+                .map_err(|_| PayloadCodecError::InvalidUtf8)?;
+                let fingerprint_sha256 = ariax_core::HostKeyFingerprint::new(
+                    decoder.take(32)?.try_into().expect("fixed length"),
+                );
+                let public_key = decoder
+                    .bytes(ariax_core::MAX_PRESENTED_HOST_KEY_BYTES)?
+                    .into_vec();
+                let challenge = ariax_core::PresentedHostKeyChallenge::new(
+                    ariax_core::HostKeyChallenge {
+                        id,
+                        canonical_host,
+                        port,
+                        algorithm,
+                        fingerprint_sha256,
+                    },
+                    public_key,
+                )
+                .map_err(|_| PayloadCodecError::InvalidHostKeyState)?;
+                let created_ms = decoder.u64()?;
+                Self::HostKeyState {
+                    state: JournalHostKeyState {
+                        challenge,
+                        decision,
+                        created_ms,
+                    },
+                }
+            }
+            RecordType::WholeFileVerified => {
+                let fingerprint = decoder.hash()?;
+                let count = decoder.u8()?;
+                if count > 2 {
+                    return Err(PayloadCodecError::InvalidVerificationManifest);
+                }
+                let mut digests = Vec::with_capacity(usize::from(count));
+                for _ in 0..count {
+                    digests.push(decoder.digest()?);
+                }
+                Self::WholeFileVerified {
+                    fingerprint,
+                    digests: digests.into_boxed_slice(),
+                }
+            }
         };
         decoder.finish()?;
         validate_payload(&payload)?;
@@ -1239,6 +1453,49 @@ impl JournalRecord {
 
 fn validate_payload(payload: &JournalPayload) -> Result<(), PayloadCodecError> {
     match payload {
+        JournalPayload::VerificationManifest {
+            total_bytes,
+            chunk_count,
+            bytes,
+            ..
+        } => {
+            let total = *total_bytes as usize;
+            if total == 0
+                || total > crate::MAX_VERIFICATION_MANIFEST_BYTES
+                || *chunk_count as usize != total.div_ceil(crate::VERIFICATION_MANIFEST_PART_BYTES)
+                || bytes.len() != total.min(crate::VERIFICATION_MANIFEST_PART_BYTES)
+            {
+                Err(PayloadCodecError::InvalidVerificationManifest)
+            } else {
+                Ok(())
+            }
+        }
+        JournalPayload::VerificationManifestChunk {
+            chunk_index,
+            chunk_count,
+            bytes,
+            ..
+        } => {
+            if *chunk_index == 0
+                || chunk_index >= chunk_count
+                || *chunk_count as usize
+                    > crate::MAX_VERIFICATION_MANIFEST_BYTES
+                        / crate::VERIFICATION_MANIFEST_PART_BYTES
+                || bytes.is_empty()
+                || bytes.len() > crate::VERIFICATION_MANIFEST_PART_BYTES
+            {
+                Err(PayloadCodecError::InvalidVerificationManifest)
+            } else {
+                Ok(())
+            }
+        }
+        JournalPayload::ProtocolValidator { validator } if !validator.validate() => {
+            Err(PayloadCodecError::InvalidProtocolValidator)
+        }
+        JournalPayload::WholeFileVerified { digests, .. } if digests.len() > 2 => {
+            Err(PayloadCodecError::InvalidVerificationManifest)
+        }
+
         JournalPayload::TaskCreated {
             creator_version: 0, ..
         } => Err(PayloadCodecError::ZeroCreatorVersion),
@@ -1599,6 +1856,9 @@ pub enum PayloadCodecError {
     ZeroStateRecordCount,
     InvalidHttpStrongValidator,
     InvalidHttpRangeIdentity,
+    InvalidVerificationManifest,
+    InvalidProtocolValidator,
+    InvalidHostKeyState,
     AllocationFailed,
 }
 
@@ -1652,12 +1912,15 @@ impl PayloadCodecError {
             Self::ZeroStateRecordCount => "zero_state_record_count",
             Self::InvalidHttpStrongValidator => "invalid_http_strong_validator",
             Self::InvalidHttpRangeIdentity => "invalid_http_range_identity",
+            Self::InvalidVerificationManifest => "invalid_verification_manifest",
+            Self::InvalidProtocolValidator => "invalid_protocol_validator",
+            Self::InvalidHostKeyState => "invalid_host_key_state",
             Self::AllocationFailed => "allocation_failed",
         }
     }
 }
 
-pub const ALL_PAYLOAD_CODEC_ERROR_CLASSES: [PayloadCodecError; 47] = [
+pub const ALL_PAYLOAD_CODEC_ERROR_CLASSES: [PayloadCodecError; 50] = [
     PayloadCodecError::PayloadTooLarge,
     PayloadCodecError::Truncated,
     PayloadCodecError::TrailingBytes,
@@ -1704,6 +1967,9 @@ pub const ALL_PAYLOAD_CODEC_ERROR_CLASSES: [PayloadCodecError; 47] = [
     PayloadCodecError::ZeroStateRecordCount,
     PayloadCodecError::InvalidHttpStrongValidator,
     PayloadCodecError::InvalidHttpRangeIdentity,
+    PayloadCodecError::InvalidVerificationManifest,
+    PayloadCodecError::InvalidProtocolValidator,
+    PayloadCodecError::InvalidHostKeyState,
     PayloadCodecError::AllocationFailed,
 ];
 
@@ -2513,6 +2779,64 @@ mod tests {
                 identity_fingerprint: calculate_http_range_identity_fingerprint(&digest(), 2048)
                     .expect("range identity fingerprint"),
                 total_length: 2048,
+            },
+            JournalPayload::VerificationManifest {
+                fingerprint: hash(15),
+                total_bytes: 2,
+                chunk_count: 1,
+                bytes: vec![1, 2].into_boxed_slice(),
+            },
+            JournalPayload::VerificationManifestChunk {
+                fingerprint: hash(15),
+                chunk_index: 1,
+                chunk_count: 2,
+                bytes: vec![1].into_boxed_slice(),
+            },
+            JournalPayload::ProtocolValidator {
+                validator: crate::ProtocolValidator {
+                    protocol: 1,
+                    source: hash(16),
+                    total_length: 2048,
+                    modified_unix_seconds: Some(4),
+                    host_key: None,
+                },
+            },
+            JournalPayload::WholeFileVerified {
+                fingerprint: hash(15),
+                digests: vec![digest()].into_boxed_slice(),
+            },
+            JournalPayload::HostKeyState {
+                state: super::JournalHostKeyState {
+                    challenge: ariax_core::PresentedHostKeyChallenge::new(
+                        ariax_core::HostKeyChallenge {
+                            id: ariax_core::HostKeyChallengeId::new([1; 16]),
+                            canonical_host: "example.test".into(),
+                            port: 22,
+                            algorithm: "ssh-ed25519".into(),
+                            fingerprint_sha256: ariax_core::HostKeyFingerprint::for_presented_key(
+                                b"key",
+                            ),
+                        },
+                        b"key".to_vec(),
+                    )
+                    .unwrap(),
+                    decision: super::HostKeyDecision::Pending,
+                    created_ms: 1,
+                },
+            },
+            JournalPayload::MetadataComplete {
+                expansion: crate::MetalinkExpansion {
+                    parent: crate::MetalinkParent {
+                        gid: ariax_core::Gid::new(1).unwrap(),
+                        generation: Generation::INITIAL,
+                        snapshot_hash: hash(1),
+                        document_hash: hash(2),
+                        document_bytes: 3,
+                        retained: false,
+                    },
+                    children: vec![ariax_core::Gid::new(2).unwrap()],
+                },
+                completed_at_unix_ms: 1,
             },
         ]
     }

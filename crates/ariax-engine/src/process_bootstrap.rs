@@ -887,7 +887,11 @@ where
         journal_install_recoveries,
         queue_session_repairs,
         terminal_session_repairs,
+        host_key_resolutions,
+        host_key_challenge_repairs,
     } = native.startup;
+    debug_assert!(host_key_resolutions.is_empty());
+    debug_assert!(host_key_challenge_repairs.is_empty());
     debug_assert!(authority_repairs.is_empty());
     debug_assert!(appender_recoveries.is_empty());
     debug_assert!(journal_install_recoveries.is_empty());

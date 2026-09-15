@@ -1839,16 +1839,6 @@ fn host_key_approval_requires_exact_proof_and_preserves_later_pause() {
     assert_eq!(
         challenged.effects,
         vec![
-            TransitionEffect::PersistHostKeyChallenge {
-                task_id: task_id(1),
-                gid: task_gid,
-                challenge: challenge.clone(),
-            },
-            TransitionEffect::ReleaseSlot {
-                task_id: task_id(1),
-                gid: task_gid,
-                ownership: SlotOwnership::Active,
-            },
             queue_transition(
                 task_id(1),
                 task_gid,
@@ -1860,6 +1850,16 @@ fn host_key_approval_requires_exact_proof_and_preserves_later_pause() {
                     (QueueClass::Paused, vec![task_gid]),
                 ],
             ),
+            TransitionEffect::PersistHostKeyChallenge {
+                task_id: task_id(1),
+                gid: task_gid,
+                challenge: challenge.clone(),
+            },
+            TransitionEffect::ReleaseSlot {
+                task_id: task_id(1),
+                gid: task_gid,
+                ownership: SlotOwnership::Active,
+            },
             TransitionEffect::PublishSnapshot {
                 task_id: task_id(1),
                 snapshot,

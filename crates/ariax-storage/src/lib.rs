@@ -3,6 +3,8 @@
 //! Portable storage contracts shared by safe-open and disk backends.
 
 mod journal;
+mod metalink_expansion;
+pub use metalink_expansion::{METALINK_EXPANSION_OPTION, MetalinkExpansion, MetalinkParent};
 mod journal_appender;
 mod journal_payload;
 mod journal_state;
@@ -15,6 +17,13 @@ mod root_binding;
 mod session_export;
 mod session_owner;
 mod session_store;
+mod verification;
+
+pub use verification::{
+    MAX_VERIFICATION_CHUNKS, MAX_VERIFICATION_MANIFEST_BYTES, ProtocolValidator,
+    VERIFICATION_MANIFEST_DOMAIN, VERIFICATION_MANIFEST_PART_BYTES, VerificationManifest,
+    VerificationManifestError,
+};
 
 pub use session_export::{
     SESSION_EXPORT_MAX_BYTES, SessionExportDestination, read_session_document,
@@ -38,8 +47,8 @@ pub use journal_appender::{
 pub use journal_payload::{
     ALL_JOURNAL_DIGEST_ALGORITHMS, ALL_PAYLOAD_CODEC_ERROR_CLASSES, AppendPayloadError,
     CheckpointId, DurableEvidenceRun, HTTP_RANGE_IDENTITY_HASH_DOMAIN,
-    HTTP_STRONG_VALIDATOR_HASH_DOMAIN, JournalDigest, JournalDigestAlgorithm,
-    JournalFileLayoutEntry, JournalHash, JournalPayload, JournalRelativePath,
+    HTTP_STRONG_VALIDATOR_HASH_DOMAIN, HostKeyDecision, JournalDigest, JournalDigestAlgorithm,
+    JournalFileLayoutEntry, JournalHash, JournalHostKeyState, JournalPayload, JournalRelativePath,
     MAX_DIGEST_ALGORITHM_BYTES, MAX_DIGEST_VALUE_BYTES, MAX_HTTP_STRONG_ETAG_BYTES,
     MAX_OPTION_KEY_BYTES, MAX_OPTION_MAP_BYTES, MAX_OPTION_MAP_ENTRIES, MAX_OPTION_VALUE_BYTES,
     MAX_PIECE_STATE_BITMAP_BYTES, MAX_PIECE_STATE_COVERED_PIECES, OPTIONS_SNAPSHOT_HASH_DOMAIN,

@@ -1,3 +1,6 @@
+mod verification_state;
+use verification_state::PendingManifest;
+
 use crate::{
     CheckpointId, DataBarrierKind, DurabilityMode, FileEntry, FileIdentity, FileLayout,
     GenerationStartReason, JournalDigest, JournalFileLayoutEntry, JournalHash, JournalPayload,
@@ -347,9 +350,14 @@ pub struct RecoveredJournalState {
     layout: Option<RecoveredLayout>,
     http_strong_validator: Option<RecoveredHttpStrongValidator>,
     http_range_identity: Option<RecoveredHttpRangeIdentity>,
+    verification_manifest: Option<std::sync::Arc<crate::VerificationManifest>>,
+    protocol_validators: BTreeMap<JournalHash, crate::ProtocolValidator>,
+    whole_file_verified: bool,
+    committed_spans: BTreeMap<LeaseId, JournalContributor>,
     durable_pieces: BTreeMap<PieceId, RecoveredDurablePiece>,
     retry_states: BTreeMap<(u8, u64), RecoveredRetryState>,
     paused: Option<TaskPauseReason>,
+    host_key_state: Option<crate::JournalHostKeyState>,
     finalizations: BTreeMap<FileId, RecoveredFinalization>,
     terminal: Option<RecoveredTerminal>,
     checkpoint: Option<RecoveredCheckpoint>,
@@ -405,6 +413,21 @@ impl RecoveredJournalState {
     }
 
     #[must_use]
+    pub fn verification_manifest(&self) -> Option<&std::sync::Arc<crate::VerificationManifest>> {
+        self.verification_manifest.as_ref()
+    }
+
+    #[must_use]
+    pub const fn protocol_validators(&self) -> &BTreeMap<JournalHash, crate::ProtocolValidator> {
+        &self.protocol_validators
+    }
+
+    #[must_use]
+    pub const fn committed_spans(&self) -> &BTreeMap<LeaseId, JournalContributor> {
+        &self.committed_spans
+    }
+
+    #[must_use]
     pub const fn durable_pieces(&self) -> &BTreeMap<PieceId, RecoveredDurablePiece> {
         &self.durable_pieces
     }
@@ -412,6 +435,11 @@ impl RecoveredJournalState {
     #[must_use]
     pub const fn retry_states(&self) -> &BTreeMap<(u8, u64), RecoveredRetryState> {
         &self.retry_states
+    }
+
+    #[must_use]
+    pub const fn host_key_state(&self) -> Option<&crate::JournalHostKeyState> {
+        self.host_key_state.as_ref()
     }
 
     #[must_use]
@@ -523,6 +551,9 @@ pub enum JournalStateError {
     RootBindingHashMismatch,
     InvalidHttpStrongValidator,
     InvalidHttpRangeIdentity,
+    InvalidVerificationManifest,
+    InvalidProtocolValidator,
+    InvalidHostKeyState,
     SpanOutsideLayout,
     PieceSpanMismatch,
     DuplicateLease,
@@ -585,6 +616,9 @@ impl JournalStateError {
             Self::RootBindingHashMismatch => "root_binding_hash_mismatch",
             Self::InvalidHttpStrongValidator => "invalid_http_strong_validator",
             Self::InvalidHttpRangeIdentity => "invalid_http_range_identity",
+            Self::InvalidVerificationManifest => "invalid_verification_manifest",
+            Self::InvalidProtocolValidator => "invalid_protocol_validator",
+            Self::InvalidHostKeyState => "invalid_host_key_state",
             Self::SpanOutsideLayout => "span_outside_layout",
             Self::PieceSpanMismatch => "piece_span_mismatch",
             Self::DuplicateLease => "duplicate_lease",
@@ -646,6 +680,8 @@ pub const ALL_JOURNAL_STATE_ERROR_CODES: &[&str] = &[
     "root_binding_hash_mismatch",
     "invalid_http_strong_validator",
     "invalid_http_range_identity",
+    "invalid_verification_manifest",
+    "invalid_protocol_validator",
     "span_outside_layout",
     "piece_span_mismatch",
     "duplicate_lease",
@@ -725,6 +761,10 @@ impl From<PayloadCodecError> for JournalStateError {
 pub enum JournalStateStop {
     NoRecords,
     CleanEnd,
+    IncompleteVerificationManifest {
+        expected_chunk: u32,
+        chunk_count: u32,
+    },
     IncompleteLayout {
         expected_chunk: u32,
         chunk_count: u32,
@@ -1042,7 +1082,10 @@ where
             JournalStateError::TaskCreatedMissing,
         );
     }
-    if machine.pending_layout.is_some() || machine.pending_piece_state.is_some() {
+    if machine.pending_manifest.is_some()
+        || machine.pending_layout.is_some()
+        || machine.pending_piece_state.is_some()
+    {
         return checkpoint_invalid(
             end_index,
             records[end_index].sequence,
@@ -1144,7 +1187,12 @@ where
         .state
         .as_ref()
         .map_or(0, RecoveredJournalState::last_sequence);
-    let stop = if let Some(pending) = machine.pending_layout {
+    let stop = if let Some(pending) = machine.pending_manifest {
+        JournalStateStop::IncompleteVerificationManifest {
+            expected_chunk: pending.next,
+            chunk_count: pending.count,
+        }
+    } else if let Some(pending) = machine.pending_layout {
         JournalStateStop::IncompleteLayout {
             expected_chunk: pending.next_chunk,
             chunk_count: pending.chunk_count,
@@ -1237,6 +1285,7 @@ struct SemanticMachine<'a, P: ?Sized> {
     checkpoint_rank: u8,
     checkpoint_retry_key: Option<(u8, u64)>,
     state: Option<RecoveredJournalState>,
+    pending_manifest: Option<PendingManifest>,
     pending_layout: Option<PendingLayout>,
     pending_piece_state: Option<PendingPieceState>,
     seen_piece_state: bool,
@@ -1269,6 +1318,7 @@ where
             checkpoint_rank: 0,
             checkpoint_retry_key: None,
             state: None,
+            pending_manifest: None,
             pending_layout: None,
             pending_piece_state: None,
             seen_piece_state: false,
@@ -1287,6 +1337,11 @@ where
         record: &JournalRecord,
         payload: JournalPayload,
     ) -> Result<(), JournalStateError> {
+        if self.pending_manifest.is_some()
+            && !matches!(payload, JournalPayload::VerificationManifestChunk { .. })
+        {
+            return Err(JournalStateError::InvalidVerificationManifest);
+        }
         if self.pending_layout.is_some() && !matches!(payload, JournalPayload::LayoutChunk { .. }) {
             return Err(JournalStateError::IncompleteLayoutSequence);
         }
@@ -1452,6 +1507,11 @@ where
                 },
             ),
             JournalPayload::TaskPaused { reason } => self.apply_paused(record, reason),
+            JournalPayload::HostKeyState { state } => self.apply_host_key_state(record, state),
+            JournalPayload::MetadataComplete {
+                expansion,
+                completed_at_unix_ms,
+            } => self.apply_metadata_complete(record, expansion, completed_at_unix_ms),
             JournalPayload::TaskComplete {
                 layout_hash,
                 final_length,
@@ -1564,6 +1624,25 @@ where
                     representation_digest,
                 },
             ),
+            JournalPayload::VerificationManifest {
+                fingerprint,
+                total_bytes,
+                chunk_count,
+                bytes,
+            } => self.apply_manifest(record, fingerprint, total_bytes, chunk_count, bytes),
+            JournalPayload::VerificationManifestChunk {
+                fingerprint,
+                chunk_index,
+                chunk_count,
+                bytes,
+            } => self.apply_manifest_chunk(record, fingerprint, chunk_index, chunk_count, bytes),
+            JournalPayload::ProtocolValidator { validator } => {
+                self.apply_protocol_validator(record, validator)
+            }
+            JournalPayload::WholeFileVerified {
+                fingerprint,
+                digests,
+            } => self.apply_whole_verified(record, fingerprint, &digests),
             JournalPayload::CheckpointStart { .. } | JournalPayload::CheckpointEnd { .. } => {
                 Err(JournalStateError::CheckpointRecordForbidden)
             }
@@ -1589,7 +1668,11 @@ where
             } => 2,
             JournalPayload::LayoutCommitted { .. } | JournalPayload::LayoutChunk { .. } => 3,
             JournalPayload::HttpStrongValidator { .. }
-            | JournalPayload::HttpRangeIdentity { .. } => 4,
+            | JournalPayload::HttpRangeIdentity { .. }
+            | JournalPayload::ProtocolValidator { .. }
+            | JournalPayload::VerificationManifest { .. }
+            | JournalPayload::VerificationManifestChunk { .. } => 4,
+            JournalPayload::WholeFileVerified { .. } => 6,
             JournalPayload::RetryState {
                 scope, scope_id, ..
             } => {
@@ -1604,9 +1687,10 @@ where
                 5
             }
             JournalPayload::PieceStateChunk { .. } => 6,
-            JournalPayload::TaskPaused { .. } => 7,
+            JournalPayload::TaskPaused { .. } | JournalPayload::HostKeyState { .. } => 7,
             JournalPayload::FinalizeIntent { .. } | JournalPayload::FinalizeDone { .. } => 8,
             JournalPayload::TaskComplete { .. }
+            | JournalPayload::MetadataComplete { .. }
             | JournalPayload::TaskError { .. }
             | JournalPayload::TaskRemoved { .. } => 9,
             _ => return Err(JournalStateError::CheckpointRecordForbidden),
@@ -1650,9 +1734,14 @@ where
             layout: None,
             http_strong_validator: None,
             http_range_identity: None,
+            verification_manifest: None,
+            protocol_validators: BTreeMap::new(),
+            whole_file_verified: false,
+            committed_spans: BTreeMap::new(),
             durable_pieces: BTreeMap::new(),
             retry_states: BTreeMap::new(),
             paused: None,
+            host_key_state: None,
             finalizations: BTreeMap::new(),
             terminal: None,
             checkpoint: None,
@@ -1768,8 +1857,28 @@ where
             state.retry_states.clear();
         }
         state.paused = None;
+        state.host_key_state = None;
         state.http_strong_validator = None;
         state.http_range_identity = None;
+        state.protocol_validators.clear();
+        state.committed_spans.clear();
+        state.whole_file_verified = false;
+        let manifest_key = state.current_options.as_ref().and_then(|snapshot| {
+            snapshot
+                .options
+                .entries()
+                .find_map(|(key, value)| (key == "verification-manifest").then_some(value))
+        });
+        if state
+            .verification_manifest
+            .as_ref()
+            .is_some_and(|manifest| {
+                manifest_key != Some(manifest.fingerprint().to_string().as_str())
+            })
+        {
+            state.verification_manifest = None;
+            state.durable_pieces.clear();
+        }
         if reason == GenerationStartReason::RepresentationRestart {
             // The old layout remains only as descriptor-bound authority for
             // reopening the task-owned file. No byte from the prior
@@ -2010,6 +2119,7 @@ where
         validator_fingerprint: JournalHash,
     ) -> Result<(), JournalStateError> {
         self.require_ready_nonterminal(record)?;
+        self.require_manifest_ready()?;
         self.require_span_in_layout(span)?;
         if self
             .state
@@ -2109,6 +2219,14 @@ where
             return Err(JournalStateError::LeaseMismatch);
         }
         self.committed_leases.insert(lease_id, lease);
+        self.state
+            .as_mut()
+            .ok_or(JournalStateError::TaskCreatedMissing)?
+            .committed_spans
+            .insert(
+                lease_id,
+                JournalContributor::new(lease_id, span, validator_fingerprint),
+            );
         Ok(())
     }
 
@@ -2135,6 +2253,16 @@ where
     ) -> Result<(), JournalStateError> {
         self.require_ready_nonterminal(record)?;
         if self.expected_piece_span(piece_id)? != piece_span {
+            return Err(JournalStateError::VerificationMismatch);
+        }
+        self.require_manifest_ready()?;
+        if let Some(manifest) = self
+            .state
+            .as_ref()
+            .and_then(|state| state.verification_manifest.as_ref())
+            && !manifest.chunks().is_empty()
+            && manifest.chunks().get(piece_id.get() as usize) != Some(&digest)
+        {
             return Err(JournalStateError::VerificationMismatch);
         }
         let contributors = self.contributors_for_piece(piece_id, piece_span)?;
@@ -2168,6 +2296,14 @@ where
             return Err(JournalStateError::VerificationMismatch);
         }
         self.verified_pieces.remove(&piece_id);
+        self.piece_leases.retain(|(_, piece)| *piece != piece_id);
+        if let Some(state) = self.state.as_mut() {
+            state.durable_pieces.remove(&piece_id);
+            state
+                .committed_spans
+                .retain(|_, contributor| !spans_intersect(contributor.span(), piece_span));
+            state.whole_file_verified = false;
+        }
         Ok(())
     }
 
@@ -2291,6 +2427,26 @@ where
         if contributors.is_empty() {
             return Err(JournalStateError::VerificationMismatch);
         }
+        let mut spans = contributors
+            .iter()
+            .map(|value| {
+                let start = value.span().offset().max(piece_span.offset());
+                let end = (value.span().offset() + value.span().len())
+                    .min(piece_span.offset() + piece_span.len());
+                (start, end)
+            })
+            .collect::<Vec<_>>();
+        spans.sort_unstable();
+        let mut next = piece_span.offset();
+        for (start, end) in spans {
+            if start != next || end <= start {
+                return Err(JournalStateError::VerificationMismatch);
+            }
+            next = end;
+        }
+        if next != piece_span.offset() + piece_span.len() {
+            return Err(JournalStateError::VerificationMismatch);
+        }
         Ok(contributors)
     }
 
@@ -2313,6 +2469,132 @@ where
             ));
         }
         state.retry_states.insert(key, retry);
+        Ok(())
+    }
+
+    fn apply_metadata_complete(
+        &mut self,
+        record: &JournalRecord,
+        expansion: crate::MetalinkExpansion,
+        completed_at_unix_ms: u64,
+    ) -> Result<(), JournalStateError> {
+        self.require_ready_nonterminal(record)?;
+        if !self.active_leases.is_empty() {
+            return Err(JournalStateError::GenerationNotDrained);
+        }
+        let state = self
+            .state
+            .as_mut()
+            .ok_or(JournalStateError::TaskCreatedMissing)?;
+        let current = state
+            .current_options
+            .as_mut()
+            .ok_or(JournalStateError::CurrentSnapshotMissing)?;
+        let base = SanitizedOptionMap::new(
+            current
+                .options
+                .entries()
+                .filter(|(name, _)| *name != crate::METALINK_EXPANSION_OPTION)
+                .map(|(name, value)| (name.to_owned(), value.to_owned())),
+        )
+        .map_err(JournalStateError::Payload)?;
+        if !expansion.validate()
+            || expansion.parent.generation > record.generation
+            || expansion.parent.snapshot_hash != base.snapshot_hash()
+            || state.verification_manifest.is_some()
+        {
+            return Err(JournalStateError::VerificationMismatch);
+        }
+        let (layout_hash, final_length) = if expansion.parent.retained {
+            let layout = state
+                .layout
+                .as_ref()
+                .ok_or(JournalStateError::LayoutMissing)?;
+            if layout.layout.total_length() != Some(expansion.parent.document_bytes) {
+                return Err(JournalStateError::VerificationMismatch);
+            }
+            (layout.layout_hash, expansion.parent.document_bytes)
+        } else {
+            if state.layout.is_some() {
+                return Err(JournalStateError::VerificationMismatch);
+            }
+            (expansion.parent.document_hash, 0)
+        };
+        current.options = expansion
+            .with_options(&current.options)
+            .map_err(JournalStateError::Payload)?;
+        current.snapshot_hash = current.options.snapshot_hash();
+        state.terminal = Some(RecoveredTerminal::Complete {
+            layout_hash,
+            final_length,
+            final_digest: None,
+            completed_at_unix_ms,
+        });
+        state.paused = None;
+        Ok(())
+    }
+
+    fn apply_host_key_state(
+        &mut self,
+        record: &JournalRecord,
+        trust: crate::JournalHostKeyState,
+    ) -> Result<(), JournalStateError> {
+        use crate::HostKeyDecision;
+        self.require_ready_nonterminal(record)?;
+        if !self.active_leases.is_empty() {
+            return Err(JournalStateError::GenerationNotDrained);
+        }
+        let state = self
+            .state
+            .as_mut()
+            .ok_or(JournalStateError::TaskCreatedMissing)?;
+        if !self.checkpoint_state {
+            match trust.decision {
+                HostKeyDecision::Pending => {
+                    if state.host_key_state.is_some() {
+                        return Err(JournalStateError::InvalidHostKeyState);
+                    }
+                }
+                HostKeyDecision::Approved | HostKeyDecision::Rejected => {
+                    if state.paused != Some(TaskPauseReason::HostKeyApproval)
+                        || state.host_key_state.as_ref().is_none_or(|previous| {
+                            previous.decision != HostKeyDecision::Pending
+                                || previous.challenge != trust.challenge
+                        })
+                    {
+                        return Err(JournalStateError::InvalidHostKeyState);
+                    }
+                }
+            }
+        } else if state.host_key_state.is_some() {
+            return Err(JournalStateError::InvalidHostKeyState);
+        }
+        match trust.decision {
+            HostKeyDecision::Pending => state.paused = Some(TaskPauseReason::HostKeyApproval),
+            HostKeyDecision::Approved => {
+                // Only this drained, challenge-bound record may replace the pin
+                // in a current snapshot; ordinary options remain immutable.
+                let current = state
+                    .current_options
+                    .as_mut()
+                    .ok_or(JournalStateError::CurrentSnapshotMissing)?;
+                let pin =
+                    crate::session_host_key_pin_value(trust.challenge.summary().fingerprint_sha256);
+                let mut options = current
+                    .options
+                    .entries()
+                    .filter(|(name, _)| *name != crate::SESSION_HOST_KEY_PIN_OPTION)
+                    .map(|(key, value)| (key.to_owned(), value.to_owned()))
+                    .collect::<Vec<_>>();
+                options.push((crate::SESSION_HOST_KEY_PIN_OPTION.to_owned(), pin));
+                current.options =
+                    SanitizedOptionMap::new(options).map_err(JournalStateError::Payload)?;
+                current.snapshot_hash = current.options.snapshot_hash();
+                state.paused = None;
+            }
+            HostKeyDecision::Rejected => state.paused = Some(TaskPauseReason::RecoveryHold),
+        }
+        state.host_key_state = Some(trust);
         Ok(())
     }
 
@@ -2348,6 +2630,19 @@ where
                 .is_some_and(|state| state.finalizations.values().any(|value| !value.done))
         {
             return Err(JournalStateError::FinalizationMismatch);
+        }
+        self.require_manifest_ready()?;
+        if self.state.as_ref().is_some_and(|state| {
+            state
+                .verification_manifest
+                .as_ref()
+                .is_some_and(|manifest| {
+                    (!manifest.whole().is_empty() && !state.whole_file_verified)
+                        || (!manifest.chunks().is_empty()
+                            && state.durable_pieces.len() != manifest.chunks().len())
+                })
+        }) {
+            return Err(JournalStateError::VerificationMismatch);
         }
         let layout = self.require_layout()?;
         if layout.layout_hash != layout_hash
@@ -4068,6 +4363,132 @@ mod tests {
             calculate_checkpoint_state_hash(&[first]),
             calculate_checkpoint_state_hash(&[other_payload])
         );
+    }
+
+    #[test]
+    fn trust_decisions_require_the_exact_pending_challenge() {
+        use crate::{HostKeyDecision, JournalHostKeyState};
+        let state = |decision| {
+            let key = b"presented-key".to_vec();
+            JournalHostKeyState {
+                challenge: ariax_core::PresentedHostKeyChallenge::new(
+                    ariax_core::HostKeyChallenge {
+                        id: ariax_core::HostKeyChallengeId::new([1; 16]),
+                        canonical_host: "example.test".into(),
+                        port: 22,
+                        algorithm: "ssh-ed25519".into(),
+                        fingerprint_sha256: ariax_core::HostKeyFingerprint::for_presented_key(&key),
+                    },
+                    key,
+                )
+                .unwrap(),
+                decision,
+                created_ms: 1,
+            }
+        };
+        for pending in [false, true] {
+            let mut records = vec![
+                record(1, 0, task_created()),
+                record(2, 0, current_options(&[])),
+            ];
+            records.push(record(
+                3,
+                0,
+                if pending {
+                    JournalPayload::HostKeyState {
+                        state: state(HostKeyDecision::Pending),
+                    }
+                } else {
+                    JournalPayload::TaskPaused {
+                        reason: TaskPauseReason::HostKeyApproval,
+                    }
+                },
+            ));
+            records.push(record(
+                4,
+                0,
+                JournalPayload::HostKeyState {
+                    state: state(HostKeyDecision::Approved),
+                },
+            ));
+            let replay = recover_journal_state(&records, task(), &allow_all, Default::default());
+            assert_eq!(replay.accepted_records, if pending { 4 } else { 3 });
+            if pending {
+                records.push(record(
+                    5,
+                    0,
+                    JournalPayload::HostKeyState {
+                        state: state(HostKeyDecision::Rejected),
+                    },
+                ));
+                let replay =
+                    recover_journal_state(&records, task(), &allow_all, Default::default());
+                assert_eq!(replay.accepted_records, 4);
+            }
+        }
+        let mut mismatched = state(HostKeyDecision::Approved);
+        let mut summary = mismatched.challenge.summary().clone();
+        summary.id = ariax_core::HostKeyChallengeId::new([2; 16]);
+        mismatched.challenge =
+            ariax_core::PresentedHostKeyChallenge::new(summary, b"presented-key".to_vec()).unwrap();
+        let records = vec![
+            record(1, 0, task_created()),
+            record(2, 0, current_options(&[])),
+            record(
+                3,
+                0,
+                JournalPayload::HostKeyState {
+                    state: state(HostKeyDecision::Pending),
+                },
+            ),
+            record(4, 0, JournalPayload::HostKeyState { state: mismatched }),
+        ];
+        assert_eq!(
+            recover_journal_state(&records, task(), &allow_all, Default::default())
+                .accepted_records,
+            3
+        );
+    }
+
+    #[test]
+    fn metadata_completion_rejects_changed_snapshots_and_missing_retained_layout() {
+        for case in 0..4 {
+            let mut expansion = crate::MetalinkExpansion {
+                parent: crate::MetalinkParent {
+                    gid: ariax_core::Gid::new(1).unwrap(),
+                    generation: Generation::INITIAL,
+                    snapshot_hash: options(&[]).snapshot_hash(),
+                    document_hash: hash(4),
+                    document_bytes: 128,
+                    retained: false,
+                },
+                children: vec![ariax_core::Gid::new(2).unwrap()],
+            };
+            match case {
+                1 => expansion.parent.snapshot_hash = hash(8),
+                2 => expansion.parent.retained = true,
+                3 => expansion.parent.generation = Generation::new(1),
+                _ => (),
+            }
+            let records = vec![
+                record(1, 0, task_created()),
+                record(2, 0, current_options(&[])),
+                record(
+                    3,
+                    0,
+                    JournalPayload::MetadataComplete {
+                        expansion,
+                        completed_at_unix_ms: 10,
+                    },
+                ),
+            ];
+            let replay = recover_journal_state(&records, task(), &allow_all, Default::default());
+            assert_eq!(
+                replay.accepted_records,
+                if case == 0 { 3 } else { 2 },
+                "case {case}: {replay:?}"
+            );
+        }
     }
 
     #[test]

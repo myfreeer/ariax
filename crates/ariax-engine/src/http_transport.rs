@@ -1090,7 +1090,7 @@ fn classify_box_error(error: BoxError) -> HttpTransportError {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{
         HttpDirectTransport, HttpDirectTransportConfig, HttpMinimumTlsVersion, HttpTlsPolicy,
         HttpTransportBudgets, HttpTransportError, HttpTransportResponse, HttpTrustSource,
@@ -1111,7 +1111,7 @@ mod tests {
     use std::thread::{self, JoinHandle};
     use std::time::Duration;
 
-    const TEST_ROOT_CERTIFICATE_PEM: &str = r#"-----BEGIN CERTIFICATE-----
+    pub(crate) const TEST_ROOT_CERTIFICATE_PEM: &str = r#"-----BEGIN CERTIFICATE-----
 MIIDJTCCAg2gAwIBAgIUYRDo2MpuEgKXCDw0hfysW5VzQBcwDQYJKoZIhvcNAQEL
 BQAwGjEYMBYGA1UEAwwPQXJpYXgtVGVzdC1Sb290MB4XDTI2MDgxMDEzMjYzNFoX
 DTQ2MDgwNTEzMjYzNFowGjEYMBYGA1UEAwwPQXJpYXgtVGVzdC1Sb290MIIBIjAN
@@ -1440,7 +1440,7 @@ e31pxMIvRBTw+dGS6spzZo+W4ft31it0tEUmShjy5iE5lqwPpp9GaF3UadN+fWJy
         }
     }
 
-    fn test_server_config() -> Arc<ServerConfig> {
+    pub(crate) fn test_server_config() -> Arc<ServerConfig> {
         let mut certificates = TEST_SERVER_CERTIFICATE_PEM.as_bytes();
         let certificates = rustls_pemfile::certs(&mut certificates)
             .collect::<Result<Vec<_>, _>>()

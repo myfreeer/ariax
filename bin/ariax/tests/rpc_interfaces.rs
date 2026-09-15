@@ -270,7 +270,17 @@ fn cli_json_call_uses_the_shared_catalog_and_compatibility_rejections() {
             .expect("catalog")
             .contains(&json!("ariax.reloadConfig"))
     );
-    assert_eq!(response[1]["error"]["data"]["feature"], "metalink");
+    if cfg!(feature = "minimal") {
+        assert!(
+            response[0]["result"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("aria2.addMetalink"))
+        );
+        assert_eq!(response[1]["error"]["code"], -32602);
+    } else {
+        assert_eq!(response[1]["error"]["data"]["feature"], "metalink");
+    }
 }
 
 #[test]

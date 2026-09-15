@@ -139,6 +139,10 @@ impl fmt::Debug for HttpPolicyClient {
 }
 
 impl HttpPolicyClient {
+    #[cfg(any(feature = "ftp", feature = "sftp"))]
+    pub(crate) fn protocol_policy(&self) -> (&HttpResolver, &HttpPolicyClientConfig) {
+        (&self.resolver, &self.config)
+    }
     #[must_use]
     pub fn new(resolver: HttpResolver, config: HttpPolicyClientConfig) -> Self {
         let direct_transport_cache_capacity = effective_direct_transport_cache_capacity(&config);

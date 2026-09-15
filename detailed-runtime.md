@@ -1,5 +1,12 @@
 # Detailed Runtime, Queues, And Buffer Design
 
+Phase-5 parsing and hashing use a private CPU executor with job, resident-byte
+and completion reservations acquired before submission. Reservations follow
+accepted work through completion even when its caller cancels. The executor
+never uses the global Rayon pool; the minimum-thread topology shares a bounded
+executor for disk and CPU work. No unbounded completion queue or detached
+per-metadata thread is part of the Phase-5 admission path.
+
 Status: first-slice implementation in progress. The poll-driven scheduler
 driver, immutable applied status roots, dual byte permits, stable `BufferLease`
 state machine, bounded lazy pool/quarantine, item+byte queue credits, reserved

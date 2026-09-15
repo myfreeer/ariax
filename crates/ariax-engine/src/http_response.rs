@@ -72,8 +72,16 @@ impl HttpRangeResponseValidator {
         status: StatusCode,
         headers: &HeaderMap,
     ) -> Result<Self, HttpRangeResponseError> {
-        let (_, _, total_length) =
-            validate_exact_range_head(status, headers, GlobalSpan { offset: 0, len: 1 }, None)?;
+        let total_length = if matches!(status, StatusCode::OK | StatusCode::RANGE_NOT_SATISFIABLE)
+            && headers
+                .get(CONTENT_LENGTH)
+                .is_some_and(|length| length == "0")
+        {
+            validate_empty_probe(status, headers)?;
+            0
+        } else {
+            validate_exact_range_head(status, headers, GlobalSpan { offset: 0, len: 1 }, None)?.2
+        };
         let (etag, strong_etag) = parse_etag(headers)?;
         let last_modified = parse_last_modified(headers)?;
         let representation_digest = parse_repr_digest(headers)?;
@@ -311,6 +319,48 @@ fn validate_exact_range_head(
         return Err(HttpRangeResponseError::RangeMismatch);
     }
     Ok((start, end, total))
+}
+
+fn validate_empty_probe(
+    status: StatusCode,
+    headers: &HeaderMap,
+) -> Result<(), HttpRangeResponseError> {
+    if headers.contains_key(TRANSFER_ENCODING) {
+        return Err(HttpRangeResponseError::TransferEncoding);
+    }
+    let mut encodings = headers.get_all(CONTENT_ENCODING).iter();
+    if let Some(encoding) = encodings.next()
+        && (encodings.next().is_some()
+            || !encoding
+                .to_str()
+                .is_ok_and(|value| value.eq_ignore_ascii_case("identity")))
+    {
+        return Err(HttpRangeResponseError::ContentEncoding);
+    }
+    if single_decimal_header(
+        headers,
+        CONTENT_LENGTH,
+        HttpRangeResponseError::MissingContentLength,
+        HttpRangeResponseError::DuplicateContentLength,
+        HttpRangeResponseError::InvalidContentLength,
+    )? != 0
+    {
+        return Err(HttpRangeResponseError::RangeMismatch);
+    }
+    if status == StatusCode::RANGE_NOT_SATISFIABLE {
+        if single_header(
+            headers,
+            CONTENT_RANGE,
+            HttpRangeResponseError::MissingContentRange,
+            HttpRangeResponseError::DuplicateContentRange,
+        )? != "bytes */0"
+        {
+            return Err(HttpRangeResponseError::InvalidContentRange);
+        }
+    } else if headers.contains_key(CONTENT_RANGE) {
+        return Err(HttpRangeResponseError::InvalidContentRange);
+    }
+    Ok(())
 }
 
 fn single_header(
@@ -916,6 +966,58 @@ mod tests {
                 GlobalSpan { offset: 4, len: 4 },
             ),
             Err(HttpRangeResponseError::ValidatorChanged)
+        );
+    }
+    #[test]
+    fn empty_probes_require_exact_uncoded_zero_length_evidence() {
+        for status in [StatusCode::OK, StatusCode::RANGE_NOT_SATISFIABLE] {
+            let mut head = HeaderMap::new();
+            head.insert(CONTENT_LENGTH, HeaderValue::from_static("0"));
+            if status == StatusCode::RANGE_NOT_SATISFIABLE {
+                head.insert(CONTENT_RANGE, HeaderValue::from_static("bytes */0"));
+            }
+            assert_eq!(
+                HttpRangeResponseValidator::from_probe(
+                    UriId::new(0),
+                    "http://example.test/empty",
+                    status,
+                    &head
+                )
+                .unwrap()
+                .total_length(),
+                0
+            );
+            let mut coded = head.clone();
+            coded.insert(CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+            assert!(
+                HttpRangeResponseValidator::from_probe(
+                    UriId::new(0),
+                    "http://example.test/empty",
+                    status,
+                    &coded
+                )
+                .is_err()
+            );
+            head.append(CONTENT_LENGTH, HeaderValue::from_static("0"));
+            assert!(
+                HttpRangeResponseValidator::from_probe(
+                    UriId::new(0),
+                    "http://example.test/empty",
+                    status,
+                    &head
+                )
+                .is_err()
+            );
+        }
+        let head = headers("bytes */1", "0", "\"empty\"");
+        assert!(
+            HttpRangeResponseValidator::from_probe(
+                UriId::new(0),
+                "http://example.test/empty",
+                StatusCode::RANGE_NOT_SATISFIABLE,
+                &head
+            )
+            .is_err()
         );
     }
 }

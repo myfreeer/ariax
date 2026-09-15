@@ -243,6 +243,7 @@ pub enum SchedulerAction {
     GenerationPersistenceSucceeded,
     AllocationSucceeded,
     AllocationRetryableFailure,
+    ActiveHostKeyChallengeRequired,
     HostKeyChallengeRequired,
     AllocationTerminalFailure,
     ActiveRestartOptionPatchAccepted,
@@ -320,6 +321,7 @@ pub const ALL_SCHEDULER_ACTIONS: &[SchedulerAction] = &[
     SchedulerAction::GenerationPersistenceSucceeded,
     SchedulerAction::AllocationSucceeded,
     SchedulerAction::AllocationRetryableFailure,
+    SchedulerAction::ActiveHostKeyChallengeRequired,
     SchedulerAction::HostKeyChallengeRequired,
     SchedulerAction::AllocationTerminalFailure,
     SchedulerAction::ActiveRestartOptionPatchAccepted,
@@ -404,6 +406,7 @@ impl SchedulerAction {
             Self::GenerationPersistenceSucceeded => "generation_persistence_succeeded",
             Self::AllocationSucceeded => "allocation_succeeded",
             Self::AllocationRetryableFailure => "allocation_retryable_failure",
+            Self::ActiveHostKeyChallengeRequired => "active_host_key_challenge_required",
             Self::HostKeyChallengeRequired => "host_key_challenge_required",
             Self::AllocationTerminalFailure => "allocation_terminal_failure",
             Self::ActiveRestartOptionPatchAccepted => "active_restart_option_patch_accepted",
@@ -575,6 +578,9 @@ impl SchedulerAction {
             }
             Self::AllocationRetryableFailure => {
                 SchedulerActionSource::TaskEvent(TaskEventKind::AllocationRetryable)
+            }
+            Self::ActiveHostKeyChallengeRequired => {
+                SchedulerActionSource::TaskEvent(TaskEventKind::ActiveHostKeyChallenge)
             }
             Self::HostKeyChallengeRequired => {
                 SchedulerActionSource::TaskEvent(TaskEventKind::AllocationHostKeyChallenge)
@@ -1270,6 +1276,10 @@ pub const fn transition_contract(state: TaskState, action: SchedulerAction) -> T
             }
             _ => conflict(),
         },
+        SchedulerAction::ActiveHostKeyChallengeRequired => match state {
+            TaskState::Active => transition(StateReason::HostKeyChallenge, PAUSED_HOST_KEY_TARGET),
+            _ => conflict(),
+        },
         SchedulerAction::HostKeyChallengeRequired => match state {
             TaskState::Allocating => {
                 transition(StateReason::HostKeyChallenge, PAUSED_HOST_KEY_TARGET)
@@ -1662,7 +1672,7 @@ mod tests {
             }
         }
         assert_eq!(cells, ALL_TASK_STATES.len() * ALL_SCHEDULER_ACTIONS.len());
-        assert_eq!(cells, 16 * 73);
+        assert_eq!(cells, 16 * 74);
     }
 
     #[test]

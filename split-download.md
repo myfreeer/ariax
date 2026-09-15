@@ -1,9 +1,10 @@
 # Split Download Design
 
-Status: known-length HTTP split downloads, piece-aligned range leases, concurrent
-mirrors, durable resume and bounded cancellation-fenced endgame are implemented.
-Adaptive lease sizing and non-HTTP protocol integration remain roadmap work.
-`detailed-http-first-slice.md` defines the current executable boundary.
+Status: known-length HTTP/SFTP split downloads, checksum-aligned range leases,
+concurrent mirrors, durable resume and bounded cancellation-fenced HTTP endgame
+are implemented. FTP/FTPS uses exclusive sequential fallback. Adaptive lease
+sizing remains roadmap work. `detailed-protocol-transfers.md` tracks the current
+Phase-5 boundary and validation; native Linux acceptance stays deferred.
 
 Decision: use dynamic non-overlapping range leases, not overlapping
 "connection 1 downloads 0-100%, connection 2 downloads 50-100%" style ranges.
@@ -267,6 +268,18 @@ Exhausted
 
 Range unsupported mirrors can still be used for sequential fallback or
 single-connection downloads if policy allows.
+
+`inorder` chooses the first available source in admitted priority order.
+`feedback` ranks measured useful throughput, discounted by recent failures and
+current origin concurrency, then uses admitted priority to break ties.
+`adaptive` additionally reserves one in eight assignments to explore the least
+used eligible source. Selection never bypasses identity, retry, origin, proxy,
+or range capability gates. Cancellation does not count as a server failure.
+
+Workers share a process-owned server-statistics cache keyed by canonical
+protocol/host/port, without credentials or paths. Samples use a bounded moving
+average. Entries expire after `server-stat-timeout` (86,400 seconds by default),
+then LRU eviction enforces the profile count and metadata-cache byte budget.
 
 ## Cross-Mirror Entity Identity
 

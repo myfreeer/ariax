@@ -16,12 +16,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ariax_config::persisted_option_is_safe;
 use ariax_core::{Aria2Status, Generation, Gid, MonotonicInstant, SchedulerConfig, TaskId};
 use ariax_engine::{
-    AddUri, DownloadOptions, Engine, HttpCancellation, HttpControlBackend, HttpControlPlane,
-    HttpControlPlaneConfig, HttpCookieJar, HttpCookieLimits, HttpDestinationPolicy,
-    HttpMultiRangeWorker, HttpPolicyClient, HttpProcessResources, HttpResolver, HttpResolverConfig,
-    KnownLengthHttpRecoveryRequest, KnownLengthHttpRequest, KnownLengthHttpResumeRequest,
-    ProcessBootstrapConfig, RpcAuthPolicy, RuntimeEffectConfig, StartupRecoveryConfig,
-    StorageEngineConfig, download_known_length_http_blocking, resume_known_length_http_blocking,
+    AddMetalink, AddUri, ApproveHostKey, DownloadOptions, Engine, HttpCancellation,
+    HttpControlBackend, HttpControlPlane, HttpControlPlaneConfig, HttpCookieJar, HttpCookieLimits,
+    HttpDestinationPolicy, HttpMultiRangeWorker, HttpPolicyClient, HttpProcessResources,
+    HttpResolver, HttpResolverConfig, KnownLengthHttpRecoveryRequest, KnownLengthHttpRequest,
+    KnownLengthHttpResumeRequest, ProcessBootstrapConfig, RpcAuthPolicy, RuntimeEffectConfig,
+    StartupRecoveryConfig, StorageEngineConfig, download_known_length_http_blocking,
+    resume_known_length_http_blocking,
 };
 use ariax_runtime::RuntimeProfile;
 use ariax_storage::{
@@ -29,7 +30,7 @@ use ariax_storage::{
 };
 
 const DEFAULT_HTTP_PIECE_LENGTH: u64 = 1024 * 1024;
-const HELP: &str = "ariax — experimental bounded downloader\n\nUsage: ariax [--help|--version]\n       ariax --check-bootstrap SESSION_DB CONTROL_DIR [OUTPUT_ROOT ...]\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --add-uri SESSION_DB CONTROL_DIR OUTPUT_ROOT URI [URI ...]\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --status SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --pause SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --resume SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --remove SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --rpc-http SESSION_DB CONTROL_DIR OUTPUT_ROOT LOOPBACK_ADDR\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --rpc-ws SESSION_DB CONTROL_DIR OUTPUT_ROOT LOOPBACK_ADDR\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --rpc-stdio SESSION_DB CONTROL_DIR OUTPUT_ROOT\n       ariax --download-http-pinned GID JOURNAL_ID URI PEER OUTPUT_ROOT OUTPUT_PATH JOURNAL_DIR [PIECE_LENGTH]\n       ariax --resume-http-pinned GID JOURNAL_ID URI PEER OUTPUT_ROOT JOURNAL_DIR\n\nRPC is JSON-RPC 2.0 over loopback HTTP/1.1, loopback WebSocket, or Content-Length-framed stdio. Direct control commands use the same engine/control plane. The pinned HTTP commands accept an already policy-approved numeric PEER (IP:port); they do not perform DNS or SSRF-policy resolution.\n";
+const HELP: &str = "ariax — experimental bounded downloader\n\nUsage: ariax [--help|--version]\n       ariax --check-bootstrap SESSION_DB CONTROL_DIR [OUTPUT_ROOT ...]\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --add-uri SESSION_DB CONTROL_DIR OUTPUT_ROOT URI [URI ...]\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --status SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --pause SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --resume SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --remove SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --rpc-http SESSION_DB CONTROL_DIR OUTPUT_ROOT LOOPBACK_ADDR\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --rpc-ws SESSION_DB CONTROL_DIR OUTPUT_ROOT LOOPBACK_ADDR\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --rpc-stdio SESSION_DB CONTROL_DIR OUTPUT_ROOT\n       ariax --add-metalink SESSION_DB CONTROL_DIR OUTPUT_ROOT FILE [--NAME=VALUE ...]\n       ariax approve-host-key SESSION_DB CONTROL_DIR OUTPUT_ROOT GID CHALLENGE SHA256_FINGERPRINT\n       ariax --download-http-pinned GID JOURNAL_ID URI PEER OUTPUT_ROOT OUTPUT_PATH JOURNAL_DIR [PIECE_LENGTH]\n       ariax --resume-http-pinned GID JOURNAL_ID URI PEER OUTPUT_ROOT JOURNAL_DIR\n\nRPC is JSON-RPC 2.0 over loopback HTTP/1.1, loopback WebSocket, or Content-Length-framed stdio. Direct control commands use the same engine/control plane. Add commands accept --NAME=VALUE download options, including checksum, uri-selector, server-stat-timeout, FTP/SFTP settings, follow-metalink and Metalink selection filters. Explicit Metalink input also accepts --metalink-base-uri and --position. Supported checksums: sha-512, sha-256, sha-1 and md5. The pinned HTTP commands accept an already policy-approved numeric PEER (IP:port); they do not perform DNS or SSRF-policy resolution.\n";
 
 fn main() -> ExitCode {
     run(env::args_os().skip(1))
@@ -83,6 +84,10 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
                     || command == "--rpc-ws"
                     || command == "--rpc-stdio"
                     || command == "--add-uri"
+                    || command == "--add-metalink"
+                    || command == "--metalink-file"
+                    || command == "approve-host-key"
+                    || command == "--approve-host-key"
                     || command == "--status"
                     || command == "--pause"
                     || command == "--resume"
@@ -214,20 +219,89 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
             auth,
             &startup,
         ),
+        [
+            command,
+            database,
+            control,
+            output_root,
+            gid,
+            challenge,
+            fingerprint,
+        ] if command == "approve-host-key" || command == "--approve-host-key" => {
+            let request = gid
+                .to_str()
+                .and_then(|gid| gid.parse().ok())
+                .ok_or_else(|| "invalid GID".to_owned())
+                .and_then(|gid| {
+                    ApproveHostKey::from_text(
+                        gid,
+                        &challenge.to_string_lossy(),
+                        &fingerprint.to_string_lossy(),
+                    )
+                    .map_err(|error| error.to_string())
+                });
+            match request {
+                Ok(request) => run_direct_control(
+                    PathBuf::from(database),
+                    PathBuf::from(control),
+                    PathBuf::from(output_root),
+                    profile.unwrap_or_default(),
+                    DirectControl::Approve(request),
+                ),
+                Err(error) => {
+                    eprintln!("ariax: {error}");
+                    ExitCode::from(2)
+                }
+            }
+        }
+        [command, database, control, output_root, path, flags @ ..]
+            if command == "--add-metalink" || command == "--metalink-file" =>
+        {
+            match read_metalink_file(&PathBuf::from(path)).and_then(|bytes| {
+                let (positional, options, selection, position) = parse_transfer_flags(flags, true)?;
+                if !positional.is_empty() {
+                    return Err("unexpected Metalink argument".into());
+                }
+                Ok(AddMetalink {
+                    bytes,
+                    options,
+                    selection,
+                    position,
+                })
+            }) {
+                Ok(request) => run_direct_control(
+                    PathBuf::from(database),
+                    PathBuf::from(control),
+                    PathBuf::from(output_root),
+                    profile.unwrap_or_default(),
+                    DirectControl::Metalink(request),
+                ),
+                Err(error) => {
+                    eprintln!("ariax: {error}");
+                    ExitCode::from(2)
+                }
+            }
+        }
         [command, database, control, output_root, uris @ ..]
             if command == "--add-uri" && !uris.is_empty() =>
         {
-            run_direct_control(
-                PathBuf::from(database),
-                PathBuf::from(control),
-                PathBuf::from(output_root),
-                profile.unwrap_or_default(),
-                DirectControl::Add(
-                    uris.iter()
-                        .map(|uri| uri.to_string_lossy().into_owned())
-                        .collect(),
+            match parse_transfer_flags(uris, false) {
+                Ok((uris, options, _, _)) if !uris.is_empty() => run_direct_control(
+                    PathBuf::from(database),
+                    PathBuf::from(control),
+                    PathBuf::from(output_root),
+                    profile.unwrap_or_default(),
+                    DirectControl::Add(AddUri { uris, options }),
                 ),
-            )
+                Ok(_) => {
+                    eprintln!("ariax: add-uri requires a URI");
+                    ExitCode::from(2)
+                }
+                Err(error) => {
+                    eprintln!("ariax: {error}");
+                    ExitCode::from(2)
+                }
+            }
         }
         [command, database, control, output_root, gid]
             if command == "--status"
@@ -327,7 +401,9 @@ const RPC_STARTUP_HELP: &str = "\nRPC startup options (before the command):\n  -
 const RPC_INTERFACE_HELP: &str = "\nCombined RPC and compatibility commands:\n  --rpc SESSION_DB CONTROL_DIR OUTPUT_ROOT [LOOPBACK_ADDR]\n  --rpc-call SESSION_DB CONTROL_DIR OUTPUT_ROOT JSON_RPC_DOCUMENT\nAdditional startup options (before the command):\n  --rpc-transport=http|websocket|stdio|http+stdio|websocket+stdio\n  --rpc-stdio-framing=content-length|ndjson\n  --rpc-stdio-eof=shutdown|close-transport|ignore\n  --rpc-stdio-events=true|false\n  --rpc-stdio-max-request-size=SIZE  At most 2M\n  --rpc-compat=aria2|extended|strict\n  --conf-path=FILE   Reloadable HTTP task defaults\n  --url-rules=FILE   Bounded TOML rules\n";
 
 enum DirectControl {
-    Add(Vec<String>),
+    Add(AddUri),
+    Metalink(AddMetalink),
+    Approve(ApproveHostKey),
     Status(Gid),
     Pause(Gid),
     Resume(Gid),
@@ -369,6 +445,11 @@ fn run_direct_control(
         };
         let result = match command {
             DirectControl::Add(uris) => direct_add(&engine, uris).await,
+            DirectControl::Metalink(bytes) => direct_metalink(&engine, bytes).await,
+            DirectControl::Approve(request) => engine
+                .approve_host_key(request)
+                .await
+                .map_err(|error| error.to_string()),
             DirectControl::Status(gid) => direct_status(&engine, gid).await,
             DirectControl::Pause(gid) => engine
                 .pause(gid)
@@ -411,27 +492,188 @@ fn run_direct_control(
     })
 }
 
-async fn direct_add(engine: &Engine, uris: Vec<String>) -> Result<(), String> {
+async fn direct_add(engine: &Engine, request: AddUri) -> Result<(), String> {
     let gid = engine
-        .add_uri(AddUri {
-            uris,
-            options: DownloadOptions::default(),
-        })
+        .add_uri(request)
         .await
         .map_err(|error| error.to_string())?;
     println!("added {gid}");
+    direct_wait(engine, gid).await
+}
+
+type TransferArguments = (
+    Vec<String>,
+    DownloadOptions,
+    ariax_engine::MetalinkSelection,
+    Option<i64>,
+);
+fn parse_transfer_flags(
+    arguments: &[OsString],
+    metalink: bool,
+) -> Result<TransferArguments, String> {
+    let mut positional = Vec::new();
+    let mut options = Vec::new();
+    let mut selection = ariax_engine::MetalinkSelection::default();
+    let mut position = None;
+    let mut literal = false;
+    for argument in arguments {
+        let text = argument
+            .to_str()
+            .ok_or("transfer arguments must be UTF-8")?;
+        if text == "--" && !literal {
+            literal = true;
+            continue;
+        }
+        if !literal && let Some(flag) = text.strip_prefix("--") {
+            let (name, value) = flag
+                .split_once('=')
+                .ok_or("download options require --NAME=VALUE")?;
+            if name == "metalink-base-uri" && metalink {
+                if selection.base_uri.replace(value.to_owned()).is_some() {
+                    return Err("duplicate Metalink base URI".into());
+                }
+            } else if name == "position" && metalink {
+                let value = value
+                    .parse::<i64>()
+                    .ok()
+                    .filter(|value| *value >= -1)
+                    .ok_or("invalid queue position")?;
+                if position.replace(value).is_some() {
+                    return Err("duplicate queue position".into());
+                }
+            } else {
+                options.push((name.to_owned(), value.to_owned()));
+            }
+        } else {
+            positional.push(text.to_owned());
+        }
+    }
+    Ok((
+        positional,
+        DownloadOptions::from_pairs(options).map_err(|error| error.to_string())?,
+        selection,
+        position,
+    ))
+}
+
+fn read_metalink_file(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).map_err(|_| "cannot open Metalink file")?;
+    const LIMIT: usize = 64 * 1024 * 1024;
+    if !file
+        .metadata()
+        .map_err(|_| "cannot inspect Metalink file")?
+        .is_file()
+    {
+        return Err("Metalink input must be a regular file".into());
+    }
+    let mut bytes = Vec::new();
+    file.take((LIMIT + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "cannot read Metalink file")?;
+    if bytes.len() > LIMIT {
+        return Err("Metalink file exceeds 64 MiB".into());
+    }
+    Ok(bytes)
+}
+
+async fn direct_metalink(engine: &Engine, request: AddMetalink) -> Result<(), String> {
+    let gids = engine
+        .add_metalink(request)
+        .await
+        .map_err(|error| error.to_string())?;
+    for gid in &gids {
+        println!("added {gid}");
+    }
+    for gid in gids {
+        direct_wait(engine, gid).await?;
+    }
+    Ok(())
+}
+
+fn read_key_approval(input: impl std::io::Read) -> Option<bool> {
+    use std::io::BufRead;
+    let mut text = Vec::new();
+    std::io::BufReader::new(input.take(32))
+        .read_until(b'\n', &mut text)
+        .ok()?;
+    Some(text == b"yes\n" || text == b"yes\r\n")
+}
+
+async fn direct_wait(engine: &Engine, gid: Gid) -> Result<(), String> {
+    let mut pending = std::collections::VecDeque::from([gid]);
+    let mut seen = std::collections::BTreeSet::new();
+    while let Some(gid) = pending.pop_front() {
+        if !seen.insert(gid) {
+            continue;
+        }
+        pending.extend(direct_wait_one(engine, gid).await?);
+        if pending.len() > 1000 {
+            return Err("too many followed tasks".into());
+        }
+    }
+    Ok(())
+}
+
+async fn direct_wait_one(engine: &Engine, gid: Gid) -> Result<Vec<Gid>, String> {
     loop {
         let status = engine
             .status(gid)
             .await
             .map_err(|error| error.to_string())?;
+        if let Some(challenge) = status.host_key_challenge {
+            use std::io::IsTerminal;
+            let id = challenge
+                .id
+                .as_bytes()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            let fingerprint =
+                ariax_storage::session_host_key_pin_value(challenge.fingerprint_sha256);
+            eprintln!(
+                "host key for {}:{}: {} SHA-256 {} (challenge {})",
+                challenge.canonical_host, challenge.port, challenge.algorithm, fingerprint, id
+            );
+            if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+                return Err(format!(
+                    "task {gid} is paused; verify the fingerprint, then use ariax approve-host-key SESSION_DB CONTROL_DIR OUTPUT_ROOT {gid} {id} {fingerprint}, or supply an explicit host-key pin"
+                ));
+            }
+            eprintln!("Approve this key? Type yes to allow, or anything else to stop:");
+            let approved =
+                tokio::task::spawn_blocking(|| read_key_approval(std::io::stdin().lock()))
+                    .await
+                    .map_err(|_| "approval input stopped")?
+                    .unwrap_or(false);
+            if !approved {
+                engine
+                    .remove(gid)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                return Err(format!("host key rejected for {gid}"));
+            }
+            engine
+                .approve_host_key(ApproveHostKey {
+                    gid,
+                    challenge: challenge.id,
+                    fingerprint_sha256: challenge.fingerprint_sha256,
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+            continue;
+        }
+        if status.status == Aria2Status::Paused {
+            println!("paused {gid}");
+            return Ok(Vec::new());
+        }
         if status.status.is_terminal() {
             println!(
                 "gid={} status={} completed={} total={}",
                 gid, status.status, status.completed_length, status.total_length
             );
             return if status.status == Aria2Status::Complete {
-                Ok(())
+                Ok(status.followed_by)
             } else {
                 Err(format!("task {gid} finished with status {}", status.status))
             };
@@ -954,6 +1196,78 @@ fn check_bootstrap(
         Err(error) => {
             eprintln!("ariax: bootstrap failed: {error}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(test)]
+mod phase5_cli_tests {
+    use super::*;
+    #[test]
+    fn cli_options_use_shared_validation_and_reject_unknown_or_duplicate_flags() {
+        let flags = [
+            "https://example.test/file",
+            "--checksum=md5=d41d8cd98f00b204e9800998ecf8427e",
+            "--follow-metalink=mem",
+            "--server-stat-timeout=2",
+        ];
+        let (uris, options, _, _) =
+            parse_transfer_flags(&flags.map(OsString::from), false).unwrap();
+        assert_eq!(uris.len(), 1);
+        let transfer = options.transfer.unwrap();
+        assert_eq!(
+            transfer.follow_metalink,
+            ariax_engine::FollowMetalink::Memory
+        );
+        assert_eq!(transfer.server_stat_timeout, Duration::from_secs(2));
+        assert!(transfer.checksum.is_some());
+        for flags in [
+            vec!["--follow-metalink=bad"],
+            vec!["--server-stat-timeout=-1"],
+            vec!["--split=1", "--split=2"],
+            vec!["--metalink-expansion=forged"],
+            vec!["--position=-2"],
+            vec!["--unknown=true"],
+        ] {
+            assert!(
+                parse_transfer_flags(
+                    &flags.into_iter().map(OsString::from).collect::<Vec<_>>(),
+                    true
+                )
+                .is_err()
+            );
+        }
+        let (_, options, selection, position) = parse_transfer_flags(
+            &[
+                "--select-file=2",
+                "--metalink-base-uri=https://example.test/",
+                "--position=0",
+            ]
+            .map(OsString::from),
+            true,
+        )
+        .unwrap();
+        assert_eq!(position, Some(0));
+        assert!(selection.base_uri.is_some());
+        assert_eq!(
+            options.transfer.unwrap().metalink_filters["select-file"],
+            "2"
+        );
+    }
+    #[test]
+    fn host_key_prompt_accepts_only_a_complete_explicit_yes_line() {
+        assert_eq!(read_key_approval(&b"yes\n"[..]), Some(true));
+        assert_eq!(read_key_approval(&b"yes\r\n"[..]), Some(true));
+        for input in [
+            &b"yes"[..],
+            b"y\n",
+            b"no\n",
+            b"yes please\n",
+            b"YES\n",
+            b"",
+            &[b'y'; 33],
+        ] {
+            assert_eq!(read_key_approval(input), Some(false));
         }
     }
 }

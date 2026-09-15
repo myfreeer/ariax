@@ -2,7 +2,8 @@
 
 Status: Phase 4B implements bounded values, flat configuration and TOML URL
 rules, versioned atomic reload, redacted dumps and typed runtime/global updates.
-The 50 reviewed registry options declare executable or feature-gated behavior.
+The 89 reviewed registry options declare executable or feature-gated behavior,
+including the Phase-5 protocol, Metalink, verification and selector options.
 Retry admission/recovery (`P4-03`), active
 option replay and live rates (`P4-04`), and the supported HTTP runtime option
 matrix (`P4-07`) have executable success/rejection coverage. The generated
@@ -274,6 +275,12 @@ Current RPC transports use fixed 2 MiB request, 16 MiB response, 256-member, and
 future work. The separate per-client/process reservations required by `P4-06`
 are implemented, including the shared resident budget and transport-held credit.
 
+Phase-5 Metalink admission additionally caps retained parser metadata at 4 MiB
+and each selected atomic batch at 1,000 tasks. The 64 MiB default XML cap and
+256 MiB hard maximum do not enlarge these budgets. Local/native inputs and
+automatic HTTP following share admission; RPC's base64 envelope and request
+reservations can impose smaller effective document limits.
+
 The exact public options are `rpc-max-request-size`,
 `rpc-stdio-max-request-size`, `rpc-max-response-size`,
 `rpc-max-batch-calls`, `rpc-max-list-items`,
@@ -534,7 +541,8 @@ HTTP/FTP/SFTP:
   `max-tries`, `retry-wait`, `timeout`, `connect-timeout`,
   `lowest-speed-limit`, `max-file-not-found`, `max-resume-failure-tries`:
   are the target transfer option set. The executable HTTP parser accepts split,
-  connection, piece, timeout, speed, and SHA-256 checksum settings. Explicit
+  connection, piece, timeout, speed, and `sha-512`, `sha-256`, `sha-1`, and `md5`
+  checksum settings. Explicit
   retry-policy admission and recovery pass the production persistence policy
   (`P4-03`); `allow-piece-length-change`, `max-file-not-found`, and
   `max-resume-failure-tries` are not accepted by this HTTP RPC checkpoint.

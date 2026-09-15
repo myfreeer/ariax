@@ -1,4 +1,7 @@
 //! Journal-backed non-overlapping multi-mirror HTTP range worker.
+mod metalink_follow;
+mod protocol;
+use protocol::PreparedValidator;
 
 use crate::http_first_slice::{
     KnownLengthHttpError, append_http_strong_validator, append_initial_admission_with_options,
@@ -47,7 +50,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime};
-use tokio::sync::{Semaphore, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::{AbortHandle, JoinSet};
 
 pub const MAX_HTTP_RANGE_EVENT_CAPACITY: usize = 4096;
@@ -301,6 +304,19 @@ pub struct HttpRetryDiagnosticSnapshot {
     pub lease_disposition: HttpRetryLeaseDisposition,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshConnectionDiagnostic {
+    pub source: u32,
+    pub kex: &'static str,
+    pub host_key: &'static str,
+    pub cipher: &'static str,
+    pub client_mac: &'static str,
+    pub server_mac: &'static str,
+    pub insecure_host_key: bool,
+    pub legacy_host_key_digest: bool,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct HttpTransferStatsSnapshot {
     pub total_length: u64,
@@ -323,6 +339,7 @@ pub struct HttpTransferStatsSnapshot {
     pub condition_reason: Option<ConnectionConditionReason>,
     pub rate_debt_bytes: u64,
     pub retry_diagnostic: Option<HttpRetryDiagnosticSnapshot>,
+    pub ssh_connection: Option<SshConnectionDiagnostic>,
     pub network_phase: bool,
     pub local_pressure: bool,
     pub retry_wait_until: Option<MonotonicInstant>,
@@ -356,6 +373,7 @@ struct HttpTransferStatsInner {
     rate_debt_bytes: AtomicU64,
     diagnostic: Mutex<StatsDiagnostic>,
     retry_diagnostic: Mutex<Option<HttpRetryDiagnosticSnapshot>>,
+    ssh_connection: Mutex<Option<SshConnectionDiagnostic>>,
     speed: Mutex<HttpSpeedState>,
 }
 
@@ -378,6 +396,7 @@ impl Default for HttpTransferStatsInner {
             rate_debt_bytes: AtomicU64::new(0),
             diagnostic: Mutex::new(StatsDiagnostic::default()),
             retry_diagnostic: Mutex::new(None),
+            ssh_connection: Mutex::new(None),
             speed: Mutex::new(HttpSpeedState::new(ariax_core::MonotonicInstant::now())),
         }
     }
@@ -447,6 +466,11 @@ impl HttpTransferStats {
     fn begin(&self) {
         self.inner.network_phase.store(false, Ordering::Relaxed);
         self.set_retry_wait(None);
+        *self
+            .inner
+            .ssh_connection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         for value in [
             &self.inner.total_length,
             &self.inner.raw_body_bytes,
@@ -574,6 +598,11 @@ impl HttpTransferStats {
         self.set_diagnostic(StatsDiagnostic::default());
     }
 
+    #[cfg(feature = "sftp")]
+    pub(crate) fn set_ssh_connection(&self, diagnostic: SshConnectionDiagnostic) {
+        *self.inner.ssh_connection.lock().expect("SSH diagnostics") = Some(diagnostic);
+    }
+
     fn set_retry_diagnostic(&self, diagnostic: HttpRetryDiagnosticSnapshot) {
         *self
             .inner
@@ -695,6 +724,7 @@ impl HttpTransferStats {
             condition_reason: diagnostic.reason,
             rate_debt_bytes,
             retry_diagnostic,
+            ssh_connection: *self.inner.ssh_connection.lock().expect("SSH diagnostics"),
         }
     }
 }
@@ -809,10 +839,14 @@ pub struct HttpMultiRangeWorkerConfig {
     /// Bounds body frames retained between Hyper and storage. The permit moves
     /// with the frame until positional disk submission has consumed it.
     pub ingress_budget: HttpIngressBudgets,
+    pub protocol_metadata: HttpIngressBudgets,
+    pub server_stats: crate::ServerStatistics,
+    pub metalink_follow: crate::MetalinkFollowQueue,
+    pub sftp_ingress: HttpIngressBudgets,
     pub ingress_frame_bytes: NonZeroUsize,
     pub event_capacity: NonZeroUsize,
     /// Process-local cap for CPU-heavy whole-file digest verification. Worker
-    /// clones share the semaphore created from this value.
+    /// clones share the private CPU pool created from this value.
     pub digest_workers: NonZeroUsize,
 }
 
@@ -843,6 +877,10 @@ impl Default for HttpMultiRangeWorkerConfig {
                 .expect("default download rate arbiter is valid"),
             discard_budget: HttpDiscardBudget::default(),
             ingress_budget: HttpIngressBudgets::new(DEFAULT_HTTP_INGRESS_BUDGET_BYTES),
+            protocol_metadata: HttpIngressBudgets::new(32 * 1024 * 1024),
+            server_stats: crate::ServerStatistics::default(),
+            metalink_follow: crate::MetalinkFollowQueue::default(),
+            sftp_ingress: HttpIngressBudgets::new(16 * 1024 * 1024),
             ingress_frame_bytes: NonZeroUsize::new(DEFAULT_HTTP_INGRESS_FRAME_BYTES)
                 .expect("default ingress frame is nonzero"),
             event_capacity: NonZeroUsize::new(DEFAULT_HTTP_RANGE_EVENT_CAPACITY)
@@ -859,7 +897,6 @@ pub struct HttpMultiRangeWorker {
     config: HttpMultiRangeWorkerConfig,
     stats: SharedHttpTransferStats,
     session: Option<SessionHandle>,
-    digest_slots: Arc<Semaphore>,
 }
 
 impl fmt::Debug for HttpMultiRangeWorker {
@@ -878,14 +915,24 @@ impl HttpMultiRangeWorker {
         config: HttpMultiRangeWorkerConfig,
         stats: SharedHttpTransferStats,
     ) -> Result<Self, HttpMultiRangeError> {
-        let config = config.validate()?;
-        let digest_slots = Arc::new(Semaphore::new(config.digest_workers.get()));
+        let mut config = config.validate()?;
+        if config.storage.cpu_pool.is_none() {
+            config.storage.cpu_pool = Some(
+                ariax_runtime::CpuPool::new(ariax_runtime::CpuPoolConfig {
+                    workers: config.digest_workers.get(),
+                    jobs: 128,
+                    bytes: (32 * 1024 * 1024).min(config.storage.resident_budget.limit()),
+                    resident: config.storage.resident_budget.clone(),
+                    shared_disk: false,
+                })
+                .map_err(|_| HttpMultiRangeError::InvalidConfig)?,
+            );
+        }
         Ok(Self {
             client,
             config,
             stats,
             session: None,
-            digest_slots,
         })
     }
 
@@ -922,6 +969,32 @@ impl HttpMultiRangeWorker {
         generation: Generation,
         cancellation: HttpCancellation,
     ) -> Result<HttpWorkerSuccess, HttpMultiRangeError> {
+        if let Some(expansion) = task.options().transfer.metalink_expansion.clone() {
+            return self
+                .finish_metalink_parent(task, generation, expansion)
+                .await;
+        }
+        let result = self
+            .run_payload_task(task.clone(), generation, cancellation.clone())
+            .await;
+        match result {
+            Err(HttpMultiRangeError::MetalinkDiscovered(uri)) => {
+                self.follow_metalink(task, generation, cancellation, uri.0)
+                    .await
+            }
+            result => result,
+        }
+    }
+
+    async fn run_payload_task(
+        &self,
+        task: Arc<HttpTaskSpec>,
+        generation: Generation,
+        cancellation: HttpCancellation,
+    ) -> Result<HttpWorkerSuccess, HttpMultiRangeError> {
+        if task.requires_protocol_dispatch() {
+            return self.run_protocol_task(task, generation, cancellation).await;
+        }
         let retry_policy = task.options().retry.as_ref().unwrap_or(&self.config.retry);
         let discard_limits = HttpDiscardBudgetLimits::for_http_task(
             self.config.discard_budget.process_limit(),
@@ -1171,10 +1244,13 @@ impl HttpMultiRangeWorker {
         let mut last_error = None;
         let mirror_identity = HttpMirrorIdentityContext {
             policy: task.options().mirror_identity,
-            shared_whole_entity_digest: task.options().checksum.is_some(),
+            shared_whole_entity_digest: task.has_strict_content_identity(),
             shared_range_digest: None,
         };
         for source in &task.sources()[..source_limit] {
+            if !source.protocol().is_http() {
+                continue;
+            }
             let Some(uri) = source.uri() else {
                 continue;
             };
@@ -1187,6 +1263,9 @@ impl HttpMultiRangeWorker {
                 cancellation,
                 stats,
                 discard_task,
+                cfg!(feature = "metalink")
+                    && task.verification().is_none()
+                    && task.options().transfer.follow_metalink != crate::FollowMetalink::Never,
             )
             .await
             {
@@ -1197,7 +1276,7 @@ impl HttpMultiRangeWorker {
                     if settled_total == Some(validator.total_length()) {
                         prepared.push(PreparedSource {
                             lease_fingerprint: validator.fingerprint(),
-                            validator: Arc::new(validator),
+                            validator: Arc::new(PreparedValidator::Http(Arc::new(validator))),
                             ordinary_assignments: true,
                             range_digest_endgame: false,
                         });
@@ -1205,7 +1284,10 @@ impl HttpMultiRangeWorker {
                         last_error = Some(HttpMultiRangeError::SourceLengthMismatch);
                     }
                 }
-                Err(HttpMultiRangeError::Cancelled) => return Err(HttpMultiRangeError::Cancelled),
+                Err(
+                    error @ (HttpMultiRangeError::Cancelled
+                    | HttpMultiRangeError::MetalinkDiscovered(_)),
+                ) => return Err(error),
                 Err(error) => last_error = Some(error),
             }
         }
@@ -1214,7 +1296,7 @@ impl HttpMultiRangeWorker {
         }
         if let Some(identity) = recovered_identity
             && task.options().mirror_identity == HttpMirrorIdentityPolicy::RequireSharedDigest
-            && task.options().checksum.is_none()
+            && !task.has_strict_content_identity()
         {
             let expected = identity.representation_digest();
             prepared.retain(|source| {
@@ -1235,7 +1317,7 @@ impl HttpMultiRangeWorker {
                 source.range_digest_endgame = true;
             }
         } else if task.options().mirror_identity == HttpMirrorIdentityPolicy::RequireSharedDigest
-            && task.options().checksum.is_none()
+            && !task.has_strict_content_identity()
             && prepared.len() > 1
         {
             let shared = prepared[0].validator.representation_digest();
@@ -1700,19 +1782,15 @@ impl HttpMultiRangeWorker {
             return Ok(None);
         };
         let output = output.ok_or(HttpMultiRangeError::Protocol)?;
-        let slots = Arc::clone(&self.digest_slots);
-        let permit = tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => return Err(HttpMultiRangeError::Cancelled),
-            permit = slots.acquire_owned() => permit.map_err(|_| HttpMultiRangeError::Protocol)?,
-        };
+        if cancellation.is_cancelled() {
+            return Err(HttpMultiRangeError::Cancelled);
+        }
         let hash_cancellation = cancellation.clone();
-        let actual = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            hash_output_sha256(&output, total_length, &hash_cancellation)
-        })
-        .await
-        .map_err(|_| HttpMultiRangeError::Protocol)??;
+        let actual = self
+            .cpu(128 * 1024, move || {
+                hash_output_sha256(&output, total_length, &hash_cancellation)
+            })
+            .await??;
         let expected_value = expected.value();
         if actual.algorithm() != expected.algorithm() || actual.value() != expected_value.as_slice()
         {
@@ -1863,6 +1941,18 @@ impl HttpMultiRangeWorker {
         discard_task: &HttpDiscardTaskGuard,
     ) -> Result<(), HttpMultiRangeError> {
         let total_length = sources[0].validator.total_length();
+        if total_length == 0 {
+            if cancellation.is_cancelled() {
+                return Err(HttpMultiRangeError::Cancelled);
+            }
+            #[cfg(feature = "sftp")]
+            for source in sources {
+                if let PreparedValidator::Sftp { session, .. } = source.validator.as_ref() {
+                    session.finish().await?;
+                }
+            }
+            return Ok(());
+        }
         let retry_policy = task.options().retry.as_ref().unwrap_or(&self.config.retry);
         let recovered_retries = recover_range_retries(recovered_retry_states, retry_policy)?;
         if let Some(diagnostic) =
@@ -1885,19 +1975,22 @@ impl HttpMultiRangeWorker {
         let range_sources = sources
             .iter()
             .map(|source| {
-                HttpRangeSource::from_uri(source.validator.source(), source.validator.final_uri())
-                    .map(|source_id| {
-                        source_id
-                            .with_ordinary_assignments(source.ordinary_assignments)
-                            .with_same_source_endgame(source.validator.if_range().is_some())
-                            .with_shared_identity_endgame(
-                                mirror_identity.shared_range_digest.is_some()
-                                    && source.range_digest_endgame,
-                            )
-                    })
+                HttpRangeSource::from_transfer_uri(
+                    source.validator.source(),
+                    source.validator.final_uri(),
+                )
+                .map(|source_id| {
+                    source_id
+                        .with_ordinary_assignments(source.ordinary_assignments)
+                        .with_same_source_endgame(source.validator.if_range().is_some())
+                        .with_shared_identity_endgame(
+                            mirror_identity.shared_range_digest.is_some()
+                                && source.range_digest_endgame,
+                        )
+                })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let mut coordinator = HttpRangeCoordinator::new(
+        let mut coordinator = HttpRangeCoordinator::new_transfer(
             HttpRangeCoordinatorConfig {
                 total_length,
                 piece_length: task.options().piece_length,
@@ -1905,10 +1998,38 @@ impl HttpMultiRangeWorker {
                 max_connections_per_origin: task.options().max_connections_per_server,
                 max_total_attempts: retry_policy.max_attempts.get(),
                 max_attempts_per_source: retry_policy.max_attempts_per_mirror.get(),
-                endgame_max_duplicates: task.options().endgame_max_duplicates,
+                endgame_max_duplicates: if storage.has_verification() {
+                    0
+                } else {
+                    task.options().endgame_max_duplicates
+                },
             },
             range_sources,
         )?;
+        coordinator.configure_selector(
+            task.options().transfer.uri_selector,
+            sources.iter().filter_map(|source| {
+                let id = source.validator.source();
+                let origin =
+                    HttpRangeSource::from_transfer_uri(id, source.validator.final_uri()).ok()?;
+                let priority = task
+                    .sources()
+                    .iter()
+                    .find(|source| source.id() == id)
+                    .map_or(0, |source| source.priority());
+                Some((
+                    id,
+                    priority,
+                    self.config.server_stats.feedback_with_timeout(
+                        origin.origin(),
+                        task.options().transfer.server_stat_timeout,
+                    ),
+                ))
+            }),
+        );
+        if storage.has_verification() {
+            coordinator.advance_lease_floor(storage.next_lease_floor());
+        }
         coordinator.restore_durable(durable_pieces.iter().copied())?;
         let durable_pieces = durable_pieces.iter().copied().collect::<BTreeSet<_>>();
         let mut budgets = restore_range_retry_budgets(
@@ -1957,6 +2078,67 @@ impl HttpMultiRangeWorker {
                             .get(&assignment.source)
                             .cloned()
                             .ok_or(HttpMultiRangeError::Protocol)?;
+                        #[cfg(feature = "sftp")]
+                        let (source, connection_error) = {
+                            let mut source = source;
+                            let mut connection_error = None;
+                            if let PreparedValidator::Sftp {
+                                session,
+                                source: submitted,
+                            } = source.validator.as_ref()
+                                && session.raw.is_closed()
+                            {
+                                session.drain().await;
+                                match crate::sftp::SftpSession::connect(
+                                    &self.client,
+                                    Arc::new(task.clone()),
+                                    submitted,
+                                    generation,
+                                    &self.config.protocol_metadata,
+                                    &self.config.sftp_ingress,
+                                    self.config
+                                        .storage
+                                        .cpu_pool
+                                        .as_ref()
+                                        .ok_or(HttpMultiRangeError::InvalidConfig)?,
+                                    cancellation,
+                                    stats.clone(),
+                                )
+                                .await
+                                {
+                                    Ok(fresh) => {
+                                        if !fresh.validator.permits_resume(
+                                            &session.validator,
+                                            task.has_strict_content_identity(),
+                                        ) {
+                                            fresh.drain().await;
+                                            break 'download Err(
+                                                crate::ProtocolFailure::StaleValidator.into(),
+                                            );
+                                        }
+                                        storage
+                                            .record_protocol_validator(fresh.validator.clone())?;
+                                        source = PreparedSource {
+                                            lease_fingerprint: fresh.validator.fingerprint(),
+                                            validator: Arc::new(PreparedValidator::Sftp {
+                                                session: Arc::new(fresh),
+                                                source: submitted.clone(),
+                                            }),
+                                            ordinary_assignments: true,
+                                            range_digest_endgame: false,
+                                        };
+                                        validators.insert(assignment.source, source.clone());
+                                    }
+                                    Err(HttpMultiRangeError::Transfer(error)) => {
+                                        connection_error = Some(error)
+                                    }
+                                    Err(error) => break 'download Err(error),
+                                }
+                            }
+                            (source, connection_error)
+                        };
+                        #[cfg(not(feature = "sftp"))]
+                        let connection_error = None;
                         let validator = Arc::clone(&source.validator);
                         let budget = budgets.entry(assignment.piece).or_insert(
                             HttpRetryBudget::new(retry_policy.clone())
@@ -2009,6 +2191,7 @@ impl HttpMultiRangeWorker {
                                 opened: false,
                                 received: 0,
                                 last_progress_ms: now_ms,
+                                started_ms: now_ms,
                                 discard: discard.clone(),
                             },
                         );
@@ -2028,24 +2211,57 @@ impl HttpMultiRangeWorker {
                         let rate = self.config.download_rate.clone();
                         let ingress_budget = self.config.ingress_budget.clone();
                         let ingress_frame_bytes = self.config.ingress_frame_bytes;
+                        #[cfg(feature = "sftp")]
+                        let sftp_ingress = self.config.sftp_ingress.clone();
                         let abort = joins.spawn(async move {
-                            range_attempt(
-                                client,
-                                assignment,
-                                validator,
-                                mirror_identity,
-                                body_timeout,
-                                lowest_speed_limit,
-                                rate,
-                                rate_path,
-                                ingress_budget,
-                                ingress_frame_bytes,
-                                discard,
-                                cancellation,
-                                sender,
-                                attempt_stats,
-                            )
-                            .await;
+                            if let Some(error) = connection_error {
+                                let _ = sender
+                                    .send(AttemptEvent::Terminal {
+                                        lease: assignment.lease,
+                                        result: Err(RangeAttemptFailure::Transfer(error)),
+                                    })
+                                    .await;
+                                return assignment.lease;
+                            }
+                            match validator.as_ref() {
+                                PreparedValidator::Http(validator) => {
+                                    range_attempt(
+                                        client,
+                                        assignment,
+                                        validator.clone(),
+                                        mirror_identity,
+                                        body_timeout,
+                                        lowest_speed_limit,
+                                        rate,
+                                        rate_path,
+                                        ingress_budget,
+                                        ingress_frame_bytes,
+                                        discard,
+                                        cancellation,
+                                        sender,
+                                        attempt_stats,
+                                    )
+                                    .await
+                                }
+                                #[cfg(feature = "sftp")]
+                                PreparedValidator::Sftp { session, .. } => {
+                                    protocol::sftp_transfer::range_attempt(
+                                        session.clone(),
+                                        assignment,
+                                        body_timeout,
+                                        rate,
+                                        rate_path,
+                                        ingress_budget,
+                                        ingress_frame_bytes,
+                                        sftp_ingress,
+                                        discard,
+                                        cancellation,
+                                        sender,
+                                        attempt_stats,
+                                    )
+                                    .await
+                                }
+                            }
                             assignment.lease
                         });
                         by_join.insert(abort.id(), assignment.lease);
@@ -2095,8 +2311,13 @@ impl HttpMultiRangeWorker {
                     let Some(event) = event else {
                         break 'download Err(HttpMultiRangeError::Protocol);
                     };
+                    let sample = if let AttemptEvent::Terminal { lease,result }=&event {
+                        active.get(lease).filter(|_|!matches!(result,Err(RangeAttemptFailure::Cancelled))).map(|attempt| {
+                            (attempt.assignment.source, attempt.received as u64, Duration::from_millis(elapsed_ms(started).saturating_sub(attempt.started_ms).max(1)),result.is_ok())
+                        })
+                    } else {None};
                     let _local_work = stats.local_wait();
-                    match process_attempt_event(
+                    let processed = process_attempt_event(
                         event,
                         task.task(),
                         generation,
@@ -2110,7 +2331,14 @@ impl HttpMultiRangeWorker {
                         &mut endgame_losers,
                         &mut cancelled_leases,
                         stats,
-                    ).await {
+                    ).await;
+                    if let Some((id,bytes,elapsed,success))=sample
+                        && let Some(source)=validators.get(&id)
+                        && let Ok(origin)=HttpRangeSource::from_transfer_uri(id,source.validator.final_uri()) {
+                        let feedback=self.config.server_stats.observe_with_timeout(origin.origin(),bytes,elapsed,success && processed.is_ok(), task.options().transfer.server_stat_timeout);
+                        coordinator.update_feedback(id,feedback);
+                    }
+                    match processed {
                         Ok(AttemptAction::None) => {}
                         Ok(AttemptAction::CancelLease(lease)) => {
                             let Some(handle) = abort_handles.get(&lease) else {
@@ -2216,6 +2444,18 @@ impl HttpMultiRangeWorker {
         joins.abort_all();
         while joins.join_next().await.is_some() {}
         let mut cleanup_error = None;
+        #[cfg(feature = "sftp")]
+        for source in validators.values() {
+            if let PreparedValidator::Sftp { session, .. } = source.validator.as_ref() {
+                if outcome.is_ok() {
+                    if let Err(error) = session.finish().await {
+                        cleanup_error.get_or_insert(HttpMultiRangeError::Transfer(error));
+                    }
+                } else {
+                    session.drain().await;
+                }
+            }
+        }
         while let Ok(event) = receiver.try_recv() {
             match event {
                 AttemptEvent::Head { start, .. } => {
@@ -2283,7 +2523,7 @@ impl HttpMultiRangeWorker {
             .ok_or(HttpMultiRangeError::Protocol)?;
         let mirror_identity = HttpMirrorIdentityContext {
             policy: task.options().mirror_identity,
-            shared_whole_entity_digest: task.options().checksum.is_some(),
+            shared_whole_entity_digest: task.has_strict_content_identity(),
             shared_range_digest: current
                 .range_digest_endgame
                 .then(|| current.validator.representation_digest())
@@ -2300,6 +2540,7 @@ impl HttpMultiRangeWorker {
             cancellation,
             stats,
             discard_task,
+            false,
         )
         .await
         .map_err(|error| match error {
@@ -2308,17 +2549,18 @@ impl HttpMultiRangeWorker {
         })?;
         if fresh.total_length() != total_length
             || fresh.final_uri() != current.validator.final_uri()
-            || (task.options().checksum.is_none() && fresh != *current.validator)
+            || (!task.has_strict_content_identity()
+                && current.validator.http().is_none_or(|old| &fresh != old))
         {
             return Err(HttpMultiRangeError::StaleValidator);
         }
-        let lease_fingerprint = if task.options().checksum.is_some() {
+        let lease_fingerprint = if task.has_strict_content_identity() {
             fresh.fingerprint()
         } else {
             current.lease_fingerprint
         };
         Ok(PreparedSource {
-            validator: Arc::new(fresh),
+            validator: Arc::new(PreparedValidator::Http(Arc::new(fresh))),
             lease_fingerprint,
             ordinary_assignments: current.ordinary_assignments,
             range_digest_endgame: current.range_digest_endgame,
@@ -2327,6 +2569,9 @@ impl HttpMultiRangeWorker {
 }
 
 impl HttpTaskWorker for HttpMultiRangeWorker {
+    fn metalink_follow_queue(&self) -> Option<crate::MetalinkFollowQueue> {
+        Some(self.config.metalink_follow.clone())
+    }
     fn start(
         &self,
         task: Arc<HttpTaskSpec>,
@@ -2351,6 +2596,11 @@ impl HttpTaskWorker for HttpMultiRangeWorker {
                 Err(HttpMultiRangeError::RetryWait(retry_at)) => Ok(HttpWorkerSuccess {
                     seed: false,
                     retry_at: Some(retry_at),
+                    host_key_challenge: None,
+                }),
+                Err(HttpMultiRangeError::HostKeyChallenge(challenge)) => Ok(HttpWorkerSuccess {
+                    host_key_challenge: Some(*challenge),
+                    ..Default::default()
                 }),
                 result => result.map_err(|error| error.into_public(&retry_policy, generation)),
             }
@@ -2360,7 +2610,7 @@ impl HttpTaskWorker for HttpMultiRangeWorker {
 
 #[derive(Clone, Debug)]
 struct PreparedSource {
-    validator: Arc<HttpRangeResponseValidator>,
+    validator: Arc<PreparedValidator>,
     lease_fingerprint: ariax_storage::JournalHash,
     ordinary_assignments: bool,
     range_digest_endgame: bool,
@@ -2379,7 +2629,7 @@ fn mirror_identity_context(
 ) -> HttpMirrorIdentityContext {
     HttpMirrorIdentityContext {
         policy: task.options().mirror_identity,
-        shared_whole_entity_digest: task.options().checksum.is_some(),
+        shared_whole_entity_digest: task.has_strict_content_identity(),
         shared_range_digest: (sources.len() > 1
             && sources.iter().all(|source| source.range_digest_endgame))
         .then(|| {
@@ -2989,6 +3239,7 @@ struct ActiveAttempt {
     opened: bool,
     received: usize,
     last_progress_ms: u64,
+    started_ms: u64,
     discard: HttpDiscardAttemptGuard,
 }
 
@@ -3030,6 +3281,7 @@ enum AttemptEvent {
 
 #[derive(Debug)]
 enum RangeAttemptFailure {
+    Transfer(crate::ProtocolFailure),
     Client(HttpPolicyClientError),
     Response {
         error: HttpRangeResponseError,
@@ -3044,8 +3296,19 @@ enum RangeAttemptFailure {
     Cancelled,
 }
 
+/// A live metadata location. Formatting deliberately omits credentials and queries.
+pub struct MetalinkLocation(String);
+impl fmt::Debug for MetalinkLocation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("MetalinkLocation([redacted])")
+    }
+}
+
 #[derive(Debug)]
 pub enum HttpMultiRangeError {
+    MetalinkDiscovered(MetalinkLocation),
+    HostKeyChallenge(Box<ariax_core::PresentedHostKeyChallenge>),
+    Transfer(crate::ProtocolFailure),
     RetryWait(MonotonicInstant),
     InvalidConfig,
     StatsCatalogFull,
@@ -3074,6 +3337,9 @@ impl HttpMultiRangeError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
+            Self::Transfer(error) => error.code(),
+            Self::MetalinkDiscovered(_) => "metalink_metadata",
+            Self::HostKeyChallenge(_) => "HostKeyApprovalRequired",
             Self::InvalidConfig => "invalid_multi_range_config",
             Self::StatsCatalogFull => "http_stats_catalog_full",
             Self::DiscardBudgetExhausted(_) => "http_discard_budget_exhausted",
@@ -3100,6 +3366,9 @@ impl HttpMultiRangeError {
     }
 
     fn into_public(self, policy: &HttpRetryPolicy, generation: Generation) -> PublicError {
+        if let Self::Transfer(error) = self {
+            return error.into_public();
+        }
         let (kind, retry) = match &self {
             Self::Cancelled => (ErrorKind::Cancelled, RetryClass::Never),
             Self::Client(error) if error.retriable() => {
@@ -3208,6 +3477,18 @@ impl From<StorageEngineError> for HttpMultiRangeError {
     }
 }
 
+impl From<HttpRetryError> for HttpMultiRangeError {
+    fn from(error: HttpRetryError) -> Self {
+        Self::Retry(error)
+    }
+}
+
+impl From<crate::ProtocolFailure> for HttpMultiRangeError {
+    fn from(error: crate::ProtocolFailure) -> Self {
+        Self::Transfer(error)
+    }
+}
+
 impl From<HttpRangeCoordinatorError> for HttpMultiRangeError {
     fn from(error: HttpRangeCoordinatorError) -> Self {
         Self::Coordinator(error)
@@ -3224,6 +3505,7 @@ async fn probe_source(
     cancellation: &HttpCancellation,
     stats: &HttpTransferStats,
     discard_task: &HttpDiscardTaskGuard,
+    follow_metalink: bool,
 ) -> Result<HttpRangeResponseValidator, HttpMultiRangeError> {
     let mut request = HttpClientRequest::get(uri.to_owned());
     request.range = Some(GlobalSpan { offset: 0, len: 1 });
@@ -3238,6 +3520,24 @@ async fn probe_source(
         response = client.execute(request) => response.map_err(HttpMultiRangeError::Client)?,
     };
     let mut response = response;
+    if follow_metalink
+        && matches!(
+            response.status(),
+            hyper::StatusCode::OK | hyper::StatusCode::PARTIAL_CONTENT
+        )
+        && metalink_follow::is_metalink_type(response.headers())
+    {
+        let location = MetalinkLocation(response.final_uri().to_owned());
+        let discard = discard_task
+            .begin_attempt(discard_host_key(response.final_uri())?)
+            .map_err(discard_setup_error)?;
+        let data = tokio::select! { biased; _ = cancellation.cancelled() => return Err(HttpMultiRangeError::Cancelled), result = response.next_data(body_timeout) => result.map_err(HttpMultiRangeError::Client)? };
+        if let Some(data) = data {
+            stats.add_raw(data.len());
+            record_discarded(&discard, stats, data.len())?;
+        }
+        return Err(HttpMultiRangeError::MetalinkDiscovered(location));
+    }
     let validator = HttpRangeResponseValidator::from_probe(
         source,
         response.final_uri(),
@@ -3249,6 +3549,7 @@ async fn probe_source(
         .begin_attempt(discard_host_key(validator.final_uri())?)
         .map_err(discard_setup_error)?;
     let mut received = 0_usize;
+    let expected_bytes = usize::from(validator.total_length() != 0);
     let mut probe_digest = validator.representation_digest().map(|_| Sha256::new());
     loop {
         if let Some(scope) = discard.exhausted_scope() {
@@ -3268,11 +3569,11 @@ async fn probe_source(
         stats.add_raw(data.len());
         record_discarded(&discard, stats, data.len())?;
         received = received.saturating_add(data.len());
-        if received > 1 {
+        if received > expected_bytes {
             return Err(HttpMultiRangeError::OversizedBody);
         }
     }
-    if received != 1 {
+    if received != expected_bytes {
         return Err(HttpMultiRangeError::ShortBody);
     }
     if let (Some(expected), Some(actual)) = (validator.representation_digest(), probe_digest) {
@@ -3906,7 +4207,7 @@ async fn process_attempt_event(
                     if !attempt.opened || attempt.received != attempt.assignment.span.len {
                         return Err(HttpMultiRangeError::Protocol);
                     }
-                    let acknowledgements = storage.commit_lease(LeaseCommit {
+                    let mut acknowledgements = storage.commit_lease(LeaseCommit {
                         task,
                         generation,
                         lease,
@@ -3915,6 +4216,9 @@ async fn process_attempt_event(
                         validator: attempt.validator,
                         response_digest,
                     })?;
+                    if storage.has_verification() {
+                        acknowledgements.extend(storage.finish_verification().await?);
+                    }
                     if let [
                         WriteAck::LeaseCommitPending {
                             group,
@@ -4056,6 +4360,11 @@ fn apply_attempt_failure(
     } = context;
     if matches!(failure, RangeAttemptFailure::Cancelled) {
         return Err(HttpMultiRangeError::Cancelled);
+    }
+    if let RangeAttemptFailure::Transfer(error) = failure
+        && !error.retryable()
+    {
+        return Err(error.into());
     }
     let cause = retry_cause(&failure);
     let retry_after = match &failure {
@@ -4290,6 +4599,8 @@ fn persist_range_retry_state(
 
 const fn retry_error_kind(cause: HttpRetryCause) -> ErrorKind {
     match cause {
+        HttpRetryCause::Protocol(crate::ProtocolFailure::Timeout) => ErrorKind::Timeout,
+        HttpRetryCause::Protocol(_) => ErrorKind::Network,
         HttpRetryCause::Transport(
             HttpRetryTransportFailure::Timeout
             | HttpRetryTransportFailure::Hang
@@ -4358,6 +4669,7 @@ fn fail_panicked_attempt(
 
 fn retry_cause(failure: &RangeAttemptFailure) -> HttpRetryCause {
     match failure {
+        RangeAttemptFailure::Transfer(error) => HttpRetryCause::Protocol(*error),
         RangeAttemptFailure::Client(error) if error.retriable() => {
             HttpRetryCause::Transport(retry_transport_failure(error))
         }
@@ -4423,6 +4735,7 @@ fn abort_reason(failure: &RangeAttemptFailure) -> LeaseAbortReason {
         | RangeAttemptFailure::DiscardBudgetExhausted(_)
         | RangeAttemptFailure::Client(_)
         | RangeAttemptFailure::Response { .. } => LeaseAbortReason::Retry,
+        RangeAttemptFailure::Transfer(_) => LeaseAbortReason::Retry,
     }
 }
 
@@ -4978,6 +5291,7 @@ mod tests {
     fn endgame_task(root: &TestDirectory, source: SocketAddr, total_length: usize) -> HttpTaskSpec {
         assert!(total_length >= MIB);
         let options = HttpTaskOptions {
+            transfer: crate::TransferOptions::default(),
             split: NonZeroUsize::new(1).expect("split"),
             max_connections_per_server: NonZeroUsize::new(2).expect("per server"),
             min_split_size: MIB as u64,
@@ -5012,6 +5326,7 @@ mod tests {
     ) -> HttpTaskSpec {
         assert!(total_length >= MIB);
         let options = HttpTaskOptions {
+            transfer: crate::TransferOptions::default(),
             split: NonZeroUsize::new(1).expect("split"),
             max_connections_per_server: NonZeroUsize::new(1).expect("per server"),
             min_split_size: MIB as u64,
@@ -5170,6 +5485,7 @@ mod tests {
         checksum: Option<HttpContentChecksum>,
     ) -> HttpTaskSpec {
         let options = HttpTaskOptions {
+            transfer: crate::TransferOptions::default(),
             split: NonZeroUsize::new(2).expect("split"),
             max_connections_per_server: NonZeroUsize::new(1).expect("per server"),
             min_split_size: MIB as u64,
@@ -5208,6 +5524,7 @@ mod tests {
     ) -> HttpTaskSpec {
         assert!(total_length >= MIB);
         let options = HttpTaskOptions {
+            transfer: crate::TransferOptions::default(),
             split: NonZeroUsize::new(1).expect("split"),
             max_connections_per_server: NonZeroUsize::new(1).expect("per server"),
             min_split_size: MIB as u64,

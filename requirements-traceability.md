@@ -6,6 +6,12 @@ integration test and recorded platform evidence before its status is closed.
 The selected real-download RPC p99 target is 50 ms; the existing mock dispatcher
 benchmark does not satisfy that requirement.
 
+Phase 5 is underway under `P5-01` through `P5-06` in
+[the shared protocol transfer contract](detailed-protocol-transfers.md).
+The scope includes self-contained Metalink JSON migration and keeps native
+Linux acceptance deferred until CI is ready. Planned gates are not passing
+implementation or platform evidence.
+
 Status: reviewed contract; the scoped Phase-3B/3C HTTP(S) downloader milestone
 is checkpointed at `30b70c5`, and the bounded Phase-4 control-plane checkpoint
 is executable at `71acb03`; Phase-4B implementation and native Windows benchmark
@@ -52,9 +58,10 @@ implemented. The bounded SHA-256 `Repr-Digest` profile now negotiates strict
 probe/range evidence, verifies response bodies, journals accepted digests, and
 admits secondary origins only for exact-range endgame. Its persisted
 digest/length identity now drives fail-closed restart reprobe and durable-range
-network revalidation before pending work is released. Broader RFC 9530/Metalink
-identity, `Content-Digest`, alternate checksum algorithms,
-Last-Modified/unsafe-override resume, broader protocols/control APIs, adaptive
+network revalidation before pending work is released. Phase 5 adds Metalink
+identity and SHA-512/SHA-256/SHA-1/MD5 content checksums. Broader RFC 9530
+identity, `Content-Digest`, Last-Modified/unsafe-override resume,
+BitTorrent/control APIs, adaptive
 profile tuning, and the complete release matrix remain incomplete. Optimized
 Linux and native Windows-GNU capacity evidence, including mandatory RSS or
 working-set samples, is recorded in `performance-profiles.md`.
@@ -388,9 +395,9 @@ Design coverage:
   durable-range revalidation, first-slice checkpoint-boundary interruption
   recovery with exactly-once lease dispositions, pre-read storage-backpressure
   admission, and the Phase-4 shared dispatcher/control/event checkpoint.
-  Broader RFC
-  9530/Metalink identity, `Content-Digest`, additional checksum algorithms,
-  Last-Modified/unsafe-override resume, HTTP/2, growing bodies,
+  Phase 5 adds Metalink identity and four content checksum algorithms. Broader
+  RFC 9530 identity, `Content-Digest`, Last-Modified/unsafe-override resume,
+  HTTP/2, growing bodies,
   and native Linux benchmark acceptance remain pending. Aria2
   text-session compatibility and the Phase-4B implementation gates are covered above.
 

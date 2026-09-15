@@ -26,6 +26,10 @@ jobs:
         run: scripts/test-verify-rusqlite-features.sh
       - name: Verify resolved rusqlite feature graph
         run: scripts/verify-rusqlite-features.sh --rustup 1.97.1
+      - name: Verify pinned protocol forks and feature bundles
+        run: |
+          python3 scripts/verify-protocol-vendors.py
+          python3 scripts/verify-protocol-features.py --rustup 1.97.1
       - name: Verify repository SQLite flags override ambient environment
         env:
           LIBSQLITE3_FLAGS: -DARIAX_UNEXPECTED_AMBIENT_SQLITE_FLAG=1

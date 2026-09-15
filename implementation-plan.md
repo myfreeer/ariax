@@ -34,9 +34,9 @@ the bounded SHA-256 `Repr-Digest` exact-range cross-origin profile are now
 executable under the overlap-fence contract. Matching probe digests retain
 secondary mirrors as endgame-only peers; they do not authorize ordinary
 concurrent pieces or replace the persisted whole-file checksum. `Content-Digest`,
-digest parameters/coverage metadata, alternate algorithms, server-advertised
-whole-entity admission, Metalink chunk hashes, Last-Modified/unsafe-override
-resume, HTTP/2, growing/chunked transfers, the Phase-4 query/bulk progress gates,
+digest parameters/coverage metadata, alternate HTTP digest algorithms,
+server-advertised whole-entity admission, Last-Modified/unsafe-override
+resume, HTTP/2, growing/chunked transfers,
 native Linux benchmark acceptance, and the full release-platform matrix remain
 phase/tag gates. Hot-backup
 publication residue is now recovered through
@@ -51,7 +51,7 @@ storage buffers share the resident budget. The local C10k/active-range harness
 passes under an isolated raised Linux handle limit and rejects insufficient
 native capacity explicitly; optimized Linux and native Windows-GNU runs also
 exercise the complete socket and active-range phases. Adaptive tuning,
-non-HTTP domain wiring, the broader evictable file-handle LRU, and the remaining
+the broader evictable file-handle LRU, and the remaining
 release-platform matrix remain phase gates. Linux RSS and native Windows-GNU
 working-set sampling are mandatory benchmark checks rather than inferred from
 the permit envelope.
@@ -60,8 +60,8 @@ The HTTP discard-bound slice is executable: a process-owned ledger atomically
 charges process, canonical final-origin host, task, and attempt scopes without
 refund; body polling stops when no credit remains; probe, retry/cancel,
 checksum, stale queued-chunk, and endgame settlement paths reconcile the same
-counter; and RPC status exposes consumed/remaining task credit. FTP/SFTP and
-libtorrent discard producers remain later adapter work. The standalone
+counter; and RPC status exposes consumed/remaining task credit. Phase 5 wires
+FTP/SFTP to the shared accounting; libtorrent remains later adapter work. The standalone
 workspace-excluded `fuzz/` package now provides bounded cargo-fuzz targets for
 HTTP response/request headers, retry specifications, discard accounting, and
 journal replay. Deterministic storage-boundary ENOSPC, permission-denied, and
@@ -476,20 +476,23 @@ retain the expanded native Linux CI campaign once CI is ready; it remains deferr
 
 ## Phase 5: Metalink, FTP, SFTP
 
+Implementation is underway under the accepted [shared transfer plan and
+checkpoint gates](detailed-protocol-transfers.md). Native Linux acceptance stays
+deferred until CI is ready. Self-contained native JSON Metalink migration is
+part of this phase; HTTP/2 remains deferred.
+
 - Metalink parser with safe XML settings and chunk checksums.
 - Metalink checksum-aligned verification with bounded ordered reassembly and
   readback fallback.
 - Patched-SuppaFTP adapter with sequential resume per source by default;
-  concurrency is across distinct mirrors rather than overlapping REST-to-EOF
-  streams.
+  distinct mirrors fail over sequentially for one file, while independent files
+  and tasks may transfer concurrently. No overlapping REST-to-EOF streams.
 - FTP EPSV/PASV and active-mode endpoint validation tied to the approved control
   peer, with administrator overrides re-running the complete destination policy.
 - russh/patched-russh-sftp adapter with project-owned bounded offset-request pipelining,
   host-key verification, known-hosts policy, authentication ordering, algorithm
   policy, timeout/rekey handling, and secret redaction.
 - Mirror selection and server stats.
-- Optional HTTP/2 enablement if the selected HTTP stack and tests are mature
-  enough.
 
 Exit criteria:
 

@@ -40,32 +40,21 @@ impl HttpRangeSource {
         let uri: Uri = uri_text
             .parse()
             .map_err(|_| HttpRangeCoordinatorError::InvalidSource)?;
-        let scheme = uri
-            .scheme_str()
-            .filter(|scheme| matches!(*scheme, "http" | "https"))
+        if !matches!(uri.scheme_str(), Some("http" | "https")) {
+            return Err(HttpRangeCoordinatorError::InvalidSource);
+        }
+        Self::from_transfer_uri(id, uri_text)
+    }
+
+    pub fn from_transfer_uri(id: UriId, uri_text: &str) -> Result<Self, HttpRangeCoordinatorError> {
+        let uri: Uri = uri_text
+            .parse()
+            .map_err(|_| HttpRangeCoordinatorError::InvalidSource)?;
+        uri.scheme_str()
+            .filter(|scheme| matches!(*scheme, "http" | "https" | "sftp"))
             .ok_or(HttpRangeCoordinatorError::InvalidSource)?;
-        let authority = uri
-            .authority()
+        let origin = crate::server_stats::transfer_origin(uri_text)
             .ok_or(HttpRangeCoordinatorError::InvalidSource)?;
-        if authority.as_str().contains('@') {
-            return Err(HttpRangeCoordinatorError::InvalidSource);
-        }
-        let host = authority.host();
-        if host.is_empty() {
-            return Err(HttpRangeCoordinatorError::InvalidSource);
-        }
-        let port = authority
-            .port_u16()
-            .unwrap_or(if scheme == "https" { 443 } else { 80 });
-        if port == 0 {
-            return Err(HttpRangeCoordinatorError::InvalidSource);
-        }
-        let host = host.to_ascii_lowercase();
-        let origin = if host.contains(':') {
-            format!("{scheme}://[{host}]:{port}")
-        } else {
-            format!("{scheme}://{host}:{port}")
-        };
         Ok(Self {
             id,
             origin: origin.into(),
@@ -245,6 +234,9 @@ pub struct HttpRangeCoordinator {
     next_overlap_group: u64,
     next_piece: usize,
     next_source: usize,
+    selector: Option<crate::UriSelector>,
+    selection_feedback: BTreeMap<UriId, (i64, crate::ServerFeedback, u64)>,
+    selections: u64,
     completed_length: u64,
     completed_pieces: usize,
     retry_count: u32,
@@ -256,9 +248,18 @@ impl HttpRangeCoordinator {
         config: HttpRangeCoordinatorConfig,
         sources: impl IntoIterator<Item = HttpRangeSource>,
     ) -> Result<Self, HttpRangeCoordinatorError> {
+        if !config.piece_length.is_power_of_two() {
+            return Err(HttpRangeCoordinatorError::InvalidConfig);
+        }
+        Self::new_transfer(config, sources)
+    }
+
+    pub fn new_transfer(
+        config: HttpRangeCoordinatorConfig,
+        sources: impl IntoIterator<Item = HttpRangeSource>,
+    ) -> Result<Self, HttpRangeCoordinatorError> {
         if config.total_length == 0
             || config.piece_length == 0
-            || !config.piece_length.is_power_of_two()
             || config.split.get() > 1024
             || config.max_connections_per_origin.get() > 1024
             || config.max_total_attempts == 0
@@ -304,6 +305,9 @@ impl HttpRangeCoordinator {
             next_overlap_group: 1,
             next_piece: 0,
             next_source: 0,
+            selector: None,
+            selection_feedback: BTreeMap::new(),
+            selections: 0,
             completed_length: 0,
             completed_pieces: 0,
             retry_count: 0,
@@ -311,8 +315,30 @@ impl HttpRangeCoordinator {
         })
     }
 
+    pub(crate) fn configure_selector(
+        &mut self,
+        selector: crate::UriSelector,
+        feedback: impl IntoIterator<Item = (UriId, i64, crate::ServerFeedback)>,
+    ) {
+        self.selector = Some(selector);
+        self.selection_feedback = feedback
+            .into_iter()
+            .filter(|(id, _, _)| self.sources.iter().any(|source| source.source.id == *id))
+            .map(|(id, priority, feedback)| (id, (priority, feedback, 0)))
+            .collect();
+    }
+    pub(crate) fn update_feedback(&mut self, source: UriId, feedback: crate::ServerFeedback) {
+        if let Some(value) = self.selection_feedback.get_mut(&source) {
+            value.1 = feedback;
+        }
+    }
+
     pub fn poll(&mut self, now_ms: u64) -> Result<HttpRangePoll, HttpRangeCoordinatorError> {
         self.poll_with_endgame(now_ms, &[])
+    }
+
+    pub(crate) fn advance_lease_floor(&mut self, next: u64) {
+        self.next_lease = self.next_lease.max(next);
     }
 
     /// Polls ordinary work first, then admits at most one same-source
@@ -356,6 +382,10 @@ impl HttpRangeCoordinator {
         let source_id = self.sources[source_index].source.id;
         let source_origin = Arc::clone(&self.sources[source_index].source.origin);
         self.record_attempt(piece_index, source_index, false);
+        self.selections = self.selections.saturating_add(1);
+        if let Some(value) = self.selection_feedback.get_mut(&source_id) {
+            value.2 = value.2.saturating_add(1);
+        }
         *self.active_by_origin.entry(source_origin).or_default() += 1;
         self.pieces[piece_index] = PieceState::Active(ActivePiece {
             original: lease,
@@ -833,9 +863,36 @@ impl HttpRangeCoordinator {
             .find_map(|piece| {
                 (0..self.sources.len())
                     .map(|offset| (self.next_source + offset) % self.sources.len())
-                    .find(|source_index| {
+                    .filter(|source_index| {
                         self.sources[*source_index].source.ordinary_assignments
                             && self.source_available(piece, *source_index, now_ms)
+                    })
+                    .min_by_key(|index| {
+                        let source = &self.sources[*index].source;
+                        let (priority, feedback, assigned) = self
+                            .selection_feedback
+                            .get(&source.id)
+                            .copied()
+                            .unwrap_or_default();
+                        let concurrent = self
+                            .active_by_origin
+                            .get(&source.origin)
+                            .copied()
+                            .unwrap_or(0);
+                        let rotated =
+                            (*index + self.sources.len() - self.next_source) % self.sources.len();
+                        match self.selector {
+                            None => (0, 0, 0, rotated),
+                            Some(crate::UriSelector::InOrder) => (0, 0, priority, *index),
+                            Some(crate::UriSelector::Adaptive)
+                                if self.selections.is_multiple_of(8) =>
+                            {
+                                (assigned, 0, priority, rotated)
+                            }
+                            Some(_) => {
+                                (0, u64::MAX - feedback.score(concurrent), priority, rotated)
+                            }
+                        }
                     })
                     .map(|source| (piece, source))
             })
@@ -1395,5 +1452,59 @@ mod tests {
             panic!("rolled-back piece must be pending");
         };
         assert_eq!(retry.piece, original.piece);
+    }
+    #[test]
+    fn selectors_obey_feedback_priority_capacity_and_disabled_sources() {
+        for (selector, expected) in [
+            (crate::UriSelector::InOrder, 0),
+            (crate::UriSelector::Feedback, 1),
+            (crate::UriSelector::Adaptive, 0),
+        ] {
+            let mut c = HttpRangeCoordinator::new(
+                config(),
+                [
+                    source(0, "http://a.test/file"),
+                    source(1, "http://b.test/file"),
+                ],
+            )
+            .unwrap();
+            c.configure_selector(
+                selector,
+                [
+                    (
+                        UriId::new(0),
+                        0,
+                        crate::ServerFeedback {
+                            samples: 1,
+                            bytes_per_second: 10,
+                            failures: 0,
+                        },
+                    ),
+                    (
+                        UriId::new(1),
+                        1,
+                        crate::ServerFeedback {
+                            samples: 1,
+                            bytes_per_second: 1000,
+                            failures: 0,
+                        },
+                    ),
+                ],
+            );
+            let HttpRangePoll::Assignment(first) = c.poll(0).unwrap() else {
+                panic!("assignment");
+            };
+            assert_eq!(first.source, UriId::new(expected));
+            let HttpRangePoll::Assignment(second) = c.poll(0).unwrap() else {
+                panic!("assignment");
+            };
+            assert_ne!(
+                first.source, second.source,
+                "per-origin capacity is mandatory"
+            );
+            c.fail(first.lease, HttpRangeFailure::DisableSource)
+                .unwrap();
+            assert!(matches!(c.poll(1).unwrap(), HttpRangePoll::Saturated));
+        }
     }
 }

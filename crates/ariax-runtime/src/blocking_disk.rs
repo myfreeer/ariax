@@ -996,6 +996,7 @@ pub struct BlockingDiskLane {
     accepted_bytes: ByteBudget,
     workers: Vec<BlockingDiskWorker>,
     worker_exits: Mutex<Receiver<usize>>,
+    cpu: Option<(crate::CpuPool, Arc<dyn BlockingDiskExecutor>)>,
 }
 
 impl BlockingDiskLane {
@@ -1007,6 +1008,26 @@ impl BlockingDiskLane {
     where
         E: BlockingDiskExecutor,
     {
+        Self::new_inner(config, backend_epoch, executor, None)
+    }
+
+    /// Compact mode shares the bounded process CPU worker. Disk operations
+    /// retain their ordinary completion and buffer ownership guarantees.
+    pub fn with_cpu_pool<E: BlockingDiskExecutor>(
+        config: BlockingDiskLaneConfig,
+        backend_epoch: BlockingBackendEpoch,
+        executor: E,
+        pool: crate::CpuPool,
+    ) -> Result<Self, BlockingDiskLaneStartError> {
+        Self::new_inner(config, backend_epoch, executor, Some(pool))
+    }
+
+    fn new_inner<E: BlockingDiskExecutor>(
+        config: BlockingDiskLaneConfig,
+        backend_epoch: BlockingBackendEpoch,
+        executor: E,
+        pool: Option<crate::CpuPool>,
+    ) -> Result<Self, BlockingDiskLaneStartError> {
         if config.worker_count == 0 {
             return Err(BlockingDiskLaneStartError::ZeroWorkers);
         }
@@ -1071,6 +1092,7 @@ impl BlockingDiskLane {
                 accepting: true,
                 stopping: false,
                 in_flight: 0,
+                cpu_jobs: 0,
                 accepted: 0,
                 completed: 0,
                 received: 0,
@@ -1081,7 +1103,11 @@ impl BlockingDiskLane {
             available: Condvar::new(),
         });
         let executor: Arc<dyn BlockingDiskExecutor> = Arc::new(executor);
-        for worker in 0..config.worker_count {
+        for worker in 0..if pool.is_some() {
+            0
+        } else {
+            config.worker_count
+        } {
             let worker_shared = Arc::clone(&shared);
             let worker_executor = Arc::clone(&executor);
             let worker_exit_sender = exit_sender.clone();
@@ -1128,6 +1154,7 @@ impl BlockingDiskLane {
             accepted_bytes,
             workers,
             worker_exits: Mutex::new(worker_exits),
+            cpu: pool.map(|pool| (pool, executor)),
         })
     }
 
@@ -1154,6 +1181,21 @@ impl BlockingDiskLane {
                 submission,
             ));
         }
+
+        let cpu_reservation = if let Some((pool, _)) = &self.cpu {
+            match pool.reserve(1024) {
+                Ok(reservation) => Some(reservation),
+                Err(_) => {
+                    self.record_rejection();
+                    return Err(BlockingDiskSubmitError::new(
+                        BlockingDiskSubmitErrorKind::QueueFull,
+                        submission,
+                    ));
+                }
+            }
+        } else {
+            None
+        };
 
         let expected_len = submission.operation.expected_len();
         let byte_permit = match self.accepted_bytes.try_acquire(expected_len) {
@@ -1225,8 +1267,31 @@ impl BlockingDiskLane {
         });
         state.accepted += 1;
         state.peak_queue_len = state.peak_queue_len.max(state.queue.len());
+        if cpu_reservation.is_some() {
+            state.cpu_jobs += 1;
+        }
         drop(state);
-        self.shared.available.notify_one();
+        if let Some(reservation) = cpu_reservation {
+            let shared = self.shared.clone();
+            let executor = self.cpu.as_ref().expect("reserved shared worker").1.clone();
+            drop(reservation.spawn(move || {
+                let work = {
+                    let mut state = shared.lock();
+                    let work = state.queue.pop_front();
+                    if work.is_some() {
+                        state.in_flight += 1;
+                    }
+                    work
+                };
+                if let Some(work) = work {
+                    finish_work(work, &shared, executor.as_ref());
+                }
+                shared.lock().cpu_jobs -= 1;
+                shared.available.notify_all();
+            }));
+        } else {
+            self.shared.available.notify_one();
+        }
         Ok(())
     }
 
@@ -1264,7 +1329,7 @@ impl BlockingDiskLane {
     pub fn metrics(&self) -> BlockingDiskLaneMetrics {
         let state = self.shared.lock();
         BlockingDiskLaneMetrics {
-            worker_count: self.workers.len(),
+            worker_count: self.workers.len() + usize::from(self.cpu.is_some()),
             queue_len: state.queue.len(),
             queue_capacity: state.queue_capacity,
             in_flight: state.in_flight,
@@ -1376,14 +1441,26 @@ impl BlockingDiskLane {
         loop {
             self.drain_worker_exit_reports();
             worker_panics += self.join_reported_finished_workers();
-            if self.workers.iter().all(|worker| worker.handle.is_none()) {
+            if self.workers.iter().all(|worker| worker.handle.is_none())
+                && self.shared.lock().cpu_jobs == 0
+            {
                 break;
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 break;
             }
-            self.wait_for_one_worker_exit(remaining.min(Duration::from_millis(1)));
+            if self.cpu.is_some() {
+                let state = self.shared.lock();
+                drop(
+                    self.shared
+                        .available
+                        .wait_timeout(state, remaining.min(Duration::from_millis(1)))
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                );
+            } else {
+                self.wait_for_one_worker_exit(remaining.min(Duration::from_millis(1)));
+            }
         }
 
         self.drain_worker_exit_reports();
@@ -1393,7 +1470,8 @@ impl BlockingDiskLane {
             .workers
             .iter()
             .filter(|worker| worker.handle.is_some())
-            .count();
+            .count()
+            + usize::from(self.shared.lock().cpu_jobs != 0);
         for worker in &mut self.workers {
             drop(worker.handle.take());
         }
@@ -1513,6 +1591,7 @@ struct BlockingDiskState {
     accepting: bool,
     stopping: bool,
     in_flight: usize,
+    cpu_jobs: usize,
     accepted: u64,
     completed: u64,
     received: u64,
@@ -1574,25 +1653,31 @@ impl Drop for AcceptedWork {
 
 fn worker_main(shared: Arc<BlockingDiskShared>, executor: Arc<dyn BlockingDiskExecutor>) {
     loop {
-        let Some(mut work) = next_work(&shared) else {
+        let Some(work) = next_work(&shared) else {
             return;
         };
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            execute_work(&mut work, executor.as_ref())
-        }))
+        finish_work(work, &shared, executor.as_ref());
+    }
+}
+
+fn finish_work(
+    mut work: AcceptedWork,
+    shared: &BlockingDiskShared,
+    executor: &dyn BlockingDiskExecutor,
+) {
+    let result = catch_unwind(AssertUnwindSafe(|| execute_work(&mut work, executor)))
         .unwrap_or(Err(BlockingDiskError::ExecutorPanicked));
-        let result = match work.normalize_terminal_state() {
-            Ok(()) => result,
-            Err(error) => Err(BlockingDiskError::BufferTransition(error)),
-        };
-        let cancelled = matches!(result, Err(BlockingDiskError::Cancelled));
-        work.finish(result);
-        let mut state = shared.lock();
-        state.in_flight -= 1;
-        state.completed += 1;
-        if cancelled {
-            state.cancelled += 1;
-        }
+    let result = match work.normalize_terminal_state() {
+        Ok(()) => result,
+        Err(error) => Err(BlockingDiskError::BufferTransition(error)),
+    };
+    let cancelled = matches!(result, Err(BlockingDiskError::Cancelled));
+    work.finish(result);
+    let mut state = shared.lock();
+    state.in_flight -= 1;
+    state.completed += 1;
+    if cancelled {
+        state.cancelled += 1;
     }
 }
 
@@ -1975,6 +2060,71 @@ mod tests {
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
             }
             Ok(bytes.len())
+        }
+    }
+
+    #[test]
+    fn compact_cpu_disk_lane_shares_capacity_and_drains_accepted_work() {
+        for abort in [false, true] {
+            let buffers = pool();
+            let epoch = backend_epoch(20);
+            let cpu = crate::CpuPool::new(crate::CpuPoolConfig {
+                workers: 1,
+                jobs: 2,
+                bytes: 4096,
+                resident: ByteBudget::new(4096),
+                shared_disk: true,
+            })
+            .unwrap();
+            let (entered, started) = std::sync::mpsc::sync_channel(1);
+            let (release, wait) = std::sync::mpsc::sync_channel(1);
+            let held = cpu
+                .submit(2048, move || {
+                    entered.send(()).unwrap();
+                    wait.recv().unwrap();
+                })
+                .unwrap();
+            started.recv_timeout(TEST_TIMEOUT).unwrap();
+            let lane = BlockingDiskLane::with_cpu_pool(
+                config(1, 2, 2, 16),
+                epoch,
+                ScriptExecutor::new([ScriptAction::Exact]),
+                cpu.clone(),
+            )
+            .unwrap();
+            assert!(lane.workers.is_empty());
+            let file = handle(epoch, 8);
+            lane.try_submit(submission(&buffers, 1, epoch, file, 0, b"aria").0)
+                .unwrap();
+            let rejected = lane
+                .try_submit(submission(&buffers, 2, epoch, file, 0, b"aria").0)
+                .unwrap_err();
+            assert_eq!(rejected.reason(), BlockingDiskSubmitErrorKind::QueueFull);
+            release_lease(&buffers, rejected.into_parts().1.into_lease());
+            assert_eq!(cpu.accepted_jobs(), 2);
+            assert_eq!(cpu.reserved_bytes(), 3072);
+            cpu.close();
+            if abort {
+                lane.begin_shutdown();
+            }
+            drop(held);
+            release.send(()).unwrap();
+            let outcome = release_outcome(&buffers, wait_for_outcome(&lane));
+            assert_eq!(
+                outcome,
+                if abort {
+                    Err(BlockingDiskError::WorkerAborted)
+                } else {
+                    Ok(BlockingDiskCompletion { bytes_written: 4 })
+                }
+            );
+            assert!(lane.shutdown(TEST_TIMEOUT).completion_closed());
+            let deadline = Instant::now() + TEST_TIMEOUT;
+            while cpu.accepted_jobs() != 0 {
+                assert!(Instant::now() < deadline);
+                thread::yield_now();
+            }
+            assert_eq!(cpu.reserved_bytes(), 0);
         }
     }
 

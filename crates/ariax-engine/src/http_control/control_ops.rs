@@ -12,6 +12,7 @@ pub(super) fn is_task_control(method: &str) -> bool {
             | "forceRemove"
             | "removeDownloadResult"
             | "changePosition"
+            | "ariax.approveHostKey"
     )
 }
 
@@ -37,7 +38,37 @@ impl HttpControlPlane {
         }
         let name = method.strip_prefix("aria2.").unwrap_or(method);
         let mut remove_task = None;
-        let (command, response) = if name == "changePosition" {
+        let mut replacement = None;
+        let (command, response) = if name == "ariax.approveHostKey" {
+            let values = params.as_array().filter(|values| values.len() == 3).ok_or(
+                HttpControlError::InvalidParams(
+                    "approveHostKey requires GID, challenge id, and SHA-256 fingerprint",
+                ),
+            )?;
+            let gid = self.resolve_gid_text(
+                values[0]
+                    .as_str()
+                    .ok_or(HttpControlError::InvalidParams("GID must be a string"))?,
+            )?;
+            let challenge =
+                crate::transfer_task::parse_hex_bytes::<16>(values[1].as_str().unwrap_or_default())
+                    .map(ariax_core::HostKeyChallengeId::new)
+                    .map_err(HttpControlError::TaskSpec)?;
+            let fingerprint = crate::transfer_task::parse_host_key_fingerprint(
+                values[2].as_str().unwrap_or_default(),
+            )
+            .map(ariax_core::HostKeyFingerprint::new)
+            .map_err(HttpControlError::TaskSpec)?;
+            replacement = Some(Box::new(self.pinned_host_key_spec(gid, fingerprint)?));
+            (
+                SchedulerCommand::ApproveHostKey {
+                    gid,
+                    challenge,
+                    fingerprint_sha256: fingerprint,
+                },
+                Value::String(gid.to_string()),
+            )
+        } else if name == "changePosition" {
             let values = params.as_array().filter(|values| values.len() == 3).ok_or(
                 HttpControlError::InvalidParams("changePosition requires GID, position, and mode"),
             )?;
@@ -103,6 +134,7 @@ impl HttpControlPlane {
         let identity = match &command {
             SchedulerCommand::Pause { gid, .. }
             | SchedulerCommand::Resume { gid }
+            | SchedulerCommand::ApproveHostKey { gid, .. }
             | SchedulerCommand::Remove { gid, .. }
             | SchedulerCommand::RemoveStoppedResult { gid } => self
                 .engine
@@ -121,11 +153,31 @@ impl HttpControlPlane {
             publication: MutationPublication::Control {
                 response,
                 remove_task,
-                readmit: name == "unpause",
+                readmit: matches!(name, "unpause" | "ariax.approveHostKey"),
+                replacement,
             },
             reply,
         });
         Ok(ControlReply::Deferred(receiver))
+    }
+
+    pub(super) fn pinned_host_key_spec(
+        &self,
+        gid: Gid,
+        fingerprint: ariax_core::HostKeyFingerprint,
+    ) -> Result<HttpTaskSpec, HttpControlError> {
+        let spec = self.tasks.get_gid(gid).ok_or(HttpControlError::NotFound)?;
+        let mut options = spec.options().clone();
+        options.transfer.sftp_host_key_sha256 =
+            Some(ariax_storage::session_host_key_pin_value(fingerprint));
+        options.transfer.sftp_check_host_key = true;
+        let replacement = spec
+            .with_options(spec.output().clone(), options)
+            .map_err(HttpControlError::TaskSpec)?;
+        self.tasks
+            .snapshot()
+            .reserve_spec(replacement)
+            .map_err(|_| HttpControlError::Busy)
     }
 }
 

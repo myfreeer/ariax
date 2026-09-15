@@ -1,9 +1,10 @@
 # Session Persistence
 
 Status: first-slice implementation in progress. The control-journal v1 framing,
-segment linkage, bounded replay, torn-tail valid-prefix rules, and 19 scalar
-record payload codecs are executable, as are the seven bounded
-collection/metadata/path payloads that complete all 26 v1 record types.
+segment linkage, bounded replay, torn-tail valid-prefix rules, and all 32
+record payload codecs are executable. Phase 5 adds bounded manifests,
+protocol validators, whole-file verification, trust decisions and metadata
+completion without changing existing record numbers or framing.
 Policy-gated typed state
 reconstruction, exact generation/layout/lease/finalization validation, and
 whole-checkpoint hash validation are also executable. File-backed typed append,
@@ -814,6 +815,17 @@ Phase 4B exports unfinished work through the configured local destination for
 RPC export. Both formats use the persistence-safe source view, never live raw
 URI strings. Credential placeholders remain explicit and cannot become runnable
 URIs through export/import. Remote callers cannot supply filesystem paths.
+
+Phase 5 adds self-contained JSON migration version 2 for verification metadata.
+Each selected Metalink child carries its original file index, exact length,
+chunk geometry, supported checksum algorithms and values, source priorities,
+and sanitized sources; importing into a new output root needs no original XML.
+Internal journal bindings, host-key challenges and active progress are not
+migration authority. Version-1 JSON import remains supported, and exports that
+need no new verification metadata retain version 1. Expanded metadata parents
+are omitted while their independently exportable children remain in the file.
+Aria2 text export rejects atomically when required verification metadata cannot
+be represented; use JSON for those tasks.
 
 Import parses and validates the entire bounded document and reserves admission
 capacity before publishing tasks. One bounded filesystem job captures the

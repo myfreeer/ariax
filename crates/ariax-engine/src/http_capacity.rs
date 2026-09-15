@@ -22,9 +22,13 @@ pub struct HttpProcessResources {
     resident: ByteBudget,
     transport: HttpTransportBudgets,
     ingress: HttpIngressBudgets,
+    protocol_metadata: HttpIngressBudgets,
+    sftp_ingress: HttpIngressBudgets,
     discard: HttpDiscardBudget,
     rpc: RpcBudgets,
     scheduling: crate::HttpSchedulingPolicy,
+    cpu: ariax_runtime::CpuPool,
+    server_stats: crate::ServerStatistics,
 }
 
 impl HttpProcessResources {
@@ -62,7 +66,36 @@ impl HttpProcessResources {
             limits.http_ingress_budget_bytes,
             resident.clone(),
         );
+        let cpu = ariax_runtime::CpuPool::new(ariax_runtime::CpuPoolConfig {
+            workers: if profile == RuntimeProfile::Compact {
+                1
+            } else {
+                2
+            },
+            jobs: 512,
+            bytes: limits.cpu_scratch_budget_bytes,
+            resident: resident.clone(),
+            shared_disk: profile == RuntimeProfile::Compact,
+        })
+        .map_err(HttpCapacityError::Cpu)?;
         Ok(Self {
+            server_stats: crate::ServerStatistics::new(
+                limits.server_stat_entries,
+                std::time::Duration::from_secs(86400),
+                HttpIngressBudgets::with_shared_resident(
+                    limits.metadata_cache_budget_bytes,
+                    resident.clone(),
+                ),
+            ),
+            protocol_metadata: HttpIngressBudgets::with_shared_resident(
+                limits.task_metadata_budget_bytes,
+                resident.clone(),
+            ),
+            sftp_ingress: HttpIngressBudgets::with_shared_resident(
+                limits.sftp_ingress_budget_bytes,
+                resident.clone(),
+            ),
+            cpu,
             profile: resolved,
             rpc: RpcBudgets::with_shared_resident(resolved, resident.clone()),
             scheduling: crate::HttpSchedulingPolicy::default(),
@@ -87,6 +120,14 @@ impl HttpProcessResources {
     #[must_use]
     pub fn resident_budget(&self) -> ByteBudget {
         self.resident.clone()
+    }
+
+    pub(crate) fn metadata_budget(&self) -> HttpIngressBudgets {
+        self.protocol_metadata.clone()
+    }
+
+    pub fn cpu_pool(&self) -> ariax_runtime::CpuPool {
+        self.cpu.clone()
     }
 
     #[must_use]
@@ -151,12 +192,16 @@ impl HttpProcessResources {
             buffer_pool_bytes: limits.buffer_budget_bytes,
             resident_budget: self.resident.clone(),
             handle_budgets: Some(self.transport.handle_budgets()),
+            cpu_pool: Some(self.cpu.clone()),
             ..StorageEngineConfig::default()
         };
         HttpMultiRangeWorkerConfig {
             journal_root,
             storage,
             ingress_budget: self.ingress.clone(),
+            protocol_metadata: self.protocol_metadata.clone(),
+            server_stats: self.server_stats.clone(),
+            sftp_ingress: self.sftp_ingress.clone(),
             discard_budget: self.discard.clone(),
             scheduling: self.scheduling.clone(),
             ..HttpMultiRangeWorkerConfig::default()
@@ -166,6 +211,7 @@ impl HttpProcessResources {
 
 #[derive(Debug)]
 pub enum HttpCapacityError {
+    Cpu(ariax_runtime::CpuError),
     Profile(ProfileCapacityError),
     Handles(HandleBudgetError),
     Transport(HttpTransportError),
@@ -175,6 +221,7 @@ pub enum HttpCapacityError {
 impl fmt::Display for HttpCapacityError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Cpu(error) => error.fmt(formatter),
             Self::Profile(error) => error.fmt(formatter),
             Self::Handles(error) => error.fmt(formatter),
             Self::Transport(error) => error.fmt(formatter),
@@ -188,6 +235,7 @@ impl fmt::Display for HttpCapacityError {
 impl Error for HttpCapacityError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::Cpu(error) => Some(error),
             Self::Profile(error) => Some(error),
             Self::Handles(error) => Some(error),
             Self::Transport(error) => Some(error),

@@ -25,6 +25,10 @@ slice and journal replay path:
   syntax, including bounded metadata comments and exact safe projections.
 - `url_rules`: bounded TOML rule parsing, safe option admission, canonical
   round trips, and bounded URL matching without network access.
+- `metalink`: capped v3/v4 pull parsing, namespaces/entities, safe paths,
+  selection and verification-manifest round trips.
+- `verification_manifest`: binary digest-table decoding, exact geometry,
+  canonical encoding and fingerprint stability.
 
 From the repository root, after installing `cargo-fuzz`, run for example:
 
@@ -39,3 +43,7 @@ cargo fuzz run --manifest-path fuzz/Cargo.toml url_rules
 CI should use a fixed corpus/time budget and retain only minimized inputs. The
 targets cap input-derived collections before constructing headers, scopes, or
 replay segments; they do not authorize network or filesystem access.
+
+Local Phase 5 smoke runs use at most 1,000 inputs per process and small inputs,
+with a cooldown between runs. Compile all fuzz binaries before collecting
+timing or benchmark evidence.

@@ -142,9 +142,15 @@ record_types!(
     (PieceStateChunk, 24, "piece_state_chunk"),
     (HttpStrongValidator, 25, "http_strong_validator"),
     (HttpRangeIdentity, 26, "http_range_identity"),
+    (VerificationManifest, 27, "verification_manifest"),
+    (VerificationManifestChunk, 28, "verification_manifest_chunk"),
+    (ProtocolValidator, 29, "protocol_validator"),
+    (WholeFileVerified, 30, "whole_file_verified"),
+    (HostKeyState, 31, "host_key_state"),
+    (MetadataComplete, 32, "metadata_complete"),
 );
 
-pub const ALL_RECORD_TYPES: [RecordType; 26] = RecordType::ALL;
+pub const ALL_RECORD_TYPES: [RecordType; 32] = RecordType::ALL;
 
 /// Exact version-1 segment header fields.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

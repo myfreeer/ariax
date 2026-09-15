@@ -51,10 +51,14 @@ impl SessionFormat {
     }
 }
 
+#[derive(Default)]
 pub(crate) struct ImportedTask {
     pub uris: Vec<String>,
     pub sources: Option<Vec<SessionTaskSourceRecord>>,
     pub options: Value,
+    pub verification: Option<std::sync::Arc<crate::VerificationManifest>>,
+    pub metalink_index: Option<u32>,
+    pub priorities: Option<Vec<i64>>,
 }
 
 pub(crate) fn parse_import(
@@ -97,7 +101,7 @@ pub(crate) fn parse_import(
     reject_unknown(object, &["formatVersion", "sessionId", "tasks"])?;
     if object
         .get("formatVersion")
-        .is_some_and(|value| value.as_u64() != Some(1))
+        .is_some_and(|value| !matches!(value.as_u64(), Some(1 | 2)))
     {
         return Err(invalid("unsupported session format version"));
     }
@@ -112,7 +116,19 @@ pub(crate) fn parse_import(
         .and_then(Value::as_array)
         .filter(|tasks| tasks.len() <= SESSION_MAX_IMPORT_TASKS)
         .ok_or_else(|| invalid("invalid session task array"))?;
-    tasks.iter().map(|task| parse_task(task, true)).collect()
+    let version = object
+        .get("formatVersion")
+        .and_then(Value::as_u64)
+        .unwrap_or(1);
+    tasks
+        .iter()
+        .map(|task| {
+            if version == 1 && task.get("verification").is_some() {
+                return Err(invalid("verification requires session format version 2"));
+            }
+            parse_task(task, true)
+        })
+        .collect()
 }
 
 fn parse_json(text: &str, request: &RpcRequestLease) -> Result<Value, HttpControlError> {
@@ -134,7 +150,14 @@ fn parse_task(task: &Value, force_pause: bool) -> Result<ImportedTask, HttpContr
     let object = task
         .as_object()
         .ok_or_else(|| invalid("session task must be an object"))?;
-    reject_unknown(object, &["gid", "uris", "sources", "options", "state"])?;
+    reject_unknown(
+        object,
+        &["gid", "uris", "sources", "options", "state", "verification"],
+    )?;
+    let verification = object
+        .get("verification")
+        .map(crate::verification_document::parse_verification)
+        .transpose()?;
     if object
         .get("gid")
         .is_some_and(|value| !value.as_str().is_some_and(|text| is_hex(text, 16)))
@@ -205,10 +228,26 @@ fn parse_task(task: &Value, force_pause: bool) -> Result<ImportedTask, HttpContr
     if force_pause {
         option_map.insert("pause".to_owned(), Value::Bool(true));
     }
+    if option_map.contains_key("metalink-expansion")
+        || option_map.contains_key("verification-manifest")
+        || option_map.contains_key("metalink-file-index")
+    {
+        return Err(invalid(
+            "internal verification bindings cannot be imported as options",
+        ));
+    }
+    if verification.is_some() {
+        option_map.remove("piece-length");
+    }
+    let (verification, metalink_index) =
+        verification.map_or((None, None), |(manifest, index)| (Some(manifest), index));
     Ok(ImportedTask {
         uris,
         sources,
         options,
+        verification,
+        metalink_index,
+        priorities: None,
     })
 }
 
@@ -410,6 +449,21 @@ fn push_task(tasks: &mut Vec<ImportedTask>, task: ImportedTask) -> Result<(), Ht
 }
 
 pub(crate) fn render(document: &Value, format: SessionFormat) -> Result<Vec<u8>, HttpControlError> {
+    if format == SessionFormat::Aria2
+        && document
+            .get("tasks")
+            .and_then(Value::as_array)
+            .is_some_and(|tasks| {
+                tasks.iter().any(|task| {
+                    task.get("verification")
+                        .is_some_and(|value| !value.is_null())
+                })
+            })
+    {
+        return Err(HttpControlError::Unsupported(
+            "VerificationMetadataRequiresJson",
+        ));
+    }
     let mut writer = SessionWriter { bytes: Vec::new() };
     if format == SessionFormat::Json {
         serde_json::to_writer(&mut writer, document)
@@ -532,7 +586,7 @@ mod tests {
         for text in [
             r#"{"tasks":[],"tasks":[]}"#,
             r#"{"tasks":[],"extra":true}"#,
-            r#"{"tasks":[],"formatVersion":2}"#,
+            r#"{"tasks":[],"formatVersion":3}"#,
             r#"{"tasks":[{"uris":["http://example.test/file"],"options":{"pause":"invalid"}}]}"#,
             r#"{"tasks":[{"uris":["http://example.test/file"],"options":false}]}"#,
             r#"{"tasks":[{"uris":["http://example.test/file"],"state":"unknown"}]}"#,

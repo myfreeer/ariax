@@ -34,14 +34,90 @@ pub struct DownloadOptions {
     pub lowest_speed_limit: Option<u64>,
     pub endgame_max_duplicates: Option<usize>,
     pub checksum: Option<crate::HttpContentChecksum>,
+    /// Protocol-neutral options, including all four supported content digests.
+    pub transfer: Option<crate::TransferOptions>,
     pub mirror_identity: Option<crate::HttpMirrorIdentityPolicy>,
     pub retry: Option<crate::HttpRetryPolicy>,
 }
 
 impl DownloadOptions {
+    /// Parses local download settings through the shared admission registry.
+    pub fn from_pairs(
+        settings: impl IntoIterator<Item = (String, String)>,
+    ) -> Result<Self, NativeApiError> {
+        let mut values = serde_json::Map::new();
+        let mut bytes = 0usize;
+        for (name, value) in settings {
+            bytes = bytes
+                .saturating_add(name.len())
+                .saturating_add(value.len())
+                .saturating_add(128);
+            if bytes > crate::MAX_HTTP_RPC_REQUEST_BYTES
+                || values.len() >= ariax_storage::MAX_OPTION_MAP_ENTRIES
+                || name == "dir"
+                || values.insert(name, Value::String(value)).is_some()
+            {
+                return Err(NativeApiError::InvalidConfiguration(
+                    "duplicate, oversized or unsupported download option",
+                ));
+            }
+        }
+        let root = std::env::current_dir().map_err(|_| {
+            NativeApiError::InvalidConfiguration("cannot resolve local output root")
+        })?;
+        let (parsed, _, _, paused) = crate::http_control::parse_add_options_authorized(
+            &Value::Object(values.clone()),
+            &root,
+            &["https://options.invalid/download".to_owned()],
+            true,
+        )
+        .map_err(NativeApiError::Control)?;
+        Ok(Self {
+            pause: paused,
+            output: values.get("out").and_then(Value::as_str).map(str::to_owned),
+            split: values.contains_key("split").then_some(parsed.split),
+            timeout_seconds: values
+                .contains_key("timeout")
+                .then_some(parsed.response_body_timeout.as_secs()),
+            max_download_limit: values
+                .contains_key("max-download-limit")
+                .then_some(parsed.max_download_limit),
+            max_connections_per_server: values
+                .contains_key("max-connection-per-server")
+                .then_some(parsed.max_connections_per_server),
+            min_split_size: values
+                .contains_key("min-split-size")
+                .then_some(parsed.min_split_size),
+            piece_length: values
+                .contains_key("piece-length")
+                .then_some(parsed.piece_length),
+            connect_timeout_seconds: values
+                .contains_key("connect-timeout")
+                .then_some(parsed.connect_timeout.as_secs()),
+            lowest_speed_limit: values
+                .contains_key("lowest-speed-limit")
+                .then_some(parsed.lowest_speed_limit),
+            endgame_max_duplicates: values
+                .contains_key("endgame-max-duplicates")
+                .then_some(parsed.endgame_max_duplicates),
+            checksum: parsed.checksum,
+            transfer: Some(parsed.transfer),
+            mirror_identity: values
+                .contains_key("verify-mirror-identity")
+                .then_some(parsed.mirror_identity),
+            retry: parsed.retry,
+        })
+    }
+
     fn input_bytes(&self) -> usize {
         // Includes canonical retry fields, JSON nodes and bounded conversion scratch.
-        (64 * 1024_usize).saturating_add(self.output.as_ref().map_or(0, String::capacity))
+        (64 * 1024_usize)
+            .saturating_add(self.output.as_ref().map_or(0, String::capacity))
+            .saturating_add(
+                self.transfer
+                    .as_ref()
+                    .map_or(0, |options| options.retained_bytes().saturating_mul(3)),
+            )
     }
 
     fn into_value(self, admission: bool) -> Result<Value, NativeApiError> {
@@ -81,6 +157,69 @@ impl DownloadOptions {
         }
         if let Some(checksum) = self.checksum {
             options.insert("checksum".to_owned(), Value::String(checksum.canonical()));
+        }
+        if let Some(transfer) = self.transfer {
+            transfer
+                .validate()
+                .map_err(|error| NativeApiError::Control(HttpControlError::TaskSpec(error)))?;
+            for (name, value) in transfer.persisted() {
+                if !matches!(
+                    name.as_str(),
+                    "verification-manifest" | "metalink-expansion"
+                ) {
+                    options.insert(name, Value::String(value));
+                }
+            }
+            if let Some(checksum) = transfer.checksum {
+                if options.contains_key("checksum") {
+                    return Err(NativeApiError::InvalidConfiguration(
+                        "only one user checksum may be supplied",
+                    ));
+                }
+                options.insert("checksum".into(), Value::String(checksum.canonical()));
+            }
+            if let Some(credentials) = transfer.credentials {
+                options.insert(
+                    "ftp-user".into(),
+                    Value::String(credentials.username.to_string()),
+                );
+                if let Some(password) = credentials.password {
+                    options.insert("ftp-passwd".into(), Value::String(password.to_string()));
+                }
+            }
+            for (name, path) in [
+                ("sftp-known-hosts", transfer.sftp_known_hosts),
+                ("sftp-private-key", transfer.sftp_private_key),
+                ("netrc-path", transfer.netrc_path),
+            ] {
+                if let Some(path) = path {
+                    options.insert(
+                        name.into(),
+                        Value::String(
+                            path.to_str()
+                                .ok_or(NativeApiError::InvalidConfiguration(
+                                    "credential paths must be UTF-8",
+                                ))?
+                                .to_owned(),
+                        ),
+                    );
+                }
+            }
+            if let Some(passphrase) = transfer.sftp_private_key_passphrase {
+                options.insert(
+                    "sftp-private-key-passphrase".into(),
+                    Value::String(passphrase.expose().to_owned()),
+                );
+            }
+            if transfer.sftp_use_agent {
+                options.insert("sftp-use-agent".into(), Value::Bool(true));
+            }
+            if !transfer.sftp_check_host_key {
+                options.insert("sftp-check-host-key".into(), Value::Bool(false));
+            }
+            if transfer.ftp_pasv_server_address {
+                options.insert("ftp-pasv-address".into(), Value::String("server".into()));
+            }
         }
         if let Some(policy) = self.mirror_identity {
             options.insert(
@@ -194,12 +333,81 @@ pub struct AddUri {
     pub options: DownloadOptions,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct MetalinkSelection {
+    pub base_uri: Option<String>,
+    pub select_file: Option<String>,
+    pub language: Option<String>,
+    pub os: Option<String>,
+    pub version: Option<String>,
+    pub location: Option<String>,
+    pub preferred_protocol: Option<crate::TransferProtocol>,
+    pub unique_protocol: Option<bool>,
+}
+
+pub struct AddMetalink {
+    pub bytes: Vec<u8>,
+    pub options: DownloadOptions,
+    pub selection: MetalinkSelection,
+    pub position: Option<i64>,
+}
+impl fmt::Debug for AddMetalink {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AddMetalink")
+            .field("bytes", &self.bytes.len())
+            .field("options", &self.options)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ApproveHostKey {
+    pub gid: Gid,
+    pub challenge: ariax_core::HostKeyChallengeId,
+    pub fingerprint_sha256: ariax_core::HostKeyFingerprint,
+}
+impl ApproveHostKey {
+    pub fn from_text(gid: Gid, challenge: &str, fingerprint: &str) -> Result<Self, NativeApiError> {
+        Ok(Self {
+            gid,
+            challenge: ariax_core::HostKeyChallengeId::new(
+                crate::transfer_task::parse_hex_bytes(challenge).map_err(|_| {
+                    NativeApiError::InvalidConfiguration(
+                        "challenge id must be 32 hexadecimal characters",
+                    )
+                })?,
+            ),
+            fingerprint_sha256: ariax_core::HostKeyFingerprint::new(
+                crate::transfer_task::parse_host_key_fingerprint(fingerprint).map_err(|_| {
+                    NativeApiError::InvalidConfiguration("invalid SHA-256 host-key fingerprint")
+                })?,
+            ),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshConnectionStatus {
+    pub source: u32,
+    pub kex: String,
+    pub host_key: String,
+    pub cipher: String,
+    pub client_mac: String,
+    pub server_mac: String,
+    pub insecure_host_key: bool,
+    pub legacy_host_key_digest: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TaskStatus {
     pub gid: Gid,
     pub status: Aria2Status,
     pub total_length: u64,
     pub completed_length: u64,
+    pub host_key_challenge: Option<ariax_core::HostKeyChallenge>,
+    pub followed_by: Vec<Gid>,
+    pub ssh_connection: Option<SshConnectionStatus>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize)]
@@ -467,6 +675,88 @@ impl Engine {
     #[must_use]
     pub fn builder() -> EngineBuilder {
         EngineBuilder::default()
+    }
+
+    pub async fn add_metalink(&self, request: AddMetalink) -> Result<Vec<Gid>, NativeApiError> {
+        use base64ct::Encoding;
+        if request.bytes.len() > crate::MAX_METALINK_DOCUMENT_BYTES {
+            return Err(NativeApiError::InvalidConfiguration(
+                "Metalink exceeds document limit",
+            ));
+        }
+        let lease = self.client.try_request(0).map_err(native_budget_error)?;
+        lease
+            .reserve(
+                request
+                    .bytes
+                    .capacity()
+                    .saturating_add(request.bytes.len().saturating_mul(4).div_ceil(3))
+                    .saturating_add(256 * 1024),
+            )
+            .map_err(native_budget_error)?;
+        let mut options = request.options.into_value(true)?;
+        let object = options.as_object_mut().expect("download options");
+        for (name, value) in [
+            ("metalink-base-uri", request.selection.base_uri),
+            ("select-file", request.selection.select_file),
+            ("metalink-language", request.selection.language),
+            ("metalink-os", request.selection.os),
+            ("metalink-version", request.selection.version),
+            ("metalink-location", request.selection.location),
+        ] {
+            if let Some(value) = value {
+                object.insert(name.into(), Value::String(value));
+            }
+        }
+        if let Some(protocol) = request.selection.preferred_protocol {
+            object.insert(
+                "metalink-preferred-protocol".into(),
+                Value::String(protocol.code().into()),
+            );
+        }
+        if let Some(unique) = request.selection.unique_protocol {
+            object.insert(
+                "metalink-enable-unique-protocol".into(),
+                Value::Bool(unique),
+            );
+        }
+        let value = self
+            .call_control_admitted(
+                "aria2.addMetalink",
+                json!([
+                    base64ct::Base64::encode_string(&request.bytes),
+                    options,
+                    request.position.unwrap_or(-1)
+                ]),
+                lease,
+            )
+            .await?;
+        value
+            .as_array()
+            .ok_or(NativeApiError::InvalidResponse(
+                "addMetalink must return GIDs",
+            ))?
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .and_then(|text| text.parse().ok())
+                    .ok_or(NativeApiError::InvalidResponse("invalid Metalink GID"))
+            })
+            .collect()
+    }
+
+    pub async fn approve_host_key(&self, request: ApproveHostKey) -> Result<(), NativeApiError> {
+        self.call_control(
+            "ariax.approveHostKey",
+            json!([
+                request.gid.to_string(),
+                crate::transfer_task::hex_bytes(request.challenge.as_bytes()),
+                ariax_storage::session_host_key_pin_value(request.fingerprint_sha256)
+            ]),
+        )
+        .await?;
+        Ok(())
     }
 
     pub async fn add_uri(&self, request: AddUri) -> Result<Gid, NativeApiError> {
@@ -969,7 +1259,7 @@ impl Engine {
             .response(Some(lease.clone()))
             .map_err(native_budget_error)?;
         let workspace = response.workspace().map_err(native_budget_error)?;
-        let context = RpcClientContext::default().with_request(lease);
+        let context = RpcClientContext::local().with_request(lease);
         let value = self
             .control
             .call(method, params, context)
@@ -1042,6 +1332,55 @@ fn task_status(value: &Value) -> Result<TaskStatus, NativeApiError> {
         status,
         total_length: decimal_field(value, "totalLength")?,
         completed_length: decimal_field(value, "completedLength")?,
+        ssh_connection: value
+            .get("sshConnection")
+            .map(|value| {
+                serde_json::from_value(value.clone())
+                    .map_err(|_| NativeApiError::InvalidResponse("invalid SSH diagnostics"))
+            })
+            .transpose()?,
+        followed_by: match value.get("followedBy") {
+            None => Vec::new(),
+            Some(value) => value
+                .as_array()
+                .filter(|values| values.len() <= 1000)
+                .ok_or(NativeApiError::InvalidResponse("invalid followedBy"))?
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .and_then(|text| text.parse().ok())
+                        .ok_or(NativeApiError::InvalidResponse("invalid child GID"))
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        },
+        host_key_challenge: value
+            .get("hostKeyChallenge")
+            .map(|value| {
+                let invalid = || NativeApiError::InvalidResponse("invalid host-key challenge");
+                Ok(ariax_core::HostKeyChallenge {
+                    id: ariax_core::HostKeyChallengeId::new(
+                        crate::transfer_task::parse_hex_bytes(
+                            value["id"].as_str().ok_or_else(invalid)?,
+                        )
+                        .map_err(|_| invalid())?,
+                    ),
+                    canonical_host: value["host"].as_str().ok_or_else(invalid)?.to_owned(),
+                    port: value["port"]
+                        .as_u64()
+                        .and_then(|port| u16::try_from(port).ok())
+                        .filter(|port| *port != 0)
+                        .ok_or_else(invalid)?,
+                    algorithm: value["algorithm"].as_str().ok_or_else(invalid)?.to_owned(),
+                    fingerprint_sha256: ariax_core::HostKeyFingerprint::new(
+                        crate::transfer_task::parse_host_key_fingerprint(
+                            value["fingerprintSha256"].as_str().ok_or_else(invalid)?,
+                        )
+                        .map_err(|_| invalid())?,
+                    ),
+                })
+            })
+            .transpose()?,
     })
 }
 
