@@ -1,8 +1,10 @@
 # Detailed FTP And SFTP Design
 
-Status: implementation is underway under the Phase-5
-[shared transfer gates](detailed-protocol-transfers.md). FTP/SFTP adapter and
-security acceptance remain pending until their executable evidence is recorded.
+Status: the Phase-5 [shared transfer gates](detailed-protocol-transfers.md)
+pass local validation at `6a55b1f`. FTP/FTPS wire and security tests, SFTP trust
+and framing tests, and both clients against OpenSSH are recorded in the
+[validation evidence](performance-evidence/phase5-validation-2026-09-15.md).
+Native Linux acceptance remains deferred until CI is ready.
 
 The HTTP-centric resume/validation model (`EntityValidator` with
 ETag/Last-Modified, the HTTP `StaleValidator` classification, and

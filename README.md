@@ -1,9 +1,13 @@
 # Downloader Design
 
-Phase 5 implements Metalink v3/v4, FTP/FTPS, SFTP, four content digests and
-self-contained Metalink JSON migration through the shared scheduler and public
-interfaces. The [shared protocol transfer gates](detailed-protocol-transfers.md)
-track validation. Native Linux acceptance remains deferred until CI is ready.
+Phase 5 implementation and local validation are complete at `6a55b1f`:
+Metalink v3/v4, FTP/FTPS, SFTP, four content digests and self-contained Metalink
+JSON migration use the shared scheduler and public interfaces. All six
+[shared protocol transfer gates](detailed-protocol-transfers.md) pass locally.
+The [validation record](performance-evidence/phase5-validation-2026-09-15.md)
+includes both local platform suites, OpenSSH interoperability, ten bounded
+fuzz targets and five passing native Windows benchmark scenarios. Native Linux
+acceptance remains deferred until CI is ready.
 
 Status: overall implementation is underway. The scoped Phase-3B/3C HTTP(S)
 downloader milestone is implemented and checkpointed at `f97845d`, and the
@@ -684,9 +688,10 @@ Required before production claims:
   Content-Range parsing, bencode, Metalink, and input-file parsing.
 - Fuzz targets for HTTP headers, bencode, Metalink XML, RPC JSON/XML, control
   file recovery, and path components.
-  The implemented HTTP/journal subset is maintained in `fuzz/` with bounded
-  targets for response/request headers, retry specifications, discard budgets,
-  and journal replay; deferred protocol targets remain tracked here.
+  Ten implemented targets are maintained in `fuzz/`: HTTP response/request
+  headers, retry specifications, discard budgets, journal replay, RPC JSON,
+  session documents, URL rules, Metalink XML and verification manifests.
+  Bencode and XML-RPC targets remain tied to their later protocol gates.
 - Fault injection for short reads, oversized responses, server ignores Range,
   disk full, permission denied, lease abort, hash failure after write, partial
   fsync, torn/rotated control journals, and process kill during every recovery

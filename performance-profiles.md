@@ -68,6 +68,49 @@ The current implementation moves projection outside the owner and runs bounded
 mutation continuations through the managed runtime; deterministic tests and the
 expanded campaign validate those changes separately from the older results.
 
+### Native Windows Phase 5 Evidence
+
+The September 15, 2026 campaign passes on Phase 5 implementation `6a55b1f`,
+using native Windows-GNU Rust 1.97.1, two Tokio workers per process, the
+concurrency profile and `BlockingDiskLane`. `ARIAX_BENCH_METALINK=1` admits the
+1,000 active HTTP ranges through Metalink with a complete SHA-256 chunk
+manifest. Each transport completes 20,000 measured calls and 1,000 additional
+mutation-verification calls. Every operation's p99 meets the 50 ms gate.
+
+| Transport | Measured Calls | Aggregate p99 (ms) | Worst Operation p99 (ms) | Longest Burst (ms) | Scenario Time (s) | Peak Sampled Working Set (MiB) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| HTTP | 20,000 | 17.260 | 34.435 | 414 | 44.650 | 139.09 |
+| WebSocket | 20,000 | 17.064 | 28.010 | 417 | 44.910 | 140.52 |
+| Content-Length stdio | 20,000 | 17.424 | 35.674 | 420 | 51.655 | 142.63 |
+| NDJSON stdio | 20,000 | 17.605 | 38.946 | 419 | 50.184 | 140.48 |
+
+The worst operation is `addUri` for HTTP and Content-Length, and `changeUri`
+for WebSocket and NDJSON. No burst exceeds 426 calls or 420 ms; cooldowns are
+250 ms. All renewed range barriers, stalled-credit releases, resource limits
+and clean shutdown checks pass. Peak RPC and resident reservations are
+37.77 MiB against 64 MiB and 194.98 MiB against 896 MiB, respectively.
+Transport owner turns use at most 12 steps. Maximum observed owner turn and
+lock wait are 6.514 ms and 0.524 ms; the approximately 1 ms owner budget remains
+cooperative rather than a hard wall-clock deadline.
+
+The separate administrative scenario completes in 10.298 seconds with zero
+active ranges. It imports/exports/saves 128 tasks, preserves later per-task
+intent during bulk resume/pause, creates and purges 128 real stopped results,
+and shuts down cleanly. Concurrent query p99 peaks at 3.790 ms, urgent
+acknowledgement at 17.380 ms, and the longest query burst at 402.025 ms.
+Shutdown acknowledgement and drain take 0.016 ms and 50.337 ms. Total operation
+durations remain separate from the query and urgent acknowledgement gates.
+
+All five scenarios pass on their first attempt. Compilation and fuzzing finish
+before measurement; no compiler process is observed by preflight or the
+five-second native process samples. The
+[raw reports](performance-evidence/phase5-windows-gnu-2026-09-15.json) retain
+commands, source/binary hashes, runtime/resource observations and fuzz attempts.
+The [validation record](performance-evidence/phase5-validation-2026-09-15.md)
+also covers protocol security, OpenSSH interoperability, workspace checks and
+the bounded fuzz campaign. Native Linux acceptance stays deferred until CI is
+ready. The P4 reports below retain their original scope and results.
+
 ### Native Windows Control Plane Evidence
 
 The September 14, 2026 campaign passes all four transports on the P4-11
@@ -142,9 +185,11 @@ This report predates the P4-11 progress implementation and does not validate it.
 
 Status: executable profile and HTTP-capacity slice implemented and recorded;
 optimized Linux and native Windows-GNU HTTP-capacity runs are recorded below.
-The native Windows control-plane runs above also pass. Adaptive tuning,
-non-HTTP resource wiring, native Linux control-plane acceptance, and the
-remaining release-platform matrix remain pending.
+The native Windows control-plane runs above also pass, including Phase 5
+Metalink admission. FTP/FTPS and SFTP share the implemented resource owners.
+Adaptive tuning, native Linux control-plane acceptance, and the remaining
+release-platform matrix remain pending; native Linux acceptance is deferred
+until CI is ready.
 
 The runtime resolver now owns the exact preset matrix below, subtracts the
 64-handle control reserve from the native soft handle limit, and derives shared
@@ -152,8 +197,8 @@ process/socket/file and resident-byte budgets. The RPC binary accepts
 `--profile=auto|concurrency|throughput|latency|compact`; its HTTP transport,
 HTTP ingress, and storage buffer pool share the resolved resident budget, while
 transport sockets consume the process/socket handle permits. Selected storage
-files share file-handle permits; eviction and non-HTTP consumers remain later
-work. `auto` currently resolves to the
+files share file-handle permits, as do the Phase-5 protocol adapters; the
+evictable file-handle LRU remains later work. `auto` currently resolves to the
 concurrency baseline; adaptive movement inside the guardrails is a later
 milestone.
 

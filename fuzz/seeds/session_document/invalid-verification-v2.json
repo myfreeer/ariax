@@ -1,0 +1,1 @@
+{"formatVersion":2,"tasks":[{"uris":["https://example.test/abc"],"options":{"pause":true},"verification":{"length":"3","chunkLength":"0","chunks":["sha-256=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"],"whole":[],"fileIndex":1}}]}

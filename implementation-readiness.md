@@ -19,6 +19,11 @@ report. Native Linux benchmark acceptance stays deferred at the user's request
 until CI is ready; release matrix work remains governed by the exit criteria
 below and `implementation-plan.md`.
 
+Phase 5 implementation at `6a55b1f` now passes all six local
+[shared transfer gates](detailed-protocol-transfers.md#scope-and-checkpoints).
+The [September 15 validation record](performance-evidence/phase5-validation-2026-09-15.md)
+covers shared protocol transfers, verification, migration and current evidence.
+
 This document is the handoff checklist from architecture design to detailed
 module design and implementation.
 
@@ -457,12 +462,37 @@ removing generated target outputs; preserve pinned toolchains and archives.
 - Pass MSRV 1.88 and the full native Linux, Windows, and macOS release matrix
   before any tag; configured workflow jobs alone are not completion evidence.
 
+## Phase 5 Local Completion
+
+`P5-01` through `P5-06` pass locally at `6a55b1f`: shared bounded CPU and
+transfer ownership, four checksum algorithms, multi-lease verification and
+recovery, streamed Metalink v3/v4 admission/following, patched FTP/FTPS and
+SFTP, mixed-source scheduling, selectors/statistics and CLI/RPC/Rust parity.
+JSON migration v2 retains selected verification without the original XML;
+version-1 import remains supported. Journal v1 gains required records 27–32;
+existing record meanings and SQLite schema v2 are unchanged.
+
+Default and all-feature workspace suites, builds and strict Clippy pass on
+Linux-under-WSL and native Windows-GNU. MSRV 1.88, generated contracts, all four
+protocol feature bundles, SQLite closure/rejections and fork inventories pass.
+Both clients pass real OpenSSH authentication and bounded offset reads. Named
+success/rejection and crash regressions are recorded in the
+[validation record](performance-evidence/phase5-validation-2026-09-15.md).
+
+Ten ASan/coverage fuzz targets each pass 512 executions in accepted bursts of
+at most 500 ms, with three over-limit attempts retained and excluded. All five
+native Windows benchmark scenarios pass: four transports each complete 20,000
+measured calls under 1,000 active ranges admitted through Metalink, followed by
+the separate 128-task administrative scenario. Worst operation p99 is
+38.946 ms and longest transport burst is 420 ms. The
+[Phase 5 performance evidence](performance-profiles.md#native-windows-phase-5-evidence)
+is separate from the historical P4 reports.
+
 ## Deferred But Tracked
 
-Phase 5 is now being implemented under the separate `P5-01` through `P5-06`
-[shared transfer gates](detailed-protocol-transfers.md#scope-and-checkpoints).
-Those gates remain open until their implementation, regression and platform
-evidence is recorded. This does not close the deferred P4-11 native Linux gate.
+Native Linux acceptance remains deferred until CI is ready. Phase 5 local
+completion does not close the P4-11 native Linux gate, native kernel/backend
+coverage or the full release-platform matrix.
 
 These are intentionally not first-slice blockers, but their registry and
 feature-gate status must exist from the start:

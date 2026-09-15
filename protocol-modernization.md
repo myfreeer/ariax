@@ -4,9 +4,12 @@ Status: reviewed implementation contract. Direct HTTP(S), the Phase-3B shared
 DNS/Happy-Eyeballs policy client, redirects, HTTP/SOCKS5 proxy routing,
 Basic/netrc authentication, bounded cookies, and the Phase-4B shared control
 plane are executable. HTTP/WebSocket, both stdio framings, CLI and typed Rust
-interfaces share that control plane. HTTP/2, advanced DNS transports, client
-certificates and non-HTTP protocol workers remain later gates; control progress
-and native Linux performance gates are tracked in `implementation-readiness.md`.
+interfaces share that control plane. Phase 5 adds FTP/FTPS and SFTP workers,
+Metalink admission and verification with
+[passing local evidence](performance-evidence/phase5-validation-2026-09-15.md).
+HTTP/2, advanced DNS transports, client certificates and BitTorrent remain later
+gates. Native Linux acceptance stays deferred until CI is ready and is tracked
+in `implementation-readiness.md`.
 
 Modern protocols should be part of the roadmap, but not all of them belong in
 the mandatory baseline. The downloader must keep the reliable aria2-style

@@ -1,24 +1,26 @@
 # Shared Protocol Transfer Design
 
-Status: Phase 5 implementation is underway from `dfdeae6`. The gates below
-describe the accepted implementation scope, not completed validation. Native
-Linux acceptance remains deferred until CI is ready.
+Status: Phase 5 implementation and local validation are complete at `6a55b1f`,
+following the accepted scope from `dfdeae6`. The
+[validation record](performance-evidence/phase5-validation-2026-09-15.md) covers
+Linux-under-WSL and native Windows-GNU tests, interoperability, bounded fuzzing
+and native Windows measurements. Native Linux acceptance remains deferred until
+CI is ready.
 
 ## Scope And Checkpoints
 
 | Gate | Required Result | Current Status |
 | --- | --- | --- |
-| `P5-01` Shared foundations | Protocol-neutral source/task dispatch, bounded CPU work, real feature bundles, existing HTTP compatibility | In progress |
-| `P5-02` Verification and recovery | Four content digests, immutable verification manifests, multiple leases per chunk, ordered hashing and bounded readback fallback | Pending |
-| `P5-03` Metalink | Bounded v3/v4 parser, safe names, atomic selected-file admission, streaming downloads and follow behavior | Pending |
-| `P5-04` FTP/FTPS | Pinned parser/logging/active-peer patches, owned socket paths, sequential resume, protected FTPS data | Pending |
-| `P5-05` SFTP | Pinned framing patch, host-key approval, authentication policy and bounded offset pipeline | Pending |
-| `P5-06` Integration | Mixed-source scheduling, selectors/statistics, public parity, self-contained JSON migration and recorded validation | Pending |
+| `P5-01` Shared foundations | Protocol-neutral source/task dispatch, bounded CPU work, real feature bundles, existing HTTP compatibility | Passed locally |
+| `P5-02` Verification and recovery | Four content digests, immutable verification manifests, multiple leases per chunk, ordered hashing and bounded readback fallback | Passed locally |
+| `P5-03` Metalink | Bounded v3/v4 parser, safe names, atomic selected-file admission, streaming downloads and follow behavior | Passed locally |
+| `P5-04` FTP/FTPS | Pinned parser/logging/active-peer patches, owned socket paths, sequential resume, protected FTPS data | Passed locally |
+| `P5-05` SFTP | Pinned framing patch, host-key approval, authentication policy and bounded offset pipeline | Passed locally |
+| `P5-06` Integration | Mixed-source scheduling, selectors/statistics, public parity, self-contained JSON migration and recorded validation | Passed locally |
 
-Implementation runs in this order without subagents. HTTP/2, BitTorrent,
+These local gates do not close the P4-11 native Linux gate. HTTP/2, BitTorrent,
 growing layouts, new native disk backends and release/tag qualification remain
-separate gates. The P4-11 native Linux gate remains open independently of this
-phase's local implementation progress.
+separate gates.
 
 ## Shared Ownership
 
@@ -211,3 +213,11 @@ source/binary hashes. Phase-5 evidence is separate from historical P4 reports.
 `ARIAX_BENCH_METALINK=1` admits the active-range benchmark through Metalink,
 with a complete SHA-256 chunk manifest. The report records that admission path;
 the default retains the ordinary `addUri` fixture for comparison.
+
+The September 15 native Windows campaign passes all four 20,000-call transports
+and the separate 128-task administrative scenario. Worst operation p99 is
+38.946 ms, longest transport burst is 420 ms, and every scenario finishes within
+90 seconds. Ten ASan/coverage fuzz targets each pass 512 executions in accepted
+bursts no longer than 500 ms; three over-limit attempts remain excluded. The
+[raw evidence](performance-evidence/phase5-windows-gnu-2026-09-15.json) records
+source/binary hashes, reports, seed inventories and validation log hashes.

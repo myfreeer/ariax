@@ -6,11 +6,15 @@ integration test and recorded platform evidence before its status is closed.
 The selected real-download RPC p99 target is 50 ms; the existing mock dispatcher
 benchmark does not satisfy that requirement.
 
-Phase 5 is underway under `P5-01` through `P5-06` in
-[the shared protocol transfer contract](detailed-protocol-transfers.md).
-The scope includes self-contained Metalink JSON migration and keeps native
-Linux acceptance deferred until CI is ready. Planned gates are not passing
-implementation or platform evidence.
+Phase 5 gates `P5-01` through `P5-06` in
+[the shared protocol transfer contract](detailed-protocol-transfers.md) pass
+local validation at `6a55b1f`. The
+[validation record](performance-evidence/phase5-validation-2026-09-15.md) maps
+the gates to named regressions, protocol/security and OpenSSH evidence,
+Linux-under-WSL/native Windows checks, ten bounded fuzz targets and five passing
+native Windows scenarios. This includes self-contained Metalink JSON v2
+migration with v1 import. Native Linux acceptance remains deferred until CI is
+ready; local completion does not close that platform gate.
 
 Status: reviewed contract; the scoped Phase-3B/3C HTTP(S) downloader milestone
 is checkpointed at `30b70c5`, and the bounded Phase-4 control-plane checkpoint
@@ -397,8 +401,8 @@ Design coverage:
   admission, and the Phase-4 shared dispatcher/control/event checkpoint.
   Phase 5 adds Metalink identity and four content checksum algorithms. Broader
   RFC 9530 identity, `Content-Digest`, Last-Modified/unsafe-override resume,
-  HTTP/2, growing bodies,
-  and native Linux benchmark acceptance remain pending. Aria2
+  HTTP/2 and growing bodies remain later gates. Native Linux benchmark
+  acceptance stays deferred until CI is ready. Aria2
   text-session compatibility and the Phase-4B implementation gates are covered above.
 
 Legacy HTTP Basic RPC now has startup registry/CLI/environment validation,

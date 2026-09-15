@@ -476,10 +476,14 @@ retain the expanded native Linux CI campaign once CI is ready; it remains deferr
 
 ## Phase 5: Metalink, FTP, SFTP
 
-Implementation is underway under the accepted [shared transfer plan and
-checkpoint gates](detailed-protocol-transfers.md). Native Linux acceptance stays
-deferred until CI is ready. Self-contained native JSON Metalink migration is
-part of this phase; HTTP/2 remains deferred.
+Implementation and local validation are complete at `6a55b1f` under the accepted
+[shared transfer plan and checkpoint gates](detailed-protocol-transfers.md).
+The [validation record](performance-evidence/phase5-validation-2026-09-15.md)
+records passing Linux-under-WSL and native Windows builds/tests/lints, MSRV,
+contracts, feature/fork checks, OpenSSH interoperability, ten bounded fuzz
+targets and all five native Windows benchmark scenarios. Native Linux
+acceptance stays deferred until CI is ready. Self-contained JSON migration v2
+is implemented with v1 import compatibility; HTTP/2 remains deferred.
 
 - Metalink parser with safe XML settings and chunk checksums.
 - Metalink checksum-aligned verification with bounded ordered reassembly and
@@ -493,8 +497,10 @@ part of this phase; HTTP/2 remains deferred.
   host-key verification, known-hosts policy, authentication ordering, algorithm
   policy, timeout/rekey handling, and secret redaction.
 - Mirror selection and server stats.
+- Shared CLI/RPC/Rust admission, exact SFTP challenge approval and self-contained
+  JSON v2 migration, retaining v1 import and atomic rejection of lossy text export.
 
-Exit criteria:
+Local exit criteria (passed; named regressions are in the validation record):
 
 - Multi-source Metalink downloads stream to disk without whole-file buffering.
 - Protocol-specific options have behavioral tests.

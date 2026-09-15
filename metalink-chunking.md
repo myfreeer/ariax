@@ -1,8 +1,10 @@
 # Metalink Chunking And Checksums
 
-Status: implementation is underway under the Phase-5
-[shared transfer gates](detailed-protocol-transfers.md). Verification and parser
-acceptance remain pending until their executable evidence is recorded.
+Status: the Phase-5 [shared transfer gates](detailed-protocol-transfers.md)
+pass local validation at `6a55b1f`. Parser, multi-lease verification, bounded
+readback, crash recovery and fuzz results are recorded in the
+[validation evidence](performance-evidence/phase5-validation-2026-09-15.md).
+Native Linux acceptance remains deferred until CI is ready.
 
 Decision: when Metalink chunk hashes are present and enabled, verification
 chunks are fixed by the Metalink checksum ranges. Network range leases should
