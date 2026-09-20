@@ -184,6 +184,9 @@ The Unix payload is `st_dev:u64le || st_ino:u64le`. The Windows payload is
 lengths, and identities from another platform fail closed. `RootIdentity` and
 `FileIdentity` use the same codec; object kind, link count, and containment are
 verified separately from the opened descriptor or handle.
+Regular-file link counts are widened to `u64` at the native boundary; Unix
+`nlink_t` widths differ across Linux and macOS. Missing entries and non-regular
+objects are rejected before their counts can authorize publication recovery.
 
 On Windows, an absolute capability open first acquires only the drive-volume or
 UNC-share anchor with `CreateFileW`, because applying `OBJ_DONT_REPARSE` to a

@@ -813,7 +813,7 @@ mod platform {
                 expected: NativeObjectKind::RegularFile,
             });
         }
-        Ok(stat.st_nlink)
+        Ok(stat.st_nlink as u64)
     }
 
     fn validate_fd_kind(
@@ -1315,6 +1315,12 @@ mod tests {
             .expect("file open");
         let identity = FileIdentity::new(native_file_identity(&file).encode()).expect("identity");
         drop(file);
+        assert_eq!(
+            journal
+                .regular_file_link_count("selected.bin".as_ref())
+                .expect("single link count"),
+            1
+        );
         let safe = SafePathBuilder::from_user_path("selected.bin", PathPlatform::current())
             .expect("safe path");
 
@@ -1347,6 +1353,16 @@ mod tests {
             root.verify_file(&safe, &replacement_identity),
             Err(NativeCapabilityError::HardLinkAlias)
         ));
+    }
+
+    #[test]
+    fn link_count_rejects_directories_and_missing_entries() {
+        let directory = TestDirectory::new();
+        fs::create_dir(directory.0.join("subdirectory")).expect("directory");
+        let journal = JournalDirectoryCapability::open_trusted(&directory.0).expect("journal");
+        for name in ["subdirectory", "missing.bin"] {
+            assert!(journal.regular_file_link_count(name.as_ref()).is_err());
+        }
     }
 
     #[cfg(unix)]
