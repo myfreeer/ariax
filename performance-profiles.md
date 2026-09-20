@@ -70,7 +70,7 @@ expanded campaign validate those changes separately from the older results.
 
 ### Native Windows Phase 5 Evidence
 
-The September 15, 2026 campaign passes on Phase 5 implementation `6a55b1f`,
+The September 15, 2026 campaign passes on Phase 5 implementation `88d1a83`,
 using native Windows-GNU Rust 1.97.1, two Tokio workers per process, the
 concurrency profile and `BlockingDiskLane`. `ARIAX_BENCH_METALINK=1` admits the
 1,000 active HTTP ranges through Metalink with a complete SHA-256 chunk

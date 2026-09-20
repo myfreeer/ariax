@@ -329,7 +329,8 @@
     "The 296 source-file hashes identify the implementation commit. Later evidence/status documentation and two added session-v2 fuzz seeds do not change compiled Rust/build inputs. The complete seed inventory is recorded separately.",
     "Fuzz counts are libFuzzer executions, including corpus initialization and repeated seeds across bursts; they are not counts of distinct generated inputs.",
     "Three fuzz processes exceeded 500 ms and are retained as excluded attempts. Turning off per-function printing and reducing batches preserved ASan and coverage instrumentation.",
-    "Publication redacts workstation paths in command records. Measurements and original artifact hashes are unchanged; source commit IDs and source-file hashes refer to the pre-publication history."
+    "Publication redacts workstation paths in command records. Measurements and original artifact hashes are unchanged; source commit IDs and source-file hashes refer to the pre-publication history.",
+    "The sourceCommit and original artifact hashes identify the pre-publication history. publishedSourceCommit identifies the corresponding sanitized implementation; benchmark measurements are unchanged."
   ],
   "scenarios": [
     {
@@ -2930,5 +2931,6 @@
       },
       "inspection": "Markdown headings, TODO and unresolved scan inspected; remaining uses describe historical or explicit contract states."
     }
-  }
+  },
+  "publishedSourceCommit": "88d1a8321afb85229695e306f015d9f3bcbd5074"
 }

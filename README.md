@@ -1,6 +1,6 @@
 # Downloader Design
 
-Phase 5 implementation and local validation are complete at `6a55b1f`:
+Phase 5 implementation and local validation are complete at `88d1a83`:
 Metalink v3/v4, FTP/FTPS, SFTP, four content digests and self-contained Metalink
 JSON migration use the shared scheduler and public interfaces. All six
 [shared protocol transfer gates](detailed-protocol-transfers.md) pass locally.
@@ -10,9 +10,9 @@ fuzz targets and five passing native Windows benchmark scenarios. Native Linux
 acceptance remains deferred until CI is ready.
 
 Status: overall implementation is underway. The scoped Phase-3B/3C HTTP(S)
-downloader milestone is implemented and checkpointed at `f97845d`, and the
-Phase-4 control-plane checkpoint is executable at `71acb03`, with the Phase-4B
-implementation and native Windows benchmark evidence at `f2f560e`. Phase 0
+downloader milestone is implemented and checkpointed at `7adddc1`, and the
+Phase-4 control-plane checkpoint is executable at `ec415ff`, with the Phase-4B
+implementation and native Windows benchmark evidence at `f9edb5c`. Phase 0
 through the core Phase-1/2
 scheduler, configuration, journal, SQLite session owner, bounded runtime,
 descriptor-safe storage, startup recovery, and platform capability work have
@@ -46,7 +46,7 @@ records these changes; sanitized atomic session import/export and configured
 explicit, periodic, and shutdown saves now share the CLI/Rust/RPC control plane.
 Versioned configuration reload, bounded URL rules, redacted dumps, real option
 restarts, combined transports, compatibility modes and opt-in slow-slot/retry
-scheduling are implemented and tested. P4-11 control progress at `d13547b` adds
+scheduling are implemented and tested. P4-11 control progress at `8fefde2` adds
 immutable query projection outside the control owner, one managed
 native/transport runtime, nonblocking
 persistence and admission preparation, and bounded bulk continuations with

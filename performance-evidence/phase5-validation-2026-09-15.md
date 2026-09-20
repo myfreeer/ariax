@@ -4,9 +4,12 @@ The Phase 5 implementation and all required local validation pass, including
 bounded fuzzing and all five native Windows benchmark scenarios. Native Linux
 acceptance remains deferred until CI is ready.
 
-Implementation checkpoint: `6a55b1f1a2d3494f954725fab8a80d96e186f0d4`.
+Implementation checkpoint: `88d1a8321afb85229695e306f015d9f3bcbd5074`.
 The [raw evidence](phase5-windows-gnu-2026-09-15.json) records the implementation
 source hashes, benchmark binary, reports, fuzz attempts and validation log hashes.
+The implementation citation uses the sanitized publication history. Raw
+`sourceCommit` and artifact hashes remain unchanged; `publishedSourceCommit`
+and the [history map](publication-history-map.json) connect the two histories.
 
 ## Implemented Scope
 

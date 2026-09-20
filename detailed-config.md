@@ -370,7 +370,7 @@ If quiescence or later option application fails after acknowledgement, the task
 follows the `PausedRestarting -> Error` row with the patch id in diagnostics; it
 does not silently roll back only the live members and create a mixed version.
 
-The `71acb03` checkpoint cleared accepted patch metadata before cancellation
+The `ec415ff` checkpoint cleared accepted patch metadata before cancellation
 drained, producing `InvalidStagedSnapshotReplacement` on recovery. Phase 4B
 repairs that ordering with a retained snapshot, exact generation/mirror
 promotion, recovery of each durable prefix, and current-generation

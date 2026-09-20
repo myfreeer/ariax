@@ -8,7 +8,7 @@ benchmark does not satisfy that requirement.
 
 Phase 5 gates `P5-01` through `P5-06` in
 [the shared protocol transfer contract](detailed-protocol-transfers.md) pass
-local validation at `6a55b1f`. The
+local validation at `88d1a83`. The
 [validation record](performance-evidence/phase5-validation-2026-09-15.md) maps
 the gates to named regressions, protocol/security and OpenSSH evidence,
 Linux-under-WSL/native Windows checks, ten bounded fuzz targets and five passing
@@ -17,16 +17,16 @@ migration with v1 import. Native Linux acceptance remains deferred until CI is
 ready; local completion does not close that platform gate.
 
 Status: reviewed contract; the scoped Phase-3B/3C HTTP(S) downloader milestone
-is checkpointed at `30b70c5`, and the bounded Phase-4 control-plane checkpoint
-is executable at `71acb03`; Phase-4B implementation and native Windows benchmark
-evidence are checkpointed at `f2f560e`. Phase 4B repairs authentication, retry
+is checkpointed at `1099be9`, and the bounded Phase-4 control-plane checkpoint
+is executable at `ec415ff`; Phase-4B implementation and native Windows benchmark
+evidence are checkpointed at `f9edb5c`. Phase 4B repairs authentication, retry
 admission, active option journal recovery, live-rate changes and source mutations. Shared
 RPC reservations, transport ownership, borrowed result preflight, and typed
 input/native projection accounting are implemented. Scheduler simulations and
 status drafts reserve before mutation and retain credit through pending driver
 work. Runtime option application, bounded URL rules, configuration reload/dumps,
 interface parity, sanitized sessions and slow-slot scheduling are implemented
-and tested. P4-11 control progress at `d13547b` adds immutable query projection
+and tested. P4-11 control progress at `8fefde2` adds immutable query projection
 outside the owner, one managed runtime, nonblocking mutation/admission continuations, and bulk
 controls that preserve later per-task intent. Expanded Windows evidence is
 tracked separately from the historical status/global-template report; native
@@ -70,7 +70,7 @@ profile tuning, and the complete release matrix remain incomplete. Optimized
 Linux and native Windows-GNU capacity evidence, including mandatory RSS or
 working-set samples, is recorded in `performance-profiles.md`.
 
-The Phase-4 audit of `71acb03` identified six control-plane repair gates: multicall
+The Phase-4 audit of `ec415ff` identified six control-plane repair gates: multicall
 envelopes must be dispatched before outer token parsing while checking every
 inner token; pushed WebSocket/stdio events must wait for successful client
 authentication; every accepted retry option must be registry- and

@@ -1,7 +1,7 @@
 # Detailed FTP And SFTP Design
 
 Status: the Phase-5 [shared transfer gates](detailed-protocol-transfers.md)
-pass local validation at `6a55b1f`. FTP/FTPS wire and security tests, SFTP trust
+pass local validation at `88d1a83`. FTP/FTPS wire and security tests, SFTP trust
 and framing tests, and both clients against OpenSSH are recorded in the
 [validation evidence](performance-evidence/phase5-validation-2026-09-15.md).
 Native Linux acceptance remains deferred until CI is ready.

@@ -1,0 +1,14 @@
+{
+  "description": "Referenced implementation and design commits remapped during initial publication; original benchmark artifact hashes remain historical evidence.",
+  "commits": {
+    "6a55b1f1a2d3494f954725fab8a80d96e186f0d4": "88d1a8321afb85229695e306f015d9f3bcbd5074",
+    "71acb03686e2aa6245fcfb52b9933c0b528fab18": "ec415ff4d2ab093d4f5559fca16da34474169856",
+    "d13547b20e4cf527da0ea3dd22c1ed501a740dfb": "8fefde23b21bdf3026dc143a763724c53b6a6b12",
+    "f2f560ec9f3af05454b2d67348aadf6aeadbeaeb": "f9edb5c3b25a9e50dfedf73068c9687fa2a9e360",
+    "f97845d5988c36bdb4765469e53d5d9db0877b16": "7adddc1714205ad6d21ddef1de29c3448aea6a7a",
+    "dfdeae61faf44445f5ee5075b3fb1cc4b6e69763": "2892fec34224b408596f84283ed66cbd45e6f1ce",
+    "3600223bad963e279bdc3f4d46428a9bc56a5f18": "3778eee6c76d1f6c3ee726b5603e1bf916390262",
+    "abf32c3918914ad3acb408effe58ccc394fea47c": "6081b56ed9ce453e7a191d9efe8ad084288770be",
+    "30b70c50d0fad529c378e25bc0e313b0b110f014": "1099be916e0b601d10ab7139132175d55a4f2228"
+  }
+}

@@ -53,7 +53,8 @@
     "Administrative measurements use the production in-process backend with zero active ranges. Urgent probes follow observed bulk progress. Import/export/save/purge cardinalities and separate shutdown durations are reported.",
     "Transport shutdownDrainUs ends at engine process exit; fixtureCleanupUs measures origin cleanup separately. Administrative shutdownDrainUs includes owner/session shutdown in process.",
     "supersededRuns retains the preliminary HTTP failure and administrative result from the earlier binary. They are excluded from final acceptance. The HTTP failure prompted productive-turn yielding; no latency, burst or scenario gate was relaxed.",
-    "Native Linux acceptance remains explicitly deferred until CI is ready. The historical September 13 status/global-template report does not validate this implementation."
+    "Native Linux acceptance remains explicitly deferred until CI is ready. The historical September 13 status/global-template report does not validate this implementation.",
+    "The sourceCommit and original artifact hashes identify the pre-publication history. publishedSourceCommit identifies the corresponding sanitized implementation; benchmark measurements are unchanged."
   ],
   "scenarios": [
     {
@@ -1247,5 +1248,6 @@
         "passed": true
       }
     ]
-  }
+  },
+  "publishedSourceCommit": "8fefde23b21bdf3026dc143a763724c53b6a6b12"
 }

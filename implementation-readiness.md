@@ -3,15 +3,15 @@
 Status: overall implementation is underway. The P0 contract blockers recorded
 in `final-preimplementation-review.md` are resolved in their normative
 documents, the scoped Phase-3B/3C HTTP(S) downloader milestone is checkpointed
-at `30b70c5`, and the Phase-4 control-plane checkpoint is executable at
-`71acb03`; Phase-4B implementation and native Windows benchmark evidence are
-checkpointed at `f2f560e`. A 2026-09-06 implementation audit found that the Phase-4
+at `1099be9`, and the Phase-4 control-plane checkpoint is executable at
+`ec415ff`; Phase-4B implementation and native Windows benchmark evidence are
+checkpointed at `f9edb5c`. A 2026-09-06 implementation audit found that the Phase-4
 checkpoint needed multicall authentication ordering, authenticated pushed
 events, complete registry-backed retry admission, active option restart replay,
 active source replacement outcome handling, and per-client RPC budget
 reservation. Phase 4B implements these six repairs and completes the runtime
 option, configuration, session, interface and slow-slot integration gates.
-P4-11 control progress at `d13547b` adds immutable query projection outside
+P4-11 control progress at `8fefde2` adds immutable query projection outside
 the control owner, one managed runtime, nonblocking mutation/admission continuations, and
 bounded bulk progress with later per-task intent taking precedence. The expanded
 Windows campaign is tracked separately from the historical status/global-template
@@ -19,7 +19,7 @@ report. Native Linux benchmark acceptance stays deferred at the user's request
 until CI is ready; release matrix work remains governed by the exit criteria
 below and `implementation-plan.md`.
 
-Phase 5 implementation at `6a55b1f` now passes all six local
+Phase 5 implementation at `88d1a83` now passes all six local
 [shared transfer gates](detailed-protocol-transfers.md#scope-and-checkpoints).
 The [September 15 validation record](performance-evidence/phase5-validation-2026-09-15.md)
 covers shared protocol transfers, verification, migration and current evidence.
@@ -301,7 +301,7 @@ this vertical slice.
 
 ## Phase 4 Repair Gates
 
-The six defects below were established against `71acb03` and are repaired.
+The six defects below were established against `ec415ff` and are repaired.
 Linux 1.97.1 and native Windows-GNU workspace tests pass, including production
 retry admission, authenticated transports, delayed cancellation, durable
 prefixes, exact mirror promotion, source rollback and disconnected callers.
@@ -464,7 +464,7 @@ removing generated target outputs; preserve pinned toolchains and archives.
 
 ## Phase 5 Local Completion
 
-`P5-01` through `P5-06` pass locally at `6a55b1f`: shared bounded CPU and
+`P5-01` through `P5-06` pass locally at `88d1a83`: shared bounded CPU and
 transfer ownership, four checksum algorithms, multi-lease verification and
 recovery, streamed Metalink v3/v4 admission/following, patched FTP/FTPS and
 SFTP, mixed-source scheduling, selectors/statistics and CLI/RPC/Rust parity.
@@ -497,7 +497,9 @@ after a real passing CI measurement campaign; it is not inferred from workflow
 configuration. Phase 6 permits breaking unreleased internal APIs and moving to
 fresh schema/JSON v3 stores without new backward-compatibility machinery.
 
-Native Linux acceptance remains deferred until CI is ready. Phase 5 local
+The sanitized history and fail-fast workflow are published on `main`; the
+native Linux acceptance gate remains open pending a verified passing CI run.
+Phase 5 local
 completion does not close the P4-11 native Linux gate, native kernel/backend
 coverage or the full release-platform matrix.
 

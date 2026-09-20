@@ -1,9 +1,9 @@
 # Implementation Plan
 
 Status: implementation remains underway for the overall roadmap. The scoped
-Phase-3B/3C HTTP(S) downloader milestone is checkpointed at `30b70c5`, and the
-Phase-4 control-plane checkpoint is executable at `71acb03`, with the Phase-4B
-implementation and native Windows benchmark evidence at `f2f560e`. Phase 0
+Phase-3B/3C HTTP(S) downloader milestone is checkpointed at `1099be9`, and the
+Phase-4 control-plane checkpoint is executable at `ec415ff`, with the Phase-4B
+implementation and native Windows benchmark evidence at `f9edb5c`. Phase 0
 contracts and the gated Phase-1/2 core, config,
 persistence, recovery, runtime, storage, and native capability work have
 executable checkpoints. The completed HTTP checkpoint covers
@@ -476,7 +476,7 @@ retain the expanded native Linux CI campaign once CI is ready; it remains deferr
 
 ## Phase 5: Metalink, FTP, SFTP
 
-Implementation and local validation are complete at `6a55b1f` under the accepted
+Implementation and local validation are complete at `88d1a83` under the accepted
 [shared transfer plan and checkpoint gates](detailed-protocol-transfers.md).
 The [validation record](performance-evidence/phase5-validation-2026-09-15.md)
 records passing Linux-under-WSL and native Windows builds/tests/lints, MSRV,
@@ -533,7 +533,9 @@ Before Phase 6, publish the existing history to
 shared fail-fast platform/feature/MSRV matrix; successful `main` pushes then
 collect native Linux benchmark evidence for the same commit. Retain actual
 passing reports before closing the deferred native Linux acceptance gate.
-The prerequisite is being implemented; no remote CI result is claimed yet.
+The sanitized history and CI configuration are published on `main`. Local
+preflight and native Windows checks pass. Remote acceptance remains open until
+the complete CI matrix and native Linux measurement campaign pass.
 
 ## Phase 6: BitTorrent Full Build
 

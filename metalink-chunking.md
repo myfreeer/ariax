@@ -1,7 +1,7 @@
 # Metalink Chunking And Checksums
 
 Status: the Phase-5 [shared transfer gates](detailed-protocol-transfers.md)
-pass local validation at `6a55b1f`. Parser, multi-lease verification, bounded
+pass local validation at `88d1a83`. Parser, multi-lease verification, bounded
 readback, crash recovery and fuzz results are recorded in the
 [validation evidence](performance-evidence/phase5-validation-2026-09-15.md).
 Native Linux acceptance remains deferred until CI is ready.

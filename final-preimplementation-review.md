@@ -547,9 +547,9 @@ repository:
 8. Artifact/panic/target matrices, supply-chain wiring, queue defaults, and
    memory equations.
 9. Cross-document state, path, protocol, and dependency-choice reconciliation
-   (`abf32c3`).
+   (`6081b56`).
 10. Persistence identity/schema/checkpoint, resource/cardinality/RPC, FTP/SFTP,
-    and live-failover boundaries (`3600223`).
+    and live-failover boundaries (`3778eee`).
 11. Final crate-source gates for FTP control replies/active-peer policy/secret
     logging, SFTP inbound framing, russh's exact ssh-key/features, and cookie
     Public Suffix List plus SameSite policy.

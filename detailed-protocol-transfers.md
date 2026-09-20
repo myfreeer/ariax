@@ -1,7 +1,7 @@
 # Shared Protocol Transfer Design
 
-Status: Phase 5 implementation and local validation are complete at `6a55b1f`,
-following the accepted scope from `dfdeae6`. The
+Status: Phase 5 implementation and local validation are complete at `88d1a83`,
+following the accepted scope from `2892fec`. The
 [validation record](performance-evidence/phase5-validation-2026-09-15.md) covers
 Linux-under-WSL and native Windows-GNU tests, interoperability, bounded fuzzing
 and native Windows measurements. Native Linux acceptance remains deferred until
