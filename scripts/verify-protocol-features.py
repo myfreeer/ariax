@@ -62,7 +62,7 @@ if __name__ == "__main__":
         cargo = ([str(args.cargo)] if args.cargo else ["cargo", f"+{args.rustup}"] if args.rustup
                  else [str(ROOT / "scripts/cargo-local.sh"), "linux"])
         for bundle in ("minimal", "standard", "full", "compat"):
-            output = subprocess.check_output(cargo + ["tree", "--locked", "-p", "ariax-cli", "--no-default-features", "--features", bundle,
+            output = subprocess.check_output(cargo + ["tree", "--color", "never", "--locked", "-p", "ariax-cli", "--no-default-features", "--features", bundle,
                 "--target", "all", "-e", "normal,build", "--prefix", "none", "--format", "{p}|{f}"], cwd=ROOT, text=True)
             graph = {}
             for line in output.splitlines():

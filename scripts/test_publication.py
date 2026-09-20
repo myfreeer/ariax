@@ -3,6 +3,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import publication
 
@@ -48,6 +49,12 @@ class PublicationTests(unittest.TestCase):
         issues = publication.audit(self.root, history=True)
         self.assertTrue(any("workstation path" in issue for issue in issues))
         self.assertTrue(any("local-only file" in issue for issue in issues))
+
+    def test_environment_file_is_rejected_without_opening_its_contents(self):
+        (self.root / ".env").write_text("fixture only")
+        self.commit()
+        with patch.object(Path, "read_bytes", side_effect=AssertionError("must not open environment file")):
+            self.assertEqual(publication.audit(self.root), [".env: local-only file"])
 
 
 if __name__ == "__main__":

@@ -68,6 +68,8 @@ cargo() {
     local -a expected=(
         +1.97.1
         tree
+        --color
+        never
         --locked
         --workspace
         --all-features
@@ -120,7 +122,7 @@ printf '%s\n' "$valid_tree" > "$ARIAX_SQLITE_FIXTURE"
 cat > "$fixture_dir/cargo" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ $1 == tree && $2 == --locked ]] || exit 97
+[[ $1 == tree && $2 == --color && $3 == never && $4 == --locked ]] || exit 97
 cat -- "$ARIAX_SQLITE_FIXTURE"
 exit "${ARIAX_SQLITE_FIXTURE_EXIT:-0}"
 EOF

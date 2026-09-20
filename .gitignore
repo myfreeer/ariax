@@ -3,3 +3,5 @@
 /_reference/
 *.profraw
 __pycache__/
+/.env
+/.env.*

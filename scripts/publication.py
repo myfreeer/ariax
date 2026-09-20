@@ -11,6 +11,10 @@ WORKSTATION_PATH = re.compile(
 LOCAL_PREFIXES = (b"toolchains/", b"target/", b".codex/", b".claude/")
 
 
+def local_only(name):
+    return name.startswith(LOCAL_PREFIXES) or name == b".env" or name.startswith(b".env.")
+
+
 def git(root, *arguments):
     return subprocess.check_output(["git", *arguments], cwd=root)
 
@@ -40,11 +44,11 @@ def audit(root=ROOT, history=False):
     else:
         names = git(root, "ls-files", "-z").split(b"\0")
         for name in names:
-            if name and WORKSTATION_PATH.search((Path(root) / name.decode()).read_bytes()):
+            if name and not local_only(name) and WORKSTATION_PATH.search((Path(root) / name.decode()).read_bytes()):
                 issues.append(name.decode() + ": workstation path")
     for name in sorted(set(names)):
         name = name.lstrip(b"\n")
-        if name.startswith(LOCAL_PREFIXES):
+        if local_only(name):
             issues.append(name.decode() + ": local-only file")
     return issues
 
