@@ -187,6 +187,9 @@ verified separately from the opened descriptor or handle.
 Regular-file link counts are widened to `u64` at the native boundary; Unix
 `nlink_t` widths differ across Linux and macOS. Missing entries and non-regular
 objects are rejected before their counts can authorize publication recovery.
+Identity-replacement tests create the new object while the original still
+exists, then rename it into place. Deleting the original first would allow
+filesystem identifier reuse and would not establish a distinct-object fixture.
 
 On Windows, an absolute capability open first acquires only the drive-volume or
 UNC-share anchor with `CreateFileW`, because applying `OBJ_DONT_REPARSE` to a

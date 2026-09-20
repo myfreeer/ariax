@@ -1324,8 +1324,11 @@ mod tests {
         let safe = SafePathBuilder::from_user_path("selected.bin", PathPlatform::current())
             .expect("safe path");
 
-        fs::remove_file(&path).expect("remove original");
-        fs::write(&path, b"replacement").expect("replacement");
+        // Keep both objects alive during creation; unlink-and-create can reuse
+        // the original inode on native Linux filesystems.
+        let replacement_path = directory.0.join("replacement.bin");
+        fs::write(&replacement_path, b"replacement").expect("replacement");
+        fs::rename(&replacement_path, &path).expect("replace original");
         assert!(matches!(
             root.verify_file(&safe, &identity),
             Err(NativeCapabilityError::IdentityMismatch)
