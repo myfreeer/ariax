@@ -12,11 +12,7 @@ command -v wslpath >/dev/null 2>&1 || {
 }
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-msys_env="${ARIAX_MSYS2_ROOT:?set ARIAX_MSYS2_ROOT}/usr/bin/env.exe"
-[[ -x "$msys_env" ]] || {
-    printf 'MSYS2 environment launcher is unavailable: %s\n' "$msys_env" >&2
-    exit 1
-}
+msys_env=$(python3 -B "$repo_root/scripts/local_paths.py" msys2-env)
 
 exec "$msys_env" \
     MSYSTEM=MINGW64 \
@@ -33,13 +29,14 @@ exec "$msys_env" \
         mkdir -p -- "$cargo_home" "$target_dir"
         # Keep matching GCC runtime DLLs ahead of the standalone Rust bundle.
         # Cargo/rustc/rustdoc/rustfmt/clippy remain explicitly pinned below.
-        export PATH="/mingw64/bin:$toolchain_root/bin:/usr/local/bin:/usr/bin"
-        export RUSTC="$toolchain_root/bin/rustc.exe"
-        export RUSTDOC="$toolchain_root/bin/rustdoc.exe"
-        export RUSTFMT="$toolchain_root/bin/rustfmt.exe"
-        export CLIPPY_DRIVER="$toolchain_root/bin/clippy-driver.exe"
-        export CARGO_HOME="$cargo_home"
-        export CARGO_TARGET_DIR="$target_dir"
+        export PATH=/mingw64/bin:/usr/local/bin:/usr/bin:/bin
+        export CARGO="$(cygpath -m "$toolchain_root/bin/cargo.exe")"
+        export RUSTC="$(cygpath -m "$toolchain_root/bin/rustc.exe")"
+        export RUSTDOC="$(cygpath -m "$toolchain_root/bin/rustdoc.exe")"
+        export RUSTFMT="$(cygpath -m "$toolchain_root/bin/rustfmt.exe")"
+        export CLIPPY_DRIVER="$(cygpath -m "$toolchain_root/bin/clippy-driver.exe")"
+        export CARGO_HOME="$(cygpath -m "$cargo_home")"
+        export CARGO_TARGET_DIR="$(cygpath -m "$target_dir")"
         cd -- "$repo_root"
         command_name=$1
         shift
@@ -47,6 +44,7 @@ exec "$msys_env" \
             cargo.exe)
                 case "${1-}" in
                     clippy)
+                        export CARGO_TARGET_DIR="$(cygpath -m "$target_dir-clippy")"
                         exec "$toolchain_root/bin/cargo-clippy.exe" "$@"
                         ;;
                     fmt)

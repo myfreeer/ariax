@@ -2,3 +2,4 @@
 /toolchains/
 /_reference/
 *.profraw
+__pycache__/

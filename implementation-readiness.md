@@ -490,6 +490,13 @@ is separate from the historical P4 reports.
 
 ## Deferred But Tracked
 
+The accepted next action is the
+[remote and fail-fast CI prerequisite](continuous-integration.md), followed by
+the complete Phase-6 BitTorrent build. Native Linux acceptance closes only
+after a real passing CI measurement campaign; it is not inferred from workflow
+configuration. Phase 6 permits breaking unreleased internal APIs and moving to
+fresh schema/JSON v3 stores without new backward-compatibility machinery.
+
 Native Linux acceptance remains deferred until CI is ready. Phase 5 local
 completion does not close the P4-11 native Linux gate, native kernel/backend
 coverage or the full release-platform matrix.

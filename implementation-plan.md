@@ -525,7 +525,30 @@ Local exit criteria (passed; named regressions are in the validation record):
   malformed frame closes rather than resynchronizes, and all outstanding raw
   requests receive exactly one terminal result.
 
+## Remote And CI Prerequisite
+
+Before Phase 6, publish the existing history to
+`git@github.com:myfreeer/ariax.git` on `main` and establish the
+[fail-fast CI baseline](continuous-integration.md). Cheap preflight gates one
+shared fail-fast platform/feature/MSRV matrix; successful `main` pushes then
+collect native Linux benchmark evidence for the same commit. Retain actual
+passing reports before closing the deferred native Linux acceptance gate.
+The prerequisite is being implemented; no remote CI result is claimed yet.
+
 ## Phase 6: BitTorrent Full Build
+
+The accepted implementation uses pinned libtorrent 2.1.1 and
+`cxx`/`cxx-build` 1.0.202 behind a narrow unsafe adapter. Full Phase 6 follows
+the passing remote/CI baseline above. Implement native integration, a
+pre-storage metadata admission gate, bounded scheduler/resource ownership,
+tracked checkpoint completion, shared public interfaces and native evidence.
+
+SQLite schema v3 distinguishes project-owned transfers from BT tasks. BT
+metadata and bounded libtorrent resume data do not require HTTP piece journals.
+As the project is unreleased, v3 requires a fresh development store and rejects
+older stores unchanged. Do not add v1/v2-to-v3 migrations, historical JSON
+readers, downgrade support or obsolete API aliases. Keep current-format
+self-contained import/export and the existing aria2-facing product contracts.
 
 - libtorrent adapter.
 - Safe path integration.

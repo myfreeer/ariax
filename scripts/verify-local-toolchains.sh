@@ -41,11 +41,12 @@ windows_environment=$(scripts/with-windows-gnu-env.sh /usr/bin/bash -c '
     printf "gcc=%s\n" "$(command -v gcc.exe)"
     printf "target=%s\n" "$CARGO_TARGET_DIR"
 ')
-[[ "$windows_environment" == *"rustc="*"/toolchains/installed/windows-gnu/bin/rustc.exe"* ]]
-[[ "$windows_environment" == *"rustdoc="*"/toolchains/installed/windows-gnu/bin/rustdoc.exe"* ]]
-[[ "$windows_environment" == *"rustfmt="*"/toolchains/installed/windows-gnu/bin/rustfmt.exe"* ]]
-[[ "$windows_environment" == *"clippy="*"/toolchains/installed/windows-gnu/bin/clippy-driver.exe"* ]]
+windows_root=$(wslpath -m "$repo_root")
+[[ "$windows_environment" == *"rustc=$windows_root/toolchains/installed/windows-gnu/bin/rustc.exe"* ]]
+[[ "$windows_environment" == *"rustdoc=$windows_root/toolchains/installed/windows-gnu/bin/rustdoc.exe"* ]]
+[[ "$windows_environment" == *"rustfmt=$windows_root/toolchains/installed/windows-gnu/bin/rustfmt.exe"* ]]
+[[ "$windows_environment" == *"clippy=$windows_root/toolchains/installed/windows-gnu/bin/clippy-driver.exe"* ]]
 [[ "$windows_environment" == *"gcc=/mingw64/bin/gcc.exe"* ]]
-[[ "$windows_environment" == *"target="*"/toolchains/target/windows-gnu"* ]]
+[[ "$windows_environment" == *"target=$windows_root/toolchains/target/windows-gnu"* ]]
 
 printf 'verified local Linux and Windows-GNU Rust 1.97.1 toolchains\n'

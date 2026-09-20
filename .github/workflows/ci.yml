@@ -13,138 +13,163 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_BUILD_JOBS: "2"
   RUST_BACKTRACE: "1"
+  RUST_TEST_THREADS: "2"
 
 jobs:
-  quality:
-    runs-on: ubuntu-latest
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-      - name: Install Rust 1.97.1
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: "3.13"
+      - name: Install pinned Rust
         run: rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt
-      - name: Test rusqlite feature graph verifier
-        run: scripts/test-verify-rusqlite-features.sh
-      - name: Verify resolved rusqlite feature graph
-        run: scripts/verify-rusqlite-features.sh --rustup 1.97.1
-      - name: Verify pinned protocol forks and feature bundles
-        run: |
-          python3 scripts/verify-protocol-vendors.py
-          python3 scripts/verify-protocol-features.py --rustup 1.97.1
-      - name: Verify repository SQLite flags override ambient environment
-        env:
-          LIBSQLITE3_FLAGS: -DARIAX_UNEXPECTED_AMBIENT_SQLITE_FLAG=1
-        run: cargo +1.97.1 test --locked -p ariax-xtask session_contracts::tests::cargo_build_uses_repository_sqlite_flags -- --exact
-      - run: cargo +1.97.1 fmt --all -- --check
-      - run: cargo +1.97.1 clippy --locked --workspace --all-targets --all-features -- -D warnings
-      - run: cargo +1.97.1 test --locked --workspace
-      - run: cargo +1.97.1 test --locked --workspace --all-features
-      - run: cargo +1.97.1 build --locked -p ariax-core --profile release-capi
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            toolchains/ci-target/preflight
+          key: ci-preflight-${{ runner.os }}-${{ runner.arch }}-1.97.1-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml', 'scripts/ci.py') }}
+      - name: Check workflow, contracts and dependency policies
+        run: python3 scripts/ci.py preflight
+      - name: Retain preflight diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-preflight
+          path: toolchains/ci-reports/preflight/
+          if-no-files-found: warn
 
-  feature-bundles:
+  validation:
+    name: Validate (${{ matrix.check }})
+    needs: preflight
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
-        feature: [minimal, standard, full, compat]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-      - run: rustup toolchain install 1.97.1 --profile minimal
-      - name: Test exact feature bundle
-        run: cargo +1.97.1 test --locked -p ariax-cli --no-default-features --features "${{ matrix.feature }}"
-      - name: Build exact release artifact
-        run: cargo +1.97.1 build --locked -p ariax-cli --profile release-cli --no-default-features --features "${{ matrix.feature }}"
-
-  platforms:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - check: linux
+            os: ubuntu-24.04
+            toolchain: "1.97.1"
+          - check: macos
+            os: macos-15
+            toolchain: "1.97.1"
+          - check: windows-msvc
+            os: windows-2022
+            toolchain: "1.97.1"
+          - check: windows-gnu
+            os: windows-2022
+            toolchain: "1.97.1-x86_64-pc-windows-gnu"
+          - check: msrv-linux
+            os: ubuntu-24.04
+            toolchain: "1.88.0"
+          - check: msrv-windows-gnu
+            os: windows-2022
+            toolchain: "1.88.0-x86_64-pc-windows-gnu"
+          - check: feature-minimal
+            os: ubuntu-24.04
+            toolchain: "1.97.1"
+          - check: feature-standard
+            os: ubuntu-24.04
+            toolchain: "1.97.1"
+          - check: feature-full
+            os: ubuntu-24.04
+            toolchain: "1.97.1"
+          - check: feature-compat
+            os: ubuntu-24.04
+            toolchain: "1.97.1"
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      ARIAX_RUST_TOOLCHAIN: ${{ matrix.toolchain }}
+      ARIAX_CI_CHECK: ${{ matrix.check }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-      - run: rustup toolchain install 1.97.1 --profile minimal
-      - name: Test workspace
-        if: runner.os != 'Windows'
-        run: cargo +1.97.1 test --locked --workspace --all-features
-      - name: Test workspace with mandatory native security coverage
-        if: runner.os == 'Windows'
-        env:
-          ARIAX_REQUIRE_WINDOWS_REPARSE_TEST: "1"
-        run: cargo +1.97.1 test --locked --workspace --all-features
-
-  windows-gnu:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-      - run: rustup toolchain install 1.97.1-x86_64-pc-windows-gnu --profile minimal --component clippy
-      - run: rustup toolchain install 1.88.0-x86_64-pc-windows-gnu --profile minimal
-      - name: Test and lint the all-MinGW native graph
-        shell: pwsh
-        run: |
-          $toolchain = "1.97.1-x86_64-pc-windows-gnu"
-          $env:RUSTC = rustup which --toolchain $toolchain rustc
-          $env:RUSTDOC = rustup which --toolchain $toolchain rustdoc
-          $env:CC = "gcc.exe"
-          $env:AR = "ar.exe"
-          $env:ARIAX_REQUIRE_WINDOWS_REPARSE_TEST = "1"
-          $env:PATH = "C:\msys64\mingw64\bin;$env:PATH"
-          rustup run $toolchain cargo test --locked --workspace --all-features
-          rustup run $toolchain cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-      - name: Check the all-MinGW graph at MSRV 1.88
-        shell: pwsh
-        run: |
-          $toolchain = "1.88.0-x86_64-pc-windows-gnu"
-          $env:RUSTC = rustup which --toolchain $toolchain rustc
-          $env:RUSTDOC = rustup which --toolchain $toolchain rustdoc
-          $env:CC = "gcc.exe"
-          $env:AR = "ar.exe"
-          $env:PATH = "C:\msys64\mingw64\bin;$env:PATH"
-          rustup run $toolchain cargo check --locked --workspace --all-targets --all-features
-
-  msrv:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-      - run: rustup toolchain install 1.88.0 --profile minimal
-      - run: cargo +1.88.0 check --locked --workspace --all-targets --all-features
-
-  aria2-reference:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-      - run: rustup toolchain install 1.97.1 --profile minimal
-      - name: Fetch pinned aria2 commit
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: "3.13"
+      - name: Install MSYS2 MinGW64 dependencies
+        if: contains(matrix.check, 'windows-gnu')
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2.32.0
+        with:
+          msystem: MINGW64
+          path-type: minimal
+          install: >-
+            git
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-python
+            mingw-w64-x86_64-pkgconf
+      - name: Install and locate pinned Rust
         shell: bash
         run: |
-          commit=$(cargo +1.97.1 xtask print-aria2-pin)
-          repository=$(cargo +1.97.1 xtask print-aria2-repository)
-          source_dir="$RUNNER_TEMP/aria2-reference"
-          git init "$source_dir"
-          git -C "$source_dir" remote add origin "$repository"
-          git -C "$source_dir" fetch --depth=1 origin "$commit"
-          git -C "$source_dir" checkout --detach FETCH_HEAD
-          cargo +1.97.1 xtask verify-aria2 "$source_dir"
-          cargo +1.97.1 xtask verify-contracts "$source_dir"
+          set -euo pipefail
+          rustup toolchain install "$ARIAX_RUST_TOOLCHAIN" --profile minimal --component clippy --component rustfmt
+          python scripts/ci.py resolve-toolchain >> "$GITHUB_ENV"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            toolchains/ci-target/${{ matrix.check }}
+            toolchains/ci-target/${{ matrix.check }}-clippy
+          key: ci-${{ matrix.check }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.toolchain }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml', 'scripts/ci.py') }}
+      - name: Validate native platform or feature bundle
+        if: ${{ !contains(matrix.check, 'windows-gnu') }}
+        shell: bash
+        run: python scripts/ci.py validate --check "$ARIAX_CI_CHECK"
+      - name: Validate through native MINGW64
+        if: contains(matrix.check, 'windows-gnu')
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          export MSYSTEM=MINGW64
+          export PATH=/mingw64/bin:/usr/local/bin:/usr/bin:/bin
+          python scripts/ci.py validate --check "$ARIAX_CI_CHECK"
+      - name: Retain validation diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-${{ matrix.check }}
+          path: toolchains/ci-reports/${{ matrix.check }}/
+          if-no-files-found: warn
+
+  native-linux-benchmarks:
+    name: Native Linux Acceptance
+    needs: [preflight, validation]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/native-linux-rpc-benchmarks.yml
+    with:
+      phase5: true
+
+  required:
+    name: CI Required
+    if: always()
+    needs: [preflight, validation, native-linux-benchmarks]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - name: Require every applicable stage
+        env:
+          ARIAX_CI_PREFLIGHT: ${{ needs.preflight.result }}
+          ARIAX_CI_VALIDATION: ${{ needs.validation.result }}
+          ARIAX_CI_BENCHMARKS: ${{ needs.native-linux-benchmarks.result }}
+        run: python3 scripts/ci.py gate
 
   tag-gate:
+    name: Release Tag Gate
     if: always() && startsWith(github.ref, 'refs/tags/')
-    needs: [quality, feature-bundles, platforms, windows-gnu, msrv, aria2-reference]
-    runs-on: ubuntu-latest
+    needs: required
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
-      - name: Require complete test matrix
-        env:
-          QUALITY: ${{ needs.quality.result }}
-          FEATURE_BUNDLES: ${{ needs.feature-bundles.result }}
-          PLATFORMS: ${{ needs.platforms.result }}
-          WINDOWS_GNU: ${{ needs.windows-gnu.result }}
-          MSRV: ${{ needs.msrv.result }}
-          ARIA2_REFERENCE: ${{ needs.aria2-reference.result }}
+      - name: Retain the explicit release-platform gate
         run: |
-          test "$QUALITY" = success
-          test "$FEATURE_BUNDLES" = success
-          test "$PLATFORMS" = success
-          test "$WINDOWS_GNU" = success
-          test "$MSRV" = success
-          test "$ARIA2_REFERENCE" = success
-          printf '%s\n' 'Tagging remains disabled until the full Phase 0 target and supply-chain matrix lands.' >&2
+          printf '%s\n' 'Tagging remains disabled until the full target and supply-chain matrix passes.' >&2
           exit 1

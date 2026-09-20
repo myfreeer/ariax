@@ -113,4 +113,26 @@ if [[ $output != *'unexpected resolved feature set for rusqlite'* ]]; then
     exit 1
 fi
 
-printf '%s\n' 'verified rusqlite feature graph rejection cases and dev-edge invocation'
+fixture_dir=$(mktemp -d)
+trap 'rm -rf -- "$fixture_dir"' EXIT
+export ARIAX_SQLITE_FIXTURE="$fixture_dir/tree"
+printf '%s\n' "$valid_tree" > "$ARIAX_SQLITE_FIXTURE"
+cat > "$fixture_dir/cargo" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ $1 == tree && $2 == --locked ]] || exit 97
+cat -- "$ARIAX_SQLITE_FIXTURE"
+exit "${ARIAX_SQLITE_FIXTURE_EXIT:-0}"
+EOF
+chmod +x "$fixture_dir/cargo"
+"$verifier" --cargo "$fixture_dir/cargo" >/dev/null
+if ARIAX_SQLITE_FIXTURE_EXIT=7 "$verifier" --cargo "$fixture_dir/cargo" >/dev/null 2>&1; then
+    printf '%s\n' 'explicit cargo failure was swallowed after valid output' >&2
+    exit 1
+fi
+if "$verifier" --cargo "$fixture_dir/missing" >/dev/null 2>&1; then
+    printf '%s\n' 'verifier accepted a missing explicit cargo' >&2
+    exit 1
+fi
+
+printf '%s\n' 'verified rusqlite feature rejection, explicit tool selection, and command failure propagation'

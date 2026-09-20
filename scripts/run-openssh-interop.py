@@ -11,6 +11,8 @@ import tempfile
 import time
 from urllib.parse import quote
 
+from local_paths import windows_tool
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -83,13 +85,13 @@ def main():
                 known_hosts.write_bytes(b"")
                 if windows_test:
                     identity = subprocess.check_output([
-                        str(Path(os.environ["ARIAX_WINDOWS_SYSTEM32"]) / "whoami.exe"), "/user", "/fo", "csv", "/nh"
+                        str(windows_tool("whoami.exe")), "/user", "/fo", "csv", "/nh"
                     ], text=True)
                     client_sid = next(csv.reader(identity.splitlines()))[1]
                     assert client_sid.startswith("S-1-") and all(c in "S-0123456789" for c in client_sid)
                 for client_file in (client_key, known_hosts):
                     if windows_test:
-                        acl_command = [str(Path(os.environ["ARIAX_WINDOWS_SYSTEM32"]) / "icacls.exe"), converted(client_file, "windows")]
+                        acl_command = [str(windows_tool("icacls.exe")), converted(client_file, "windows")]
                         subprocess.run(acl_command + ["/reset"], check=True, stdout=subprocess.DEVNULL)
                         subprocess.run(acl_command + ["/setowner", f"*{client_sid}"],
                             check=True, stdout=subprocess.DEVNULL)

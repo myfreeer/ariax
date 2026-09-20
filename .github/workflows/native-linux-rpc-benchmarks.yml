@@ -1,10 +1,16 @@
 name: Native Linux RPC Benchmarks
 
 on:
+  workflow_call:
+    inputs:
+      phase5:
+        description: Admit active ranges through Metalink
+        type: boolean
+        default: true
   workflow_dispatch:
     inputs:
       phase5:
-        description: Admit the active range fixture through Metalink
+        description: Admit active ranges through Metalink
         type: boolean
         default: true
 
@@ -17,42 +23,36 @@ concurrency:
 
 jobs:
   active-ranges:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
       ARIAX_BENCH_METALINK: ${{ inputs.phase5 && '1' || '0' }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-      - name: Install the pinned toolchain
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: "3.13"
+      - name: Install pinned Rust
         run: rustup toolchain install 1.97.1 --profile minimal
-      - name: Build the optimized harness
-        run: cargo +1.97.1 bench --locked -p ariax-engine --all-features --bench rpc_active_profile --no-run
-      - name: Measure all four transports in bounded bursts
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            toolchains/ci-target/benchmarks
+          key: ci-benchmarks-${{ runner.os }}-${{ runner.arch }}-1.97.1-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml', 'scripts/ci.py') }}
+      - name: Build and measure sequential bounded scenarios
         shell: bash
         run: |
           set -euo pipefail
           ulimit -n 20000
-          mkdir -p benchmark-reports
-          rustc +1.97.1 --version --verbose > benchmark-reports/toolchain.txt
-          for scenario in http websocket content-length ndjson; do
-            ARIAX_RUN_ACTIVE_RPC_BENCH=1 cargo +1.97.1 bench \
-              --locked -p ariax-engine --all-features --bench rpc_active_profile -- \
-              --scenario="$scenario" 2>"benchmark-reports/$scenario.stderr.log" \
-              | tee "benchmark-reports/$scenario.jsonl"
-            sleep 2
-          done
-      - name: Measure administrative progress separately
-        shell: bash
-        run: |
-          set -euo pipefail
-          ARIAX_RUN_ACTIVE_RPC_BENCH=1 cargo +1.97.1 bench \
-            --locked -p ariax-engine --all-features --bench rpc_active_profile -- \
-            --administrative 2>benchmark-reports/administrative.stderr.log \
-            | tee benchmark-reports/administrative.jsonl
-      - name: Preserve complete reports and failed-run diagnostics
+          python3 scripts/ci.py benchmark
+      - name: Preserve reports and failure diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: native-linux-rpc-benchmarks
-          path: benchmark-reports/
+          path: toolchains/ci-reports/benchmarks/
           if-no-files-found: warn

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-    printf 'usage: %s [--rustup VERSION | --stdin | --tree-file PATH]\n' "$0" >&2
+    printf 'usage: %s [--cargo PATH | --rustup VERSION | --stdin | --tree-file PATH]\n' "$0" >&2
     exit 2
 }
 
@@ -28,6 +28,10 @@ case ${1-} in
     --rustup)
         [[ $# -eq 2 && $2 =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || usage
         tree_output=$(cargo "+$2" "${tree_args[@]}")
+        ;;
+    --cargo)
+        [[ $# -eq 2 && -x $2 ]] || usage
+        tree_output=$("$2" "${tree_args[@]}")
         ;;
     --stdin)
         [[ $# -eq 1 ]] || usage
