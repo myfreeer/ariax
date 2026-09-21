@@ -1,11 +1,13 @@
 """Regressions for failure propagation and benchmark acceptance boundaries."""
 import copy
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import ci
 
@@ -45,6 +47,32 @@ class CommandTests(unittest.TestCase):
             result = ci.checked_command([sys.executable, "-c", "print('ok')"], Path(temporary) / "command.log",
                                         cwd=temporary, capture=True)
             self.assertEqual(result.strip(), "ok")
+
+
+@unittest.skipIf(os.name == "nt", "Unix temporary-directory aliases")
+class TemporaryDirectoryTests(unittest.TestCase):
+    def test_runner_resolves_system_alias_before_creating_fixture_descendants(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            actual = root / "actual"
+            actual.mkdir(mode=0o700)
+            alias = root / "alias"
+            alias.symlink_to(actual, target_is_directory=True)
+            with mock.patch.object(ci, "ROOT", root), \
+                    mock.patch.object(ci, "resolve_toolchain", return_value=root), \
+                    mock.patch.object(ci.tempfile, "gettempdir", return_value=str(alias)):
+                runner = ci.Runner("macos")
+            self.assertEqual(runner.env["TMPDIR"], str(actual))
+            self.assertEqual(runner.env["RUST_TEST_NOCAPTURE"], "1")
+
+    def test_missing_temporary_parent_fails_before_commands_run(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            with mock.patch.object(ci, "ROOT", root), \
+                    mock.patch.object(ci, "resolve_toolchain", return_value=root), \
+                    mock.patch.object(ci.tempfile, "gettempdir", return_value=str(root / "missing")):
+                with self.assertRaises(FileNotFoundError):
+                    ci.Runner("macos")
 
 
 class BenchmarkTests(unittest.TestCase):

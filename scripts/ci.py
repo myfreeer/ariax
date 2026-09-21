@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 import urllib.request
 
@@ -89,7 +90,13 @@ class Runner:
             "CLIPPY_DRIVER": str(self.tool("clippy-driver")),
             "CARGO_TARGET_DIR": str(self.target), "PYTHONDONTWRITEBYTECODE": "1",
             "RUST_TEST_THREADS": "2",
+            "RUST_TEST_NOCAPTURE": "1",
         })
+        if os.name != "nt":
+            # macOS's system temporary directory can traverse /var -> /private/var.
+            # Select its real parent before fixtures create private descendants;
+            # production persistence paths must continue to reject symlinks.
+            self.env["TMPDIR"] = str(Path(tempfile.gettempdir()).resolve(strict=True))
         if os.name == "nt":
             self.env["ARIAX_REQUIRE_WINDOWS_REPARSE_TEST"] = "1"
         if "windows-gnu" in name:

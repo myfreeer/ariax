@@ -1,5 +1,7 @@
 # Protocol provenance hashes cover exact upstream and patched bytes.
 vendor/** -text
+# The cookie policy validates the exact bytes of its bundled snapshot.
+assets/public-suffix-list.dat -text
 # Preserve upstream whitespace and patch context without reformatting copies.
 vendor/suppaftp/** -whitespace
 vendor/russh-sftp/** -whitespace
