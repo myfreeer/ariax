@@ -1,7 +1,11 @@
+* text=auto eol=lf
 # Protocol provenance hashes cover exact upstream and patched bytes.
 vendor/** -text
 # The cookie policy validates the exact bytes of its bundled snapshot.
 assets/public-suffix-list.dat -text
+# Destination policy registries and parser seeds are byte-oriented inputs.
+compat/iana-*-special-registry.csv -text
+fuzz/seeds/** -text
 # Preserve upstream whitespace and patch context without reformatting copies.
 vendor/suppaftp/** -whitespace
 vendor/russh-sftp/** -whitespace

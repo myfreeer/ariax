@@ -37,9 +37,10 @@ Rust 1.88.0. CI helpers use Python 3.13, or MSYS2's native Python for GNU jobs.
 Use the locked dependency graph. The checkout must supply all
 tracked fixtures and pinned fork sources; ignored workstation toolchains,
 cached references and absolute local paths are not CI inputs.
-Git attributes preserve the exact bytes of the bundled public-suffix snapshot
-and protocol forks on every platform. Windows checkout newline conversion
-must not change an integrity-pinned input or weaken its runtime hash check.
+Git attributes select LF for text sources and generated contracts and preserve
+the exact bytes of integrity-pinned policy inputs, protocol forks and parser
+seeds on every platform. Windows checkout newline conversion must not change
+an integrity-pinned input or weaken its runtime hash check.
 On Unix, CI resolves the runner's temporary-directory alias before selecting
 the fixture parent. This avoids macOS system aliases without relaxing the
 application's rejection of symlinks in persistence paths. Test output is
