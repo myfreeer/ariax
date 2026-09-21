@@ -1984,7 +1984,7 @@ mod tests {
     use ariax_storage::{JournalPayload, JournalStateStop, PathPlatform, SafePathBuilder};
     use std::fs;
     use std::io::{Read, Write};
-    use std::net::{Shutdown, TcpListener};
+    use std::net::TcpListener;
     use std::num::NonZeroUsize;
     use std::path::Path;
     use std::sync::mpsc;
@@ -2047,9 +2047,7 @@ mod tests {
             stream.write_all(response).expect("write response");
             stream.flush().expect("flush response");
             thread::sleep(Duration::from_millis(25));
-            stream
-                .shutdown(Shutdown::Both)
-                .expect("close response body");
+            drop(stream);
         });
         address
     }
@@ -2116,9 +2114,7 @@ mod tests {
                 stream.write_all(response).expect("write response");
                 stream.flush().expect("flush response");
                 thread::sleep(Duration::from_millis(25));
-                stream
-                    .shutdown(Shutdown::Both)
-                    .expect("close response body");
+                drop(stream);
             }
         });
         (address, received)

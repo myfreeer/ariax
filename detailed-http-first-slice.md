@@ -769,6 +769,12 @@ Shutdown:
 
 ## Tests
 
+Loopback response fixtures close their owned stream after writing the bounded
+response. They must accept a client that has already closed the connection;
+an additional socket shutdown is not evidence of response or resume correctness.
+Short-body rejection, exact output and resumed `Range`/`If-Range` requests are
+the assertions that establish that contract on every native platform.
+
 Required tests:
 
 - fresh `200 OK` sequential writes at offset `0`,

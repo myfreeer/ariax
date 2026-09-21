@@ -10,7 +10,7 @@ use std::fs;
 #[cfg(unix)]
 use std::io::{Read, Write};
 #[cfg(unix)]
-use std::net::{Shutdown, TcpListener};
+use std::net::TcpListener;
 #[cfg(unix)]
 use std::os::unix::fs::DirBuilderExt;
 #[cfg(unix)]
@@ -372,9 +372,7 @@ fn pinned_http_control_recovers_and_resumes_with_range_and_if_range() {
             stream.write_all(response).expect("write HTTP response");
             stream.flush().expect("flush HTTP response");
             thread::sleep(std::time::Duration::from_millis(25));
-            stream
-                .shutdown(Shutdown::Both)
-                .expect("close HTTP response");
+            drop(stream);
         }
     });
     let uri = format!("http://127.0.0.1:{}/file", peer.port());
