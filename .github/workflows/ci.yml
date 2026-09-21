@@ -105,6 +105,9 @@ jobs:
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-python
             mingw-w64-x86_64-pkgconf
+      - name: Provision macOS security fixture loopback address
+        if: runner.os == 'macOS'
+        run: sudo ifconfig lo0 alias 127.0.0.2 up
       - name: Install and locate pinned Rust
         shell: bash
         run: |

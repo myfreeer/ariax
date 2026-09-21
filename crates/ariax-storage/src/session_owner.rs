@@ -1584,8 +1584,13 @@ mod tests {
             })
             .expect("accept held command");
         entered_receiver.recv().expect("owner entered hold");
+        let (next_entered_sender, next_entered_receiver) = std::sync::mpsc::sync_channel(1);
+        let next_release = Arc::new((Mutex::new(false), Condvar::new()));
         let dropped_completion = handle
-            .try_submit(SessionCommand::IntegrityCheck)
+            .try_submit(SessionCommand::HoldForTest {
+                entered: next_entered_sender,
+                release: Arc::clone(&next_release),
+            })
             .expect("fill request queue");
         assert!(matches!(
             handle.try_submit(SessionCommand::ReadTasks),
@@ -1600,9 +1605,17 @@ mod tests {
             held.wait().expect("held completion"),
             SessionCommandResult::Unit
         );
+        next_entered_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("owner dequeued the command with a dropped completion");
+        let last = handle
+            .try_submit(SessionCommand::IntegrityCheck)
+            .expect("next admission slot is available");
+        let (released, wake) = &*next_release;
+        *released.lock().expect("release next lock") = true;
+        wake.notify_one();
         assert_eq!(
-            handle
-                .execute(SessionCommand::IntegrityCheck)
+            last.wait()
                 .expect("owner remains live after dropped completion"),
             SessionCommandResult::Unit
         );

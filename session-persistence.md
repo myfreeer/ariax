@@ -479,6 +479,11 @@ mark the owner closed, release its lock, manufacture accepted-command results,
 or claim pending journal/SQLite work durable. The shutdown coordinator records
 that result as a dirty recovery checkpoint and proceeds toward process exit.
 
+An accepted command's completion does not imply that the owner has dequeued
+the following command. Queue-pressure tests synchronize with entry into that
+next command before expecting a newly available admission slot. A dropped
+completion receiver must not block delivery of later accepted work.
+
 Orderly shutdown first submits the all-journals close command; the out-of-band
 join still drops appenders after an unclean or failed close, but does not claim
 their unflushed records durable. Dropping the last handle is zero-wait: it closes

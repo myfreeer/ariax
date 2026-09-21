@@ -72,6 +72,9 @@ compiler/runtime first on `PATH`, explicitly selected Rust tools, and separate
 Clippy and MSRV output directories. Native reparse-point tests are mandatory
 on Windows. Additional libtorrent dependencies will be provisioned and pinned
 when the BT feature lands.
+The disposable macOS runner explicitly provisions the second loopback address
+used by active-FTPS peer-rejection fixtures. Those tests must exercise a real
+unapproved source address before the approved TLS data connection.
 
 ## Native Linux Measurements
 
