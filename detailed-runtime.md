@@ -409,7 +409,12 @@ documented mutation/admission fence while allowing queries.
 
 Deterministic tests cover 1,000-task progress, later per-task precedence,
 coalescing barriers, queue saturation, stalled filesystem/SQLite work,
-cancellation ownership, and import fencing. The explicit synchronous facade
+cancellation ownership, and import fencing. A manually driven owner uses the
+same productive-turn yield and idle-turn backoff as the managed runtime;
+unconditional sleeps must not multiply native timer granularity by the number
+of control steps. The unoptimized 1,000-task fixture checks a bounded interval
+without forward progress and an overall watchdog; native optimized benchmarks
+own the elapsed-time acceptance targets. The explicit synchronous facade
 and startup repair may drive blocking work; production callers use the managed
 runtime. Native Linux benchmark acceptance remains deferred until CI is ready.
 

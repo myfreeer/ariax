@@ -6263,7 +6263,11 @@ mod tests {
             plane.begin_call_admitted("aria2.pauseAll", json!([]), None),
             Err(HttpControlError::Busy)
         ));
-        let deadline = Instant::now() + Duration::from_secs(60);
+        // This debug-build fixture proves bounded turns and durable ordering.
+        // Detect a stuck continuation independently of cumulative native I/O
+        // and timer costs; optimized native benchmarks enforce latency limits.
+        let deadline = Instant::now() + Duration::from_secs(300);
+        let mut progress_deadline = Instant::now() + Duration::from_secs(30);
         let mut overridden = false;
         let mut query_count = 0;
         let mut turns = 0;
@@ -6283,6 +6287,9 @@ mod tests {
                 .len();
             assert!(after <= before + 1, "one bulk target per turn");
             assert!(plane.turn.used <= 32, "one shared owner step budget");
+            if after > before {
+                progress_deadline = Instant::now() + Duration::from_secs(30);
+            }
             if !overridden && after != 0 {
                 plane
                     .call("aria2.pause", json!([gids[999].to_string()]))
@@ -6312,11 +6319,17 @@ mod tests {
                 Err(error) => panic!("lost bulk continuation: {error}"),
             }
             assert!(
-                Instant::now() < deadline,
+                Instant::now() < deadline && Instant::now() < progress_deadline,
                 "bulk progress deadline: waiting={after}, turns={turns}, queries={query_count}"
             );
             turns += 1;
-            std::thread::park_timeout(CONTROL_PROGRESS_POLL);
+            // Match the managed owner: productive turns yield without a timer.
+            // Windows may round even a 50-us park up to a full scheduler tick.
+            if plane.turn.progressed {
+                std::thread::yield_now();
+            } else {
+                std::thread::park_timeout(CONTROL_PROGRESS_POLL);
+            }
         }
         assert!(query_count > 10);
         let root = plane.engine.snapshot_reader().load();
