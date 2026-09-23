@@ -13,8 +13,10 @@ local validation at `88d1a83`. The
 the gates to named regressions, protocol/security and OpenSSH evidence,
 Linux-under-WSL/native Windows checks, ten bounded fuzz targets and five passing
 native Windows scenarios. This includes self-contained Metalink JSON v2
-migration with v1 import. Native Linux acceptance remains deferred until CI is
-ready; local completion does not close that platform gate.
+migration with v1 import. The
+[September 22 CI baseline](performance-evidence/ci-baseline-2026-09-22.md)
+closes native Linux control-plane acceptance at `af5d193`, with all five reports
+and the complete passing platform/feature/MSRV matrix retained and verified.
 
 Status: reviewed contract; the scoped Phase-3B/3C HTTP(S) downloader milestone
 is checkpointed at `1099be9`, and the bounded Phase-4 control-plane checkpoint
@@ -30,7 +32,7 @@ and tested. P4-11 control progress at `8fefde2` adds immutable query projection
 outside the owner, one managed runtime, nonblocking mutation/admission continuations, and bulk
 controls that preserve later per-task intent. Expanded Windows evidence is
 tracked separately from the historical status/global-template report; native
-Linux benchmark acceptance stays deferred at the user's request until CI is ready.
+Linux benchmark acceptance passes in the September 22 CI baseline at `af5d193`.
 Core scheduling, bounded persistence/recovery, native storage handoff, runtime ownership,
 packet-independent stats, process bootstrap, and the first public Phase-3B
 multi-mirror HTTP(S) slice have executable checkpoints. The latter includes
@@ -141,8 +143,8 @@ ordinary operation p99 is 37.543 ms and longest burst 421 ms. The
 workspace, MSRV, lint, contract and bounded fuzz evidence. See the
 [measurement protocol and results](performance-profiles.md#native-windows-control-plane-evidence).
 The September 13 status/global-template report remains historical. Native Linux
-acceptance is explicitly deferred until CI is ready; its manual workflow retains
-the same gates and captures reports. WSL validation does not close that gate or
+acceptance now passes in the September 22 CI baseline with the same gates and
+complete reports. WSL validation remains distinct from native measurement and
 the broader release-platform matrix.
 
 The implemented HTTP discard hierarchy now has deterministic process/task/host
@@ -402,7 +404,7 @@ Design coverage:
   Phase 5 adds Metalink identity and four content checksum algorithms. Broader
   RFC 9530 identity, `Content-Digest`, Last-Modified/unsafe-override resume,
   HTTP/2 and growing bodies remain later gates. Native Linux benchmark
-  acceptance stays deferred until CI is ready. Aria2
+  acceptance passes in the September 22 CI baseline. Aria2
   text-session compatibility and the Phase-4B implementation gates are covered above.
 
 Legacy HTTP Basic RPC now has startup registry/CLI/environment validation,

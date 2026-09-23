@@ -57,16 +57,30 @@ On Linux, run in a shell with a 20,000-file-descriptor soft limit, as for the
 capacity harness; the default 1,024 limit cannot hold the origin listeners and
 1,000 live responses. This changes only the benchmark shell and its children.
 
-Native Linux acceptance is deferred at the user's request on September 13,
-2026, until CI is ready. WSL 1 timings do not close that platform gate. The
-manually dispatched `native-linux-rpc-benchmarks.yml` workflow runs the same four
-optimized transport scenarios plus the administrative scenario, and fails on a missing barrier, incomplete call count,
-unreleased stalled-consumer credit, memory overflow or latency-gate failure.
-It preserves JSON reports and failed-run diagnostics as artifacts. A successful
-native CI result must be recorded before closing native Linux acceptance.
+Native Linux acceptance passes in the September 22, 2026
+[CI baseline](performance-evidence/ci-baseline-2026-09-22.md) at `af5d193`.
+The reusable `native-linux-rpc-benchmarks.yml` workflow runs the four optimized
+transport scenarios and the administrative scenario after the functional
+matrix. It fails on a missing barrier, incomplete call count, unreleased
+stalled-consumer credit, memory overflow or latency-gate failure, and preserves
+complete JSON reports and failed-run diagnostics. WSL 1 timings remain local
+evidence; the retained passing native CI reports close the platform gate.
 The current implementation moves projection outside the owner and runs bounded
 mutation continuations through the managed runtime; deterministic tests and the
 expanded campaign validate those changes separately from the older results.
+
+### Native Linux CI Baseline
+
+The September 22 campaign passes all five scenarios after the complete
+functional matrix. Each transport completes 20,000 measured calls under 1,000
+Metalink-admitted ranges. Worst per-operation p99 is 15.381 ms, longest burst
+is 411 ms, and peak sampled RSS is 143.78 MiB. Every memory, mutation, renewed
+barrier and clean-shutdown gate passes. The separate administrative scenario
+passes all six operations with concurrent query and urgent-command progress.
+The [validation record](performance-evidence/ci-baseline-2026-09-22.md) and
+[complete reports](performance-evidence/ci-baseline-2026-09-22.json) retain
+source/binary identity and verified artifact hashes. This closes the previously
+deferred P4-11 and Phase 5 native Linux control-plane gate.
 
 ### Native Windows Phase 5 Evidence
 
@@ -108,8 +122,8 @@ five-second native process samples. The
 commands, source/binary hashes, runtime/resource observations and fuzz attempts.
 The [validation record](performance-evidence/phase5-validation-2026-09-15.md)
 also covers protocol security, OpenSSH interoperability, workspace checks and
-the bounded fuzz campaign. Native Linux acceptance stays deferred until CI is
-ready. The P4 reports below retain their original scope and results.
+the bounded fuzz campaign. Native Linux acceptance subsequently passes in the
+September 22 CI baseline. The P4 reports below retain their original scope and results.
 
 ### Native Windows Control Plane Evidence
 
@@ -152,8 +166,8 @@ it completed all samples but `addUri` p99 was 55.507 ms. Removing timer delays
 between ready continuation turns produced the passing campaign above; the
 latency, burst and scenario limits were unchanged. The
 [validation record](performance-evidence/p4-11-validation-2026-09-14.md) covers
-tests, toolchains, fuzzing and deferred coverage. Native Linux acceptance remains
-deferred until CI is ready.
+tests, toolchains, fuzzing and deferred coverage. Native Linux acceptance
+subsequently passes in the September 22 CI baseline.
 
 ### Historical September 13 Evidence
 
@@ -187,9 +201,8 @@ Status: executable profile and HTTP-capacity slice implemented and recorded;
 optimized Linux and native Windows-GNU HTTP-capacity runs are recorded below.
 The native Windows control-plane runs above also pass, including Phase 5
 Metalink admission. FTP/FTPS and SFTP share the implemented resource owners.
-Adaptive tuning, native Linux control-plane acceptance, and the remaining
-release-platform matrix remain pending; native Linux acceptance is deferred
-until CI is ready.
+Native Linux control-plane acceptance passes in the September 22 CI baseline.
+Adaptive tuning and the remaining release-platform matrix remain pending.
 
 The runtime resolver now owns the exact preset matrix below, subtracts the
 64-handle control reserve from the native soft handle limit, and derives shared
@@ -357,7 +370,7 @@ credit through typed conversion. Scheduler simulation and status-draft copies
 reserve before mutation and retain credit while driver work is pending. The
 1,000-active-task forecast test covers allocation contracts. The native Windows
 active-download/RSS and latency evidence above closes that platform's `P4-11`
-measurement; native Linux acceptance remains deferred until CI is ready.
+measurement; native Linux acceptance passes in the September 22 CI baseline.
 
 Cache/cardinality defaults are also registry-owned and admission-visible:
 
@@ -637,8 +650,8 @@ fixture. Measure pause-all/resume-all/purge and administrative import/export or
 shutdown separately: bulk operations may change the active population and must
 not claim a continuously maintained 1,000-active-range barrier. Report their
 actual task cardinalities, completion counts, and total durations, as well as
-concurrent query and urgent-command progress. Keep native Linux acceptance
-deferred until CI is ready.
+concurrent query and urgent-command progress. The September 22 CI baseline
+retains passing native Linux evidence under these requirements.
 
 Administrative urgent probes follow observed bulk progress so their ordering
 is established by published state. Concurrent query p99 and urgent probe

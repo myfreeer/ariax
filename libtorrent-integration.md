@@ -8,6 +8,44 @@ The main downloader owns scheduling, configuration, RPC, output-root policy, and
 final user-visible state. Libtorrent owns BitTorrent peer protocol mechanics
 inside an isolated adapter lane.
 
+## Phase 6 Gates
+
+Implementation starts after the passing remote matrix and native Linux
+measurement campaign required by `continuous-integration.md`. The accepted
+milestone has six gates:
+
+| Gate | Required Behavior |
+| --- | --- |
+| `P6-01` Native integration | Pinned libtorrent 2.1.1 and `cxx`/`cxx-build` 1.0.202, a narrow unsafe bridge, a safe Rust adapter, and separate native builds for Linux, macOS, Windows MSVC and Windows GNU. `full` and `compat` enable BT; other bundles exclude its native dependencies. |
+| `P6-02` Safe admission | Bounded v1/v2/hybrid torrent and magnet admission, metadata-only downloads and following, a native metadata hold before storage initialization, stable validated file mappings, protected roots and destination/credential policy. |
+| `P6-03` Scheduling and resources | Existing scheduler and immutable queries own lifecycle; bounded commands, events, completions and blobs retain reservations through cancellation. Native threads, memory, sockets, files and bandwidth consume process shares. |
+| `P6-04` Persistence | Fresh SQLite/JSON v3 stores distinguish transfers from BT without requiring transfer journals for BT. Tracked periodic, pause, remove and shutdown checkpoints survive alert loss; failure preserves the last safe resume data with `DirtyCheckpoint`. |
+| `P6-05` Public interfaces | Shared Rust, CLI and RPC torrent/magnet admission, peer/file/status queries, seeding events and exact supported option mappings with acknowledged live updates. |
+| `P6-06` Acceptance | Real native transfers, security and crash tests, bounded parser fuzzing, FFI lifetime/exception coverage, the complete CI matrix, and native measurements with 1,000 BT peers and mixed HTTP/BT controls. |
+
+The native dependency graph uses Boost 1.91.0 headers and OpenSSL 3.6.3,
+verified from upstream source archives. Native libraries and their build
+settings are specific to the target ABI; an installed system libtorrent is
+not a substitute for the pinned patched source. Disable WebTorrent, I2P,
+mutable torrents and dependency logging explicitly.
+
+The magnet gate must expose held metadata through tracked state even when its
+notification is dropped. Approval supplies the complete validated mapping and
+selection only after their session-store transaction succeeds. Pausing in
+response to `metadata_received_alert` is insufficient: upstream initializes
+storage immediately after posting that alert. Rejection or cancellation keeps
+storage uninitialized.
+
+The checkpoint hook must complete after the native disk release barrier and
+must deliver success or failure through an owned tracked result. The upstream
+`save_resume_data()` alert and synchronous `get_resume_data()` alone do not
+establish that barrier. Serialization checks its byte limit before growing the
+output; an oversized result is a failed checkpoint.
+
+No migration from older development stores, historical JSON reader, downgrade
+path or obsolete API alias is added. Existing aria2-facing behavior, torrent
+protocol versions, feature bundles and MSRV remain requirements.
+
 ## Threading Model
 
 ```text

@@ -6,8 +6,10 @@ JSON migration use the shared scheduler and public interfaces. All six
 [shared protocol transfer gates](detailed-protocol-transfers.md) pass locally.
 The [validation record](performance-evidence/phase5-validation-2026-09-15.md)
 includes both local platform suites, OpenSSH interoperability, ten bounded
-fuzz targets and five passing native Windows benchmark scenarios. Native Linux
-acceptance remains deferred until CI is ready.
+fuzz targets and five passing native Windows benchmark scenarios. The
+[September 22 CI baseline](performance-evidence/ci-baseline-2026-09-22.md)
+passes at `af5d193`, including the full platform/feature/MSRV matrix and all five
+native Linux benchmark scenarios. Phase 6 BitTorrent implementation is next.
 
 Status: overall implementation is underway. The scoped Phase-3B/3C HTTP(S)
 downloader milestone is implemented and checkpointed at `7adddc1`, and the
@@ -52,8 +54,8 @@ native/transport runtime, nonblocking
 persistence and admission preparation, and bounded bulk continuations with
 later per-task controls taking precedence. Queries, queued commands and
 accepted durable work retain their budgets through cancellation and disconnect.
-Native Linux benchmark acceptance stays deferred at the user's request until
-CI is ready. The expanded Windows campaign passes 20,000 calls per transport
+Native Linux benchmark acceptance now passes at `af5d193` with the retained
+September 22 CI campaign. The expanded Windows campaign passes 20,000 calls per transport
 under 1,000 active ranges plus separate administrative measurements; worst
 operation p99 is 37.543 ms and the longest burst is 421 ms. The
 [recorded evidence](performance-profiles.md#native-windows-control-plane-evidence)
@@ -73,7 +75,7 @@ hierarchical rate limiter, stall policy, process-owned discard guard, same-origi
 endgame fencing, bounded exact-range cross-origin digest fencing, and local
 capacity benchmarks are executable; HTTP/2, unknown-length/chunked layouts,
 broader RFC 9530 and `Content-Digest` modes,
-native Linux benchmark acceptance, non-loopback RPC,
+non-loopback RPC,
 and the full native release matrix remain
 gated by `implementation-readiness.md`
 and `implementation-plan.md`. Deterministic ENOSPC, permission-denied,

@@ -37,7 +37,7 @@ concurrent pieces or replace the persisted whole-file checksum. `Content-Digest`
 digest parameters/coverage metadata, alternate HTTP digest algorithms,
 server-advertised whole-entity admission, Last-Modified/unsafe-override
 resume, HTTP/2, growing/chunked transfers,
-native Linux benchmark acceptance, and the full release-platform matrix remain
+and the full release-platform matrix remain
 phase/tag gates. Hot-backup
 publication residue is now recovered through
 descriptor-bound same-file/link-count validation with no-clobber collision and
@@ -390,8 +390,8 @@ scheduling tests pass. P4-11 now implements immutable query projection outside
 the control owner, the managed control runtime, and bounded nonblocking
 mutation and bulk progress. Expanded Windows validation is recorded separately
 from the historical status/global-template report. Native Linux
-measurement is deferred until CI is ready, as requested on
-September 13, 2026. Release-platform gates remain separate.
+measurement passes in the September 22 CI baseline at `af5d193`.
+Release-platform gates remain separate.
 
 - Complete control-plane operations over the Phase-1 scheduler.
 - Request/response, batch, list-page, per-client pending-work, and serialized-byte
@@ -443,11 +443,10 @@ option/source changes; registry/configuration completion; sanitized session
 compatibility; CLI/transport/Rust parity; and opt-in slow-slot scheduling.
 Performance and platform evidence belong to `P4-11`. The September 13 Windows
 status/global-template measurements are historical. The expanded campaign
-below measures the current control implementation; the full gate still requires
-native Linux acceptance, deferred until CI is ready. The manual native Linux
-workflow preserves the same measurement gates and retains JSON reports and
-failure diagnostics. Deferred platform evidence and the complete release matrix
-must not be represented as passing local WSL results.
+below measures the current control implementation. The September 22 native
+Linux CI campaign passes the same gates and retains complete reports and
+failure diagnostics. Remaining backend and release-platform evidence must not
+be represented as passing local WSL results.
 
 ### P4-11 Control Progress Milestone
 
@@ -465,14 +464,15 @@ use auxiliary tasks while the 1,000-range fixture stays active; bulk controls,
 import/export, and shutdown are measured separately with actual cardinalities.
 Runs retain the short-burst limits and never count incomplete scenarios as
 passing. Readiness and traceability track implementation, Windows evidence,
-and the deferred native Linux gate separately. Phase 5 is outside this milestone.
+and the September 22 native Linux CI evidence separately. Phase 5 is outside this milestone.
 
 The September 14 Windows campaign passes all four 20,000-call transport scenarios
 and the separate 128-task administrative scenario. Worst ordinary operation p99
 is 37.543 ms, the longest burst is 421 ms, and sampled working set stays below
 140 MiB. [Validation and remaining coverage](performance-evidence/p4-11-validation-2026-09-14.md)
-record the completed local work. The next P4-11 acceptance action is to run and
-retain the expanded native Linux CI campaign once CI is ready; it remains deferred.
+record the completed local work. The
+[September 22 native Linux CI campaign](performance-evidence/ci-baseline-2026-09-22.md)
+now closes the deferred measurement gate.
 
 ## Phase 5: Metalink, FTP, SFTP
 
@@ -482,7 +482,7 @@ The [validation record](performance-evidence/phase5-validation-2026-09-15.md)
 records passing Linux-under-WSL and native Windows builds/tests/lints, MSRV,
 contracts, feature/fork checks, OpenSSH interoperability, ten bounded fuzz
 targets and all five native Windows benchmark scenarios. Native Linux
-acceptance stays deferred until CI is ready. Self-contained JSON migration v2
+acceptance passes in the September 22 CI baseline. Self-contained JSON migration v2
 is implemented with v1 import compatibility; HTTP/2 remains deferred.
 
 - Metalink parser with safe XML settings and chunk checksums.
@@ -533,9 +533,11 @@ Before Phase 6, publish the existing history to
 shared fail-fast platform/feature/MSRV matrix; successful `main` pushes then
 collect native Linux benchmark evidence for the same commit. Retain actual
 passing reports before closing the deferred native Linux acceptance gate.
-The sanitized history and CI configuration are published on `main`. Local
-preflight and native Windows checks pass. Remote acceptance remains open until
-the complete CI matrix and native Linux measurement campaign pass.
+The sanitized history and CI configuration are published on `main`.
+[CI run 35720518419](performance-evidence/ci-baseline-2026-09-22.md) passes at
+`af5d193`, including every platform, feature and MSRV job and all five native
+Linux benchmark scenarios. Artifact/log and source hashes are verified and the
+complete reports are retained. The prerequisite is complete.
 
 ## Phase 6: BitTorrent Full Build
 

@@ -15,9 +15,9 @@ P4-11 control progress at `8fefde2` adds immutable query projection outside
 the control owner, one managed runtime, nonblocking mutation/admission continuations, and
 bounded bulk progress with later per-task intent taking precedence. The expanded
 Windows campaign is tracked separately from the historical status/global-template
-report. Native Linux benchmark acceptance stays deferred at the user's request
-until CI is ready; release matrix work remains governed by the exit criteria
-below and `implementation-plan.md`.
+report. Native Linux benchmark acceptance passes in the September 22 CI
+baseline at `af5d193`; release matrix work remains governed by the exit
+criteria below and `implementation-plan.md`.
 
 Phase 5 implementation at `88d1a83` now passes all six local
 [shared transfer gates](detailed-protocol-transfers.md#scope-and-checkpoints).
@@ -341,9 +341,9 @@ persistence coverage remain required when implementing these repairs.
 `P4-01` through `P4-10` are implemented and tested. The P4-11 control-progress
 implementation adds immutable query roots, two bounded projection slots, one
 managed urgent/bulk runtime, nonblocking persistence preludes, filesystem
-preparation outside the owner, and resumable bulk controls. The user explicitly
-deferred native Linux benchmark acceptance until CI is ready; that platform gate stays
-deferred and must not be represented as passing WSL evidence.
+preparation outside the owner, and resumable bulk controls. The previously
+deferred native Linux measurement gate passes with the September 22 CI
+baseline; local WSL checks remain distinct from that native evidence.
 
 Deterministic regressions cover queries with the owner locked, stalled filesystem
 and SQLite work, import queue revalidation/fencing, snapshot identity and
@@ -408,8 +408,8 @@ The expanded native Windows campaign passes all four 20,000-call transport
 scenarios and the 128-task administrative scenario. Worst ordinary operation p99
 is 37.543 ms; the longest measured burst is 421 ms; sampled working set stays
 below 140 MiB. The [validation record](performance-evidence/p4-11-validation-2026-09-14.md)
-separates passing evidence, the retained failed preliminary run, and the native
-Linux acceptance gate deferred until CI is ready.
+separates passing evidence and the retained failed preliminary run. The
+September 22 CI baseline closes its deferred native Linux measurement gate.
 
 | Gate | Status And Evidence |
 | --- | --- |
@@ -417,7 +417,7 @@ Linux acceptance gate deferred until CI is ready.
 | `P4-08` Session compatibility | Closed. Linux/native Windows tests and Linux MSRV checking pass as recorded above. Configured aria2/JSON export, explicit/periodic/shutdown saves, local input and typed Rust operations share bounded sanitized documents. Whole-document validation, atomic batch metadata, disconnect retention and crash tests prevent invalid task prefixes and partial exports. |
 | `P4-09` Public interfaces | Closed. CLI, HTTP, WebSocket, both stdio framings and typed Rust queries/mutations share the dispatcher. `every_advertised_method_executes_or_reports_its_disabled_protocol`, combined-transport/EOF integration tests, native parity and credit exhaustion, authenticated filters, diagnostics, and all compatibility modes pass success/rejection coverage. |
 | `P4-10` Slow-slot scheduling | Closed. Default `off`, demote/pause, queue ordering, cooldown, user precedence, recovery and concurrent local-pressure guards are covered. `slow_remote_workers_free_slots_and_user_controls_override_cooldown` and `retry_wait_slot_policy_uses_real_worker_deadlines` pass. Automatic retry readmission preserves range deadlines and attempt counts under unchanged snapshots; strict generation rejection remains tested. |
-| `P4-11` Performance and platform evidence | Implementation and expanded native Windows campaign pass: immutable queries outside the owner, one managed runtime, nonblocking mutation/admission work, bounded bulk continuation, later-action precedence, and cancellation ownership. Four transports each complete 20,000 measured calls under 1,000 active ranges; worst operation p99 is 37.543 ms and longest burst 421 ms. The separate 128-task administrative scenario also passes. [Reports and limits](performance-profiles.md#native-windows-control-plane-evidence). Native Linux acceptance stays deferred until CI is ready; the full platform gate remains open. |
+| `P4-11` Performance and platform evidence | Implementation and expanded native Windows campaign pass: immutable queries outside the owner, one managed runtime, nonblocking mutation/admission work, bounded bulk continuation, later-action precedence, and cancellation ownership. Four transports each complete 20,000 measured calls under 1,000 active ranges; worst operation p99 is 37.543 ms and longest burst 421 ms. The separate 128-task administrative scenario also passes. [Reports and limits](performance-profiles.md#native-windows-control-plane-evidence). Native Linux measurement and the full functional CI matrix pass at `af5d193`; native backend and release-packaging gates remain separate. |
 
 The session schema stays at v2 and journal replay remains strict. Native disk
 backend additions, hardware poweroff, release packaging, and tagging remain
@@ -490,18 +490,15 @@ is separate from the historical P4 reports.
 
 ## Deferred But Tracked
 
-The accepted next action is the
-[remote and fail-fast CI prerequisite](continuous-integration.md), followed by
-the complete Phase-6 BitTorrent build. Native Linux acceptance closes only
-after a real passing CI measurement campaign; it is not inferred from workflow
-configuration. Phase 6 permits breaking unreleased internal APIs and moving to
-fresh schema/JSON v3 stores without new backward-compatibility machinery.
-
-The sanitized history and fail-fast workflow are published on `main`; the
-native Linux acceptance gate remains open pending a verified passing CI run.
-Phase 5 local
-completion does not close the P4-11 native Linux gate, native kernel/backend
-coverage or the full release-platform matrix.
+The [remote and fail-fast CI prerequisite](continuous-integration.md) passes
+at `af5d193`. The [retained baseline](performance-evidence/ci-baseline-2026-09-22.md)
+verifies every required CI job, all five native Linux reports, command logs and
+source hashes. This closes the P4-11 and Phase 5 native Linux control-plane
+measurement gate and permits the complete Phase-6 BitTorrent build.
+Phase 6 permits breaking unreleased internal APIs and moving to fresh
+schema/JSON v3 stores without new backward-compatibility machinery.
+Native kernel/backend coverage and the full release-platform matrix remain
+separate gates.
 
 These are intentionally not first-slice blockers, but their registry and
 feature-gate status must exist from the start:

@@ -1,8 +1,9 @@
 # Continuous Integration
 
-Status: the remote and CI baseline are being established before Phase 6.
-Configured jobs are not acceptance evidence; record their actual results and
-the tested commit before advancing the implementation gate.
+Status: the remote and CI baseline passes at `af5d193`.
+[Run 35720518419 and its retained evidence](performance-evidence/ci-baseline-2026-09-22.md)
+cover every required platform, feature and MSRV job and all five native Linux
+benchmark scenarios. The prerequisite is complete; Phase 6 may proceed.
 
 ## Repository And Branch
 
@@ -95,8 +96,8 @@ successfully. Compiler processes must be absent during collection.
 
 ## Acceptance And Scope
 
-The prerequisite is complete only after a real passing CI run and native
-Linux measurement campaign are retained for the baseline commit. Remaining
+The prerequisite is complete with the verified September 22 CI run and native
+Linux measurement campaign retained for `af5d193`. Remaining
 kernel/backend and release-platform requirements are separate gates; this
 workflow does not authorize a release tag.
 
