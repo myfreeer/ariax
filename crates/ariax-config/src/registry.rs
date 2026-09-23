@@ -613,7 +613,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: true,
         aria2_runtime_update: RuntimeUpdate::WaitingOnly,
         compatibility_difference: CompatibilityDifference::None,
-        docs: "configuration.md#compatibility-matrix-categories",
+        docs: "docs/interfaces/configuration.md#compatibility-matrix-categories",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -631,7 +631,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: true,
         aria2_runtime_update: RuntimeUpdate::WaitingOnly,
         compatibility_difference: CompatibilityDifference::None,
-        docs: "configuration.md#compatibility-matrix-categories",
+        docs: "docs/interfaces/configuration.md#compatibility-matrix-categories",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -649,7 +649,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: true,
         aria2_runtime_update: RuntimeUpdate::WaitingOnly,
         compatibility_difference: CompatibilityDifference::None,
-        docs: "retry-policy.md#policy-options",
+        docs: "docs/protocols/retry-policy.md#policy-options",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -670,7 +670,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: true,
         aria2_runtime_update: RuntimeUpdate::WaitingOnly,
         compatibility_difference: CompatibilityDifference::Required,
-        docs: "detailed-storage.md#safepathbuilder",
+        docs: "docs/storage/detailed-storage.md#safepathbuilder",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -688,7 +688,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: true,
         aria2_runtime_update: RuntimeUpdate::WaitingOnly,
         compatibility_difference: CompatibilityDifference::Required,
-        docs: "detailed-storage.md#safepathbuilder",
+        docs: "docs/storage/detailed-storage.md#safepathbuilder",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -706,7 +706,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: true,
         aria2_runtime_update: RuntimeUpdate::ActiveRestart,
         compatibility_difference: CompatibilityDifference::None,
-        docs: "configuration.md#rpc-option-compatibility",
+        docs: "docs/interfaces/configuration.md#rpc-option-compatibility",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -724,7 +724,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: true,
         aria2_runtime_update: RuntimeUpdate::WaitingOnly,
         compatibility_difference: CompatibilityDifference::None,
-        docs: "retry-policy.md#policy-options",
+        docs: "docs/protocols/retry-policy.md#policy-options",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -742,7 +742,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: true,
         aria2_runtime_update: RuntimeUpdate::ActiveRestart,
         compatibility_difference: CompatibilityDifference::None,
-        docs: "configuration.md#rpc-option-compatibility",
+        docs: "docs/interfaces/configuration.md#rpc-option-compatibility",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -763,7 +763,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: true,
         aria2_runtime_update: RuntimeUpdate::ActiveRestart,
         compatibility_difference: CompatibilityDifference::None,
-        docs: "configuration.md#rpc-option-compatibility",
+        docs: "docs/interfaces/configuration.md#rpc-option-compatibility",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -784,7 +784,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: true,
         aria2_runtime_update: RuntimeUpdate::WaitingOnly,
         compatibility_difference: CompatibilityDifference::Required,
-        docs: "detailed-storage.md#piece-model",
+        docs: "docs/storage/detailed-storage.md#piece-model",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -805,7 +805,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: true,
         aria2_runtime_update: RuntimeUpdate::Live,
         compatibility_difference: CompatibilityDifference::None,
-        docs: "configuration.md#rpc-option-compatibility",
+        docs: "docs/interfaces/configuration.md#rpc-option-compatibility",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -826,7 +826,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: true,
         aria2_runtime_update: RuntimeUpdate::Live,
         compatibility_difference: CompatibilityDifference::None,
-        docs: "configuration.md#rpc-option-compatibility",
+        docs: "docs/interfaces/configuration.md#rpc-option-compatibility",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -847,7 +847,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: true,
         aria2_runtime_update: RuntimeUpdate::ActiveRestart,
         compatibility_difference: CompatibilityDifference::None,
-        docs: "configuration.md#rpc-option-compatibility",
+        docs: "docs/interfaces/configuration.md#rpc-option-compatibility",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -865,7 +865,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: false,
         aria2_runtime_update: RuntimeUpdate::None,
         compatibility_difference: CompatibilityDifference::Intentional,
-        docs: "split-download.md#endgame-mode",
+        docs: "docs/protocols/split-download.md#endgame-mode",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -883,7 +883,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: false,
         aria2_runtime_update: RuntimeUpdate::None,
         compatibility_difference: CompatibilityDifference::Intentional,
-        docs: "retry-policy.md",
+        docs: "docs/protocols/retry-policy.md",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -901,7 +901,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: true,
         aria2_runtime_update: RuntimeUpdate::Live,
         compatibility_difference: CompatibilityDifference::Required,
-        docs: "retry-policy.md#policy-options",
+        docs: "docs/protocols/retry-policy.md#policy-options",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -919,7 +919,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: true,
         aria2_runtime_update: RuntimeUpdate::Live,
         compatibility_difference: CompatibilityDifference::Intentional,
-        docs: "retry-policy.md#policy-options",
+        docs: "docs/protocols/retry-policy.md#policy-options",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -939,7 +939,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: false,
         aria2_runtime_update: RuntimeUpdate::None,
         compatibility_difference: CompatibilityDifference::Intentional,
-        docs: "retry-policy.md#policy-options",
+        docs: "docs/protocols/retry-policy.md#policy-options",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -959,7 +959,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: false,
         aria2_runtime_update: RuntimeUpdate::None,
         compatibility_difference: CompatibilityDifference::Intentional,
-        docs: "retry-policy.md#policy-options",
+        docs: "docs/protocols/retry-policy.md#policy-options",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -977,7 +977,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: false,
         aria2_runtime_update: RuntimeUpdate::None,
         compatibility_difference: CompatibilityDifference::Intentional,
-        docs: "retry-policy.md#policy-options",
+        docs: "docs/protocols/retry-policy.md#policy-options",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -995,7 +995,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: false,
         aria2_runtime_update: RuntimeUpdate::None,
         compatibility_difference: CompatibilityDifference::Intentional,
-        docs: "retry-policy.md#policy-options",
+        docs: "docs/protocols/retry-policy.md#policy-options",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -1015,7 +1015,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: false,
         aria2_runtime_update: RuntimeUpdate::None,
         compatibility_difference: CompatibilityDifference::Intentional,
-        docs: "retry-policy.md#policy-options",
+        docs: "docs/protocols/retry-policy.md#policy-options",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -1033,7 +1033,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: false,
         aria2_runtime_update: RuntimeUpdate::None,
         compatibility_difference: CompatibilityDifference::Intentional,
-        docs: "retry-policy.md#policy-options",
+        docs: "docs/protocols/retry-policy.md#policy-options",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -1051,7 +1051,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: false,
         aria2_runtime_update: RuntimeUpdate::None,
         compatibility_difference: CompatibilityDifference::Intentional,
-        docs: "retry-policy.md#policy-options",
+        docs: "docs/protocols/retry-policy.md#policy-options",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -1071,7 +1071,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: false,
         aria2_runtime_update: RuntimeUpdate::None,
         compatibility_difference: CompatibilityDifference::Intentional,
-        docs: "retry-policy.md#policy-options",
+        docs: "docs/protocols/retry-policy.md#policy-options",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -1089,7 +1089,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: false,
         aria2_runtime_update: RuntimeUpdate::None,
         compatibility_difference: CompatibilityDifference::Intentional,
-        docs: "retry-policy.md#policy-options",
+        docs: "docs/protocols/retry-policy.md#policy-options",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -1107,7 +1107,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: false,
         aria2_runtime_update: RuntimeUpdate::None,
         compatibility_difference: CompatibilityDifference::Intentional,
-        docs: "retry-policy.md#policy-options",
+        docs: "docs/protocols/retry-policy.md#policy-options",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -1125,7 +1125,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: false,
         aria2_runtime_update: RuntimeUpdate::None,
         compatibility_difference: CompatibilityDifference::Intentional,
-        docs: "retry-policy.md#policy-options",
+        docs: "docs/protocols/retry-policy.md#policy-options",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -1143,7 +1143,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: false,
         aria2_runtime_update: RuntimeUpdate::None,
         compatibility_difference: CompatibilityDifference::Intentional,
-        docs: "retry-policy.md#policy-options",
+        docs: "docs/protocols/retry-policy.md#policy-options",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -1163,7 +1163,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: false,
         aria2_runtime_update: RuntimeUpdate::None,
         compatibility_difference: CompatibilityDifference::Intentional,
-        docs: "retry-policy.md#policy-options",
+        docs: "docs/protocols/retry-policy.md#policy-options",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -1181,7 +1181,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: true,
         aria2_runtime_update: RuntimeUpdate::None,
         compatibility_difference: CompatibilityDifference::Intentional,
-        docs: "detailed-http-first-slice.md#cross-mirror-entity-identity",
+        docs: "docs/protocols/detailed-http-first-slice.md#cross-mirror-entity-identity",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -1201,7 +1201,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: false,
         aria2_runtime_update: RuntimeUpdate::None,
         compatibility_difference: CompatibilityDifference::Intentional,
-        docs: "detailed-http-first-slice.md#cross-mirror-entity-identity",
+        docs: "docs/protocols/detailed-http-first-slice.md#cross-mirror-entity-identity",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -1221,7 +1221,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: false,
         aria2_runtime_update: RuntimeUpdate::None,
         compatibility_difference: CompatibilityDifference::Intentional,
-        docs: "detailed-storage.md#write-and-journal-ordering",
+        docs: "docs/storage/detailed-storage.md#write-and-journal-ordering",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -1241,7 +1241,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: false,
         aria2_runtime_update: RuntimeUpdate::None,
         compatibility_difference: CompatibilityDifference::Intentional,
-        docs: "configuration.md#new-options",
+        docs: "docs/interfaces/configuration.md#new-options",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -1259,7 +1259,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: true,
         aria2_runtime_update: RuntimeUpdate::StartupOnly,
         compatibility_difference: CompatibilityDifference::None,
-        docs: "apis-and-embedding.md#rpc-authentication",
+        docs: "docs/interfaces/apis-and-embedding.md#rpc-authentication",
         behavior_tests: &[
             "rpc_auth_options_are_sensitive_startup_only_and_bounded",
             "rpc_startup_credentials_override_environment_without_exposure",
@@ -1280,7 +1280,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: true,
         aria2_runtime_update: RuntimeUpdate::StartupOnly,
         compatibility_difference: CompatibilityDifference::Required,
-        docs: "apis-and-embedding.md#rpc-authentication",
+        docs: "docs/interfaces/apis-and-embedding.md#rpc-authentication",
         behavior_tests: &[
             "rpc_auth_options_are_sensitive_startup_only_and_bounded",
             "http_basic_rejects_before_body_and_preserves_token_policy",
@@ -1301,7 +1301,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: true,
         aria2_runtime_update: RuntimeUpdate::StartupOnly,
         compatibility_difference: CompatibilityDifference::Required,
-        docs: "apis-and-embedding.md#rpc-authentication",
+        docs: "docs/interfaces/apis-and-embedding.md#rpc-authentication",
         behavior_tests: &[
             "rpc_auth_options_are_sensitive_startup_only_and_bounded",
             "websocket_basic_upgrade_does_not_authorize_method_events",
@@ -1324,7 +1324,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: false,
         aria2_runtime_update: RuntimeUpdate::None,
         compatibility_difference: CompatibilityDifference::Intentional,
-        docs: "performance-profiles.md#unified-user-profile",
+        docs: "docs/runtime/performance-profiles.md#unified-user-profile",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -1344,7 +1344,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: false,
         aria2_runtime_update: RuntimeUpdate::None,
         compatibility_difference: CompatibilityDifference::Required,
-        docs: "configuration.md#compatibility-matrix-categories",
+        docs: "docs/interfaces/configuration.md#compatibility-matrix-categories",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -1364,7 +1364,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: false,
         aria2_runtime_update: RuntimeUpdate::None,
         compatibility_difference: CompatibilityDifference::Intentional,
-        docs: "configuration.md#compatibility-matrix-categories",
+        docs: "docs/interfaces/configuration.md#compatibility-matrix-categories",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -1382,7 +1382,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: true,
         aria2_runtime_update: RuntimeUpdate::StartupOnly,
         compatibility_difference: CompatibilityDifference::Required,
-        docs: "security-recovery.md#no-rce-policy",
+        docs: "docs/architecture/security-recovery.md#no-rce-policy",
         behavior_tests: NONE,
     },
     OptionDef {
@@ -1400,7 +1400,7 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         aria2_available: true,
         aria2_runtime_update: RuntimeUpdate::WaitingOnly,
         compatibility_difference: CompatibilityDifference::Required,
-        docs: "configuration.md#compatibility-matrix-categories",
+        docs: "docs/interfaces/configuration.md#compatibility-matrix-categories",
         behavior_tests: NONE,
     },
 ];
@@ -1426,7 +1426,7 @@ const fn protocol_option(
         aria2_available: false,
         aria2_runtime_update: RuntimeUpdate::None,
         compatibility_difference: CompatibilityDifference::Intentional,
-        docs: "detailed-protocol-transfers.md#scope-and-checkpoints",
+        docs: "docs/protocols/detailed-protocol-transfers.md#scope-and-checkpoints",
         behavior_tests: NONE,
     }
 }
@@ -1466,7 +1466,7 @@ const fn scheduling_option(
         aria2_available: false,
         aria2_runtime_update: RuntimeUpdate::None,
         compatibility_difference: CompatibilityDifference::None,
-        docs: "download-scheduling.md#slow-slot-freeing",
+        docs: "docs/runtime/download-scheduling.md#slow-slot-freeing",
         behavior_tests: &[
             "slow_remote_workers_free_slots_and_user_controls_override_cooldown",
             "retry_wait_slot_policy_uses_real_worker_deadlines",

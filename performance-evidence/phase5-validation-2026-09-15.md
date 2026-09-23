@@ -152,7 +152,7 @@ Compilation and fuzzing finish before benchmark collection. Preflight and
 five-second native process samples observe no concurrent compiler. Limits stay
 at 1,000 calls or 500 ms per burst, at least 250 ms cooldown, and a 90-second
 scenario deadline; incomplete or over-limit runs fail. The
-[performance profile](../performance-profiles.md#native-windows-phase-5-evidence)
+[performance profile](../docs/runtime/performance-profiles.md#native-windows-phase-5-evidence)
 preserves this campaign separately from the historical P4 reports.
 
 ## Bounded Fuzzing

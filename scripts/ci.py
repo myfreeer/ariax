@@ -163,6 +163,7 @@ def actionlint():
 
 def preflight(runner):
     runner.run([sys.executable, "-B", "-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py"])
+    runner.run([sys.executable, "-B", "scripts/check_docs.py"])
     runner.run([actionlint(), "-shellcheck=", "-pyflakes="])
     runner.run([sys.executable, "-B", "scripts/publication.py"])
     runner.run(["git", "show", "--format=", "--check", "HEAD"])
