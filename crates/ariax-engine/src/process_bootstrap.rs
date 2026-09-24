@@ -1068,6 +1068,8 @@ fn session_result_code(result: &SessionCommandResult) -> &'static str {
     match result {
         SessionCommandResult::Unit => "unit",
         SessionCommandResult::Tasks(_) => "tasks",
+        SessionCommandResult::BtTasks(_) => "bt_tasks",
+        SessionCommandResult::BtResume(_) => "bt_resume",
         SessionCommandResult::StoppedResults(_) => "stopped_results",
         SessionCommandResult::TaskSources(_) => "task_sources",
         SessionCommandResult::TaskOptions(_) => "task_options",
