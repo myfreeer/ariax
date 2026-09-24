@@ -12,6 +12,10 @@ inside an isolated adapter lane.
 
 ## Phase 6 Gates
 
+The pure `ariax-bt-metadata` parser is shared by admission and session recovery.
+It has no native dependencies. `ariax-bt` owns safe mapping, resource accounting
+and the adapter lane; only `ariax-bt-libtorrent-sys` crosses the native ABI.
+
 Implementation starts after the passing remote matrix and native Linux
 measurement campaign required by [continuous-integration.md](../development/continuous-integration.md). The accepted
 milestone has six gates:
@@ -37,6 +41,13 @@ selection only after their session-store transaction succeeds. Pausing in
 response to `metadata_received_alert` is insufficient: upstream initializes
 storage immediately after posting that alert. Rejection or cancellation keeps
 storage uninitialized.
+
+The native magnet decoder also receives the configured depth, token, byte,
+piece and file-count limits. It bounds the file-tree walk before constructing
+native file storage; Rust validates canonical metadata and the exact resulting
+native layout before approval. Native build provenance covers every installed
+Boost header as well as libtorrent, OpenSSL and the patch. Target builds use
+separate source/build caches and serialize mutations within one target.
 
 The checkpoint hook must complete after the native disk release barrier and
 must deliver success or failure through an owned tracked result. The upstream
@@ -90,6 +101,9 @@ Baseline full-build bridge caps are 256 command items / 8 MiB encoded payload,
 1024 coalescible event items / 16 MiB, and 64 reliable terminal/checkpoint items
 / 4 MiB. Raw torrent/resume blobs are not copied through the coalescible event
 lane; they use one tracked sized handoff charged to the BT/session budget.
+Reservations may shrink to the verified retained allocation after a native
+handoff. Shrinking returns only unused credit; cancellation cannot release
+bytes still owned by native work, a callback or an unread completion.
 
 ## Runtime BT Option Updates
 

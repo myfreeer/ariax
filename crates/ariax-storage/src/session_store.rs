@@ -20,7 +20,14 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-pub const SESSION_SCHEMA_VERSION: u32 = 2;
+#[path = "session_bt.rs"]
+mod bt;
+pub use bt::{
+    SessionBtBinding, SessionBtCheckpoint, SessionBtFile, SessionBtResumeRecord,
+    SessionBtTaskRecord,
+};
+
+pub const SESSION_SCHEMA_VERSION: u32 = 3;
 pub const SESSION_RUSQLITE_VERSION: &str = "0.40.2";
 pub const SESSION_RUSQLITE_FEATURES: [&str; 4] = ["bundled", "backup", "cache", "limits"];
 pub const SESSION_BUNDLED_SQLITE_FLAGS: &str = "-DSQLITE_MAX_LIKE_PATTERN_LENGTH=65536";
@@ -105,7 +112,6 @@ const PLATFORM_PATH_ENCODING_OVERHEAD: usize = 5;
 const MAX_ENCODED_PLATFORM_PATH_BYTES: usize =
     MAX_PLATFORM_PATH_BYTES + PLATFORM_PATH_ENCODING_OVERHEAD;
 static BACKUP_TEMP_ID: AtomicU64 = AtomicU64::new(1);
-const MIGRATION_BACKUP_ATTEMPTS: u32 = 32;
 const MAX_BACKUP_PUBLICATION_CANDIDATES: usize = 64;
 const BACKUP_TEMP_MARKER: &str = ".ariax-backup-";
 const BACKUP_TEMP_SUFFIX: &str = ".tmp";
@@ -123,33 +129,10 @@ const SESSION_TABLE_SQL: &str = r#"CREATE TABLE session (
     clean_shutdown INTEGER NOT NULL CHECK(clean_shutdown IN (0, 1))
 ) STRICT"#;
 
-const V1_TASK_TABLE_SQL: &str = r#"CREATE TABLE task (
-    gid TEXT PRIMARY KEY NOT NULL CHECK(length(gid) = 16 AND gid NOT GLOB '*[^0-9a-f]*'),
-    session_id BLOB NOT NULL CHECK(typeof(session_id) = 'blob' AND length(session_id) = 16),
-    queue_state INTEGER NOT NULL CHECK(queue_state IN (1, 2, 3, 4)),
-    queue_position INTEGER NOT NULL CHECK(queue_position >= 0),
-    desired_paused INTEGER NOT NULL CHECK(desired_paused IN (0, 1)),
-    primary_journal_id BLOB NOT NULL CHECK(typeof(primary_journal_id) = 'blob' AND length(primary_journal_id) = 16),
-    primary_journal_path BLOB NOT NULL CHECK(typeof(primary_journal_path) = 'blob' AND length(primary_journal_path) BETWEEN 6 AND 65541),
-    replica_journal_path BLOB CHECK(replica_journal_path IS NULL OR (typeof(replica_journal_path) = 'blob' AND length(replica_journal_path) BETWEEN 6 AND 65541)),
-    replica_sequence BLOB CHECK(replica_sequence IS NULL OR (typeof(replica_sequence) = 'blob' AND length(replica_sequence) = 8)),
-    root_display BLOB NOT NULL CHECK(typeof(root_display) = 'blob' AND length(root_display) BETWEEN 6 AND 65541),
-    cached_layout_hash BLOB CHECK(cached_layout_hash IS NULL OR (typeof(cached_layout_hash) = 'blob' AND length(cached_layout_hash) = 32)),
-    cached_root_binding_hash BLOB CHECK(cached_root_binding_hash IS NULL OR (typeof(cached_root_binding_hash) = 'blob' AND length(cached_root_binding_hash) = 32)),
-    cached_snapshot_hash BLOB NOT NULL CHECK(typeof(cached_snapshot_hash) = 'blob' AND length(cached_snapshot_hash) = 32),
-    no_space_target BLOB CHECK(no_space_target IS NULL OR (typeof(no_space_target) = 'blob' AND length(no_space_target) BETWEEN 6 AND 65541)),
-    no_space_scheduled_at_ms INTEGER CHECK(no_space_scheduled_at_ms IS NULL OR no_space_scheduled_at_ms >= 0),
-    no_space_delay_ms BLOB CHECK(no_space_delay_ms IS NULL OR (typeof(no_space_delay_ms) = 'blob' AND length(no_space_delay_ms) = 8)),
-    created_ms INTEGER NOT NULL CHECK(created_ms >= 0),
-    updated_ms INTEGER NOT NULL CHECK(updated_ms >= created_ms),
-    CHECK((replica_journal_path IS NULL) = (replica_sequence IS NULL)),
-    CHECK((no_space_target IS NULL) = (no_space_scheduled_at_ms IS NULL) AND (no_space_target IS NULL) = (no_space_delay_ms IS NULL)),
-    FOREIGN KEY(session_id) REFERENCES session(session_id) ON UPDATE RESTRICT ON DELETE CASCADE
-) STRICT"#;
-
 const TASK_TABLE_SQL: &str = r#"CREATE TABLE task (
     gid TEXT PRIMARY KEY NOT NULL CHECK(length(gid) = 16 AND gid NOT GLOB '*[^0-9a-f]*'),
     session_id BLOB NOT NULL CHECK(typeof(session_id) = 'blob' AND length(session_id) = 16),
+    task_kind INTEGER NOT NULL DEFAULT 1 CHECK(task_kind IN (1, 2)),
     queue_state INTEGER NOT NULL CHECK(queue_state IN (1, 2, 3, 4, 5)),
     queue_position INTEGER NOT NULL CHECK(queue_position BETWEEN 0 AND 4294967295),
     desired_paused INTEGER NOT NULL CHECK(desired_paused IN (0, 1)),
@@ -157,19 +140,23 @@ const TASK_TABLE_SQL: &str = r#"CREATE TABLE task (
     slow_original_position INTEGER CHECK(slow_original_position IS NULL OR slow_original_position BETWEEN 0 AND 99999),
     slow_retry_scheduled_at_ms INTEGER CHECK(slow_retry_scheduled_at_ms IS NULL OR slow_retry_scheduled_at_ms >= 0),
     slow_retry_delay_ms BLOB CHECK(slow_retry_delay_ms IS NULL OR (typeof(slow_retry_delay_ms) = 'blob' AND length(slow_retry_delay_ms) = 8 AND slow_retry_delay_ms != X'0000000000000000')),
-    primary_journal_id BLOB NOT NULL CHECK(typeof(primary_journal_id) = 'blob' AND length(primary_journal_id) = 16),
-    primary_journal_path BLOB NOT NULL CHECK(typeof(primary_journal_path) = 'blob' AND length(primary_journal_path) BETWEEN 6 AND 65541),
+    primary_journal_id BLOB CHECK(primary_journal_id IS NULL OR (typeof(primary_journal_id) = 'blob' AND length(primary_journal_id) = 16)),
+    primary_journal_path BLOB CHECK(primary_journal_path IS NULL OR (typeof(primary_journal_path) = 'blob' AND length(primary_journal_path) BETWEEN 6 AND 65541)),
     replica_journal_path BLOB CHECK(replica_journal_path IS NULL OR (typeof(replica_journal_path) = 'blob' AND length(replica_journal_path) BETWEEN 6 AND 65541)),
     replica_sequence BLOB CHECK(replica_sequence IS NULL OR (typeof(replica_sequence) = 'blob' AND length(replica_sequence) = 8)),
     root_display BLOB NOT NULL CHECK(typeof(root_display) = 'blob' AND length(root_display) BETWEEN 6 AND 65541),
     cached_layout_hash BLOB CHECK(cached_layout_hash IS NULL OR (typeof(cached_layout_hash) = 'blob' AND length(cached_layout_hash) = 32)),
     cached_root_binding_hash BLOB CHECK(cached_root_binding_hash IS NULL OR (typeof(cached_root_binding_hash) = 'blob' AND length(cached_root_binding_hash) = 32)),
-    cached_snapshot_hash BLOB NOT NULL CHECK(typeof(cached_snapshot_hash) = 'blob' AND length(cached_snapshot_hash) = 32),
+    cached_snapshot_hash BLOB CHECK(cached_snapshot_hash IS NULL OR (typeof(cached_snapshot_hash) = 'blob' AND length(cached_snapshot_hash) = 32)),
     no_space_target BLOB CHECK(no_space_target IS NULL OR (typeof(no_space_target) = 'blob' AND length(no_space_target) BETWEEN 6 AND 65541)),
     no_space_scheduled_at_ms INTEGER CHECK(no_space_scheduled_at_ms IS NULL OR no_space_scheduled_at_ms >= 0),
     no_space_delay_ms BLOB CHECK(no_space_delay_ms IS NULL OR (typeof(no_space_delay_ms) = 'blob' AND length(no_space_delay_ms) = 8)),
     created_ms INTEGER NOT NULL CHECK(created_ms >= 0),
     updated_ms INTEGER NOT NULL CHECK(updated_ms >= created_ms),
+    CHECK((task_kind = 1 AND primary_journal_id IS NOT NULL AND primary_journal_path IS NOT NULL AND cached_snapshot_hash IS NOT NULL)
+       OR (task_kind = 2 AND primary_journal_id IS NULL AND primary_journal_path IS NULL AND replica_journal_path IS NULL
+           AND replica_sequence IS NULL AND cached_snapshot_hash IS NULL AND cached_layout_hash IS NULL AND cached_root_binding_hash IS NULL
+           AND no_space_target IS NULL AND slow_demotion_count = 0 AND queue_state != 5)),
     CHECK((replica_journal_path IS NULL) = (replica_sequence IS NULL)),
     CHECK((no_space_target IS NULL) = (no_space_scheduled_at_ms IS NULL) AND (no_space_target IS NULL) = (no_space_delay_ms IS NULL)),
     CHECK((slow_retry_scheduled_at_ms IS NULL) = (slow_retry_delay_ms IS NULL)),
@@ -212,18 +199,6 @@ const HOST_KEY_CHALLENGE_TABLE_SQL: &str = r#"CREATE TABLE host_key_challenge (
     FOREIGN KEY(gid) REFERENCES task(gid) ON UPDATE CASCADE ON DELETE CASCADE
 ) STRICT"#;
 
-const V1_HOST_KEY_CHALLENGE_TABLE_SQL: &str = r#"CREATE TABLE host_key_challenge (
-    gid TEXT PRIMARY KEY NOT NULL,
-    challenge_id BLOB NOT NULL CHECK(typeof(challenge_id) = 'blob' AND length(challenge_id) = 16),
-    canonical_host TEXT NOT NULL CHECK(length(CAST(canonical_host AS BLOB)) BETWEEN 1 AND 253),
-    port INTEGER NOT NULL CHECK(port BETWEEN 1 AND 65535),
-    algorithm TEXT NOT NULL CHECK(length(CAST(algorithm AS BLOB)) BETWEEN 1 AND 128),
-    presented_public_key BLOB NOT NULL CHECK(typeof(presented_public_key) = 'blob' AND length(presented_public_key) BETWEEN 1 AND 1048576),
-    fingerprint_sha256 BLOB NOT NULL CHECK(typeof(fingerprint_sha256) = 'blob' AND length(fingerprint_sha256) = 32),
-    created_ms INTEGER NOT NULL CHECK(created_ms >= 0),
-    FOREIGN KEY(gid) REFERENCES task(gid) ON UPDATE CASCADE ON DELETE CASCADE
-) STRICT"#;
-
 const STOPPED_RESULT_TABLE_SQL: &str = r#"CREATE TABLE stopped_result (
     gid TEXT PRIMARY KEY NOT NULL CHECK(length(gid) = 16 AND gid NOT GLOB '*[^0-9a-f]*'),
     terminal_status INTEGER NOT NULL CHECK(terminal_status IN (1, 2, 3)),
@@ -251,8 +226,10 @@ const BT_RESUME_TABLE_SQL: &str = r#"CREATE TABLE bt_resume (
     gid TEXT PRIMARY KEY NOT NULL,
     resume_blob BLOB NOT NULL CHECK(typeof(resume_blob) = 'blob' AND length(resume_blob) <= 67108864),
     dirty INTEGER NOT NULL CHECK(dirty IN (0, 1)),
+    request BLOB NOT NULL CHECK(typeof(request) = 'blob' AND length(request) = 8),
+    generation BLOB NOT NULL CHECK(typeof(generation) = 'blob' AND length(generation) = 8),
     saved_ms INTEGER NOT NULL CHECK(saved_ms >= 0),
-    FOREIGN KEY(gid) REFERENCES task(gid) ON UPDATE CASCADE ON DELETE CASCADE
+    FOREIGN KEY(gid) REFERENCES bt_metadata(gid) ON UPDATE CASCADE ON DELETE CASCADE
 ) STRICT"#;
 
 const TASK_QUEUE_INDEX_SQL: &str =
@@ -322,61 +299,8 @@ pub const SESSION_SCHEMA_OBJECTS: &[SessionSchemaObject] = &[
     },
     SessionSchemaObject {
         kind: SessionSchemaObjectKind::Table,
-        name: "bt_resume",
-        sql: BT_RESUME_TABLE_SQL,
-    },
-    SessionSchemaObject {
-        kind: SessionSchemaObjectKind::Index,
-        name: "task_queue_index",
-        sql: TASK_QUEUE_INDEX_SQL,
-    },
-    SessionSchemaObject {
-        kind: SessionSchemaObjectKind::Index,
-        name: "task_session_index",
-        sql: TASK_SESSION_INDEX_SQL,
-    },
-    SessionSchemaObject {
-        kind: SessionSchemaObjectKind::Index,
-        name: "task_source_priority_index",
-        sql: TASK_SOURCE_PRIORITY_INDEX_SQL,
-    },
-];
-
-const SESSION_V1_SCHEMA_OBJECTS: &[SessionSchemaObject] = &[
-    SessionSchemaObject {
-        kind: SessionSchemaObjectKind::Table,
-        name: "session",
-        sql: SESSION_TABLE_SQL,
-    },
-    SessionSchemaObject {
-        kind: SessionSchemaObjectKind::Table,
-        name: "task",
-        sql: V1_TASK_TABLE_SQL,
-    },
-    SessionSchemaObject {
-        kind: SessionSchemaObjectKind::Table,
-        name: "task_option",
-        sql: TASK_OPTION_TABLE_SQL,
-    },
-    SessionSchemaObject {
-        kind: SessionSchemaObjectKind::Table,
-        name: "task_source",
-        sql: TASK_SOURCE_TABLE_SQL,
-    },
-    SessionSchemaObject {
-        kind: SessionSchemaObjectKind::Table,
-        name: "host_key_challenge",
-        sql: V1_HOST_KEY_CHALLENGE_TABLE_SQL,
-    },
-    SessionSchemaObject {
-        kind: SessionSchemaObjectKind::Table,
-        name: "stopped_result",
-        sql: STOPPED_RESULT_TABLE_SQL,
-    },
-    SessionSchemaObject {
-        kind: SessionSchemaObjectKind::Table,
-        name: "journal_install",
-        sql: JOURNAL_INSTALL_TABLE_SQL,
+        name: "bt_metadata",
+        sql: bt::BT_METADATA_TABLE_SQL,
     },
     SessionSchemaObject {
         kind: SessionSchemaObjectKind::Table,
@@ -887,7 +811,7 @@ pub enum SessionStoreError {
         kind: io::ErrorKind,
     },
     InvalidConfig(&'static str),
-    NewerSchema {
+    UnsupportedSchema {
         found: u32,
         supported: u32,
     },
@@ -921,7 +845,7 @@ impl SessionStoreError {
             Self::Sqlite(_) => "sqlite",
             Self::Io { .. } => "io",
             Self::InvalidConfig(_) => "invalid_config",
-            Self::NewerSchema { .. } => "newer_schema",
+            Self::UnsupportedSchema { .. } => "unsupported_schema",
             Self::UnversionedDatabase => "unversioned_database",
             Self::SchemaMismatch(_) => "schema_mismatch",
             Self::IntegrityCheckFailed => "integrity_check_failed",
@@ -947,7 +871,7 @@ pub const ALL_SESSION_STORE_ERROR_CODES: [&str; 21] = [
     "sqlite",
     "io",
     "invalid_config",
-    "newer_schema",
+    "unsupported_schema",
     "unversioned_database",
     "schema_mismatch",
     "integrity_check_failed",
@@ -975,9 +899,9 @@ impl fmt::Display for SessionStoreError {
                 write!(formatter, "session {} failed: {kind}", operation.code())
             }
             Self::InvalidConfig(field) => write!(formatter, "invalid session config: {field}"),
-            Self::NewerSchema { found, supported } => write!(
+            Self::UnsupportedSchema { found, supported } => write!(
                 formatter,
-                "session schema {found} is newer than supported schema {supported}"
+                "unsupported session format {found}; a fresh schema {supported} store is required"
             ),
             Self::UnversionedDatabase => {
                 formatter.write_str("unversioned database contains schema objects")
@@ -1072,8 +996,8 @@ impl SessionStore {
         let existed_before_lock = validate_database_artifacts(&path)?;
         if existed_before_lock {
             let version = inspect_persisted_user_version(&path)?;
-            if version > SESSION_SCHEMA_VERSION {
-                return Err(SessionStoreError::NewerSchema {
+            if version != 0 && version != SESSION_SCHEMA_VERSION {
+                return Err(SessionStoreError::UnsupportedSchema {
                     found: version,
                     supported: SESSION_SCHEMA_VERSION,
                 });
@@ -1083,8 +1007,8 @@ impl SessionStore {
         let existed = prepare_database_path(&path)?;
         if existed {
             let version = inspect_persisted_user_version(&path)?;
-            if version > SESSION_SCHEMA_VERSION {
-                return Err(SessionStoreError::NewerSchema {
+            if version != 0 && version != SESSION_SCHEMA_VERSION {
+                return Err(SessionStoreError::UnsupportedSchema {
                     found: version,
                     supported: SESSION_SCHEMA_VERSION,
                 });
@@ -1096,8 +1020,8 @@ impl SessionStore {
         apply_limits(&connection)?;
         connection.busy_timeout(Duration::from_millis(config.busy_timeout_ms))?;
         let version = read_user_version(&connection)?;
-        if version > SESSION_SCHEMA_VERSION {
-            return Err(SessionStoreError::NewerSchema {
+        if version != 0 && version != SESSION_SCHEMA_VERSION {
+            return Err(SessionStoreError::UnsupportedSchema {
                 found: version,
                 supported: SESSION_SCHEMA_VERSION,
             });
@@ -1107,11 +1031,6 @@ impl SessionStore {
         }
         match version {
             0 => connection.pragma_update(None, "page_size", SESSION_PAGE_SIZE_BYTES)?,
-            1 => {
-                validate_schema_version(&connection, 1, SESSION_V1_SCHEMA_OBJECTS)?;
-                validate_integrity(&connection)?;
-                validate_persisted_semantics_v1(&connection)?;
-            }
             SESSION_SCHEMA_VERSION => {
                 validate_schema(&connection)?;
                 validate_integrity(&connection)?;
@@ -1122,9 +1041,6 @@ impl SessionStore {
         let journal_mode = configure_pragmas(&connection, config)?;
         match version {
             0 => create_schema(&mut connection)?,
-            1 => {
-                migrate_v1_to_v2_with_backup(&mut connection, &path)?;
-            }
             SESSION_SCHEMA_VERSION => {}
             _ => return Err(SessionStoreError::SchemaMismatch("user_version")),
         }
@@ -3562,7 +3478,6 @@ fn read_host_key_challenge_records(
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SessionBackupSchema {
-    V1,
     Current,
 }
 
@@ -3702,10 +3617,6 @@ fn validate_backup_database(
     }
     validate_integrity(&backup)?;
     match schema {
-        SessionBackupSchema::V1 => {
-            validate_schema_version(&backup, 1, SESSION_V1_SCHEMA_OBJECTS)?;
-            validate_persisted_semantics_v1(&backup)?;
-        }
         SessionBackupSchema::Current => {
             validate_schema(&backup)?;
             validate_persisted_semantics(&backup)?;
@@ -4032,58 +3943,6 @@ fn remove_owned_sqlite_sidecars(database: &Path) -> Result<(), SessionStoreError
     }
 }
 
-fn migrate_v1_to_v2_with_backup(
-    connection: &mut Connection,
-    database: &Path,
-) -> Result<PathBuf, SessionStoreError> {
-    let timestamp_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| SessionStoreError::InvalidPersistedValue("system_clock"))?
-        .as_millis();
-    migrate_v1_to_v2_with_backup_at(connection, database, timestamp_ms)
-}
-
-fn migrate_v1_to_v2_with_backup_at(
-    connection: &mut Connection,
-    database: &Path,
-    timestamp_ms: u128,
-) -> Result<PathBuf, SessionStoreError> {
-    let backup = create_v1_migration_backup_at(connection, database, timestamp_ms)?;
-    migrate_v1_to_v2(connection)?;
-    Ok(backup)
-}
-
-fn create_v1_migration_backup_at(
-    connection: &Connection,
-    database: &Path,
-    timestamp_ms: u128,
-) -> Result<PathBuf, SessionStoreError> {
-    for attempt in 0..MIGRATION_BACKUP_ATTEMPTS {
-        let destination = migration_backup_path(database, timestamp_ms, attempt)?;
-        match backup_connection_to(connection, &destination, SessionBackupSchema::V1) {
-            Ok(()) => return Ok(destination),
-            Err(SessionStoreError::BackupPathExists) => {}
-            Err(error) => return Err(error),
-        }
-    }
-    Err(SessionStoreError::BackupPathExists)
-}
-
-fn migration_backup_path(
-    database: &Path,
-    timestamp_ms: u128,
-    attempt: u32,
-) -> Result<PathBuf, SessionStoreError> {
-    let mut name = database
-        .file_name()
-        .ok_or(SessionStoreError::InvalidConfig("database_path"))?
-        .to_os_string();
-    name.push(format!(
-        ".ariax-v1-to-v2-{timestamp_ms:020}-{attempt:04}.backup"
-    ));
-    Ok(database.with_file_name(name))
-}
-
 fn backup_temporary_path(destination: &Path) -> PathBuf {
     let identifier = BACKUP_TEMP_ID.fetch_add(1, Ordering::Relaxed);
     let mut name = destination.as_os_str().to_os_string();
@@ -4144,33 +4003,6 @@ impl RawTaskRow {
             no_space_delay_ms: row.get(19)?,
             created_ms: row.get(20)?,
             updated_ms: row.get(21)?,
-        })
-    }
-
-    fn from_v1_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
-        Ok(Self {
-            gid: row.get(0)?,
-            session_id: row.get(1)?,
-            queue_state: row.get(2)?,
-            queue_position: row.get(3)?,
-            desired_paused: row.get(4)?,
-            slow_original_position: None,
-            slow_demotion_count: 0,
-            slow_retry_scheduled_at_ms: None,
-            slow_retry_delay_ms: None,
-            primary_journal_id: row.get(5)?,
-            primary_journal_path: row.get(6)?,
-            replica_journal_path: row.get(7)?,
-            replica_sequence: row.get(8)?,
-            root_display: row.get(9)?,
-            cached_layout_hash: row.get(10)?,
-            cached_root_binding_hash: row.get(11)?,
-            cached_snapshot_hash: row.get(12)?,
-            no_space_target: row.get(13)?,
-            no_space_scheduled_at_ms: row.get(14)?,
-            no_space_delay_ms: row.get(15)?,
-            created_ms: row.get(16)?,
-            updated_ms: row.get(17)?,
         })
     }
 
@@ -4313,10 +4145,13 @@ impl RawTaskRow {
 }
 
 fn read_task_records(connection: &Connection) -> Result<Vec<SessionTaskRecord>, SessionStoreError> {
-    let count: i64 = connection.query_row("SELECT COUNT(*) FROM task", [], |row| row.get(0))?;
+    let count: i64 =
+        connection.query_row("SELECT COUNT(*) FROM task WHERE task_kind = 1", [], |row| {
+            row.get(0)
+        })?;
     let count = bounded_count(count, SESSION_MAX_TASKS, "task.count")?;
     let mut statement = connection.prepare(
-        "SELECT gid, session_id, queue_state, queue_position, desired_paused, slow_original_position, slow_demotion_count, slow_retry_scheduled_at_ms, slow_retry_delay_ms, primary_journal_id, primary_journal_path, replica_journal_path, replica_sequence, root_display, cached_layout_hash, cached_root_binding_hash, cached_snapshot_hash, no_space_target, no_space_scheduled_at_ms, no_space_delay_ms, created_ms, updated_ms FROM task ORDER BY queue_state, queue_position, gid",
+        "SELECT gid, session_id, queue_state, queue_position, desired_paused, slow_original_position, slow_demotion_count, slow_retry_scheduled_at_ms, slow_retry_delay_ms, primary_journal_id, primary_journal_path, replica_journal_path, replica_sequence, root_display, cached_layout_hash, cached_root_binding_hash, cached_snapshot_hash, no_space_target, no_space_scheduled_at_ms, no_space_delay_ms, created_ms, updated_ms FROM task WHERE task_kind = 1 ORDER BY queue_state, queue_position, gid",
     )?;
     let mut rows = statement.query([])?;
     let mut tasks = Vec::new();
@@ -4326,41 +4161,6 @@ fn read_task_records(connection: &Connection) -> Result<Vec<SessionTaskRecord>, 
     let mut read_bytes = 0_usize;
     while let Some(row) = rows.next()? {
         let raw = RawTaskRow::from_row(row)?;
-        read_bytes = read_bytes
-            .checked_add(raw.estimated_read_bytes()?)
-            .ok_or(SessionStoreError::InvalidPersistedValue("task.read_budget"))?;
-        if read_bytes > SESSION_TASK_READ_BUDGET_BYTES {
-            return Err(SessionStoreError::InvalidPersistedValue("task.read_budget"));
-        }
-        let task = raw.decode()?;
-        validate_task(&task)?;
-        tasks.push(task);
-        if tasks.len() > count {
-            return Err(SessionStoreError::InvalidPersistedValue("task.count"));
-        }
-    }
-    if tasks.len() != count {
-        return Err(SessionStoreError::InvalidPersistedValue("task.count"));
-    }
-    Ok(tasks)
-}
-
-fn read_task_records_v1(
-    connection: &Connection,
-) -> Result<Vec<SessionTaskRecord>, SessionStoreError> {
-    let count: i64 = connection.query_row("SELECT COUNT(*) FROM task", [], |row| row.get(0))?;
-    let count = bounded_count(count, SESSION_MAX_TASKS, "task.count")?;
-    let mut statement = connection.prepare(
-        "SELECT gid, session_id, queue_state, queue_position, desired_paused, primary_journal_id, primary_journal_path, replica_journal_path, replica_sequence, root_display, cached_layout_hash, cached_root_binding_hash, cached_snapshot_hash, no_space_target, no_space_scheduled_at_ms, no_space_delay_ms, created_ms, updated_ms FROM task ORDER BY queue_state, queue_position, gid",
-    )?;
-    let mut rows = statement.query([])?;
-    let mut tasks = Vec::new();
-    tasks
-        .try_reserve_exact(count)
-        .map_err(|_| SessionStoreError::InvalidPersistedValue("task.allocation"))?;
-    let mut read_bytes = 0_usize;
-    while let Some(row) = rows.next()? {
-        let raw = RawTaskRow::from_v1_row(row)?;
         read_bytes = read_bytes
             .checked_add(raw.estimated_read_bytes()?)
             .ok_or(SessionStoreError::InvalidPersistedValue("task.read_budget"))?;
@@ -5642,107 +5442,6 @@ fn create_schema(connection: &mut Connection) -> Result<(), SessionStoreError> {
     Ok(())
 }
 
-fn migrate_v1_to_v2(connection: &mut Connection) -> Result<(), SessionStoreError> {
-    connection.pragma_update(None, "foreign_keys", false)?;
-    let migration = migrate_v1_to_v2_inner(connection);
-    let restore = connection.pragma_update(None, "foreign_keys", true);
-    match (migration, restore) {
-        (Err(error), _) => Err(error),
-        (Ok(()), Err(error)) => Err(SessionStoreError::Sqlite(error)),
-        (Ok(()), Ok(())) if pragma_i64(connection, "foreign_keys")? == 1 => Ok(()),
-        (Ok(()), Ok(())) => Err(SessionStoreError::InvalidPersistedValue("foreign_keys")),
-    }
-}
-
-fn migrate_v1_to_v2_inner(connection: &mut Connection) -> Result<(), SessionStoreError> {
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    rebuild_v1_task_table(&transaction)?;
-    rebuild_v1_host_key_challenge_table(&transaction)?;
-    transaction.pragma_update(None, "user_version", SESSION_SCHEMA_VERSION)?;
-    validate_schema(&transaction)?;
-    validate_integrity(&transaction)?;
-    validate_persisted_semantics(&transaction)?;
-    transaction.commit()?;
-    Ok(())
-}
-
-fn rebuild_v1_task_table(transaction: &rusqlite::Transaction<'_>) -> Result<(), SessionStoreError> {
-    transaction.execute_batch(
-        "CREATE TEMP TABLE ariax_task_v1_migration AS
-         SELECT gid, session_id, queue_state, queue_position, desired_paused,
-                primary_journal_id, primary_journal_path, replica_journal_path,
-                replica_sequence, root_display, cached_layout_hash,
-                cached_root_binding_hash, cached_snapshot_hash, no_space_target,
-                no_space_scheduled_at_ms, no_space_delay_ms, created_ms, updated_ms
-         FROM task;
-         DROP INDEX task_queue_index;
-         DROP INDEX task_session_index;
-         DROP TABLE task;",
-    )?;
-    transaction.execute(TASK_TABLE_SQL, [])?;
-    transaction.execute_batch(
-        "INSERT INTO task(
-             gid, session_id, queue_state, queue_position, desired_paused,
-             slow_original_position, slow_demotion_count,
-             slow_retry_scheduled_at_ms, slow_retry_delay_ms,
-             primary_journal_id, primary_journal_path, replica_journal_path,
-             replica_sequence, root_display, cached_layout_hash,
-             cached_root_binding_hash, cached_snapshot_hash, no_space_target,
-             no_space_scheduled_at_ms, no_space_delay_ms, created_ms, updated_ms
-         )
-         SELECT gid, session_id, queue_state, queue_position, desired_paused,
-                NULL, 0, NULL, NULL,
-                primary_journal_id, primary_journal_path, replica_journal_path,
-                replica_sequence, root_display, cached_layout_hash,
-                cached_root_binding_hash, cached_snapshot_hash, no_space_target,
-                no_space_scheduled_at_ms, no_space_delay_ms, created_ms, updated_ms
-         FROM ariax_task_v1_migration;
-         DROP TABLE ariax_task_v1_migration;",
-    )?;
-    transaction.execute(TASK_QUEUE_INDEX_SQL, [])?;
-    transaction.execute(TASK_SESSION_INDEX_SQL, [])?;
-    Ok(())
-}
-
-fn rebuild_v1_host_key_challenge_table(
-    transaction: &rusqlite::Transaction<'_>,
-) -> Result<(), SessionStoreError> {
-    let out_of_bounds: i64 = transaction.query_row(
-        "SELECT COUNT(*) FROM host_key_challenge
-         WHERE length(CAST(algorithm AS BLOB)) > ?1
-            OR length(presented_public_key) > ?2",
-        params![
-            SESSION_MAX_ALGORITHM_BYTES as i64,
-            SESSION_MAX_HOST_KEY_BYTES as i64
-        ],
-        |row| row.get(0),
-    )?;
-    if out_of_bounds != 0 {
-        return Err(SessionStoreError::InvalidPersistedValue(
-            "host_key_challenge_bounds",
-        ));
-    }
-    transaction.execute_batch(
-        "CREATE TEMP TABLE ariax_host_key_v1_migration AS
-         SELECT gid, challenge_id, canonical_host, port, algorithm,
-                presented_public_key, fingerprint_sha256, created_ms
-         FROM host_key_challenge;
-         DROP TABLE host_key_challenge;",
-    )?;
-    transaction.execute(HOST_KEY_CHALLENGE_TABLE_SQL, [])?;
-    transaction.execute_batch(
-        "INSERT INTO host_key_challenge(
-             gid, challenge_id, canonical_host, port, algorithm,
-             presented_public_key, fingerprint_sha256, created_ms
-         )
-         SELECT gid, challenge_id, canonical_host, port, algorithm,
-                presented_public_key, fingerprint_sha256, created_ms
-         FROM ariax_host_key_v1_migration;
-         DROP TABLE ariax_host_key_v1_migration;",
-    )?;
-    Ok(())
-}
-
 fn validate_schema(connection: &Connection) -> Result<(), SessionStoreError> {
     validate_schema_version(connection, SESSION_SCHEMA_VERSION, SESSION_SCHEMA_OBJECTS)
 }
@@ -5798,22 +5497,7 @@ fn validate_integrity(connection: &Connection) -> Result<(), SessionStoreError> 
 }
 
 fn validate_persisted_semantics(connection: &Connection) -> Result<(), SessionStoreError> {
-    validate_persisted_semantics_for_version(connection, false)
-}
-
-fn validate_persisted_semantics_v1(connection: &Connection) -> Result<(), SessionStoreError> {
-    validate_persisted_semantics_for_version(connection, true)
-}
-
-fn validate_persisted_semantics_for_version(
-    connection: &Connection,
-    version_one: bool,
-) -> Result<(), SessionStoreError> {
-    if version_one {
-        validate_dense_queues_v1(connection)?;
-    } else {
-        validate_dense_queues(connection)?;
-    }
+    validate_dense_queues(connection)?;
     let session_rows: i64 =
         connection.query_row("SELECT COUNT(*) FROM session", [], |row| row.get(0))?;
     if !(0..=1).contains(&session_rows) {
@@ -5830,11 +5514,8 @@ fn validate_persisted_semantics_for_version(
             "foreign_key_check",
         ));
     }
-    if version_one {
-        read_task_records_v1(connection)?;
-    } else {
-        read_task_records(connection)?;
-    }
+    read_task_records(connection)?;
+    bt::validate_rows(connection)?;
     validate_task_sources(connection)?;
     validate_stopped_result_pairing(connection)?;
     read_stopped_results(connection)?;
@@ -6147,17 +5828,6 @@ fn validate_install_values(intent: &JournalInstallIntent) -> Result<(), SessionS
 }
 
 fn validate_dense_queues(connection: &Connection) -> Result<(), SessionStoreError> {
-    validate_dense_queues_for_version(connection, false)
-}
-
-fn validate_dense_queues_v1(connection: &Connection) -> Result<(), SessionStoreError> {
-    validate_dense_queues_for_version(connection, true)
-}
-
-fn validate_dense_queues_for_version(
-    connection: &Connection,
-    version_one: bool,
-) -> Result<(), SessionStoreError> {
     let count: i64 = connection.query_row("SELECT COUNT(*) FROM task", [], |row| row.get(0))?;
     let maximum = bounded_count(count, SESSION_MAX_TASKS, "task.count")?;
     let mut statement = connection.prepare(
@@ -6169,10 +5839,7 @@ fn validate_dense_queues_for_version(
     while let Some(row) = rows.next()? {
         let state = row.get::<_, i64>(0)?;
         let position = row.get::<_, i64>(1)?;
-        let queue_state = SessionQueueState::try_from(state)?;
-        if version_one && queue_state == SessionQueueState::Demoted {
-            return Err(SessionStoreError::InvalidPersistedValue("queue_state"));
-        }
+        SessionQueueState::try_from(state)?;
         let expected = next.entry(state).or_insert(0);
         if position != *expected {
             return Err(SessionStoreError::QueueInvariant);
@@ -6710,112 +6377,6 @@ mod tests {
         store
     }
 
-    fn seed_v1_store(directory: &TestDirectory, journal_mode: SessionJournalMode) {
-        let mut connection = Connection::open(directory.database()).expect("create v1 database");
-        connection
-            .pragma_update(None, "journal_mode", journal_mode.code().to_uppercase())
-            .expect("set v1 journal mode");
-        let transaction = connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .expect("begin v1 seed");
-        for object in super::SESSION_V1_SCHEMA_OBJECTS {
-            transaction.execute(object.sql, []).expect(object.name);
-        }
-        let session = session_record();
-        transaction
-            .execute(
-                "INSERT INTO session(session_id, created_ms, updated_ms, clean_shutdown) VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![
-                    session.session_id.as_bytes().as_slice(),
-                    i64::try_from(session.created_ms).expect("created time"),
-                    i64::try_from(session.updated_ms).expect("updated time"),
-                    super::bool_to_i64(session.clean_shutdown),
-                ],
-            )
-            .expect("insert v1 session");
-        let task = task_record(gid(1), 0);
-        transaction
-            .execute(
-                "INSERT INTO task(gid, session_id, queue_state, queue_position, desired_paused, primary_journal_id, primary_journal_path, replica_journal_path, replica_sequence, root_display, cached_layout_hash, cached_root_binding_hash, cached_snapshot_hash, no_space_target, no_space_scheduled_at_ms, no_space_delay_ms, created_ms, updated_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
-                rusqlite::params![
-                    task.gid.to_string(),
-                    task.session_id.as_bytes().as_slice(),
-                    task.queue_state as i64,
-                    i64::from(task.queue_position),
-                    super::bool_to_i64(task.desired_paused),
-                    task.primary_journal_id.as_bytes().as_slice(),
-                    super::encode_platform_path(&task.primary_journal_path).expect("primary path"),
-                    task.replica_journal_path
-                        .as_ref()
-                        .map(super::encode_platform_path)
-                        .transpose()
-                        .expect("replica path"),
-                    task.replica_sequence.map(super::encode_u64),
-                    super::encode_platform_path(&task.root_display).expect("root display"),
-                    task.cached_layout_hash.map(|value| value.as_bytes().to_vec()),
-                    task.cached_root_binding_hash
-                        .map(|value| value.as_bytes().to_vec()),
-                    task.cached_snapshot_hash.as_bytes().as_slice(),
-                    task.no_space
-                        .as_ref()
-                        .map(|value| super::encode_platform_path(&value.target))
-                        .transpose()
-                        .expect("no-space target"),
-                    task.no_space
-                        .as_ref()
-                        .map(|value| i64::try_from(value.scheduled_at_ms).expect("scheduled time")),
-                    task.no_space.as_ref().map(|value| super::encode_u64(value.delay_ms)),
-                    i64::try_from(task.created_ms).expect("task created time"),
-                    i64::try_from(task.updated_ms).expect("task updated time"),
-                ],
-            )
-            .expect("insert v1 task");
-        transaction
-            .execute(
-                "INSERT INTO task_source(gid, uri_id, persistence_safe_uri, redacted_fingerprint, needs_credentials, priority) VALUES (?1, 0, NULL, ?2, 1, 0)",
-                rusqlite::params![task.gid.to_string(), [7_u8; 32].as_slice()],
-            )
-            .expect("insert v1 child row");
-        transaction
-            .pragma_update(None, "user_version", 1)
-            .expect("set v1 version");
-        transaction.commit().expect("commit v1 seed");
-    }
-
-    fn seed_v1_host_key_challenge(
-        directory: &TestDirectory,
-        algorithm_bytes: usize,
-        key_bytes: usize,
-    ) {
-        let connection = Connection::open(directory.database()).expect("open v1 database");
-        connection
-            .execute(
-                "UPDATE task SET queue_state = ?1 WHERE gid = ?2",
-                rusqlite::params![SessionQueueState::Paused as i64, gid(1).to_string()],
-            )
-            .expect("pause v1 host-key task");
-        let presented_public_key = vec![7_u8; key_bytes];
-        let fingerprint_sha256 = HostKeyFingerprint::for_presented_key(&presented_public_key);
-        connection
-            .execute(
-                "INSERT INTO host_key_challenge(
-                     gid, challenge_id, canonical_host, port, algorithm,
-                     presented_public_key, fingerprint_sha256, created_ms
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                rusqlite::params![
-                    gid(1).to_string(),
-                    [1_u8; 16].as_slice(),
-                    "example.test",
-                    22_i64,
-                    "a".repeat(algorithm_bytes),
-                    presented_public_key,
-                    fingerprint_sha256.as_bytes().as_slice(),
-                    200_i64,
-                ],
-            )
-            .expect("insert v1 host-key challenge");
-    }
-
     fn seed_raw_host_key_challenge(
         directory: &TestDirectory,
         canonical_host: &[u8],
@@ -6960,271 +6521,25 @@ mod tests {
     }
 
     #[test]
-    fn migrates_exact_v1_task_rows_to_v2_in_wal_and_delete_modes() {
-        for journal_mode in [SessionJournalMode::Wal, SessionJournalMode::Delete] {
-            let directory = TestDirectory::new();
-            seed_v1_store(&directory, journal_mode);
-            let store = SessionStore::open(
-                directory.database(),
-                SessionStoreConfig {
-                    prefer_wal: journal_mode == SessionJournalMode::Wal,
-                    ..SessionStoreConfig::default()
-                },
-            )
-            .expect("migrate v1 store");
-            if journal_mode == SessionJournalMode::Delete {
-                assert_eq!(store.journal_mode(), SessionJournalMode::Delete);
-            }
-            assert_eq!(
-                super::read_user_version(&store.connection).expect("migrated version"),
-                SESSION_SCHEMA_VERSION
-            );
-            assert_eq!(
-                store.tasks().expect("migrated tasks"),
-                vec![task_record(gid(1), 0)]
-            );
-            let child_rows: i64 = store
-                .connection
-                .query_row("SELECT COUNT(*) FROM task_source", [], |row| row.get(0))
-                .expect("preserved child rows");
-            assert_eq!(child_rows, 1);
-            super::validate_schema(&store.connection).expect("exact v2 schema");
-            let backups = fs::read_dir(directory.path())
-                .expect("migration backup directory")
-                .map(|entry| entry.expect("migration backup entry").path())
-                .filter(|path| {
-                    path.file_name()
-                        .is_some_and(|name| name.to_string_lossy().contains(".ariax-v1-to-v2-"))
-                })
-                .collect::<Vec<_>>();
-            assert_eq!(backups.len(), 1);
-            let backup = Connection::open_with_flags(
-                &backups[0],
-                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-            )
-            .expect("open v1 migration backup");
-            super::validate_schema_version(&backup, 1, super::SESSION_V1_SCHEMA_OBJECTS)
-                .expect("exact v1 backup schema");
-            super::validate_persisted_semantics_v1(&backup).expect("valid v1 backup semantics");
-        }
-    }
-
-    #[test]
-    fn paired_stopped_result_survives_v1_to_v2_migration() {
-        let directory = TestDirectory::new();
-        seed_v1_store(&directory, SessionJournalMode::Delete);
-        let connection = Connection::open(directory.database()).expect("open v1 database");
-        connection
-            .execute(
-                "UPDATE task SET queue_state = ?1 WHERE gid = ?2",
-                rusqlite::params![SessionQueueState::Stopped as i64, gid(1).to_string()],
-            )
-            .expect("move v1 task to stopped queue");
-        connection
-            .execute(
-                "INSERT INTO stopped_result(gid, terminal_status, error_code, safe_message, total_length, layout_hash, completed_ms) VALUES (?1, ?2, 0, '', ?3, ?4, 300)",
-                rusqlite::params![
-                    gid(1).to_string(),
-                    SessionTerminalStatus::Complete as i64,
-                    super::encode_u64(u64::MAX),
-                    hash(9).as_bytes().as_slice(),
-                ],
-            )
-            .expect("insert paired v1 stopped result");
-        drop(connection);
-
-        let store = SessionStore::open(directory.database(), SessionStoreConfig::default())
-            .expect("migrate paired stopped result");
-        assert_eq!(
-            store.stopped_results().expect("migrated stopped result"),
-            vec![stopped_result_record(
-                gid(1),
-                SessionTerminalStatus::Complete
-            )]
-        );
-        let task = store.tasks().expect("migrated stopped task").remove(0);
-        assert_eq!(task.queue_state, SessionQueueState::Stopped);
-        assert_eq!(task.queue_position, 0);
-    }
-
-    #[test]
-    fn v1_migration_rejects_noncanonical_stopped_payload_without_backup() {
-        let directory = TestDirectory::new();
-        seed_v1_store(&directory, SessionJournalMode::Delete);
-        let connection = Connection::open(directory.database()).expect("open v1 database");
-        connection
-            .execute(
-                "UPDATE task SET queue_state = ?1 WHERE gid = ?2",
-                rusqlite::params![SessionQueueState::Stopped as i64, gid(1).to_string()],
-            )
-            .expect("move v1 task to stopped queue");
-        connection
-            .execute(
-                "INSERT INTO stopped_result(gid, terminal_status, error_code, safe_message, total_length, layout_hash, completed_ms) VALUES (?1, ?2, 0, '', ?3, NULL, 300)",
-                rusqlite::params![
-                    gid(1).to_string(),
-                    SessionTerminalStatus::Removed as i64,
-                    super::encode_u64(1),
-                ],
-            )
-            .expect("insert noncanonical v1 stopped result");
-        drop(connection);
-
-        for _ in 0..2 {
-            assert!(matches!(
-                SessionStore::open(directory.database(), SessionStoreConfig::default()),
-                Err(SessionStoreError::InvalidRecord(
-                    "stopped_result.non_error_payload"
-                ))
-            ));
-        }
-        let connection = Connection::open(directory.database()).expect("inspect retained v1");
-        assert_eq!(
-            super::read_user_version(&connection).expect("retained v1 version"),
-            1
-        );
-        assert_eq!(
-            connection
-                .query_row("SELECT COUNT(*) FROM stopped_result", [], |row| row
-                    .get::<_, i64>(0))
-                .expect("retained invalid result"),
-            1
-        );
-        let migration_entries = fs::read_dir(directory.path())
-            .expect("migration directory")
-            .map(|entry| entry.expect("migration entry").path())
-            .filter(|path| {
-                path.file_name()
-                    .is_some_and(|name| name.to_string_lossy().contains(".ariax-v1-to-v2-"))
-            })
-            .collect::<Vec<_>>();
-        assert!(migration_entries.is_empty());
-    }
-
-    #[test]
-    fn unpaired_stopped_tasks_are_rejected_in_v1_and_v2() {
-        let v1 = TestDirectory::new();
-        seed_v1_store(&v1, SessionJournalMode::Delete);
-        let connection = Connection::open(v1.database()).expect("open v1 database");
-        connection
-            .execute(
-                "UPDATE task SET queue_state = ?1 WHERE gid = ?2",
-                rusqlite::params![SessionQueueState::Stopped as i64, gid(1).to_string()],
-            )
-            .expect("seed unpaired v1 stopped task");
-        drop(connection);
-        assert!(matches!(
-            SessionStore::open(v1.database(), SessionStoreConfig::default()),
-            Err(SessionStoreError::InvalidPersistedValue(
-                "stopped_result.task_pair"
-            ))
-        ));
-        let connection = Connection::open(v1.database()).expect("inspect retained v1");
-        assert_eq!(
-            super::read_user_version(&connection).expect("retained v1 version"),
-            1
-        );
-
-        let v2 = TestDirectory::new();
-        let mut store = open_store(&v2);
-        store.put_task(&task_record(gid(1), 0)).expect("v2 task");
+    fn unpaired_stopped_tasks_are_rejected_in_v3() {
+        let current = TestDirectory::new();
+        let mut store = open_store(&current);
+        store
+            .put_task(&task_record(gid(1), 0))
+            .expect("current task");
         store
             .connection
             .execute(
                 "UPDATE task SET queue_state = ?1 WHERE gid = ?2",
                 rusqlite::params![SessionQueueState::Stopped as i64, gid(1).to_string()],
             )
-            .expect("seed unpaired v2 stopped task");
+            .expect("seed unpaired current stopped task");
         assert!(matches!(
             store.tasks(),
             Err(SessionStoreError::InvalidPersistedValue(
                 "stopped_result.task_pair"
             ))
         ));
-    }
-
-    #[test]
-    fn v1_host_key_boundary_migrates_to_tightened_v2_schema() {
-        let directory = TestDirectory::new();
-        seed_v1_store(&directory, SessionJournalMode::Delete);
-        seed_v1_host_key_challenge(
-            &directory,
-            super::SESSION_MAX_ALGORITHM_BYTES,
-            super::SESSION_MAX_HOST_KEY_BYTES,
-        );
-        let store = SessionStore::open(directory.database(), SessionStoreConfig::default())
-            .expect("migrate boundary host-key row");
-        let lengths: (i64, i64) = store
-            .connection
-            .query_row(
-                "SELECT length(CAST(algorithm AS BLOB)), length(presented_public_key)
-                 FROM host_key_challenge WHERE gid = ?1",
-                [gid(1).to_string()],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .expect("read migrated host-key row");
-        assert_eq!(
-            lengths,
-            (
-                super::SESSION_MAX_ALGORITHM_BYTES as i64,
-                super::SESSION_MAX_HOST_KEY_BYTES as i64,
-            )
-        );
-        super::validate_schema(&store.connection).expect("exact tightened v2 schema");
-    }
-
-    #[test]
-    fn v1_host_key_rows_above_v2_bounds_fail_migration_atomically() {
-        for (algorithm_bytes, key_bytes) in [
-            (
-                super::SESSION_MAX_ALGORITHM_BYTES + 1,
-                super::SESSION_MAX_HOST_KEY_BYTES,
-            ),
-            (
-                super::SESSION_MAX_ALGORITHM_BYTES,
-                super::SESSION_MAX_HOST_KEY_BYTES + 1,
-            ),
-        ] {
-            let directory = TestDirectory::new();
-            seed_v1_store(&directory, SessionJournalMode::Delete);
-            seed_v1_host_key_challenge(&directory, algorithm_bytes, key_bytes);
-            for _ in 0..2 {
-                let error =
-                    match SessionStore::open(directory.database(), SessionStoreConfig::default()) {
-                        Ok(_) => panic!("accepted host-key row above tightened v2 bounds"),
-                        Err(error) => error,
-                    };
-                assert!(matches!(
-                    error,
-                    SessionStoreError::InvalidPersistedValue("host_key_challenge_bounds")
-                ));
-            }
-            let connection = Connection::open(directory.database()).expect("reopen retained v1");
-            assert_eq!(
-                super::read_user_version(&connection).expect("retained version"),
-                1
-            );
-            super::validate_schema_version(&connection, 1, super::SESSION_V1_SCHEMA_OBJECTS)
-                .expect("retained exact v1 schema");
-            let lengths: (i64, i64) = connection
-                .query_row(
-                    "SELECT length(CAST(algorithm AS BLOB)), length(presented_public_key)
-                     FROM host_key_challenge WHERE gid = ?1",
-                    [gid(1).to_string()],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .expect("retained v1 host-key row");
-            assert_eq!(lengths, (algorithm_bytes as i64, key_bytes as i64));
-            let migration_entries = fs::read_dir(directory.path())
-                .expect("migration directory")
-                .map(|entry| entry.expect("migration entry").path())
-                .filter(|path| {
-                    path.file_name()
-                        .is_some_and(|name| name.to_string_lossy().contains(".ariax-v1-to-v2-"))
-                })
-                .collect::<Vec<_>>();
-            assert!(migration_entries.is_empty());
-        }
     }
 
     #[test]
@@ -7269,117 +6584,48 @@ mod tests {
     }
 
     #[test]
-    fn v1_migration_rejects_inconsistent_host_key_challenges_without_mutation() {
-        let key = [7_u8; 32];
-        let valid_fingerprint = HostKeyFingerprint::for_presented_key(&key);
-        for (canonical_host, algorithm, fingerprint, expected_field) in [
-            (
-                b"example.test".as_slice(),
-                b"ssh-ed25519".as_slice(),
-                [9_u8; 32].as_slice(),
-                "host_key_challenge.fingerprint_sha256",
-            ),
-            (
-                [0xff_u8].as_slice(),
-                b"ssh-ed25519".as_slice(),
-                valid_fingerprint.as_bytes().as_slice(),
-                "host_key_challenge.canonical_host",
-            ),
-            (
-                b"example.test".as_slice(),
-                [0xff_u8].as_slice(),
-                valid_fingerprint.as_bytes().as_slice(),
-                "host_key_challenge.algorithm",
-            ),
-        ] {
-            let directory = TestDirectory::new();
-            seed_v1_store(&directory, SessionJournalMode::Delete);
-            seed_raw_host_key_challenge(&directory, canonical_host, algorithm, fingerprint);
-            super::tighten_sqlite_artifact_permissions(&directory.database())
-                .expect("normalize fixture permissions");
-            seed_owner_lock(&directory.database());
-            let before = snapshot_directory(directory.path());
-            let result = SessionStore::open(directory.database(), SessionStoreConfig::default());
-            assert!(matches!(
-                result,
-                Err(SessionStoreError::InvalidPersistedValue(field)) if field == expected_field
-            ));
-            assert_eq!(snapshot_directory(directory.path()), before);
-            let connection = Connection::open(directory.database()).expect("inspect retained v1");
-            assert_eq!(
-                super::read_user_version(&connection).expect("retained version"),
-                1
-            );
-            super::validate_schema_version(&connection, 1, super::SESSION_V1_SCHEMA_OBJECTS)
-                .expect("retained exact v1 schema");
-        }
-    }
-
-    #[test]
-    fn host_key_challenges_require_paused_tasks_in_v1_and_v2() {
+    fn host_key_challenges_require_paused_tasks_in_v3() {
         let key = [7_u8; 32];
         let fingerprint = HostKeyFingerprint::for_presented_key(&key);
-        let v1 = TestDirectory::new();
-        seed_v1_store(&v1, SessionJournalMode::Delete);
-        seed_raw_host_key_challenge(&v1, b"example.test", b"ssh-ed25519", fingerprint.as_bytes());
-        let connection = Connection::open(v1.database()).expect("open v1 host-key database");
-        connection
-            .execute(
-                "UPDATE task SET queue_state = ?1 WHERE gid = ?2",
-                rusqlite::params![SessionQueueState::Waiting as i64, gid(1).to_string()],
-            )
-            .expect("make v1 host-key task non-paused");
-        drop(connection);
-
-        assert!(matches!(
-            SessionStore::open(v1.database(), SessionStoreConfig::default()),
-            Err(SessionStoreError::InvalidPersistedValue(
-                "host_key_challenge.queue_state"
-            ))
-        ));
-        let connection = Connection::open(v1.database()).expect("inspect retained v1 database");
-        assert_eq!(
-            super::read_user_version(&connection).expect("retained v1 version"),
-            1
-        );
-        assert_eq!(
-            connection
-                .query_row("SELECT COUNT(*) FROM host_key_challenge", [], |row| row
-                    .get::<_, i64>(0))
-                .expect("retained v1 challenge"),
-            1
-        );
-
-        let v2 = TestDirectory::new();
-        let mut store = open_store(&v2);
-        store.put_task(&task_record(gid(1), 0)).expect("v2 task");
+        let current = TestDirectory::new();
+        let mut store = open_store(&current);
+        store
+            .put_task(&task_record(gid(1), 0))
+            .expect("current task");
         drop(store);
-        seed_raw_host_key_challenge(&v2, b"example.test", b"ssh-ed25519", fingerprint.as_bytes());
-        let connection = Connection::open(v2.database()).expect("open v2 host-key database");
+        seed_raw_host_key_challenge(
+            &current,
+            b"example.test",
+            b"ssh-ed25519",
+            fingerprint.as_bytes(),
+        );
+        let connection =
+            Connection::open(current.database()).expect("open current host-key database");
         connection
             .execute(
                 "UPDATE task SET queue_state = ?1 WHERE gid = ?2",
                 rusqlite::params![SessionQueueState::Waiting as i64, gid(1).to_string()],
             )
-            .expect("make v2 host-key task non-paused");
+            .expect("make current host-key task non-paused");
         drop(connection);
 
         assert!(matches!(
-            SessionStore::open(v2.database(), SessionStoreConfig::default()),
+            SessionStore::open(current.database(), SessionStoreConfig::default()),
             Err(SessionStoreError::InvalidPersistedValue(
                 "host_key_challenge.queue_state"
             ))
         ));
-        let connection = Connection::open(v2.database()).expect("inspect retained v2 database");
+        let connection =
+            Connection::open(current.database()).expect("inspect retained current database");
         assert_eq!(
-            super::read_user_version(&connection).expect("retained v2 version"),
+            super::read_user_version(&connection).expect("retained current version"),
             SESSION_SCHEMA_VERSION
         );
         assert_eq!(
             connection
                 .query_row("SELECT COUNT(*) FROM host_key_challenge", [], |row| row
                     .get::<_, i64>(0))
-                .expect("retained v2 challenge"),
+                .expect("retained current challenge"),
             1
         );
     }
@@ -7429,209 +6675,6 @@ mod tests {
                 .len(),
             1
         );
-    }
-
-    #[test]
-    fn migration_backup_skips_collisions_without_clobbering_them() {
-        let directory = TestDirectory::new();
-        seed_v1_store(&directory, SessionJournalMode::Delete);
-        let timestamp_ms = 7_u128;
-        let collision =
-            super::migration_backup_path(&directory.database(), timestamp_ms, 0).expect("path");
-        fs::write(&collision, b"keep existing backup").expect("seed collision");
-        let mut connection = Connection::open(directory.database()).expect("open v1 database");
-
-        let backup = super::migrate_v1_to_v2_with_backup_at(
-            &mut connection,
-            &directory.database(),
-            timestamp_ms,
-        )
-        .expect("backup and migrate after collision");
-
-        assert_eq!(
-            fs::read(&collision).expect("collision bytes"),
-            b"keep existing backup"
-        );
-        assert_eq!(
-            backup,
-            super::migration_backup_path(&directory.database(), timestamp_ms, 1).expect("path")
-        );
-        assert_eq!(
-            super::read_user_version(&connection).expect("migrated version"),
-            SESSION_SCHEMA_VERSION
-        );
-        let backup =
-            Connection::open_with_flags(backup, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-                .expect("open collision-safe backup");
-        super::validate_schema_version(&backup, 1, super::SESSION_V1_SCHEMA_OBJECTS)
-            .expect("backup remains v1");
-    }
-
-    #[test]
-    fn migration_backup_failure_leaves_v1_schema_and_version_untouched() {
-        let directory = TestDirectory::new();
-        seed_v1_store(&directory, SessionJournalMode::Delete);
-        let timestamp_ms = 11_u128;
-        for attempt in 0..super::MIGRATION_BACKUP_ATTEMPTS {
-            let collision =
-                super::migration_backup_path(&directory.database(), timestamp_ms, attempt)
-                    .expect("collision path");
-            fs::write(collision, format!("collision-{attempt}")).expect("seed collision");
-        }
-        let before = fs::read(directory.database()).expect("v1 bytes before failure");
-        let mut connection = Connection::open(directory.database()).expect("open v1 database");
-
-        assert!(matches!(
-            super::migrate_v1_to_v2_with_backup_at(
-                &mut connection,
-                &directory.database(),
-                timestamp_ms,
-            ),
-            Err(SessionStoreError::BackupPathExists)
-        ));
-
-        assert_eq!(
-            super::read_user_version(&connection).expect("retained version"),
-            1
-        );
-        super::validate_schema_version(&connection, 1, super::SESSION_V1_SCHEMA_OBJECTS)
-            .expect("retained v1 schema");
-        drop(connection);
-        assert_eq!(
-            fs::read(directory.database()).expect("v1 bytes after failure"),
-            before
-        );
-    }
-
-    #[test]
-    fn crashed_v1_to_v2_task_and_host_key_rebuilds_roll_back_then_recover() {
-        let directory = TestDirectory::new();
-        seed_v1_store(&directory, SessionJournalMode::Delete);
-        let presented_public_key = vec![7_u8; 32];
-        let fingerprint = HostKeyFingerprint::for_presented_key(&presented_public_key);
-        seed_raw_host_key_challenge(
-            &directory,
-            b"example.test",
-            b"ssh-ed25519",
-            fingerprint.as_bytes(),
-        );
-        let connection = Connection::open(directory.database()).expect("open v1 for backup");
-        super::create_v1_migration_backup_at(&connection, &directory.database(), 13)
-            .expect("publish pre-migration backup");
-        drop(connection);
-
-        let status = Command::new(std::env::current_exe().expect("current test executable"))
-            .args([
-                "--ignored",
-                "--exact",
-                "session_store::tests::v1_to_v2_migration_crash_child",
-                "--nocapture",
-            ])
-            .env("ARIAX_V1_TO_V2_CRASH_CHILD", directory.database())
-            .status()
-            .expect("spawn migration crash child");
-        assert_eq!(status.code(), Some(93));
-        let journal = super::sqlite_sidecar_path(&directory.database(), "-journal");
-        assert!(fs::metadata(&journal).expect("hot migration journal").len() > 0);
-        assert_eq!(
-            super::inspect_persisted_user_version(&directory.database())
-                .expect("rollback-aware version"),
-            1
-        );
-
-        let recovered = SessionStore::open(
-            directory.database(),
-            SessionStoreConfig {
-                prefer_wal: false,
-                ..SessionStoreConfig::default()
-            },
-        )
-        .expect("recover v1 and migrate");
-        assert_eq!(recovered.journal_mode(), SessionJournalMode::Delete);
-        assert_eq!(
-            super::read_user_version(&recovered.connection).expect("recovered version"),
-            SESSION_SCHEMA_VERSION
-        );
-        assert_eq!(
-            recovered.tasks().expect("recovered tasks"),
-            vec![SessionTaskRecord {
-                queue_state: SessionQueueState::Paused,
-                ..task_record(gid(1), 0)
-            }]
-        );
-        let recovered_challenge: (Vec<u8>, String, i64, String, Vec<u8>, Vec<u8>, i64) = recovered
-            .connection
-            .query_row(
-                "SELECT challenge_id, canonical_host, port, algorithm,
-                            presented_public_key, fingerprint_sha256, created_ms
-                     FROM host_key_challenge WHERE gid = ?1",
-                [gid(1).to_string()],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                        row.get(6)?,
-                    ))
-                },
-            )
-            .expect("recovered host-key challenge");
-        assert_eq!(
-            recovered_challenge,
-            (
-                vec![1_u8; 16],
-                "example.test".to_owned(),
-                22,
-                "ssh-ed25519".to_owned(),
-                presented_public_key.clone(),
-                fingerprint.as_bytes().to_vec(),
-                200,
-            )
-        );
-        let crash_table: i64 = recovered
-            .connection
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_schema WHERE name = 'crash_fill'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("recovered schema");
-        assert_eq!(crash_table, 0);
-        assert!(!journal.exists());
-    }
-
-    #[test]
-    fn rejects_invalid_v1_task_before_migration_and_keeps_version_one() {
-        let directory = TestDirectory::new();
-        seed_v1_store(&directory, SessionJournalMode::Delete);
-        let connection = Connection::open(directory.database()).expect("open v1 fixture");
-        connection
-            .execute(
-                "UPDATE task SET no_space_delay_ms = X'0000000000000000'",
-                [],
-            )
-            .expect("seed invalid v1 retry delay");
-        drop(connection);
-        super::tighten_sqlite_artifact_permissions(&directory.database())
-            .expect("normalize fixture permissions");
-        seed_owner_lock(&directory.database());
-        let before = snapshot_directory(directory.path());
-
-        assert!(matches!(
-            SessionStore::open(directory.database(), SessionStoreConfig::default()),
-            Err(SessionStoreError::InvalidRecord("no_space.delay_ms"))
-        ));
-        assert_eq!(snapshot_directory(directory.path()), before);
-        let connection = Connection::open(directory.database()).expect("inspect rejected v1");
-        assert_eq!(
-            super::read_user_version(&connection).expect("retained v1 version"),
-            1
-        );
-        super::validate_schema_version(&connection, 1, super::SESSION_V1_SCHEMA_OBJECTS)
-            .expect("retained exact v1 schema");
     }
 
     #[test]
@@ -8027,18 +7070,18 @@ mod tests {
     }
 
     #[test]
-    fn rejects_newer_schema_without_rewriting_database_bytes() {
+    fn rejects_unsupported_schema_without_rewriting_database_bytes() {
         let directory = TestDirectory::new();
         let connection = Connection::open(directory.database()).expect("create newer");
         connection
-            .execute_batch("CREATE TABLE sentinel(value TEXT); INSERT INTO sentinel VALUES ('keep'); PRAGMA user_version=3;")
+            .execute_batch("CREATE TABLE sentinel(value TEXT); INSERT INTO sentinel VALUES ('keep'); PRAGMA user_version=4;")
             .expect("seed newer");
         drop(connection);
         let before = fs::read(directory.database()).expect("read before");
         assert!(matches!(
             SessionStore::open(directory.database(), SessionStoreConfig::default()),
-            Err(SessionStoreError::NewerSchema {
-                found: 3,
+            Err(SessionStoreError::UnsupportedSchema {
+                found: 4,
                 supported: SESSION_SCHEMA_VERSION
             })
         ));
@@ -8046,25 +7089,25 @@ mod tests {
     }
 
     #[test]
-    fn rejects_newer_schema_committed_in_wal_without_touching_artifacts() {
+    fn rejects_unsupported_schema_committed_in_wal_without_touching_artifacts() {
         let directory = TestDirectory::new();
         let connection = Connection::open(directory.database()).expect("create WAL database");
         connection
             .execute_batch(
-                "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE sentinel(value TEXT); PRAGMA user_version=3; INSERT INTO sentinel VALUES ('wal');",
+                "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE sentinel(value TEXT); PRAGMA user_version=4; INSERT INTO sentinel VALUES ('wal');",
             )
             .expect("seed newer WAL schema");
         let wal = super::sqlite_sidecar_path(&directory.database(), "-wal");
         assert!(wal.exists());
         assert_eq!(
             super::inspect_persisted_user_version(&directory.database()).expect("preflight"),
-            3
+            4
         );
         let before = snapshot_directory(directory.path());
         assert!(matches!(
             SessionStore::open(directory.database(), SessionStoreConfig::default()),
-            Err(SessionStoreError::NewerSchema {
-                found: 3,
+            Err(SessionStoreError::UnsupportedSchema {
+                found: 4,
                 supported: SESSION_SCHEMA_VERSION,
             })
         ));
@@ -8331,27 +7374,6 @@ mod tests {
             super::inspect_persisted_user_version(&database).expect("large WAL preflight"),
             2
         );
-    }
-
-    #[test]
-    fn rejects_v1_schema_mismatch_before_changing_database_artifacts() {
-        let directory = TestDirectory::new();
-        let connection = Connection::open(directory.database()).expect("create mismatched v1");
-        connection
-            .execute_batch(
-                "CREATE TABLE sqliteevil(value TEXT); INSERT INTO sqliteevil VALUES ('keep'); PRAGMA user_version=1;",
-            )
-            .expect("seed mismatched v1");
-        drop(connection);
-        super::tighten_sqlite_artifact_permissions(&directory.database())
-            .expect("normalize fixture permissions");
-        seed_owner_lock(&directory.database());
-        let before = snapshot_directory(directory.path());
-        assert!(matches!(
-            SessionStore::open(directory.database(), SessionStoreConfig::default()),
-            Err(SessionStoreError::SchemaMismatch("unexpected_object"))
-        ));
-        assert_eq!(snapshot_directory(directory.path()), before);
     }
 
     #[test]
@@ -11187,13 +10209,17 @@ mod tests {
     fn backup_validation_failure_removes_temporary_database_and_sidecars() {
         let directory = TestDirectory::new();
         let store = open_store(&directory);
+        store
+            .connection
+            .execute_batch("CREATE TABLE unexpected(value TEXT)")
+            .expect("alter schema");
         let destination = directory.path().join("invalid-schema.backup.db");
         let before = directory_entry_names(directory.path());
         assert!(matches!(
             super::backup_connection_to(
                 &store.connection,
                 &destination,
-                super::SessionBackupSchema::V1,
+                super::SessionBackupSchema::Current,
             ),
             Err(SessionStoreError::SchemaMismatch(_))
         ));
@@ -11485,7 +10511,7 @@ mod tests {
     }
 
     #[test]
-    fn hot_rollback_journal_is_recovered_before_v1_validation() {
+    fn hot_rollback_journal_is_recovered_before_v3_validation() {
         let directory = TestDirectory::new();
         let mut store = SessionStore::open(
             directory.database(),
@@ -11614,7 +10640,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "spawned by hot_rollback_journal_is_recovered_before_v1_validation"]
+    #[ignore = "spawned by hot_rollback_journal_is_recovered_before_v3_validation"]
     fn hot_rollback_journal_child() {
         let Some(database) = std::env::var_os("ARIAX_HOT_JOURNAL_CHILD") else {
             return;
@@ -11655,35 +10681,6 @@ mod tests {
             )
             .expect("child create page-one hot journal");
         std::process::exit(92);
-    }
-
-    #[test]
-    #[ignore = "spawned by crashed_v1_to_v2_task_and_host_key_rebuilds_roll_back_then_recover"]
-    fn v1_to_v2_migration_crash_child() {
-        let Some(database) = std::env::var_os("ARIAX_V1_TO_V2_CRASH_CHILD") else {
-            return;
-        };
-        let mut connection = Connection::open(PathBuf::from(database)).expect("open v1 database");
-        connection
-            .execute_batch(
-                "PRAGMA foreign_keys=OFF; PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA cache_size=1; PRAGMA cache_spill=ON;",
-            )
-            .expect("configure migration crash child");
-        let transaction = connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .expect("begin migration transaction");
-        super::rebuild_v1_task_table(&transaction).expect("rebuild v1 task table");
-        super::rebuild_v1_host_key_challenge_table(&transaction)
-            .expect("rebuild v1 host-key challenge table");
-        transaction
-            .pragma_update(None, "user_version", SESSION_SCHEMA_VERSION)
-            .expect("stage v2 version");
-        transaction
-            .execute_batch(
-                "CREATE TABLE crash_fill(value BLOB); INSERT INTO crash_fill VALUES(zeroblob(8388608));",
-            )
-            .expect("force migration rollback journal spill");
-        std::process::exit(93);
     }
 
     #[test]

@@ -14,13 +14,12 @@ flush acknowledgement, tail/content reopen validation after portable named-file
 preflight, and durable linked rotation are executable. That portable boundary
 does not establish native namespace authority. The native capability adapters
 now provide descriptor-bound root identity revalidation; checkpoint compaction
-writing remains pending. The SQLite v2
+writing remains pending. The SQLite v3
 synchronous primitive creates and validates the exact strict schema, preserves
 dense queues across atomic queue/pause/slow-metadata transitions, and enforces
 bounded semantic reads and
-tokenized journal installs. Exact v1 stores migrate through a private
-timestamped no-clobber backup and transactional rebuild with crash rollback
-coverage. Atomic stopped-result retention/deletion, bounded stopped-result and
+tokenized journal installs. Phase 6 requires a fresh v3 development store;
+older formats are rejected unchanged, without migrations or deletion. Atomic stopped-result retention/deletion, bounded stopped-result and
 task-source reads, exact supplied-order queue transitions, no-space updates,
 and challenge-bound host-key persistence are executable. A dedicated bounded
 session-owner thread exclusively owns the synchronous store and every installed
@@ -234,13 +233,13 @@ SQLite stores:
 SQLite does not store high-frequency per-piece durability transitions in the
 normal path.
 
-### SQLite Schema Version 2
+### SQLite Schema Version 3
 
-Implementation status: executable and generated as `generated/session_v2.json`.
-`generated/session_v1.json` remains the exact historical migration source. An
-empty version-0 file is initialized in `BEGIN IMMEDIATE`; a nonempty
-unversioned database and every newer `user_version` are rejected without schema
-rewrites. Exact v1 databases are backed up and migrated before normal use.
+The current contract is generated as `generated/session_v3.json`. An empty
+version-0 file is initialized in `BEGIN IMMEDIATE`. Nonempty unversioned stores
+and every nonzero version other than 3 are rejected unchanged with a typed
+unsupported-format error. There are no historical schema readers, migrations,
+downgrade paths, or automatic deletion of development stores.
 
 For an existing database, startup performs a streaming, fixed-buffer raw
 preflight before opening SQLite. A hot rollback journal contributes its last
@@ -248,7 +247,7 @@ valid page-one before-image, then valid committed WAL frames are applied in comm
 uncommitted frames and torn or invalid tails cannot authorize a version. This
 also permits SQLite to recover a supported hot rollback transaction when the
 main page-one header is damaged. A legacy rollback-journal header whose encoded
-page size is zero fails closed. A newer committed version is rejected before
+page size is zero fails closed. An unsupported committed version is rejected before
 permission changes, owner-lock creation, SQLite open, or journal-mode changes,
 leaving the database and sidecars untouched.
 
@@ -263,22 +262,23 @@ foreign keys, queue density, decoded task/stopped/host-key/install records, and
 install-pointer relation are validated before connection journal policy is
 changed.
 
-`PRAGMA user_version=2` is the authoritative current schema version. Version-2 tables
+`PRAGMA user_version=3` is the authoritative current schema version. Version-3 tables
 are `STRICT`, enable foreign keys, and use closed integer enums generated from
 the same state/error matrices as the API. A `u64` that may exceed SQLite's
 signed integer range is stored as an exactly 8-byte little-endian BLOB; hashes,
 ids, and platform paths have exact length/codec checks before binding.
 
-| Table | Version-2 columns and key |
+| Table | Version-3 Columns and key |
 | --- | --- |
 | `session` | `session_id BLOB(16) PRIMARY KEY`, `created_ms INTEGER`, `updated_ms INTEGER`, `clean_shutdown INTEGER` |
-| `task` | `gid TEXT PRIMARY KEY`, `session_id BLOB(16)`, `queue_state INTEGER`, `queue_position INTEGER`, `desired_paused INTEGER`, nullable `slow_original_position INTEGER`, `slow_demotion_count INTEGER`, nullable `slow_retry_scheduled_at_ms INTEGER`, nullable `slow_retry_delay_ms BLOB(8)`, journal/path/hash/no-space fields, `created_ms INTEGER`, `updated_ms INTEGER`; foreign key to `session` |
+| `task` | `gid TEXT PRIMARY KEY`, `session_id BLOB(16)`, `task_kind INTEGER` (transfer or BT), `queue_state INTEGER`, `queue_position INTEGER`, `desired_paused INTEGER`, nullable `slow_original_position INTEGER`, `slow_demotion_count INTEGER`, nullable `slow_retry_scheduled_at_ms INTEGER`, nullable `slow_retry_delay_ms BLOB(8)`, journal/path/hash/no-space fields, `created_ms INTEGER`, `updated_ms INTEGER`; foreign key to `session` |
 | `task_option` | `gid TEXT`, `scope INTEGER`, `key TEXT`, `canonical_value BLOB`, primary key `(gid, scope, key)`; secret-class registry keys are rejected before SQL |
 | `task_source` | `gid TEXT`, `uri_id INTEGER`, nullable `persistence_safe_uri TEXT`, `redacted_fingerprint BLOB(32)`, `needs_credentials INTEGER`, `priority INTEGER`, primary key `(gid, uri_id)` |
 | `host_key_challenge` | `gid TEXT PRIMARY KEY`, `challenge_id BLOB(16)`, `canonical_host TEXT`, `port INTEGER`, `algorithm TEXT`, `presented_public_key BLOB`, `fingerprint_sha256 BLOB(32)`, `created_ms INTEGER`; public key/challenge caps come from [detailed-ftp-sftp.md](../protocols/detailed-ftp-sftp.md) |
 | `stopped_result` | `gid TEXT PRIMARY KEY`, `terminal_status INTEGER`, `error_code INTEGER`, `safe_message TEXT`, nullable `total_length BLOB(8)`, nullable `layout_hash BLOB(32)`, `completed_ms INTEGER`; RPC output is rendered from these canonical fields, not stored arbitrary JSON |
 | `journal_install` | `gid TEXT PRIMARY KEY`, `checkpoint_id BLOB(16)`, `old_journal_id BLOB(16)`, `old_path BLOB`, `new_journal_id BLOB(16)`, `new_path BLOB`, `source_last_sequence BLOB(8)`, `phase INTEGER`, `created_ms INTEGER` |
-| `bt_resume` | `gid TEXT PRIMARY KEY`, `resume_blob BLOB`, `dirty INTEGER`, `saved_ms INTEGER`; baseline default maximum 16 MiB, hard maximum 64 MiB |
+| `bt_metadata` | `gid TEXT PRIMARY KEY`, generation, v1/v2 identities, root identity, bounded metainfo/magnet/info data, validated stable file mapping, and downloaded/uploaded/seeding counters; foreign key to a BT `task` |
+| `bt_resume` | `gid TEXT PRIMARY KEY`, `resume_blob BLOB`, `dirty INTEGER`, tracked checkpoint identity, `saved_ms INTEGER`; baseline default maximum 16 MiB, hard maximum 64 MiB |
 
 `session.clean_shutdown` is a publication marker, not an optimistic process
 state. Every startup transaction sets it to false before scheduler/runtime
@@ -293,8 +293,7 @@ running process or a timed-out graceful shutdown.
 A canonical `Complete` stopped result has no error payload and carries both
 `total_length` and `layout_hash`. A canonical `Error` carries its required
 public error kind/message and no completion fields. A canonical `Removed`
-carries neither error nor completion fields. Writes, normal reads, v1
-preflight, and v2 reopen all reject any other status/payload tuple.
+carries neither error nor completion fields. Writes, normal reads, and v3 reopen all reject any other status/payload tuple.
 
 `gid` is validated as exactly 16 lowercase hexadecimal characters by the
 application codec before SQL. `queue_position` is indexed with `queue_state`;
@@ -346,7 +345,7 @@ restart without persisting a credential. Approval still requires the exact
 challenge id and fingerprint, persists the resulting task pin through the
 option snapshot, and reconnects/rechecks that pin before any authentication.
 Deleting/replacing the current challenge makes an old approval stale. Startup
-and v1 migration require valid UTF-8 canonical host and algorithm text, a
+and v3 reopen require valid UTF-8 canonical host and algorithm text, a
 nonzero valid port, exact size caps, a SHA-256 fingerprint matching the stored
 presented key, and a referenced task in the `Paused` queue.
 An ordinary queue transition cannot move that task out of `Paused` while the
@@ -495,7 +494,7 @@ commands accepted before the last handle was dropped are still drained and
 deliver their results. The same owner-thread destruction rule still applies if
 the blocked operation later returns.
 
-Startup waits for database open, migration, and bounded semantic reads only for
+Startup waits for database open and bounded semantic reads only for
 the configured startup timeout under the same hard cap. On timeout it closes
 admission, detaches the unpublished owner, and returns `StartupTimedOut`; the
 database/appenders remain owned by that thread until it actually exits. Startup
@@ -504,26 +503,40 @@ panic/exit closes all handles with a typed owner-unavailable error. Both
 configured waits are validated before thread creation or database mutation, and
 an invalid explicit shutdown wait is rejected before admission is changed.
 
-Schema migration rules are fail-closed:
+Schema admission is fail-closed. The raw hot-rollback and committed-WAL
+version preflight runs before permission changes, owner-lock creation or SQLite
+open. Only the current v3 schema and its exact semantics may become active.
+Backups retain the current format and are not a conversion mechanism.
 
-- exact v1 schema and persisted semantics are preflighted before creating a
-  migration backup, so repeated opens of deterministically invalid v1 data do
-  not accumulate timestamped backups,
-- migration runs on the dedicated session thread inside `BEGIN IMMEDIATE` and
-  takes a private timestamped backup before any non-additive change,
-- v1 to v2 rebuilds the task and host-key tables transactionally, initializes
-  slow metadata, tightens host-key caps, validates the exact v2 schema, and
-  changes `user_version` only at commit,
-- a binary that sees a newer `user_version` leaves the database and journals
-  untouched and exits persistent mode with a typed version error,
-- a future binary keeps version-1 journal readers; after successful replay it
-  may write a newer checkpoint set and retires version-1 segments only through
-  the normal install protocol,
-- future migrations must retain raw hot-rollback
-  page-one and committed-WAL preflight coverage; legacy rollback journals with
-  an encoded page size of zero remain fail-closed until a reviewed compatibility
-  rule exists,
-- downgrade is export/import only; no older binary rewrites a newer database.
+### BitTorrent Metadata And Checkpoints
+
+Transfer tasks require their existing journal fields. BT tasks require those
+fields to be NULL and have a matching `bt_metadata` row. A metadata transaction
+binds the complete identity, protected-root identity, stable mapping and file
+selection before the native initialization hold can be released. Late metadata
+must match any persisted mapping exactly. No fake transfer journal is created.
+
+Admission and recovery use the same bounded pure metadata parser. Storage
+rechecks info hashes, metainfo and magnet identities, file shapes, portable paths,
+and the absence of endpoint credentials. A pending magnet has an identity and
+protected root but no files; its first metadata commit fixes the complete mapping.
+Subsequent metadata commits cannot change that binding. Checkpoint tokens include
+both generation and monotonically increasing request number. A stale completion
+cannot clear a dirty flag or replace a newer safe blob.
+
+Resume checkpoints use one tracked protocol for periodic saves (60 seconds by
+default), pause, remove and shutdown. The native disk release barrier completes
+before resume data is serialized; its result is independent of the lossy alert
+queue. The session owner commits the bounded resume blob before a clean boundary
+is acknowledged. The default limit is 16 MiB (maximum 64 MiB) and default timeout
+30 seconds (maximum 300 seconds). Failure, timeout or oversized output preserves
+the previous safe blob and sets `DirtyCheckpoint`. A caller disconnect does not
+cancel native ownership or the persistence completion.
+
+A running task is marked dirty before it resumes native I/O. Restarts and JSON
+imports revalidate identities, root protection and stable mappings, and recheck
+payload progress; an opaque resume blob never authorizes paths, destinations,
+credentials or unchecked completed bytes.
 
 ## Control Journal Responsibilities
 
@@ -760,7 +773,7 @@ cannot clear an unrelated proxy or private-key credential requirement.
 Source metadata validation rejects a purported safe URI containing userinfo,
 a query, or a fragment at both write and recovery boundaries. Existing unsafe
 metadata is rejected without echoing its URI or silently rewriting the stored
-record. The session schema remains v2.
+record. Phase 6 uses session schema v3.
 
 Consequences:
 
@@ -823,16 +836,17 @@ RPC export. Both formats use the persistence-safe source view, never live raw
 URI strings. Credential placeholders remain explicit and cannot become runnable
 URIs through export/import. Remote callers cannot supply filesystem paths.
 
-Phase 5 adds self-contained JSON migration version 2 for verification metadata.
-Each selected Metalink child carries its original file index, exact length,
-chunk geometry, supported checksum algorithms and values, source priorities,
-and sanitized sources; importing into a new output root needs no original XML.
-Internal journal bindings, host-key challenges and active progress are not
-migration authority. Version-1 JSON import remains supported, and exports that
-need no new verification metadata retain version 1. Expanded metadata parents
-are omitted while their independently exportable children remain in the file.
-Aria2 text export rejects atomically when required verification metadata cannot
-be represented; use JSON for those tasks.
+JSON export/import uses only self-contained format version 3, with explicit
+transfer/BT task kinds. Transfer verification metadata preserves the selected
+Metalink child's original file index, exact length, chunk geometry, supported
+checksums, source priorities and sanitized sources. BT members include bounded
+metainfo or magnet identity, validated metadata and mapping, supported options,
+and the last safe resume data. They contain no credentials or trusted local
+root authority. Imports bind the selected new root and recheck payload progress.
+Versions 1 and 2 are rejected without adaptation. Expanded metadata parents are
+omitted while their independently exportable children remain in the file.
+Aria2 text export rejects atomically if BT or verification metadata cannot be
+represented safely.
 
 Import parses and validates the entire bounded document and reserves admission
 capacity before publishing tasks. One bounded filesystem job captures the
@@ -978,7 +992,7 @@ exist. No baseline code silently aliases either value to `hybrid`.
 
 SQLite:
 
-- the exact version-2 tables and version-1 migration rules are defined under
+- the exact version-3 tables and unsupported-format rejection rules are defined under
   SQLite Responsibilities above,
 - WAL mode by default when supported; WAL and DELETE are each verified with a
   `BEGIN IMMEDIATE` transaction that writes page-one `user_version` and rolls

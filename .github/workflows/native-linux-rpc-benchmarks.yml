@@ -24,7 +24,7 @@ concurrency:
 jobs:
   active-ranges:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_BUILD_JOBS: "2"
@@ -36,6 +36,10 @@ jobs:
           python-version: "3.13"
       - name: Install pinned Rust
         run: rustup toolchain install 1.97.1 --profile minimal
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: toolchains/bt-native/*/install
+          key: bt-native-linux-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native/libtorrent/**', 'scripts/bt_native.py') }}
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |

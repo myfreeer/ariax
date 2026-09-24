@@ -1,0 +1,256 @@
+--- a/include/libtorrent/aux_/torrent.hpp
++++ b/include/libtorrent/aux_/torrent.hpp
+@@ -437,6 +437,12 @@
+ 		// it will initialize the storage and the piece-picker
+ 		void init();
+ 
++		// Ariax hooks run exclusively on the session thread. No alert is authoritative.
++		bool ariax_metadata_held() const { return m_ariax_metadata_hold && valid_metadata(); }
++		bool ariax_approve_metadata(std::vector<std::string> const& paths
++			, std::vector<download_priority_t> const& priorities);
++		void ariax_checkpoint(std::function<void(error_code, add_torrent_params)> completion);
++
+ 		void load_merkle_trees(aux::vector<std::vector<sha256_hash>, file_index_t> t
+ 			, aux::vector<bitfield, file_index_t> mask
+ 			, aux::vector<bitfield, file_index_t> verified);
+@@ -1891,6 +1897,8 @@
+ 		// the torrent error
+ 		std::uint32_t m_torrent_initialized:1;
+ 
++		bool m_ariax_metadata_hold = false;
++
+ 		// this is set to true while waiting for an async_set_file_priority
+ 		std::uint32_t m_outstanding_file_priority:1;
+ 
+--- a/include/libtorrent/settings_pack.hpp
++++ b/include/libtorrent/settings_pack.hpp
+@@ -2179,6 +2179,10 @@
+ 			// to 0 to disable WebTorrent offers.
+ 			max_webtorrent_offers,
+ 
++			// Ariax bounds for late metadata, before native file-storage allocation.
++			ariax_metadata_depth,
++			ariax_metadata_files,
++
+ 			max_int_setting_internal
+ 		};
+ 
+--- a/include/libtorrent/torrent_flags.hpp
++++ b/include/libtorrent/torrent_flags.hpp
+@@ -301,6 +301,9 @@
+ 	// torrents. Cannot be changed after the torrent is added.
+ 	constexpr torrent_flags_t disable_v1_hashes = 25_bit;
+ 
++	// Ariax: storage stays uninitialized until the validated mapping is approved.
++	constexpr torrent_flags_t ariax_hold_metadata = 26_bit;
++
+ 	// all torrent flags combined. Can conveniently be used when creating masks
+ 	// for flags
+ 	constexpr torrent_flags_t all = torrent_flags_t::all();
+--- a/include/libtorrent/torrent_handle.hpp
++++ b/include/libtorrent/torrent_handle.hpp
+@@ -859,6 +859,12 @@
+ 		//	the alert, but it has not been received yet. Those torrents would
+ 		//	report that they don't need to save resume data again, and skipped by
+ 		//	the initial loop, and thwart the counter otherwise.
++		// Ariax patch 1: metadata admission and disk-barrier checkpoint hooks.
++		bool ariax_metadata_held() const;
++		bool ariax_approve_metadata(std::vector<std::string> const& paths
++			, std::vector<download_priority_t> const& priorities) const;
++		void ariax_checkpoint(std::function<void(error_code, add_torrent_params)> completion) const;
++
+ 		void save_resume_data(resume_data_flags_t flags = {}) const;
+ 		add_torrent_params get_resume_data(resume_data_flags_t flags = {}) const;
+ 
+--- a/src/settings_pack.cpp
++++ b/src/settings_pack.cpp
+@@ -390,7 +390,9 @@
+ 		SET(natpmp_lease_duration, 3600, nullptr),
+ 		SET(min_websocket_announce_interval, 1 * 60, nullptr),
+ 		SET(webtorrent_connection_timeout, 2 * 60, nullptr),
+-		SET(max_webtorrent_offers, 10, nullptr)
++		SET(max_webtorrent_offers, 10, nullptr),
++		SET(ariax_metadata_depth, 32, nullptr),
++		SET(ariax_metadata_files, 10000, nullptr)
+ 	}});
+ 	// clang-format on
+ 
+--- a/src/torrent.cpp
++++ b/src/torrent.cpp
+@@ -415,6 +415,7 @@
+ 		}
+ 
+ 		TORRENT_ASSERT(is_single_thread());
++		m_ariax_metadata_hold = bool(p.flags & torrent_flags::ariax_hold_metadata);
+ 		m_file_priority.assign(p.file_priorities.begin(), p.file_priorities.end());
+ 
+ 		if (m_seed_mode)
+@@ -1928,6 +1929,12 @@
+ 	// later time if it's a magnet link, once the metadata is downloaded
+ 	void torrent::init()
+ 	{
++		// Guard every initialization path, including resume and error clearing.
++		if (m_ariax_metadata_hold)
++		{
++			pause();
++			return;
++		}
+ 		INVARIANT_CHECK;
+ 
+ 		TORRENT_ASSERT(is_single_thread());
+@@ -8165,8 +8172,36 @@
+ 		error_code ec;
+ 		int pos = 0;
+ 		auto const& sett = settings();
+-		bdecode_node const metadata = bdecode(metadata_buf, ec, &pos, 200
++		bdecode_node const metadata = bdecode(metadata_buf, ec, &pos
++			, sett.get_int(settings_pack::ariax_metadata_depth)
+ 			, sett.get_int(settings_pack::metadata_token_limit));
++
++		// Bound file enumeration before torrent_info allocates native file storage.
++		if (!ec)
++		{
++			int const maximum = sett.get_int(settings_pack::ariax_metadata_files);
++			auto const files = metadata.dict_find_list("files");
++			if (files && files.list_size() > maximum) ec = errors::invalid_swarm_metadata;
++			auto const tree = metadata.dict_find_dict("file tree");
++			if (tree)
++			{
++				std::vector<std::pair<bdecode_node, int>> stack;
++				stack.emplace_back(tree, 0);
++				int count = 0;
++				while (!stack.empty() && !ec)
++				{
++					auto& frame = stack.back();
++					if (frame.second == frame.first.dict_size()) { stack.pop_back(); continue; }
++					auto const child = frame.first.dict_at(frame.second++);
++					if (child.first.empty())
++					{
++						if (++count > maximum) ec = errors::invalid_swarm_metadata;
++					}
++					else if (child.second.type() == bdecode_node::dict_t)
++						stack.emplace_back(child.second, 0);
++				}
++			}
++		}
+ 
+ 		std::shared_ptr<torrent_info> info;
+ 		std::map<file_index_t, std::string> renamed_files;
+@@ -8174,7 +8209,10 @@
+ 		{
+ 			load_torrent_limits cfg;
+ 			cfg.max_pieces = sett.get_int(settings_pack::max_piece_count);
++			cfg.max_directory_depth = sett.get_int(settings_pack::ariax_metadata_depth);
+ 			info = std::make_shared<torrent_info>(metadata, ec, cfg, from_info_section);
++			if (!ec && info->num_files() > sett.get_int(settings_pack::ariax_metadata_files))
++				ec = errors::invalid_swarm_metadata;
+ 			// ec is an output parameter set by torrent_info's constructor on
+ 			// parse failure; cppcheck doesn't see the constructor definition
+ 			// (in torrent_info.cpp) from this translation unit
+@@ -8280,6 +8318,13 @@
+ 		{
+ 			m_ses.alerts().emplace_alert<metadata_received_alert>(
+ 				get_handle());
++		}
++
++		if (m_ariax_metadata_hold)
++		{
++			pause();
++			set_need_save_resume(torrent_handle::if_metadata_changed);
++			return true;
+ 		}
+ 
+ 		// we have to initialize the torrent before we start
+@@ -9932,6 +9977,67 @@
+ 		}
+ 
+ 		return ret;
++	}
++
++	bool torrent::ariax_approve_metadata(std::vector<std::string> const& paths
++		, std::vector<download_priority_t> const& priorities)
++	{
++		TORRENT_ASSERT(is_single_thread());
++		if (!ariax_metadata_held() || m_abort || m_torrent_initialized || !m_add_torrent_params
++			|| paths.size() != std::size_t(m_torrent_file->num_files())
++			|| priorities.size() != paths.size()) return false;
++		// Validate the complete mapping before mutating any initialization state.
++		for (auto const& path : paths)
++		{
++			if (path.empty() || path.front() == '/' || path.front() == '\\'
++				|| path.find(':') != std::string::npos || path.find('\0') != std::string::npos)
++				return false;
++			std::size_t start = 0;
++			while (start < path.size())
++			{
++				auto const end = path.find_first_of("/\\", start);
++				auto const part = path.substr(start, end - start);
++				if (part.empty() || part == "." || part == "..") return false;
++				if (end == std::string::npos) break;
++				start = end + 1;
++			}
++		}
++		for (std::size_t i = 0; i < paths.size(); ++i)
++			m_add_torrent_params->renamed_files[file_index_t(int(i))] = paths[i];
++		m_file_priority.assign(priorities.begin(), priorities.end());
++		m_add_torrent_params->file_priorities = priorities;
++		m_add_torrent_params->flags &= ~torrent_flags::default_dont_download;
++		m_ariax_metadata_hold = false;
++		init();
++		set_need_save_resume(torrent_handle::if_metadata_changed);
++		return m_torrent_initialized && !has_error();
++	}
++
++	void torrent::ariax_checkpoint(std::function<void(error_code, add_torrent_params)> completion)
++	{
++		TORRENT_ASSERT(is_single_thread());
++		// The callback owns its result slot and must never throw. Pausing first
++		// prevents new disk jobs from passing the release fence.
++		pause();
++		auto finish = [self = shared_from_this(), completion = std::move(completion)]() mutable
++		{
++			error_code ec;
++			add_torrent_params result;
++			try
++			{
++				if (self->m_abort) ec = errors::torrent_removed;
++				else if (self->has_error()) ec = self->error();
++				else self->write_resume_data(torrent_handle::save_info_dict, result);
++			}
++			catch (...) { ec = errors::no_memory; }
++			completion(ec, std::move(result));
++		};
++		if (m_storage)
++		{
++			m_ses.disk_thread().async_release_files(m_storage, std::move(finish));
++			m_ses.deferred_submit_jobs();
++		}
++		else finish();
+ 	}
+ 
+ 	// this is an async operation triggered by the client
+--- a/src/torrent_handle.cpp
++++ b/src/torrent_handle.cpp
+@@ -344,6 +344,22 @@
+ #endif
+ 	}
+ 
++	bool torrent_handle::ariax_metadata_held() const
++	{
++		return sync_call_ret<bool>(false, &aux::torrent::ariax_metadata_held);
++	}
++
++	bool torrent_handle::ariax_approve_metadata(std::vector<std::string> const& paths
++		, std::vector<download_priority_t> const& priorities) const
++	{
++		return sync_call_ret<bool>(false, &aux::torrent::ariax_approve_metadata, paths, priorities);
++	}
++
++	void torrent_handle::ariax_checkpoint(std::function<void(error_code, add_torrent_params)> completion) const
++	{
++		async_call(&aux::torrent::ariax_checkpoint, std::move(completion));
++	}
++
+ 	void torrent_handle::save_resume_data(resume_data_flags_t f) const
+ 	{
+ 		async_call(&aux::torrent::save_resume_data, f);

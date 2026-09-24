@@ -1,26 +1,26 @@
 [package]
-name = "ariax-storage"
+name = "ariax-bt"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+libtorrent = ["ariax-bt-libtorrent-sys/native"]
+
 [dependencies]
 ariax-bt-metadata.workspace = true
+ariax-bt-libtorrent-sys = { workspace = true }
 ariax-core.workspace = true
-crc32c.workspace = true
-fs2.workspace = true
-rusqlite.workspace = true
-sha2.workspace = true
+ariax-runtime.workspace = true
+ariax-storage.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-unicode-normalization.workspace = true
+sha2.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-rustix.workspace = true
-
-[dev-dependencies]
-ariax-config.workspace = true
+rustix = { workspace = true, features = ["process"] }
 
 [target.'cfg(windows)'.dependencies]
 ariax-windows-security.workspace = true

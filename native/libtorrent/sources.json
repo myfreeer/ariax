@@ -1,0 +1,48 @@
+{
+  "patchLevel": 1,
+  "libtorrent": {
+    "version": "2.1.1",
+    "archive": "libtorrent-rasterbar-2.1.1.tar.gz",
+    "url": "https://github.com/arvidn/libtorrent/releases/download/v2.1.1/libtorrent-rasterbar-2.1.1.tar.gz",
+    "sha256": "0f163516ecef2e3331500266751de3098835a3c3ae0c2290448046c632bc0e93",
+    "license": "BSD-3-Clause",
+    "verification": "GitHub release asset SHA-256, verified 2026-09-23"
+  },
+  "boost": {
+    "version": "1.91.0",
+    "archive": "boost_1_91_0.tar.gz",
+    "url": "https://archives.boost.io/release/1.91.0/source/boost_1_91_0.tar.gz",
+    "sha256": "5734305f40a76c30f951c9abd409a45a2a19fb546efe4162119250bbe4d3a463",
+    "license": "BSL-1.0",
+    "verification": "Upstream archive JSON SHA-256, verified 2026-09-23"
+  },
+  "openssl": {
+    "version": "3.6.3",
+    "archive": "openssl-3.6.3.tar.gz",
+    "url": "https://github.com/openssl/openssl/releases/download/openssl-3.6.3/openssl-3.6.3.tar.gz",
+    "sha256": "243a86649cf6f23eeb6a2ff2456e09e5d77dd9018a54d3d96b0c6bdd6ba6c7f1",
+    "license": "Apache-2.0",
+    "verification": "GitHub release asset SHA-256, verified 2026-09-23"
+  },
+  "settings": {
+    "BUILD_SHARED_LIBS": "OFF",
+    "CMAKE_BUILD_TYPE": "Release",
+    "CMAKE_POSITION_INDEPENDENT_CODE": "ON",
+    "CMAKE_POLICY_DEFAULT_CMP0167": "OLD",
+    "build_tests": "OFF",
+    "build_examples": "OFF",
+    "build_tools": "OFF",
+    "python-bindings": "OFF",
+    "webtorrent": "OFF",
+    "i2p": "OFF",
+    "mutable-torrents": "OFF",
+    "logging": "OFF",
+    "dht": "ON",
+    "encryption": "ON",
+    "exceptions": "ON",
+    "gnutls": "OFF",
+    "OPENSSL_USE_STATIC_LIBS": "ON",
+    "Boost_NO_SYSTEM_PATHS": "ON",
+    "Boost_NO_BOOST_CMAKE": "ON"
+  }
+}

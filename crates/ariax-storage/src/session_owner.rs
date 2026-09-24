@@ -1,12 +1,12 @@
 use crate::{
     Appended, ControlJournalAppender, Flushed, JournalAppenderError, JournalId,
     JournalInstallIntent, JournalInstallToken, JournalPayload, OptionsSnapshotScope,
-    PersistedOptionPolicy, PlatformPath, PreparedJournalSet, SanitizedOptionMap,
-    SessionHostKeyChallengeRecord, SessionHostKeyResolution, SessionJournalCache,
-    SessionNoSpaceCondition, SessionQueueState, SessionQueueTransition, SessionRecord,
-    SessionStoppedResultRecord, SessionStore, SessionStoreConfig, SessionStoreError,
-    SessionStoreSettings, SessionTaskMetadata, SessionTaskRecord, SessionTaskSourceRecord,
-    SessionTaskSourceSet,
+    PersistedOptionPolicy, PlatformPath, PreparedJournalSet, SanitizedOptionMap, SessionBtBinding,
+    SessionBtCheckpoint, SessionBtResumeRecord, SessionBtTaskRecord, SessionHostKeyChallengeRecord,
+    SessionHostKeyResolution, SessionJournalCache, SessionNoSpaceCondition, SessionQueueState,
+    SessionQueueTransition, SessionRecord, SessionStoppedResultRecord, SessionStore,
+    SessionStoreConfig, SessionStoreError, SessionStoreSettings, SessionTaskMetadata,
+    SessionTaskRecord, SessionTaskSourceRecord, SessionTaskSourceSet,
 };
 use ariax_core::{Generation, Gid, HostKeyChallengeId};
 use std::collections::BTreeMap;
@@ -62,6 +62,7 @@ pub struct SessionStartupSnapshot {
     pub settings: SessionStoreSettings,
     pub session: Option<SessionRecord>,
     pub tasks: Vec<SessionTaskRecord>,
+    pub bt_tasks: Vec<SessionBtTaskRecord>,
     pub task_sources: Vec<SessionTaskSourceSet>,
     pub stopped_results: Vec<SessionStoppedResultRecord>,
     pub host_key_challenges: Vec<SessionHostKeyChallengeRecord>,
@@ -84,6 +85,26 @@ pub enum SessionCommand {
         parent: crate::MetalinkParent,
     },
     ConfirmTaskMetadata(Arc<SessionTaskMetadata>),
+    CreateBtTask {
+        task: Arc<SessionBtTaskRecord>,
+        options: SanitizedOptionMap,
+    },
+    BindBtMetadata {
+        gid: Gid,
+        generation: u64,
+        binding: Arc<SessionBtBinding>,
+    },
+    BeginBtGeneration {
+        gid: Gid,
+        expected: u64,
+        generation: u64,
+    },
+    CheckpointBt(Arc<SessionBtCheckpoint>),
+    ReadBtTasks,
+    ReadBtResume {
+        gid: Gid,
+        limit: usize,
+    },
     ReadTasks,
     ReadStoppedResults,
     TransitionTaskQueue(SessionQueueTransition),
@@ -207,6 +228,8 @@ pub enum SessionCommand {
 pub enum SessionCommandResult {
     Unit,
     Tasks(Vec<SessionTaskRecord>),
+    BtTasks(Vec<SessionBtTaskRecord>),
+    BtResume(SessionBtResumeRecord),
     StoppedResults(Vec<SessionStoppedResultRecord>),
     TaskSources(Vec<SessionTaskSourceRecord>),
     TaskOptions(SanitizedOptionMap),
@@ -823,6 +846,7 @@ fn startup_snapshot(store: &SessionStore) -> Result<SessionStartupSnapshot, Sess
         settings: store.settings()?,
         session: store.session()?,
         tasks: store.tasks()?,
+        bt_tasks: store.bt_tasks()?,
         task_sources: store.task_source_sets()?,
         stopped_results: store.stopped_results()?,
         host_key_challenges: store.host_key_challenges()?,
@@ -837,6 +861,38 @@ fn execute_command(
     command: SessionCommand,
 ) -> Result<SessionCommandResult, SessionPersistenceError> {
     match command {
+        SessionCommand::CreateBtTask { task, options } => {
+            store.create_bt_task(&task, &options, policy)?;
+            Ok(SessionCommandResult::Unit)
+        }
+        SessionCommand::BindBtMetadata {
+            gid,
+            generation,
+            binding,
+        } => {
+            store.bind_bt_metadata(gid, generation, &binding)?;
+            Ok(SessionCommandResult::Unit)
+        }
+        SessionCommand::BeginBtGeneration {
+            gid,
+            expected,
+            generation,
+        } => {
+            store.begin_bt_generation(gid, expected, generation)?;
+            Ok(SessionCommandResult::Unit)
+        }
+        SessionCommand::CheckpointBt(checkpoint) => {
+            store.checkpoint_bt(&checkpoint)?;
+            Ok(SessionCommandResult::Unit)
+        }
+        SessionCommand::ReadBtTasks => store
+            .bt_tasks()
+            .map(SessionCommandResult::BtTasks)
+            .map_err(Into::into),
+        SessionCommand::ReadBtResume { gid, limit } => store
+            .bt_resume(gid, limit)
+            .map(SessionCommandResult::BtResume)
+            .map_err(Into::into),
         SessionCommand::PutSession(record) => {
             store.put_session(&record)?;
             Ok(SessionCommandResult::Unit)

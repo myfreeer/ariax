@@ -10,3 +10,6 @@ fuzz/seeds/** -text
 vendor/suppaftp/** -whitespace
 vendor/russh-sftp/** -whitespace
 vendor/*.patch -whitespace
+native/libtorrent/*.patch -text -whitespace
+crates/ariax-bt-libtorrent-sys/tests/fixtures/*.torrent -text
+crates/ariax-bt-libtorrent-sys/tests/fixtures/payload.bin -text

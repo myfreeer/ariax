@@ -16,6 +16,14 @@ EXPECTED = {
 
 def verify(graph, bundle):
     assert "quick-xml" in graph, "Metalink missing from bundle"
+    native = {"ariax-bt", "ariax-bt-libtorrent-sys", "cxx", "cxx-build"}
+    if bundle in {"full", "compat"}:
+        assert native <= graph.keys(), "BitTorrent missing from full/compat"
+        assert graph.get("cxx", {}).keys() == {"1.0.202"}, "wrong cxx version"
+        assert graph.get("cxx-build", {}).keys() == {"1.0.202"}, "wrong cxx-build version"
+        assert "native" in graph["ariax-bt-libtorrent-sys"]["0.1.0"], "native BT feature missing"
+    else:
+        assert not native & graph.keys(), "BitTorrent dependency outside full/compat"
     for name in graph:
         assert name not in {"aws-lc-rs", "aws-lc-sys", "openssl", "openssl-sys", "native-tls", "des", "dsa"}, f"unapproved dependency: {name}"
     assert len(graph.get("rustls", {})) == 1
@@ -37,6 +45,19 @@ def self_test():
     standard.update({n: {v: f.copy()} for n, (v, f) in EXPECTED.items()})
     standard["ssh-key"] = {"0.7.0-rc.11": {"ed25519"}}
     verify(standard, "standard")
+    full = copy.deepcopy(standard)
+    full.update({"ariax-bt": {"0.1.0": {"libtorrent"}},
+                 "ariax-bt-libtorrent-sys": {"0.1.0": {"native"}},
+                 "cxx": {"1.0.202": {"std"}}, "cxx-build": {"1.0.202": set()}})
+    verify(full, "full")
+    verify(full, "compat")
+    for bundle in ("minimal", "standard"):
+        try:
+            verify(full, bundle)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("native BT leaked into a smaller bundle")
     for change, bundle in [(lambda g: g.update({"des": {"1": set()}}), "standard"),
                            (lambda g: g["rustls"]["0.23.42"].add("aws_lc_rs"), "standard"),
                            (lambda g: g["russh"]["0.62.4"].add("default"), "standard"),

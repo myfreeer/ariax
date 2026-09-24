@@ -7,11 +7,13 @@ publish.workspace = true
 
 [features]
 default = []
+bt = ["dep:ariax-bt", "ariax-bt/libtorrent"]
 metalink = ["dep:quick-xml"]
 ftp = ["dep:suppaftp"]
 sftp = ["dep:russh", "dep:russh-sftp", "dep:hmac", "dep:zeroize"]
 
 [dependencies]
+ariax-bt = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
 base64ct.workspace = true
 ariax-config.workspace = true

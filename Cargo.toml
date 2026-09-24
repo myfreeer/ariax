@@ -1,6 +1,9 @@
 [workspace]
 members = [
     "bin/ariax",
+    "crates/ariax-bt",
+    "crates/ariax-bt-metadata",
+    "crates/ariax-bt-libtorrent-sys",
     "crates/ariax-config",
     "crates/ariax-core",
     "crates/ariax-engine",
@@ -22,6 +25,9 @@ publish = false
 zeroize = "=1.9.0"
 base64ct = { version = "=1.8.3", features = ["alloc"] }
 ariax-config = { path = "crates/ariax-config" }
+ariax-bt-metadata = { path = "crates/ariax-bt-metadata" }
+ariax-bt = { path = "crates/ariax-bt" }
+ariax-bt-libtorrent-sys = { path = "crates/ariax-bt-libtorrent-sys" }
 ariax-core = { path = "crates/ariax-core" }
 ariax-engine = { path = "crates/ariax-engine" }
 ariax-runtime = { path = "crates/ariax-runtime" }
@@ -31,6 +37,8 @@ bytes = "=1.12.1"
 cookie = { version = "=0.18.1", default-features = false, features = ["percent-encode"] }
 cookie_store = { version = "=0.22.1", default-features = false, features = ["public_suffix"] }
 crc32c = "=0.6.8"
+cxx = "=1.0.202"
+cxx-build = "=1.0.202"
 fs2 = "=0.4.3"
 futures-util = "=0.3.33"
 http-body-util = "=0.1.4"

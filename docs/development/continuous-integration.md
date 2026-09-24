@@ -79,8 +79,10 @@ all-feature tests, strict Clippy, workspace builds, and the four existing
 feature bundles. Windows GNU uses MSYS2 MINGW64 with its matching native
 compiler/runtime first on `PATH`, explicitly selected Rust tools, and separate
 Clippy and MSRV output directories. Native reparse-point tests are mandatory
-on Windows. Additional libtorrent dependencies will be provisioned and pinned
-when the BT feature lands.
+on Windows. BT builds explicitly provision pinned libtorrent, Boost and OpenSSL
+sources for each native target, verify the patched installation, and retain
+its provenance and build logs. Cargo itself never downloads or builds those
+native dependencies. The minimal and standard bundles exclude the native graph.
 The disposable macOS runner explicitly provisions the second loopback address
 used by active-FTPS peer-rejection fixtures. Those tests must exercise a real
 unapproved source address before the approved TLS data connection.

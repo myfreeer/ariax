@@ -13,7 +13,7 @@ path = "src/main.rs"
 default = []
 minimal = ["ariax-engine/metalink"]
 standard = ["minimal", "ariax-engine/ftp", "ariax-engine/sftp"]
-full = ["standard"]
+full = ["standard", "ariax-engine/bt"]
 compat = ["full"]
 
 [dependencies]

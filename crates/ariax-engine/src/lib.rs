@@ -2760,6 +2760,7 @@ mod tests {
             })
             .collect();
         SessionStartupSnapshot {
+            bt_tasks: Vec::new(),
             settings: settings(),
             session: Some(SessionRecord {
                 session_id: session_id(),

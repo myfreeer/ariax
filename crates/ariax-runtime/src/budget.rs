@@ -82,6 +82,22 @@ pub struct BytePermit {
 }
 
 impl BytePermit {
+    /// Returns unused credit without releasing the retained allocation's charge.
+    /// A permit can only shrink; growing requires fresh admission.
+    pub fn shrink_to(&mut self, bytes: usize) -> Result<(), BudgetError> {
+        if bytes > self.bytes {
+            return Err(BudgetError::Exhausted {
+                requested: bytes,
+                available: self.bytes,
+            });
+        }
+        if let Some(inner) = &self.inner {
+            inner.used.fetch_sub(self.bytes - bytes, Ordering::AcqRel);
+        }
+        self.bytes = bytes;
+        Ok(())
+    }
+
     #[must_use]
     pub const fn bytes(&self) -> usize {
         self.bytes
@@ -136,6 +152,20 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier};
     use std::thread;
+
+    #[test]
+    fn shrinking_preserves_retained_credit_and_cannot_grow_a_permit() {
+        let budget = ByteBudget::new(100);
+        let mut first = budget.try_acquire(80).unwrap();
+        first.shrink_to(30).unwrap();
+        let second = budget.try_acquire(70).unwrap();
+        assert!(first.shrink_to(31).is_err());
+        assert_eq!(budget.used(), 100);
+        drop(first);
+        assert_eq!(budget.used(), 70);
+        drop(second);
+        assert_eq!(budget.used(), 0);
+    }
 
     #[test]
     fn permits_enforce_and_release_the_hard_limit() {

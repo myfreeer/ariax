@@ -25,12 +25,11 @@ identity, and bitmap caps, canonicalization rules, semantic recovery limits,
 hash domains/coverage, and both codec and cross-record rejection vocabularies.
 It also freezes the serialized appender's segment naming, acknowledgement,
 latched-fault, tail-reopen, and flushed-boundary rotation rules.
-`session_v1.json` retains the historical migration-source contract.
-`session_v2.json` freezes the current strict SQLite schema SQL, direct rusqlite
+`session_v3.json` freezes the current strict SQLite schema SQL, direct rusqlite
 feature/build contract, pragmas, hard connection limits, queue/terminal/install
-enums, caps, reconciliation rules, and failure vocabularies. Version 2 adds the
-demoted queue and bounded slow-slot metadata, plus the exact transactional v1
-task and host-key-challenge table rebuild. The contract also records
+enums, caps, reconciliation rules, and failure vocabularies. Version 3 separates
+BT metadata and tracked checkpoints from transfer journals, and rejects older
+development formats unchanged. The contract also records
 private-artifact policy, bounded task/stopped/host/install reads, one-to-one
 stopped metadata, atomic terminal retention/deletion and dense queue
 transitions, host-key semantic validation, preflight-before-backup behavior,

@@ -554,6 +554,7 @@ mod tests {
 
     fn startup_snapshot(tasks: Vec<SessionTaskRecord>) -> SessionStartupSnapshot {
         SessionStartupSnapshot {
+            bt_tasks: Vec::new(),
             settings: SessionStoreSettings {
                 journal_mode: SessionJournalMode::Delete,
                 page_size: 4096,

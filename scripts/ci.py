@@ -187,8 +187,17 @@ def preflight(runner):
                  "--", "--exact", env=environment)
 
 
+def provision_bt(runner):
+    compiler = runner.run([runner.tool("rustc"), "--version", "--verbose"], capture=True)
+    target = re.search(r"^host: (\S+)$", compiler, re.MULTILINE)
+    require(target, "missing native Rust host triple")
+    runner.run([sys.executable, "-B", "scripts/bt_native.py", "--target", target[1]])
+    runner.run([sys.executable, "-B", "scripts/bt_native.py", "--target", target[1], "--verify"])
+
+
 def validate(runner):
-    runner.run([runner.tool("rustc"), "--version", "--verbose"])
+    if runner.name not in {"feature-minimal", "feature-standard"}:
+        provision_bt(runner)
     if runner.name.startswith("msrv-"):
         runner.cargo("check", "--locked", "--workspace", "--all-targets", "--all-features")
     elif runner.name.startswith("feature-"):
@@ -346,6 +355,7 @@ def measure_scenario(runner, binary, scenario, metalink):
 def benchmark(runner):
     require(sys.platform == "linux", "native Linux benchmark runner required")
     require("microsoft" not in platform.release().lower(), "WSL does not establish native Linux acceptance")
+    provision_bt(runner)
     build = runner.cargo("bench", "--locked", "-p", "ariax-engine", "--all-features",
                          "--bench", "rpc_active_profile", "--no-run", "--message-format=json", capture=True)
     executables = set()

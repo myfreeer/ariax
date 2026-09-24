@@ -85,7 +85,7 @@ jobs:
             os: ubuntu-24.04
             toolchain: "1.97.1"
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       ARIAX_RUST_TOOLCHAIN: ${{ matrix.toolchain }}
       ARIAX_CI_CHECK: ${{ matrix.check }}
@@ -102,9 +102,13 @@ jobs:
           path-type: minimal
           install: >-
             git
+            make
+            perl
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-python
             mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-make
       - name: Provision macOS security fixture loopback address
         if: runner.os == 'macOS'
         run: sudo ifconfig lo0 alias 127.0.0.2 up
@@ -114,6 +118,12 @@ jobs:
           set -euo pipefail
           rustup toolchain install "$ARIAX_RUST_TOOLCHAIN" --profile minimal --component clippy --component rustfmt
           python scripts/ci.py resolve-toolchain >> "$GITHUB_ENV"
+      - name: Cache verified native installation
+        if: matrix.check != 'feature-minimal' && matrix.check != 'feature-standard'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: toolchains/bt-native/*/install
+          key: bt-native-${{ matrix.check }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native/libtorrent/**', 'scripts/bt_native.py') }}
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -123,9 +133,16 @@ jobs:
             toolchains/ci-target/${{ matrix.check }}-clippy
           key: ci-${{ matrix.check }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.toolchain }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml', 'scripts/ci.py') }}
       - name: Validate native platform or feature bundle
-        if: ${{ !contains(matrix.check, 'windows-gnu') }}
+        if: ${{ !contains(matrix.check, 'windows-gnu') && matrix.check != 'windows-msvc' }}
         shell: bash
         run: python scripts/ci.py validate --check "$ARIAX_CI_CHECK"
+      - name: Validate through native MSVC
+        if: matrix.check == 'windows-msvc'
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvars64.bat"
+          if errorlevel 1 exit /b %errorlevel%
+          python scripts\ci.py validate --check "%ARIAX_CI_CHECK%"
       - name: Validate through native MINGW64
         if: contains(matrix.check, 'windows-gnu')
         shell: msys2 {0}
@@ -139,7 +156,10 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ci-${{ matrix.check }}
-          path: toolchains/ci-reports/${{ matrix.check }}/
+          path: |
+            toolchains/ci-reports/${{ matrix.check }}/
+            toolchains/bt-native/*/logs/
+            toolchains/bt-native/*/install/ariax-native.json
           if-no-files-found: warn
 
   native-linux-benchmarks:
