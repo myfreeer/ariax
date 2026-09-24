@@ -133,6 +133,10 @@ fn native() {
         ] {
             println!("cargo:rustc-link-lib={library}");
         }
+    } else if target.contains("apple-darwin") {
+        // Static libtorrent's IP-change notifier uses both Apple frameworks.
+        println!("cargo:rustc-link-lib=framework=CoreFoundation");
+        println!("cargo:rustc-link-lib=framework=SystemConfiguration");
     } else if target.contains("linux") {
         println!("cargo:rustc-link-lib=dl");
         println!("cargo:rustc-link-lib=pthread");
