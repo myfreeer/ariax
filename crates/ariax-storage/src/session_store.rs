@@ -7274,7 +7274,7 @@ mod tests {
         let connection = Connection::open(source.database()).expect("open source database");
         connection
             .execute_batch(
-                "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; PRAGMA user_version=0; PRAGMA wal_checkpoint(TRUNCATE); PRAGMA user_version=2;",
+                &format!("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; PRAGMA user_version=0; PRAGMA wal_checkpoint(TRUNCATE); PRAGMA user_version={SESSION_SCHEMA_VERSION};"),
             )
             .expect("create committed page-one WAL");
         let source_wal = super::sqlite_sidecar_path(&source.database(), "-wal");
