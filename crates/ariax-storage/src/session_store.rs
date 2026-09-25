@@ -18,7 +18,7 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 #[path = "session_bt.rs"]
 mod bt;
