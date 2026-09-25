@@ -55,9 +55,9 @@ pub enum PersistencePlanStep {
         options: SanitizedOptionMap,
         resume: Arc<[u8]>,
     },
-    CreateFollowedMetalink {
-        tasks: Arc<[SessionTaskMetadata]>,
-        parent: ariax_storage::MetalinkParent,
+    CreateFollowedMetadata {
+        tasks: Arc<[ariax_storage::SessionAdmissionMetadata]>,
+        parent: ariax_storage::MetadataParent,
     },
     ConfirmTaskMetadata(Arc<SessionTaskMetadata>),
     TransitionTaskQueue(SessionQueueTransition),
@@ -707,7 +707,10 @@ fn validate_plan(
         }
         (
             effect @ TransitionEffect::PersistTask { .. },
-            [PersistencePlanStep::CreateSessionBatch(tasks)],
+            [
+                PersistencePlanStep::CreateSessionBatch(tasks)
+                | PersistencePlanStep::CreateFollowedMetadata { tasks, .. },
+            ],
         ) => {
             if tasks.is_empty()
                 || tasks.len() > ariax_storage::SESSION_MAX_IMPORT_TASKS
@@ -736,10 +739,7 @@ fn validate_plan(
         }
         (
             effect @ TransitionEffect::PersistTask { .. },
-            [
-                PersistencePlanStep::CreateTaskBatch(tasks)
-                | PersistencePlanStep::CreateFollowedMetalink { tasks, .. },
-            ],
+            [PersistencePlanStep::CreateTaskBatch(tasks)],
         ) => {
             if tasks.is_empty()
                 || tasks.len() > ariax_storage::SESSION_MAX_IMPORT_TASKS
@@ -1568,8 +1568,8 @@ fn command_for_step(step: &PersistencePlanStep) -> PendingOwnerCommand {
             },
             ExpectedResult::Unit,
         ),
-        PersistencePlanStep::CreateFollowedMetalink { tasks, parent } => (
-            SessionCommand::CreateFollowedMetalink {
+        PersistencePlanStep::CreateFollowedMetadata { tasks, parent } => (
+            SessionCommand::CreateFollowedMetadata {
                 tasks: Arc::clone(tasks),
                 parent: *parent,
             },

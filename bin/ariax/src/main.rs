@@ -1287,7 +1287,7 @@ mod phase5_cli_tests {
         let transfer = options.transfer.unwrap();
         assert_eq!(
             transfer.follow_metalink,
-            ariax_engine::FollowMetalink::Memory
+            ariax_engine::FollowMetadata::Memory
         );
         assert_eq!(transfer.server_stat_timeout, Duration::from_secs(2));
         assert!(transfer.checksum.is_some());
@@ -1295,7 +1295,7 @@ mod phase5_cli_tests {
             vec!["--follow-metalink=bad"],
             vec!["--server-stat-timeout=-1"],
             vec!["--split=1", "--split=2"],
-            vec!["--metalink-expansion=forged"],
+            vec!["--metadata-expansion=forged"],
             vec!["--position=-2"],
             vec!["--unknown=true"],
         ] {

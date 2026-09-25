@@ -351,7 +351,7 @@ fn parse_task(task: &Value, force_pause: bool) -> Result<ImportedTask, HttpContr
     if force_pause {
         option_map.insert("pause".to_owned(), Value::Bool(true));
     }
-    if option_map.contains_key("metalink-expansion")
+    if option_map.contains_key("metadata-expansion")
         || option_map.contains_key("verification-manifest")
         || option_map.contains_key("metalink-file-index")
     {

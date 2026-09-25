@@ -1,8 +1,25 @@
 use super::*;
+use crate::metadata_follow::MetadataKind;
 use crate::storage_journal::JournalWrite;
-use ariax_storage::{JournalHash, JournalPayload, MetalinkExpansion, MetalinkParent};
+use ariax_storage::{JournalHash, JournalPayload, MetadataExpansion, MetadataParent};
 use base64ct::Encoding;
 use serde_json::{Value, json};
+
+pub(super) fn is_torrent_type(headers: &hyper::HeaderMap, uri: &str) -> bool {
+    let mut values = headers.get_all(hyper::header::CONTENT_TYPE).iter();
+    let value = values.next().and_then(|value| value.to_str().ok());
+    values.next().is_none()
+        && (value.is_some_and(|value| {
+            value
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .eq_ignore_ascii_case("application/x-bittorrent")
+        }) || url::Url::parse(uri)
+            .ok()
+            .is_some_and(|uri| uri.path().to_ascii_lowercase().ends_with(".torrent")))
+}
 
 pub(super) fn is_metalink_type(headers: &hyper::HeaderMap) -> bool {
     let mut values = headers.get_all(hyper::header::CONTENT_TYPE).iter();
@@ -22,16 +39,27 @@ pub(super) fn is_metalink_type(headers: &hyper::HeaderMap) -> bool {
         })
 }
 impl HttpMultiRangeWorker {
-    pub(super) async fn follow_metalink(
+    pub(super) async fn follow_metadata(
         &self,
         task: Arc<HttpTaskSpec>,
         generation: Generation,
         cancellation: HttpCancellation,
         uri: String,
+        kind: MetadataKind,
     ) -> Result<HttpWorkerSuccess, HttpMultiRangeError> {
-        if !cfg!(feature = "metalink")
-            || task.options().transfer.follow_metalink == crate::FollowMetalink::Never
-        {
+        let (enabled, mode, document_limit) = match kind {
+            MetadataKind::Metalink => (
+                cfg!(feature = "metalink"),
+                task.options().transfer.follow_metalink,
+                64 * 1024 * 1024,
+            ),
+            MetadataKind::BitTorrent => (
+                cfg!(feature = "bt"),
+                task.options().transfer.follow_torrent,
+                16 * 1024 * 1024,
+            ),
+        };
+        if !enabled || mode == crate::FollowMetadata::Never {
             return Err(crate::ProtocolFailure::Malformed.into());
         }
         let stats = self
@@ -39,7 +67,11 @@ impl HttpMultiRangeWorker {
             .get_or_create(task.task())
             .map_err(|_| HttpMultiRangeError::StatsCatalogFull)?;
         let mut response = tokio::select! {biased;_=cancellation.cancelled()=>return Err(HttpMultiRangeError::Cancelled),result=self.client.execute(HttpClientRequest::get(uri))=>result.map_err(HttpMultiRangeError::Client)?};
-        if response.status() != hyper::StatusCode::OK || !is_metalink_type(response.headers()) {
+        let matches_kind = match kind {
+            MetadataKind::Metalink => is_metalink_type(response.headers()),
+            MetadataKind::BitTorrent => is_torrent_type(response.headers(), response.final_uri()),
+        };
+        if response.status() != hyper::StatusCode::OK || !matches_kind {
             return Err(crate::ProtocolFailure::Malformed.into());
         }
         let head = response.headers();
@@ -71,9 +103,9 @@ impl HttpMultiRangeWorker {
                 .limit()
                 .saturating_sub(64 * 1024)
                 / 4)
-            .min(64 * 1024 * 1024)
+            .min(document_limit)
         });
-        if cap == 0 || cap > 64 * 1024 * 1024 {
+        if cap == 0 || cap > document_limit {
             return Err(crate::ProtocolFailure::ResourceLimit.into());
         }
         // Includes the byte input, base64 handoff, JSON framing and parser result.
@@ -144,7 +176,7 @@ impl HttpMultiRangeWorker {
         if length.is_some_and(|length| length != bytes.len()) {
             return Err(HttpMultiRangeError::ShortBody);
         }
-        let retained = task.options().transfer.follow_metalink == crate::FollowMetalink::Follow;
+        let retained = mode == crate::FollowMetadata::Follow;
         let input_task = task.clone();
         let worker = self.clone();
         let (parent, params) = self
@@ -161,7 +193,7 @@ impl HttpMultiRangeWorker {
                 let snapshot = input_task
                     .persistence_options()
                     .map_err(|_| HttpMultiRangeError::Protocol)?;
-                let parent = MetalinkParent {
+                let parent = MetadataParent {
                     gid: input_task.gid(),
                     generation,
                     snapshot_hash: snapshot.snapshot_hash(),
@@ -170,7 +202,7 @@ impl HttpMultiRangeWorker {
                     retained,
                 };
                 if retained {
-                    worker.save_metalink(&input_task, generation, &bytes)?;
+                    worker.save_metadata_document(&input_task, generation, &bytes)?;
                 }
                 let mut options = snapshot
                     .entries()
@@ -181,23 +213,33 @@ impl HttpMultiRangeWorker {
                                 | "checksum"
                                 | "verification-manifest"
                                 | "metalink-file-index"
-                                | "metalink-expansion"
+                                | "metadata-expansion"
                         )
                     })
                     .map(|(name, value)| (name.to_owned(), Value::String(value.to_owned())))
                     .collect::<serde_json::Map<_, _>>();
-                options.insert("metalink-base-uri".into(), Value::String(base));
-                options.insert("follow-metalink".into(), Value::String("false".into()));
-                Ok::<_, HttpMultiRangeError>((
-                    parent,
-                    json!([base64ct::Base64::encode_string(&bytes), options]),
-                ))
+                let params = match kind {
+                    MetadataKind::Metalink => {
+                        options.insert("metalink-base-uri".into(), Value::String(base));
+                        options.insert("follow-metalink".into(), Value::String("false".into()));
+                        json!([base64ct::Base64::encode_string(&bytes), options])
+                    }
+                    MetadataKind::BitTorrent => {
+                        options.retain(|name, _| {
+                            crate::TransferOptions::is_bittorrent_option(name)
+                                || matches!(name.as_str(), "select-file" | "max-download-limit")
+                        });
+                        json!([base64ct::Base64::encode_string(&bytes), [], options])
+                    }
+                };
+                Ok::<_, HttpMultiRangeError>((parent, params))
             })
             .await??;
         let (reply, wait) = oneshot::channel();
         self.config
-            .metalink_follow
-            .push(crate::metalink_follow::FollowRequest {
+            .metadata_follow
+            .push(crate::metadata_follow::FollowRequest {
+                kind,
                 parent,
                 params,
                 reply,
@@ -208,7 +250,7 @@ impl HttpMultiRangeWorker {
         let expansion = tokio::select! {biased;_=cancellation.cancelled()=>return Err(HttpMultiRangeError::Cancelled),result=wait=>result.map_err(|_|HttpMultiRangeError::Protocol)?.map_err(|_|crate::ProtocolFailure::Malformed)?};
         accounting.accepted = true;
         stats.add_accepted(accounting.bytes);
-        self.finish_metalink_parent(task, generation, expansion)
+        self.finish_metadata_parent(task, generation, expansion)
             .await
     }
 
@@ -227,7 +269,7 @@ impl HttpMultiRangeWorker {
         }
     }
 
-    fn save_metalink(
+    fn save_metadata_document(
         &self,
         task: &HttpTaskSpec,
         generation: Generation,
@@ -289,11 +331,11 @@ impl HttpMultiRangeWorker {
         Ok(())
     }
 
-    pub(super) async fn finish_metalink_parent(
+    pub(super) async fn finish_metadata_parent(
         &self,
         task: Arc<HttpTaskSpec>,
         generation: Generation,
-        expansion: MetalinkExpansion,
+        expansion: MetadataExpansion,
     ) -> Result<HttpWorkerSuccess, HttpMultiRangeError> {
         if expansion.parent.gid != task.gid() {
             return Err(HttpMultiRangeError::Protocol);
@@ -416,6 +458,32 @@ impl Drop for MetadataAccounting {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn torrent_detection_requires_an_unambiguous_type_or_torrent_path() {
+        use hyper::header::{CONTENT_TYPE, HeaderValue};
+        let mut headers = hyper::HeaderMap::new();
+        assert!(!is_torrent_type(&headers, "https://example.test/file.bin"));
+        assert!(is_torrent_type(
+            &headers,
+            "https://example.test/FILE.TORRENT?key=value"
+        ));
+        headers.insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("Application/X-BitTorrent; charset=binary"),
+        );
+        assert!(is_torrent_type(&headers, "https://example.test/metadata"));
+        headers.append(
+            CONTENT_TYPE,
+            HeaderValue::from_static("application/octet-stream"),
+        );
+        assert!(!is_torrent_type(
+            &headers,
+            "https://example.test/file.torrent"
+        ));
+        assert!(!is_torrent_type(&headers, "https://example.test/metadata"));
+    }
+
     #[tokio::test]
     async fn retained_metadata_revalidates_content_identity_and_handle_capacity() {
         static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -464,7 +532,7 @@ mod tests {
                 .unwrap(),
             );
             let bytes = b"<metadata/>";
-            let saved = worker.save_metalink(&spec, Generation::INITIAL, bytes);
+            let saved = worker.save_metadata_document(&spec, Generation::INITIAL, bytes);
             if case == 4 {
                 assert!(saved.is_err());
                 assert!(!directory.join("metadata").exists());
@@ -479,8 +547,8 @@ mod tests {
                     }
                     _ => (),
                 }
-                let expansion = MetalinkExpansion {
-                    parent: MetalinkParent {
+                let expansion = MetadataExpansion {
+                    parent: MetadataParent {
                         gid: spec.gid(),
                         generation: Generation::INITIAL,
                         snapshot_hash: spec.persistence_options().unwrap().snapshot_hash(),
@@ -491,7 +559,7 @@ mod tests {
                     children: vec![Gid::new(2).unwrap()],
                 };
                 let result = worker
-                    .finish_metalink_parent(spec, Generation::INITIAL, expansion)
+                    .finish_metadata_parent(spec, Generation::INITIAL, expansion)
                     .await;
                 assert_eq!(result.is_ok(), case == 0, "case {case}: {result:?}");
             }

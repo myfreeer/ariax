@@ -10,7 +10,8 @@ pub(super) enum AdmissionKind {
     Uri,
     Session,
     Metalink,
-    Follow(ariax_storage::MetalinkParent),
+    Follow(ariax_storage::MetadataParent),
+    FollowTorrent(ariax_storage::MetadataParent),
 }
 
 struct Preparation {
@@ -110,7 +111,7 @@ enum Catalog {
 struct Prepared {
     members: Vec<Member>,
     next_id: u64,
-    parent: Option<ariax_storage::MetalinkParent>,
+    parent: Option<ariax_storage::MetadataParent>,
     parent_spec: Option<Box<HttpTaskSpec>>,
 }
 
@@ -580,15 +581,8 @@ fn finalize(prepared: Prepared, import: bool) -> Result<Finalized, HttpControlEr
     let mut first = members.pop_front().expect("nonempty admission");
     if import {
         let step = if let Some(parent) = prepared.parent {
-            let tasks = metadata
-                .into_iter()
-                .map(|entry| match entry {
-                    ariax_storage::SessionAdmissionMetadata::Transfer(task) => Ok(task),
-                    _ => Err(HttpControlError::InvalidConfig),
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            PersistencePlanStep::CreateFollowedMetalink {
-                tasks: tasks.into(),
+            PersistencePlanStep::CreateFollowedMetadata {
+                tasks: metadata.into(),
                 parent,
             }
         } else {
@@ -614,6 +608,17 @@ impl Preparation {
         request: &crate::rpc_budget::RpcRequestLease,
         kind: AdmissionKind,
     ) -> Result<Prepared, HttpControlError> {
+        if let AdmissionKind::FollowTorrent(parent) = kind {
+            #[cfg(feature = "bt")]
+            return self.prepare_followed_torrent(params, request, parent);
+            #[cfg(not(feature = "bt"))]
+            {
+                let _ = parent;
+                return Err(HttpControlError::Unsupported(
+                    "BitTorrent feature unavailable",
+                ));
+            }
+        }
         let import = kind == AdmissionKind::Session;
         let insertion = if matches!(kind, AdmissionKind::Metalink | AdmissionKind::Follow(_)) {
             params
@@ -851,32 +856,10 @@ impl Preparation {
             ));
         }
         let parent_spec = if let AdmissionKind::Follow(parent) = kind {
-            let spec = self
-                .tasks
-                .get_gid(parent.gid)
-                .ok_or(HttpControlError::NotFound)?;
-            if spec
-                .persistence_options()
-                .map_err(HttpControlError::TaskSpec)?
-                .snapshot_hash()
-                != parent.snapshot_hash
-                || spec.options().transfer.metalink_expansion.is_some()
-            {
-                return Err(HttpControlError::Busy);
-            }
-            let mut options = spec.options().clone();
-            options.transfer.metalink_expansion = Some(ariax_storage::MetalinkExpansion {
+            Some(self.parent_spec(
                 parent,
-                children: validated.iter().map(|entry| entry.0.gid()).collect(),
-            });
-            let replacement = spec
-                .with_options(spec.output().clone(), options)
-                .map_err(HttpControlError::TaskSpec)?;
-            Some(Box::new(
-                self.tasks
-                    .reserve_spec(replacement)
-                    .map_err(|_| HttpControlError::Busy)?,
-            ))
+                validated.iter().map(|entry| entry.0.gid()).collect(),
+            )?)
         } else {
             None
         };
@@ -989,6 +972,113 @@ impl Preparation {
             }
         }
         Err(HttpControlError::Busy)
+    }
+
+    fn parent_spec(
+        &self,
+        parent: ariax_storage::MetadataParent,
+        children: Vec<Gid>,
+    ) -> Result<Box<HttpTaskSpec>, HttpControlError> {
+        let spec = self
+            .tasks
+            .get_gid(parent.gid)
+            .ok_or(HttpControlError::NotFound)?;
+        if spec
+            .persistence_options()
+            .map_err(HttpControlError::TaskSpec)?
+            .snapshot_hash()
+            != parent.snapshot_hash
+            || spec.options().transfer.metadata_expansion.is_some()
+        {
+            return Err(HttpControlError::Busy);
+        }
+        let mut options = spec.options().clone();
+        options.transfer.metadata_expansion =
+            Some(ariax_storage::MetadataExpansion { parent, children });
+        let replacement = spec
+            .with_options(spec.output().clone(), options)
+            .map_err(HttpControlError::TaskSpec)?;
+        Ok(Box::new(
+            self.tasks
+                .reserve_spec(replacement)
+                .map_err(|_| HttpControlError::Busy)?,
+        ))
+    }
+
+    #[cfg(feature = "bt")]
+    fn prepare_followed_torrent(
+        mut self,
+        params: Value,
+        request: &crate::rpc_budget::RpcRequestLease,
+        parent: ariax_storage::MetadataParent,
+    ) -> Result<Prepared, HttpControlError> {
+        if self.scheduler.len() >= self.configuration.config.task_capacity.get() {
+            return Err(HttpControlError::Busy);
+        }
+        let mut args = params
+            .as_array()
+            .filter(|args| args.len() == 3)
+            .cloned()
+            .ok_or(HttpControlError::InvalidParams("invalid followed torrent"))?;
+        args[2] = self
+            .configuration
+            .merged_bt_options(args[2].clone(), false, &self.bt_config)?;
+        let task_id = self.next_available_task_id()?;
+        let mut prepared = super::bittorrent::prepare_admission(
+            Value::Array(args),
+            true,
+            task_id,
+            self.session_id,
+            &self.configuration.config.output_root,
+            &self.bt_resources.resident,
+            request,
+            false,
+        )?;
+        let spec = Arc::get_mut(&mut prepared.spec).expect("unpublished followed torrent");
+        if spec.options.settings.peers > self.bt_config.peers
+            || spec.options.settings.dht && !self.bt_config.dht
+            || spec.options.settings.pex && !self.bt_config.pex
+            || !spec
+                .options
+                .persisted
+                .entries()
+                .all(|(name, _)| self.policy.permits(name))
+        {
+            return Err(HttpControlError::InvalidParams(
+                "followed torrent exceeds startup policy",
+            ));
+        }
+        let queue = if spec.record.desired_paused {
+            QueueClass::Paused
+        } else {
+            QueueClass::Waiting
+        };
+        Arc::get_mut(&mut spec.record)
+            .expect("unpublished record")
+            .queue_position = self.scheduler.queue_snapshot(queue).len() as u32;
+        super::bittorrent::collision(spec, &self.tasks, &self.bt_catalog)?;
+        let gid = spec.record.gid;
+        self.scheduler
+            .execute_command_at(
+                SchedulerCommand::AddValidatedTask {
+                    task_id,
+                    gid,
+                    desired_paused: spec.record.desired_paused,
+                    conditions: TaskConditions::default(),
+                },
+                MonotonicInstant::now(),
+            )
+            .map_err(|error| HttpControlError::Scheduler(error.to_string()))?;
+        let parent_spec = Some(self.parent_spec(parent, vec![gid])?);
+        Ok(Prepared {
+            members: vec![Member::BitTorrent(prepared.spec)],
+            next_id: task_id
+                .get()
+                .checked_add(1)
+                .ok_or(HttpControlError::InvalidConfig)?,
+            parent: Some(parent),
+            parent_spec,
+        })
     }
 }
 

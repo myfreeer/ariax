@@ -9,8 +9,8 @@ pub use metadata::{
     parse_torrent,
 };
 pub use metadata::{
-    info_section, magnet_with_trackers, torrent_from_info, validate_resume, with_trackers,
-    with_web_seeds,
+    info_section, magnet_with_trackers, torrent_from_info, validate_resume, validate_tracker,
+    with_trackers, with_web_seeds,
 };
 
 /// Errors contain stable classifications and never untrusted metadata or URLs.

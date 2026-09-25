@@ -14,8 +14,8 @@ pub use ariax_bt_metadata::{
     parse_magnet, parse_torrent,
 };
 pub use ariax_bt_metadata::{
-    info_section, magnet_with_trackers, torrent_from_info, validate_resume, with_trackers,
-    with_web_seeds,
+    info_section, magnet_with_trackers, torrent_from_info, validate_resume, validate_tracker,
+    with_trackers, with_web_seeds,
 };
 pub use bridge_budget::{
     BandwidthAllocation, BandwidthGroup, BandwidthUpdate, BridgeBudget, BridgeLease, BridgeLimits,

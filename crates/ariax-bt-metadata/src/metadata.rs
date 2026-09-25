@@ -239,6 +239,11 @@ pub(crate) fn endpoint(value: &str, tracker: bool) -> Result<String, BtError> {
     Ok(url.to_string())
 }
 
+/// Validate a tracker before it can enter a task's persisted option snapshot.
+pub fn validate_tracker(value: &str) -> Result<String, BtError> {
+    endpoint(value, true)
+}
+
 fn parse_metadata(
     info: &Node<'_>,
     bytes: &[u8],

@@ -11,9 +11,9 @@ mod configuration;
 mod control_io;
 mod control_ops;
 pub(crate) mod control_runtime;
+mod metadata_follow;
 #[cfg(feature = "metalink")]
 mod metalink_admission;
-mod metalink_follow;
 pub(crate) mod query;
 mod scheduling;
 
@@ -308,8 +308,8 @@ pub struct HttpControlPlane {
     tasks: SharedHttpTaskCatalog,
     stats: SharedHttpTransferStats,
     supervisor: Option<HttpWorkerSupervisor>,
-    metalink_follow: Option<crate::MetalinkFollowQueue>,
-    pending_follow: Option<metalink_follow::PendingFollow>,
+    metadata_follow: Option<crate::MetadataFollowQueue>,
+    pending_follow: Option<metadata_follow::PendingFollow>,
     session: SessionHandle,
     session_id: SessionId,
     journal_sequences: BTreeMap<Gid, u64>,
@@ -438,7 +438,7 @@ impl HttpControlPlane {
             tasks,
             stats,
             supervisor: None,
-            metalink_follow: None,
+            metadata_follow: None,
             pending_follow: None,
             journal_sequences: BTreeMap::new(),
             next_task_id,
@@ -595,7 +595,7 @@ impl HttpControlPlane {
         if self.supervisor.is_some() {
             return Err(HttpControlError::InvalidConfig);
         }
-        self.metalink_follow = worker.metalink_follow_queue();
+        self.metadata_follow = worker.metadata_follow_queue();
         let supervisor = HttpWorkerSupervisor::new(
             self.engine.runtime_handle(),
             self.tasks.clone(),
@@ -626,7 +626,7 @@ impl HttpControlPlane {
 
     pub fn shutdown(mut self) -> Result<crate::ProcessShutdownReport, crate::ProcessShutdownError> {
         self.shutdown_requested = true;
-        if let Some(queue) = &self.metalink_follow {
+        if let Some(queue) = &self.metadata_follow {
             queue.close();
         }
         let deadline = Instant::now() + self.config.supervisor.shutdown_timeout;
@@ -703,7 +703,7 @@ impl HttpControlPlane {
         mut self,
     ) -> Result<crate::ProcessShutdownReport, crate::ProcessShutdownError> {
         self.shutdown_requested = true;
-        if let Some(queue) = &self.metalink_follow {
+        if let Some(queue) = &self.metadata_follow {
             queue.close();
         }
         let started = Instant::now();
@@ -1192,7 +1192,7 @@ impl HttpControlPlane {
         if self.poll_bt_admission()? {
             return Ok(());
         }
-        self.poll_metalink_follow()?;
+        self.poll_metadata_follow()?;
         if !self.turn.take_step()
             || self.poll_admission()?
             || self.admission_fenced()

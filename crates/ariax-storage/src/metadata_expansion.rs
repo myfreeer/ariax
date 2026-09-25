@@ -1,10 +1,10 @@
-//! Atomic, non-secret parent/child identity for automatic Metalink admission.
+//! Atomic, non-secret parent/child identity for followed metadata admission.
 use crate::{JournalHash, SESSION_MAX_IMPORT_TASKS, SanitizedOptionMap};
 use ariax_core::{Generation, Gid};
 use std::collections::BTreeSet;
-pub const METALINK_EXPANSION_OPTION: &str = "metalink-expansion";
+pub const METADATA_EXPANSION_OPTION: &str = "metadata-expansion";
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct MetalinkParent {
+pub struct MetadataParent {
     pub gid: Gid,
     pub generation: Generation,
     pub snapshot_hash: JournalHash,
@@ -13,11 +13,11 @@ pub struct MetalinkParent {
     pub retained: bool,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MetalinkExpansion {
-    pub parent: MetalinkParent,
+pub struct MetadataExpansion {
+    pub parent: MetadataParent,
     pub children: Vec<Gid>,
 }
-impl MetalinkExpansion {
+impl MetadataExpansion {
     pub fn validate(&self) -> bool {
         !self.children.is_empty()
             && self.children.len() <= SESSION_MAX_IMPORT_TASKS
@@ -71,7 +71,7 @@ impl MetalinkExpansion {
             return None;
         }
         let value = Self {
-            parent: MetalinkParent {
+            parent: MetadataParent {
                 gid,
                 generation,
                 snapshot_hash,
@@ -90,9 +90,9 @@ impl MetalinkExpansion {
         SanitizedOptionMap::new(
             options
                 .entries()
-                .filter(|(name, _)| *name != METALINK_EXPANSION_OPTION)
+                .filter(|(name, _)| *name != METADATA_EXPANSION_OPTION)
                 .map(|(name, value)| (name.to_owned(), value.to_owned()))
-                .chain([(METALINK_EXPANSION_OPTION.to_owned(), self.canonical())]),
+                .chain([(METADATA_EXPANSION_OPTION.to_owned(), self.canonical())]),
         )
     }
 }
@@ -111,8 +111,8 @@ mod tests {
     use super::*;
     #[test]
     fn expansion_round_trip_rejects_duplicates_and_forged_shapes() {
-        let value = MetalinkExpansion {
-            parent: MetalinkParent {
+        let value = MetadataExpansion {
+            parent: MetadataParent {
                 gid: Gid::new(1).unwrap(),
                 generation: Generation::INITIAL,
                 snapshot_hash: JournalHash::new([1; 32]).unwrap(),
@@ -123,14 +123,14 @@ mod tests {
             children: vec![Gid::new(2).unwrap()],
         };
         assert_eq!(
-            MetalinkExpansion::parse(&value.canonical()),
+            MetadataExpansion::parse(&value.canonical()),
             Some(value.clone())
         );
         let mut bad = value.clone();
         bad.children.push(bad.children[0]);
-        assert!(MetalinkExpansion::parse(&bad.canonical()).is_none());
+        assert!(MetadataExpansion::parse(&bad.canonical()).is_none());
         bad.children = vec![value.parent.gid];
-        assert!(MetalinkExpansion::parse(&bad.canonical()).is_none());
-        assert!(MetalinkExpansion::parse(&(value.canonical() + "|extra")).is_none());
+        assert!(MetadataExpansion::parse(&bad.canonical()).is_none());
+        assert!(MetadataExpansion::parse(&(value.canonical() + "|extra")).is_none());
     }
 }

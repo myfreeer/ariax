@@ -176,6 +176,22 @@ disable discovery and explicitly connect approved local peers. Trackers, web
 seeds and peers resolved or discovered later remain subject to the session IP
 filter and SSRF policy.
 
+### Torrent Following
+
+With `follow-torrent=true`, HTTP metadata identified as
+`application/x-bittorrent` or a `.torrent` URI is fetched under the existing
+destination, redirect, checksum, bandwidth and metadata-memory policies. The
+document is limited to 16 MiB and passes the same admission checks as an explicit
+torrent. `false` downloads the document normally; `mem` follows without retaining
+the document. Following does not bypass validation of the torrent's own endpoints.
+
+The shared metadata handoff records the parent's generation, option snapshot and
+document hash, and atomically persists its `metadata-expansion` relationship with
+the child. A canceled or changed parent cannot publish children. Restart completes
+an already committed parent without re-fetching or duplicating its child. The
+child uses the engine's BT defaults plus applicable explicit selection/rate
+settings. Parent/child relationships appear in `followedBy` on every interface.
+
 ## Event Channel
 
 Events out of BT lane:

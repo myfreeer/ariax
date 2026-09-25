@@ -142,7 +142,7 @@ impl BitTorrentConfig {
 }
 
 /// Validated task settings with typed builders and an explicit option-pair parser.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Eq, PartialEq)]
 pub struct BitTorrentOptions {
     values: BTreeMap<String, String>,
 }
@@ -307,7 +307,12 @@ impl BitTorrentOptions {
             ("bt-resume-timeout".into(), timeout.as_secs().to_string()),
         ])
     }
-    pub(super) fn input_bytes(&self) -> usize {
+    pub(crate) fn pairs(&self) -> impl Clone + Iterator<Item = (&str, &str)> {
+        self.values
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+    }
+    pub(crate) fn input_bytes(&self) -> usize {
         self.values.iter().fold(8192usize, |bytes, (name, value)| {
             bytes
                 .saturating_add(name.capacity())

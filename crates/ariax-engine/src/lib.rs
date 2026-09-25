@@ -35,9 +35,9 @@ mod http_proxy;
 mod http_proxy_client;
 mod http_proxy_io;
 mod http_range;
-mod metalink_follow;
+mod metadata_follow;
 mod server_stats;
-pub use metalink_follow::MetalinkFollowQueue;
+pub use metadata_follow::MetadataFollowQueue;
 pub use server_stats::{ServerFeedback, ServerStatistics};
 mod http_redirect;
 mod http_request;
@@ -75,7 +75,7 @@ pub use content_checksum::{
     MAX_CONTENT_CHECKSUM_TEXT_BYTES,
 };
 pub use transfer_task::{
-    FollowMetalink, ProtocolSecret, TransferCredentials, TransferOptions, TransferProtocol,
+    FollowMetadata, ProtocolSecret, TransferCredentials, TransferOptions, TransferProtocol,
     UriSelector,
 };
 /// Protocol-neutral names; historical HTTP names remain source compatible.

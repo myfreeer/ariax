@@ -86,9 +86,9 @@ pub enum SessionCommand {
         options: SanitizedOptionMap,
         resume: Arc<[u8]>,
     },
-    CreateFollowedMetalink {
-        tasks: Arc<[SessionTaskMetadata]>,
-        parent: crate::MetalinkParent,
+    CreateFollowedMetadata {
+        tasks: Arc<[crate::SessionAdmissionMetadata]>,
+        parent: crate::MetadataParent,
     },
     ConfirmTaskMetadata(Arc<SessionTaskMetadata>),
     CreateBtTask {
@@ -942,8 +942,8 @@ fn execute_command(
             .tasks()
             .map(SessionCommandResult::Tasks)
             .map_err(SessionPersistenceError::Store),
-        SessionCommand::CreateFollowedMetalink { tasks, parent } => {
-            store.create_task_batch_following(&tasks, Some(parent), policy)?;
+        SessionCommand::CreateFollowedMetadata { tasks, parent } => {
+            store.create_session_batch_following(&tasks, Some(parent), policy)?;
             Ok(SessionCommandResult::Unit)
         }
         SessionCommand::CreateSessionBatch(tasks) => {

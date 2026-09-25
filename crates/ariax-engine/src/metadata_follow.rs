@@ -1,34 +1,41 @@
 //! Bounded worker-to-control handoff for atomic metadata expansion.
 use crate::{HttpControlError, HttpIngressPermit};
-use ariax_storage::{MetalinkExpansion, MetalinkParent};
+use ariax_storage::{MetadataExpansion, MetadataParent};
 use serde_json::Value;
 use std::{
     collections::VecDeque,
     sync::{Arc, Mutex},
 };
 use tokio::sync::oneshot;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MetadataKind {
+    Metalink,
+    BitTorrent,
+}
 #[derive(Clone, Default)]
-pub struct MetalinkFollowQueue(Arc<Mutex<FollowQueueState>>);
+pub struct MetadataFollowQueue(Arc<Mutex<FollowQueueState>>);
 #[derive(Default)]
 struct FollowQueueState {
     closed: bool,
     requests: VecDeque<FollowRequest>,
 }
-impl std::fmt::Debug for MetalinkFollowQueue {
+impl std::fmt::Debug for MetadataFollowQueue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MetalinkFollowQueue")
+        f.debug_struct("MetadataFollowQueue")
             .finish_non_exhaustive()
     }
 }
 pub(crate) struct FollowRequest {
-    pub parent: MetalinkParent,
+    pub kind: MetadataKind,
+    pub parent: MetadataParent,
     pub params: Value,
-    pub reply: oneshot::Sender<Result<MetalinkExpansion, HttpControlError>>,
+    pub reply: oneshot::Sender<Result<MetadataExpansion, HttpControlError>>,
     pub _metadata: HttpIngressPermit,
 }
-impl MetalinkFollowQueue {
+impl MetadataFollowQueue {
     pub(crate) fn push(&self, request: FollowRequest) -> Result<(), HttpControlError> {
-        let mut queue = self.0.lock().expect("Metalink handoff");
+        let mut queue = self.0.lock().expect("metadata handoff");
         if queue.closed || queue.requests.len() >= 64 {
             return Err(HttpControlError::Busy);
         }
@@ -38,12 +45,12 @@ impl MetalinkFollowQueue {
     pub(crate) fn pop(&self) -> Option<FollowRequest> {
         self.0
             .lock()
-            .expect("Metalink handoff")
+            .expect("metadata handoff")
             .requests
             .pop_front()
     }
     pub(crate) fn close(&self) {
-        let mut state = self.0.lock().expect("Metalink handoff");
+        let mut state = self.0.lock().expect("metadata handoff");
         state.closed = true;
         for request in state.requests.drain(..) {
             let _ = request.reply.send(Err(HttpControlError::Busy));
@@ -56,13 +63,14 @@ mod tests {
     use super::*;
     #[test]
     fn bounded_handoff_refunds_rejected_and_closed_requests() {
-        let queue = MetalinkFollowQueue::default();
+        let queue = MetadataFollowQueue::default();
         let budget = crate::HttpIngressBudgets::new(65);
         let request = || {
             let (reply, receive) = oneshot::channel();
             (
                 FollowRequest {
-                    parent: MetalinkParent {
+                    kind: MetadataKind::Metalink,
+                    parent: MetadataParent {
                         gid: ariax_core::Gid::new(1).unwrap(),
                         generation: ariax_core::Generation::INITIAL,
                         snapshot_hash: ariax_storage::JournalHash::new([1; 32]).unwrap(),

@@ -252,9 +252,14 @@ impl Options {
                     }
                 }
                 "bt-tracker" | "bt-exclude-tracker" => {
-                    // Validated and applied to metainfo/magnet before the adapter sees it.
-                    if text.len() > 65536 {
+                    if text.len() > 65536 || text.split(',').count() > 64 {
                         return Err(invalid("tracker option exceeds its bound"));
+                    }
+                    for tracker in text.split(',') {
+                        if name == "bt-exclude-tracker" && tracker == "*" {
+                            continue;
+                        }
+                        ariax_bt::validate_tracker(tracker).map_err(bt_error)?;
                     }
                 }
                 _ => return Err(invalid("unsupported BitTorrent option")),
@@ -345,8 +350,8 @@ pub(super) struct QueryTask {
     pub(super) seed_millis: u64,
 }
 
-struct PreparedAdmission {
-    spec: Arc<Spec>,
+pub(super) struct PreparedAdmission {
+    pub(super) spec: Arc<Spec>,
     adapter: Option<BtAdapter>,
     position: Option<usize>,
 }
@@ -2304,7 +2309,7 @@ impl HttpControlPlane {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn prepare_admission(
+pub(super) fn prepare_admission(
     params: Value,
     torrent: bool,
     task_id: TaskId,

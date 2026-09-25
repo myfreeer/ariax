@@ -1,10 +1,10 @@
 use super::*;
 pub(super) struct PendingFollow {
-    request: crate::metalink_follow::FollowRequest,
+    request: crate::metadata_follow::FollowRequest,
     result: oneshot::Receiver<Result<Value, HttpControlError>>,
 }
 impl HttpControlPlane {
-    pub(super) fn poll_metalink_follow(&mut self) -> Result<(), HttpControlError> {
+    pub(super) fn poll_metadata_follow(&mut self) -> Result<(), HttpControlError> {
         if let Some(mut pending) = self.pending_follow.take() {
             let result = match pending.result.try_recv() {
                 Ok(result) => result,
@@ -13,7 +13,7 @@ impl HttpControlPlane {
                     return Ok(());
                 }
                 Err(_) => Err(HttpControlError::Persistence(
-                    "Metalink admission stopped".into(),
+                    "metadata admission stopped".into(),
                 )),
             };
             let result = result.and_then(|value| {
@@ -28,7 +28,7 @@ impl HttpControlPlane {
                             .ok_or(HttpControlError::InvalidConfig)
                     })
                     .collect::<Result<Vec<Gid>, _>>()?;
-                let expansion = ariax_storage::MetalinkExpansion {
+                let expansion = ariax_storage::MetadataExpansion {
                     parent: pending.request.parent,
                     children,
                 };
@@ -39,7 +39,7 @@ impl HttpControlPlane {
                     .tasks
                     .get_gid(expansion.parent.gid)
                     .ok_or(HttpControlError::NotFound)?;
-                if spec.options().transfer.metalink_expansion.as_ref() != Some(&expansion) {
+                if spec.options().transfer.metadata_expansion.as_ref() != Some(&expansion) {
                     return Err(HttpControlError::InvalidConfig);
                 }
                 Ok(expansion)
@@ -57,9 +57,9 @@ impl HttpControlPlane {
             return Ok(());
         }
         let Some(request) = self
-            .metalink_follow
+            .metadata_follow
             .as_ref()
-            .and_then(crate::MetalinkFollowQueue::pop)
+            .and_then(crate::MetadataFollowQueue::pop)
         else {
             return Ok(());
         };
@@ -86,7 +86,14 @@ impl HttpControlPlane {
             self.begin_admission(
                 std::mem::take(&mut request.params),
                 admission,
-                admission::AdmissionKind::Follow(request.parent),
+                match request.kind {
+                    crate::metadata_follow::MetadataKind::Metalink => {
+                        admission::AdmissionKind::Follow(request.parent)
+                    }
+                    crate::metadata_follow::MetadataKind::BitTorrent => {
+                        admission::AdmissionKind::FollowTorrent(request.parent)
+                    }
+                },
                 false,
             )
         });

@@ -2475,7 +2475,7 @@ where
     fn apply_metadata_complete(
         &mut self,
         record: &JournalRecord,
-        expansion: crate::MetalinkExpansion,
+        expansion: crate::MetadataExpansion,
         completed_at_unix_ms: u64,
     ) -> Result<(), JournalStateError> {
         self.require_ready_nonterminal(record)?;
@@ -2494,7 +2494,7 @@ where
             current
                 .options
                 .entries()
-                .filter(|(name, _)| *name != crate::METALINK_EXPANSION_OPTION)
+                .filter(|(name, _)| *name != crate::METADATA_EXPANSION_OPTION)
                 .map(|(name, value)| (name.to_owned(), value.to_owned())),
         )
         .map_err(JournalStateError::Payload)?;
@@ -4453,8 +4453,8 @@ mod tests {
     #[test]
     fn metadata_completion_rejects_changed_snapshots_and_missing_retained_layout() {
         for case in 0..4 {
-            let mut expansion = crate::MetalinkExpansion {
-                parent: crate::MetalinkParent {
+            let mut expansion = crate::MetadataExpansion {
+                parent: crate::MetadataParent {
                     gid: ariax_core::Gid::new(1).unwrap(),
                     generation: Generation::INITIAL,
                     snapshot_hash: options(&[]).snapshot_hash(),

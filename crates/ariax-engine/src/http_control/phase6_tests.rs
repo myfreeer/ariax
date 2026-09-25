@@ -7,6 +7,136 @@ const V2: &[u8] = include_bytes!("../../../ariax-bt-libtorrent-sys/tests/fixture
 const HYBRID: &[u8] =
     include_bytes!("../../../ariax-bt-libtorrent-sys/tests/fixtures/hybrid.torrent");
 
+async fn metadata_server(bytes: Vec<u8>) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let bytes = bytes.clone();
+            tokio::spawn(async move {
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    let Ok(byte) = stream.read_u8().await else {
+                        return;
+                    };
+                    request.push(byte);
+                    if request.len() > 16384 {
+                        return;
+                    }
+                }
+                let text = String::from_utf8(request).unwrap();
+                let range = text.lines().find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("range: bytes=")
+                        .map(str::to_owned)
+                });
+                let (status, extra, body) = if let Some(range) = range {
+                    let (start, end) = range.split_once('-').unwrap();
+                    let start = start.parse::<usize>().unwrap();
+                    let end = end.parse::<usize>().unwrap().min(bytes.len() - 1);
+                    (
+                        "206 Partial Content",
+                        format!("Content-Range: bytes {start}-{end}/{}\r\n", bytes.len()),
+                        bytes[start..=end].to_vec(),
+                    )
+                } else {
+                    ("200 OK", String::new(), bytes)
+                };
+                let head = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/x-bittorrent\r\nETag: \"metadata\"\r\nContent-Length: {}\r\n{extra}Connection: close\r\n\r\n",
+                    body.len()
+                );
+                if stream.write_all(head.as_bytes()).await.is_ok() {
+                    let _ = stream.write_all(&body).await;
+                }
+            });
+        }
+    });
+    (address, task)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn torrent_following_is_atomic_respects_retention_and_survives_restart() {
+    for mode in ["true", "mem", "false", "invalid"] {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        super::tests::attach_loopback_worker(&mut plane, &directory);
+        let (address, server) = metadata_server(if mode == "invalid" {
+            b"de".to_vec()
+        } else {
+            V1.to_vec()
+        })
+        .await;
+        let parent: Gid = plane.call("aria2.addUri", json!([[format!("http://{address}/metadata.torrent")], {
+            "out":"metadata.torrent", "follow-torrent":if mode == "invalid" {"mem"} else {mode},
+            "bt-metadata-only":"true", "enable-dht":"false", "enable-peer-exchange":"false"
+        }])).unwrap().as_str().unwrap().parse().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            plane.poll_once().unwrap();
+            if plane
+                .engine
+                .snapshot_reader()
+                .load()
+                .tasks()
+                .values()
+                .all(|task| task.snapshot.state == ariax_core::TaskState::StoppedResult)
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{mode}: {:?}",
+                plane.call("aria2.tellStatus", json!([parent.to_string()]))
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        let status = plane
+            .call("aria2.tellStatus", json!([parent.to_string()]))
+            .unwrap();
+        assert_eq!(
+            status["status"],
+            if mode == "invalid" {
+                "error"
+            } else {
+                "complete"
+            },
+            "{status}"
+        );
+        let expanded = matches!(mode, "true" | "mem");
+        assert_eq!(plane.bt.catalog.len(), usize::from(expanded));
+        assert_eq!(plane.tasks.len(), 1);
+        if expanded {
+            assert_eq!(status["followedBy"].as_array().unwrap().len(), 1);
+        }
+        assert_eq!(
+            std::fs::read_dir(&directory.output).unwrap().count(),
+            usize::from(matches!(mode, "true" | "false"))
+        );
+        if matches!(mode, "true" | "false") {
+            assert_eq!(
+                std::fs::read(directory.output.join("metadata.torrent")).unwrap(),
+                V1
+            );
+        } else {
+            assert!(!directory.output.join("metadata.torrent").exists());
+        }
+        server.abort();
+        plane.shutdown().unwrap();
+        let mut recovered = directory.control_plane();
+        assert_eq!(recovered.bt.catalog.len(), usize::from(expanded));
+        assert_eq!(
+            recovered
+                .call("aria2.tellStatus", json!([parent.to_string()]))
+                .unwrap()["followedBy"],
+            status["followedBy"]
+        );
+        recovered.shutdown().unwrap();
+    }
+}
+
 fn add_torrent(plane: &mut HttpControlPlane, bytes: &[u8], options: Value) -> Gid {
     plane
         .call(
@@ -44,6 +174,8 @@ fn bt_options_reject_invalid_selection_limits_and_unsupported_settings() {
         json!({"seed-ratio":"NaN"}),
         json!({"seed-time":"-1"}),
         json!({"proxy":"http://secret@example.test"}),
+        json!({"bt-tracker":"https://tracker.test/announce?passkey=secret-canary"}),
+        json!({"bt-tracker":"https://user:secret-canary@tracker.test/announce"}),
     ] {
         assert!(bittorrent::Options::parse(&options).is_err());
     }

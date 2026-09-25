@@ -1339,6 +1339,15 @@ impl SessionStore {
         members: &[SessionAdmissionMetadata],
         policy: &impl PersistedOptionPolicy,
     ) -> Result<(), SessionStoreError> {
+        self.create_session_batch_following(members, None, policy)
+    }
+
+    pub fn create_session_batch_following(
+        &mut self,
+        members: &[SessionAdmissionMetadata],
+        parent: Option<crate::MetadataParent>,
+        policy: &impl PersistedOptionPolicy,
+    ) -> Result<(), SessionStoreError> {
         if members.is_empty() || members.len() > SESSION_MAX_IMPORT_TASKS {
             return Err(SessionStoreError::InvalidRecord("import.task_count"));
         }
@@ -1378,6 +1387,14 @@ impl SessionStore {
             > SESSION_MAX_TASKS
         {
             return Err(SessionStoreError::InvalidRecord("import.task_limit"));
+        }
+        if let Some(parent) = parent {
+            persist_metadata_expansion(
+                &transaction,
+                parent,
+                members.iter().map(SessionAdmissionMetadata::gid).collect(),
+                policy,
+            )?;
         }
         for (index, member) in members.iter().enumerate() {
             match member {
@@ -1424,7 +1441,7 @@ impl SessionStore {
     pub fn create_task_batch_following(
         &mut self,
         tasks: &[SessionTaskMetadata],
-        parent: Option<crate::MetalinkParent>,
+        parent: Option<crate::MetadataParent>,
         policy: &impl PersistedOptionPolicy,
     ) -> Result<(), SessionStoreError> {
         if tasks.is_empty() || tasks.len() > SESSION_MAX_IMPORT_TASKS {
@@ -1453,41 +1470,11 @@ impl SessionStore {
             return Err(SessionStoreError::InvalidRecord("import.task_limit"));
         }
         if let Some(parent) = parent {
-            let options = read_task_options(
+            persist_metadata_expansion(
                 &transaction,
-                parent.gid,
-                OptionsSnapshotScope::CurrentGeneration,
-                policy,
-            )?;
-            let queue: i64 = transaction.query_row(
-                "SELECT queue_state FROM task WHERE gid = ?1",
-                [parent.gid.to_string()],
-                |row| row.get(0),
-            )?;
-            if queue != SessionQueueState::Active as i64
-                || options.snapshot_hash() != parent.snapshot_hash
-                || options
-                    .entries()
-                    .any(|(name, _)| name == crate::METALINK_EXPANSION_OPTION)
-            {
-                return Err(SessionStoreError::InvalidRecord("metalink.parent_changed"));
-            }
-            let expansion = crate::MetalinkExpansion {
                 parent,
-                children: tasks.iter().map(|entry| entry.task.gid).collect(),
-            };
-            if !expansion.validate() {
-                return Err(SessionStoreError::InvalidRecord("metalink.expansion"));
-            }
-            let options = expansion
-                .with_options(&options)
-                .map_err(|_| SessionStoreError::InvalidRecord("metalink.expansion"))?;
-            validate_options_for_persistence(&options, policy)?;
-            replace_task_options_in_transaction(
-                &transaction,
-                parent.gid,
-                OptionsSnapshotScope::CurrentGeneration,
-                &options,
+                tasks.iter().map(|entry| entry.task.gid).collect(),
+                policy,
             )?;
         }
         for (index, entry) in tasks.iter().enumerate() {
@@ -2770,6 +2757,49 @@ fn import_crash_checkpoint(point: usize) {
     if IMPORT_CRASH_POINT.with(|value| value.get() == Some(point)) {
         std::process::exit(77);
     }
+}
+
+fn persist_metadata_expansion(
+    transaction: &rusqlite::Transaction<'_>,
+    parent: crate::MetadataParent,
+    children: Vec<Gid>,
+    policy: &impl PersistedOptionPolicy,
+) -> Result<(), SessionStoreError> {
+    let options = read_task_options(
+        transaction,
+        parent.gid,
+        OptionsSnapshotScope::CurrentGeneration,
+        policy,
+    )?;
+    let (kind, queue): (i64, i64) = transaction.query_row(
+        "SELECT task_kind, queue_state FROM task WHERE gid = ?1",
+        [parent.gid.to_string()],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if kind != 1
+        || queue != SessionQueueState::Active as i64
+        || options.snapshot_hash() != parent.snapshot_hash
+        || options
+            .entries()
+            .any(|(name, _)| name == crate::METADATA_EXPANSION_OPTION)
+    {
+        return Err(SessionStoreError::InvalidRecord("metadata.parent_changed"));
+    }
+    let expansion = crate::MetadataExpansion { parent, children };
+    if !expansion.validate() {
+        return Err(SessionStoreError::InvalidRecord("metadata.expansion"));
+    }
+    let options = expansion
+        .with_options(&options)
+        .map_err(|_| SessionStoreError::InvalidRecord("metadata.expansion"))?;
+    validate_options_for_persistence(&options, policy)?;
+    replace_task_options_in_transaction(
+        transaction,
+        parent.gid,
+        OptionsSnapshotScope::CurrentGeneration,
+        &options,
+    )?;
+    Ok(())
 }
 
 fn validate_admission_metadata(
@@ -8950,6 +8980,144 @@ mod tests {
             SessionStore::open(directory.database(), SessionStoreConfig::default()).unwrap();
         assert_eq!(reopened.tasks().unwrap().len(), 1);
         assert_eq!(reopened.bt_tasks().unwrap(), [task.clone()]);
+    }
+
+    fn metadata_parent() -> (SessionTaskMetadata, crate::MetadataParent) {
+        let mut record = import_metadata(10, 0);
+        record.task.queue_state = SessionQueueState::Active;
+        let parent = crate::MetadataParent {
+            gid: record.task.gid,
+            generation: ariax_core::Generation::INITIAL,
+            snapshot_hash: record.options.snapshot_hash(),
+            document_hash: hash(42),
+            document_bytes: 100,
+            retained: false,
+        };
+        (record, parent)
+    }
+
+    #[test]
+    fn followed_mixed_batch_rolls_back_parent_with_children_and_rejects_replay() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        let (record, parent) = metadata_parent();
+        let policy = |_: &str| true;
+        store
+            .create_task_with_metadata(&record.task, &record.sources, &record.options, &policy)
+            .unwrap();
+        let batch = mixed_import_metadata();
+        store.connection.execute_batch("CREATE TEMP TRIGGER reject_follow BEFORE INSERT ON bt_metadata BEGIN SELECT RAISE(ABORT, 'injected followed child failure'); END;").unwrap();
+        assert!(
+            store
+                .create_session_batch_following(&batch, Some(parent), &policy)
+                .is_err()
+        );
+        store.confirm_task_metadata(&record, &policy).unwrap();
+        assert!(store.bt_tasks().unwrap().is_empty());
+        assert_eq!(store.tasks().unwrap().len(), 1);
+        store
+            .connection
+            .execute_batch("DROP TRIGGER reject_follow")
+            .unwrap();
+        let changed = crate::MetadataParent {
+            snapshot_hash: hash(99),
+            ..parent
+        };
+        assert!(
+            store
+                .create_session_batch_following(&batch, Some(changed), &policy)
+                .is_err()
+        );
+        store.confirm_task_metadata(&record, &policy).unwrap();
+        store
+            .create_session_batch_following(&batch, Some(parent), &policy)
+            .unwrap();
+        let options = store
+            .task_options(parent.gid, OptionsSnapshotScope::CurrentGeneration, &policy)
+            .unwrap();
+        let expansion = crate::MetadataExpansion::parse(
+            options
+                .entries()
+                .find(|(name, _)| *name == crate::METADATA_EXPANSION_OPTION)
+                .unwrap()
+                .1,
+        )
+        .unwrap();
+        assert_eq!(expansion.children, [gid(1), gid(2)]);
+        assert!(
+            store
+                .create_session_batch_following(&batch, Some(parent), &policy)
+                .is_err()
+        );
+        assert_eq!(store.tasks().unwrap().len(), 2);
+        assert_eq!(store.bt_tasks().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn followed_metadata_crash_child() {
+        let Ok(database) = std::env::var("ARIAX_FOLLOW_CRASH_DATABASE") else {
+            return;
+        };
+        let committed = std::env::var("ARIAX_FOLLOW_CRASH_COMMITTED").unwrap() == "true";
+        let mut store = SessionStore::open(database, SessionStoreConfig::default()).unwrap();
+        IMPORT_CRASH_POINT.with(|value| value.set(Some(if committed { usize::MAX } else { 0 })));
+        store
+            .create_session_batch_following(
+                &mixed_import_metadata(),
+                Some(metadata_parent().1),
+                &|_: &str| true,
+            )
+            .unwrap();
+        panic!("crash point was not reached");
+    }
+
+    #[test]
+    fn followed_metadata_crash_recovers_parent_and_children_together() {
+        for committed in [false, true] {
+            let directory = TestDirectory::new();
+            let (record, parent) = metadata_parent();
+            let mut store = open_store(&directory);
+            store
+                .create_task_with_metadata(
+                    &record.task,
+                    &record.sources,
+                    &record.options,
+                    &|_: &str| true,
+                )
+                .unwrap();
+            drop(store);
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "session_store::tests::followed_metadata_crash_child",
+                    "--nocapture",
+                ])
+                .env("ARIAX_FOLLOW_CRASH_DATABASE", directory.database())
+                .env(
+                    "ARIAX_FOLLOW_CRASH_COMMITTED",
+                    if committed { "true" } else { "false" },
+                )
+                .status()
+                .unwrap();
+            assert_eq!(status.code(), Some(77));
+            let store =
+                SessionStore::open(directory.database(), SessionStoreConfig::default()).unwrap();
+            assert_eq!(store.tasks().unwrap().len(), 1 + usize::from(committed));
+            assert_eq!(store.bt_tasks().unwrap().len(), usize::from(committed));
+            let options = store
+                .task_options(
+                    parent.gid,
+                    OptionsSnapshotScope::CurrentGeneration,
+                    &|_: &str| true,
+                )
+                .unwrap();
+            assert_eq!(
+                options
+                    .entries()
+                    .any(|(name, _)| name == crate::METADATA_EXPANSION_OPTION),
+                committed
+            );
+        }
     }
 
     #[test]

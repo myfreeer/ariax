@@ -544,7 +544,7 @@ impl ControlQueryRoot {
         self.add_slot_diagnostics(&mut value, snapshot, stats);
         if let Some(expansion) = self
             .task_spec(snapshot.gid)
-            .and_then(|spec| spec.options().transfer.metalink_expansion.as_ref().cloned())
+            .and_then(|spec| spec.options().transfer.metadata_expansion.as_ref().cloned())
         {
             value["followedBy"] = json!(
                 expansion
@@ -762,7 +762,7 @@ impl ControlQueryRoot {
                 .tasks
                 .get(applied.task_id)
                 .ok_or(HttpControlError::NotFound)?;
-            if spec.options().transfer.metalink_expansion.is_some() {
+            if spec.options().transfer.metadata_expansion.is_some() {
                 continue;
             }
             let options = spec

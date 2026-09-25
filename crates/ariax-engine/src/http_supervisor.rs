@@ -38,7 +38,7 @@ pub type HttpWorkerFuture =
 /// Factory for one transfer generation. The supervisor owns scheduler event
 /// authorities; workers own only immutable task metadata and cancellation.
 pub trait HttpTaskWorker: Send + Sync + 'static {
-    fn metalink_follow_queue(&self) -> Option<crate::MetalinkFollowQueue> {
+    fn metadata_follow_queue(&self) -> Option<crate::MetadataFollowQueue> {
         None
     }
     fn start(

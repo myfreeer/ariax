@@ -171,7 +171,7 @@ impl DownloadOptions {
             for (name, value) in transfer.persisted() {
                 if !matches!(
                     name.as_str(),
-                    "verification-manifest" | "metalink-expansion"
+                    "verification-manifest" | "metadata-expansion"
                 ) {
                     options.insert(name, Value::String(value));
                 }

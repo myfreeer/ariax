@@ -93,7 +93,7 @@ pub enum UriSelector {
     Adaptive,
 }
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum FollowMetalink {
+pub enum FollowMetadata {
     Never,
     #[default]
     Follow,
@@ -112,7 +112,9 @@ pub struct TransferOptions {
     pub checksum: Option<ContentChecksum>,
     pub alignment: ChunkAlignment,
     pub realtime_checksum: bool,
-    pub follow_metalink: FollowMetalink,
+    pub follow_metalink: FollowMetadata,
+    pub follow_torrent: FollowMetadata,
+    pub bittorrent_options: crate::BitTorrentOptions,
     pub uri_selector: UriSelector,
     pub server_stat_timeout: std::time::Duration,
     pub metalink_filters: std::collections::BTreeMap<String, String>,
@@ -129,7 +131,7 @@ pub struct TransferOptions {
     pub ssh_host_key_md: Option<String>,
     /// Internal, persisted binding; admission never accepts this from RPC options.
     pub(crate) verification_fingerprint: Option<JournalHash>,
-    pub(crate) metalink_expansion: Option<ariax_storage::MetalinkExpansion>,
+    pub(crate) metadata_expansion: Option<ariax_storage::MetadataExpansion>,
 }
 impl Default for TransferOptions {
     fn default() -> Self {
@@ -144,7 +146,9 @@ impl Default for TransferOptions {
             checksum: None,
             alignment: ChunkAlignment::Auto,
             realtime_checksum: true,
-            follow_metalink: FollowMetalink::Follow,
+            follow_metalink: FollowMetadata::Follow,
+            follow_torrent: FollowMetadata::Follow,
+            bittorrent_options: Default::default(),
             uri_selector: UriSelector::Feedback,
             server_stat_timeout: std::time::Duration::from_secs(86400),
             metalink_filters: Default::default(),
@@ -160,11 +164,21 @@ impl Default for TransferOptions {
             sftp_host_key_sha256: None,
             ssh_host_key_md: None,
             verification_fingerprint: None,
-            metalink_expansion: None,
+            metadata_expansion: None,
         }
     }
 }
 impl TransferOptions {
+    pub(crate) fn is_bittorrent_option(name: &str) -> bool {
+        cfg!(feature = "bt")
+            && ariax_config::builtin_registry()
+                .find(name)
+                .is_some_and(|definition| {
+                    definition.owner == "bt"
+                        && definition.scopes.contains(ariax_config::Scope::PerDownload)
+                        && name != "follow-torrent"
+                })
+    }
     pub(crate) fn is_metalink_filter(name: &str) -> bool {
         matches!(
             name,
@@ -216,13 +230,22 @@ impl TransferOptions {
                 .as_ref()
                 .map_or(0, |value| value.expose().len().saturating_add(32)),
         );
-        bytes = bytes.saturating_add(self.metalink_expansion.as_ref().map_or(0, |value| {
+        bytes = bytes.saturating_add(self.metadata_expansion.as_ref().map_or(0, |value| {
             value
                 .children
                 .capacity()
                 .saturating_mul(std::mem::size_of::<ariax_core::Gid>())
                 .saturating_add(256)
         }));
+        bytes = self
+            .bittorrent_options
+            .pairs()
+            .fold(bytes, |bytes, (name, value)| {
+                bytes
+                    .saturating_add(name.len())
+                    .saturating_add(value.len())
+                    .saturating_add(512)
+            });
         self.metalink_filters
             .iter()
             .fold(bytes, |sum, (key, value)| {
@@ -260,6 +283,8 @@ impl TransferOptions {
     }
     pub(crate) fn handles(name: &str) -> bool {
         Self::is_metalink_filter(name)
+            || Self::is_bittorrent_option(name)
+            || cfg!(feature = "bt") && name == "follow-torrent"
             || name == "server-stat-timeout"
             || matches!(
                 name,
@@ -298,6 +323,24 @@ impl TransferOptions {
     pub(crate) fn set(&mut self, name: &str, value: &str) -> Result<(), HttpTaskSpecError> {
         let invalid = || HttpTaskSpecError::InvalidOptions;
         match name {
+            "follow-torrent" => {
+                self.follow_torrent = match value {
+                    "true" => FollowMetadata::Follow,
+                    "false" => FollowMetadata::Never,
+                    "mem" => FollowMetadata::Memory,
+                    _ => return Err(invalid()),
+                };
+            }
+            name if Self::is_bittorrent_option(name) => {
+                self.bittorrent_options = crate::BitTorrentOptions::from_pairs(
+                    self.bittorrent_options
+                        .pairs()
+                        .filter(|(key, _)| *key != name)
+                        .map(|(name, value)| (name.to_owned(), value.to_owned()))
+                        .chain([(name.to_owned(), value.to_owned())]),
+                )
+                .map_err(|_| invalid())?;
+            }
             name if Self::is_metalink_filter(name) => {
                 self.metalink_filters
                     .insert(name.to_owned(), value.to_owned());
@@ -327,9 +370,9 @@ impl TransferOptions {
             }
             "follow-metalink" => {
                 self.follow_metalink = match value {
-                    "true" => FollowMetalink::Follow,
-                    "false" => FollowMetalink::Never,
-                    "mem" => FollowMetalink::Memory,
+                    "true" => FollowMetadata::Follow,
+                    "false" => FollowMetadata::Never,
+                    "mem" => FollowMetadata::Memory,
                     _ => return Err(invalid()),
                 }
             }
@@ -369,9 +412,9 @@ impl TransferOptions {
             "sftp-host-key" => self.sftp_host_key = Some(value.to_owned()),
             "sftp-host-key-sha256" => self.sftp_host_key_sha256 = Some(value.to_owned()),
             "ssh-host-key-md" => self.ssh_host_key_md = Some(value.to_owned()),
-            "metalink-expansion" => {
-                self.metalink_expansion =
-                    Some(ariax_storage::MetalinkExpansion::parse(value).ok_or_else(invalid)?)
+            "metadata-expansion" => {
+                self.metadata_expansion =
+                    Some(ariax_storage::MetadataExpansion::parse(value).ok_or_else(invalid)?)
             }
             "verification-manifest" => {
                 let digest =
@@ -399,7 +442,22 @@ impl TransferOptions {
                 self.server_stat_timeout.as_secs().to_string(),
             ));
         }
+        entries.extend(
+            self.bittorrent_options
+                .pairs()
+                .map(|(name, value)| (name.to_owned(), value.to_owned())),
+        );
         for (name, changed, value) in [
+            (
+                "follow-torrent",
+                self.follow_torrent != default.follow_torrent,
+                match self.follow_torrent {
+                    FollowMetadata::Follow => "true",
+                    FollowMetadata::Never => "false",
+                    FollowMetadata::Memory => "mem",
+                }
+                .to_owned(),
+            ),
             (
                 "no-netrc",
                 self.no_netrc != default.no_netrc,
@@ -424,9 +482,9 @@ impl TransferOptions {
                 "follow-metalink",
                 self.follow_metalink != default.follow_metalink,
                 match self.follow_metalink {
-                    FollowMetalink::Follow => "true",
-                    FollowMetalink::Never => "false",
-                    FollowMetalink::Memory => "mem",
+                    FollowMetadata::Follow => "true",
+                    FollowMetadata::Never => "false",
+                    FollowMetadata::Memory => "mem",
                 }
                 .to_owned(),
             ),
@@ -484,9 +542,9 @@ impl TransferOptions {
                 entries.push((name.to_owned(), value.clone()));
             }
         }
-        if let Some(expansion) = &self.metalink_expansion {
+        if let Some(expansion) = &self.metadata_expansion {
             entries.push((
-                ariax_storage::METALINK_EXPANSION_OPTION.to_owned(),
+                ariax_storage::METADATA_EXPANSION_OPTION.to_owned(),
                 expansion.canonical(),
             ));
         }

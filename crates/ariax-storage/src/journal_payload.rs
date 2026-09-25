@@ -709,7 +709,7 @@ pub enum JournalPayload {
         state: JournalHostKeyState,
     },
     MetadataComplete {
-        expansion: crate::MetalinkExpansion,
+        expansion: crate::MetadataExpansion,
         completed_at_unix_ms: u64,
     },
 }
@@ -1367,7 +1367,7 @@ impl JournalPayload {
                 let bytes = decoder.bytes(64 * 1024)?;
                 let expansion = str::from_utf8(&bytes)
                     .ok()
-                    .and_then(crate::MetalinkExpansion::parse)
+                    .and_then(crate::MetadataExpansion::parse)
                     .ok_or(PayloadCodecError::InvalidVerificationManifest)?;
                 Self::MetadataComplete {
                     expansion,
@@ -2825,8 +2825,8 @@ mod tests {
                 },
             },
             JournalPayload::MetadataComplete {
-                expansion: crate::MetalinkExpansion {
-                    parent: crate::MetalinkParent {
+                expansion: crate::MetadataExpansion {
+                    parent: crate::MetadataParent {
                         gid: ariax_core::Gid::new(1).unwrap(),
                         generation: Generation::INITIAL,
                         snapshot_hash: hash(1),

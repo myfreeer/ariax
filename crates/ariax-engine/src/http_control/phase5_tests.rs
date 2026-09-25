@@ -122,7 +122,7 @@ fn phase5_json_v3_imports_selected_verification_into_a_new_root_atomically() {
         match tamper {
             0 => bad["tasks"][0]["verification"]["length"] = json!("4"),
             1 => bad["tasks"][0]["verification"]["chunks"][0] = json!("sha-512=00"),
-            2 => bad["tasks"][0]["options"]["metalink-expansion"] = json!("forged"),
+            2 => bad["tasks"][0]["options"]["metadata-expansion"] = json!("forged"),
             _ => bad["formatVersion"] = json!(1),
         }
         assert!(target.call("ariax.importSession", json!([bad])).is_err());
@@ -610,7 +610,7 @@ async fn phase5_process_exit_recovers_trust_and_atomic_expansion_without_duplica
                 .unwrap()
                 .options()
                 .transfer
-                .metalink_expansion
+                .metadata_expansion
                 .clone()
                 .unwrap();
             assert_eq!(expansion.children.len(), 2);
@@ -692,7 +692,7 @@ async fn phase5_crash_child() {
                 assert!(Instant::now() < deadline);
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }
-            let parent = ariax_storage::MetalinkParent {
+            let parent = ariax_storage::MetadataParent {
                 gid,
                 generation: plane.engine.scheduler().task(gid).unwrap().generation,
                 snapshot_hash: plane

@@ -471,10 +471,10 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         "transfer",
     ),
     protocol_option(
-        "metalink-expansion",
+        "metadata-expansion",
         ValueType::String { max_len: 65536 },
         None,
-        "metalink",
+        "transfer",
     ),
     protocol_option(
         "verification-manifest",

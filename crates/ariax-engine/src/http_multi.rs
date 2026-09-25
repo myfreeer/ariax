@@ -1,5 +1,5 @@
 //! Journal-backed non-overlapping multi-mirror HTTP range worker.
-mod metalink_follow;
+mod metadata_follow;
 mod protocol;
 use protocol::PreparedValidator;
 
@@ -841,7 +841,7 @@ pub struct HttpMultiRangeWorkerConfig {
     pub ingress_budget: HttpIngressBudgets,
     pub protocol_metadata: HttpIngressBudgets,
     pub server_stats: crate::ServerStatistics,
-    pub metalink_follow: crate::MetalinkFollowQueue,
+    pub metadata_follow: crate::MetadataFollowQueue,
     pub sftp_ingress: HttpIngressBudgets,
     pub ingress_frame_bytes: NonZeroUsize,
     pub event_capacity: NonZeroUsize,
@@ -879,7 +879,7 @@ impl Default for HttpMultiRangeWorkerConfig {
             ingress_budget: HttpIngressBudgets::new(DEFAULT_HTTP_INGRESS_BUDGET_BYTES),
             protocol_metadata: HttpIngressBudgets::new(32 * 1024 * 1024),
             server_stats: crate::ServerStatistics::default(),
-            metalink_follow: crate::MetalinkFollowQueue::default(),
+            metadata_follow: crate::MetadataFollowQueue::default(),
             sftp_ingress: HttpIngressBudgets::new(16 * 1024 * 1024),
             ingress_frame_bytes: NonZeroUsize::new(DEFAULT_HTTP_INGRESS_FRAME_BYTES)
                 .expect("default ingress frame is nonzero"),
@@ -969,9 +969,9 @@ impl HttpMultiRangeWorker {
         generation: Generation,
         cancellation: HttpCancellation,
     ) -> Result<HttpWorkerSuccess, HttpMultiRangeError> {
-        if let Some(expansion) = task.options().transfer.metalink_expansion.clone() {
+        if let Some(expansion) = task.options().transfer.metadata_expansion.clone() {
             return self
-                .finish_metalink_parent(task, generation, expansion)
+                .finish_metadata_parent(task, generation, expansion)
                 .await;
         }
         let result = self
@@ -979,8 +979,24 @@ impl HttpMultiRangeWorker {
             .await;
         match result {
             Err(HttpMultiRangeError::MetalinkDiscovered(uri)) => {
-                self.follow_metalink(task, generation, cancellation, uri.0)
-                    .await
+                self.follow_metadata(
+                    task,
+                    generation,
+                    cancellation,
+                    uri.0,
+                    crate::metadata_follow::MetadataKind::Metalink,
+                )
+                .await
+            }
+            Err(HttpMultiRangeError::TorrentDiscovered(uri)) => {
+                self.follow_metadata(
+                    task,
+                    generation,
+                    cancellation,
+                    uri.0,
+                    crate::metadata_follow::MetadataKind::BitTorrent,
+                )
+                .await
             }
             result => result,
         }
@@ -1265,7 +1281,10 @@ impl HttpMultiRangeWorker {
                 discard_task,
                 cfg!(feature = "metalink")
                     && task.verification().is_none()
-                    && task.options().transfer.follow_metalink != crate::FollowMetalink::Never,
+                    && task.options().transfer.follow_metalink != crate::FollowMetadata::Never,
+                cfg!(feature = "bt")
+                    && task.verification().is_none()
+                    && task.options().transfer.follow_torrent != crate::FollowMetadata::Never,
             )
             .await
             {
@@ -1286,7 +1305,8 @@ impl HttpMultiRangeWorker {
                 }
                 Err(
                     error @ (HttpMultiRangeError::Cancelled
-                    | HttpMultiRangeError::MetalinkDiscovered(_)),
+                    | HttpMultiRangeError::MetalinkDiscovered(_)
+                    | HttpMultiRangeError::TorrentDiscovered(_)),
                 ) => return Err(error),
                 Err(error) => last_error = Some(error),
             }
@@ -2541,6 +2561,7 @@ impl HttpMultiRangeWorker {
             stats,
             discard_task,
             false,
+            false,
         )
         .await
         .map_err(|error| match error {
@@ -2569,8 +2590,8 @@ impl HttpMultiRangeWorker {
 }
 
 impl HttpTaskWorker for HttpMultiRangeWorker {
-    fn metalink_follow_queue(&self) -> Option<crate::MetalinkFollowQueue> {
-        Some(self.config.metalink_follow.clone())
+    fn metadata_follow_queue(&self) -> Option<crate::MetadataFollowQueue> {
+        Some(self.config.metadata_follow.clone())
     }
     fn start(
         &self,
@@ -3297,16 +3318,17 @@ enum RangeAttemptFailure {
 }
 
 /// A live metadata location. Formatting deliberately omits credentials and queries.
-pub struct MetalinkLocation(String);
-impl fmt::Debug for MetalinkLocation {
+pub struct MetadataLocation(String);
+impl fmt::Debug for MetadataLocation {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("MetalinkLocation([redacted])")
+        formatter.write_str("MetadataLocation([redacted])")
     }
 }
 
 #[derive(Debug)]
 pub enum HttpMultiRangeError {
-    MetalinkDiscovered(MetalinkLocation),
+    MetalinkDiscovered(MetadataLocation),
+    TorrentDiscovered(MetadataLocation),
     HostKeyChallenge(Box<ariax_core::PresentedHostKeyChallenge>),
     Transfer(crate::ProtocolFailure),
     RetryWait(MonotonicInstant),
@@ -3339,6 +3361,7 @@ impl HttpMultiRangeError {
         match self {
             Self::Transfer(error) => error.code(),
             Self::MetalinkDiscovered(_) => "metalink_metadata",
+            Self::TorrentDiscovered(_) => "torrent_metadata",
             Self::HostKeyChallenge(_) => "HostKeyApprovalRequired",
             Self::InvalidConfig => "invalid_multi_range_config",
             Self::StatsCatalogFull => "http_stats_catalog_full",
@@ -3506,6 +3529,7 @@ async fn probe_source(
     stats: &HttpTransferStats,
     discard_task: &HttpDiscardTaskGuard,
     follow_metalink: bool,
+    follow_torrent: bool,
 ) -> Result<HttpRangeResponseValidator, HttpMultiRangeError> {
     let mut request = HttpClientRequest::get(uri.to_owned());
     request.range = Some(GlobalSpan { offset: 0, len: 1 });
@@ -3520,14 +3544,16 @@ async fn probe_source(
         response = client.execute(request) => response.map_err(HttpMultiRangeError::Client)?,
     };
     let mut response = response;
-    if follow_metalink
+    let metalink = follow_metalink && metadata_follow::is_metalink_type(response.headers());
+    let torrent = follow_torrent
+        && metadata_follow::is_torrent_type(response.headers(), response.final_uri());
+    if (metalink || torrent)
         && matches!(
             response.status(),
             hyper::StatusCode::OK | hyper::StatusCode::PARTIAL_CONTENT
         )
-        && metalink_follow::is_metalink_type(response.headers())
     {
-        let location = MetalinkLocation(response.final_uri().to_owned());
+        let location = MetadataLocation(response.final_uri().to_owned());
         let discard = discard_task
             .begin_attempt(discard_host_key(response.final_uri())?)
             .map_err(discard_setup_error)?;
@@ -3536,7 +3562,11 @@ async fn probe_source(
             stats.add_raw(data.len());
             record_discarded(&discard, stats, data.len())?;
         }
-        return Err(HttpMultiRangeError::MetalinkDiscovered(location));
+        return Err(if metalink {
+            HttpMultiRangeError::MetalinkDiscovered(location)
+        } else {
+            HttpMultiRangeError::TorrentDiscovered(location)
+        });
     }
     let validator = HttpRangeResponseValidator::from_probe(
         source,

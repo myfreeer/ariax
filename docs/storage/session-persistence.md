@@ -4,6 +4,11 @@ JSON export measures borrowed task metadata and encoded blob lengths before
 allocating the result. Oversized BitTorrent metainfo or resume data fails within
 the response budget; base64 encoding never creates an unreserved scratch copy.
 
+Automatic Metalink and torrent following share the current `metadata-expansion`
+parent/child record. The parent option snapshot and all child records are changed
+in one transaction, which validates the active parent's snapshot before commit.
+Recovery finishes that recorded expansion without admitting the children again.
+
 [Documentation](../README.md)
 
 Status: first-slice implementation in progress. The control-journal v1 framing,

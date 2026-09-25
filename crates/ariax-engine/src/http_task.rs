@@ -359,7 +359,7 @@ impl HttpTaskOptions {
                 // when this build cannot start SFTP connections.
                 "sftp-host-key-sha256" => value.transfer.set(name, setting)?,
                 _ if crate::TransferOptions::handles(name)
-                    || matches!(name, "verification-manifest" | "metalink-expansion") =>
+                    || matches!(name, "verification-manifest" | "metadata-expansion") =>
                 {
                     value.transfer.set(name, setting)?
                 }

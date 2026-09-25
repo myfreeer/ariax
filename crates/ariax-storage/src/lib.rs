@@ -3,8 +3,8 @@
 //! Portable storage contracts shared by safe-open and disk backends.
 
 mod journal;
-mod metalink_expansion;
-pub use metalink_expansion::{METALINK_EXPANSION_OPTION, MetalinkExpansion, MetalinkParent};
+mod metadata_expansion;
+pub use metadata_expansion::{METADATA_EXPANSION_OPTION, MetadataExpansion, MetadataParent};
 mod journal_appender;
 mod journal_payload;
 mod journal_state;
