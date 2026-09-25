@@ -178,6 +178,7 @@ struct SlowTimerEntry {
 
 struct RuntimeMailbox {
     closed: bool,
+    bt_tasks: std::collections::BTreeSet<TaskId>,
     request_capacity: usize,
     event_capacity: usize,
     timer_capacity: usize,
@@ -206,8 +207,57 @@ pub struct RuntimeEffectHandle {
 }
 
 impl RuntimeEffectHandle {
+    #[cfg(feature = "bt")]
+    pub(crate) fn register_bt_task(&self, task: TaskId) {
+        lock_unpoisoned(&self.mailbox).bt_tasks.insert(task);
+    }
+
+    #[cfg(feature = "bt")]
+    pub(crate) fn unregister_bt_task(&self, task: TaskId) {
+        lock_unpoisoned(&self.mailbox).bt_tasks.remove(&task);
+    }
+
+    #[cfg(feature = "bt")]
+    /// Leave requests for other protocol owners in their original queue order.
+    pub(crate) fn take_allocation_matching(
+        &self,
+        owns: impl Fn(TaskId) -> bool,
+    ) -> Option<AllocationRequest> {
+        let mut mailbox = lock_unpoisoned(&self.mailbox);
+        let index = mailbox
+            .allocations
+            .iter()
+            .position(|entry| owns(entry.identity.task_id))?;
+        let entry = mailbox.allocations.remove(index)?;
+        Some(AllocationRequest {
+            identity: entry.identity,
+        })
+    }
+
+    #[cfg(feature = "bt")]
+    pub(crate) fn take_cancellation_matching(
+        &self,
+        owns: impl Fn(TaskId) -> bool,
+    ) -> Option<CancellationRequest> {
+        let mut mailbox = lock_unpoisoned(&self.mailbox);
+        let index = mailbox
+            .cancellations
+            .iter()
+            .position(|entry| owns(entry.identity.task_id))?;
+        let entry = mailbox.cancellations.remove(index)?;
+        Some(CancellationRequest {
+            identity: entry.identity,
+            force: entry.force,
+        })
+    }
+
     pub fn take_allocation(&self) -> Option<AllocationRequest> {
-        let entry = lock_unpoisoned(&self.mailbox).allocations.pop_front()?;
+        let mut mailbox = lock_unpoisoned(&self.mailbox);
+        let index = mailbox
+            .allocations
+            .iter()
+            .position(|entry| !mailbox.bt_tasks.contains(&entry.identity.task_id))?;
+        let entry = mailbox.allocations.remove(index)?;
         Some(AllocationRequest {
             identity: entry.identity,
         })
@@ -252,7 +302,12 @@ impl RuntimeEffectHandle {
     }
 
     pub fn take_cancellation(&self) -> Option<CancellationRequest> {
-        let entry = lock_unpoisoned(&self.mailbox).cancellations.pop_front()?;
+        let mut mailbox = lock_unpoisoned(&self.mailbox);
+        let index = mailbox
+            .cancellations
+            .iter()
+            .position(|entry| !mailbox.bt_tasks.contains(&entry.identity.task_id))?;
+        let entry = mailbox.cancellations.remove(index)?;
         Some(CancellationRequest {
             identity: entry.identity,
             force: entry.force,
@@ -528,6 +583,23 @@ pub struct ActiveTransferRequest {
 }
 
 impl ActiveTransferRequest {
+    /// Transfers ownership to the seeding lifecycle after verified BT data completion.
+    #[cfg(feature = "bt")]
+    #[must_use]
+    pub fn start_seeding(self) -> (RuntimeEventSubmission, SeedingRequest) {
+        let identity = self.identity;
+        (
+            RuntimeEventSubmission {
+                event: TaskEvent::DataComplete {
+                    gid: identity.gid,
+                    generation: identity.generation,
+                    seed: true,
+                }
+                .for_task(identity.task_id),
+            },
+            SeedingRequest { identity },
+        )
+    }
     /// The supervisor may consume this only after the worker has joined.
     pub fn host_key_challenge(
         self,
@@ -644,6 +716,36 @@ impl VerifyingTransferRequest {
     pub fn failed(self, error: PublicError) -> RuntimeEventSubmission {
         RuntimeEventSubmission {
             event: TaskEvent::VerificationFailed {
+                gid: self.identity.gid,
+                generation: self.identity.generation,
+                error,
+            }
+            .for_task(self.identity.task_id),
+        }
+    }
+}
+
+#[cfg(feature = "bt")]
+pub struct SeedingRequest {
+    identity: RuntimeIdentity,
+}
+
+#[cfg(feature = "bt")]
+impl SeedingRequest {
+    #[must_use]
+    pub fn complete(self) -> RuntimeEventSubmission {
+        RuntimeEventSubmission {
+            event: TaskEvent::SeedingComplete {
+                gid: self.identity.gid,
+                generation: self.identity.generation,
+            }
+            .for_task(self.identity.task_id),
+        }
+    }
+    #[must_use]
+    pub fn failed(self, error: PublicError) -> RuntimeEventSubmission {
+        RuntimeEventSubmission {
+            event: TaskEvent::SeedingFailed {
                 gid: self.identity.gid,
                 generation: self.identity.generation,
                 error,
@@ -773,6 +875,7 @@ impl RuntimeSchedulerEffectSink {
         let config = config.validate()?;
         let mailbox = Arc::new(Mutex::new(RuntimeMailbox {
             closed: false,
+            bt_tasks: std::collections::BTreeSet::new(),
             request_capacity: config.request_capacity.get(),
             event_capacity: config.event_capacity.get(),
             timer_capacity: config.timer_capacity.get(),

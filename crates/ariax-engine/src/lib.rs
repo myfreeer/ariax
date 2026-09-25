@@ -862,6 +862,8 @@ impl StartupDeadlineKind {
 /// Fail-closed startup reconciliation errors.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StartupRecoveryError {
+    BitTorrentUnavailable,
+    InvalidBitTorrentTask(Gid),
     TaskLimitReached,
     AllocationFailed,
     MissingSession,
@@ -916,6 +918,12 @@ pub enum StartupRecoveryError {
 impl fmt::Display for StartupRecoveryError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::BitTorrentUnavailable => formatter.write_str(
+                "session contains BitTorrent tasks but this build does not support BitTorrent",
+            ),
+            Self::InvalidBitTorrentTask(gid) => {
+                write!(formatter, "invalid BitTorrent recovery state for {gid}")
+            }
             Self::TaskLimitReached => formatter.write_str("startup task limit exceeded"),
             Self::AllocationFailed => formatter.write_str("startup allocation failed"),
             Self::MissingSession => formatter.write_str("startup tasks have no session row"),
@@ -1150,11 +1158,15 @@ pub fn reconcile_startup(
     credential_admissions: Vec<DerivedCredentialAdmission>,
     config: StartupRecoveryConfig,
 ) -> Result<StartupReconciliation, StartupRecoveryError> {
-    let task_count = snapshot.tasks.len();
+    if !cfg!(feature = "bt") && !snapshot.bt_tasks.is_empty() {
+        return Err(StartupRecoveryError::BitTorrentUnavailable);
+    }
+    let task_count = snapshot.tasks.len().saturating_add(snapshot.bt_tasks.len());
     let repair_updated_ms = snapshot
         .tasks
         .iter()
         .map(|task| task.updated_ms)
+        .chain(snapshot.bt_tasks.iter().map(|task| task.updated_ms))
         .chain(
             snapshot
                 .stopped_results
@@ -1179,8 +1191,28 @@ pub fn reconcile_startup(
             return Err(StartupRecoveryError::DuplicateTask(gid));
         }
     }
-    validate_dense_queues(tasks.values())?;
-    let persisted_queues = collect_persisted_queues(tasks.values());
+    let mut bt_gids = BTreeSet::new();
+    for task in &snapshot.bt_tasks {
+        if tasks.contains_key(&task.gid) || !bt_gids.insert(task.gid) {
+            return Err(StartupRecoveryError::DuplicateTask(task.gid));
+        }
+        task.binding
+            .validate()
+            .map_err(|_| StartupRecoveryError::InvalidBitTorrentTask(task.gid))?;
+    }
+    let memberships = || {
+        tasks
+            .values()
+            .map(|task| (task.gid, task.queue_state, task.queue_position))
+            .chain(
+                snapshot
+                    .bt_tasks
+                    .iter()
+                    .map(|task| (task.gid, task.queue_state, task.queue_position)),
+            )
+    };
+    validate_dense_queues(memberships())?;
+    let persisted_queues = collect_persisted_queues(memberships());
 
     let mut credentials = BTreeMap::new();
     for admission in credential_admissions {
@@ -1190,13 +1222,20 @@ pub fn reconcile_startup(
         }
     }
 
-    if !tasks.is_empty() {
+    if task_count != 0 {
         let session = snapshot
             .session
             .as_ref()
             .ok_or(StartupRecoveryError::MissingSession)?;
         if let Some(task) = tasks
             .values()
+            .find(|task| task.session_id != session.session_id)
+        {
+            return Err(StartupRecoveryError::TaskSessionMismatch(task.gid));
+        }
+        if let Some(task) = snapshot
+            .bt_tasks
+            .iter()
             .find(|task| task.session_id != session.session_id)
         {
             return Err(StartupRecoveryError::TaskSessionMismatch(task.gid));
@@ -1471,6 +1510,100 @@ pub fn reconcile_startup(
         });
     }
 
+    // BT uses the same queue and scheduler identities without transfer journals.
+    // Allocate above both the restored IDs and the durable transfer identities.
+    let mut next_bt_id = persisted_task_ids
+        .iter()
+        .map(|id| id.get())
+        .max()
+        .unwrap_or(0)
+        .max(
+            scheduler_tasks
+                .iter()
+                .map(|task| task.task_id.get())
+                .max()
+                .unwrap_or(0),
+        );
+    for task in snapshot.bt_tasks {
+        let gid = task.gid;
+        next_bt_id = next_bt_id
+            .checked_add(1)
+            .ok_or(StartupRecoveryError::TaskIdExhausted)?;
+        let task_id = TaskId::new(next_bt_id).ok_or(StartupRecoveryError::TaskIdExhausted)?;
+        let stopped = stopped_results.remove(&gid);
+        if (task.queue_state == SessionQueueState::Stopped) != stopped.is_some()
+            || task.queue_state == SessionQueueState::Demoted
+        {
+            return Err(StartupRecoveryError::InvalidBitTorrentTask(gid));
+        }
+        let (state, queue, stopped_status, error) = if let Some(result) = stopped {
+            let status = match result.status {
+                SessionTerminalStatus::Complete => Aria2Status::Complete,
+                SessionTerminalStatus::Error => Aria2Status::Error,
+                SessionTerminalStatus::Removed => Aria2Status::Removed,
+            };
+            let error = result
+                .error_kind
+                .map(|kind| PublicError::new(kind, result.safe_message, RetryClass::Never));
+            if status == Aria2Status::Complete
+                && (result.layout_hash != Some(task.binding.layout_hash())
+                    || result.total_length
+                        != Some(
+                            task.binding
+                                .files
+                                .iter()
+                                .filter(|file| file.selected && !file.padding)
+                                .map(|file| file.length)
+                                .sum(),
+                        ))
+            {
+                return Err(StartupRecoveryError::InvalidBitTorrentTask(gid));
+            }
+            (
+                TaskState::StoppedResult,
+                QueueClass::Stopped,
+                Some(status),
+                error,
+            )
+        } else if task.desired_paused || task.queue_state == SessionQueueState::Paused {
+            (TaskState::Paused, QueueClass::Paused, None, None)
+        } else {
+            (TaskState::Waiting, QueueClass::Waiting, None, None)
+        };
+        memberships.push(QueueMembership {
+            gid,
+            class: queue,
+            source: task.queue_state,
+            position: task.queue_position,
+        });
+        let normalized_state = queue_state_for_class(queue);
+        if normalized_state != task.queue_state {
+            queue_repair_candidates.push(QueueRepairCandidate {
+                gid,
+                expected_state: task.queue_state,
+                target_state: normalized_state,
+                desired_paused: task.desired_paused,
+                slow_demotion_count: 0,
+                updated_ms: repair_updated_ms,
+            });
+        }
+        scheduler_tasks.push(RecoveredSchedulerTask {
+            task_id,
+            gid,
+            state,
+            generation: Generation::new(task.generation),
+            generation_started: true,
+            desired_paused: task.desired_paused,
+            conditions: TaskConditions::default(),
+            slow_demotion_count: 0,
+            slow_slot: None,
+            retry_at: None,
+            host_key_challenge: None,
+            error,
+            stopped_status,
+        });
+    }
+
     if let Some(gid) = stopped_results.keys().next().copied() {
         return Err(StartupRecoveryError::ExtraStoppedResult(gid));
     }
@@ -1537,12 +1670,12 @@ fn restore_reconciliation(
     })
 }
 
-fn validate_dense_queues<'a>(
-    tasks: impl Iterator<Item = &'a SessionTaskRecord>,
+fn validate_dense_queues(
+    tasks: impl Iterator<Item = (Gid, SessionQueueState, u32)>,
 ) -> Result<(), StartupRecoveryError> {
     let mut queues: [Vec<(u32, Gid)>; 5] = std::array::from_fn(|_| Vec::new());
-    for task in tasks {
-        queues[queue_state_index(task.queue_state)].push((task.queue_position, task.gid));
+    for (gid, state, position) in tasks {
+        queues[queue_state_index(state)].push((position, gid));
     }
     for (index, queue) in queues.iter_mut().enumerate() {
         queue.sort_unstable();
@@ -2198,12 +2331,12 @@ fn build_scheduler_queues(
     Ok(output)
 }
 
-fn collect_persisted_queues<'a>(
-    tasks: impl Iterator<Item = &'a SessionTaskRecord>,
+fn collect_persisted_queues(
+    tasks: impl Iterator<Item = (Gid, SessionQueueState, u32)>,
 ) -> [Vec<Gid>; 5] {
     let mut queues: [Vec<(u32, Gid)>; 5] = std::array::from_fn(|_| Vec::new());
-    for task in tasks {
-        queues[queue_state_index(task.queue_state)].push((task.queue_position, task.gid));
+    for (gid, state, position) in tasks {
+        queues[queue_state_index(state)].push((position, gid));
     }
     std::array::from_fn(|index| {
         queues[index].sort_unstable();

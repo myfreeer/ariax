@@ -121,6 +121,10 @@ pub enum BtCommand {
     Remove {
         gid: u64,
     },
+    /// Caller has durably recorded DirtyCheckpoint; still waits for owned work.
+    RemoveDirty {
+        gid: u64,
+    },
     Checkpoint {
         gid: u64,
         request: u64,
@@ -133,7 +137,7 @@ pub enum BtCommand {
         settings: BtTaskSettings,
     },
     SetRates {
-        download: u32,
+        download: Option<u64>,
         upload: u32,
     },
     ConnectPeer {
@@ -278,8 +282,13 @@ impl BtHandle {
     }
 
     pub fn submit(&self, command: BtCommand) -> Result<BtPending, BtError> {
+        self.try_submit_owned(command).map_err(|(_, error)| error)
+    }
+
+    /// Returns unaccepted work with its blob ownership when capacity is unavailable.
+    pub fn try_submit_owned(&self, command: BtCommand) -> Result<BtPending, (BtCommand, BtError)> {
         if self.shared.stopping.load(Ordering::Acquire) {
-            return Err(BtError::Closed);
+            return Err((command, BtError::Closed));
         }
         let bytes = match &command {
             BtCommand::Add(value) => 2048usize
@@ -296,17 +305,26 @@ impl BtHandle {
             }
             _ => 4096,
         };
-        let lease = Arc::new(self.shared.budget.reserve(bytes, output)?);
+        let lease = match self.shared.budget.reserve(bytes, output) {
+            Ok(lease) => Arc::new(lease),
+            Err(error) => return Err((command, error)),
+        };
         let (reply, receiver) = mpsc::sync_channel(1);
         let work = Work {
             command,
             reply,
             lease,
         };
-        self.shared
-            .commands
-            .try_send(work, bytes)
-            .map_err(|_| BtError::Overloaded)?;
+        if let Err(rejection) = self.shared.commands.try_send(work, bytes) {
+            use ariax_runtime::QueueSendError;
+            let (work, error) = match rejection {
+                QueueSendError::Full(work) | QueueSendError::ItemTooLarge(work) => {
+                    (work, BtError::Overloaded)
+                }
+                QueueSendError::Closed { value, .. } => (value, BtError::Closed),
+            };
+            return Err((work.command, error));
+        }
         self.thread.unpark();
         Ok(BtPending {
             receiver: Some(receiver),
@@ -720,13 +738,14 @@ impl Worker {
                     .expect("validated entry")
                     .checkpointed = false;
             }
-            BtCommand::Remove { gid } => {
+            BtCommand::Remove { gid } | BtCommand::RemoveDirty { gid } => {
+                let dirty = matches!(command, BtCommand::RemoveDirty { .. });
                 let entry = self.entry(gid)?;
                 if self.pending.iter().any(|value| value.gid == gid) {
                     return Err(BtError::Overloaded);
                 }
                 let status = self.session.status(gid).map_err(|_| BtError::Native)?;
-                if !status.held && (!status.paused || !entry.checkpointed) {
+                if !status.held && (!status.paused || !entry.checkpointed && !dirty) {
                     return Err(BtError::CheckpointFailed);
                 }
                 self.session
@@ -774,7 +793,11 @@ impl Worker {
             BtCommand::SetRates { download, upload } => {
                 self.session
                     .pin_mut()
-                    .set_rates(download, upload)
+                    .set_rates(
+                        download.unwrap_or(0).min(i32::MAX as u64) as u32,
+                        upload,
+                        download == Some(0),
+                    )
                     .map_err(|_| BtError::UnsupportedOption)?;
             }
             BtCommand::ConnectPeer { gid, address } => {
@@ -847,13 +870,16 @@ impl Worker {
         {
             return Err(BtError::IdentityMismatch);
         }
+        if let Some(resume) = &admission.resume {
+            crate::validate_resume(resume.bytes(), &identity)?;
+        }
         // Reserved before a magnet can receive any metadata, and retained by the
         // entry even when the caller abandons its admission completion.
-        let magnet_memory = Some(
-            self.shared
-                .budget
-                .reserve_blob_output(self.config.metadata.bytes)?,
-        );
+        let metadata_capacity = admission
+            .torrent
+            .as_ref()
+            .map_or(self.config.metadata.bytes, |blob| blob.bytes().len());
+        let magnet_memory = Some(self.shared.budget.reserve_blob_output(metadata_capacity)?);
         let root = admission.root.path().to_str().ok_or(BtError::UnsafePath)?;
         self.session
             .pin_mut()
@@ -1003,16 +1029,16 @@ impl Worker {
                     index += 1;
                 }
                 Ok(result) if result.state == 0 => {
-                    if Instant::now() >= pending.deadline {
-                        if let Some(reply) = pending.reply.take() {
-                            // This delivery does not release the accepted-work
-                            // credit or native output reservation on timeout.
-                            Self::deliver(
-                                reply,
-                                Arc::clone(&pending.lease),
-                                Err(BtError::CheckpointTimeout),
-                            );
-                        }
+                    if Instant::now() >= pending.deadline
+                        && let Some(reply) = pending.reply.take()
+                    {
+                        // This delivery does not release the accepted-work
+                        // credit or native output reservation on timeout.
+                        Self::deliver(
+                            reply,
+                            Arc::clone(&pending.lease),
+                            Err(BtError::CheckpointTimeout),
+                        );
                     }
                     index += 1;
                 }

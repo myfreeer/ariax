@@ -160,8 +160,8 @@ fn magnet_storage_waits_for_exact_approval_and_transfers_through_owned_commands(
             .is_some_and(|status| status.metadata && status.held)
     });
     assert_eq!(std::fs::read_dir(&output_root.0).unwrap().count(), 0);
-    let mapping = mapping(&oh, 2);
-    let mut wrong = mapping.clone();
+    let approved_mapping = mapping(&oh, 2);
+    let mut wrong = approved_mapping.clone();
     wrong[0].path = "different.bin".into();
     assert!(matches!(
         call(
@@ -174,7 +174,14 @@ fn magnet_storage_waits_for_exact_approval_and_transfers_through_owned_commands(
         Err(BtError::IdentityMismatch)
     ));
     assert_eq!(std::fs::read_dir(&output_root.0).unwrap().count(), 0);
-    call(&oh, BtCommand::Approve { gid: 2, mapping }).unwrap();
+    call(
+        &oh,
+        BtCommand::Approve {
+            gid: 2,
+            mapping: approved_mapping,
+        },
+    )
+    .unwrap();
     call(&oh, BtCommand::Resume { gid: 2 }).unwrap();
     call(
         &oh,
@@ -193,20 +200,39 @@ fn magnet_storage_waits_for_exact_approval_and_transfers_through_owned_commands(
         call(&oh, BtCommand::Remove { gid: 2 }),
         Err(BtError::CheckpointFailed)
     ));
-    assert!(matches!(
-        call(
-            &oh,
-            BtCommand::Checkpoint {
-                gid: 2,
-                request: 1,
-                limit: 1024 * 1024,
-                timeout: Duration::from_secs(5)
-            }
-        )
-        .unwrap(),
-        BtReply::Checkpoint { request: 1, .. }
-    ));
+    let checkpoint = call(
+        &oh,
+        BtCommand::Checkpoint {
+            gid: 2,
+            request: 1,
+            limit: 1024 * 1024,
+            timeout: Duration::from_secs(5),
+        },
+    )
+    .unwrap();
+    let BtReply::Checkpoint { request: 1, data } = checkpoint else {
+        panic!("tracked checkpoint")
+    };
+    let identity = parse_torrent(V1, MetadataLimits::default())
+        .unwrap()
+        .identity;
+    validate_resume(data.bytes(), &identity).unwrap();
     call(&oh, BtCommand::Remove { gid: 2 }).unwrap();
+    // A new native handle validates the saved identity and rechecks payload bytes.
+    let mut restored = admission(&oh, &output_root, 3);
+    restored.resume = Some(data);
+    restored.allow_existing = true;
+    call(&oh, BtCommand::Add(Box::new(restored))).unwrap();
+    call(
+        &oh,
+        BtCommand::Approve {
+            gid: 3,
+            mapping: mapping(&oh, 3),
+        },
+    )
+    .unwrap();
+    call(&oh, BtCommand::Resume { gid: 3 }).unwrap();
+    until(|| oh.snapshot(3).is_some_and(|status| status.seeding));
     stop(&mut output);
     stop(&mut seed);
 }
@@ -321,6 +347,42 @@ fn resource_exhaustion_and_private_peer_rejection_have_no_unowned_native_work() 
         ),
         Err(BtError::CheckpointFailed)
     ));
+    stop(&mut adapter);
+    assert_eq!(std::fs::read_dir(&root.0).unwrap().count(), 0);
+}
+
+#[test]
+fn full_completion_capacity_returns_unaccepted_blob_ownership_for_retry() {
+    let root = Directory::new();
+    let mut config = config();
+    config.bridge.completions = 1;
+    let mut adapter = BtAdapter::start(config, resources()).unwrap();
+    let handle = adapter.handle();
+    let held = handle
+        .submit(BtCommand::SetRates {
+            download: Some(0),
+            upload: 0,
+        })
+        .unwrap();
+    let command = BtCommand::Add(Box::new(admission(&handle, &root, 1)));
+    let (returned, error) = match handle.try_submit_owned(command) {
+        Ok(_) => panic!("unread completion must retain its capacity"),
+        Err(rejected) => rejected,
+    };
+    assert_eq!(error, BtError::Overloaded);
+    assert!(
+        matches!(&returned, BtCommand::Add(admission) if admission.torrent.as_ref().unwrap().bytes() == V1)
+    );
+    held.wait(Duration::from_secs(10)).unwrap();
+    call(&handle, returned).unwrap();
+    call(
+        &handle,
+        BtCommand::SetRates {
+            download: None,
+            upload: 0,
+        },
+    )
+    .unwrap();
     stop(&mut adapter);
     assert_eq!(std::fs::read_dir(&root.0).unwrap().count(), 0);
 }

@@ -519,12 +519,16 @@ async fn engine(origins: &[SocketAddr], scenario: &str) -> Result<()> {
     let projection_tasks: Vec<_> = (0..PROJECTION_TASKS)
         .map(|index| {
             json!({
+                "kind":"transfer",
                 "uris":[format!("http://example.test/projection/{index}.bin")],
                 "options":{"pause":true,"out":format!("projection-{index}.bin")}
             })
         })
         .collect();
-    plane.call("ariax.importSession", json!([{"tasks":projection_tasks}]))?;
+    plane.call(
+        "ariax.importSession",
+        json!([{"formatVersion":3,"tasks":projection_tasks}]),
+    )?;
     let metadata_sources: Vec<_> = (0..PROJECTION_SOURCES)
         .map(|index| format!("http://example.test/metadata/{index}/{}", "m".repeat(2048)))
         .collect();

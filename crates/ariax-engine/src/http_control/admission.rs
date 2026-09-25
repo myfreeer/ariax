@@ -21,14 +21,90 @@ struct Preparation {
     scheduler: RequestScheduler,
     local_admin: bool,
     tasks: Arc<crate::HttpTaskCatalog>,
+    #[cfg(feature = "bt")]
+    bt_catalog: Arc<BTreeMap<Gid, Arc<super::bittorrent::QueryTask>>>,
+    #[cfg(feature = "bt")]
+    bt_resources: ariax_bt::BtResources,
+    #[cfg(feature = "bt")]
+    bt_config: ariax_bt::BtAdapterConfig,
 }
 
-struct Member {
+struct TransferMember {
     spec: HttpTaskSpec,
     metadata: SessionTaskMetadata,
     conditions: TaskConditions,
     appender: ControlJournalAppender,
     requested_position: Option<usize>,
+}
+
+enum Member {
+    Transfer(TransferMember),
+    #[cfg(feature = "bt")]
+    BitTorrent(Arc<super::bittorrent::Spec>),
+}
+
+impl Member {
+    fn task_id(&self) -> TaskId {
+        match self {
+            Self::Transfer(member) => member.spec.task(),
+            #[cfg(feature = "bt")]
+            Self::BitTorrent(spec) => spec.task_id,
+        }
+    }
+    fn gid(&self) -> Gid {
+        match self {
+            Self::Transfer(member) => member.spec.gid(),
+            #[cfg(feature = "bt")]
+            Self::BitTorrent(spec) => spec.record.gid,
+        }
+    }
+    fn paused(&self) -> bool {
+        match self {
+            Self::Transfer(member) => member.metadata.task.desired_paused,
+            #[cfg(feature = "bt")]
+            Self::BitTorrent(spec) => spec.record.desired_paused,
+        }
+    }
+    fn position(&self) -> usize {
+        match self {
+            Self::Transfer(member) => member.metadata.task.queue_position as usize,
+            #[cfg(feature = "bt")]
+            Self::BitTorrent(spec) => spec.record.queue_position as usize,
+        }
+    }
+    fn requested_position(&self) -> Option<usize> {
+        match self {
+            Self::Transfer(member) => member.requested_position,
+            #[cfg(feature = "bt")]
+            Self::BitTorrent(_) => None,
+        }
+    }
+    fn conditions(&self) -> TaskConditions {
+        match self {
+            Self::Transfer(member) => member.conditions.clone(),
+            #[cfg(feature = "bt")]
+            Self::BitTorrent(_) => TaskConditions::default(),
+        }
+    }
+    fn set_position(&mut self, position: u32) -> Result<(), HttpControlError> {
+        match self {
+            Self::Transfer(member) => member.metadata.task.queue_position = position,
+            #[cfg(feature = "bt")]
+            Self::BitTorrent(spec) => {
+                let spec = Arc::get_mut(spec).ok_or(HttpControlError::Busy)?;
+                Arc::get_mut(&mut spec.record)
+                    .ok_or(HttpControlError::Busy)?
+                    .queue_position = position;
+            }
+        }
+        Ok(())
+    }
+}
+
+enum Catalog {
+    Transfer(HttpTaskSpec, ControlJournalAppender),
+    #[cfg(feature = "bt")]
+    BitTorrent(Arc<super::bittorrent::Spec>),
 }
 
 struct Prepared {
@@ -45,7 +121,7 @@ struct Revalidation {
 }
 
 struct Finalized {
-    catalogs: VecDeque<(HttpTaskSpec, ControlJournalAppender)>,
+    catalogs: VecDeque<Catalog>,
     first: ImportMember,
     remaining: VecDeque<ImportMember>,
     result: Value,
@@ -117,6 +193,10 @@ impl HttpControlPlane {
         local_admin: bool,
     ) -> Result<ControlReply, HttpControlError> {
         let import = kind != AdmissionKind::Uri;
+        #[cfg(feature = "bt")]
+        if self.bt.admission.is_some() {
+            return Err(HttpControlError::Busy);
+        }
         if self.pending_admission.is_some()
             || self.pending_configuration.is_some()
             || !self.engine_idle()
@@ -126,7 +206,15 @@ impl HttpControlPlane {
             return Err(HttpControlError::Busy);
         }
         let work = self.reserve_scheduler_work(Some(&request), usize::from(!import))?;
+        #[cfg(feature = "bt")]
+        self.ensure_bt_resources()?;
         let preparation = Preparation {
+            #[cfg(feature = "bt")]
+            bt_catalog: self.bt.catalog.clone(),
+            #[cfg(feature = "bt")]
+            bt_resources: self.bt.resources.clone().expect("BT resources"),
+            #[cfg(feature = "bt")]
+            bt_config: self.bt.config.clone(),
             configuration: self.configuration_snapshot(),
             policy: self.engine.persisted_option_policy(),
             session_id: self.session_id,
@@ -235,7 +323,12 @@ impl HttpControlPlane {
                         .send(Ok(json!([])));
                     return Ok(true);
                 }
-                if self.tasks.len().saturating_add(prepared.members.len())
+                if self
+                    .engine
+                    .snapshot_reader()
+                    .load()
+                    .len()
+                    .saturating_add(prepared.members.len())
                     > self.config.task_capacity.get()
                 {
                     return Err(HttpControlError::Busy);
@@ -261,18 +354,20 @@ impl HttpControlPlane {
             }
             Stage::Revalidating(validation) => {
                 if let Some(member) = validation.prepared.members.get_mut(validation.cursor) {
-                    let queue = if member.metadata.task.desired_paused {
+                    let queue = if member.paused() {
                         QueueClass::Paused
                     } else {
                         QueueClass::Waiting
                     };
-                    member.metadata.task.queue_position = u32::try_from(
-                        member
-                            .requested_position
-                            .unwrap_or(usize::MAX)
-                            .min(validation.scheduler.queue_snapshot(queue).len()),
-                    )
-                    .map_err(|_| HttpControlError::InvalidConfig)?;
+                    member.set_position(
+                        u32::try_from(
+                            member
+                                .requested_position()
+                                .unwrap_or(usize::MAX)
+                                .min(validation.scheduler.queue_snapshot(queue).len()),
+                        )
+                        .map_err(|_| HttpControlError::InvalidConfig)?,
+                    )?;
                     validation
                         .scheduler
                         .execute_command_at(command(member), MonotonicInstant::now())
@@ -299,11 +394,16 @@ impl HttpControlPlane {
                         pending.work.clone(),
                         move || {
                             for member in &prepared.members {
-                                if member.spec.verification().is_some() {
-                                    preflight_output(
-                                        &member.spec,
-                                        tasks.entries().map(Arc::as_ref),
-                                    )?;
+                                match member {
+                                    Member::Transfer(member)
+                                        if member.spec.verification().is_some() =>
+                                    {
+                                        preflight_output(
+                                            &member.spec,
+                                            tasks.entries().map(Arc::as_ref),
+                                        )?;
+                                    }
+                                    _ => {}
                                 }
                             }
                             finalize(prepared, true)
@@ -333,14 +433,23 @@ impl HttpControlPlane {
                     self.turn.mark_progress();
                     return Ok(false);
                 }
-                if let Some((spec, appender)) = finalized.catalogs.pop_front() {
+                if let Some(catalog) = finalized.catalogs.pop_front() {
                     pending.installation_started = true;
-                    pending.installing_sequence = appender.appended_sequence();
-                    pending.writes.unit(SessionCommand::InstallJournalAppender {
-                        gid: spec.gid(),
-                        appender,
-                    });
-                    pending.installing = Some(spec);
+                    match catalog {
+                        Catalog::Transfer(spec, appender) => {
+                            pending.installing_sequence = appender.appended_sequence();
+                            pending.writes.unit(SessionCommand::InstallJournalAppender {
+                                gid: spec.gid(),
+                                appender,
+                            });
+                            pending.installing = Some(spec);
+                        }
+                        #[cfg(feature = "bt")]
+                        Catalog::BitTorrent(spec) => {
+                            self.engine.runtime_handle().register_bt_task(spec.task_id);
+                            self.bt.install(spec);
+                        }
+                    }
                     self.turn.mark_progress();
                     return Ok(false);
                 }
@@ -381,78 +490,108 @@ impl HttpControlPlane {
 }
 
 fn command(member: &Member) -> SchedulerCommand {
-    if member.requested_position.is_some() {
+    if member.requested_position().is_some() {
         return SchedulerCommand::AddValidatedTaskAt {
-            task_id: member.spec.task(),
-            gid: member.spec.gid(),
-            desired_paused: member.metadata.task.desired_paused,
-            conditions: member.conditions.clone(),
-            position: member.metadata.task.queue_position as usize,
+            task_id: member.task_id(),
+            gid: member.gid(),
+            desired_paused: member.paused(),
+            conditions: member.conditions(),
+            position: member.position(),
         };
     }
     SchedulerCommand::AddValidatedTask {
-        task_id: member.spec.task(),
-        gid: member.spec.gid(),
-        desired_paused: member.metadata.task.desired_paused,
-        conditions: member.conditions.clone(),
+        task_id: member.task_id(),
+        gid: member.gid(),
+        desired_paused: member.paused(),
+        conditions: member.conditions(),
     }
 }
 
 fn effect(member: &Member) -> TransitionEffect {
     TransitionEffect::PersistTask {
-        task_id: member.spec.task(),
-        gid: member.spec.gid(),
-        queue: if member.metadata.task.desired_paused {
+        task_id: member.task_id(),
+        gid: member.gid(),
+        queue: if member.paused() {
             QueueClass::Paused
         } else {
             QueueClass::Waiting
         },
-        position: member.metadata.task.queue_position as usize,
-        desired_paused: member.metadata.task.desired_paused,
+        position: member.position(),
+        desired_paused: member.paused(),
         slow_demotion_count: 0,
-        conditions: member.conditions.clone(),
+        conditions: member.conditions(),
     }
 }
 
 fn finalize(prepared: Prepared, import: bool) -> Result<Finalized, HttpControlError> {
-    let parent = prepared.parent;
     let mut metadata = Vec::with_capacity(prepared.members.len());
     let mut members = VecDeque::with_capacity(prepared.members.len());
     let mut catalogs = VecDeque::with_capacity(prepared.members.len());
     let mut gids = Vec::with_capacity(prepared.members.len());
     for member in prepared.members {
-        let step = if import {
-            PersistencePlanStep::ConfirmTaskMetadata(Arc::new(member.metadata.clone()))
-        } else {
-            PersistencePlanStep::CreateTaskWithMetadata {
-                task: member.metadata.task.clone(),
-                sources: member.metadata.sources.clone(),
-                options: member.metadata.options.clone(),
+        let command = command(&member);
+        let effect = effect(&member);
+        gids.push(Value::String(member.gid().to_string()));
+        let step = match member {
+            Member::Transfer(member) => {
+                let step = if import {
+                    PersistencePlanStep::ConfirmTaskMetadata(Arc::new(member.metadata.clone()))
+                } else {
+                    PersistencePlanStep::CreateTaskWithMetadata {
+                        task: member.metadata.task.clone(),
+                        sources: member.metadata.sources.clone(),
+                        options: member.metadata.options.clone(),
+                    }
+                };
+                metadata.push(ariax_storage::SessionAdmissionMetadata::Transfer(
+                    member.metadata,
+                ));
+                catalogs.push_back(Catalog::Transfer(member.spec, member.appender));
+                step
+            }
+            #[cfg(feature = "bt")]
+            Member::BitTorrent(spec) => {
+                let resume = spec
+                    .resume_data
+                    .as_ref()
+                    .map_or_else(|| Arc::from([]), |data| data.bytes.clone());
+                let step = PersistencePlanStep::ConfirmBtTask {
+                    task: spec.record.clone(),
+                    options: spec.options.persisted.clone(),
+                    resume: Arc::clone(&resume),
+                };
+                metadata.push(ariax_storage::SessionAdmissionMetadata::BitTorrent {
+                    task: (*spec.record).clone(),
+                    options: spec.options.persisted.clone(),
+                    resume,
+                });
+                catalogs.push_back(Catalog::BitTorrent(spec));
+                step
             }
         };
-        let plan = PersistenceEffectPlan::new(effect(&member), vec![step])
+        let plan = PersistenceEffectPlan::new(effect, vec![step])
             .map_err(|error| HttpControlError::Persistence(format!("{error:?}")))?;
-        members.push_back(ImportMember {
-            command: command(&member),
-            plan,
-        });
-        metadata.push(member.metadata);
-        gids.push(Value::String(member.spec.gid().to_string()));
-        catalogs.push_back((member.spec, member.appender));
+        members.push_back(ImportMember { command, plan });
     }
     let mut first = members.pop_front().expect("nonempty admission");
     if import {
-        first.plan = PersistenceEffectPlan::new(
-            first.plan.effect().clone(),
-            vec![match parent {
-                Some(parent) => PersistencePlanStep::CreateFollowedMetalink {
-                    tasks: metadata.into(),
-                    parent,
-                },
-                None => PersistencePlanStep::CreateTaskBatch(metadata.into()),
-            }],
-        )
-        .map_err(|error| HttpControlError::Persistence(format!("{error:?}")))?;
+        let step = if let Some(parent) = prepared.parent {
+            let tasks = metadata
+                .into_iter()
+                .map(|entry| match entry {
+                    ariax_storage::SessionAdmissionMetadata::Transfer(task) => Ok(task),
+                    _ => Err(HttpControlError::InvalidConfig),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            PersistencePlanStep::CreateFollowedMetalink {
+                tasks: tasks.into(),
+                parent,
+            }
+        } else {
+            PersistencePlanStep::CreateSessionBatch(metadata.into())
+        };
+        first.plan = PersistenceEffectPlan::new(first.plan.effect().clone(), vec![step])
+            .map_err(|error| HttpControlError::Persistence(format!("{error:?}")))?;
     }
     Ok(Finalized {
         catalogs,
@@ -527,13 +666,69 @@ impl Preparation {
                     .saturating_mul(imported.len()),
             )
             .map_err(|_| HttpControlError::Busy)?;
-        let mut validated = Vec::with_capacity(imported.len());
+        let mut validated: Vec<(
+            HttpTaskSpec,
+            SanitizedOptionMap,
+            bool,
+            usize,
+            TaskConditions,
+            Option<usize>,
+        )> = Vec::with_capacity(imported.len());
+        #[cfg(feature = "bt")]
+        let mut bt_validated = Vec::new();
         for (index, task) in imported.into_iter().enumerate() {
             let task_id = self.next_available_task_id()?;
             self.next_id = task_id
                 .get()
                 .checked_add(1)
                 .ok_or(HttpControlError::InvalidConfig)?;
+            #[cfg(feature = "bt")]
+            if let Some(imported) = task.bittorrent {
+                let spec = super::bittorrent::prepare_import(
+                    imported,
+                    task.options,
+                    task_id,
+                    self.session_id,
+                    &self.configuration.config.output_root,
+                    &self.bt_resources.resident,
+                    request,
+                )?;
+                if spec.options.settings.peers > self.bt_config.peers
+                    || !spec
+                        .options
+                        .persisted
+                        .entries()
+                        .all(|(name, _)| self.policy.permits(name))
+                {
+                    return Err(HttpControlError::InvalidParams(
+                        "BitTorrent import exceeds its configured policy",
+                    ));
+                }
+                super::bittorrent::collision(&spec, &self.tasks, &self.bt_catalog)?;
+                for entry in &validated {
+                    super::bittorrent::collision_transfer(
+                        &entry.0,
+                        std::iter::once(spec.as_ref()),
+                    )?;
+                }
+                self.scheduler
+                    .execute_command_at(
+                        SchedulerCommand::AddValidatedTask {
+                            task_id,
+                            gid: spec.record.gid,
+                            desired_paused: true,
+                            conditions: TaskConditions::default(),
+                        },
+                        MonotonicInstant::now(),
+                    )
+                    .map_err(|error| HttpControlError::Scheduler(error.to_string()))?;
+                Arc::make_mut(&mut self.bt_catalog).insert(
+                    spec.record.gid,
+                    super::bittorrent::query_for_import(spec.clone()),
+                );
+                bt_validated.push(spec);
+                continue;
+            }
             let gid = derive_http_gid(self.session_id, task_id);
             let options =
                 self.configuration
@@ -589,6 +784,11 @@ impl Preparation {
                         )),
                 )?;
             }
+            #[cfg(feature = "bt")]
+            super::bittorrent::collision_transfer(
+                &spec,
+                self.bt_catalog.values().map(|entry| entry.spec.as_ref()),
+            )?;
             let sanitized = spec
                 .persistence_options()
                 .map_err(HttpControlError::TaskSpec)?;
@@ -739,14 +939,17 @@ impl Preparation {
                 sources: spec.persistence_sources(),
                 options: sanitized,
             };
-            members.push(Member {
+            members.push(Member::Transfer(TransferMember {
                 spec,
                 metadata,
                 conditions,
                 appender,
                 requested_position,
-            });
+            }));
         }
+        #[cfg(feature = "bt")]
+        members.extend(bt_validated.into_iter().map(Member::BitTorrent));
+        members.sort_by_key(Member::task_id);
         Ok(Prepared {
             members,
             next_id: self.next_id,

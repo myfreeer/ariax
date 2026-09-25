@@ -80,6 +80,12 @@ pub enum SessionCommand {
         options: SanitizedOptionMap,
     },
     CreateTaskBatch(Arc<[SessionTaskMetadata]>),
+    CreateSessionBatch(Arc<[crate::SessionAdmissionMetadata]>),
+    ConfirmBtTask {
+        task: Arc<SessionBtTaskRecord>,
+        options: SanitizedOptionMap,
+        resume: Arc<[u8]>,
+    },
     CreateFollowedMetalink {
         tasks: Arc<[SessionTaskMetadata]>,
         parent: crate::MetalinkParent,
@@ -100,6 +106,16 @@ pub enum SessionCommand {
         generation: u64,
     },
     CheckpointBt(Arc<SessionBtCheckpoint>),
+    MarkBtDirty {
+        gid: Gid,
+        generation: u64,
+    },
+    PersistBtTerminal {
+        result: SessionStoppedResultRecord,
+        transition: SessionQueueTransition,
+        generation: u64,
+        request: u64,
+    },
     ReadBtTasks,
     ReadBtResume {
         gid: Gid,
@@ -885,6 +901,19 @@ fn execute_command(
             store.checkpoint_bt(&checkpoint)?;
             Ok(SessionCommandResult::Unit)
         }
+        SessionCommand::MarkBtDirty { gid, generation } => {
+            store.mark_bt_dirty(gid, generation)?;
+            Ok(SessionCommandResult::Unit)
+        }
+        SessionCommand::PersistBtTerminal {
+            result,
+            transition,
+            generation,
+            request,
+        } => {
+            store.persist_bt_terminal(&result, &transition, generation, request)?;
+            Ok(SessionCommandResult::Unit)
+        }
         SessionCommand::ReadBtTasks => store
             .bt_tasks()
             .map(SessionCommandResult::BtTasks)
@@ -915,6 +944,25 @@ fn execute_command(
             .map_err(SessionPersistenceError::Store),
         SessionCommand::CreateFollowedMetalink { tasks, parent } => {
             store.create_task_batch_following(&tasks, Some(parent), policy)?;
+            Ok(SessionCommandResult::Unit)
+        }
+        SessionCommand::CreateSessionBatch(tasks) => {
+            store.create_session_batch(&tasks, policy)?;
+            Ok(SessionCommandResult::Unit)
+        }
+        SessionCommand::ConfirmBtTask {
+            task,
+            options,
+            resume,
+        } => {
+            store.confirm_bt_task(&task, &options, policy)?;
+            if store
+                .bt_resume(task.gid, crate::SESSION_MAX_BT_RESUME_BYTES)?
+                .resume_blob
+                != resume
+            {
+                return Err(SessionStoreError::InvalidRecord("import.resume_mismatch").into());
+            }
             Ok(SessionCommandResult::Unit)
         }
         SessionCommand::CreateTaskBatch(tasks) => {

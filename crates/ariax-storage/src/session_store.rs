@@ -54,6 +54,49 @@ pub const SESSION_TASK_READ_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 pub const SESSION_INSTALL_READ_BUDGET_BYTES: usize = 16 * 1024 * 1024;
 pub const SESSION_OWNER_LOCK_SUFFIX: &str = ".ariax-owner-lock";
 
+/// One member of an atomic current-format session import.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SessionAdmissionMetadata {
+    Transfer(SessionTaskMetadata),
+    BitTorrent {
+        task: SessionBtTaskRecord,
+        options: SanitizedOptionMap,
+        resume: std::sync::Arc<[u8]>,
+    },
+}
+
+impl SessionAdmissionMetadata {
+    pub fn gid(&self) -> Gid {
+        match self {
+            Self::Transfer(entry) => entry.task.gid,
+            Self::BitTorrent { task, .. } => task.gid,
+        }
+    }
+    pub fn owned_bytes(&self) -> usize {
+        match self {
+            Self::Transfer(entry) => entry.owned_bytes(),
+            Self::BitTorrent {
+                task,
+                options,
+                resume,
+            } => task
+                .binding
+                .owned_bytes()
+                .saturating_add(resume.len())
+                .saturating_add(task.root_display.bytes().len())
+                .saturating_add(
+                    options
+                        .entries()
+                        .map(|(name, value)| {
+                            name.len().saturating_add(value.len()).saturating_add(128)
+                        })
+                        .sum::<usize>(),
+                )
+                .saturating_add(1024),
+        }
+    }
+}
+
 /// Complete, secret-free metadata for one atomic import member.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionTaskMetadata {
@@ -1287,6 +1330,85 @@ impl SessionStore {
         validate_dense_queues(&transaction)?;
         validate_stopped_result_pairing(&transaction)?;
         transaction.commit()?;
+        Ok(())
+    }
+
+    /// Commits both protocols together before any imported task is published.
+    pub fn create_session_batch(
+        &mut self,
+        members: &[SessionAdmissionMetadata],
+        policy: &impl PersistedOptionPolicy,
+    ) -> Result<(), SessionStoreError> {
+        if members.is_empty() || members.len() > SESSION_MAX_IMPORT_TASKS {
+            return Err(SessionStoreError::InvalidRecord("import.task_count"));
+        }
+        let mut gids = HashSet::new();
+        let mut bytes = 0usize;
+        for member in members {
+            bytes = bytes.saturating_add(member.owned_bytes());
+            if bytes > SESSION_IMPORT_MAX_BYTES || !gids.insert(member.gid()) {
+                return Err(SessionStoreError::InvalidRecord("import.batch"));
+            }
+            match member {
+                SessionAdmissionMetadata::Transfer(entry) => validate_admission_metadata(
+                    &entry.task,
+                    &entry.sources,
+                    &entry.options,
+                    policy,
+                )?,
+                SessionAdmissionMetadata::BitTorrent {
+                    task,
+                    options,
+                    resume,
+                } => {
+                    bt::validate_admission(task, options, policy)?;
+                    if !resume.is_empty() {
+                        ariax_bt_metadata::validate_resume(resume, &task.binding.identity)
+                            .map_err(|_| SessionStoreError::InvalidRecord("bt.resume"))?;
+                    }
+                }
+            }
+        }
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing: i64 =
+            transaction.query_row("SELECT COUNT(*) FROM task", [], |row| row.get(0))?;
+        if bounded_count(existing, SESSION_MAX_TASKS, "task.count")?.saturating_add(members.len())
+            > SESSION_MAX_TASKS
+        {
+            return Err(SessionStoreError::InvalidRecord("import.task_limit"));
+        }
+        for (index, member) in members.iter().enumerate() {
+            match member {
+                SessionAdmissionMetadata::Transfer(entry) => insert_admission_metadata(
+                    &transaction,
+                    &entry.task,
+                    &entry.sources,
+                    &entry.options,
+                )?,
+                SessionAdmissionMetadata::BitTorrent {
+                    task,
+                    options,
+                    resume,
+                } => {
+                    bt::insert_admission(&transaction, task, options)?;
+                    transaction.execute(
+                        "UPDATE bt_resume SET resume_blob=?2 WHERE gid=?1",
+                        params![task.gid.to_string(), resume.as_ref()],
+                    )?;
+                }
+            }
+            #[cfg(test)]
+            import_crash_checkpoint(index);
+            #[cfg(not(test))]
+            let _ = index;
+        }
+        validate_dense_queues(&transaction)?;
+        validate_stopped_result_pairing(&transaction)?;
+        transaction.commit()?;
+        #[cfg(test)]
+        import_crash_checkpoint(usize::MAX);
         Ok(())
     }
 
@@ -3038,7 +3160,9 @@ fn read_task_source_sets_with_budget(
     budget: usize,
 ) -> Result<Vec<SessionTaskSourceSet>, SessionStoreError> {
     let task_count: i64 =
-        connection.query_row("SELECT COUNT(*) FROM task", [], |row| row.get(0))?;
+        connection.query_row("SELECT COUNT(*) FROM task WHERE task_kind = 1", [], |row| {
+            row.get(0)
+        })?;
     let task_count = bounded_count(task_count, SESSION_MAX_TASKS, "task.count")?;
     let mut sets = Vec::new();
     sets.try_reserve_exact(task_count)
@@ -3046,6 +3170,7 @@ fn read_task_source_sets_with_budget(
     let mut statement = connection.prepare(
         "SELECT task.gid, source.uri_id, CAST(source.persistence_safe_uri AS BLOB), source.redacted_fingerprint, source.needs_credentials, source.priority
          FROM task LEFT JOIN task_source AS source ON source.gid = task.gid
+         WHERE task.task_kind = 1
          ORDER BY task.gid, source.priority, source.uri_id",
     )?;
     let mut rows = statement.query([])?;
@@ -8725,6 +8850,133 @@ mod tests {
         }
     }
 
+    fn mixed_import_metadata() -> Vec<SessionAdmissionMetadata> {
+        let transfer = import_metadata(1, 0);
+        let metainfo =
+            include_bytes!("../../ariax-bt-libtorrent-sys/tests/fixtures/v1.torrent").to_vec();
+        let metadata = ariax_bt_metadata::parse_torrent(
+            &metainfo,
+            ariax_bt_metadata::MetadataLimits::default(),
+        )
+        .unwrap();
+        let task = crate::SessionBtTaskRecord {
+            gid: gid(2),
+            session_id: transfer.task.session_id,
+            queue_state: transfer.task.queue_state,
+            queue_position: 1,
+            desired_paused: transfer.task.desired_paused,
+            root_display: transfer.task.root_display.clone(),
+            generation: 0,
+            downloaded: 0,
+            uploaded: 0,
+            seed_millis: 0,
+            created_ms: transfer.task.created_ms,
+            updated_ms: transfer.task.updated_ms,
+            binding: crate::SessionBtBinding {
+                identity: metadata.identity,
+                root_identity: vec![1; 16],
+                metainfo,
+                info: Vec::new(),
+                magnet: None,
+                files: metadata
+                    .files
+                    .into_iter()
+                    .map(|file| crate::SessionBtFile {
+                        index: file.index,
+                        path: file.components.join("/"),
+                        length: file.length,
+                        offset: file.offset,
+                        selected: !file.padding,
+                        padding: file.padding,
+                    })
+                    .collect(),
+            },
+        };
+        vec![
+            SessionAdmissionMetadata::Transfer(transfer),
+            SessionAdmissionMetadata::BitTorrent {
+                task,
+                options: SanitizedOptionMap::new([]).unwrap(),
+                resume: Arc::from([]),
+            },
+        ]
+    }
+
+    #[test]
+    fn mixed_session_batch_rolls_back_both_protocols_and_confirms_exact_binding() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        let batch = mixed_import_metadata();
+        assert!(store.create_session_batch(&[], &|_: &str| true).is_err());
+        let mut invalid = batch.clone();
+        let SessionAdmissionMetadata::BitTorrent { task, .. } = &mut invalid[1] else {
+            panic!("BT member")
+        };
+        task.binding.files[0].path = "../outside".into();
+        assert!(
+            store
+                .create_session_batch(&invalid, &|_: &str| true)
+                .is_err()
+        );
+        assert!(store.tasks().unwrap().is_empty());
+        assert!(store.bt_tasks().unwrap().is_empty());
+        store.connection.execute_batch("CREATE TEMP TRIGGER fail_bt_import BEFORE INSERT ON bt_metadata BEGIN SELECT RAISE(ABORT, 'injected mixed import failure'); END;").unwrap();
+        assert!(store.create_session_batch(&batch, &|_: &str| true).is_err());
+        assert!(store.tasks().unwrap().is_empty());
+        assert!(store.bt_tasks().unwrap().is_empty());
+        store
+            .connection
+            .execute_batch("DROP TRIGGER fail_bt_import")
+            .unwrap();
+        store.create_session_batch(&batch, &|_: &str| true).unwrap();
+        let SessionAdmissionMetadata::BitTorrent { task, options, .. } = &batch[1] else {
+            panic!("BT member")
+        };
+        store
+            .confirm_bt_task(task, options, &|_: &str| true)
+            .unwrap();
+        let mut changed = task.clone();
+        changed.binding.files[0].selected = false;
+        assert!(
+            store
+                .confirm_bt_task(&changed, options, &|_: &str| true)
+                .is_err()
+        );
+        assert!(store.bt_resume(task.gid, 1024).unwrap().dirty);
+        drop(store);
+        let reopened =
+            SessionStore::open(directory.database(), SessionStoreConfig::default()).unwrap();
+        assert_eq!(reopened.tasks().unwrap().len(), 1);
+        assert_eq!(reopened.bt_tasks().unwrap(), [task.clone()]);
+    }
+
+    #[test]
+    fn mixed_import_crashes_recover_none_or_both_protocols() {
+        for committed in [false, true] {
+            let directory = TestDirectory::new();
+            drop(open_store(&directory));
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "session_store::tests::import_batch_crash_child",
+                    "--nocapture",
+                ])
+                .env("ARIAX_IMPORT_CRASH_DATABASE", directory.database())
+                .env("ARIAX_IMPORT_CRASH_MIXED", "true")
+                .env(
+                    "ARIAX_IMPORT_CRASH_COMMITTED",
+                    if committed { "true" } else { "false" },
+                )
+                .status()
+                .unwrap();
+            assert_eq!(status.code(), Some(77));
+            let store =
+                SessionStore::open(directory.database(), SessionStoreConfig::default()).unwrap();
+            assert_eq!(store.tasks().unwrap().len(), usize::from(committed));
+            assert_eq!(store.bt_tasks().unwrap().len(), usize::from(committed));
+        }
+    }
+
     #[test]
     fn import_batch_is_atomic_and_member_confirmation_requires_exact_metadata() {
         let directory = TestDirectory::new();
@@ -8862,6 +9114,12 @@ mod tests {
         let mut store = SessionStore::open(PathBuf::from(database), SessionStoreConfig::default())
             .expect("child store");
         IMPORT_CRASH_POINT.with(|point| point.set(Some(if committed { usize::MAX } else { 0 })));
+        if std::env::var("ARIAX_IMPORT_CRASH_MIXED").as_deref() == Ok("true") {
+            store
+                .create_session_batch(&mixed_import_metadata(), &|_: &str| true)
+                .unwrap();
+            panic!("mixed import crash checkpoint was not reached");
+        }
         store
             .create_task_batch(
                 &[import_metadata(1, 0), import_metadata(2, 1)],

@@ -219,6 +219,7 @@ struct RateArbiterInner {
 }
 
 struct RateArbiterState {
+    global_suspended: bool,
     config: RateArbiterConfig,
     global: Bucket,
     hosts: BTreeMap<u64, BucketEntry>,
@@ -347,6 +348,7 @@ impl Bucket {
 impl RateArbiterState {
     fn new(config: RateArbiterConfig, now: Instant) -> Self {
         Self {
+            global_suspended: false,
             global: Bucket::new(config.global, now),
             config,
             hosts: BTreeMap::new(),
@@ -400,6 +402,9 @@ impl RateArbiterState {
     }
 
     fn available_for(&mut self, path: RatePath, now: Instant) -> u64 {
+        if self.global_suspended {
+            return 0;
+        }
         self.refill_path(path, now);
         [
             self.global.available(),
@@ -470,6 +475,9 @@ impl RateArbiterState {
     }
 
     fn next_delay_for(&mut self, path: RatePath, now: Instant) -> Duration {
+        if self.global_suspended {
+            return Duration::from_secs(3600);
+        }
         self.refill_path(path, now);
         [
             self.global.delay_until_one(),
@@ -545,6 +553,7 @@ impl RateArbiterState {
     }
 
     fn reconfigure(&mut self, config: RateArbiterConfig, now: Instant) {
+        self.global_suspended = false;
         self.global.reconfigure(config.global, now);
         for entry in self.hosts.values_mut().filter(|entry| !entry.explicit) {
             entry.bucket.reconfigure(config.default_host, now);
@@ -681,11 +690,24 @@ impl RateArbiter {
         Ok(())
     }
 
+    /// A process share of `Some(0)` suspends new grants; `None` is unlimited.
+    /// Accepted grants remain owned and configuration wakes every waiting stream.
+    pub fn set_global_allocation(&self, bytes_per_second: Option<u64>) {
+        let mut state = lock_unpoisoned(&self.inner.state);
+        state.global_suspended = bytes_per_second == Some(0);
+        let limit = RateLimit::per_second(bytes_per_second.unwrap_or(0));
+        state.global.reconfigure(limit, Instant::now());
+        state.config.global = limit;
+        drop(state);
+        self.inner.notify.notify_waiters();
+    }
+
     pub fn set_global_limit(&self, limit: RateLimit) -> Result<(), RateArbiterError> {
         if !limit.validate() {
             return Err(RateArbiterError::InvalidConfig);
         }
         let mut state = lock_unpoisoned(&self.inner.state);
+        state.global_suspended = false;
         state.global.reconfigure(limit, Instant::now());
         state.config.global = limit;
         drop(state);
@@ -934,6 +956,33 @@ mod tests {
         assert_eq!(charge.accepted_bytes, 7);
         assert_eq!(charge.debt_bytes, 0);
         assert_eq!(arbiter.stats().global_available_bytes, u64::MAX);
+    }
+
+    #[tokio::test]
+    async fn zero_share_suspends_new_grants_and_allocation_wakes_waiters() {
+        let arbiter = RateArbiter::new(RateDirection::Download, RateArbiterConfig::default())
+            .expect("arbiter");
+        let in_flight = arbiter.try_acquire(PATH, request(8)).unwrap().unwrap();
+        arbiter.set_global_allocation(Some(0));
+        assert!(arbiter.try_acquire(PATH, request(1)).unwrap().is_none());
+        let _ = in_flight.settle(8);
+        let waiting = {
+            let arbiter = arbiter.clone();
+            tokio::spawn(async move { arbiter.acquire(PATH, request(1)).await })
+        };
+        tokio::task::yield_now().await;
+        assert_eq!(arbiter.stats().queued_waiters, 1);
+        arbiter.set_global_allocation(Some(64));
+        let permit = tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let _ = permit.settle(1);
+        arbiter.set_global_allocation(Some(0));
+        assert!(arbiter.try_acquire(PATH, request(1)).unwrap().is_none());
+        arbiter.reconfigure(RateArbiterConfig::default()).unwrap();
+        assert!(arbiter.try_acquire(PATH, request(1)).unwrap().is_some());
     }
 
     #[test]

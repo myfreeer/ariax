@@ -18,6 +18,7 @@ struct PreparedConfiguration {
 }
 
 pub(super) struct PendingConfiguration {
+    ready: Option<PreparedConfiguration>,
     receiver: std::sync::mpsc::Receiver<Result<PreparedConfiguration, HttpControlError>>,
     reply: oneshot::Sender<Result<Value, HttpControlError>>,
     _request: crate::rpc_budget::RpcRequestLease,
@@ -33,6 +34,7 @@ impl HttpControlPlane {
         if self.pending_configuration.is_some()
             || self.pending_admission.is_some()
             || self.admission_fenced()
+            || self.bt_admission_pending()
         {
             return Err(HttpControlError::Busy);
         }
@@ -52,6 +54,7 @@ impl HttpControlPlane {
             .map_err(|_| HttpControlError::Busy)?;
         let (reply, response) = oneshot::channel();
         self.pending_configuration = Some(PendingConfiguration {
+            ready: None,
             receiver,
             reply,
             _request: request,
@@ -63,20 +66,49 @@ impl HttpControlPlane {
         if !self.engine_idle() || self.pending_mutation.is_some() || self.admission_fenced() {
             return;
         }
-        let Some(pending) = self.pending_configuration.take() else {
+        let Some(mut pending) = self.pending_configuration.take() else {
             return;
         };
-        let prepared = match pending.receiver.try_recv() {
-            Ok(result) => result,
-            Err(std::sync::mpsc::TryRecvError::Empty) => {
+        if pending.ready.is_none() {
+            match pending.receiver.try_recv() {
+                Ok(Ok(prepared)) => pending.ready = Some(prepared),
+                Ok(Err(error)) => {
+                    let _ = pending.reply.send(Err(error));
+                    self.turn.mark_progress();
+                    return;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    self.pending_configuration = Some(pending);
+                    return;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    let _ = pending.reply.send(Err(HttpControlError::Persistence(
+                        "configuration preparation stopped".to_owned(),
+                    )));
+                    self.turn.mark_progress();
+                    return;
+                }
+            }
+        }
+        let prepared = pending.ready.as_ref().expect("prepared configuration");
+        let limit = prepared
+            .effective
+            .get("max-overall-download-limit")
+            .map_or("0", String::as_str);
+        match self.apply_global_download_limit(limit) {
+            Ok(false) => {
                 self.pending_configuration = Some(pending);
                 return;
             }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(HttpControlError::Persistence(
-                "configuration preparation stopped".to_owned(),
-            )),
-        };
-        let result = prepared.and_then(|prepared| self.publish_configuration(prepared));
+            Err(error) => {
+                let _ = pending.reply.send(Err(error));
+                self.turn.mark_progress();
+                return;
+            }
+            Ok(true) => {}
+        }
+        let result =
+            self.publish_configuration(pending.ready.take().expect("prepared configuration"));
         self.turn.mark_progress();
         if result.is_ok() {
             self.publish_query();
@@ -92,9 +124,6 @@ impl HttpControlPlane {
             return Err(HttpControlError::InvalidParams(
                 "stale configuration generation",
             ));
-        }
-        if let Some(value) = prepared.effective.get("max-overall-download-limit") {
-            self.apply_global_download_limit(value)?;
         }
         self.engine
             .configure_queue_policies(
@@ -120,17 +149,24 @@ impl HttpControlPlane {
     }
 
     pub(super) fn apply_global_download_limit(
-        &self,
+        &mut self,
         canonical: &str,
-    ) -> Result<(), HttpControlError> {
+    ) -> Result<bool, HttpControlError> {
         let bytes = canonical
             .parse::<u64>()
             .map_err(|_| HttpControlError::InvalidConfig)?;
-        if let Some(rate) = &self.global_download_rate {
-            rate.set_global_limit(RateLimit::per_second(bytes))
-                .map_err(|_| HttpControlError::InvalidConfig)?;
+        #[cfg(feature = "bt")]
+        {
+            self.require_bt_bandwidth(&self.engine.scheduler().clone(), bytes)
         }
-        Ok(())
+        #[cfg(not(feature = "bt"))]
+        {
+            if let Some(rate) = &self.global_download_rate {
+                rate.set_global_limit(RateLimit::per_second(bytes))
+                    .map_err(|_| HttpControlError::InvalidConfig)?;
+            }
+            Ok(true)
+        }
     }
 
     pub(super) fn configuration_command_bytes(

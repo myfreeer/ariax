@@ -1,5 +1,12 @@
 # Rate Limiting Design
 
+The process divides a finite download limit equally between BitTorrent and
+other transfers while both groups are active. The sole active group receives
+the full limit. A zero group allocation suspends that group; it is distinct from
+the user-facing zero setting, which means unlimited. Rate reductions settle
+before increases are applied. Native acknowledgements and the transfer arbiter
+share this ordering, including live configuration changes.
+
 [Documentation](../README.md)
 
 Status: reviewed streaming contract. The HTTP download limiter, ordered read

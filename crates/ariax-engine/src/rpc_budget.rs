@@ -57,6 +57,10 @@ impl fmt::Display for RpcBudgetError {
 impl std::error::Error for RpcBudgetError {}
 
 impl RpcBudgets {
+    #[cfg(feature = "bt")]
+    pub(crate) fn resident_budget(&self) -> ByteBudget {
+        self.inner.resident.clone()
+    }
     #[must_use]
     pub fn with_shared_resident(profile: ResolvedRuntimeProfile, resident: ByteBudget) -> Self {
         let limits = profile.limits();

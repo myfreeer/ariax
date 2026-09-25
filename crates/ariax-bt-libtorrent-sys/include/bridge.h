@@ -27,7 +27,7 @@ public:
     void connect_peer(std::uint64_t gid, rust::Str address, std::uint16_t port);
     void checkpoint(std::uint64_t gid, std::uint64_t request, std::uint32_t limit);
     NativeCheckpoint poll_checkpoint(std::uint64_t gid, std::uint64_t request);
-    void set_rates(std::uint32_t download, std::uint32_t upload);
+    void set_rates(std::uint32_t download, std::uint32_t upload, bool suspended);
     void set_task_options(std::uint64_t gid, std::uint32_t download,
         std::uint32_t upload, std::uint32_t peers, bool dht, bool pex);
     std::uint64_t drain_alerts();

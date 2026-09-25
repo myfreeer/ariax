@@ -371,11 +371,10 @@ async fn dispatch_authorized<B: HttpRpcBackend>(
             })?;
             Ok(json!("OK"))
         }
-        "aria2.addTorrent" | "aria2.getPeers" => Err(HttpRpcBackendError::new(
-            -32601,
-            "ProtocolFeatureUnavailable",
-        )
-        .with_data(json!({"code":"ProtocolFeatureUnavailable", "feature":"bittorrent"}))),
+        "aria2.addTorrent" | "aria2.getPeers" if !cfg!(feature = "bt") => Err(
+            HttpRpcBackendError::new(-32601, "ProtocolFeatureUnavailable")
+                .with_data(json!({"code":"ProtocolFeatureUnavailable", "feature":"bittorrent"})),
+        ),
         "aria2.addMetalink" if !cfg!(feature = "metalink") => Err(HttpRpcBackendError::new(
             -32601,
             "ProtocolFeatureUnavailable",

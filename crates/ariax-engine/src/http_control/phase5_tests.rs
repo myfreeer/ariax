@@ -43,7 +43,7 @@ fn phase5_metalink_admission_is_atomic_ordered_and_self_contained() {
     );
     assert_eq!(plane.tasks.len(), before);
     let document = plane.call("ariax.exportSession", json!(["json"])).unwrap();
-    assert_eq!(document["formatVersion"], 2);
+    assert_eq!(document["formatVersion"], 3);
     assert!(document.to_string().contains("verification"));
     assert!(plane.call("ariax.exportSession", json!(["aria2"])).is_err());
     assert!(plane.shutdown().unwrap().is_clean());
@@ -91,7 +91,7 @@ fn phase5_metalink_admission_is_atomic_ordered_and_self_contained() {
 
 #[cfg(feature = "metalink")]
 #[test]
-fn phase5_json_v2_migrates_selected_verification_into_a_new_root_atomically() {
+fn phase5_json_v3_imports_selected_verification_into_a_new_root_atomically() {
     use base64ct::Encoding;
     let original = TestDirectory::new();
     let destination = TestDirectory::new();
@@ -113,7 +113,7 @@ fn phase5_json_v2_migrates_selected_verification_into_a_new_root_atomically() {
         .unwrap()
         .clone();
     let document = source.call("ariax.exportSession", json!(["json"])).unwrap();
-    assert_eq!(document["formatVersion"], 2);
+    assert_eq!(document["formatVersion"], 3);
     assert_eq!(document["tasks"].as_array().unwrap().len(), 1);
     source.shutdown().unwrap();
     let mut target = destination.control_plane();
@@ -143,16 +143,16 @@ fn phase5_json_v2_migrates_selected_verification_into_a_new_root_atomically() {
             .queue_snapshot(QueueClass::Paused)
             .contains(&gid)
     );
-    // Version 1 remains importable in the same session, without a verification object.
+    // Older development documents cannot modify the current session.
     let v1 = json!({"formatVersion":1,"tasks":[{"uris":["https://example.test/legacy"],"options":{"out":"legacy","pause":false}}]});
-    assert!(target.call("ariax.importSession", json!([v1])).is_ok());
+    assert!(target.call("ariax.importSession", json!([v1])).is_err());
     assert_eq!(
         target
             .engine
             .scheduler()
             .queue_snapshot(QueueClass::Paused)
             .len(),
-        2
+        1
     );
     target.shutdown().unwrap();
     let recovered = destination.control_plane();

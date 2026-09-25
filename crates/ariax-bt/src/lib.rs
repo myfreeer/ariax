@@ -13,6 +13,10 @@ pub use ariax_bt_metadata::{
     BtError, BtIdentity, Magnet, MetadataFile, MetadataLimits, TorrentMetadata, parse_info,
     parse_magnet, parse_torrent,
 };
+pub use ariax_bt_metadata::{
+    info_section, magnet_with_trackers, torrent_from_info, validate_resume, with_trackers,
+    with_web_seeds,
+};
 pub use bridge_budget::{
     BandwidthAllocation, BandwidthGroup, BandwidthUpdate, BridgeBudget, BridgeLease, BridgeLimits,
     OwnedBlob, bandwidth_updates, split_bandwidth,

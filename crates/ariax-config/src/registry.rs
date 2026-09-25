@@ -310,6 +310,98 @@ pub fn persisted_option_is_safe(name: &str) -> bool {
 
 /// The first reviewed registry slice. It grows until every upstream and extension option is covered.
 pub const BUILTIN_OPTIONS: &[OptionDef] = &[
+    bt_option(
+        "index-out",
+        ValueType::String { max_len: 65536 },
+        None,
+        RuntimeUpdate::BtRestartRequired,
+    ),
+    bt_option(
+        "max-upload-limit",
+        ValueType::SizeBytes {
+            min: 0,
+            max: 2_147_483_647,
+        },
+        Some("0"),
+        RuntimeUpdate::BtLive,
+    ),
+    bt_option(
+        "bt-max-peers",
+        ValueType::Integer { min: 2, max: 16384 },
+        Some("64"),
+        RuntimeUpdate::BtLive,
+    ),
+    bt_option(
+        "enable-dht",
+        ValueType::Bool,
+        Some("true"),
+        RuntimeUpdate::BtLive,
+    ),
+    bt_option(
+        "enable-peer-exchange",
+        ValueType::Bool,
+        Some("true"),
+        RuntimeUpdate::BtLive,
+    ),
+    bt_option(
+        "bt-metadata-only",
+        ValueType::Bool,
+        Some("false"),
+        RuntimeUpdate::BtRestartRequired,
+    ),
+    bt_option(
+        "bt-save-metadata",
+        ValueType::Bool,
+        Some("false"),
+        RuntimeUpdate::BtRestartRequired,
+    ),
+    bt_option(
+        "seed-ratio",
+        ValueType::String { max_len: 32 },
+        Some("1.0"),
+        RuntimeUpdate::BtLive,
+    ),
+    bt_option(
+        "seed-time",
+        ValueType::String { max_len: 32 },
+        None,
+        RuntimeUpdate::BtLive,
+    ),
+    bt_option(
+        "bt-resume-data-limit",
+        ValueType::SizeBytes {
+            min: 1,
+            max: 67_108_864,
+        },
+        Some("16777216"),
+        RuntimeUpdate::BtRestartRequired,
+    ),
+    bt_option(
+        "bt-resume-timeout",
+        ValueType::DurationSeconds { min: 1, max: 300 },
+        Some("30"),
+        RuntimeUpdate::BtRestartRequired,
+    ),
+    bt_option(
+        "bt-tracker",
+        ValueType::String { max_len: 65536 },
+        None,
+        RuntimeUpdate::BtRestartRequired,
+    ),
+    bt_option(
+        "bt-exclude-tracker",
+        ValueType::String { max_len: 65536 },
+        None,
+        RuntimeUpdate::BtRestartRequired,
+    ),
+    bt_option(
+        "follow-torrent",
+        ValueType::Enum {
+            values: &["true", "false", "mem"],
+        },
+        Some("true"),
+        RuntimeUpdate::WaitingOnly,
+    ),
     protocol_option(
         "realtime-chunk-checksum",
         ValueType::Bool,
@@ -1404,6 +1496,35 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         behavior_tests: NONE,
     },
 ];
+
+const fn bt_option(
+    name: &'static str,
+    value_type: ValueType,
+    default: Option<&'static str>,
+    runtime_update: RuntimeUpdate,
+) -> OptionDef {
+    OptionDef {
+        name,
+        short: None,
+        value_type,
+        default,
+        category: "bittorrent",
+        scopes: DOWNLOAD_SCOPES,
+        runtime_update,
+        owner: "bt",
+        build_features: &["full", "compat"],
+        security: SecurityClass::Normal,
+        compat: CompatStatus::FeatureGated,
+        aria2_available: !matches!(
+            name.as_bytes(),
+            b"bt-resume-data-limit" | b"bt-resume-timeout"
+        ),
+        aria2_runtime_update: RuntimeUpdate::WaitingOnly,
+        compatibility_difference: CompatibilityDifference::Intentional,
+        docs: "docs/protocols/libtorrent-integration.md#runtime-bt-option-updates",
+        behavior_tests: &["bittorrent::tests"],
+    }
+}
 
 const fn protocol_option(
     name: &'static str,

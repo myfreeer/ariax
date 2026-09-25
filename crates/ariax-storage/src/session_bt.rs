@@ -47,6 +47,29 @@ pub struct SessionBtBinding {
 }
 
 impl SessionBtBinding {
+    /// Domain-separated evidence for the exact identity, mapping and selection.
+    /// This is independent of a transfer journal and of the local root spelling.
+    pub fn layout_hash(&self) -> JournalHash {
+        use sha2::{Digest as _, Sha256};
+        let mut hash = Sha256::new();
+        hash.update(b"ariax/bt-layout/v3\0");
+        for identity in [&self.identity.v1, &self.identity.v2] {
+            hash.update([u8::from(identity.is_some())]);
+            if let Some(identity) = identity {
+                hash.update(identity.as_bytes());
+            }
+        }
+        for file in &self.files {
+            hash.update(file.index.to_le_bytes());
+            hash.update((file.path.len() as u64).to_le_bytes());
+            hash.update(file.path.as_bytes());
+            hash.update(file.length.to_le_bytes());
+            hash.update(file.offset.to_le_bytes());
+            hash.update([u8::from(file.selected), u8::from(file.padding)]);
+        }
+        JournalHash::new(hash.finalize().into()).expect("SHA-256 layout digest is nonzero")
+    }
+
     pub fn validate(&self) -> Result<(), SessionStoreError> {
         let invalid = || SessionStoreError::InvalidRecord("bt.binding");
         if self.root_identity.is_empty()
@@ -215,6 +238,60 @@ fn files_blob(binding: &SessionBtBinding) -> Result<Vec<u8>, SessionStoreError> 
     serde_json::to_vec(&binding.files).map_err(|_| SessionStoreError::InvalidRecord("bt.files"))
 }
 
+pub(super) fn validate_admission<P: PersistedOptionPolicy>(
+    task: &SessionBtTaskRecord,
+    options: &SanitizedOptionMap,
+    policy: &P,
+) -> Result<(), SessionStoreError> {
+    task.binding.validate()?;
+    validate_time_order(task.created_ms, task.updated_ms)?;
+    validate_options_for_persistence(options, policy)?;
+    if !matches!(
+        task.queue_state,
+        SessionQueueState::Waiting | SessionQueueState::Paused
+    ) {
+        return Err(SessionStoreError::InvalidRecord("bt.initial_state"));
+    }
+    Ok(())
+}
+
+pub(super) fn insert_admission(
+    transaction: &rusqlite::Transaction<'_>,
+    task: &SessionBtTaskRecord,
+    options: &SanitizedOptionMap,
+) -> Result<(), SessionStoreError> {
+    let files = files_blob(&task.binding)?;
+    let root = encode_platform_path(&task.root_display)?;
+    if task_exists(transaction, task.gid)? {
+        return Err(SessionStoreError::InvalidRecord("task.gid_exists"));
+    }
+    let count: i64 = transaction.query_row("SELECT COUNT(*) FROM task", [], |row| row.get(0))?;
+    if count >= SESSION_MAX_TASKS as i64 {
+        return Err(SessionStoreError::InvalidRecord("task.count"));
+    }
+    let queue_len: i64 = transaction.query_row(
+        "SELECT COUNT(*) FROM task WHERE queue_state=?1",
+        [task.queue_state as i64],
+        |row| row.get(0),
+    )?;
+    if i64::from(task.queue_position) > queue_len {
+        return Err(SessionStoreError::QueueInvariant);
+    }
+    transaction.execute("UPDATE task SET queue_position=queue_position+1 WHERE queue_state=?1 AND queue_position>=?2", params![task.queue_state as i64, task.queue_position])?;
+    transaction.execute("INSERT INTO task(gid,session_id,task_kind,queue_state,queue_position,desired_paused,slow_demotion_count,root_display,created_ms,updated_ms) VALUES(?1,?2,2,?3,?4,?5,0,?6,?7,?8)",
+            params![task.gid.to_string(), task.session_id.as_bytes().as_slice(), task.queue_state as i64, task.queue_position, bool_to_i64(task.desired_paused), root, time_to_i64(task.created_ms,"bt.created_ms")?, time_to_i64(task.updated_ms,"bt.updated_ms")?])?;
+    transaction.execute("INSERT INTO bt_metadata(gid,generation,v1,v2,root_identity,metainfo,info,magnet,files,downloaded,uploaded,seed_millis) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+            params![task.gid.to_string(), encode_u64(task.generation), task.binding.identity.v1, task.binding.identity.v2, task.binding.root_identity, task.binding.metainfo, task.binding.info, task.binding.magnet, files, encode_u64(task.downloaded), encode_u64(task.uploaded), encode_u64(task.seed_millis)])?;
+    transaction.execute("INSERT INTO bt_resume(gid,resume_blob,dirty,request,generation,saved_ms) VALUES(?1,X'',1,?2,?3,?4)", params![task.gid.to_string(), encode_u64(0), encode_u64(task.generation), time_to_i64(task.created_ms,"bt.created_ms")?])?;
+    replace_task_options_in_transaction(
+        transaction,
+        task.gid,
+        OptionsSnapshotScope::CurrentGeneration,
+        options,
+    )?;
+    Ok(())
+}
+
 impl SessionStore {
     pub fn create_bt_task<P: PersistedOptionPolicy>(
         &mut self,
@@ -222,52 +299,29 @@ impl SessionStore {
         options: &SanitizedOptionMap,
         policy: &P,
     ) -> Result<(), SessionStoreError> {
-        task.binding.validate()?;
-        validate_time_order(task.created_ms, task.updated_ms)?;
-        validate_options_for_persistence(options, policy)?;
-        if task.generation == 0
-            || !matches!(
-                task.queue_state,
-                SessionQueueState::Waiting | SessionQueueState::Paused
-            )
-        {
-            return Err(SessionStoreError::InvalidRecord("bt.initial_state"));
-        }
-        let files = files_blob(&task.binding)?;
-        let root = encode_platform_path(&task.root_display)?;
+        validate_admission(task, options, policy)?;
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if task_exists(&transaction, task.gid)? {
-            return Err(SessionStoreError::InvalidRecord("task.gid_exists"));
-        }
-        let count: i64 =
-            transaction.query_row("SELECT COUNT(*) FROM task", [], |row| row.get(0))?;
-        if count >= SESSION_MAX_TASKS as i64 {
-            return Err(SessionStoreError::InvalidRecord("task.count"));
-        }
-        let queue_len: i64 = transaction.query_row(
-            "SELECT COUNT(*) FROM task WHERE queue_state=?1",
-            [task.queue_state as i64],
-            |row| row.get(0),
-        )?;
-        if i64::from(task.queue_position) > queue_len {
-            return Err(SessionStoreError::QueueInvariant);
-        }
-        transaction.execute("UPDATE task SET queue_position=queue_position+1 WHERE queue_state=?1 AND queue_position>=?2", params![task.queue_state as i64, task.queue_position])?;
-        transaction.execute("INSERT INTO task(gid,session_id,task_kind,queue_state,queue_position,desired_paused,slow_demotion_count,root_display,created_ms,updated_ms) VALUES(?1,?2,2,?3,?4,?5,0,?6,?7,?8)",
-            params![task.gid.to_string(), task.session_id.as_bytes().as_slice(), task.queue_state as i64, task.queue_position, bool_to_i64(task.desired_paused), root, time_to_i64(task.created_ms,"bt.created_ms")?, time_to_i64(task.updated_ms,"bt.updated_ms")?])?;
-        transaction.execute("INSERT INTO bt_metadata(gid,generation,v1,v2,root_identity,metainfo,info,magnet,files,downloaded,uploaded,seed_millis) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
-            params![task.gid.to_string(), encode_u64(task.generation), task.binding.identity.v1, task.binding.identity.v2, task.binding.root_identity, task.binding.metainfo, task.binding.info, task.binding.magnet, files, encode_u64(task.downloaded), encode_u64(task.uploaded), encode_u64(task.seed_millis)])?;
-        transaction.execute("INSERT INTO bt_resume(gid,resume_blob,dirty,request,generation,saved_ms) VALUES(?1,X'',1,?2,?3,?4)", params![task.gid.to_string(), encode_u64(0), encode_u64(task.generation), time_to_i64(task.created_ms,"bt.created_ms")?])?;
-        replace_task_options_in_transaction(
-            &transaction,
-            task.gid,
-            OptionsSnapshotScope::CurrentGeneration,
-            options,
-        )?;
+        insert_admission(&transaction, task, options)?;
         validate_dense_queues(&transaction)?;
         transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn confirm_bt_task<P: PersistedOptionPolicy>(
+        &self,
+        task: &SessionBtTaskRecord,
+        options: &SanitizedOptionMap,
+        policy: &P,
+    ) -> Result<(), SessionStoreError> {
+        validate_admission(task, options, policy)?;
+        if read_task(&self.connection, task.gid)? != *task
+            || self.task_options(task.gid, OptionsSnapshotScope::CurrentGeneration, policy)?
+                != *options
+        {
+            return Err(SessionStoreError::InvalidRecord("import.metadata_mismatch"));
+        }
         Ok(())
     }
 
@@ -355,7 +409,7 @@ impl SessionStore {
         expected: u64,
         generation: u64,
     ) -> Result<(), SessionStoreError> {
-        if generation == 0 || generation <= expected {
+        if generation < expected || generation == expected && generation != 0 {
             return Err(SessionStoreError::InvalidRecord("bt.generation"));
         }
         let transaction = self
@@ -376,6 +430,51 @@ impl SessionStore {
             "UPDATE bt_resume SET dirty=1,generation=?2,request=?3 WHERE gid=?1",
             params![gid.to_string(), encode_u64(generation), encode_u64(0)],
         )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn mark_bt_dirty(&mut self, gid: Gid, generation: u64) -> Result<(), SessionStoreError> {
+        if self.connection.execute(
+            "UPDATE bt_resume SET dirty=1 WHERE gid=?1 AND generation=?2",
+            params![gid.to_string(), encode_u64(generation)],
+        )? != 1
+        {
+            return Err(SessionStoreError::InvalidRecord("bt.stale_generation"));
+        }
+        Ok(())
+    }
+
+    pub fn persist_bt_terminal(
+        &mut self,
+        result: &SessionStoppedResultRecord,
+        transition: &SessionQueueTransition,
+        generation: u64,
+        request: u64,
+    ) -> Result<(), SessionStoreError> {
+        validate_stopped_result(result)?;
+        if result.gid != transition.gid {
+            return Err(SessionStoreError::InvalidRecord("bt.terminal_identity"));
+        }
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (stored_generation, stored_request, dirty): (Vec<u8>, Vec<u8>, i64) = transaction
+            .query_row(
+                "SELECT generation,request,dirty FROM bt_resume WHERE gid=?1",
+                [result.gid.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+        if decode_u64(&stored_generation, "bt.generation")? != generation
+            || decode_u64(&stored_request, "bt.request")? != request
+            || result.status == SessionTerminalStatus::Complete && dirty != 0
+        {
+            return Err(SessionStoreError::InvalidRecord("bt.terminal_checkpoint"));
+        }
+        apply_exact_queue_transition_in_transaction(&transaction, transition)?;
+        transaction.execute("INSERT INTO stopped_result(gid,terminal_status,error_code,safe_message,total_length,layout_hash,completed_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)", params![result.gid.to_string(),result.status as i64,result.error_kind.map_or(0,|kind|i64::from(kind.number())),result.safe_message,result.total_length.map(encode_u64),result.layout_hash.map(|hash|hash.as_bytes().to_vec()),time_to_i64(result.completed_ms,"bt.completed_ms")?])?;
+        validate_dense_queues(&transaction)?;
+        validate_stopped_result_pairing(&transaction)?;
         transaction.commit()?;
         Ok(())
     }
@@ -490,7 +589,7 @@ fn read_tasks_filtered(
         };
         task.binding.validate()?;
         validate_time_order(task.created_ms, task.updated_ms)?;
-        if task.generation == 0 || task.queue_state == SessionQueueState::Demoted {
+        if task.queue_state == SessionQueueState::Demoted {
             return Err(SessionStoreError::InvalidPersistedValue("bt.state"));
         }
         owned = owned

@@ -27,6 +27,21 @@ pub const MAX_PERSISTENCE_PLAN_STEPS: usize = 4;
 /// One logical owner operation. Journal durability expands to append then flush.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PersistencePlanStep {
+    CreateBtTask {
+        task: Arc<ariax_storage::SessionBtTaskRecord>,
+        options: SanitizedOptionMap,
+    },
+    BeginBtGeneration {
+        gid: Gid,
+        expected: u64,
+        generation: u64,
+    },
+    PersistBtTerminal {
+        result: SessionStoppedResultRecord,
+        transition: SessionQueueTransition,
+        generation: u64,
+        request: u64,
+    },
     PutTask(SessionTaskRecord),
     CreateTaskWithMetadata {
         task: SessionTaskRecord,
@@ -34,6 +49,12 @@ pub enum PersistencePlanStep {
         options: SanitizedOptionMap,
     },
     CreateTaskBatch(Arc<[SessionTaskMetadata]>),
+    CreateSessionBatch(Arc<[ariax_storage::SessionAdmissionMetadata]>),
+    ConfirmBtTask {
+        task: Arc<ariax_storage::SessionBtTaskRecord>,
+        options: SanitizedOptionMap,
+        resume: Arc<[u8]>,
+    },
     CreateFollowedMetalink {
         tasks: Arc<[SessionTaskMetadata]>,
         parent: ariax_storage::MetalinkParent,
@@ -577,6 +598,142 @@ fn validate_plan(
     steps: &[PersistencePlanStep],
 ) -> Result<(), PersistencePlanError> {
     match (effect, steps) {
+        (
+            TransitionEffect::PersistTask {
+                gid,
+                queue,
+                position,
+                desired_paused,
+                slow_demotion_count,
+                conditions,
+                ..
+            },
+            [
+                PersistencePlanStep::CreateBtTask { task, .. }
+                | PersistencePlanStep::ConfirmBtTask { task, .. },
+            ],
+        ) => {
+            if task.gid != *gid {
+                return Err(PersistencePlanError::IdentityMismatch);
+            }
+            if task.queue_state != session_queue(*queue)
+                || task.queue_position as usize != *position
+                || task.desired_paused != *desired_paused
+                || *slow_demotion_count != 0
+                || *conditions != ariax_core::TaskConditions::default()
+                || task.generation != Generation::INITIAL.get()
+            {
+                return Err(PersistencePlanError::StateMismatch);
+            }
+            Ok(())
+        }
+        (
+            TransitionEffect::PersistGenerationStarted {
+                gid, generation, ..
+            },
+            [
+                PersistencePlanStep::BeginBtGeneration {
+                    gid: stored_gid,
+                    expected,
+                    generation: stored_generation,
+                },
+            ],
+        ) => {
+            if gid != stored_gid {
+                return Err(PersistencePlanError::IdentityMismatch);
+            }
+            if generation.get() != *stored_generation
+                || *expected != stored_generation.saturating_sub(1)
+            {
+                return Err(PersistencePlanError::GenerationMismatch);
+            }
+            Ok(())
+        }
+        (
+            TransitionEffect::PersistTerminal {
+                gid,
+                generation,
+                status,
+                error,
+                from,
+                to,
+                desired_paused,
+                slow_demotion_count,
+                slow_slot,
+                orders,
+                ..
+            },
+            [
+                PersistencePlanStep::PersistBtTerminal {
+                    result,
+                    transition,
+                    generation: saved_generation,
+                    ..
+                },
+            ],
+        ) => {
+            if result.gid != *gid {
+                return Err(PersistencePlanError::IdentityMismatch);
+            }
+            if *saved_generation != generation.get() {
+                return Err(PersistencePlanError::GenerationMismatch);
+            }
+            if !match (status, error) {
+                (Aria2Status::Complete, None) => {
+                    result.status == SessionTerminalStatus::Complete
+                        && result.total_length.is_some()
+                        && result.layout_hash.is_some()
+                }
+                (Aria2Status::Removed, None) => result.status == SessionTerminalStatus::Removed,
+                (Aria2Status::Error, Some(error)) => {
+                    result.status == SessionTerminalStatus::Error
+                        && result.error_kind == Some(error.kind())
+                        && result.safe_message == error.safe_message()
+                }
+                _ => false,
+            } {
+                return Err(PersistencePlanError::TerminalMismatch);
+            }
+            validate_transition(
+                *gid,
+                *from,
+                *to,
+                *desired_paused,
+                *slow_demotion_count,
+                slow_slot.as_ref(),
+                orders,
+                transition,
+            )
+        }
+        (
+            effect @ TransitionEffect::PersistTask { .. },
+            [PersistencePlanStep::CreateSessionBatch(tasks)],
+        ) => {
+            if tasks.is_empty()
+                || tasks.len() > ariax_storage::SESSION_MAX_IMPORT_TASKS
+                || tasks
+                    .iter()
+                    .map(ariax_storage::SessionAdmissionMetadata::owned_bytes)
+                    .fold(0usize, usize::saturating_add)
+                    > ariax_storage::SESSION_IMPORT_MAX_BYTES
+            {
+                return Err(PersistencePlanError::StateMismatch);
+            }
+            match &tasks[0] {
+                ariax_storage::SessionAdmissionMetadata::Transfer(entry) => {
+                    validate_import_member(effect, entry)
+                }
+                ariax_storage::SessionAdmissionMetadata::BitTorrent { task, options, .. } => {
+                    validate_plan(
+                        effect,
+                        &[PersistencePlanStep::CreateBtTask {
+                            task: Arc::new(task.clone()),
+                            options: options.clone(),
+                        }],
+                    )
+                }
+            }
+        }
         (
             effect @ TransitionEffect::PersistTask { .. },
             [
@@ -1378,10 +1535,59 @@ fn validate_dispatched_plan(
 
 fn command_for_step(step: &PersistencePlanStep) -> PendingOwnerCommand {
     let (command, expected) = match step {
+        PersistencePlanStep::CreateBtTask { task, options } => (
+            SessionCommand::CreateBtTask {
+                task: task.clone(),
+                options: options.clone(),
+            },
+            ExpectedResult::Unit,
+        ),
+        PersistencePlanStep::BeginBtGeneration {
+            gid,
+            expected,
+            generation,
+        } => (
+            SessionCommand::BeginBtGeneration {
+                gid: *gid,
+                expected: *expected,
+                generation: *generation,
+            },
+            ExpectedResult::Unit,
+        ),
+        PersistencePlanStep::PersistBtTerminal {
+            result,
+            transition,
+            generation,
+            request,
+        } => (
+            SessionCommand::PersistBtTerminal {
+                result: result.clone(),
+                transition: transition.clone(),
+                generation: *generation,
+                request: *request,
+            },
+            ExpectedResult::Unit,
+        ),
         PersistencePlanStep::CreateFollowedMetalink { tasks, parent } => (
             SessionCommand::CreateFollowedMetalink {
                 tasks: Arc::clone(tasks),
                 parent: *parent,
+            },
+            ExpectedResult::Unit,
+        ),
+        PersistencePlanStep::CreateSessionBatch(tasks) => (
+            SessionCommand::CreateSessionBatch(tasks.clone()),
+            ExpectedResult::Unit,
+        ),
+        PersistencePlanStep::ConfirmBtTask {
+            task,
+            options,
+            resume,
+        } => (
+            SessionCommand::ConfirmBtTask {
+                task: task.clone(),
+                options: options.clone(),
+                resume: resume.clone(),
             },
             ExpectedResult::Unit,
         ),

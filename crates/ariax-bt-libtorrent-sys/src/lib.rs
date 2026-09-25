@@ -121,7 +121,12 @@ pub mod ffi {
             gid: u64,
             request: u64,
         ) -> Result<NativeCheckpoint>;
-        fn set_rates(self: Pin<&mut NativeSession>, download: u32, upload: u32) -> Result<()>;
+        fn set_rates(
+            self: Pin<&mut NativeSession>,
+            download: u32,
+            upload: u32,
+            suspended: bool,
+        ) -> Result<()>;
         fn set_task_options(
             self: Pin<&mut NativeSession>,
             gid: u64,

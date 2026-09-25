@@ -848,6 +848,14 @@ omitted while their independently exportable children remain in the file.
 Aria2 text export rejects atomically if BT or verification metadata cannot be
 represented safely.
 
+Every JSON task carries `kind: "transfer"` or `kind: "bittorrent"`. The latter
+has a `bittorrent` object with `identity`, base64 `metainfo`, an optional
+`magnet`, the complete `files` mapping, and base64 `resumeData`. Imported roots
+are selected by the receiving engine; root identities and exported lifecycle
+counters are never accepted as recovery authority. A mixed batch commits all
+transfer and BT rows in one transaction before scheduler publication. Its
+subsequent acknowledgements compare each exact committed member.
+
 Import parses and validates the entire bounded document and reserves admission
 capacity before publishing tasks. One bounded filesystem job captures the
 configuration and policy, validates every member, then prepares journals outside

@@ -1,4 +1,4 @@
-//! Bounded migration documents. Progress and caller GIDs are never recovery authority.
+//! Bounded current-format session documents. Progress and caller GIDs are never recovery authority.
 
 use crate::{HttpControlError, MAX_HTTP_TASK_SOURCES, rpc_budget::RpcRequestLease};
 use ariax_storage::{SESSION_MAX_IMPORT_TASKS, SessionTaskSourceRecord};
@@ -8,7 +8,7 @@ use std::io::Write as _;
 pub const MAX_SESSION_DOCUMENT_BYTES: usize = ariax_storage::SESSION_EXPORT_MAX_BYTES;
 pub const MAX_SESSION_LINE_BYTES: usize = 64 * 1024;
 
-/// Validates migration syntax under the process budget, without admitting tasks.
+/// Validates current-format session syntax under the process budget, without admitting tasks.
 /// Task option and destination policy validation is performed again at import.
 pub fn validate_session_syntax(
     text: &str,
@@ -53,12 +53,99 @@ impl SessionFormat {
 
 #[derive(Default)]
 pub(crate) struct ImportedTask {
+    #[cfg(feature = "bt")]
+    pub bittorrent: Option<ImportedBt>,
     pub uris: Vec<String>,
     pub sources: Option<Vec<SessionTaskSourceRecord>>,
     pub options: Value,
     pub verification: Option<std::sync::Arc<crate::VerificationManifest>>,
     pub metalink_index: Option<u32>,
     pub priorities: Option<Vec<i64>>,
+}
+
+#[cfg(feature = "bt")]
+pub(crate) struct ImportedBt {
+    pub binding: ariax_storage::SessionBtBinding,
+    pub resume_data: Vec<u8>,
+}
+
+#[cfg(feature = "bt")]
+fn parse_bittorrent(value: &Value) -> Result<ImportedBt, HttpControlError> {
+    use base64ct::Encoding as _;
+    let object = value
+        .as_object()
+        .ok_or_else(|| invalid("invalid BitTorrent session metadata"))?;
+    reject_unknown(
+        object,
+        &["identity", "metainfo", "magnet", "files", "resumeData"],
+    )?;
+    let decode = |name: &str, limit: usize| -> Result<Vec<u8>, HttpControlError> {
+        let encoded = object
+            .get(name)
+            .and_then(Value::as_str)
+            .filter(|value| value.len() <= limit.div_ceil(3).saturating_mul(4))
+            .ok_or_else(|| invalid("invalid BitTorrent session blob"))?;
+        let bytes = base64ct::Base64::decode_vec(encoded)
+            .map_err(|_| invalid("invalid BitTorrent session base64"))?;
+        if bytes.len() > limit {
+            return Err(invalid("BitTorrent session blob exceeds its limit"));
+        }
+        Ok(bytes)
+    };
+    let metainfo = decode("metainfo", 16 * 1024 * 1024)?;
+    let info = if metainfo.is_empty() {
+        Vec::new()
+    } else {
+        ariax_bt::info_section(&metainfo, ariax_bt::MetadataLimits::default())
+            .map_err(|_| invalid("invalid BitTorrent session metainfo"))?
+            .to_vec()
+    };
+    let identity = serde_json::from_value(
+        object
+            .get("identity")
+            .cloned()
+            .ok_or_else(|| invalid("missing BitTorrent identity"))?,
+    )
+    .map_err(|_| invalid("invalid BitTorrent identity"))?;
+    let files = object
+        .get("files")
+        .and_then(Value::as_array)
+        .filter(|files| files.len() <= 10_000)
+        .ok_or_else(|| invalid("invalid BitTorrent file mapping"))?;
+    let files = files
+        .iter()
+        .map(|file| {
+            serde_json::from_value(file.clone())
+                .map_err(|_| invalid("invalid BitTorrent file mapping"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let magnet = match object.get("magnet") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value)) if value.len() <= 65536 => Some(value.clone()),
+        _ => return Err(invalid("invalid BitTorrent magnet")),
+    };
+    // The receiver supplies a new protected root. This marker is used only to
+    // validate identity and portable paths, and never leaves preparation.
+    let binding = ariax_storage::SessionBtBinding {
+        identity,
+        root_identity: vec![1],
+        metainfo,
+        info,
+        magnet,
+        files,
+    };
+    binding
+        .validate()
+        .map_err(|_| invalid("invalid BitTorrent session binding"))?;
+    let resume_data = decode("resumeData", ariax_storage::SESSION_MAX_BT_RESUME_BYTES)?;
+    if !resume_data.is_empty() {
+        ariax_bt::validate_resume(&resume_data, &binding.identity)
+            .map_err(|_| invalid("invalid BitTorrent resume data"))?;
+    }
+    Ok(ImportedBt {
+        binding,
+        resume_data,
+    })
 }
 
 pub(crate) fn parse_import(
@@ -99,11 +186,10 @@ pub(crate) fn parse_import(
         .as_object()
         .ok_or_else(|| invalid("session must be an object"))?;
     reject_unknown(object, &["formatVersion", "sessionId", "tasks"])?;
-    if object
-        .get("formatVersion")
-        .is_some_and(|value| !matches!(value.as_u64(), Some(1 | 2)))
-    {
-        return Err(invalid("unsupported session format version"));
+    if object.get("formatVersion").and_then(Value::as_u64) != Some(3) {
+        return Err(invalid(
+            "unsupported session format version; expected version 3",
+        ));
     }
     if object
         .get("sessionId")
@@ -116,15 +202,14 @@ pub(crate) fn parse_import(
         .and_then(Value::as_array)
         .filter(|tasks| tasks.len() <= SESSION_MAX_IMPORT_TASKS)
         .ok_or_else(|| invalid("invalid session task array"))?;
-    let version = object
-        .get("formatVersion")
-        .and_then(Value::as_u64)
-        .unwrap_or(1);
     tasks
         .iter()
         .map(|task| {
-            if version == 1 && task.get("verification").is_some() {
-                return Err(invalid("verification requires session format version 2"));
+            if !matches!(
+                task.get("kind").and_then(Value::as_str),
+                Some("transfer" | "bittorrent")
+            ) {
+                return Err(invalid("session task requires an explicit supported kind"));
             }
             parse_task(task, true)
         })
@@ -152,8 +237,46 @@ fn parse_task(task: &Value, force_pause: bool) -> Result<ImportedTask, HttpContr
         .ok_or_else(|| invalid("session task must be an object"))?;
     reject_unknown(
         object,
-        &["gid", "uris", "sources", "options", "state", "verification"],
+        &[
+            "kind",
+            "gid",
+            "uris",
+            "sources",
+            "options",
+            "state",
+            "verification",
+            "bittorrent",
+        ],
     )?;
+    let is_bt = object.get("kind").and_then(Value::as_str) == Some("bittorrent");
+    if is_bt {
+        if ["uris", "sources", "verification"]
+            .iter()
+            .any(|key| object.contains_key(*key))
+        {
+            return Err(invalid(
+                "BitTorrent session member contains transfer fields",
+            ));
+        }
+        #[cfg(not(feature = "bt"))]
+        return Err(HttpControlError::Unsupported(
+            "BitTorrent feature unavailable",
+        ));
+    } else if object.contains_key("bittorrent")
+        || object
+            .get("kind")
+            .is_some_and(|kind| kind.as_str() != Some("transfer"))
+    {
+        return Err(invalid("session task kind differs from its metadata"));
+    }
+    #[cfg(feature = "bt")]
+    let bittorrent = if is_bt {
+        Some(parse_bittorrent(object.get("bittorrent").ok_or_else(
+            || invalid("missing BitTorrent session metadata"),
+        )?)?)
+    } else {
+        None
+    };
     let verification = object
         .get("verification")
         .map(crate::verification_document::parse_verification)
@@ -213,7 +336,7 @@ fn parse_task(task: &Value, force_pause: bool) -> Result<ImportedTask, HttpContr
                 "session URI projection differs from its source records",
             ));
         }
-    } else if uris.is_empty() {
+    } else if uris.is_empty() && !is_bt {
         return Err(invalid("session task has no sources"));
     }
     let mut options = object.get("options").cloned().unwrap_or_else(|| json!({}));
@@ -242,6 +365,8 @@ fn parse_task(task: &Value, force_pause: bool) -> Result<ImportedTask, HttpContr
     let (verification, metalink_index) =
         verification.map_or((None, None), |(manifest, index)| (Some(manifest), index));
     Ok(ImportedTask {
+        #[cfg(feature = "bt")]
+        bittorrent,
         uris,
         sources,
         options,
@@ -464,6 +589,20 @@ pub(crate) fn render(document: &Value, format: SessionFormat) -> Result<Vec<u8>,
             "VerificationMetadataRequiresJson",
         ));
     }
+    if format == SessionFormat::Aria2
+        && document
+            .get("tasks")
+            .and_then(Value::as_array)
+            .is_some_and(|tasks| {
+                tasks
+                    .iter()
+                    .any(|task| task.get("kind").and_then(Value::as_str) == Some("bittorrent"))
+            })
+    {
+        return Err(HttpControlError::Unsupported(
+            "BitTorrentMetadataRequiresJson",
+        ));
+    }
     let mut writer = SessionWriter { bytes: Vec::new() };
     if format == SessionFormat::Json {
         serde_json::to_writer(&mut writer, document)
@@ -584,12 +723,15 @@ mod tests {
     #[test]
     fn session_documents_reject_unknown_duplicate_and_malformed_fields() {
         for text in [
-            r#"{"tasks":[],"tasks":[]}"#,
-            r#"{"tasks":[],"extra":true}"#,
-            r#"{"tasks":[],"formatVersion":3}"#,
-            r#"{"tasks":[{"uris":["http://example.test/file"],"options":{"pause":"invalid"}}]}"#,
-            r#"{"tasks":[{"uris":["http://example.test/file"],"options":false}]}"#,
-            r#"{"tasks":[{"uris":["http://example.test/file"],"state":"unknown"}]}"#,
+            r#"{"formatVersion":3,"tasks":[],"tasks":[]}"#,
+            r#"{"formatVersion":3,"tasks":[],"extra":true}"#,
+            r#"{"tasks":[],"formatVersion":1}"#,
+            r#"{"tasks":[],"formatVersion":2}"#,
+            r#"{"tasks":[]}"#,
+            r#"{"tasks":[],"formatVersion":4}"#,
+            r#"{"formatVersion":3,"tasks":[{"kind":"transfer","uris":["http://example.test/file"],"options":{"pause":"invalid"}}]}"#,
+            r#"{"formatVersion":3,"tasks":[{"kind":"transfer","uris":["http://example.test/file"],"options":false}]}"#,
+            r#"{"formatVersion":3,"tasks":[{"kind":"transfer","uris":["http://example.test/file"],"state":"unknown"}]}"#,
             r#"{"tasks":[]} trailing"#,
         ] {
             assert!(matches!(
@@ -598,7 +740,7 @@ mod tests {
             ));
         }
         assert!(
-            parse(json!([{"tasks": []}]))
+            parse(json!([{"formatVersion":3,"tasks": []}]))
                 .expect("empty document")
                 .is_empty()
         );
@@ -619,9 +761,9 @@ mod tests {
     fn aria2_migration_comments_preserve_placeholders_and_reject_projection_changes() {
         let unavailable = json!({"uriId":"9", "uri":null, "fingerprint":"01".repeat(32), "needsCredentials":true, "priority":"0"});
         let safe = json!({"uriId":"11", "uri":"http://example.test/file", "fingerprint":"02".repeat(32), "needsCredentials":false, "priority":"1"});
-        let document = json!({"formatVersion":1,"tasks":[
-            {"uris":[],"sources":[unavailable.clone()],"options":{"out":"blocked.bin","pause":"true"}},
-            {"uris":["http://example.test/file"],"sources":[unavailable,safe],"options":{"out":"file.bin","pause":"false"}}
+        let document = json!({"formatVersion":3,"tasks":[
+            {"kind":"transfer","uris":[],"sources":[unavailable.clone()],"options":{"out":"blocked.bin","pause":"true"}},
+            {"kind":"transfer","uris":["http://example.test/file"],"sources":[unavailable,safe],"options":{"out":"file.bin","pause":"false"}}
         ]});
         let text =
             String::from_utf8(render(&document, SessionFormat::Aria2).expect("aria2 export"))
@@ -649,7 +791,7 @@ mod tests {
 
     #[test]
     fn aria2_option_lines_omit_extensions_while_metadata_round_trips_them() {
-        let document = json!({"tasks":[{"uris":["http://example.test/file"],"options":{"pause":"true", "split":"3", "piece-length":"1048576", "retry-profile":"standard"}}]});
+        let document = json!({"formatVersion":3,"tasks":[{"kind":"transfer","uris":["http://example.test/file"],"options":{"pause":"true", "split":"3", "piece-length":"1048576", "retry-profile":"standard"}}]});
         let text = String::from_utf8(render(&document, SessionFormat::Aria2).expect("export"))
             .expect("text");
         assert!(text.contains("  split=3\n"));

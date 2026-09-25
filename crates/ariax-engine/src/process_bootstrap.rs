@@ -93,7 +93,7 @@ impl BootstrappedEngine {
 
     #[must_use]
     pub fn task_count(&self) -> usize {
-        self.tasks.len()
+        self.snapshot_reader().load().len()
     }
 
     #[must_use]

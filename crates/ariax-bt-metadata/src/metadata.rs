@@ -392,6 +392,10 @@ fn parse_metadata(
 
 pub fn parse_torrent(bytes: &[u8], limits: MetadataLimits) -> Result<TorrentMetadata, BtError> {
     let root = decode(bytes, limits)?;
+    // Libtorrent 2.1 does not implement BEP 17 HTTP seeds.
+    if root.get(b"httpseeds").is_some() {
+        return Err(BtError::UnsupportedOption);
+    }
     let mut metadata = parse_metadata(root.required(b"info")?, bytes, limits)?;
     if let Some(value) = root.get(b"announce") {
         metadata.trackers.push(endpoint(value.text()?, true)?);
@@ -409,7 +413,7 @@ pub fn parse_torrent(bytes: &[u8], limits: MetadataLimits) -> Result<TorrentMeta
             }
         }
     }
-    for name in [b"url-list".as_slice(), b"httpseeds"] {
+    for name in [b"url-list".as_slice()] {
         if let Some(values) = root.get(name) {
             if let Ok(value) = values.text() {
                 metadata.web_seeds.push(endpoint(value, false)?);
@@ -424,6 +428,282 @@ pub fn parse_torrent(bytes: &[u8], limits: MetadataLimits) -> Result<TorrentMeta
         }
     }
     Ok(metadata)
+}
+
+/// Extract the exact hashed info dictionary; never re-encode its identity.
+pub fn info_section(bytes: &[u8], limits: MetadataLimits) -> Result<&[u8], BtError> {
+    let root = decode(bytes, limits)?;
+    let info = root.required(b"info")?;
+    Ok(&bytes[info.range.clone()])
+}
+
+/// Add BEP 19 web seeds while preserving all existing hashed metadata bytes.
+pub fn with_web_seeds(
+    bytes: &[u8],
+    seeds: &[String],
+    limits: MetadataLimits,
+) -> Result<Vec<u8>, BtError> {
+    let metadata = parse_torrent(bytes, limits)?;
+    if seeds.len().saturating_add(metadata.web_seeds.len()) > 64 {
+        return Err(BtError::MetadataLimit);
+    }
+    let mut urls = metadata.web_seeds;
+    for seed in seeds {
+        urls.push(endpoint(seed, false)?);
+    }
+    let maximum = bytes
+        .len()
+        .saturating_add(urls.iter().map(|url| url.len() + 16).sum::<usize>())
+        .saturating_add(32);
+    if maximum > limits.bytes {
+        return Err(BtError::MetadataLimit);
+    }
+    let root = decode(bytes, limits)?;
+    let mut entries = root
+        .dictionary()?
+        .iter()
+        .filter(|(key, _)| *key != b"url-list")
+        .map(|(key, node)| (*key, &bytes[node.range.clone()]))
+        .collect::<Vec<_>>();
+    let mut list = Vec::new();
+    list.push(b'l');
+    for url in urls {
+        list.extend_from_slice(format!("{}:", url.len()).as_bytes());
+        list.extend_from_slice(url.as_bytes());
+    }
+    list.push(b'e');
+    entries.push((b"url-list", &list));
+    entries.sort_by_key(|(key, _)| *key);
+    let mut output = Vec::with_capacity(maximum);
+    output.push(b'd');
+    for (key, value) in entries {
+        output.extend_from_slice(format!("{}:", key.len()).as_bytes());
+        output.extend_from_slice(key);
+        output.extend_from_slice(value);
+    }
+    output.push(b'e');
+    Ok(output)
+}
+
+/// A metadata-only magnet export has no cached endpoint or credential state.
+pub fn torrent_from_info(info: &[u8], limits: MetadataLimits) -> Result<Vec<u8>, BtError> {
+    parse_info(info, limits)?;
+    if info.len().saturating_add(8) > limits.bytes {
+        return Err(BtError::MetadataLimit);
+    }
+    let mut output = Vec::with_capacity(info.len() + 8);
+    output.extend_from_slice(b"d4:info");
+    output.extend_from_slice(info);
+    output.push(b'e');
+    Ok(output)
+}
+
+/// Apply explicit tracker additions/exclusions without touching the info hash.
+pub fn with_trackers(
+    bytes: &[u8],
+    add: &[String],
+    exclude: &[String],
+    limits: MetadataLimits,
+) -> Result<Vec<u8>, BtError> {
+    let mut trackers = parse_torrent(bytes, limits)?.trackers;
+    trackers.retain(|url| {
+        !exclude
+            .iter()
+            .any(|pattern| pattern == "*" || pattern == url)
+    });
+    for url in add {
+        let url = endpoint(url, true)?;
+        if !trackers.contains(&url) {
+            trackers.push(url);
+        }
+    }
+    if trackers.len() > 64 {
+        return Err(BtError::MetadataLimit);
+    }
+    let maximum = bytes
+        .len()
+        .saturating_add(trackers.iter().map(|url| url.len() + 32).sum::<usize>())
+        .saturating_add(64);
+    if maximum > limits.bytes {
+        return Err(BtError::MetadataLimit);
+    }
+    let root = decode(bytes, limits)?;
+    let mut entries = root
+        .dictionary()?
+        .iter()
+        .filter(|(key, _)| *key != b"announce" && *key != b"announce-list")
+        .map(|(key, node)| (*key, &bytes[node.range.clone()]))
+        .collect::<Vec<_>>();
+    let mut list = vec![b'l'];
+    for url in &trackers {
+        list.push(b'l');
+        list.extend_from_slice(format!("{}:", url.len()).as_bytes());
+        list.extend_from_slice(url.as_bytes());
+        list.push(b'e');
+    }
+    list.push(b'e');
+    if !trackers.is_empty() {
+        entries.push((b"announce-list", &list));
+    }
+    entries.sort_by_key(|(key, _)| *key);
+    let mut output = Vec::with_capacity(maximum);
+    output.push(b'd');
+    for (key, value) in entries {
+        output.extend_from_slice(format!("{}:", key.len()).as_bytes());
+        output.extend_from_slice(key);
+        output.extend_from_slice(value);
+    }
+    output.push(b'e');
+    Ok(output)
+}
+
+pub fn magnet_with_trackers(
+    value: &str,
+    add: &[String],
+    exclude: &[String],
+) -> Result<String, BtError> {
+    let mut magnet = parse_magnet(value)?;
+    magnet.trackers.retain(|url| {
+        !exclude
+            .iter()
+            .any(|pattern| pattern == "*" || pattern == url)
+    });
+    for url in add {
+        let url = endpoint(url, true)?;
+        if !magnet.trackers.contains(&url) {
+            magnet.trackers.push(url);
+        }
+    }
+    if magnet.trackers.len() > 64 {
+        return Err(BtError::MetadataLimit);
+    }
+    let mut url = url::Url::parse(value).map_err(|_| BtError::InvalidMagnet)?;
+    let pairs = url
+        .query_pairs()
+        .filter(|(name, _)| name != "tr")
+        .map(|(name, value)| (name.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    url.set_query(None);
+    url.query_pairs_mut()
+        .extend_pairs(pairs)
+        .extend_pairs(magnet.trackers.iter().map(|value| ("tr", value)));
+    let output = url.to_string();
+    parse_magnet(&output)?;
+    Ok(output)
+}
+
+/// Validates the pinned native resume format without trusting paths or endpoints.
+pub fn validate_resume(bytes: &[u8], expected: &BtIdentity) -> Result<(), BtError> {
+    use crate::bencode::Value;
+    let limits = MetadataLimits {
+        bytes: 64 * 1024 * 1024,
+        tokens: 1_000_000,
+        ..MetadataLimits::default()
+    };
+    let root = decode(bytes, limits)?;
+    if root.required(b"file-format")?.bytes()? != b"libtorrent resume file"
+        || root.required(b"file-version")?.integer()? != 2
+    {
+        return Err(BtError::InvalidMetadata);
+    }
+    fn empty(value: &Node<'_>) -> bool {
+        match &value.value {
+            Value::Bytes(value) => value.is_empty(),
+            Value::List(values) => values.iter().all(empty),
+            Value::Dictionary(values) => values.is_empty(),
+            Value::Integer(_) => false,
+        }
+    }
+    for (name, value) in root.dictionary()? {
+        match *name {
+            b"save_path" | b"part_file_dir" | b"root_certificate" | b"mapped_files"
+            | b"trackers" | b"url-list" | b"httpseeds" | b"peers" | b"peers6" | b"banned_peers"
+            | b"banned_peers6" | b"url" | b"comment" | b"created by" => {
+                if !empty(value) {
+                    return Err(BtError::Credentials);
+                }
+            }
+            b"file-format" | b"file-version" | b"info-hash" | b"info-hash2" | b"info"
+            | b"pieces" | b"verified" | b"trees" | b"unfinished" | b"file_priority"
+            | b"piece_priority" => {}
+            b"libtorrent-version" => {
+                if value.bytes()?.len() > 32 || !value.text()?.starts_with("2.1.1") {
+                    return Err(BtError::InvalidMetadata);
+                }
+            }
+            b"allocation" => {
+                if !matches!(value.bytes()?, b"full" | b"sparse") {
+                    return Err(BtError::InvalidMetadata);
+                }
+            }
+            b"name" => {
+                component(value.bytes()?)?;
+            }
+            b"total_uploaded"
+            | b"total_downloaded"
+            | b"active_time"
+            | b"finished_time"
+            | b"seeding_time"
+            | b"last_seen_complete"
+            | b"last_download"
+            | b"last_upload"
+            | b"num_complete"
+            | b"num_incomplete"
+            | b"num_downloaded"
+            | b"seed_mode"
+            | b"upload_mode"
+            | b"share_mode"
+            | b"apply_ip_filter"
+            | b"paused"
+            | b"auto_managed"
+            | b"super_seeding"
+            | b"sequential_download"
+            | b"stop_when_ready"
+            | b"disable_dht"
+            | b"disable_lsd"
+            | b"disable_pex"
+            | b"disable_v1_hashes"
+            | b"added_time"
+            | b"completed_time"
+            | b"creation date"
+            | b"upload_rate_limit"
+            | b"download_rate_limit"
+            | b"max_connections"
+            | b"max_uploads" => {
+                if !matches!(value.value, Value::Integer(_)) {
+                    return Err(BtError::InvalidMetadata);
+                }
+            }
+            _ => return Err(BtError::InvalidMetadata),
+        }
+    }
+    let read_hash = |name: &[u8], length: usize| -> Result<Option<String>, BtError> {
+        let Some(value) = root.get(name) else {
+            return Ok(None);
+        };
+        let bytes = value.bytes()?;
+        if bytes.len() != length {
+            return Err(BtError::IdentityMismatch);
+        }
+        Ok(bytes
+            .iter()
+            .any(|byte| *byte != 0)
+            .then(|| bytes.iter().map(|byte| format!("{byte:02x}")).collect()))
+    };
+    let identity = BtIdentity {
+        v1: read_hash(b"info-hash", 20)?,
+        v2: read_hash(b"info-hash2", 32)?,
+    };
+    if !expected.matches(&identity) {
+        return Err(BtError::IdentityMismatch);
+    }
+    if let Some(info) = root.get(b"info") {
+        let metadata = parse_info(&bytes[info.range.clone()], MetadataLimits::default())?;
+        if metadata.identity != identity {
+            return Err(BtError::IdentityMismatch);
+        }
+    }
+    Ok(())
 }
 
 pub fn parse_info(bytes: &[u8], limits: MetadataLimits) -> Result<TorrentMetadata, BtError> {
@@ -542,6 +822,103 @@ mod tests {
     const V2: &[u8] = include_bytes!("../../ariax-bt-libtorrent-sys/tests/fixtures/v2.torrent");
     const HYBRID: &[u8] =
         include_bytes!("../../ariax-bt-libtorrent-sys/tests/fixtures/hybrid.torrent");
+
+    fn resume_fixture(identity: &BtIdentity, extra: Option<(&str, &[u8])>) -> Vec<u8> {
+        let mut fields = std::collections::BTreeMap::from([
+            ("file-format", b"22:libtorrent resume file".to_vec()),
+            ("file-version", b"i2e".to_vec()),
+        ]);
+        for (key, hash) in [("info-hash", &identity.v1), ("info-hash2", &identity.v2)] {
+            if let Some(hash) = hash {
+                let mut bytes = format!("{}:", hash.len() / 2).into_bytes();
+                bytes.extend(
+                    (0..hash.len())
+                        .step_by(2)
+                        .map(|index| u8::from_str_radix(&hash[index..index + 2], 16).unwrap()),
+                );
+                fields.insert(key, bytes);
+            }
+        }
+        if let Some((key, value)) = extra {
+            fields.insert(key, value.to_vec());
+        }
+        let mut bytes = vec![b'd'];
+        for (key, value) in fields {
+            bytes.extend(format!("{}:{key}", key.len()).bytes());
+            bytes.extend(value);
+        }
+        bytes.push(b'e');
+        bytes
+    }
+
+    #[test]
+    fn resume_data_accepts_current_progress_and_rejects_authority_or_changed_identity() {
+        for torrent in [V1, V2, HYBRID] {
+            let identity = parse_torrent(torrent, MetadataLimits::default())
+                .unwrap()
+                .identity;
+            let bytes = resume_fixture(&identity, Some(("trackers", b"llee")));
+            validate_resume(&bytes, &identity).unwrap();
+            for length in 0..bytes.len() {
+                assert!(validate_resume(&bytes[..length], &identity).is_err());
+            }
+            for (name, value) in [
+                ("save_path", b"7:/secret".as_slice()),
+                ("mapped_files", b"l10:../outsidee".as_slice()),
+                ("peers", b"6:secret".as_slice()),
+                ("url-list", b"l6:secrete".as_slice()),
+                ("unknown", b"i1e".as_slice()),
+                ("file-version", b"i1e".as_slice()),
+            ] {
+                assert!(
+                    validate_resume(&resume_fixture(&identity, Some((name, value))), &identity)
+                        .is_err()
+                );
+            }
+            let changed = BtIdentity {
+                v1: Some("ff".repeat(20)),
+                v2: Some("ff".repeat(32)),
+            };
+            assert_eq!(
+                validate_resume(&bytes, &changed),
+                Err(BtError::IdentityMismatch)
+            );
+        }
+    }
+
+    #[test]
+    fn tracker_and_web_seed_overlays_preserve_all_torrent_identities() {
+        for torrent in [V1, V2, HYBRID] {
+            let identity = parse_torrent(torrent, MetadataLimits::default())
+                .unwrap()
+                .identity;
+            let with_seed = with_web_seeds(
+                torrent,
+                &["https://seed.example/payload".into()],
+                MetadataLimits::default(),
+            )
+            .unwrap();
+            let updated = with_trackers(
+                &with_seed,
+                &["udp://tracker.example:6969".into()],
+                &[],
+                MetadataLimits::default(),
+            )
+            .unwrap();
+            let metadata = parse_torrent(&updated, MetadataLimits::default()).unwrap();
+            assert_eq!(metadata.identity, identity);
+            assert_eq!(metadata.web_seeds, ["https://seed.example/payload"]);
+            assert_eq!(metadata.trackers, ["udp://tracker.example:6969"]);
+            assert!(
+                with_web_seeds(
+                    torrent,
+                    &["https://user:secret@seed.example/".into()],
+                    MetadataLimits::default()
+                )
+                .is_err()
+            );
+        }
+    }
 
     #[test]
     fn v1_v2_hybrid_identity_and_limits_cover_complete_and_rejected_inputs() {

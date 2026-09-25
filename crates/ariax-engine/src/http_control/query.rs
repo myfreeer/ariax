@@ -156,6 +156,7 @@ pub(crate) fn is_query(method: &str) -> bool {
             | "getUris"
             | "getFiles"
             | "getServers"
+            | "getPeers"
             | "getOption"
             | "getGlobalOption"
             | "getVersion"
@@ -178,6 +179,8 @@ pub(super) struct ConfigurationSnapshot {
 }
 
 pub(super) struct ControlQueryRoot {
+    #[cfg(feature = "bt")]
+    bt_tasks: Arc<BTreeMap<Gid, Arc<super::bittorrent::QueryTask>>>,
     status: Arc<ariax_runtime::StatusSnapshotRoot>,
     tasks: Arc<crate::HttpTaskCatalog>,
     stats: Arc<BTreeMap<TaskId, crate::HttpTransferStats>>,
@@ -226,16 +229,26 @@ impl HttpControlPlane {
         let status = self.engine.snapshot_reader().load();
         let tasks = self.tasks.snapshot();
         let stats = self.stats.snapshot_handles();
+        #[cfg(feature = "bt")]
+        let bt_unchanged = self
+            .queries
+            .current()
+            .is_some_and(|root| Arc::ptr_eq(&root.bt_tasks, &self.bt.catalog));
+        #[cfg(not(feature = "bt"))]
+        let bt_unchanged = true;
         if let Some(root) = self.queries.current()
             && Arc::ptr_eq(&root.status, &status)
             && Arc::ptr_eq(&root.tasks, &tasks)
             && Arc::ptr_eq(&root.stats, &stats)
             && root.config_generation == self.config_generation
             && root.sample == self.next_slow_sample
+            && bt_unchanged
         {
             return root;
         }
         Arc::new(ControlQueryRoot {
+            #[cfg(feature = "bt")]
+            bt_tasks: self.bt.catalog.clone(),
             slow_observations: self.slow_observations.clone(),
             _publication: self.query_publication_charge.clone(),
             sample: self.next_slow_sample,
@@ -260,13 +273,150 @@ impl HttpControlPlane {
 }
 
 impl ControlQueryRoot {
+    pub(super) fn get_peers(&self, params: Value) -> Result<Value, HttpControlError> {
+        let gid = self.resolve_gid_param(&params)?;
+        #[cfg(feature = "bt")]
+        {
+            let bt = self.bt_task(gid).ok_or(HttpControlError::NotFound)?;
+            let mut peers = ResultList::new();
+            for peer in bt.peers.iter() {
+                peers.push_scratch(json!({ "peerId": peer.peer_id, "ip": peer.address, "port": peer.port.to_string(),
+                    "bitfield": "", "amChoking": peer.am_choking.to_string(), "peerChoking": peer.peer_choking.to_string(),
+                    "downloadSpeed": peer.download_rate.to_string(), "uploadSpeed": peer.upload_rate.to_string(), "seeder": peer.seeder.to_string() }))?;
+            }
+            Ok(peers.finish())
+        }
+        #[cfg(not(feature = "bt"))]
+        {
+            let _ = gid;
+            Err(HttpControlError::Unsupported(
+                "BitTorrent feature unavailable",
+            ))
+        }
+    }
+
+    #[cfg(feature = "bt")]
+    fn bt_task(&self, gid: Gid) -> Option<&super::bittorrent::QueryTask> {
+        let applied = self.status.task(gid)?;
+        self.bt_tasks
+            .get(&gid)
+            .filter(|bt| bt.spec.task_id == applied.task_id)
+            .map(Arc::as_ref)
+    }
+
+    #[cfg(feature = "bt")]
+    fn bt_files(&self, bt: &super::bittorrent::QueryTask) -> Result<Value, HttpControlError> {
+        let mut files = ResultList::new();
+        for file in bt
+            .spec
+            .record
+            .binding
+            .files
+            .iter()
+            .filter(|file| !file.padding)
+        {
+            let progress = bt
+                .snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.file_progress.get(file.index as usize))
+                .copied()
+                .unwrap_or(0)
+                .min(file.length);
+            files.push_scratch(json!({ "index": (file.index+1).to_string(), "path": bt.spec.root.path().join(&file.path).to_string_lossy(),
+                "length": file.length.to_string(), "completedLength": progress.to_string(), "selected": file.selected.to_string(), "uris": [] }))?;
+        }
+        Ok(files.finish())
+    }
+
+    #[cfg(feature = "bt")]
+    fn bt_status(
+        &self,
+        mut value: Value,
+        bt: &super::bittorrent::QueryTask,
+        keys: Option<&[String]>,
+    ) -> Result<Value, HttpControlError> {
+        let identity = &bt.spec.record.binding.identity;
+        let total: u64 = bt
+            .spec
+            .record
+            .binding
+            .files
+            .iter()
+            .filter(|file| file.selected && !file.padding)
+            .map(|file| file.length)
+            .sum();
+        let snapshot = bt.snapshot.as_deref();
+        value["totalLength"] = json!(total.to_string());
+        value["completedLength"] = json!(
+            snapshot
+                .map_or(0, |snapshot| snapshot.done_bytes)
+                .min(total)
+                .to_string()
+        );
+        value["downloadSpeed"] = json!(
+            snapshot
+                .map_or(0, |snapshot| snapshot.download_rate)
+                .to_string()
+        );
+        value["uploadSpeed"] = json!(
+            snapshot
+                .map_or(0, |snapshot| snapshot.upload_rate)
+                .to_string()
+        );
+        value["uploadLength"] = json!(bt.uploaded.to_string());
+        value["connections"] = json!(snapshot.map_or(0, |snapshot| snapshot.peers).to_string());
+        value["numSeeders"] = json!(snapshot.map_or(0, |snapshot| snapshot.seeds).to_string());
+        value["seeder"] = json!(
+            snapshot
+                .is_some_and(|snapshot| snapshot.seeding)
+                .to_string()
+        );
+        value["infoHash"] = json!(identity.v1.as_ref().or(identity.v2.as_ref()));
+        if let Some(v2) = &identity.v2 {
+            value["infoHashV2"] = json!(v2);
+        }
+        value["dir"] = json!(bt.spec.root.path().to_string_lossy());
+        value["btCheckpointDirty"] = json!(bt.dirty);
+        value["btDownloadedLength"] = json!(bt.downloaded.to_string());
+        value["btSeedTime"] = json!(bt.seed_millis / 1000);
+        if bt.checkpoint_failed {
+            value["btCheckpointError"] = json!("DirtyCheckpoint");
+        }
+        if let Some(metadata) = &bt.spec.metadata {
+            value["pieceLength"] = json!(metadata.piece_length.to_string());
+            value["numPieces"] = json!(metadata.pieces.to_string());
+            value["bittorrent"] = json!({ "info": { "name": metadata.name }, "mode": if metadata.files.iter().filter(|file| !file.padding).count() == 1 { "single" } else { "multi" },
+                "announceList": metadata.trackers.iter().map(|tracker| vec![tracker]).collect::<Vec<_>>() });
+        }
+        if keys.is_some_and(|keys| keys.iter().any(|key| key == "files")) {
+            value["files"] = self.bt_files(bt)?;
+        }
+        Ok(project_status(value, keys))
+    }
+
     pub(super) fn applied_root(&self) -> Arc<ariax_runtime::StatusSnapshotRoot> {
         self.status.clone()
     }
 
     pub(super) fn retained_bytes(&self) -> usize {
+        #[cfg(feature = "bt")]
+        let bt_bytes = self
+            .bt_tasks
+            .values()
+            .map(|task| {
+                task.spec
+                    .record
+                    .binding
+                    .owned_bytes()
+                    .saturating_mul(3)
+                    .saturating_add(128 * 1024)
+            })
+            .sum();
+        #[cfg(not(feature = "bt"))]
+        let bt_bytes = 0;
         self.status
             .estimated_draft_bytes()
+            .saturating_add(bt_bytes)
             .saturating_add(self.status.len().saturating_mul(1024))
             .saturating_add(self.tasks.retained_bytes())
             .saturating_add(self.configuration_defaults_bytes())
@@ -300,6 +450,7 @@ impl ControlQueryRoot {
             "getUris" => self.get_uris(params),
             "getFiles" => self.get_files(params),
             "getServers" => self.get_servers(params),
+            "getPeers" => self.get_peers(params),
             "getOption" => self.get_option(params),
             "getGlobalOption" => self.get_global_option(params),
             "getVersion" => self.get_version(params),
@@ -393,6 +544,10 @@ impl ControlQueryRoot {
             .map(|stats| stats.snapshot())
             .unwrap_or_default();
         let mut value = status_value(snapshot, status, stats);
+        #[cfg(feature = "bt")]
+        if let Some(bt) = self.bt_task(snapshot.gid) {
+            return self.bt_status(value, bt, keys);
+        }
         self.add_slot_diagnostics(&mut value, snapshot, stats);
         if let Some(expansion) = self
             .task_spec(snapshot.gid)
@@ -412,6 +567,10 @@ impl ControlQueryRoot {
 
     pub(super) fn get_uris(&self, params: Value) -> Result<Value, HttpControlError> {
         let gid = self.resolve_gid_param(&params)?;
+        #[cfg(feature = "bt")]
+        if self.bt_task(gid).is_some() {
+            return Ok(json!([]));
+        }
         let spec = self.task_spec(gid).ok_or(HttpControlError::NotFound)?;
         Ok(crate::rpc_result::to_value(
             &SourceUris {
@@ -424,6 +583,10 @@ impl ControlQueryRoot {
 
     pub(super) fn get_files(&self, params: Value) -> Result<Value, HttpControlError> {
         let gid = self.resolve_gid_param(&params)?;
+        #[cfg(feature = "bt")]
+        if let Some(bt) = self.bt_task(gid) {
+            return self.bt_files(bt);
+        }
         let root = self.status.clone();
         let task = root.task(gid).ok_or(HttpControlError::NotFound)?;
         let spec = self.task_spec(gid).ok_or(HttpControlError::NotFound)?;
@@ -467,6 +630,10 @@ impl ControlQueryRoot {
 
     pub(super) fn get_servers(&self, params: Value) -> Result<Value, HttpControlError> {
         let gid = self.resolve_gid_param(&params)?;
+        #[cfg(feature = "bt")]
+        if self.bt_task(gid).is_some() {
+            return Ok(json!([]));
+        }
         let spec = self.task_spec(gid).ok_or(HttpControlError::NotFound)?;
         Ok(crate::rpc_result::to_value(
             &SourceServers(spec.sources()),
@@ -476,6 +643,14 @@ impl ControlQueryRoot {
 
     pub(super) fn get_option(&self, params: Value) -> Result<Value, HttpControlError> {
         let gid = self.resolve_gid_param(&params)?;
+        #[cfg(feature = "bt")]
+        if let Some(bt) = self.bt_task(gid) {
+            return crate::rpc_result::to_value(
+                &OptionMap(&bt.spec.options.persisted),
+                RESULT_VALUE_BYTES,
+            )
+            .map_err(Into::into);
+        }
         let spec = self.task_spec(gid).ok_or(HttpControlError::NotFound)?;
         let options = spec
             .persistence_options()
@@ -497,9 +672,22 @@ impl ControlQueryRoot {
 
     pub(super) fn get_version(&self, params: Value) -> Result<Value, HttpControlError> {
         require_no_params(&params, "getVersion")?;
+        let mut features = vec!["HTTP", "HTTPS", "JSON-RPC", "Session", "Async DNS"];
+        if cfg!(feature = "bt") {
+            features.push("BitTorrent");
+        }
+        if cfg!(feature = "metalink") {
+            features.push("Metalink");
+        }
+        if cfg!(feature = "ftp") {
+            features.push("FTP");
+        }
+        if cfg!(feature = "sftp") {
+            features.push("SFTP");
+        }
         Ok(json!({
             "version": env!("CARGO_PKG_VERSION"),
-            "enabledFeatures": ["HTTP", "HTTPS", "JSON-RPC", "Session", "Async DNS"],
+            "enabledFeatures": features,
         }))
     }
 
@@ -526,12 +714,27 @@ impl ControlQueryRoot {
             return Err(HttpControlError::Busy);
         }
         let mut tasks = ResultList::new();
-        let mut format_version = 1;
+
         for applied in root.tasks().values() {
             if matches!(
                 applied.snapshot.wire_status(),
                 Ok(Aria2Status::Complete | Aria2Status::Removed)
             ) {
+                continue;
+            }
+            #[cfg(feature = "bt")]
+            if let Some(bt) = self.bt_task(applied.snapshot.gid) {
+                use base64ct::Encoding as _;
+                let mut options = string_map_value(bt.spec.options.persisted.entries())?;
+                options["pause"] = json!(applied.snapshot.desired_paused);
+                tasks.push_scratch(json!({
+                    "kind": "bittorrent", "gid": applied.snapshot.gid.to_string(),
+                    "state": applied.snapshot.state.code(), "options": options,
+                    "bittorrent": { "identity": bt.spec.record.binding.identity,
+                        "metainfo": base64ct::Base64::encode_string(&bt.spec.record.binding.metainfo),
+                        "magnet": bt.spec.record.binding.magnet, "files": bt.spec.record.binding.files,
+                        "resumeData": base64ct::Base64::encode_string(bt.resume_data.as_deref().map_or(&[], |resume| resume.bytes.as_ref())) }
+                }))?;
                 continue;
             }
             let spec = self
@@ -546,6 +749,7 @@ impl ControlQueryRoot {
                 .map_err(HttpControlError::TaskSpec)?;
             #[derive(serde::Serialize)]
             struct Task<'a> {
+                kind: &'static str,
                 gid: DisplayValue<Gid>,
                 uris: PersistedUris<'a>,
                 sources: PersistedSources<'a>,
@@ -555,6 +759,7 @@ impl ControlQueryRoot {
                 verification: Option<crate::verification_document::VerificationView<'a>>,
             }
             tasks.push(&Task {
+                kind: "transfer",
                 gid: DisplayValue(applied.snapshot.gid),
                 uris: PersistedUris(spec.sources()),
                 sources: PersistedSources(spec.sources()),
@@ -564,7 +769,6 @@ impl ControlQueryRoot {
                 },
                 state: applied.snapshot.state.code(),
                 verification: spec.verification().map(|manifest| {
-                    format_version = 2;
                     crate::verification_document::VerificationView {
                         manifest,
                         index: spec.metalink_index(),
@@ -578,7 +782,7 @@ impl ControlQueryRoot {
             Value::String(self.session_id.to_string()),
         );
         result.insert("tasks".to_owned(), tasks.finish());
-        result.insert("formatVersion".to_owned(), Value::from(format_version));
+        result.insert("formatVersion".to_owned(), Value::from(3));
         let document = Value::Object(result);
         if format == crate::SessionFormat::Aria2 {
             let bytes = crate::session_file::render(&document, format)?;

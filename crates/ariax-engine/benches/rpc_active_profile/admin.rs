@@ -139,7 +139,7 @@ pub(super) async fn measure() -> Result<()> {
     })?;
     let backend = Arc::new(HttpControlBackend::new(plane));
     backend.start_control_runtime()?;
-    let document = json!({"tasks":(0..TASKS).map(|index| json!({"uris":[format!("http://example.test/admin-{index}.bin")],"options":{"pause":true}})).collect::<Vec<_>>()});
+    let document = json!({"formatVersion":3,"tasks":(0..TASKS).map(|index| json!({"kind":"transfer","uris":[format!("http://example.test/admin-{index}.bin")],"options":{"pause":true}})).collect::<Vec<_>>()});
     let (gids, mut imported) = timed(
         &backend,
         "ariax.importSession",

@@ -5,6 +5,8 @@
 //! transports never mutate the scheduler directly.
 
 mod admission;
+#[cfg(feature = "bt")]
+mod bittorrent;
 mod configuration;
 mod control_io;
 mod control_ops;
@@ -285,6 +287,8 @@ impl OwnerTurn {
 
 /// Shared mutable control plane used by both transports.
 pub struct HttpControlPlane {
+    #[cfg(feature = "bt")]
+    bt: bittorrent::BtControl,
     engine: crate::BootstrappedEngine,
     config: HttpControlPlaneConfig,
     tasks: SharedHttpTaskCatalog,
@@ -352,6 +356,28 @@ impl fmt::Debug for HttpControlPlane {
 }
 
 impl HttpControlPlane {
+    fn bt_admission_pending(&self) -> bool {
+        #[cfg(feature = "bt")]
+        {
+            self.bt.admission.is_some()
+        }
+        #[cfg(not(feature = "bt"))]
+        {
+            false
+        }
+    }
+    fn is_bt_task(&self, task: TaskId) -> bool {
+        #[cfg(feature = "bt")]
+        {
+            self.bt.contains(task)
+        }
+        #[cfg(not(feature = "bt"))]
+        {
+            let _ = task;
+            false
+        }
+    }
+
     pub fn new(
         engine: crate::BootstrappedEngine,
         config: HttpControlPlaneConfig,
@@ -387,6 +413,8 @@ impl HttpControlPlane {
         })
         .map_err(|_| HttpControlError::InvalidConfig)?;
         let mut plane = Self {
+            #[cfg(feature = "bt")]
+            bt: bittorrent::BtControl::default(),
             cpu_pool,
             session: engine.session_handle(),
             session_id: engine.session_id(),
@@ -443,6 +471,8 @@ impl HttpControlPlane {
             managed_runtime: None,
         };
         plane.restore_catalog()?;
+        #[cfg(feature = "bt")]
+        plane.restore_bt_catalog()?;
         plane.reset_observed_statuses();
         Ok(plane)
     }
@@ -492,6 +522,10 @@ impl HttpControlPlane {
         self.attach_rpc_budgets(resources.rpc_budgets())?;
         self.cpu_pool = resources.cpu_pool();
         self.scheduling = resources.scheduling_policy();
+        #[cfg(feature = "bt")]
+        {
+            self.bt.attach_resources(resources.bt_resources())?;
+        }
         self.process_resources = Some(resources);
         Ok(())
     }
@@ -520,7 +554,7 @@ impl HttpControlPlane {
             }),
             disk_backend: profile.map(|_| "blocking-positioned".to_owned()),
             buffer_budget_bytes: profile.map(|profile| profile.limits().buffer_budget_bytes),
-            task_count: self.tasks.len(),
+            task_count: self.engine.snapshot_reader().load().len(),
             active_workers: self
                 .supervisor
                 .as_ref()
@@ -582,6 +616,7 @@ impl HttpControlPlane {
         let deadline = Instant::now() + self.config.supervisor.shutdown_timeout;
         let continuations_drained = loop {
             if self.pending_admission.is_some()
+                || self.bt_admission_pending()
                 || self.pending_configuration.is_some()
                 || self.pending_follow.is_some()
             {
@@ -608,6 +643,10 @@ impl HttpControlPlane {
                 break false;
             }
         };
+        #[cfg(feature = "bt")]
+        let bt_drained = continuations_drained && self.drain_bt(deadline);
+        #[cfg(not(feature = "bt"))]
+        let bt_drained = true;
         let exports_drained = continuations_drained && self.drain_session_export(deadline);
         let Self {
             engine,
@@ -635,7 +674,7 @@ impl HttpControlPlane {
         } else {
             ProcessDrainOutcome::Drained
         };
-        shutdown.complete_drain(if continuations_drained && exports_drained {
+        shutdown.complete_drain(if continuations_drained && exports_drained && bt_drained {
             drain
         } else {
             ProcessDrainOutcome::Failed
@@ -658,6 +697,7 @@ impl HttpControlPlane {
                 && self.pending_source_replacements.is_empty()
                 && self.pending_bulk.is_none()
                 && self.pending_admission.is_none()
+                && !self.bt_admission_pending()
                 && self.pending_follow.is_none()
                 && self.pending_configuration.is_none()
                 && self.pending_mutation.is_none()
@@ -673,6 +713,10 @@ impl HttpControlPlane {
             }
             tokio::time::sleep(Duration::from_millis(1)).await;
         };
+        #[cfg(feature = "bt")]
+        let bt_drained = continuations_drained && self.drain_bt_async(deadline).await;
+        #[cfg(not(feature = "bt"))]
+        let bt_drained = true;
         let exports_drained =
             continuations_drained && self.drain_session_export_async(deadline).await;
         let Self {
@@ -698,7 +742,7 @@ impl HttpControlPlane {
             },
             None => ProcessDrainOutcome::Drained,
         };
-        shutdown.complete_drain(if continuations_drained && exports_drained {
+        shutdown.complete_drain(if continuations_drained && exports_drained && bt_drained {
             drain
         } else {
             ProcessDrainOutcome::Failed
@@ -936,6 +980,11 @@ impl HttpControlPlane {
                 if let Some(task) = remove_task {
                     self.tasks.remove(task);
                     self.stats.remove(task);
+                    #[cfg(feature = "bt")]
+                    {
+                        self.bt.remove(task);
+                        self.engine.runtime_handle().unregister_bt_task(task);
+                    }
                 }
                 if readmit {
                     match self.try_admit_one(MonotonicInstant::now()) {
@@ -1115,6 +1164,10 @@ impl HttpControlPlane {
             return Ok(());
         }
         self.poll_configuration();
+        #[cfg(feature = "bt")]
+        if self.poll_bt_admission()? {
+            return Ok(());
+        }
         self.poll_metalink_follow()?;
         if !self.turn.take_step()
             || self.poll_admission()?
@@ -1136,6 +1189,19 @@ impl HttpControlPlane {
         let now = MonotonicInstant::now();
         if !self.turn.take_step() {
             return Ok(());
+        }
+        #[cfg(feature = "bt")]
+        if self.bt.poll_rates(self.global_download_rate.as_ref())? {
+            self.turn.mark_progress();
+        }
+        #[cfg(feature = "bt")]
+        if self.bt.poll(
+            &self.engine.runtime_handle(),
+            &self.session,
+            &self.cpu_pool,
+            &self.tasks,
+        )? {
+            self.turn.mark_progress();
         }
         if let Some(supervisor) = self.supervisor.as_mut() {
             supervisor
@@ -1204,6 +1270,28 @@ impl HttpControlPlane {
         local_admin: bool,
     ) -> Result<ControlReply, HttpControlError> {
         let request = self.reserve_command_memory(method, &params, request.as_ref())?;
+        let torrent = matches!(method, "aria2.addTorrent" | "addTorrent");
+        let magnet = matches!(method, "aria2.addUri" | "addUri")
+            && params.get(0).and_then(Value::as_array).is_some_and(|uris| {
+                uris.iter()
+                    .any(|uri| uri.as_str().is_some_and(|uri| uri.starts_with("magnet:")))
+            });
+        if torrent || magnet {
+            #[cfg(feature = "bt")]
+            {
+                return self.begin_bt_admission(
+                    params,
+                    torrent,
+                    request.expect("command reservation"),
+                );
+            }
+            #[cfg(not(feature = "bt"))]
+            {
+                return Err(HttpControlError::Unsupported(
+                    "BitTorrent feature unavailable",
+                ));
+            }
+        }
         if matches!(method, "aria2.saveSession" | "saveSession") {
             require_no_params(&params, "saveSession")?;
             return self.begin_session_export(request.expect("command reservation"), true);
@@ -1265,6 +1353,7 @@ impl HttpControlPlane {
             "aria2.getUris" | "getUris" => self.get_uris(params),
             "aria2.getFiles" | "getFiles" => self.get_files(params),
             "aria2.getServers" | "getServers" => self.get_servers(params),
+            "aria2.getPeers" | "getPeers" => self.capture_query().get_peers(params),
             "aria2.getOption" | "getOption" => self.get_option(params),
             "aria2.changeUri" | "changeUri" | "ariax.replaceSources" => {
                 self.source_call_sync(method, params)
@@ -1556,6 +1645,14 @@ impl HttpControlPlane {
                 .as_str()
                 .ok_or(HttpControlError::InvalidParams("GID must be a string"))?,
         )?;
+        #[cfg(feature = "bt")]
+        if self.bt.catalog.contains_key(&gid) {
+            return self.begin_bt_option_change(
+                gid,
+                &values[1],
+                request.expect("option request reservation"),
+            );
+        }
         let mut patch = parse_registry_options(&values[1], Scope::RpcChange)?;
         if self.pending_restart_patches.contains_key(&gid)
             || self.pending_source_replacements.contains_key(&gid)
@@ -2561,17 +2658,39 @@ impl HttpControlPlane {
     }
 
     fn try_admit_one(&mut self, now: MonotonicInstant) -> Result<(), HttpControlError> {
-        if self.supervisor.is_none() || self.shutdown_requested {
+        if self.shutdown_requested || self.pending_configuration.is_some() {
             return Ok(());
         }
         let mut simulation = self.engine.scheduler().clone();
+        #[cfg(feature = "bt")]
+        let total = self
+            .global_options
+            .get("max-overall-download-limit")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
         let outcome = match simulation.admit_next_at(now) {
             Ok(outcome) => outcome,
-            Err(_) => return Ok(()),
+            Err(_) => {
+                #[cfg(feature = "bt")]
+                self.require_bt_bandwidth(&simulation, total)?;
+                return Ok(());
+            }
         };
+        if self.supervisor.is_none() && outcome.effects.iter().any(|effect| matches!(effect, TransitionEffect::PersistGenerationStarted { task_id, .. } if !self.is_bt_task(*task_id))) {
+            #[cfg(feature = "bt")]
+            self.require_bt_bandwidth(&self.engine.scheduler().clone(), total)?;
+            return Ok(());
+        }
+        #[cfg(feature = "bt")]
+        if !self.require_bt_bandwidth(&simulation, total)? {
+            return Ok(());
+        }
         if let Some(rate) = &self.global_download_rate {
             for effect in &outcome.effects {
                 if let TransitionEffect::PersistGenerationStarted { task_id, .. } = effect {
+                    if self.is_bt_task(*task_id) {
+                        continue;
+                    }
                     let spec = self.tasks.get(*task_id).ok_or(HttpControlError::NotFound)?;
                     rate.set_scoped_limit(
                         RateScope::Task(task_id.get()),
@@ -2641,6 +2760,7 @@ impl HttpControlPlane {
             if let TransitionEffect::PublishSnapshot { snapshot, .. } = &effect
                 && let Some(task) = simulation.task(snapshot.gid)
                 && self.engine.scheduler().task(snapshot.gid).is_some()
+                && !self.is_bt_task(task.task_id)
                 && task.pending_barrier.is_none()
                 && matches!(
                     task.state,
@@ -2729,6 +2849,18 @@ impl HttpControlPlane {
                 gid,
                 generation,
             } => {
+                #[cfg(feature = "bt")]
+                if self.bt.contains(*task_id) {
+                    return PersistenceEffectPlan::new(
+                        effect.clone(),
+                        vec![PersistencePlanStep::BeginBtGeneration {
+                            gid: *gid,
+                            expected: generation.get().saturating_sub(1),
+                            generation: generation.get(),
+                        }],
+                    )
+                    .map_err(|error| HttpControlError::Persistence(format!("{error:?}")));
+                }
                 if let Some(patch_id) = self.pending_restart_patches.get(gid).copied() {
                     let pending =
                         self.pending_option_snapshots
@@ -3066,6 +3198,14 @@ impl HttpControlPlane {
                 .collect(),
             updated_ms: now_unix_ms(),
         };
+        #[cfg(feature = "bt")]
+        if self.bt.contains(task_id) {
+            let step = self
+                .bt
+                .terminal_step(task_id, generation, status, error, transition)?;
+            return PersistenceEffectPlan::new(effect.clone(), vec![step])
+                .map_err(|error| HttpControlError::Persistence(format!("{error:?}")));
+        }
         if status == Aria2Status::Complete && error.is_none() {
             let evidence = self
                 .stats
@@ -3288,6 +3428,7 @@ fn changes_scheduler_tasks(method: &str) -> bool {
     matches!(
         method.strip_prefix("aria2.").unwrap_or(method),
         "addUri"
+            | "addTorrent"
             | "addMetalink"
             | "pause"
             | "forcePause"
@@ -3311,6 +3452,10 @@ fn changes_scheduler_tasks(method: &str) -> bool {
 #[cfg(test)]
 #[path = "http_control/phase5_tests.rs"]
 mod phase5_tests;
+
+#[cfg(all(test, feature = "bt"))]
+#[path = "http_control/phase6_tests.rs"]
+mod phase6_tests;
 
 fn control_backend_error(error: HttpControlError) -> HttpRpcBackendError {
     if let HttpControlError::OptionPatchRejected(rejected) = &error {
@@ -6219,7 +6364,8 @@ mod tests {
     }
 
     fn import_document(count: usize) -> Value {
-        json!({"tasks": (0..count).map(|index| json!({
+        json!({"formatVersion":3,"tasks": (0..count).map(|index| json!({
+            "kind": "transfer",
             "uris": [format!("http://example.test/import-{index}.bin")],
             "options": {"split": "2"}
         })).collect::<Vec<_>>()})

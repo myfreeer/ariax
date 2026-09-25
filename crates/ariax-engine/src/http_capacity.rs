@@ -20,6 +20,8 @@ use std::path::PathBuf;
 pub struct HttpProcessResources {
     profile: ResolvedRuntimeProfile,
     resident: ByteBudget,
+    #[cfg(feature = "bt")]
+    native_threads: ByteBudget,
     transport: HttpTransportBudgets,
     ingress: HttpIngressBudgets,
     protocol_metadata: HttpIngressBudgets,
@@ -79,6 +81,12 @@ impl HttpProcessResources {
         })
         .map_err(HttpCapacityError::Cpu)?;
         Ok(Self {
+            #[cfg(feature = "bt")]
+            native_threads: ByteBudget::new(if profile == RuntimeProfile::Compact {
+                4
+            } else {
+                8
+            }),
             server_stats: crate::ServerStatistics::new(
                 limits.server_stat_entries,
                 std::time::Duration::from_secs(86400),
@@ -120,6 +128,15 @@ impl HttpProcessResources {
     #[must_use]
     pub fn resident_budget(&self) -> ByteBudget {
         self.resident.clone()
+    }
+
+    #[cfg(feature = "bt")]
+    pub fn bt_resources(&self) -> ariax_bt::BtResources {
+        ariax_bt::BtResources {
+            resident: self.resident.clone(),
+            handles: self.transport.handle_budgets(),
+            threads: self.native_threads.clone(),
+        }
     }
 
     pub(crate) fn metadata_budget(&self) -> HttpIngressBudgets {

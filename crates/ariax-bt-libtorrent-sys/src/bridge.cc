@@ -219,8 +219,10 @@ void NativeSession::add(std::uint64_t gid, rust::Slice<std::uint8_t const> torre
         require(expected == actual);
         // Only progress and counters cross the recovery boundary. Paths, peer
         // addresses, credentials, flags and settings are admitted afresh.
-        params.have_pieces = std::move(restored.have_pieces);
-        params.verified_pieces = std::move(restored.verified_pieces);
+        // A recovered root is rechecked against payload bytes. Imported cached
+        // completion bits and file timestamps never establish verified progress.
+        params.have_pieces.clear();
+        params.verified_pieces.clear();
         params.merkle_trees = std::move(restored.merkle_trees);
         params.merkle_tree_mask = std::move(restored.merkle_tree_mask);
         params.verified_leaf_hashes = std::move(restored.verified_leaf_hashes);
@@ -371,6 +373,10 @@ void NativeSession::checkpoint(std::uint64_t gid, std::uint64_t request, std::ui
                 params.banned_peers.clear();
                 params.renamed_files.clear();
                 params.save_path.clear();
+                params.part_file_dir.clear();
+                params.root_certificate.clear();
+                params.comment.clear();
+                params.created_by.clear();
                 lt::bencode(BoundedOutput{data, limit}, lt::write_resume_data(params));
                 outcome = 1;
             }
@@ -397,13 +403,16 @@ NativeCheckpoint NativeSession::poll_checkpoint(std::uint64_t gid, std::uint64_t
     return result;
 } catch (...) { throw std::runtime_error("bt/native-checkpoint-poll-rejected"); }
 
-void NativeSession::set_rates(std::uint32_t download, std::uint32_t upload) try {
+void NativeSession::set_rates(std::uint32_t download, std::uint32_t upload, bool suspended) try {
     require(download <= INT_MAX && upload <= INT_MAX);
     lt::settings_pack settings;
     settings.set_int(lt::settings_pack::download_rate_limit, int(download));
     settings.set_int(lt::settings_pack::upload_rate_limit, int(upload));
+    if (suspended) impl_->session->pause();
     impl_->session->apply_settings(settings);
+    if (!suspended) impl_->session->resume();
     auto applied = impl_->session->get_settings();
+    require(impl_->session->is_paused() == suspended);
     require(applied.get_int(lt::settings_pack::download_rate_limit) == int(download)
         && applied.get_int(lt::settings_pack::upload_rate_limit) == int(upload));
 } catch (...) { throw std::runtime_error("bt/native-rate-update-rejected"); }

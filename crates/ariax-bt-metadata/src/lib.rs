@@ -8,6 +8,10 @@ pub use metadata::{
     BtIdentity, Magnet, MetadataFile, MetadataLimits, TorrentMetadata, parse_info, parse_magnet,
     parse_torrent,
 };
+pub use metadata::{
+    info_section, magnet_with_trackers, torrent_from_info, validate_resume, with_trackers,
+    with_web_seeds,
+};
 
 /// Errors contain stable classifications and never untrusted metadata or URLs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

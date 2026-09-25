@@ -2,13 +2,33 @@
 
 [Documentation](../README.md)
 
-Status: reviewed pre-implementation contract. Implementation pending.
+Status: native adapter implemented; engine integration and Phase-6 acceptance
+are in progress. The gates below require complete CI and measurement evidence.
 
 Decision: libtorrent runs outside the main control and HTTP network event loops.
 
 The main downloader owns scheduling, configuration, RPC, output-root policy, and
 final user-visible state. Libtorrent owns BitTorrent peer protocol mechanics
 inside an isolated adapter lane.
+
+Transfer and BT workers consume only their own allocation and cancellation
+requests from the shared runtime mailbox. Both publish through the existing
+scheduler. Native work advances through nonblocking command and persistence
+completions; query projection uses immutable, identity-bound BT snapshots.
+
+Recovery validates the combined transfer/BT queue before normalizing active
+tasks to waiting or paused. BT tasks retain their GID and metadata identity;
+they receive fresh scheduler IDs and never acquire transfer journals. A build
+without BT support rejects a store containing BT tasks before admission.
+
+Periodic checkpoints pause through the native disk barrier, persist the tracked
+result, mark the resumed generation dirty, then resume. Pause, removal and
+shutdown retain ownership until that same boundary and native removal complete.
+Checkpoint failure preserves the previous blob, records `DirtyCheckpoint`, and
+cannot acknowledge a drain while a native callback still owns the task.
+Unaccepted native commands return their metadata and resume ownership to the
+caller for bounded retry. Shutdown also awaits option acknowledgements,
+background preparation and pending scheduler events before stopping the adapter.
 
 ## Phase 6 Gates
 
