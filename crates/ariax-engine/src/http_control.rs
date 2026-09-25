@@ -345,6 +345,7 @@ pub struct HttpControlPlane {
     #[cfg(test)]
     admission_gate: Option<Arc<admission::PreparationGate>>,
     pending_bulk: Option<control_ops::PendingBulkControl>,
+    bulk_first: bool,
     control_order: control_ops::ControlOrdering,
     dispatch_sequence: Option<u64>,
     dispatch_bulk: Option<control_ops::PreparedBulk>,
@@ -472,6 +473,7 @@ impl HttpControlPlane {
             #[cfg(test)]
             admission_gate: None,
             pending_bulk: None,
+            bulk_first: false,
             control_order: control_ops::ControlOrdering::default(),
             dispatch_sequence: None,
             dispatch_bulk: None,
@@ -1156,9 +1158,17 @@ impl HttpControlPlane {
     /// Performs one bounded engine/supervisor progress turn.
     pub fn poll_once(&mut self) -> Result<(), HttpControlError> {
         self.turn = OwnerTurn::new();
-        let result = self
-            .poll_once_inner()
-            .and_then(|()| self.poll_bulk_control());
+        // A large scheduler step may use the remaining cooperative deadline.
+        // Alternate first access so neither continuation nor maintenance work
+        // can be permanently placed behind that step on every owner turn.
+        self.bulk_first = !self.bulk_first;
+        let result = if self.bulk_first {
+            self.poll_bulk_control()
+                .and_then(|()| self.poll_once_inner())
+        } else {
+            self.poll_once_inner()
+                .and_then(|()| self.poll_bulk_control())
+        };
         self.publish_query();
         result
     }
@@ -6547,7 +6557,21 @@ mod tests {
             }
             assert!(
                 Instant::now() < deadline && Instant::now() < progress_deadline,
-                "bulk progress deadline: waiting={after}, turns={turns}, queries={query_count}"
+                "bulk progress deadline: waiting={after}, turns={turns}, queries={query_count}, steps={}, progressed={}, idle={}, mutation={}, input={}, work={}, scheduler_bytes={}, draft_bytes={}, request_bytes={}, owner_bytes={}",
+                plane.turn.used,
+                plane.turn.progressed,
+                plane.engine_idle(),
+                plane.pending_mutation.is_some(),
+                plane.pending_input.is_some(),
+                plane.pending_work.is_some(),
+                plane.engine.scheduler().estimated_clone_bytes(),
+                plane
+                    .engine
+                    .snapshot_reader()
+                    .load()
+                    .estimated_draft_bytes(),
+                plane.direct_client.request_bytes(),
+                plane.owner_client.request_bytes(),
             );
             turns += 1;
             // Match the managed owner: productive turns yield without a timer.

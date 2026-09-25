@@ -386,6 +386,9 @@ not permission for one step to block on I/O or process an entire batch. Ordinary
 bulk continuations advance at most one target per turn. Filesystem preparation
 has one bounded execution slot; query/configuration projection has two separate
 slots so a filesystem stall cannot consume query execution capacity.
+Bulk continuations and ordinary owner progress alternate first access to that
+turn budget. A scheduler step that consumes the remaining cooperative time
+cannot indefinitely prevent an already accepted bulk member from starting.
 Productive turns yield cooperatively and resume without a timer delay. Idle
 turns and unready I/O completions use the wake signal or short polling backoff;
 backpressure must not create a busy loop.
