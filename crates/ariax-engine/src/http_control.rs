@@ -6388,10 +6388,13 @@ mod tests {
         let directory = TestDirectory::new();
         let mut plane = directory.control_plane_with_capacity(1000);
         let mut gids = Vec::with_capacity(1000);
-        for batch in 0..10 {
+        // Leave request budget for the growing scheduler and snapshot drafts
+        // alongside the explicit v3 task-kind envelope. This test exercises
+        // bulk control over 1,000 tasks, independent of import batch size.
+        for batch in 0..20 {
             gids.extend(
                 plane
-                    .call("ariax.importSession", json!([import_document(100)]))
+                    .call("ariax.importSession", json!([import_document(50)]))
                     .unwrap_or_else(|error| panic!(
                         "bounded import batch {batch}: {error:?}; tasks={}, scheduler_bytes={}, draft_bytes={}, request_bytes={}, client_bytes={}, process={:?}",
                         plane.engine.scheduler().len(),
