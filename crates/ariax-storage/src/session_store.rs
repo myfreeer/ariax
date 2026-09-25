@@ -6177,7 +6177,8 @@ mod tests {
         SessionTaskSourceRecord, SessionTerminalStatus,
     };
     use super::{
-        IMPORT_CRASH_POINT, SESSION_IMPORT_MAX_BYTES, SESSION_MAX_IMPORT_TASKS, SessionTaskMetadata,
+        IMPORT_CRASH_POINT, SESSION_IMPORT_MAX_BYTES, SESSION_MAX_IMPORT_TASKS,
+        SessionAdmissionMetadata, SessionTaskMetadata,
     };
     use crate::{
         CheckpointId, JournalHash, JournalId, OptionsSnapshotScope, PathPlatform, PlatformPath,
@@ -6192,6 +6193,7 @@ mod tests {
     use std::io::{Read, Seek, SeekFrom, Write};
     use std::path::{Path, PathBuf};
     use std::process::Command;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_DIRECTORY_ID: AtomicU64 = AtomicU64::new(1);
