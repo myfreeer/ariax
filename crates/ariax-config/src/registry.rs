@@ -311,6 +311,35 @@ pub fn persisted_option_is_safe(name: &str) -> bool {
 /// The first reviewed registry slice. It grows until every upstream and extension option is covered.
 pub const BUILTIN_OPTIONS: &[OptionDef] = &[
     bt_option(
+        "max-overall-upload-limit",
+        ValueType::SizeBytes {
+            min: 0,
+            max: 2_147_483_647,
+        },
+        Some("0"),
+        RuntimeUpdate::BtLive,
+    ),
+    bt_option(
+        "bt-encryption",
+        ValueType::Enum {
+            values: &["required", "preferred", "disabled"],
+        },
+        Some("preferred"),
+        RuntimeUpdate::StartupOnly,
+    ),
+    bt_option(
+        "bt-listen-address",
+        ValueType::String { max_len: 128 },
+        Some("127.0.0.1:0"),
+        RuntimeUpdate::StartupOnly,
+    ),
+    bt_option(
+        "bt-allow-private-destinations",
+        ValueType::Bool,
+        Some("false"),
+        RuntimeUpdate::StartupOnly,
+    ),
+    bt_option(
         "index-out",
         ValueType::String { max_len: 65536 },
         None,
@@ -1509,21 +1538,73 @@ const fn bt_option(
         value_type,
         default,
         category: "bittorrent",
-        scopes: DOWNLOAD_SCOPES,
+        scopes: if matches!(runtime_update, RuntimeUpdate::StartupOnly) {
+            STARTUP_ONLY
+        } else if matches!(name.as_bytes(), b"max-overall-upload-limit") {
+            GLOBAL_LIVE
+        } else if matches!(name.as_bytes(), b"enable-dht" | b"enable-peer-exchange") {
+            STARTUP_GLOBAL_DOWNLOAD
+        } else {
+            DOWNLOAD_SCOPES
+        },
         runtime_update,
         owner: "bt",
         build_features: &["full", "compat"],
-        security: SecurityClass::Normal,
+        security: if matches!(runtime_update, RuntimeUpdate::StartupOnly) {
+            SecurityClass::LocalAdmin
+        } else {
+            SecurityClass::Normal
+        },
         compat: CompatStatus::FeatureGated,
         aria2_available: !matches!(
             name.as_bytes(),
-            b"bt-resume-data-limit" | b"bt-resume-timeout"
+            b"bt-resume-data-limit"
+                | b"bt-resume-timeout"
+                | b"bt-encryption"
+                | b"bt-listen-address"
+                | b"bt-allow-private-destinations"
         ),
         aria2_runtime_update: RuntimeUpdate::WaitingOnly,
         compatibility_difference: CompatibilityDifference::Intentional,
         docs: "docs/protocols/libtorrent-integration.md#runtime-bt-option-updates",
-        behavior_tests: &["bittorrent::tests"],
+        behavior_tests: &[
+            "http_control::phase6_tests",
+            "native_api::bittorrent::tests",
+        ],
     }
+}
+
+/// Exact BT mapping in the pinned libtorrent 2.1.1 adapter.
+#[must_use]
+pub fn bittorrent_setting(name: &str) -> Option<(&'static str, &'static str)> {
+    Some(match name {
+        "max-download-limit" => ("task", "torrent_handle::set_download_limit"),
+        "max-upload-limit" => ("task", "torrent_handle::set_upload_limit"),
+        "max-overall-upload-limit" => ("session", "settings_pack::upload_rate_limit"),
+        "bt-max-peers" => ("task", "torrent_handle::set_max_connections"),
+        "enable-dht" => ("task", "torrent_flags::disable_dht"),
+        "enable-peer-exchange" => ("task", "torrent_flags::disable_pex"),
+        "bt-encryption" => (
+            "startup",
+            "settings_pack::in_enc_policy, settings_pack::out_enc_policy",
+        ),
+        "bt-listen-address" => ("startup", "settings_pack::listen_interfaces"),
+        "bt-allow-private-destinations" => (
+            "startup",
+            "session::set_ip_filter, settings_pack::ssrf_mitigation",
+        ),
+        "select-file" | "index-out" | "out" => {
+            ("admission", "torrent_handle::ariax_approve_metadata")
+        }
+        "bt-tracker" | "bt-exclude-tracker" => ("admission", "add_torrent_params::trackers"),
+        "bt-metadata-only" | "bt-save-metadata" => ("engine", "metadata hold and publication"),
+        "seed-ratio" | "seed-time" => ("engine", "persisted seeding byte/time counters"),
+        "bt-resume-data-limit" | "bt-resume-timeout" => {
+            ("engine", "torrent_handle::ariax_checkpoint")
+        }
+        "follow-torrent" => ("engine", "verified transfer-to-torrent admission"),
+        _ => return None,
+    })
 }
 
 const fn protocol_option(

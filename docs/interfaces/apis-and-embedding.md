@@ -8,9 +8,10 @@ events, loopback HTTP/WebSocket, both stdio framings, combined transports, direc
 CLI controls and typed Rust embedding. Repair and completion evidence is tracked in
 [implementation-readiness.md](../project/implementation-readiness.md#phase-4-repair-gates).
 Phase 5 adds Metalink admission, FTP/FTPS/SFTP sources, exact host-key approval
-and self-contained JSON v2 migration through that same control plane; its
+and self-contained session import through that same control plane; its
 validation is tracked by the [shared transfer gates](../protocols/detailed-protocol-transfers.md).
-The C ABI and BitTorrent remain later work. Optional legacy
+Phase 6 adds torrent/magnet admission, peer queries and JSON v3 task kinds. The
+C ABI remains later work. Optional legacy
 HTTP Basic authentication supplements method tokens at the HTTP request and
 WebSocket upgrade boundaries.
 
@@ -80,6 +81,18 @@ GIDs in document order. CLI `--add-metalink` and Rust `AddMetalink` use the same
 atomic admission, selection filters and portable output-name checks. A disabled
 protocol or Metalink feature rejects explicitly. `minimal` enables Metalink;
 `standard` also enables FTP/FTPS and SFTP.
+
+`aria2.addTorrent([base64, webSeeds?, options?, position?])` and magnets through
+`aria2.addUri` share admission with Rust `AddTorrent` and `AddMagnet`. The typed
+`BitTorrentOptions` builders cover rate/peer limits, discovery, selection,
+metadata and seeding; `from_pairs` is the explicit registry-backed CLI adapter.
+`EngineBuilder::bittorrent` configures session-wide listening, encryption,
+discovery and private-destination policy before any imported task starts.
+`Engine::peers` and `TaskStatus::bittorrent` expose typed peer and lifecycle
+snapshots. CLI `--add-torrent` and `--add-magnet` use those same owners; a magnet
+passed to `--add-uri` follows the same path. All three surfaces reject BT in
+builds without the feature. Runtime task changes acknowledge native settings
+before the new option snapshot is published.
 
 `ARIAX_RPC_SECRET` enables the aria2 `token:<secret>` first-parameter policy on
 HTTP, WebSocket, and stdio. Every multicall member authenticates independently.

@@ -155,6 +155,7 @@ fn metadata_only_finishes_all_torrent_versions_without_payload_files_or_transfer
     for bytes in [V1, V2, HYBRID] {
         let directory = TestDirectory::new();
         let mut plane = directory.control_plane();
+        let subscription = plane.call("ariax.subscribe", json!([32, 65536])).unwrap();
         let gid = add_torrent(
             &mut plane,
             bytes,
@@ -184,6 +185,26 @@ fn metadata_only_finishes_all_torrent_versions_without_payload_files_or_transfer
             panic!("transfer task list")
         };
         assert!(transfers.is_empty());
+        let events = plane
+            .call(
+                "ariax.pollEvents",
+                json!([subscription["subscriptionId"], 32]),
+            )
+            .unwrap();
+        let events = events.as_array().unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["method"] == "aria2.onBtDownloadComplete")
+                .count(),
+            1
+        );
+        let seeding: Vec<_> = events
+            .iter()
+            .filter(|event| event["method"] == "ariax.onSeeding")
+            .map(|event| event["params"]["seeding"].as_bool().unwrap())
+            .collect();
+        assert_eq!(seeding, [true, false]);
         plane.shutdown().unwrap();
     }
 }

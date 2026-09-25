@@ -13,6 +13,7 @@ use std::time::Duration;
 
 #[derive(Debug, Default)]
 pub(crate) struct StartupOptions {
+    pub bittorrent: Option<ariax_engine::BitTorrentConfig>,
     pub profile: Option<RuntimeProfile>,
     pub session_export: Option<ariax_engine::SessionExportConfig>,
     pub input_file: Option<(PathBuf, ariax_engine::SessionFormat)>,
@@ -56,10 +57,31 @@ impl StartupOptions {
         let mut session = BTreeMap::new();
         let mut session_names = BTreeSet::new();
         let mut rpc_names = BTreeSet::new();
+        let mut bt_settings = Vec::new();
         while let Some(argument) = arguments.get(cursor).and_then(|arg| arg.to_str()) {
             let (local_name, inline) = argument
                 .split_once('=')
                 .map_or((argument, None), |(name, value)| (name, Some(value)));
+            if matches!(
+                local_name,
+                "--bt-listen-address"
+                    | "--bt-encryption"
+                    | "--bt-allow-private-destinations"
+                    | "--enable-dht"
+                    | "--enable-peer-exchange"
+            ) {
+                let value = inline.ok_or_else(|| format!("{local_name} requires =VALUE"))?;
+                bt_settings.push((
+                    local_name.trim_start_matches("--").to_owned(),
+                    value.to_owned(),
+                ));
+                options.bittorrent = Some(
+                    ariax_engine::BitTorrentConfig::from_pairs(bt_settings.clone())
+                        .map_err(|error| error.to_string())?,
+                );
+                cursor += 1;
+                continue;
+            }
             if let Some(name) = local_name.strip_prefix("--")
                 && builtin_registry()
                     .find(name)

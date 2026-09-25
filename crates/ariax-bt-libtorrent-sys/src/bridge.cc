@@ -159,7 +159,8 @@ NativeSession::NativeSession(NativeOptions const& options) try : impl_(std::make
     lt::settings_pack pack;
     pack.set_str(lt::settings_pack::listen_interfaces, string(options.listen));
     pack.set_str(lt::settings_pack::user_agent, "ariax/0.1");
-    pack.set_str(lt::settings_pack::dht_bootstrap_nodes, "");
+    // Keep the pinned release's public bootstrap defaults when DHT is enabled.
+    if (!options.dht) pack.set_str(lt::settings_pack::dht_bootstrap_nodes, "");
     pack.set_bool(lt::settings_pack::enable_dht, options.dht);
     pack.set_bool(lt::settings_pack::enable_lsd, false);
     pack.set_bool(lt::settings_pack::enable_upnp, false);

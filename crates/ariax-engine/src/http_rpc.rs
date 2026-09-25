@@ -102,6 +102,7 @@ pub const RPC_NOTIFICATIONS: &[&str] = &[
     "aria2.onDownloadError",
     "aria2.onBtDownloadComplete",
     "ariax.onStatus",
+    "ariax.onSeeding",
     "ariax.onShutdown",
     "ariax.onError",
 ];

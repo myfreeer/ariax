@@ -21,6 +21,28 @@ use std::task::Poll;
 const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(60);
 const PEER_INTERVAL: Duration = Duration::from_secs(1);
 
+pub(super) fn task_option(name: &str) -> bool {
+    matches!(
+        name,
+        "max-download-limit"
+            | "max-upload-limit"
+            | "bt-max-peers"
+            | "enable-dht"
+            | "enable-peer-exchange"
+            | "bt-metadata-only"
+            | "bt-save-metadata"
+            | "seed-ratio"
+            | "seed-time"
+            | "bt-resume-data-limit"
+            | "bt-resume-timeout"
+            | "select-file"
+            | "out"
+            | "index-out"
+            | "bt-tracker"
+            | "bt-exclude-tracker"
+    )
+}
+
 fn invalid(message: &'static str) -> HttpControlError {
     HttpControlError::InvalidParams(message)
 }
@@ -113,11 +135,35 @@ fn selection(value: &str) -> Result<BTreeSet<u32>, HttpControlError> {
 }
 
 impl Options {
+    fn retained_bytes(&self) -> usize {
+        self.persisted
+            .entries()
+            .fold(1024usize, |bytes, (name, value)| {
+                bytes
+                    .saturating_add(name.len())
+                    .saturating_add(value.len())
+                    .saturating_add(512)
+            })
+            .saturating_mul(3)
+    }
+
     pub(super) fn parse(value: &Value) -> Result<Self, HttpControlError> {
         let values = value
             .as_object()
             .ok_or_else(|| invalid("BitTorrent options must be an object"))?;
         let registry = builtin_registry();
+        let mut values = values.clone();
+        for definition in registry
+            .definitions()
+            .iter()
+            .filter(|definition| task_option(definition.name))
+        {
+            if let Some(default) = definition.default {
+                values
+                    .entry(definition.name.to_owned())
+                    .or_insert_with(|| json!(default));
+            }
+        }
         let mut result = Self {
             settings: BtTaskSettings::default(),
             mapping: MappingOptions::default(),
@@ -128,7 +174,7 @@ impl Options {
             directory: None,
         };
         let mut persisted = BTreeMap::new();
-        for (name, input) in values {
+        for (name, input) in &values {
             let text = scalar(input)?;
             if name == "pause" {
                 result.paused = match text.as_str() {
@@ -277,11 +323,12 @@ impl Spec {
             .map(|file| file.length)
             .sum()
     }
-    fn retained_bytes(&self) -> usize {
+    pub(super) fn retained_bytes(&self) -> usize {
         self.record
             .binding
             .owned_bytes()
             .saturating_mul(3)
+            .saturating_add(self.options.retained_bytes())
             .saturating_add(128 * 1024)
     }
 }
@@ -309,9 +356,52 @@ pub(super) struct PendingAdmission {
     reply: Option<oneshot::Sender<Result<Value, HttpControlError>>>,
     work: ControlWorkReservation,
     _request: crate::rpc_budget::RpcRequestLease,
+    validation: Option<MappingValidation>,
+}
+
+/// A checked catalog remains current across progress-only publications.
+struct MappingValidation {
+    http: Arc<crate::HttpTaskCatalog>,
+    revision: Arc<()>,
+    result: Receiver<Result<(), HttpControlError>>,
+}
+
+fn validate_current_mapping(
+    pending: &mut Option<MappingValidation>,
+    spec: &Arc<Spec>,
+    cpu: &ariax_runtime::CpuPool,
+    http: &SharedHttpTaskCatalog,
+    catalog: &Arc<BTreeMap<Gid, Arc<QueryTask>>>,
+    revision: &Arc<()>,
+) -> Result<bool, HttpControlError> {
+    if let Some(validation) = pending {
+        if receive(&validation.result)?.is_none() {
+            return Ok(false);
+        }
+        let current = Arc::ptr_eq(&validation.http, &http.snapshot())
+            && Arc::ptr_eq(&validation.revision, revision);
+        *pending = None;
+        if current {
+            return Ok(true);
+        }
+    }
+    let http = http.snapshot();
+    let checked_http = http.clone();
+    let catalog = catalog.clone();
+    let spec = spec.clone();
+    let result = spawn(cpu, move || collision(&spec, &checked_http, &catalog))?;
+    *pending = Some(MappingValidation {
+        http,
+        revision: revision.clone(),
+        result,
+    });
+    Ok(false)
 }
 
 pub(super) struct BtControl {
+    mapping_revision: Arc<()>,
+    upload_limit: u32,
+    upload_applied: Option<u32>,
     bandwidth: ariax_bt::BandwidthAllocation,
     rate_updates: VecDeque<ariax_bt::BandwidthUpdate>,
     rate_pending: Option<BtPending>,
@@ -330,6 +420,9 @@ pub(super) struct BtControl {
 impl Default for BtControl {
     fn default() -> Self {
         Self {
+            mapping_revision: Arc::new(()),
+            upload_limit: 0,
+            upload_applied: None,
             bandwidth: ariax_bt::BandwidthAllocation {
                 bt: None,
                 transfer: None,
@@ -356,7 +449,10 @@ impl BtControl {
         rate: Option<&RateArbiter>,
     ) -> Result<bool, HttpControlError> {
         use ariax_bt::{BandwidthGroup, BandwidthUpdate};
-        if !self.rate_applied && self.handle().is_some() && self.rate_updates.is_empty() {
+        if (!self.rate_applied || self.upload_applied != Some(self.upload_limit))
+            && self.handle().is_some()
+            && self.rate_updates.is_empty()
+        {
             self.rate_updates.push_back(BandwidthUpdate {
                 group: BandwidthGroup::Bt,
                 limit: self.bandwidth.bt,
@@ -379,6 +475,7 @@ impl BtControl {
                         Some(BtReply::Applied { version: 0 }) => {
                             self.bandwidth.bt = update.limit;
                             self.rate_applied = true;
+                            self.upload_applied = Some(self.upload_limit);
                             self.rate_updates.pop_front();
                         }
                         None => {
@@ -390,7 +487,7 @@ impl BtControl {
                 } else if let Some(handle) = self.handle() {
                     match handle.submit(BtCommand::SetRates {
                         download: update.limit,
-                        upload: 0,
+                        upload: self.upload_limit,
                     }) {
                         Ok(pending) => self.rate_pending = Some(pending),
                         Err(BtError::Overloaded) => return Ok(false),
@@ -408,6 +505,7 @@ impl BtControl {
     pub(super) fn require_bandwidth(
         &mut self,
         total: u64,
+        upload: u32,
         bt: bool,
         transfer: bool,
         rate: Option<&RateArbiter>,
@@ -416,12 +514,15 @@ impl BtControl {
         if !self.rate_updates.is_empty() {
             return Ok(false);
         }
+        self.upload_limit = upload;
         let desired = ariax_bt::split_bandwidth((total != 0).then_some(total), bt, transfer);
         if self.bandwidth != desired {
             self.rate_updates = ariax_bt::bandwidth_updates(self.bandwidth, desired).into();
-            self.poll_rates(rate)?;
         }
-        Ok(self.rate_updates.is_empty() && (self.handle().is_none() || self.rate_applied))
+        self.poll_rates(rate)?;
+        Ok(self.rate_updates.is_empty()
+            && (self.handle().is_none()
+                || self.rate_applied && self.upload_applied == Some(upload)))
     }
 
     pub(super) fn begin_shutdown(&mut self) {
@@ -516,6 +617,13 @@ impl BtControl {
     }
     fn publish(&mut self, id: TaskId) {
         let task = &self.tasks[&id];
+        if self
+            .catalog
+            .get(&task.spec.record.gid)
+            .is_none_or(|previous| !Arc::ptr_eq(&previous.spec.record, &task.spec.record))
+        {
+            self.mapping_revision = Arc::new(());
+        }
         Arc::make_mut(&mut self.catalog).insert(
             task.spec.record.gid,
             Arc::new(QueryTask {
@@ -538,6 +646,7 @@ impl BtControl {
     }
     pub(super) fn remove(&mut self, task: TaskId) {
         if let Some(task) = self.tasks.remove(&task) {
+            self.mapping_revision = Arc::new(());
             Arc::make_mut(&mut self.catalog).remove(&task.spec.record.gid);
         }
     }
@@ -633,6 +742,7 @@ impl BtControl {
             cpu,
             http,
             &self.catalog,
+            &self.mapping_revision,
             &resources.resident,
         )?;
         if changed {
@@ -672,6 +782,7 @@ enum Boundary {
 }
 
 struct Task {
+    mapping_validation: Option<MappingValidation>,
     resume_data: Option<Arc<ResumeData>>,
     option_change: Option<OptionChange>,
     settings_version: u64,
@@ -727,6 +838,7 @@ impl Task {
             || self.option_change.is_some()
             || self.preparation.is_some()
             || self.binding.is_some()
+            || self.mapping_validation.is_some()
             || self.save.is_some()
             || self.checkpoint_preparation.is_some()
             || !matches!(self.phase, Phase::Idle | Phase::Finished)
@@ -735,6 +847,7 @@ impl Task {
     fn new(spec: Arc<Spec>) -> Self {
         let now = Instant::now();
         Self {
+            mapping_validation: None,
             resume_data: spec.resume_data.clone(),
             shutdown: false,
             option_change: None,
@@ -878,6 +991,7 @@ impl Task {
         cpu: &ariax_runtime::CpuPool,
         http: &SharedHttpTaskCatalog,
         catalog: &Arc<BTreeMap<Gid, Arc<QueryTask>>>,
+        mapping_revision: &Arc<()>,
         resident: &ByteBudget,
     ) -> Result<bool, HttpControlError> {
         let gid = self.spec.record.gid;
@@ -910,6 +1024,7 @@ impl Task {
             && self.native_offered.is_none()
             && self.store.is_none()
             && self.offered.is_none()
+            && self.mapping_validation.is_none()
             && matches!(
                 self.phase,
                 Phase::Idle
@@ -1157,6 +1272,34 @@ impl Task {
                 }
             }
             Phase::Approve => {
+                if self.native.is_none() && self.native_offered.is_none() {
+                    match validate_current_mapping(
+                        &mut self.mapping_validation,
+                        &self.spec,
+                        cpu,
+                        http,
+                        catalog,
+                        mapping_revision,
+                    ) {
+                        Ok(false) => return Ok(false),
+                        Ok(true) => {
+                            if self.cancellation.is_some() || self.shutdown {
+                                self.begin_boundary(if self.shutdown {
+                                    Boundary::Shutdown
+                                } else {
+                                    Boundary::Cancel
+                                })?;
+                                return Ok(true);
+                            }
+                        }
+                        Err(_) => {
+                            self.mapping_validation = None;
+                            self.failure = Some(public_error(BtError::Collision));
+                            self.begin_boundary(Boundary::Failure)?;
+                            return Ok(true);
+                        }
+                    }
+                }
                 if self.spec.options.settings.metadata_only {
                     let (event, active) = self.allocation.take().expect("BT allocation").activate();
                     self.event = Some(event);
@@ -1563,6 +1706,7 @@ fn files(mapping: &[FileMapping]) -> Vec<SessionBtFile> {
 
 fn charge(
     record: &SessionBtTaskRecord,
+    options: &Options,
     resident: &ByteBudget,
 ) -> Result<BytePermit, HttpControlError> {
     resident
@@ -1571,6 +1715,7 @@ fn charge(
                 .binding
                 .owned_bytes()
                 .saturating_mul(3)
+                .saturating_add(options.retained_bytes())
                 .saturating_add(128 * 1024),
         )
         .map_err(|_| HttpControlError::Busy)
@@ -1670,6 +1815,7 @@ impl HttpControlPlane {
         &mut self,
         scheduler: &RequestScheduler,
         total: u64,
+        upload: u32,
     ) -> Result<bool, HttpControlError> {
         let mut bt = false;
         let mut transfer = false;
@@ -1680,8 +1826,13 @@ impl HttpControlPlane {
                 transfer = true;
             }
         }
-        self.bt
-            .require_bandwidth(total, bt, transfer, self.global_download_rate.as_ref())
+        self.bt.require_bandwidth(
+            total,
+            upload,
+            bt,
+            transfer,
+            self.global_download_rate.as_ref(),
+        )
     }
 
     pub(super) fn begin_bt_option_change(
@@ -1740,7 +1891,10 @@ impl HttpControlPlane {
             return Err(HttpControlError::OptionPatchRejected(rejected));
         }
         let previous = task.spec.clone();
-        let mut options = string_map_value(previous.options.persisted.entries())?;
+        let mut options = crate::rpc_result::to_value(
+            &crate::rpc_result::OptionMap(&previous.options.persisted),
+            crate::rpc_result::RESULT_VALUE_BYTES,
+        )?;
         options
             .as_object_mut()
             .expect("options object")
@@ -1763,7 +1917,7 @@ impl HttpControlPlane {
             {
                 return Err(bt_error(BtError::RequiresRestart));
             }
-            let memory = charge(&previous.record, &resources.resident)?;
+            let memory = charge(&previous.record, &options, &resources.resident)?;
             Ok(Arc::new(Spec {
                 resume_data: previous.resume_data.clone(),
                 task_id: previous.task_id,
@@ -1870,6 +2024,7 @@ impl HttpControlPlane {
         self.ensure_bt_resources()?;
         let work = self.reserve_scheduler_work(Some(&request), 1)?;
         let config = self.bt.config.clone();
+        let configuration = self.configuration_snapshot();
         let resources = self.bt.resources.clone().expect("BT resources");
         let initialize = self.bt.adapter.is_none();
         let root = self.config.output_root.clone();
@@ -1882,8 +2037,26 @@ impl HttpControlPlane {
         let work_copy = work.clone();
         let preparation = spawn(&self.cpu_pool, move || {
             let _work = work_copy;
+            let mut args = params
+                .as_array()
+                .cloned()
+                .ok_or_else(|| invalid("invalid BitTorrent admission arguments"))?;
+            let options_index = if torrent { 2 } else { 1 };
+            let explicit = args
+                .get(options_index)
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            let options = configuration.merged_bt_options(explicit, false, &config)?;
+            while args.len() <= options_index {
+                args.push(if torrent && args.len() == 1 {
+                    json!([])
+                } else {
+                    json!({})
+                });
+            }
+            args[options_index] = options;
             let mut prepared = prepare_admission(
-                params,
+                Value::Array(args),
                 torrent,
                 task_id,
                 session_id,
@@ -1892,7 +2065,10 @@ impl HttpControlPlane {
                 &retained,
                 false,
             )?;
-            if prepared.spec.options.settings.peers > config.peers {
+            if prepared.spec.options.settings.peers > config.peers
+                || prepared.spec.options.settings.dht && !config.dht
+                || prepared.spec.options.settings.pex && !config.pex
+            {
                 return Err(invalid(
                     "task peer limit exceeds the BitTorrent process share",
                 ));
@@ -1914,6 +2090,7 @@ impl HttpControlPlane {
         })?;
         let (reply, receiver) = oneshot::channel();
         self.bt.admission = Some(PendingAdmission {
+            validation: None,
             preparation,
             ready: None,
             reply: Some(reply),
@@ -1936,6 +2113,16 @@ impl HttpControlPlane {
                 || self.pending_mutation.is_some()
                 || self.pending_admission.is_some()
             {
+                return Ok(false);
+            }
+            if !validate_current_mapping(
+                &mut pending.validation,
+                &pending.ready.as_ref().expect("prepared BT admission").spec,
+                &self.cpu_pool,
+                &self.tasks,
+                &self.bt.catalog,
+                &self.bt.mapping_revision,
+            )? {
                 return Ok(false);
             }
             let mut ready = pending.ready.take().expect("prepared BT admission");
@@ -2048,7 +2235,10 @@ impl HttpControlPlane {
                 SessionCommandResult::TaskOptions(options) => options,
                 _ => return Err(bt_error(BtError::StaleCompletion)),
             };
-            let mut options = Options::parse(&string_map_value(options.entries())?)?;
+            let mut options = Options::parse(&crate::rpc_result::to_value(
+                &crate::rpc_result::OptionMap(&options),
+                crate::rpc_result::RESULT_VALUE_BYTES,
+            )?)?;
             options.paused = record.desired_paused;
             let root = ariax_storage::platform_path_to_current(&record.root_display)
                 .map_err(|_| bt_error(BtError::UnsafePath))?;
@@ -2062,6 +2252,7 @@ impl HttpControlPlane {
                 .map_err(bt_error)?;
             let memory = charge(
                 &record,
+                &options,
                 &self.bt.resources.as_ref().expect("BT resources").resident,
             )?;
             let resume = match self
@@ -2274,7 +2465,7 @@ fn prepare_admission(
         .binding
         .validate()
         .map_err(|_| invalid("invalid BitTorrent task binding"))?;
-    let memory = charge(&record, resident)?;
+    let memory = charge(&record, &options, resident)?;
     Ok(PreparedAdmission {
         spec: Arc::new(Spec {
             resume_data: None,
@@ -2347,4 +2538,88 @@ pub(super) fn query_for_import(spec: Arc<Spec>) -> Arc<QueryTask> {
         uploaded: 0,
         seed_millis: 0,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mapping_validation_ignores_progress_and_rechecks_changed_catalogs() {
+        let directory = super::super::tests::TestDirectory::new();
+        let mut plane = directory.control_plane();
+        plane.ensure_bt_resources().unwrap();
+        let request = plane.direct_client.try_request(0).unwrap();
+        let spec = prepare_admission(
+            json!([base64ct::Base64::encode_string(include_bytes!("../../../ariax-bt-libtorrent-sys/tests/fixtures/v1.torrent")), [], {"pause":true}]),
+            true, TaskId::new(1).unwrap(), plane.session_id, &directory.output,
+            &plane.bt.resources.as_ref().unwrap().resident, &request, false,
+        ).unwrap().spec;
+        plane.bt.install(spec.clone());
+        let mut validation = None;
+        let revision = plane.bt.mapping_revision.clone();
+        plane.bt.publish(spec.task_id);
+        assert!(Arc::ptr_eq(&revision, &plane.bt.mapping_revision));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !validate_current_mapping(
+            &mut validation,
+            &spec,
+            &plane.cpu_pool,
+            &plane.tasks,
+            &plane.bt.catalog,
+            &plane.bt.mapping_revision,
+        )
+        .unwrap()
+        {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            !validate_current_mapping(
+                &mut validation,
+                &spec,
+                &plane.cpu_pool,
+                &plane.tasks,
+                &plane.bt.catalog,
+                &plane.bt.mapping_revision
+            )
+            .unwrap()
+        );
+        let transfer = HttpTaskSpec::new(
+            TaskId::new(2).unwrap(),
+            Gid::new(2).unwrap(),
+            vec!["https://example.test/file".into()],
+            directory.output.clone(),
+            SafePathBuilder::from_user_path(
+                &spec.record.binding.files[0].path,
+                PathPlatform::current(),
+            )
+            .unwrap(),
+            HttpTaskOptions::default(),
+            false,
+        )
+        .unwrap();
+        plane.tasks.insert(transfer).unwrap();
+        loop {
+            match validate_current_mapping(
+                &mut validation,
+                &spec,
+                &plane.cpu_pool,
+                &plane.tasks,
+                &plane.bt.catalog,
+                &plane.bt.mapping_revision,
+            ) {
+                Err(HttpControlError::InvalidParams(_)) => break,
+                Ok(false) => {}
+                other => panic!("stale mapping check accepted a conflicting output: {other:?}"),
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(std::fs::read_dir(&directory.output).unwrap().count(), 0);
+        plane.tasks.remove(TaskId::new(2).unwrap());
+        plane.bt.remove(spec.task_id);
+        drop((validation, spec, request));
+        plane.shutdown().unwrap();
+    }
 }

@@ -12,6 +12,22 @@ pub(crate) const RESULT_VALUE_BYTES: usize =
 
 pub(crate) struct DisplayValue<T>(pub(crate) T);
 
+#[cfg(feature = "bt")]
+pub(crate) struct Base64Value<'a>(pub(crate) &'a [u8]);
+
+#[cfg(feature = "bt")]
+impl fmt::Display for Base64Value<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use base64ct::Encoding as _;
+        let mut encoded = [0u8; 1024];
+        for chunk in self.0.chunks(768) {
+            let text = base64ct::Base64::encode(chunk, &mut encoded).map_err(|_| fmt::Error)?;
+            formatter.write_str(text)?;
+        }
+        Ok(())
+    }
+}
+
 impl<T: fmt::Display> Serialize for DisplayValue<T> {
     fn serialize<S: ser::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_str(&self.0)
@@ -479,6 +495,24 @@ impl ser::SerializeStructVariant for &mut Meter {
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[cfg(feature = "bt")]
+    #[test]
+    fn base64_session_blobs_are_measured_before_materialization() {
+        use base64ct::Encoding as _;
+        for length in [0, 1, 2, 3, 767, 768, 769, 4096] {
+            let bytes = vec![0xa5; length];
+            let value = DisplayValue(Base64Value(&bytes));
+            let measured = measure(&value, RESULT_VALUE_BYTES).unwrap();
+            assert_eq!(
+                to_value(&value, measured).unwrap(),
+                base64ct::Base64::encode_string(&bytes)
+            );
+            assert!(to_value(&value, measured - 1).is_err());
+        }
+        let bytes = vec![0; RESULT_VALUE_BYTES / 2];
+        assert!(to_value(&DisplayValue(Base64Value(&bytes)), RESULT_VALUE_BYTES).is_err());
+    }
 
     #[test]
     fn measured_borrowed_results_match_json_and_bound_owned_layout() {

@@ -43,6 +43,16 @@ const ARIA2_STATUS_KEYS: &[&str] = &[
     "connections",
     "errorCode",
     "errorMessage",
+    "uploadLength",
+    "infoHash",
+    "seeder",
+    "numSeeders",
+    "bittorrent",
+    "pieceLength",
+    "numPieces",
+    "dir",
+    "files",
+    "followedBy",
 ];
 const EXTENDED_STATUS_KEYS: &[&str] = &[
     "slotState",
@@ -67,6 +77,11 @@ const EXTENDED_STATUS_KEYS: &[&str] = &[
     "conditionReason",
     "rateDebt",
     "retryDiagnostic",
+    "infoHashV2",
+    "btCheckpointDirty",
+    "btCheckpointError",
+    "btDownloadedLength",
+    "btSeedTime",
 ];
 
 fn status_keys<'a>(method: &str, params: &'a Value) -> Option<&'a Vec<Value>> {

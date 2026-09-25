@@ -20,6 +20,6 @@ pub use registry::{
     ALL_COMPAT_STATUSES, ALL_COMPATIBILITY_DIFFERENCES, ALL_RUNTIME_UPDATES, ALL_SCOPES,
     ALL_SECURITY_CLASSES, BUILTIN_OPTIONS, CompatStatus, CompatibilityDifference, OptionDef,
     OptionRegistry, RegistryError, RuntimeUpdate, Scope, ScopeSet, SecurityClass, ValueType,
-    builtin_registry, persisted_option_is_safe,
+    bittorrent_setting, builtin_registry, persisted_option_is_safe,
 };
 pub use value::{OptionValue, ParseOptionValueError, SecretString, parse_option_value};

@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod bittorrent;
 mod rpc_service;
 mod startup;
 
@@ -30,7 +31,7 @@ use ariax_storage::{
 };
 
 const DEFAULT_HTTP_PIECE_LENGTH: u64 = 1024 * 1024;
-const HELP: &str = "ariax — experimental bounded downloader\n\nUsage: ariax [--help|--version]\n       ariax --check-bootstrap SESSION_DB CONTROL_DIR [OUTPUT_ROOT ...]\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --add-uri SESSION_DB CONTROL_DIR OUTPUT_ROOT URI [URI ...]\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --status SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --pause SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --resume SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --remove SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --rpc-http SESSION_DB CONTROL_DIR OUTPUT_ROOT LOOPBACK_ADDR\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --rpc-ws SESSION_DB CONTROL_DIR OUTPUT_ROOT LOOPBACK_ADDR\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --rpc-stdio SESSION_DB CONTROL_DIR OUTPUT_ROOT\n       ariax --add-metalink SESSION_DB CONTROL_DIR OUTPUT_ROOT FILE [--NAME=VALUE ...]\n       ariax approve-host-key SESSION_DB CONTROL_DIR OUTPUT_ROOT GID CHALLENGE SHA256_FINGERPRINT\n       ariax --download-http-pinned GID JOURNAL_ID URI PEER OUTPUT_ROOT OUTPUT_PATH JOURNAL_DIR [PIECE_LENGTH]\n       ariax --resume-http-pinned GID JOURNAL_ID URI PEER OUTPUT_ROOT JOURNAL_DIR\n\nRPC is JSON-RPC 2.0 over loopback HTTP/1.1, loopback WebSocket, or Content-Length-framed stdio. Direct control commands use the same engine/control plane. Add commands accept --NAME=VALUE download options, including checksum, uri-selector, server-stat-timeout, FTP/SFTP settings, follow-metalink and Metalink selection filters. Explicit Metalink input also accepts --metalink-base-uri and --position. Supported checksums: sha-512, sha-256, sha-1 and md5. The pinned HTTP commands accept an already policy-approved numeric PEER (IP:port); they do not perform DNS or SSRF-policy resolution.\n";
+const HELP: &str = "ariax — experimental bounded downloader\n\nUsage: ariax [--help|--version]\n       ariax --check-bootstrap SESSION_DB CONTROL_DIR [OUTPUT_ROOT ...]\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --add-uri SESSION_DB CONTROL_DIR OUTPUT_ROOT URI [URI ...]\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --status SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --pause SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --resume SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --remove SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --rpc-http SESSION_DB CONTROL_DIR OUTPUT_ROOT LOOPBACK_ADDR\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --rpc-ws SESSION_DB CONTROL_DIR OUTPUT_ROOT LOOPBACK_ADDR\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --rpc-stdio SESSION_DB CONTROL_DIR OUTPUT_ROOT\n       ariax --add-torrent SESSION_DB CONTROL_DIR OUTPUT_ROOT FILE [--NAME=VALUE ...]\n       ariax --add-magnet SESSION_DB CONTROL_DIR OUTPUT_ROOT MAGNET [--NAME=VALUE ...]\n       ariax --add-metalink SESSION_DB CONTROL_DIR OUTPUT_ROOT FILE [--NAME=VALUE ...]\n       ariax approve-host-key SESSION_DB CONTROL_DIR OUTPUT_ROOT GID CHALLENGE SHA256_FINGERPRINT\n       ariax --download-http-pinned GID JOURNAL_ID URI PEER OUTPUT_ROOT OUTPUT_PATH JOURNAL_DIR [PIECE_LENGTH]\n       ariax --resume-http-pinned GID JOURNAL_ID URI PEER OUTPUT_ROOT JOURNAL_DIR\n\nRPC is JSON-RPC 2.0 over loopback HTTP/1.1, loopback WebSocket, or Content-Length-framed stdio. Direct control commands use the same engine/control plane. Add commands accept --NAME=VALUE download options, including checksum, uri-selector, server-stat-timeout, FTP/SFTP settings, follow-metalink and Metalink selection filters. BitTorrent commands accept select-file, index-out, discovery, rate, metadata and seeding options. Explicit torrent input accepts repeated --web-seed=URI and --position. Explicit Metalink input also accepts --metalink-base-uri and --position. Supported checksums: sha-512, sha-256, sha-1 and md5. The pinned HTTP commands accept an already policy-approved numeric PEER (IP:port); they do not perform DNS or SSRF-policy resolution.\n";
 
 fn main() -> ExitCode {
     run(env::args_os().skip(1))
@@ -86,6 +87,8 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
                     || command == "--add-uri"
                     || command == "--add-metalink"
                     || command == "--metalink-file"
+                    || command == "--add-torrent"
+                    || command == "--add-magnet"
                     || command == "approve-host-key"
                     || command == "--approve-host-key"
                     || command == "--status"
@@ -97,6 +100,16 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
         eprintln!("ariax: --profile is accepted only with RPC or direct control commands");
         return ExitCode::from(2);
     }
+    let direct = |database, control, output, profile, command| {
+        run_direct_control(
+            database,
+            control,
+            output,
+            profile,
+            command,
+            startup.bittorrent.clone(),
+        )
+    };
     match arguments {
         [] => {
             print!("{HELP}{RPC_STARTUP_HELP}{RPC_INTERFACE_HELP}");
@@ -182,7 +195,7 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
                 eprintln!("ariax: RPC document must be bounded UTF-8 text");
                 return ExitCode::from(2);
             };
-            run_direct_control(
+            direct(
                 PathBuf::from(database),
                 PathBuf::from(control),
                 PathBuf::from(output_root),
@@ -241,12 +254,39 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
                     .map_err(|error| error.to_string())
                 });
             match request {
-                Ok(request) => run_direct_control(
+                Ok(request) => direct(
                     PathBuf::from(database),
                     PathBuf::from(control),
                     PathBuf::from(output_root),
                     profile.unwrap_or_default(),
                     DirectControl::Approve(request),
+                ),
+                Err(error) => {
+                    eprintln!("ariax: {error}");
+                    ExitCode::from(2)
+                }
+            }
+        }
+        [command, database, control, output_root, path, flags @ ..]
+            if command == "--add-torrent" || command == "--add-magnet" =>
+        {
+            let request = if command == "--add-torrent" {
+                bittorrent::torrent(&PathBuf::from(path), flags)
+            } else {
+                bittorrent::magnet(
+                    std::iter::once(path.clone())
+                        .chain(flags.iter().cloned())
+                        .collect::<Vec<_>>()
+                        .as_slice(),
+                )
+            };
+            match request {
+                Ok(request) => direct(
+                    PathBuf::from(database),
+                    PathBuf::from(control),
+                    PathBuf::from(output_root),
+                    profile.unwrap_or_default(),
+                    DirectControl::BitTorrent(request),
                 ),
                 Err(error) => {
                     eprintln!("ariax: {error}");
@@ -269,7 +309,7 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
                     position,
                 })
             }) {
-                Ok(request) => run_direct_control(
+                Ok(request) => direct(
                     PathBuf::from(database),
                     PathBuf::from(control),
                     PathBuf::from(output_root),
@@ -285,8 +325,26 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
         [command, database, control, output_root, uris @ ..]
             if command == "--add-uri" && !uris.is_empty() =>
         {
+            if uris
+                .iter()
+                .any(|uri| uri.to_str().is_some_and(|uri| uri.starts_with("magnet:")))
+            {
+                return match bittorrent::magnet(uris) {
+                    Ok(request) => direct(
+                        PathBuf::from(database),
+                        PathBuf::from(control),
+                        PathBuf::from(output_root),
+                        profile.unwrap_or_default(),
+                        DirectControl::BitTorrent(request),
+                    ),
+                    Err(error) => {
+                        eprintln!("ariax: {error}");
+                        ExitCode::from(2)
+                    }
+                };
+            }
             match parse_transfer_flags(uris, false) {
-                Ok((uris, options, _, _)) if !uris.is_empty() => run_direct_control(
+                Ok((uris, options, _, _)) if !uris.is_empty() => direct(
                     PathBuf::from(database),
                     PathBuf::from(control),
                     PathBuf::from(output_root),
@@ -325,7 +383,7 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
             } else {
                 DirectControl::Remove(gid)
             };
-            run_direct_control(
+            direct(
                 PathBuf::from(database),
                 PathBuf::from(control),
                 PathBuf::from(output_root),
@@ -396,13 +454,14 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
     }
 }
 
-const RPC_STARTUP_HELP: &str = "\nRPC startup options (before the command):\n  --rpc-secret=VALUE   Method token; defaults to ARIAX_RPC_SECRET\n  --rpc-user=VALUE     HTTP Basic user; defaults to ARIAX_RPC_USER\n  --rpc-passwd=VALUE   HTTP Basic password; defaults to ARIAX_RPC_PASSWD\nSession startup options:\n  --save-session=FILE  Atomically save unfinished downloads at shutdown\n  --save-session-format=aria2|json  Default aria2\n  --save-session-interval=SECONDS  Periodic saving; 0 disables it\n  --input-file=FILE    Import a complete bounded session before workers start\n  --input-file-format=aria2|json   Default aria2\nBoth Basic fields must be configured together. HTTP Basic applies to HTTP and WebSocket; method tokens also apply to stdio.\n";
+const RPC_STARTUP_HELP: &str = "\nRPC startup options (before the command):\n  --rpc-secret=VALUE   Method token; defaults to ARIAX_RPC_SECRET\n  --rpc-user=VALUE     HTTP Basic user; defaults to ARIAX_RPC_USER\n  --rpc-passwd=VALUE   HTTP Basic password; defaults to ARIAX_RPC_PASSWD\nBitTorrent startup options (before the command):\n  --bt-listen-address=IP:PORT  Native peer listener\n  --bt-encryption=required|preferred|disabled\n  --bt-allow-private-destinations=true|false  Default false\n  --enable-dht=true|false --enable-peer-exchange=true|false\nSession startup options:\n  --save-session=FILE  Atomically save unfinished downloads at shutdown\n  --save-session-format=aria2|json  Default aria2\n  --save-session-interval=SECONDS  Periodic saving; 0 disables it\n  --input-file=FILE    Import a complete bounded session before workers start\n  --input-file-format=aria2|json   Default aria2\nBoth Basic fields must be configured together. HTTP Basic applies to HTTP and WebSocket; method tokens also apply to stdio.\n";
 
 const RPC_INTERFACE_HELP: &str = "\nCombined RPC and compatibility commands:\n  --rpc SESSION_DB CONTROL_DIR OUTPUT_ROOT [LOOPBACK_ADDR]\n  --rpc-call SESSION_DB CONTROL_DIR OUTPUT_ROOT JSON_RPC_DOCUMENT\nAdditional startup options (before the command):\n  --rpc-transport=http|websocket|stdio|http+stdio|websocket+stdio\n  --rpc-stdio-framing=content-length|ndjson\n  --rpc-stdio-eof=shutdown|close-transport|ignore\n  --rpc-stdio-events=true|false\n  --rpc-stdio-max-request-size=SIZE  At most 2M\n  --rpc-compat=aria2|extended|strict\n  --conf-path=FILE   Reloadable HTTP task defaults\n  --url-rules=FILE   Bounded TOML rules\n";
 
 enum DirectControl {
     Add(AddUri),
     Metalink(AddMetalink),
+    BitTorrent(bittorrent::Admission),
     Approve(ApproveHostKey),
     Status(Gid),
     Pause(Gid),
@@ -417,6 +476,7 @@ fn run_direct_control(
     output_root: PathBuf,
     profile: RuntimeProfile,
     command: DirectControl,
+    bittorrent: Option<ariax_engine::BitTorrentConfig>,
 ) -> ExitCode {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -429,14 +489,16 @@ fn run_direct_control(
         }
     };
     runtime.block_on(async move {
-        let engine = match Engine::builder()
+        let builder = Engine::builder()
             .database_path(database_path)
             .control_directory(control_directory)
             .output_root(output_root)
-            .profile(profile)
-            .build()
-            .await
-        {
+            .profile(profile);
+        let builder = match bittorrent {
+            Some(config) => builder.bittorrent(config),
+            None => builder,
+        };
+        let engine = match builder.build().await {
             Ok(engine) => engine,
             Err(error) => {
                 eprintln!("ariax: direct control bootstrap failed: {error}");
@@ -446,6 +508,7 @@ fn run_direct_control(
         let result = match command {
             DirectControl::Add(uris) => direct_add(&engine, uris).await,
             DirectControl::Metalink(bytes) => direct_metalink(&engine, bytes).await,
+            DirectControl::BitTorrent(request) => bittorrent::run(&engine, request).await,
             DirectControl::Approve(request) => engine
                 .approve_host_key(request)
                 .await
@@ -1016,6 +1079,13 @@ fn run_rpc(
     };
     if let Err(error) = plane.attach_process_resources(resources.clone()) {
         eprintln!("ariax: RPC budget initialization failed: {error}");
+        return ExitCode::FAILURE;
+    }
+    if let Some(config) = &startup.bittorrent
+        && let Err(error) = config.clone().apply(&mut plane)
+    {
+        eprintln!("ariax: BitTorrent startup configuration was rejected: {error}");
+        let _ = plane.shutdown();
         return ExitCode::FAILURE;
     }
     if let Some(configuration) = configuration

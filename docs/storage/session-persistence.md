@@ -1,5 +1,9 @@
 # Session Persistence
 
+JSON export measures borrowed task metadata and encoded blob lengths before
+allocating the result. Oversized BitTorrent metainfo or resume data fails within
+the response budget; base64 encoding never creates an unreserved scratch copy.
+
 [Documentation](../README.md)
 
 Status: first-slice implementation in progress. The control-journal v1 framing,

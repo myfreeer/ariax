@@ -1,5 +1,11 @@
 //! Typed Rust embedding facade over the process-owned HTTP control plane.
 
+mod bittorrent;
+pub use bittorrent::{
+    AddMagnet, AddTorrent, BitTorrentConfig, BitTorrentEncryption, BitTorrentOptions,
+    BitTorrentPeer, BitTorrentStatus,
+};
+
 use crate::{
     HttpControlError, HttpControlPlane, HttpControlPlaneConfig, HttpCookieJar, HttpCookieLimits,
     HttpDestinationPolicy, HttpMultiRangeWorker, HttpPolicyClient, HttpProcessResources,
@@ -252,6 +258,8 @@ impl DownloadOptions {
 pub struct GlobalOptions {
     pub task_defaults: DownloadOptions,
     pub max_overall_download_limit: Option<u64>,
+    pub max_overall_upload_limit: Option<u32>,
+    pub bittorrent_defaults: Option<BitTorrentOptions>,
     pub scheduling: Option<crate::SlowSlotConfig>,
 }
 
@@ -405,6 +413,7 @@ pub struct TaskStatus {
     pub status: Aria2Status,
     pub total_length: u64,
     pub completed_length: u64,
+    pub bittorrent: Option<BitTorrentStatus>,
     pub host_key_challenge: Option<ariax_core::HostKeyChallenge>,
     pub followed_by: Vec<Gid>,
     pub ssh_connection: Option<SshConnectionStatus>,
@@ -526,9 +535,15 @@ pub struct EngineBuilder {
     profile: RuntimeProfile,
     session_export: Option<crate::SessionExportConfig>,
     input_file: Option<(PathBuf, crate::SessionFormat)>,
+    bittorrent: Option<BitTorrentConfig>,
 }
 
 impl EngineBuilder {
+    #[must_use]
+    pub fn bittorrent(mut self, config: BitTorrentConfig) -> Self {
+        self.bittorrent = Some(config);
+        self
+    }
     #[must_use]
     pub fn output_root(mut self, output_root: impl Into<PathBuf>) -> Self {
         self.output_root = Some(output_root.into());
@@ -606,6 +621,9 @@ impl EngineBuilder {
         plane
             .attach_process_resources(resources.clone())
             .map_err(|error| NativeApiError::Bootstrap(error.to_string()))?;
+        if let Some(config) = self.bittorrent {
+            config.apply(&mut plane)?;
+        }
         if let Some(config) = self.session_export {
             plane
                 .configure_session_export(config)
@@ -952,6 +970,21 @@ impl Engine {
                 .as_object_mut()
                 .expect("option object")
                 .insert("max-overall-download-limit".to_owned(), Value::from(limit));
+        }
+        if let Some(limit) = options.max_overall_upload_limit {
+            values
+                .as_object_mut()
+                .expect("option object")
+                .insert("max-overall-upload-limit".into(), json!(limit));
+        }
+        if let Some(defaults) = options.bittorrent_defaults {
+            lease
+                .reserve(defaults.input_bytes())
+                .map_err(native_budget_error)?;
+            values
+                .as_object_mut()
+                .expect("option object")
+                .extend(defaults.value().as_object().expect("BT options").clone());
         }
         if let Some(scheduling) = options.scheduling {
             scheduling.validate().map_err(NativeApiError::Control)?;
@@ -1332,6 +1365,7 @@ fn task_status(value: &Value) -> Result<TaskStatus, NativeApiError> {
         status,
         total_length: decimal_field(value, "totalLength")?,
         completed_length: decimal_field(value, "completedLength")?,
+        bittorrent: BitTorrentStatus::from_status(value)?,
         ssh_connection: value
             .get("sshConnection")
             .map(|value| {
@@ -1504,6 +1538,7 @@ mod tests {
                 },
                 max_overall_download_limit: Some(1024 * 1024),
                 scheduling: None,
+                ..GlobalOptions::default()
             })
             .await
             .expect("global");

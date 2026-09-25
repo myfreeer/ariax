@@ -244,11 +244,12 @@ pub use http_transport::{
     MAX_HTTP_TLS_BUNDLE_BYTES, MAX_HTTP_TLS_BUNDLE_CERTIFICATES,
 };
 pub use native_api::{
-    AddMetalink, AddUri, ApproveHostKey, ConfigDumpFormat, ConfigDumpMode, ConfigurationReport,
-    ConfigurationUpdate, DownloadFile, DownloadOptions, DownloadServer, DownloadServers,
-    DownloadUri, Engine, EngineBuilder, EngineSession, EngineVersion, GlobalOptions,
-    GlobalStatistics, MetalinkSelection, NativeApiError, NativeEventSubscription, PositionOrigin,
-    SshConnectionStatus, TaskStatus, UriUsage,
+    AddMagnet, AddMetalink, AddTorrent, AddUri, ApproveHostKey, BitTorrentConfig,
+    BitTorrentEncryption, BitTorrentOptions, BitTorrentPeer, BitTorrentStatus, ConfigDumpFormat,
+    ConfigDumpMode, ConfigurationReport, ConfigurationUpdate, DownloadFile, DownloadOptions,
+    DownloadServer, DownloadServers, DownloadUri, Engine, EngineBuilder, EngineSession,
+    EngineVersion, GlobalOptions, GlobalStatistics, MetalinkSelection, NativeApiError,
+    NativeEventSubscription, PositionOrigin, SshConnectionStatus, TaskStatus, UriUsage,
 };
 pub(crate) use process_bootstrap::ProcessDrainOutcome;
 pub use process_bootstrap::{

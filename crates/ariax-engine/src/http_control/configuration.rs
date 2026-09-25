@@ -95,7 +95,11 @@ impl HttpControlPlane {
             .effective
             .get("max-overall-download-limit")
             .map_or("0", String::as_str);
-        match self.apply_global_download_limit(limit) {
+        let upload = prepared
+            .effective
+            .get("max-overall-upload-limit")
+            .map_or("0", String::as_str);
+        match self.apply_global_bandwidth(limit, upload) {
             Ok(false) => {
                 self.pending_configuration = Some(pending);
                 return;
@@ -148,19 +152,24 @@ impl HttpControlPlane {
         self.configuration_snapshot().check_config(params)
     }
 
-    pub(super) fn apply_global_download_limit(
+    pub(super) fn apply_global_bandwidth(
         &mut self,
         canonical: &str,
+        upload: &str,
     ) -> Result<bool, HttpControlError> {
         let bytes = canonical
             .parse::<u64>()
             .map_err(|_| HttpControlError::InvalidConfig)?;
         #[cfg(feature = "bt")]
         {
-            self.require_bt_bandwidth(&self.engine.scheduler().clone(), bytes)
+            let upload = upload
+                .parse::<u32>()
+                .map_err(|_| HttpControlError::InvalidConfig)?;
+            self.require_bt_bandwidth(&self.engine.scheduler().clone(), bytes, upload)
         }
         #[cfg(not(feature = "bt"))]
         {
+            let _ = upload;
             if let Some(rate) = &self.global_download_rate {
                 rate.set_global_limit(RateLimit::per_second(bytes))
                     .map_err(|_| HttpControlError::InvalidConfig)?;
@@ -244,6 +253,44 @@ fn map_bytes(values: &BTreeMap<String, String>) -> usize {
 }
 
 impl super::query::ConfigurationSnapshot {
+    #[cfg(feature = "bt")]
+    pub(super) fn merged_bt_options(
+        &self,
+        explicit: Value,
+        input_file: bool,
+        config: &ariax_bt::BtAdapterConfig,
+    ) -> Result<Value, HttpControlError> {
+        let explicit = explicit.as_object().ok_or(HttpControlError::InvalidParams(
+            "BitTorrent options must be an object",
+        ))?;
+        let mut result = serde_json::Map::from_iter([
+            ("enable-dht".into(), json!(config.dht)),
+            ("enable-peer-exchange".into(), json!(config.pex)),
+            ("bt-max-peers".into(), json!(config.peers.min(64))),
+        ]);
+        result.extend(
+            self.flat_options
+                .iter()
+                .filter(|(name, _)| super::bittorrent::task_option(name))
+                .map(|(name, value)| (name.clone(), json!(value))),
+        );
+        if input_file {
+            result.extend(explicit.clone());
+        }
+        result.extend(
+            self.rpc_template
+                .iter()
+                .filter(|(name, _)| super::bittorrent::task_option(name))
+                .map(|(name, value)| (name.clone(), json!(value))),
+        );
+        if !input_file {
+            result.extend(explicit.clone());
+        }
+        if input_file {
+            result.insert("pause".into(), json!(true));
+        }
+        Ok(Value::Object(result))
+    }
     fn prepare_configuration(
         &self,
         params: Value,
@@ -523,6 +570,14 @@ impl super::query::ConfigurationSnapshot {
         let (options, _, _, _) = parse_add_options(&value, &self.config.output_root, &[])?;
         HttpTaskOptions::from_sanitized(&options.sanitized().map_err(HttpControlError::TaskSpec)?)
             .map_err(HttpControlError::TaskSpec)?;
+        #[cfg(feature = "bt")]
+        super::bittorrent::Options::parse(&Value::Object(
+            values
+                .iter()
+                .filter(|(name, _)| super::bittorrent::task_option(name))
+                .map(|(name, value)| (name.clone(), json!(value)))
+                .collect(),
+        ))?;
         Ok(())
     }
 

@@ -127,6 +127,15 @@ fn render_options(definitions: &[&OptionDef]) -> String {
         )
         .expect("write to string");
         write_str_array(&mut output, definition.behavior_tests);
+        if let Some((scope, setting)) = ariax_config::bittorrent_setting(definition.name) {
+            write!(
+                output,
+                ", \"libtorrent\": {{\"version\": \"2.1.1\", \"scope\": {}, \"mapping\": {}}}",
+                json_string(scope),
+                json_string(setting)
+            )
+            .expect("write to string");
+        }
         writeln!(output, "}}{}", comma(index, definitions.len())).expect("write to string");
     }
     output.push_str("  ]\n}\n");

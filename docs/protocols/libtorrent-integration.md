@@ -62,6 +62,12 @@ response to `metadata_received_alert` is insufficient: upstream initializes
 storage immediately after posting that alert. Rejection or cancellation keeps
 storage uninitialized.
 
+Admission rechecks output collisions against the current catalogs before
+publication. Late metadata is checked again after its binding is durable and
+before native approval. A background check whose catalog changed is repeated;
+progress-only snapshot updates do not invalidate a mapping check. The durable
+binding is visible to later admission checks before payload creation is allowed.
+
 The native magnet decoder also receives the configured depth, token, byte,
 piece and file-count limits. It bounds the file-tree walk before constructing
 native file storage; Rust validates canonical metadata and the exact resulting
@@ -143,6 +149,33 @@ they enter the adapter.  The configuration compatibility matrix labels these as
 design/BT behavior rather than pretending that aria2 has an identical live-update
 rule.
 
+The registry exports the following exact mappings for libtorrent 2.1.1. Global
+task-option updates change defaults for future admissions; they do not modify
+existing tasks. The overall upload cap is a session setting and waits for its
+native acknowledgement. Session encryption and destination policy are startup
+authority; RPC task/global changes cannot relax them.
+
+| Option | Owner And Mapping |
+| --- | --- |
+| `max-download-limit`, `max-upload-limit` | Task `torrent_handle::set_download_limit` / `set_upload_limit` |
+| `max-overall-upload-limit` | Session `settings_pack::upload_rate_limit` |
+| `bt-max-peers` | Task `torrent_handle::set_max_connections`, bounded by the process share |
+| `enable-dht`, `enable-peer-exchange` | Task `disable_dht` / `disable_pex` flags, within startup session permissions |
+| `bt-encryption` | Startup `settings_pack::in_enc_policy` and `out_enc_policy`: required = forced, preferred = enabled, disabled = disabled |
+| `bt-listen-address` | Startup `settings_pack::listen_interfaces` with one numeric socket address |
+| `bt-allow-private-destinations` | Startup destination policy; false installs the special-use IP filter before admitting tasks |
+| `select-file`, `index-out`, `out` | Validated stable mapping supplied to `ariax_approve_metadata` before storage initialization |
+| `bt-tracker`, `bt-exclude-tracker` | Validated `add_torrent_params::trackers`, without changing the info dictionary |
+| `bt-metadata-only`, `bt-save-metadata` | Engine metadata hold and atomic metainfo publication |
+| `seed-ratio`, `seed-time` | Engine seeding completion policy using persisted byte/time counters |
+| `bt-resume-data-limit`, `bt-resume-timeout` | Engine tracked checkpoint byte/deadline bounds |
+| `follow-torrent` | Engine verified transfer-to-torrent admission |
+
+DHT uses libtorrent's pinned public bootstrap defaults when enabled. Tests may
+disable discovery and explicitly connect approved local peers. Trackers, web
+seeds and peers resolved or discovered later remain subject to the session IP
+filter and SSRF policy.
+
 ## Event Channel
 
 Events out of BT lane:
@@ -158,6 +191,11 @@ Events out of BT lane:
 
 Events are normalized before reaching RPC/status code. Raw libtorrent objects do
 not leak across the adapter boundary.
+
+Entering `Seeding` publishes reliable `aria2.onBtDownloadComplete` and
+`ariax.onSeeding` notifications. The latter contains `gid` and the boolean
+`seeding`; leaving seeding publishes `seeding: false`. These transitions are
+observed even though aria2 reports both downloading and seeding as `active`.
 
 Overflow policy (the channel is bounded, so full-channel behavior must be
 defined per event class):

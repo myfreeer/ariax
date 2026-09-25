@@ -17,6 +17,20 @@ mod metalink_follow;
 pub(crate) mod query;
 mod scheduling;
 
+pub(crate) fn validate_bittorrent_options(value: &Value) -> Result<(), HttpControlError> {
+    #[cfg(feature = "bt")]
+    {
+        bittorrent::Options::parse(value).map(|_| ())
+    }
+    #[cfg(not(feature = "bt"))]
+    {
+        let _ = value;
+        Err(HttpControlError::Unsupported(
+            "BitTorrent feature unavailable",
+        ))
+    }
+}
+
 pub use control_runtime::ControlRuntimeMetrics;
 
 use crate::http_first_slice::append_initial_admission_with_options;
@@ -1557,6 +1571,28 @@ impl HttpControlPlane {
                 .observed_statuses
                 .task(gid)
                 .and_then(|task| task.snapshot.wire_status().ok());
+            let seeding = current
+                .task(gid)
+                .is_some_and(|task| task.snapshot.state == ariax_core::TaskState::Seeding);
+            let was_seeding = self
+                .observed_statuses
+                .task(gid)
+                .is_some_and(|task| task.snapshot.state == ariax_core::TaskState::Seeding);
+            if seeding != was_seeding {
+                if seeding
+                    && let Ok(event) = aria2_task_event("aria2.onBtDownloadComplete", Some(gid))
+                {
+                    self.events.publish(event);
+                }
+                if let Ok(event) = RpcEvent::notification(
+                    "ariax.onSeeding",
+                    json!({"gid": gid.to_string(), "seeding": seeding}),
+                    RpcEventClass::Reliable,
+                    None,
+                ) {
+                    self.events.publish(event);
+                }
+            }
             if previous == Some(status) {
                 continue;
             }
@@ -2668,21 +2704,27 @@ impl HttpControlPlane {
             .get("max-overall-download-limit")
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(0);
+        #[cfg(feature = "bt")]
+        let upload = self
+            .global_options
+            .get("max-overall-upload-limit")
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(0);
         let outcome = match simulation.admit_next_at(now) {
             Ok(outcome) => outcome,
             Err(_) => {
                 #[cfg(feature = "bt")]
-                self.require_bt_bandwidth(&simulation, total)?;
+                self.require_bt_bandwidth(&simulation, total, upload)?;
                 return Ok(());
             }
         };
         if self.supervisor.is_none() && outcome.effects.iter().any(|effect| matches!(effect, TransitionEffect::PersistGenerationStarted { task_id, .. } if !self.is_bt_task(*task_id))) {
             #[cfg(feature = "bt")]
-            self.require_bt_bandwidth(&self.engine.scheduler().clone(), total)?;
+            self.require_bt_bandwidth(&self.engine.scheduler().clone(), total, upload)?;
             return Ok(());
         }
         #[cfg(feature = "bt")]
-        if !self.require_bt_bandwidth(&simulation, total)? {
+        if !self.require_bt_bandwidth(&simulation, total, upload)? {
             return Ok(());
         }
         if let Some(rate) = &self.global_download_rate {
@@ -3639,6 +3681,20 @@ fn default_global_options() -> Result<BTreeMap<String, String>, HttpControlError
         .map(|(name, value)| (name.to_owned(), value.to_owned()))
         .collect::<BTreeMap<_, _>>();
     result.insert("max-overall-download-limit".to_owned(), "0".to_owned());
+    #[cfg(feature = "bt")]
+    for definition in builtin_registry()
+        .definitions()
+        .iter()
+        .filter(|definition| {
+            definition.owner == "bt"
+                && definition.runtime_update != RuntimeUpdate::StartupOnly
+                && definition.name != "follow-torrent"
+        })
+    {
+        if let Some(default) = definition.default {
+            result.insert(definition.name.to_owned(), default.to_owned());
+        }
+    }
     for option in builtin_registry()
         .definitions()
         .iter()
@@ -3674,8 +3730,21 @@ fn is_executable_download_option(name: &str) -> bool {
 
 fn is_executable_global_option(name: &str) -> bool {
     name == "max-overall-download-limit"
+        || is_executable_bt_option(name)
         || is_executable_download_option(name)
         || is_scheduling_option(name)
+}
+
+fn is_executable_bt_option(name: &str) -> bool {
+    #[cfg(feature = "bt")]
+    {
+        bittorrent::task_option(name) || name == "max-overall-upload-limit"
+    }
+    #[cfg(not(feature = "bt"))]
+    {
+        let _ = name;
+        false
+    }
 }
 
 fn is_scheduling_option(name: &str) -> bool {
@@ -3719,17 +3788,18 @@ fn parse_registry_options(
             {
                 return Err(OptionPatchRejectReason::NotRuntimeMutable);
             }
-            if matches!(
-                definition.compat,
-                CompatStatus::Unsupported | CompatStatus::FeatureGated
-            ) || !is_executable_global_option(name)
+            let bt_global = scope == Scope::RpcGlobal && is_executable_bt_option(name);
+            if definition.compat == CompatStatus::Unsupported
+                || definition.compat == CompatStatus::FeatureGated && !bt_global
+                || !is_executable_global_option(name)
                 || matches!(
                     definition.runtime_update,
-                    RuntimeUpdate::None
-                        | RuntimeUpdate::UnsafeCompatOnly
-                        | RuntimeUpdate::BtLive
-                        | RuntimeUpdate::BtRestartRequired
+                    RuntimeUpdate::None | RuntimeUpdate::UnsafeCompatOnly
                 )
+                || matches!(
+                    definition.runtime_update,
+                    RuntimeUpdate::BtLive | RuntimeUpdate::BtRestartRequired
+                ) && !bt_global
             {
                 return Err(OptionPatchRejectReason::Unsupported);
             }

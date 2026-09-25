@@ -138,6 +138,8 @@ pub(super) fn parse_upload(
             options.remove("piece-length");
             options.insert("out".into(), Value::String(file.name.canonical_string()));
             crate::session_file::ImportedTask {
+                #[cfg(feature = "bt")]
+                bittorrent: None,
                 uris: file
                     .sources
                     .iter()

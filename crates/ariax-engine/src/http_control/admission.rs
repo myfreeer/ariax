@@ -385,33 +385,37 @@ impl HttpControlPlane {
                         parent_spec: None,
                     },
                 );
-                if pending.import {
-                    // Complete batch plan validation and materialization can
-                    // visit all members; it also executes outside the owner.
-                    let tasks = self.tasks.snapshot();
-                    pending.stage = Stage::Finalizing(spawn(
-                        &self.cpu_pool,
-                        pending.work.clone(),
-                        move || {
-                            for member in &prepared.members {
-                                match member {
-                                    Member::Transfer(member)
-                                        if member.spec.verification().is_some() =>
-                                    {
+                // The admission fence stops mapping publication while this
+                // background job checks the current catalogs before installation.
+                let tasks = self.tasks.snapshot();
+                #[cfg(feature = "bt")]
+                let bt = self.bt.catalog.clone();
+                let import = pending.import;
+                pending.stage =
+                    Stage::Finalizing(spawn(&self.cpu_pool, pending.work.clone(), move || {
+                        for member in &prepared.members {
+                            match member {
+                                Member::Transfer(member) => {
+                                    if member.spec.verification().is_some() {
                                         preflight_output(
                                             &member.spec,
                                             tasks.entries().map(Arc::as_ref),
                                         )?;
                                     }
-                                    _ => {}
+                                    #[cfg(feature = "bt")]
+                                    super::bittorrent::collision_transfer(
+                                        &member.spec,
+                                        bt.values().map(|task| task.spec.as_ref()),
+                                    )?;
+                                }
+                                #[cfg(feature = "bt")]
+                                Member::BitTorrent(spec) => {
+                                    super::bittorrent::collision(spec, &tasks, &bt)?
                                 }
                             }
-                            finalize(prepared, true)
-                        },
-                    )?);
-                } else {
-                    pending.stage = Stage::Installing(Box::new(finalize(prepared, false)?));
-                }
+                        }
+                        finalize(prepared, import)
+                    })?);
                 self.turn.mark_progress();
             }
             Stage::Finalizing(receiver) => {
@@ -686,7 +690,8 @@ impl Preparation {
             if let Some(imported) = task.bittorrent {
                 let spec = super::bittorrent::prepare_import(
                     imported,
-                    task.options,
+                    self.configuration
+                        .merged_bt_options(task.options, true, &self.bt_config)?,
                     task_id,
                     self.session_id,
                     &self.configuration.config.output_root,

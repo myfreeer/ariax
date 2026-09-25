@@ -403,14 +403,7 @@ impl ControlQueryRoot {
         let bt_bytes = self
             .bt_tasks
             .values()
-            .map(|task| {
-                task.spec
-                    .record
-                    .binding
-                    .owned_bytes()
-                    .saturating_mul(3)
-                    .saturating_add(128 * 1024)
-            })
+            .map(|task| task.spec.retained_bytes())
             .sum();
         #[cfg(not(feature = "bt"))]
         let bt_bytes = 0;
@@ -724,17 +717,45 @@ impl ControlQueryRoot {
             }
             #[cfg(feature = "bt")]
             if let Some(bt) = self.bt_task(applied.snapshot.gid) {
-                use base64ct::Encoding as _;
-                let mut options = string_map_value(bt.spec.options.persisted.entries())?;
-                options["pause"] = json!(applied.snapshot.desired_paused);
-                tasks.push_scratch(json!({
-                    "kind": "bittorrent", "gid": applied.snapshot.gid.to_string(),
-                    "state": applied.snapshot.state.code(), "options": options,
-                    "bittorrent": { "identity": bt.spec.record.binding.identity,
-                        "metainfo": base64ct::Base64::encode_string(&bt.spec.record.binding.metainfo),
-                        "magnet": bt.spec.record.binding.magnet, "files": bt.spec.record.binding.files,
-                        "resumeData": base64ct::Base64::encode_string(bt.resume_data.as_deref().map_or(&[], |resume| resume.bytes.as_ref())) }
-                }))?;
+                use crate::rpc_result::Base64Value;
+                #[derive(serde::Serialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Metadata<'a> {
+                    identity: &'a ariax_bt::BtIdentity,
+                    metainfo: DisplayValue<Base64Value<'a>>,
+                    magnet: &'a Option<String>,
+                    files: &'a [ariax_storage::SessionBtFile],
+                    resume_data: DisplayValue<Base64Value<'a>>,
+                }
+                #[derive(serde::Serialize)]
+                struct Task<'a> {
+                    kind: &'static str,
+                    gid: DisplayValue<Gid>,
+                    state: &'static str,
+                    options: SessionOptions<'a>,
+                    bittorrent: Metadata<'a>,
+                }
+                let binding = &bt.spec.record.binding;
+                tasks.push(&Task {
+                    kind: "bittorrent",
+                    gid: DisplayValue(applied.snapshot.gid),
+                    state: applied.snapshot.state.code(),
+                    options: SessionOptions {
+                        options: &bt.spec.options.persisted,
+                        paused: applied.snapshot.desired_paused,
+                    },
+                    bittorrent: Metadata {
+                        identity: &binding.identity,
+                        metainfo: DisplayValue(Base64Value(&binding.metainfo)),
+                        magnet: &binding.magnet,
+                        files: &binding.files,
+                        resume_data: DisplayValue(Base64Value(
+                            bt.resume_data
+                                .as_deref()
+                                .map_or(&[], |resume| &resume.bytes),
+                        )),
+                    },
+                })?;
                 continue;
             }
             let spec = self
