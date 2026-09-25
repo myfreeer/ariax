@@ -497,7 +497,9 @@ For BT options, `bt_live` maps to an acknowledged libtorrent `settings_pack`
 update through the adapter. `bt_restart_required` never performs an automatic
 generation requeue: an active task receives
 `OptionPatchRejected/requires_explicit_bt_restart` until the caller explicitly
-stops and restarts it. The authoritative adapter behavior is in
+pauses it, applies the patch at the drained boundary, and resumes it. A paused
+patch remains paused and invalidates cached resume progress when its mapping or
+other restart-required settings change. The authoritative adapter behavior is in
 [libtorrent-integration.md](../protocols/libtorrent-integration.md).
 
 `getOption` and `getGlobalOption`:

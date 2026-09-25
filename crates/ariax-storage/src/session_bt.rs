@@ -210,6 +210,16 @@ pub struct SessionBtResumeRecord {
     pub saved_ms: u64,
 }
 
+/// Explicit replacement at a drained pause, distinct from native metadata binding.
+#[derive(Clone, Debug)]
+pub struct SessionBtOptionPatch {
+    pub previous: Arc<SessionBtTaskRecord>,
+    pub replacement: Arc<SessionBtTaskRecord>,
+    pub generation: u64,
+    pub expected_options: JournalHash,
+    pub options: SanitizedOptionMap,
+}
+
 /// `None` records a failed boundary and retains the previous safe resume blob.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionBtCheckpoint {
@@ -397,6 +407,69 @@ impl SessionStore {
                 binding.info,
                 files
             ],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn replace_paused_bt_options(
+        &mut self,
+        patch: &SessionBtOptionPatch,
+        policy: &impl PersistedOptionPolicy,
+    ) -> Result<(), SessionStoreError> {
+        let before = &patch.previous;
+        let after = &patch.replacement;
+        after.binding.validate()?;
+        validate_options_for_persistence(&patch.options, policy)?;
+        if before.gid != after.gid
+            || before.session_id != after.session_id
+            || before.root_display != after.root_display
+            || before.binding.identity != after.binding.identity
+            || before.binding.root_identity != after.binding.root_identity
+            || before.binding.info != after.binding.info
+        {
+            return Err(SessionStoreError::InvalidRecord("bt.option_identity"));
+        }
+        let files = files_blob(&after.binding)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = read_task(&transaction, before.gid)?;
+        if current.queue_state != SessionQueueState::Paused
+            || !current.desired_paused
+            || current.generation != patch.generation
+            || current.binding != before.binding
+            || read_task_options(
+                &transaction,
+                before.gid,
+                OptionsSnapshotScope::CurrentGeneration,
+                policy,
+            )?
+            .snapshot_hash()
+                != patch.expected_options
+        {
+            return Err(SessionStoreError::InvalidRecord("bt.option_changed"));
+        }
+        transaction.execute(
+            "UPDATE bt_metadata SET metainfo=?2,magnet=?3,files=?4 WHERE gid=?1",
+            params![
+                before.gid.to_string(),
+                after.binding.metainfo,
+                after.binding.magnet,
+                files
+            ],
+        )?;
+        replace_task_options_in_transaction(
+            &transaction,
+            before.gid,
+            OptionsSnapshotScope::CurrentGeneration,
+            &patch.options,
+        )?;
+        // All old-generation callbacks are obsolete. Only BeginBtGeneration
+        // can reopen its request sequence; paused removal can use this token.
+        transaction.execute(
+            "UPDATE bt_resume SET resume_blob=X'',dirty=1,request=?2 WHERE gid=?1",
+            params![before.gid.to_string(), encode_u64(u64::MAX)],
         )?;
         transaction.commit()?;
         Ok(())
@@ -737,6 +810,87 @@ mod tests {
         assert_eq!(restored.generation, 2);
         assert_eq!(&*restored.resume_blob, b"de");
     }
+    #[test]
+    fn paused_option_replacement_is_atomic_and_retires_old_checkpoint_tokens() {
+        let directory = Directory::new();
+        let mut store = store(&directory);
+        let mut task = record();
+        task.queue_state = SessionQueueState::Paused;
+        task.desired_paused = true;
+        let options = SanitizedOptionMap::new([]).unwrap();
+        store.create_bt_task(&task, &options, &policy).unwrap();
+        let mut checkpoint = SessionBtCheckpoint {
+            gid: task.gid,
+            generation: task.generation,
+            request: 1,
+            resume_blob: Some(Arc::from(b"de".as_slice())),
+            downloaded: 7,
+            uploaded: 3,
+            seed_millis: 2,
+            saved_ms: 2,
+        };
+        store.checkpoint_bt(&checkpoint).unwrap();
+        let original = store.bt_tasks().unwrap().remove(0);
+        let resume = store.bt_resume(task.gid, 64).unwrap();
+        let mut replacement = original.clone();
+        replacement.binding.files[0].path = "renamed.bin".into();
+        let patch = SessionBtOptionPatch {
+            previous: Arc::new(original.clone()),
+            replacement: Arc::new(replacement),
+            generation: task.generation,
+            expected_options: options.snapshot_hash(),
+            options: SanitizedOptionMap::new([("out".into(), "renamed.bin".into())]).unwrap(),
+        };
+        store.connection.execute_batch("CREATE TEMP TRIGGER reject_restart BEFORE UPDATE ON bt_resume BEGIN SELECT RAISE(ABORT, 'injected restart failure'); END;").unwrap();
+        assert!(store.replace_paused_bt_options(&patch, &policy).is_err());
+        assert_eq!(store.bt_tasks().unwrap(), [original.clone()]);
+        assert_eq!(
+            store
+                .task_options(task.gid, OptionsSnapshotScope::CurrentGeneration, &policy)
+                .unwrap(),
+            options
+        );
+        assert_eq!(store.bt_resume(task.gid, 64).unwrap(), resume);
+        store
+            .connection
+            .execute_batch("DROP TRIGGER reject_restart")
+            .unwrap();
+        let mut stale = patch.clone();
+        stale.generation += 1;
+        assert!(store.replace_paused_bt_options(&stale, &policy).is_err());
+        stale = patch.clone();
+        stale.expected_options = JournalHash::new([99; 32]).unwrap();
+        assert!(store.replace_paused_bt_options(&stale, &policy).is_err());
+        store.replace_paused_bt_options(&patch, &policy).unwrap();
+        let changed = store.bt_tasks().unwrap().remove(0);
+        assert_eq!(changed.binding.files[0].path, "renamed.bin");
+        assert_eq!(
+            (changed.downloaded, changed.uploaded, changed.seed_millis),
+            (7, 3, 2)
+        );
+        assert_eq!(changed.queue_state, SessionQueueState::Paused);
+        assert!(store.replace_paused_bt_options(&patch, &policy).is_err());
+        let retired = store.bt_resume(task.gid, 64).unwrap();
+        assert!(retired.dirty && retired.resume_blob.is_empty());
+        assert_eq!(retired.request, u64::MAX);
+        checkpoint.request = 2;
+        assert!(store.checkpoint_bt(&checkpoint).is_err());
+        store
+            .begin_bt_generation(task.gid, task.generation, task.generation + 1)
+            .unwrap();
+        checkpoint.generation += 1;
+        checkpoint.request = 1;
+        store.checkpoint_bt(&checkpoint).unwrap();
+        drop(store);
+        let store =
+            SessionStore::open(directory.database(), SessionStoreConfig::default()).unwrap();
+        assert_eq!(
+            store.bt_tasks().unwrap()[0].binding,
+            patch.replacement.binding
+        );
+        assert!(!store.bt_resume(task.gid, 64).unwrap().dirty);
+    }
+
     #[test]
     fn metadata_binding_rejects_changed_paths_identity_and_duplicate_torrents() {
         let directory = Directory::new();

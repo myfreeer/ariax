@@ -23,8 +23,8 @@ use std::time::Duration;
 #[path = "session_bt.rs"]
 mod bt;
 pub use bt::{
-    SessionBtBinding, SessionBtCheckpoint, SessionBtFile, SessionBtResumeRecord,
-    SessionBtTaskRecord,
+    SessionBtBinding, SessionBtCheckpoint, SessionBtFile, SessionBtOptionPatch,
+    SessionBtResumeRecord, SessionBtTaskRecord,
 };
 
 pub const SESSION_SCHEMA_VERSION: u32 = 3;

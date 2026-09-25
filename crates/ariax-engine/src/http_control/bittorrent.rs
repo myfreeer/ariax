@@ -418,6 +418,7 @@ pub(super) struct BtControl {
     initializing: Option<Receiver<Result<BtAdapter, HttpControlError>>>,
     pub(super) catalog: Arc<BTreeMap<Gid, Arc<QueryTask>>>,
     tasks: BTreeMap<TaskId, Task>,
+    pub(super) paused_options: Option<TaskId>,
     pub(super) admission: Option<PendingAdmission>,
     cursor: Option<TaskId>,
 }
@@ -442,6 +443,7 @@ impl Default for BtControl {
             initializing: None,
             catalog: Arc::new(BTreeMap::new()),
             tasks: BTreeMap::new(),
+            paused_options: None,
             admission: None,
             cursor: None,
         }
@@ -663,32 +665,6 @@ impl BtControl {
         cpu: &ariax_runtime::CpuPool,
         http: &SharedHttpTaskCatalog,
     ) -> Result<bool, HttpControlError> {
-        if self.adapter.is_none() && !self.tasks.is_empty() {
-            if let Some(receiver) = &self.initializing {
-                if let Some(adapter) = receive(receiver)? {
-                    self.adapter = Some(adapter);
-                    self.rate_applied = false;
-                    self.initializing = None;
-                }
-            } else if self.admission.is_none() {
-                let config = self.config.clone();
-                let resources = self
-                    .resources
-                    .clone()
-                    .ok_or(HttpControlError::InvalidConfig)?;
-                self.initializing = Some(spawn(cpu, move || {
-                    BtAdapter::start(config, resources).map_err(bt_error)
-                })?);
-            }
-            return Ok(true);
-        }
-        let Some(handle) = self.handle() else {
-            return Ok(false);
-        };
-        if !self.rate_applied || !self.rate_updates.is_empty() {
-            return Ok(false);
-        }
-
         if let Some(request) =
             runtime.take_allocation_matching(|task| self.tasks.contains_key(&task))
         {
@@ -716,6 +692,35 @@ impl BtControl {
             task.cancellation = Some(request);
             return Ok(true);
         }
+        if self.adapter.is_none()
+            && (self.initializing.is_some()
+                || self.tasks.values().any(|task| task.allocation.is_some()))
+        {
+            if let Some(receiver) = &self.initializing {
+                if let Some(adapter) = receive(receiver)? {
+                    self.adapter = Some(adapter);
+                    self.rate_applied = false;
+                    self.initializing = None;
+                }
+            } else if self.admission.is_none() {
+                let config = self.config.clone();
+                let resources = self
+                    .resources
+                    .clone()
+                    .ok_or(HttpControlError::InvalidConfig)?;
+                self.initializing = Some(spawn(cpu, move || {
+                    BtAdapter::start(config, resources).map_err(bt_error)
+                })?);
+            }
+            return Ok(true);
+        }
+        let Some(handle) = self.handle() else {
+            return Ok(false);
+        };
+        if !self.rate_applied || !self.rate_updates.is_empty() {
+            return Ok(false);
+        }
+
         if handle.needs_reconciliation() {
             for task in self.tasks.values_mut() {
                 task.checkpoint_at = Instant::now();
@@ -1017,7 +1022,7 @@ impl Task {
                 && self.store.is_none()
                 && matches!(self.phase, Phase::Idle | Phase::Finished | Phase::Running)
         {
-            return self.poll_options(handle, session);
+            return self.poll_options(Some(handle), session);
         }
         if let Some(snapshot) = handle.snapshot(gid.get()) {
             self.snapshot = Some(snapshot);
@@ -1577,6 +1582,7 @@ impl Task {
 }
 
 struct OptionChange {
+    restart: bool,
     preparation: Receiver<Result<Arc<Spec>, HttpControlError>>,
     prepared: Option<Arc<Spec>>,
     reply: Option<oneshot::Sender<Result<Value, HttpControlError>>>,
@@ -1587,10 +1593,96 @@ struct OptionChange {
     _request: crate::rpc_budget::RpcRequestLease,
 }
 
+fn prepare_option_replacement(
+    previous: &Arc<Spec>,
+    options: Options,
+    restart: bool,
+    resident: &ByteBudget,
+) -> Result<Arc<Spec>, HttpControlError> {
+    let _working = resident
+        .try_acquire(
+            previous
+                .retained_bytes()
+                .saturating_add(options.retained_bytes())
+                .saturating_add(512 * 1024),
+        )
+        .map_err(|_| HttpControlError::Busy)?;
+    let mut record = previous.record.clone();
+    let mut metadata = previous.metadata.clone();
+    if restart {
+        previous.root.revalidate().map_err(bt_error)?;
+        let record = Arc::make_mut(&mut record);
+        let trackers = |name: &str| {
+            options
+                .persisted
+                .entries()
+                .find_map(|(key, value)| {
+                    (key == name).then(|| value.split(',').map(str::to_owned).collect::<Vec<_>>())
+                })
+                .unwrap_or_default()
+        };
+        let added = trackers("bt-tracker");
+        let excluded = trackers("bt-exclude-tracker");
+        if !record.binding.metainfo.is_empty() {
+            record.binding.metainfo = ariax_bt::with_trackers(
+                &record.binding.metainfo,
+                &added,
+                &excluded,
+                MetadataLimits::default(),
+            )
+            .map_err(bt_error)?;
+            metadata = Some(
+                parse_torrent(&record.binding.metainfo, MetadataLimits::default())
+                    .map_err(bt_error)?,
+            );
+        } else if !record.binding.info.is_empty() {
+            metadata = Some(
+                ariax_bt::parse_info(&record.binding.info, MetadataLimits::default())
+                    .map_err(bt_error)?,
+            );
+        }
+        if let Some(magnet) = &record.binding.magnet {
+            record.binding.magnet =
+                Some(ariax_bt::magnet_with_trackers(magnet, &added, &excluded).map_err(bt_error)?);
+        }
+        if let Some(metadata) = &metadata {
+            let mapping = map_files(metadata, &options.mapping).map_err(bt_error)?;
+            for file in &mapping {
+                let owned = previous.record.binding.files.iter().any(|old| {
+                    old.index == file.index && old.path == file.path && old.length == file.length
+                });
+                previous
+                    .root
+                    .validate_mapping(std::slice::from_ref(file), owned)
+                    .map_err(bt_error)?;
+            }
+            record.binding.files = files(&mapping);
+        }
+        record
+            .binding
+            .validate()
+            .map_err(|_| invalid("invalid paused BitTorrent mapping"))?;
+    }
+    let memory = charge(&record, &options, resident)?;
+    Ok(Arc::new(Spec {
+        resume_data: if restart {
+            None
+        } else {
+            previous.resume_data.clone()
+        },
+        task_id: previous.task_id,
+        record,
+        root: previous.root.clone(),
+        options,
+        metadata,
+        _memory: memory,
+    }))
+}
+
 impl Task {
     fn poll_options(
         &mut self,
-        handle: &BtHandle,
+        handle: Option<&BtHandle>,
         session: &SessionHandle,
     ) -> Result<bool, HttpControlError> {
         let mut change = self.option_change.take().expect("BT option operation");
@@ -1634,11 +1726,13 @@ impl Task {
                         }
                     }
                 } else {
-                    match handle.submit(BtCommand::SetTask {
-                        gid: prepared.record.gid.get(),
-                        version: self.settings_version + 1,
-                        settings: prepared.options.settings.clone(),
-                    }) {
+                    match handle.ok_or_else(|| bt_error(BtError::Closed))?.submit(
+                        BtCommand::SetTask {
+                            gid: prepared.record.gid.get(),
+                            version: self.settings_version + 1,
+                            settings: prepared.options.settings.clone(),
+                        },
+                    ) {
                         Ok(pending) => change.native = Some(pending),
                         Err(BtError::Overloaded) => {}
                         Err(error) => {
@@ -1662,6 +1756,16 @@ impl Task {
                 None => change.store = Some(completion),
                 Some(result) => {
                     expect_unit(result)?;
+                    if change.restart {
+                        self.download_base = self.downloaded();
+                        self.upload_base = self.uploaded();
+                        self.seed_base = self.seed_millis();
+                        self.snapshot = None;
+                        self.seeded_since = None;
+                        self.resume_data = None;
+                        self.dirty = true;
+                        self.request = u64::MAX;
+                    }
                     self.spec = change.prepared.take().expect("acknowledged BT options");
                     let _ = change
                         .reply
@@ -1672,11 +1776,24 @@ impl Task {
                 }
             }
         } else {
-            match session.try_submit(SessionCommand::ReplaceTaskOptions {
-                gid: prepared.record.gid,
-                scope: OptionsSnapshotScope::CurrentGeneration,
-                options: prepared.options.persisted.clone(),
-            }) {
+            let command = if change.restart {
+                SessionCommand::ReplacePausedBtOptions(Arc::new(
+                    ariax_storage::SessionBtOptionPatch {
+                        previous: self.spec.record.clone(),
+                        replacement: prepared.record.clone(),
+                        generation: self.generation.get(),
+                        expected_options: self.spec.options.persisted.snapshot_hash(),
+                        options: prepared.options.persisted.clone(),
+                    },
+                ))
+            } else {
+                SessionCommand::ReplaceTaskOptions {
+                    gid: prepared.record.gid,
+                    scope: OptionsSnapshotScope::CurrentGeneration,
+                    options: prepared.options.persisted.clone(),
+                }
+            };
+            match session.try_submit(command) {
                 Ok(completion) => change.store = Some(completion),
                 Err(SessionOwnerError::QueueFull) => {}
                 Err(error) => return Err(HttpControlError::Persistence(error.to_string())),
@@ -1850,29 +1967,44 @@ impl HttpControlPlane {
             || self.admission_fenced()
             || self.bt.admission.is_some()
             || self.pending_mutation.is_some()
+            || self.pending_admission.is_some()
+            || self.pending_configuration.is_some()
+            || !self.pending_source_replacements.is_empty()
         {
             return Err(HttpControlError::Busy);
         }
-        let task_id = self
+        let state = self
             .engine
             .scheduler()
             .task(gid)
-            .ok_or(HttpControlError::NotFound)?
-            .task_id;
+            .ok_or(HttpControlError::NotFound)?;
+        let task_id = state.task_id;
+        let paused =
+            state.state == ariax_core::TaskState::Paused && state.pending_barrier.is_none();
         let task = self
             .bt
             .tasks
-            .get_mut(&task_id)
+            .get(&task_id)
             .ok_or(HttpControlError::NotFound)?;
-        if task.option_change.is_some() || task.shutdown {
+        if task.option_change.is_some()
+            || task.shutdown
+            || task.native.is_some()
+            || task.native_offered.is_some()
+            || task.store.is_some()
+            || task.offered.is_some()
+            || task.event.is_some()
+            || !matches!(task.phase, Phase::Idle | Phase::Finished | Phase::Running)
+        {
             return Err(HttpControlError::Busy);
         }
+        let offline = !task.native_added;
         let patch = patch
             .as_object()
             .ok_or_else(|| invalid("BitTorrent option patch must be an object"))?;
         let mut rejected = Vec::new();
+        let mut restart = false;
         for name in patch.keys() {
-            if !matches!(
+            let live = matches!(
                 name.as_str(),
                 "max-download-limit"
                     | "max-upload-limit"
@@ -1881,11 +2013,17 @@ impl HttpControlPlane {
                     | "enable-peer-exchange"
                     | "seed-ratio"
                     | "seed-time"
-            ) {
+            );
+            restart |= !live;
+            if !task_option(name) || !live && !(paused && offline) {
                 rejected.push(OptionPatchRejection {
                     name: name.clone(),
-                    reason: if builtin_registry().find(name).is_some() {
+                    reason: if task_option(name) {
                         OptionPatchRejectReason::RequiresExplicitBtRestart
+                    } else if builtin_registry().find(name).is_some_and(|definition| {
+                        definition.runtime_update == ariax_config::RuntimeUpdate::StartupOnly
+                    }) {
+                        OptionPatchRejectReason::NotRuntimeMutable
                     } else {
                         OptionPatchRejectReason::Unsupported
                     },
@@ -1894,6 +2032,21 @@ impl HttpControlPlane {
         }
         if !rejected.is_empty() {
             return Err(HttpControlError::OptionPatchRejected(rejected));
+        }
+        // An in-flight metadata binding may already be durable but not yet
+        // published. Settle it before freezing the collision catalog.
+        if offline
+            && self.bt.tasks.values().any(|other| {
+                other.binding.is_some()
+                    || other.prepared_spec.is_some()
+                    || other.mapping_validation.is_some()
+                    || matches!(
+                        other.phase,
+                        Phase::PrepareBinding | Phase::Bind | Phase::SaveMetadata | Phase::Approve
+                    )
+            })
+        {
+            return Err(HttpControlError::Busy);
         }
         let previous = task.spec.clone();
         let mut options = crate::rpc_result::to_value(
@@ -1912,6 +2065,8 @@ impl HttpControlPlane {
         let peers = self.bt.config.peers;
         let dht = self.bt.config.dht;
         let pex = self.bt.config.pex;
+        let http = self.tasks.snapshot();
+        let catalog = self.bt.catalog.clone();
         let held = request.clone();
         let preparation = spawn(&self.cpu_pool, move || {
             let _held = held;
@@ -1922,19 +2077,17 @@ impl HttpControlPlane {
             {
                 return Err(bt_error(BtError::RequiresRestart));
             }
-            let memory = charge(&previous.record, &options, &resources.resident)?;
-            Ok(Arc::new(Spec {
-                resume_data: previous.resume_data.clone(),
-                task_id: previous.task_id,
-                record: previous.record.clone(),
-                root: previous.root.clone(),
-                options,
-                metadata: previous.metadata.clone(),
-                _memory: memory,
-            }))
+            let replacement =
+                prepare_option_replacement(&previous, options, restart, &resources.resident)?;
+            if restart {
+                collision(&replacement, &http, &catalog)?;
+            }
+            Ok(replacement)
         })?;
         let (reply, receiver) = oneshot::channel();
+        let task = self.bt.tasks.get_mut(&task_id).expect("validated BT task");
         task.option_change = Some(OptionChange {
+            restart,
             preparation,
             prepared: None,
             reply: Some(reply),
@@ -1944,7 +2097,30 @@ impl HttpControlPlane {
             store: None,
             _request: request,
         });
+        if offline {
+            self.bt.paused_options = Some(task_id);
+        }
         Ok(ControlReply::Deferred(receiver))
+    }
+
+    pub(super) fn poll_bt_paused_options(&mut self) -> Result<bool, HttpControlError> {
+        let Some(id) = self.bt.paused_options else {
+            return Ok(false);
+        };
+        let task = self
+            .bt
+            .tasks
+            .get_mut(&id)
+            .ok_or(HttpControlError::NotFound)?;
+        if task.poll_options(None, &self.session)? {
+            self.turn.mark_progress();
+        }
+        let complete = task.option_change.is_none();
+        self.bt.publish(id);
+        if complete {
+            self.bt.paused_options = None;
+        }
+        Ok(!complete)
     }
 
     pub(super) fn drain_bt(&mut self, deadline: Instant) -> bool {
@@ -1981,12 +2157,34 @@ impl HttpControlPlane {
             return Err(HttpControlError::Busy);
         }
         config.metadata.validate().map_err(bt_error)?;
+        if self.bt.tasks.values().any(|task| {
+            task.spec.options.settings.peers > config.peers
+                || task.spec.options.settings.dht && !config.dht
+                || task.spec.options.settings.pex && !config.pex
+        }) {
+            return Err(invalid("restored BitTorrent options exceed startup policy"));
+        }
         self.bt.config = config;
         self.ensure_bt_resources()
     }
 
     pub fn bittorrent_handle(&self) -> Option<BtHandle> {
         self.bt.handle()
+    }
+
+    pub(super) fn attach_bt_download_rate(&self, rate: &RateArbiter, total: u64) {
+        let active = self.engine.scheduler().queue_snapshot(QueueClass::Active);
+        let bt = active.iter().any(|gid| self.bt.catalog.contains_key(gid));
+        let transfer = active.iter().any(|gid| !self.bt.catalog.contains_key(gid));
+        let desired =
+            ariax_bt::split_bandwidth((total != 0).then_some(total), bt, transfer).transfer;
+        let allocation = match (self.bt.bandwidth.transfer, desired) {
+            (Some(current), Some(next)) => Some(current.min(next)),
+            (current, next) => current.or(next),
+        };
+        // Attachment may lower the HTTP share immediately. Increasing it waits
+        // for the existing reduce-before-increase reconciliation with native BT.
+        rate.set_global_allocation(allocation);
     }
 
     pub(super) fn ensure_bt_resources(&mut self) -> Result<(), HttpControlError> {
@@ -2017,6 +2215,7 @@ impl HttpControlPlane {
         request: crate::rpc_budget::RpcRequestLease,
     ) -> Result<ControlReply, HttpControlError> {
         if self.pending_admission.is_some()
+            || self.admission_fenced()
             || self.bt.admission.is_some()
             || self.bt.initializing.is_some()
             || self.pending_configuration.is_some()
@@ -2088,7 +2287,7 @@ impl HttpControlPlane {
                 return Err(invalid("BitTorrent options cannot be persisted"));
             }
             collision(&prepared.spec, &http, &bt)?;
-            if initialize {
+            if initialize && !prepared.spec.record.desired_paused {
                 prepared.adapter = Some(BtAdapter::start(config, resources).map_err(bt_error)?);
             }
             Ok(prepared)
@@ -2272,6 +2471,7 @@ impl HttpControlPlane {
                 _ => return Err(bt_error(BtError::StaleCompletion)),
             };
             let dirty = resume.dirty;
+            let request = resume.request;
             let resume_data = retained_resume(
                 resume.resume_blob,
                 &self.bt.resources.as_ref().expect("BT resources").resident,
@@ -2291,11 +2491,9 @@ impl HttpControlPlane {
                 .map_err(bt_error)?;
             self.engine.runtime_handle().register_bt_task(task_id);
             self.bt.install(spec);
-            self.bt
-                .tasks
-                .get_mut(&task_id)
-                .expect("restored BT task")
-                .dirty = dirty;
+            let task = self.bt.tasks.get_mut(&task_id).expect("restored BT task");
+            task.dirty = dirty;
+            task.request = request;
             self.bt.publish(task_id);
             self.next_task_id = self.next_task_id.max(
                 task_id
@@ -2548,6 +2746,70 @@ pub(super) fn query_for_import(spec: Arc<Spec>) -> Arc<QueryTask> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attaching_transfer_arbiter_does_not_expand_an_existing_bt_allocation() {
+        let directory = super::super::tests::TestDirectory::new();
+        let mut plane = directory.control_plane();
+        plane.bt.bandwidth = ariax_bt::BandwidthAllocation {
+            bt: Some(100),
+            transfer: Some(0),
+        };
+        let rate =
+            RateArbiter::new(ariax_runtime::RateDirection::Download, Default::default()).unwrap();
+        plane.attach_global_download_rate(rate.clone()).unwrap();
+        let path = ariax_runtime::RatePath {
+            host: 1,
+            task: 1,
+            stream: 1,
+        };
+        assert!(
+            rate.try_acquire(path, NonZeroUsize::new(1).unwrap())
+                .unwrap()
+                .is_none()
+        );
+        while !plane
+            .bt
+            .require_bandwidth(100, 0, false, true, Some(&rate))
+            .unwrap()
+        {}
+        assert_eq!(plane.bt.bandwidth.bt, Some(0));
+        let granted = rate
+            .try_acquire(path, NonZeroUsize::new(200).unwrap())
+            .unwrap()
+            .unwrap();
+        assert!(granted.reserved_bytes() <= 100);
+        plane.shutdown().unwrap();
+    }
+
+    #[test]
+    fn startup_policy_rejects_incompatible_restored_task_permissions() {
+        let directory = super::super::tests::TestDirectory::new();
+        let mut plane = directory.control_plane();
+        plane.call("aria2.addTorrent", json!([
+            base64ct::Base64::encode_string(include_bytes!("../../../ariax-bt-libtorrent-sys/tests/fixtures/v1.torrent")), [], {"pause":true}
+        ])).unwrap();
+        plane.shutdown().unwrap();
+        let mut recovered = directory.control_plane();
+        let original = recovered.bt.config.clone();
+        for config in [
+            BtAdapterConfig {
+                dht: false,
+                ..original.clone()
+            },
+            BtAdapterConfig {
+                peers: 2,
+                ..original.clone()
+            },
+        ] {
+            assert!(recovered.configure_bittorrent(config).is_err());
+            assert_eq!(recovered.bt.config.dht, original.dht);
+            assert_eq!(recovered.bt.config.peers, original.peers);
+        }
+        assert!(recovered.bittorrent_handle().is_none());
+        recovered.configure_bittorrent(original).unwrap();
+        recovered.shutdown().unwrap();
+    }
 
     #[test]
     fn mapping_validation_ignores_progress_and_rechecks_changed_catalogs() {

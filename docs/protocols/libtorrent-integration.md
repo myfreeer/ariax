@@ -75,6 +75,11 @@ native layout before approval. Native build provenance covers every installed
 Boost header as well as libtorrent, OpenSSL and the patch. Target builds use
 separate source/build caches and serialize mutations within one target.
 
+Hybrid torrents retain their v1 file order and explicit padding after their
+real files and offsets are checked against the v2 tree. Pure v2 torrents use
+libtorrent's implicit alignment padding, including the last piece. A hybrid
+single-file torrent therefore does not acquire a synthetic trailing file.
+
 The checkpoint hook must complete after the native disk release barrier and
 must deliver success or failure through an owned tracked result. The upstream
 `save_resume_data()` alert and synchronous `get_resume_data()` alone do not
@@ -148,6 +153,20 @@ mapping for every `bt_live` entry.  Unknown or unavailable settings fail before
 they enter the adapter.  The configuration compatibility matrix labels these as
 design/BT behavior rather than pretending that aria2 has an identical live-update
 rule.
+
+A fully drained paused task accepts a validated `bt_restart_required` patch
+without restarting itself. The owner fences admission, rechecks collisions,
+and commits options and the replacement mapping/endpoints atomically. It keeps
+the torrent identity and protected root, retains lifecycle counters, and retires
+the old resume blob and checkpoint sequence. An explicit `unpause` starts the
+next generation and rechecks payload pieces. New output paths must be absent;
+existing files are reusable only at paths already owned by the task. An active
+task still receives `requires_explicit_bt_restart`, and startup settings remain
+immutable. The shared native session is never rebuilt for a task option patch.
+
+Paused-only catalogs and their option updates do not initialize libtorrent.
+Startup policy is applied before any recovered task can enter the adapter;
+restored task settings cannot exceed its discovery or peer permissions.
 
 The registry exports the following exact mappings for libtorrent 2.1.1. Global
 task-option updates change defaults for future admissions; they do not modify

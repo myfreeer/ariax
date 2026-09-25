@@ -345,9 +345,10 @@ fn parse_metadata(
             if real(&files) != real(&tree_files) {
                 return Err(BtError::IdentityMismatch);
             }
+        } else {
+            files = tree_files;
+            total = tree_total;
         }
-        files = tree_files;
-        total = tree_total;
     }
     if files.is_empty() || total == 0 {
         return Err(BtError::InvalidMetadata);
@@ -937,6 +938,8 @@ mod tests {
             );
             assert_eq!(metadata.files[0].components, ["payload.bin"]);
             assert_eq!(metadata.files[0].length, 5000);
+            assert_eq!(metadata.files.len(), if v2 && !v1 { 2 } else { 1 });
+            assert_eq!(metadata.total_length, if v2 && !v1 { 16384 } else { 5000 });
             for length in 0..bytes.len() {
                 assert!(parse_torrent(&bytes[..length], MetadataLimits::default()).is_err());
             }

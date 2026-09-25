@@ -182,6 +182,129 @@ fn bt_options_reject_invalid_selection_limits_and_unsupported_settings() {
 }
 
 #[test]
+fn paused_torrent_options_commit_without_native_start_and_reject_unsafe_replacements() {
+    let directory = TestDirectory::new();
+    let mut plane = directory.control_plane();
+    let gid = add_torrent(
+        &mut plane,
+        V1,
+        json!({"pause":true,"enable-dht":false,"enable-peer-exchange":false}),
+    );
+    assert!(plane.bittorrent_handle().is_none());
+    let old = plane
+        .call("aria2.getFiles", json!([gid.to_string()]))
+        .unwrap();
+    let identity = plane.bt.catalog[&gid].spec.record.binding.identity.clone();
+    for invalid in [
+        json!({"out":"../escape"}),
+        json!({"select-file":"2"}),
+        json!({"bt-tracker":"https://tracker.test/announce?token=secret"}),
+    ] {
+        assert!(
+            plane
+                .call("aria2.changeOption", json!([gid.to_string(), invalid]))
+                .is_err()
+        );
+        assert_eq!(
+            plane
+                .call("aria2.getFiles", json!([gid.to_string()]))
+                .unwrap(),
+            old
+        );
+    }
+    std::fs::write(directory.output.join("occupied.bin"), b"unrelated data").unwrap();
+    assert!(
+        plane
+            .call(
+                "aria2.changeOption",
+                json!([gid.to_string(), {"out":"occupied.bin"}])
+            )
+            .is_err()
+    );
+    let ControlReply::Deferred(reply) = plane
+        .begin_call_admitted(
+            "aria2.changeOption",
+            json!([gid.to_string(), {
+                "out":"renamed.bin", "bt-metadata-only":true, "bt-resume-timeout":15,
+                "bt-tracker":"https://tracker.example.test/announce"
+            }]),
+            None,
+        )
+        .unwrap()
+    else {
+        panic!("owned option continuation");
+    };
+    assert!(matches!(
+        plane.begin_call_admitted("aria2.unpause", json!([gid.to_string()]), None),
+        Err(HttpControlError::Busy)
+    ));
+    assert!(matches!(
+        plane.begin_call_admitted(
+            "aria2.addUri",
+            json!([["https://example.test/renamed.bin"]]),
+            None
+        ),
+        Err(HttpControlError::Busy)
+    ));
+    drop(reply);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while plane.admission_fenced() {
+        plane.poll_once().unwrap();
+        assert!(
+            Instant::now() < deadline,
+            "disconnected option owner did not settle"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(plane.bittorrent_handle().is_none());
+    assert_eq!(
+        plane.bt.catalog[&gid].spec.record.binding.identity,
+        identity
+    );
+    assert_eq!(
+        plane.bt.catalog[&gid].spec.record.binding.files[0].path,
+        "renamed.bin"
+    );
+    assert_eq!(
+        plane
+            .call("aria2.tellStatus", json!([gid.to_string()]))
+            .unwrap()["status"],
+        "paused"
+    );
+    let options = plane
+        .call("aria2.getOption", json!([gid.to_string()]))
+        .unwrap();
+    assert_eq!(options["bt-resume-timeout"], "15");
+    plane.shutdown().unwrap();
+    let mut recovered = directory.control_plane();
+    assert!(recovered.bittorrent_handle().is_none());
+    assert_eq!(
+        recovered
+            .call("aria2.getOption", json!([gid.to_string()]))
+            .unwrap(),
+        options
+    );
+    assert_eq!(
+        recovered.bt.catalog[&gid].spec.record.binding.files[0].path,
+        "renamed.bin"
+    );
+    recovered
+        .call("aria2.remove", json!([gid.to_string()]))
+        .unwrap();
+    assert_eq!(
+        recovered
+            .call("aria2.tellStatus", json!([gid.to_string()]))
+            .unwrap()["status"],
+        "removed"
+    );
+    assert_eq!(
+        std::fs::read(directory.output.join("occupied.bin")).unwrap(),
+        b"unrelated data"
+    );
+    recovered.shutdown().unwrap();
+}
+
+#[test]
 fn mixed_json_v3_import_validates_identity_mapping_and_atomic_rejection() {
     let original = TestDirectory::new();
     let destination = TestDirectory::new();

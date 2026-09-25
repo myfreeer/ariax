@@ -613,13 +613,21 @@ impl HttpControlPlane {
         &mut self,
         rate: RateArbiter,
     ) -> Result<(), HttpControlError> {
-        if let Some(limit) = self.global_options.get("max-overall-download-limit") {
-            let bytes = limit
-                .parse::<u64>()
-                .map_err(|_| HttpControlError::InvalidConfig)?;
-            rate.set_global_limit(RateLimit::per_second(bytes))
-                .map_err(|_| HttpControlError::InvalidConfig)?;
-        }
+        let bytes = self
+            .global_options
+            .get("max-overall-download-limit")
+            .map(|limit| {
+                limit
+                    .parse::<u64>()
+                    .map_err(|_| HttpControlError::InvalidConfig)
+            })
+            .transpose()?
+            .unwrap_or(0);
+        #[cfg(feature = "bt")]
+        self.attach_bt_download_rate(&rate, bytes);
+        #[cfg(not(feature = "bt"))]
+        rate.set_global_limit(RateLimit::per_second(bytes))
+            .map_err(|_| HttpControlError::InvalidConfig)?;
         self.global_download_rate = Some(rate);
         Ok(())
     }
@@ -1188,6 +1196,10 @@ impl HttpControlPlane {
             return Ok(());
         }
         self.poll_configuration();
+        #[cfg(feature = "bt")]
+        if self.poll_bt_paused_options()? {
+            return Ok(());
+        }
         #[cfg(feature = "bt")]
         if self.poll_bt_admission()? {
             return Ok(());
@@ -9156,7 +9168,7 @@ mod tests {
                 .call_with_context(method, json!([{"invalidArgument":true}]), context.clone())
                 .await
                 .expect_err("bad arguments must reject");
-            if matches!(*method, "aria2.addTorrent" | "aria2.getPeers")
+            if (matches!(*method, "aria2.addTorrent" | "aria2.getPeers") && !cfg!(feature = "bt"))
                 || (*method == "aria2.addMetalink" && !cfg!(feature = "metalink"))
             {
                 assert_eq!(error.data.unwrap()["code"], "ProtocolFeatureUnavailable");
@@ -9176,6 +9188,20 @@ mod tests {
                     .await
                     .unwrap_or_else(|error| panic!("{}: {error}", $method))
             }};
+        }
+        #[cfg(feature = "bt")]
+        {
+            use base64ct::Encoding as _;
+            let torrent = call!(
+                "aria2.addTorrent",
+                json!([
+                    base64ct::Base64::encode_string(include_bytes!("../../ariax-bt-libtorrent-sys/tests/fixtures/v1.torrent")),
+                    [], {"pause":true,"enable-dht":false,"enable-peer-exchange":false}
+                ])
+            );
+            assert_eq!(call!("aria2.getPeers", json!([torrent])), json!([]));
+            call!("aria2.remove", json!([torrent]));
+            call!("aria2.removeDownloadResult", json!([torrent]));
         }
         #[cfg(feature = "metalink")]
         {

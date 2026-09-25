@@ -2398,7 +2398,11 @@ mod tests {
                 .await,
             )
             .expect("feature rejection");
-            assert_eq!(feature["error"]["data"]["feature"], "bittorrent");
+            if cfg!(feature = "bt") {
+                assert_eq!(feature["result"]["gid"], "0000000000000001");
+            } else {
+                assert_eq!(feature["error"]["data"]["feature"], "bittorrent");
+            }
         }
         let strict = RpcDispatcher::new(Arc::new(CompatibilityFixture), RpcAuthPolicy::default())
             .with_compatibility(RpcCompatibility::Strict);

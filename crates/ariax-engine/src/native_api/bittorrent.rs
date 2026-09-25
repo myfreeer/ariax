@@ -618,16 +618,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(engine.options(gid).await.unwrap()["bt-max-peers"], "32");
-        assert!(
-            engine
-                .change_bittorrent_options(
-                    gid,
-                    BitTorrentOptions::default().metadata(true, false).unwrap()
-                )
-                .await
-                .is_err()
+        engine
+            .change_bittorrent_options(
+                gid,
+                BitTorrentOptions::default().metadata(true, false).unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            engine.options(gid).await.unwrap()["bt-metadata-only"],
+            "true"
         );
-        let response = engine
+        let response_bytes = engine
             .rpc_json(
                 format!(
                     r#"{{"jsonrpc":"2.0","id":1,"method":"aria2.tellStatus","params":["{gid}"]}}"#
@@ -637,7 +639,12 @@ mod tests {
             )
             .await
             .unwrap();
-        let response: Value = serde_json::from_slice(&response).unwrap();
+        let response: Value = serde_json::from_slice(&response_bytes).unwrap();
+        assert!(matches!(
+            engine.status(gid).await,
+            Err(NativeApiError::Control(HttpControlError::Busy))
+        ));
+        drop(response_bytes);
         assert_eq!(
             response["result"]["infoHash"],
             engine

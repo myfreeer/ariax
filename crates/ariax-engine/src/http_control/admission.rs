@@ -199,6 +199,7 @@ impl HttpControlPlane {
             return Err(HttpControlError::Busy);
         }
         if self.pending_admission.is_some()
+            || self.admission_fenced()
             || self.pending_configuration.is_some()
             || !self.engine_idle()
             || self.pending_mutation.is_some()
@@ -250,6 +251,10 @@ impl HttpControlPlane {
     }
 
     pub(super) fn admission_fenced(&self) -> bool {
+        #[cfg(feature = "bt")]
+        if self.bt.paused_options.is_some() {
+            return true;
+        }
         self.pending_admission
             .as_ref()
             .is_some_and(PendingAdmission::fenced)

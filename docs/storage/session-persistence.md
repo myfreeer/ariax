@@ -533,6 +533,15 @@ Subsequent metadata commits cannot change that binding. Checkpoint tokens includ
 both generation and monotonically increasing request number. A stale completion
 cannot clear a dirty flag or replace a newer safe blob.
 
+An explicit option patch on a drained paused BT task is a separate transaction
+from metadata binding. It compares the previous binding, current option hash,
+generation and paused state before replacing options and mapping/endpoints.
+Identity and protected-root bindings cannot change. Restart-required patches
+clear the resume blob and retire every checkpoint token from that generation;
+the next explicit resume opens a new sequence. Queue state and lifecycle
+counters stay intact, and a failed transaction leaves the old configuration and
+resume data together. Ordinary metadata callbacks cannot use this path.
+
 Resume checkpoints use one tracked protocol for periodic saves (60 seconds by
 default), pause, remove and shutdown. The native disk release barrier completes
 before resume data is serialized; its result is independent of the lossy alert

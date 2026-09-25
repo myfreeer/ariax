@@ -100,6 +100,7 @@ pub enum SessionCommand {
         generation: u64,
         binding: Arc<SessionBtBinding>,
     },
+    ReplacePausedBtOptions(Arc<crate::SessionBtOptionPatch>),
     BeginBtGeneration {
         gid: Gid,
         expected: u64,
@@ -895,6 +896,10 @@ fn execute_command(
             generation,
         } => {
             store.begin_bt_generation(gid, expected, generation)?;
+            Ok(SessionCommandResult::Unit)
+        }
+        SessionCommand::ReplacePausedBtOptions(patch) => {
+            store.replace_paused_bt_options(&patch, policy)?;
             Ok(SessionCommandResult::Unit)
         }
         SessionCommand::CheckpointBt(checkpoint) => {
