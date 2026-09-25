@@ -6388,11 +6388,19 @@ mod tests {
         let directory = TestDirectory::new();
         let mut plane = directory.control_plane_with_capacity(1000);
         let mut gids = Vec::with_capacity(1000);
-        for _ in 0..10 {
+        for batch in 0..10 {
             gids.extend(
                 plane
                     .call("ariax.importSession", json!([import_document(100)]))
-                    .expect("bounded import batch")
+                    .unwrap_or_else(|error| panic!(
+                        "bounded import batch {batch}: {error:?}; tasks={}, scheduler_bytes={}, draft_bytes={}, request_bytes={}, client_bytes={}, process={:?}",
+                        plane.engine.scheduler().len(),
+                        plane.engine.scheduler().estimated_clone_bytes(),
+                        plane.engine.snapshot_reader().load().estimated_draft_bytes(),
+                        plane.direct_client.request_bytes(),
+                        plane.direct_client.bytes(),
+                        plane.rpc_budgets.snapshot(),
+                    ))
                     .as_array()
                     .expect("gids")
                     .iter()
