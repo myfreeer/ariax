@@ -541,6 +541,8 @@ clear the resume blob and retire every checkpoint token from that generation;
 the next explicit resume opens a new sequence. Queue state and lifecycle
 counters stay intact, and a failed transaction leaves the old configuration and
 resume data together. Ordinary metadata callbacks cannot use this path.
+Regression coverage distinguishes an option-policy rejection from an injected
+SQLite failure after the replacement writes, and verifies rollback of both.
 
 Resume checkpoints use one tracked protocol for periodic saves (60 seconds by
 default), pause, remove and shutdown. The native disk release barrier completes

@@ -812,6 +812,7 @@ mod tests {
     }
     #[test]
     fn paused_option_replacement_is_atomic_and_retires_old_checkpoint_tokens() {
+        let option_policy = |name: &str| name == "out";
         let directory = Directory::new();
         let mut store = store(&directory);
         let mut task = record();
@@ -841,8 +842,15 @@ mod tests {
             expected_options: options.snapshot_hash(),
             options: SanitizedOptionMap::new([("out".into(), "renamed.bin".into())]).unwrap(),
         };
+        assert!(matches!(
+            store.replace_paused_bt_options(&patch, &policy),
+            Err(SessionStoreError::ForbiddenPersistedOption)
+        ));
         store.connection.execute_batch("CREATE TEMP TRIGGER reject_restart BEFORE UPDATE ON bt_resume BEGIN SELECT RAISE(ABORT, 'injected restart failure'); END;").unwrap();
-        assert!(store.replace_paused_bt_options(&patch, &policy).is_err());
+        assert!(matches!(
+            store.replace_paused_bt_options(&patch, &option_policy),
+            Err(SessionStoreError::Sqlite(_))
+        ));
         assert_eq!(store.bt_tasks().unwrap(), [original.clone()]);
         assert_eq!(
             store
@@ -857,11 +865,19 @@ mod tests {
             .unwrap();
         let mut stale = patch.clone();
         stale.generation += 1;
-        assert!(store.replace_paused_bt_options(&stale, &policy).is_err());
+        assert!(matches!(
+            store.replace_paused_bt_options(&stale, &option_policy),
+            Err(SessionStoreError::InvalidRecord("bt.option_changed"))
+        ));
         stale = patch.clone();
         stale.expected_options = JournalHash::new([99; 32]).unwrap();
-        assert!(store.replace_paused_bt_options(&stale, &policy).is_err());
-        store.replace_paused_bt_options(&patch, &policy).unwrap();
+        assert!(matches!(
+            store.replace_paused_bt_options(&stale, &option_policy),
+            Err(SessionStoreError::InvalidRecord("bt.option_changed"))
+        ));
+        store
+            .replace_paused_bt_options(&patch, &option_policy)
+            .unwrap();
         let changed = store.bt_tasks().unwrap().remove(0);
         assert_eq!(changed.binding.files[0].path, "renamed.bin");
         assert_eq!(
@@ -869,7 +885,10 @@ mod tests {
             (7, 3, 2)
         );
         assert_eq!(changed.queue_state, SessionQueueState::Paused);
-        assert!(store.replace_paused_bt_options(&patch, &policy).is_err());
+        assert!(matches!(
+            store.replace_paused_bt_options(&patch, &option_policy),
+            Err(SessionStoreError::InvalidRecord("bt.option_changed"))
+        ));
         let retired = store.bt_resume(task.gid, 64).unwrap();
         assert!(retired.dirty && retired.resume_blob.is_empty());
         assert_eq!(retired.request, u64::MAX);
