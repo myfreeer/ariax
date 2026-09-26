@@ -1,8 +1,8 @@
 //! A single owned REST/RETR stream per file, with bounded control metadata.
 use crate::{
-    HttpCancellation, HttpIngressBudgets, HttpIngressPermit, HttpPolicyClient, HttpSourceSpec,
-    HttpTaskOptions, HttpTransportCapacityPermit, ProtocolFailure, ProtocolValidator,
-    TransferProtocol,
+    HttpCancellation, HttpIngressBudgets, HttpIngressPermit, HttpPolicyClient,
+    HttpTransportCapacityPermit, ProtocolFailure, ProtocolValidator, TransferProtocol,
+    TransferSourceSpec, TransferTaskOptions,
 };
 use ariax_storage::JournalHash;
 use std::{
@@ -36,8 +36,8 @@ impl FtpSession {
     #[allow(clippy::too_many_arguments)]
     pub async fn connect(
         client: &HttpPolicyClient,
-        source: &HttpSourceSpec,
-        options: &HttpTaskOptions,
+        source: &TransferSourceSpec,
+        options: &TransferTaskOptions,
         metadata: &HttpIngressBudgets,
         tls: Option<Arc<rustls::ClientConfig>>,
         credentials: Option<crate::TransferCredentials>,

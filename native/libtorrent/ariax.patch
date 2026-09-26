@@ -1,19 +1,41 @@
+--- a/include/libtorrent/aux_/parse_url.hpp
++++ b/include/libtorrent/aux_/parse_url.hpp
+@@ -51,6 +51,9 @@
+ 	// false if either URL fails to parse. Used to decide whether credentials
+ 	// may be forwarded across an HTTP redirect.
+ 	TORRENT_EXTRA_EXPORT bool same_origin(std::string const& a, std::string const& b);
++
++	// Ariax: redirects cannot introduce credentials, downgrade TLS or grow URLs.
++	TORRENT_EXTRA_EXPORT bool ariax_redirect_allowed(std::string const& source, std::string const& target);
+ }
+ 
+ #endif
 --- a/include/libtorrent/aux_/torrent.hpp
 +++ b/include/libtorrent/aux_/torrent.hpp
-@@ -437,6 +437,12 @@
+@@ -137,6 +137,9 @@
+ 			, std::string const& auth_ = std::string()
+ 			, web_seed_entry::headers_t const& extra_headers_ = web_seed_entry::headers_t());
+ 
++		// Ariax bounds the lifetime of each redirected web-seed chain.
++		int ariax_redirects = 0;
++
+ 		// if this is > now, we can't reconnect yet
+ 		time_point32 retry = aux::time_now32();
+ 
+@@ -436,6 +439,12 @@
+ 		// this is called when the torrent has metadata.
  		// it will initialize the storage and the piece-picker
  		void init();
- 
++
 +		// Ariax hooks run exclusively on the session thread. No alert is authoritative.
 +		bool ariax_metadata_held() const { return m_ariax_metadata_hold && valid_metadata(); }
 +		bool ariax_approve_metadata(std::vector<std::string> const& paths
 +			, std::vector<download_priority_t> const& priorities);
 +		void ariax_checkpoint(std::function<void(error_code, add_torrent_params)> completion);
-+
+ 
  		void load_merkle_trees(aux::vector<std::vector<sha256_hash>, file_index_t> t
  			, aux::vector<bitfield, file_index_t> mask
- 			, aux::vector<bitfield, file_index_t> verified);
-@@ -1891,6 +1897,8 @@
+@@ -1891,6 +1900,8 @@
  		// the torrent error
  		std::uint32_t m_torrent_initialized:1;
  
@@ -62,6 +84,97 @@
  		void save_resume_data(resume_data_flags_t flags = {}) const;
  		add_torrent_params get_resume_data(resume_data_flags_t flags = {}) const;
  
+--- a/src/http_connection.cpp
++++ b/src/http_connection.cpp
+@@ -761,6 +761,11 @@
+ 			m_sock->close(ec);
+ 
+ 			std::string url = aux::resolve_redirect_location(m_url, location);
++			if (!ariax_redirect_allowed(m_url, url))
++			{
++				callback(error_code(errors::ssrf_mitigation));
++				return;
++			}
+ 
+ 			// Don't forward Authorization credentials to a different
+ 			// origin. The redirect target may be a third party server
+--- a/src/kademlia/dht_tracker.cpp
++++ b/src/kademlia/dht_tracker.cpp
+@@ -670,6 +670,17 @@
+ 	{
+ 		TORRENT_ASSERT(m_nodes.find(s) != m_nodes.end());
+ 
++		// Ariax: learned and bootstrap destinations need the same filter as input.
++		if (m_settings.get_bool(settings_pack::apply_filter_to_dht))
++		{
++			ip_filter const* filter = m_log->get_dht_ip_filter();
++			if (filter && (filter->access(addr.address()) & ip_filter::blocked))
++			{
++				m_counters.inc_stats_counter(counters::dht_messages_out_dropped);
++				return false;
++			}
++		}
++
+ 		static_assert(lt::version_minor < 16, "version number not supported by DHT");
+ 		static_assert(lt::version_tiny < 16, "version number not supported by DHT");
+ 		static char const ver[] = {'L', 'T'
+--- a/src/parse_url.cpp
++++ b/src/parse_url.cpp
+@@ -269,4 +269,54 @@
+ 		return !ec;
+ 	}
+ 
++	bool ariax_redirect_allowed(std::string const& source, std::string const& target)
++	{
++		if (target.size() > 4096 || target.find('#') != std::string::npos
++			|| std::any_of(target.begin(), target.end(), [](unsigned char c)
++				{ return c <= 0x20 || c == 0x7f || c == '\\'; })) return false;
++		error_code ec;
++		auto const [scheme, auth, host, port, path] = parse_url_components(target, ec);
++		if (ec || !auth.empty() || host.empty() || port == 0 || port > 65535
++			|| (scheme != "http" && scheme != "https")
++			|| (source.compare(0, 8, "https://") == 0 && scheme != "https")) return false;
++		auto const question = target.find('?');
++		if (question == std::string::npos) return true;
++		auto const original_question = source.find('?');
++		std::string const original = original_question == std::string::npos
++			? std::string() : "&" + source.substr(original_question + 1) + "&";
++		auto hex = [](char c) -> int {
++			if (c >= '0' && c <= '9') return c - '0';
++			if (c >= 'a' && c <= 'f') return c - 'a' + 10;
++			if (c >= 'A' && c <= 'F') return c - 'A' + 10;
++			return -1;
++		};
++		for (auto start = question + 1; start < target.size(); )
++		{
++			auto const end = target.find('&', start);
++			auto const field = target.substr(start, end - start);
++			auto const equals = field.find('=');
++			auto const encoded = field.substr(0, equals);
++			std::string key;
++			for (std::size_t i = 0; i < encoded.size(); ++i)
++			{
++				unsigned char c = static_cast<unsigned char>(encoded[i]);
++				if (c == '%')
++				{
++					if (i + 2 >= encoded.size() || hex(encoded[i + 1]) < 0 || hex(encoded[i + 2]) < 0) return false;
++					c = static_cast<unsigned char>(hex(encoded[i + 1]) * 16 + hex(encoded[i + 2]));
++					i += 2;
++				}
++				if (c >= 'A' && c <= 'Z') c = static_cast<unsigned char>(c - 'A' + 'a');
++				key.push_back(static_cast<char>(c));
++			}
++			bool const protocol_key = key == "key" && original.find("&" + field + "&") != std::string::npos;
++			if (!protocol_key && (key == "token" || key == "key" || key == "passkey"
++				|| key == "auth" || key == "password" || key == "secret"
++				|| key == "signature" || key == "access_token")) return false;
++			if (end == std::string::npos) break;
++			start = end + 1;
++		}
++		return true;
++	}
++
+ }
 --- a/src/settings_pack.cpp
 +++ b/src/settings_pack.cpp
 @@ -390,7 +390,9 @@
@@ -254,3 +367,56 @@
  	void torrent_handle::save_resume_data(resume_data_flags_t f) const
  	{
  		async_call(&aux::torrent::save_resume_data, f);
+--- a/src/web_peer_connection.cpp
++++ b/src/web_peer_connection.cpp
+@@ -661,6 +661,14 @@
+ 		return;
+ 	}
+ 
++	location = aux::resolve_redirect_location(m_url, location);
++	if (m_web->ariax_redirects >= 20 || !ariax_redirect_allowed(m_url, location))
++	{
++		disable(errors::ssrf_mitigation);
++		return;
++	}
++	int const redirects = m_web->ariax_redirects + 1;
++
+ 	bool const single_file_request = !m_path.empty()
+ 		&& m_path[m_path.size() - 1] != '/';
+ 
+@@ -681,8 +689,6 @@
+ 			return;
+ 		}
+ 		file_index_t const file_index = m_file_requests.front().file_index;
+-
+-		location = aux::resolve_redirect_location(m_url, location);
+ 
+ 		// work-around for buggy HTTP servers, that fail to encode the redirect URL
+ 		location = maybe_url_encode(location);
+@@ -720,6 +726,7 @@
+ 		// If we try to load resume with such "web_seed_t" then "web_peer_connection" will send
+ 		// request with wrong path "http://example2.com/file1" (cause "redirects" map is not serialized in resume)
+ 		web_seed_t* web = t->add_web_seed(redirect_base, auth, m_extra_headers, web_seed_flags);
++		web->ariax_redirects = std::max(web->ariax_redirects, redirects);
+ 		web->have_files.resize(t->torrent_file().num_files(), false);
+ 
+ 		// the new web seed we're adding only has this file for now
+@@ -759,8 +766,6 @@
+ 	}
+ 	else
+ 	{
+-		location = aux::resolve_redirect_location(m_url, location);
+-
+ 		// work-around for buggy HTTP servers, that fail to encode the redirect URL
+ 		location = maybe_url_encode(location);
+ #ifndef TORRENT_DISABLE_LOGGING
+@@ -772,7 +777,8 @@
+ 		// that any user-supplied m_extra_headers are still forwarded -- see the
+ 		// warning on web_seed_entry::extra_headers.
+ 		std::string const auth = same_origin(m_url, location) ? m_external_auth : std::string();
+-		t->add_web_seed(location, auth, m_extra_headers, web_seed_flags);
++		web_seed_t* web = t->add_web_seed(location, auth, m_extra_headers, web_seed_flags);
++		web->ariax_redirects = std::max(web->ariax_redirects, redirects);
+ 
+ 		// this web seed doesn't have any files. Don't try to request from it
+ 		// again this session

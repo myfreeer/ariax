@@ -3,6 +3,7 @@
 use super::*;
 use ariax_core::TaskState;
 use ariax_runtime::ConnectionCondition;
+use std::borrow::Cow;
 use std::fmt::Write as _;
 use std::sync::RwLock;
 use tokio::sync::Semaphore;
@@ -182,7 +183,7 @@ pub(super) struct ControlQueryRoot {
     #[cfg(feature = "bt")]
     bt_tasks: Arc<BTreeMap<Gid, Arc<super::bittorrent::QueryTask>>>,
     status: Arc<ariax_runtime::StatusSnapshotRoot>,
-    tasks: Arc<crate::HttpTaskCatalog>,
+    tasks: Arc<crate::TransferTaskCatalog>,
     stats: Arc<BTreeMap<TaskId, crate::HttpTransferStats>>,
     slow_observations: Arc<BTreeMap<Gid, crate::slow_slots::SlowObservation>>,
     _publication: Arc<crate::rpc_budget::RpcByteCharge>,
@@ -336,15 +337,7 @@ impl ControlQueryRoot {
         keys: Option<&[String]>,
     ) -> Result<Value, HttpControlError> {
         let identity = &bt.spec.record.binding.identity;
-        let total: u64 = bt
-            .spec
-            .record
-            .binding
-            .files
-            .iter()
-            .filter(|file| file.selected && !file.padding)
-            .map(|file| file.length)
-            .sum();
+        let total = bt.spec.total_length();
         let snapshot = bt.snapshot.as_deref();
         value["totalLength"] = json!(total.to_string());
         value["completedLength"] = json!(
@@ -427,7 +420,7 @@ impl ControlQueryRoot {
             .saturating_add(64 * 1024)
     }
 
-    pub(super) fn task_spec(&self, gid: Gid) -> Option<Arc<HttpTaskSpec>> {
+    pub(super) fn task_spec(&self, gid: Gid) -> Option<Arc<TransferTaskSpec>> {
         let applied = self.status.task(gid)?;
         self.tasks
             .get(applied.task_id)
@@ -636,22 +629,22 @@ impl ControlQueryRoot {
 
     pub(super) fn get_option(&self, params: Value) -> Result<Value, HttpControlError> {
         let gid = self.resolve_gid_param(&params)?;
-        #[cfg(feature = "bt")]
-        if let Some(bt) = self.bt_task(gid) {
-            return crate::rpc_result::to_value(
-                &OptionMap(&bt.spec.options.persisted),
-                RESULT_VALUE_BYTES,
-            )
-            .map_err(Into::into);
-        }
-        let spec = self.task_spec(gid).ok_or(HttpControlError::NotFound)?;
-        let options = spec
-            .persistence_options()
-            .map_err(HttpControlError::TaskSpec)?;
+        let options = self.task_options(gid)?;
         Ok(crate::rpc_result::to_value(
             &OptionMap(&options),
             RESULT_VALUE_BYTES,
         )?)
+    }
+
+    fn task_options(&self, gid: Gid) -> Result<Cow<'_, SanitizedOptionMap>, HttpControlError> {
+        #[cfg(feature = "bt")]
+        if let Some(bt) = self.bt_task(gid) {
+            return Ok(Cow::Borrowed(&bt.spec.options.persisted));
+        }
+        let spec = self.task_spec(gid).ok_or(HttpControlError::NotFound)?;
+        spec.persistence_options()
+            .map(Cow::Owned)
+            .map_err(HttpControlError::TaskSpec)
     }
 
     pub(super) fn get_global_option(&self, params: Value) -> Result<Value, HttpControlError> {
@@ -856,6 +849,10 @@ impl ControlQueryRoot {
         let mut waiting = 0_u64;
         let mut stopped = 0_u64;
         let mut download_speed = 0_u64;
+        #[cfg(feature = "bt")]
+        let mut upload_speed = 0_u64;
+        #[cfg(not(feature = "bt"))]
+        let upload_speed = 0_u64;
         let mut completed = 0_u64;
         for applied in root.tasks().values() {
             match applied.snapshot.wire_status().ok() {
@@ -865,6 +862,17 @@ impl ControlQueryRoot {
                     stopped += 1
                 }
                 None => {}
+            }
+            #[cfg(feature = "bt")]
+            if let Some(bt) = self.bt_task(applied.snapshot.gid) {
+                if let Some(snapshot) = &bt.snapshot {
+                    download_speed =
+                        download_speed.saturating_add(u64::from(snapshot.download_rate));
+                    upload_speed = upload_speed.saturating_add(u64::from(snapshot.upload_rate));
+                    completed =
+                        completed.saturating_add(snapshot.done_bytes.min(bt.spec.total_length()));
+                }
+                continue;
             }
             let stats = self
                 .stats
@@ -877,7 +885,7 @@ impl ControlQueryRoot {
         }
         Ok(json!({
             "downloadSpeed": download_speed.to_string(),
-            "uploadSpeed": "0",
+            "uploadSpeed": upload_speed.to_string(),
             "numActive": active.to_string(),
             "numWaiting": waiting.to_string(),
             "numStopped": stopped.to_string(),
@@ -906,16 +914,14 @@ impl ControlQueryRoot {
                     .ok_or(HttpControlError::InvalidParams("dump format must be text"))
             })
             .transpose()?
-            .unwrap_or("legacy");
-        if !matches!(format, "legacy" | "flat" | "json" | "toml") {
+            .unwrap_or("json");
+        if !matches!(format, "flat" | "json" | "toml") {
             return Err(HttpControlError::InvalidParams("unknown dump format"));
         }
         if mode == "url-rules" {
             return match format {
-                "json" | "legacy" => {
-                    crate::rpc_result::to_value(self.url_rules.as_ref(), RESULT_VALUE_BYTES)
-                        .map_err(Into::into)
-                }
+                "json" => crate::rpc_result::to_value(self.url_rules.as_ref(), RESULT_VALUE_BYTES)
+                    .map_err(Into::into),
                 "toml" => self
                     .url_rules
                     .to_toml()
@@ -935,23 +941,13 @@ impl ControlQueryRoot {
                         HttpControlError::InvalidParams("task-effective dump requires a GID"),
                     )?;
                     let gid = self.resolve_gid_text(gid)?;
-                    let spec = self.task_spec(gid).ok_or(HttpControlError::NotFound)?;
-                    spec.persistence_options()
-                        .map_err(HttpControlError::TaskSpec)?
+                    self.task_options(gid)?
                         .entries()
                         .map(|(name, value)| (name.to_owned(), value.to_owned()))
                         .collect()
                 }
                 _ => return Err(HttpControlError::InvalidParams("unknown dump mode")),
             };
-        if format == "legacy" {
-            return string_map_value(
-                options
-                    .iter()
-                    .map(|(key, value)| (key.as_str(), value.as_str())),
-            )
-            .map_err(Into::into);
-        }
         let sources = options
             .keys()
             .map(|key| {

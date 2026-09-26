@@ -84,6 +84,9 @@ jobs:
           - check: feature-compat
             os: ubuntu-24.04
             toolchain: "1.97.1"
+          - check: bt-safety
+            os: ubuntu-24.04
+            toolchain: "1.97.1"
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:

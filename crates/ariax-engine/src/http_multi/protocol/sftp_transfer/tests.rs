@@ -1,6 +1,6 @@
 use super::super::tests::{Directory, server as http_server};
 use super::*;
-use crate::{HttpPolicyClientConfig, HttpTaskOptions};
+use crate::{HttpPolicyClientConfig, TransferTaskOptions};
 use russh::{
     Channel, ChannelId,
     server::{Auth, Msg, Session},
@@ -252,7 +252,7 @@ async fn sftp_trust_precedes_authentication_and_bounded_reads_share_http_ranges(
         let directory = Directory::new();
         let (uri, pin, auth, reads, server) = server(scenario).await;
         let (http, http_server) = http_server(false).await;
-        let mut options = HttpTaskOptions::default();
+        let mut options = TransferTaskOptions::default();
         options.transfer.sftp_known_hosts = Some(known_hosts.0.clone());
         options.transfer.sftp_max_read_size = 2;
         options.transfer.sftp_max_packet_size = 1024;
@@ -290,7 +290,7 @@ async fn sftp_trust_precedes_authentication_and_bounded_reads_share_http_ranges(
             )
             .unwrap(),
         );
-        let spec = HttpTaskSpec::new(
+        let spec = TransferTaskSpec::new(
             TaskId::new(1).unwrap(),
             Gid::new(1).unwrap(),
             uris,

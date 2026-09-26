@@ -10,8 +10,8 @@ mod tests;
 impl HttpMultiRangeWorker {
     pub(super) async fn connect_sftp_with_retry(
         &self,
-        task: &Arc<HttpTaskSpec>,
-        source: &crate::HttpSourceSpec,
+        task: &Arc<TransferTaskSpec>,
+        source: &crate::TransferSourceSpec,
         generation: Generation,
         cancellation: &HttpCancellation,
         stats: &HttpTransferStats,

@@ -40,13 +40,13 @@ use crate::rpc_result::{
 };
 use crate::{
     HttpRetryAfterPolicy, HttpRetryBackoff, HttpRetryPolicy, HttpRetryProfile, HttpRetryStatusSet,
-    HttpRetryTriggerSet, HttpRpcBackend, HttpRpcBackendError, HttpTaskCatalogError,
-    HttpTaskOptions, HttpTaskSpec, HttpTaskSpecError, HttpTaskWorker, HttpTransferStatsSnapshot,
-    HttpWorkerSupervisor, HttpWorkerSupervisorConfig, HttpWorkerSupervisorShutdown,
-    MAX_HTTP_ENDGAME_MAX_DUPLICATES, PersistenceEffectPlan, PersistencePlanStep,
-    ProcessDrainOutcome, RpcEvent, RpcEventBroker, RpcEventClass, RpcEventError, RpcEventKey,
-    RpcEventLimits, RpcEventSubscriber, SharedHttpTaskCatalog, SharedHttpTransferStats,
-    derive_http_journal_id, http_journal_directory,
+    HttpRetryTriggerSet, HttpRpcBackend, HttpRpcBackendError, HttpTaskWorker,
+    HttpTransferStatsSnapshot, HttpWorkerSupervisor, HttpWorkerSupervisorConfig,
+    HttpWorkerSupervisorShutdown, MAX_HTTP_ENDGAME_MAX_DUPLICATES, PersistenceEffectPlan,
+    PersistencePlanStep, ProcessDrainOutcome, RpcEvent, RpcEventBroker, RpcEventClass,
+    RpcEventError, RpcEventKey, RpcEventLimits, RpcEventSubscriber, SharedHttpTransferStats,
+    SharedTransferTaskCatalog, TransferTaskCatalogError, TransferTaskOptions, TransferTaskSpec,
+    TransferTaskSpecError, derive_http_journal_id, http_journal_directory,
 };
 use ariax_config::{
     CompatStatus, FlatConfigLimits, OptionValue, RuntimeUpdate, Scope, SecurityClass,
@@ -136,8 +136,8 @@ pub enum HttpControlError {
     InvalidConfig,
     InvalidParams(&'static str),
     OptionPatchRejected(Vec<OptionPatchRejection>),
-    TaskSpec(HttpTaskSpecError),
-    Catalog(HttpTaskCatalogError),
+    TaskSpec(TransferTaskSpecError),
+    Catalog(TransferTaskCatalogError),
     Persistence(String),
     Scheduler(String),
     Journal(String),
@@ -220,19 +220,19 @@ enum MutationPublication {
         response: Value,
         remove_task: Option<TaskId>,
         readmit: bool,
-        replacement: Option<Box<HttpTaskSpec>>,
+        replacement: Option<Box<TransferTaskSpec>>,
     },
     Import {
         remaining: VecDeque<ImportMember>,
         result: Value,
-        parent_spec: Option<Box<HttpTaskSpec>>,
+        parent_spec: Option<Box<TransferTaskSpec>>,
     },
     Admission {
         gid: Gid,
         readmission_started: bool,
     },
     Options {
-        replacement: Box<HttpTaskSpec>,
+        replacement: Box<TransferTaskSpec>,
         patch_id: OptionPatchId,
         previous_generation: Generation,
         kind: ValidatedOptionPatchKind,
@@ -251,7 +251,7 @@ struct PendingMutation {
 }
 
 struct PendingSourceReplacement {
-    replacement: HttpTaskSpec,
+    replacement: TransferTaskSpec,
     response: Value,
     reply: oneshot::Sender<Result<Value, HttpControlError>>,
     committing: bool,
@@ -305,7 +305,7 @@ pub struct HttpControlPlane {
     bt: bittorrent::BtControl,
     engine: crate::BootstrappedEngine,
     config: HttpControlPlaneConfig,
-    tasks: SharedHttpTaskCatalog,
+    tasks: SharedTransferTaskCatalog,
     stats: SharedHttpTransferStats,
     supervisor: Option<HttpWorkerSupervisor>,
     metadata_follow: Option<crate::MetadataFollowQueue>,
@@ -398,7 +398,7 @@ impl HttpControlPlane {
         config: HttpControlPlaneConfig,
     ) -> Result<Self, HttpControlError> {
         config.validate()?;
-        let tasks = SharedHttpTaskCatalog::new(config.task_capacity);
+        let tasks = SharedTransferTaskCatalog::new(config.task_capacity);
         let stats = SharedHttpTransferStats::new(config.task_capacity);
         let next_task_id = engine
             .snapshot_reader()
@@ -889,7 +889,7 @@ impl HttpControlPlane {
                     "approved host-key option mirror does not match the journal".to_owned(),
                 ));
             }
-            let options = match HttpTaskOptions::from_sanitized(&persisted_options) {
+            let options = match TransferTaskOptions::from_sanitized(&persisted_options) {
                 Ok(options) => options,
                 Err(_) if !self.pending_restart_patches.contains_key(&recovered.gid) => continue,
                 Err(_) => {
@@ -898,18 +898,18 @@ impl HttpControlPlane {
                     ));
                 }
             };
-            let output = HttpTaskSpec::persisted_output(&persisted_options).or_else(|_| {
+            let output = TransferTaskSpec::persisted_output(&persisted_options).or_else(|_| {
                 recovered
                     .journal
                     .layout()
                     .and_then(|layout| layout.layout().files().first())
                     .map(|file| file.safe_path().clone())
-                    .ok_or(HttpTaskSpecError::InvalidOptions)
+                    .ok_or(TransferTaskSpecError::InvalidOptions)
             });
             let Ok(output) = output else {
                 continue;
             };
-            let mut spec = match HttpTaskSpec::from_persisted_sources(
+            let mut spec = match TransferTaskSpec::from_persisted_sources(
                 recovered.task_id,
                 recovered.gid,
                 sources,
@@ -1134,7 +1134,7 @@ impl HttpControlPlane {
     }
 
     #[must_use]
-    pub fn task_catalog(&self) -> SharedHttpTaskCatalog {
+    pub fn task_catalog(&self) -> SharedTransferTaskCatalog {
         self.tasks.clone()
     }
 
@@ -1794,10 +1794,10 @@ impl HttpControlPlane {
                 "option patch violates persistence policy",
             ));
         }
-        let http_options = HttpTaskOptions::from_sanitized(&options).map_err(|_| {
+        let http_options = TransferTaskOptions::from_sanitized(&options).map_err(|_| {
             rejected_option_names(patch.keys(), OptionPatchRejectReason::InvalidValue)
         })?;
-        let output = HttpTaskSpec::persisted_output(&options).map_err(|_| {
+        let output = TransferTaskSpec::persisted_output(&options).map_err(|_| {
             rejected_option_names(patch.keys(), OptionPatchRejectReason::InvalidValue)
         })?;
         let replacement = current.with_options(output, http_options).map_err(|_| {
@@ -1975,7 +1975,7 @@ impl HttpControlPlane {
         &self,
         method: &str,
         params: Value,
-    ) -> Result<(HttpTaskSpec, Value), HttpControlError> {
+    ) -> Result<(TransferTaskSpec, Value), HttpControlError> {
         let (gid, uris, response) = if method == "ariax.replaceSources" {
             self.replace_sources_request(params)?
         } else {
@@ -1988,7 +1988,7 @@ impl HttpControlPlane {
         &self,
         gid: Gid,
         uris: Vec<String>,
-    ) -> Result<HttpTaskSpec, HttpControlError> {
+    ) -> Result<TransferTaskSpec, HttpControlError> {
         if self.pending_restart_patches.contains_key(&gid)
             || self.pending_source_replacements.contains_key(&gid)
         {
@@ -2018,7 +2018,7 @@ impl HttpControlPlane {
             ));
         }
         drop(root);
-        let replacement = HttpTaskSpec::new(
+        let replacement = TransferTaskSpec::new(
             current.task(),
             current.gid(),
             uris,
@@ -2077,7 +2077,7 @@ impl HttpControlPlane {
 
     fn begin_source_plan(
         &mut self,
-        replacement: HttpTaskSpec,
+        replacement: TransferTaskSpec,
         response: Value,
         request: Option<crate::rpc_budget::RpcRequestLease>,
     ) -> Result<oneshot::Receiver<Result<Value, HttpControlError>>, HttpControlError> {
@@ -3521,6 +3521,10 @@ mod phase5_tests;
 #[path = "http_control/phase6_tests.rs"]
 mod phase6_tests;
 
+#[cfg(all(test, feature = "bt"))]
+#[path = "http_control/phase6_native_tests.rs"]
+mod phase6_native_tests;
+
 fn control_backend_error(error: HttpControlError) -> HttpRpcBackendError {
     if let HttpControlError::OptionPatchRejected(rejected) = &error {
         return HttpRpcBackendError::new(-32602, "OptionPatchRejected").with_data(json!({
@@ -3692,9 +3696,9 @@ struct ParsedRegistryOption {
 }
 
 fn default_global_options() -> Result<BTreeMap<String, String>, HttpControlError> {
-    let options = HttpTaskOptions {
+    let options = TransferTaskOptions {
         retry: Some(HttpRetryPolicy::default()),
-        ..HttpTaskOptions::default()
+        ..TransferTaskOptions::default()
     }
     .sanitized()
     .map_err(HttpControlError::TaskSpec)?;
@@ -4114,7 +4118,7 @@ fn parse_add_options(
     uris: &[String],
 ) -> Result<
     (
-        HttpTaskOptions,
+        TransferTaskOptions,
         PathBuf,
         ariax_storage::SafeRelativePath,
         bool,
@@ -4131,7 +4135,7 @@ pub(crate) fn parse_add_options_authorized(
     local_admin: bool,
 ) -> Result<
     (
-        HttpTaskOptions,
+        TransferTaskOptions,
         PathBuf,
         ariax_storage::SafeRelativePath,
         bool,
@@ -4164,7 +4168,7 @@ pub(crate) fn parse_add_options_authorized(
         parse_option_value(definition, &option_input_text(value)?, None)
             .map_err(|_| HttpControlError::InvalidParams("invalid option value"))?;
     }
-    let mut parsed = HttpTaskOptions::default();
+    let mut parsed = TransferTaskOptions::default();
     let mut root = default_root.to_path_buf();
     let mut out = None;
     let mut paused = false;
@@ -4231,13 +4235,14 @@ pub(crate) fn parse_add_options_authorized(
                 }
             }
             "checksum" => {
-                parsed
-                    .set_content_checksum(
+                parsed.checksum = Some(
+                    crate::ContentChecksum::parse(
                         value
                             .as_str()
                             .ok_or(HttpControlError::InvalidParams("checksum must be a string"))?,
                     )
-                    .map_err(|_| HttpControlError::InvalidParams("invalid checksum"))?;
+                    .map_err(|_| HttpControlError::InvalidParams("invalid checksum"))?,
+                );
             }
             "verify-mirror-identity" => {
                 parsed.mirror_identity = match value.as_str() {
@@ -5535,7 +5540,7 @@ mod tests {
                 json!([gid.to_string(), ["gopher://example.test/file"]]),
             ),
             Err(HttpControlError::TaskSpec(
-                HttpTaskSpecError::UnsupportedScheme
+                TransferTaskSpecError::UnsupportedScheme
             ))
         ));
         assert_eq!(
@@ -5724,7 +5729,7 @@ mod tests {
         assert_eq!(
             plane
                 .call("ariax.dumpConfig", json!(["effective"]))
-                .expect("dump effective config")["max-overall-download-limit"],
+                .expect("dump effective config")["options"]["max-overall-download-limit"],
             "2097152"
         );
         assert!(matches!(
@@ -5736,7 +5741,7 @@ mod tests {
         assert_eq!(
             plane
                 .call("ariax.dumpConfig", json!(["effective"]))
-                .expect("failed reload retained config")["max-overall-download-limit"],
+                .expect("failed reload retained config")["options"]["max-overall-download-limit"],
             "2097152"
         );
 
@@ -6041,11 +6046,42 @@ mod tests {
             .expect("JSON");
         assert_eq!(json["options"]["split"], "7");
         assert_eq!(json["sources"]["split"], "rpc");
+        assert_eq!(
+            plane
+                .call("ariax.dumpConfig", json!([]))
+                .expect("default JSON"),
+            json
+        );
+        assert_eq!(
+            plane
+                .call("ariax.dumpConfig", json!(["effective"]))
+                .expect("default format"),
+            json
+        );
+        for format in ["legacy", "yaml", ""] {
+            assert!(matches!(
+                plane.call("ariax.dumpConfig", json!(["effective", format])),
+                Err(HttpControlError::InvalidParams("unknown dump format"))
+            ));
+        }
         let toml = plane
             .call("ariax.dumpConfig", json!(["effective", "toml"]))
             .expect("TOML");
         assert!(toml.as_str().expect("text").contains("[sources]"));
         assert!(!format!("{flat} {json} {toml}").contains("secret-canary"));
+        assert_eq!(
+            plane
+                .call("ariax.dumpConfig", json!(["url-rules"]))
+                .expect("default rule format"),
+            plane
+                .call("ariax.dumpConfig", json!(["url-rules", "json"]))
+                .expect("JSON rules")
+        );
+        assert!(
+            plane
+                .call("ariax.dumpConfig", json!(["url-rules", "flat"]))
+                .is_err()
+        );
         let rule_text = plane
             .call("ariax.dumpConfig", json!(["url-rules", "toml"]))
             .expect("TOML rules");
@@ -6965,7 +7001,7 @@ mod tests {
         let gid = add_paused(&mut plane);
         let original = plane.tasks.get_gid(gid).expect("task");
         for count in [2, 512] {
-            let spec = HttpTaskSpec::new(
+            let spec = TransferTaskSpec::new(
                 original.task(),
                 gid,
                 (0..count)
@@ -7037,7 +7073,7 @@ mod tests {
         );
         let gid = add_paused(&mut plane);
         let original = plane.tasks.get_gid(gid).expect("task");
-        let spec = HttpTaskSpec::new(
+        let spec = TransferTaskSpec::new(
             original.task(),
             gid,
             (0..128).map(|index| {
@@ -7304,7 +7340,7 @@ mod tests {
     impl HttpTaskWorker for DelayedCancellationWorker {
         fn start(
             &self,
-            _task: Arc<HttpTaskSpec>,
+            _task: Arc<TransferTaskSpec>,
             _generation: Generation,
             cancellation: crate::HttpCancellation,
         ) -> crate::HttpWorkerFuture {
@@ -8394,7 +8430,7 @@ mod tests {
     impl HttpTaskWorker for UncooperativeShutdownWorker {
         fn start(
             &self,
-            _task: Arc<HttpTaskSpec>,
+            _task: Arc<TransferTaskSpec>,
             _generation: Generation,
             _cancellation: crate::HttpCancellation,
         ) -> crate::HttpWorkerFuture {
@@ -8708,7 +8744,7 @@ mod tests {
                 json!([["http://example.test/file"], {"piece-length": "3M"}]),
             ),
             Err(HttpControlError::TaskSpec(
-                HttpTaskSpecError::InvalidOptions
+                TransferTaskSpecError::InvalidOptions
             ))
         ));
         assert!(matches!(
@@ -8794,7 +8830,7 @@ mod tests {
         assert_eq!(options.endgame_max_duplicates, 8);
         assert_eq!(
             options.checksum,
-            Some(crate::HttpContentChecksum::sha256([0xab; 32]))
+            Some(crate::ContentChecksum::Sha256([0xab; 32]))
         );
         let retry = options.retry.expect("resolved retry policy");
         assert_eq!(retry.profile, HttpRetryProfile::Custom);
@@ -9508,7 +9544,7 @@ mod tests {
         let mut plane = directory.control_plane();
         attach_loopback_worker(&mut plane, &directory);
         let checksum =
-            crate::HttpContentChecksum::sha256(Sha256::digest(data.as_ref()).into()).canonical();
+            crate::ContentChecksum::Sha256(Sha256::digest(data.as_ref()).into()).canonical();
         let gid = plane
             .call(
                 "aria2.addUri",

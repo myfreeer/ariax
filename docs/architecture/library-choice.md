@@ -252,8 +252,7 @@ provider is visible in diagnostics.
 Use Hickory Resolver for the in-process async resolver, custom upstreams, TTL
 cache policy, and future DoH/DoT feature gates. Keep `system` as a distinct
 backend for libc/OS resolver behavior. The public option name is `hickory`;
-`trust-dns` may be accepted only as a deprecated compatibility alias because the
-project was renamed.
+the unreleased configuration does not retain a `trust-dns` alias.
 
 Do not implement a separate c-ares backend in the baseline. The current
 `c-ares-resolver`/`c-ares` crates are viable and maintained, but they add a C

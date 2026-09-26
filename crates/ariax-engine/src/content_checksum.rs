@@ -135,23 +135,6 @@ impl fmt::Debug for ContentChecksum {
     }
 }
 
-impl From<crate::HttpContentChecksum> for ContentChecksum {
-    fn from(value: crate::HttpContentChecksum) -> Self {
-        Self::Sha256(value.value())
-    }
-}
-
-impl TryFrom<ContentChecksum> for crate::HttpContentChecksum {
-    type Error = ContentChecksumError;
-
-    fn try_from(value: ContentChecksum) -> Result<Self, Self::Error> {
-        match value {
-            ContentChecksum::Sha256(bytes) => Ok(Self::sha256(bytes)),
-            _ => Err(ContentChecksumError::UnsupportedAlgorithm),
-        }
-    }
-}
-
 impl TryFrom<&JournalDigest> for ContentChecksum {
     type Error = ContentChecksumError;
 
@@ -332,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn strict_identity_is_algorithm_and_length_bound_and_legacy_sha256_survives() {
+    fn strict_identity_is_algorithm_and_length_bound() {
         for text in ABC {
             let value = ContentChecksum::parse(text).expect("vector");
             assert_eq!(
@@ -343,14 +326,6 @@ mod tests {
                 )
             );
             assert_ne!(value.identity_fingerprint(3), value.identity_fingerprint(4));
-            let legacy = crate::HttpContentChecksum::try_from(value);
-            assert_eq!(
-                legacy.is_ok(),
-                value.algorithm() == JournalDigestAlgorithm::Sha256
-            );
-            if let Ok(legacy) = legacy {
-                assert_eq!(ContentChecksum::from(legacy), value);
-            }
         }
     }
 }

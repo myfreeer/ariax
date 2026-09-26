@@ -349,8 +349,8 @@ Resolver selection:
 ```
 
 `hickory` is the in-process async resolver selected in [library-choice.md](../architecture/library-choice.md).
-Configuration may accept `trust-dns` as a deprecated input alias for migration,
-but dumps, diagnostics, and generated help emit `hickory`.
+Configuration, dumps, diagnostics and generated help use `hickory`; the
+unreleased configuration does not retain a `trust-dns` alias.
 
 `cares` is not a baseline backend. If encountered as a reserved compatibility
 value it rejects as unsupported rather than silently selecting Hickory; the

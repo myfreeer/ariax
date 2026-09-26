@@ -9,16 +9,16 @@ use crate::http_first_slice::{
 };
 use crate::storage_journal::StorageJournal;
 use crate::{
-    HttpCancellation, HttpClientRequest, HttpContentChecksum, HttpDiscardAttemptGuard,
+    ContentChecksum, HttpCancellation, HttpClientRequest, HttpDiscardAttemptGuard,
     HttpDiscardBudget, HttpDiscardBudgetError, HttpDiscardBudgetLimits, HttpDiscardScope,
     HttpDiscardTaskGuard, HttpMirrorIdentityPolicy, HttpOverlapSettlement, HttpPolicyClient,
     HttpPolicyClientError, HttpRangeAssignment, HttpRangeCoordinator, HttpRangeCoordinatorConfig,
     HttpRangeCoordinatorError, HttpRangeFailure, HttpRangePoll, HttpRangeResponseError,
     HttpRangeResponseValidator, HttpRangeSource, HttpRepresentationDigest, HttpRetryBudget,
     HttpRetryCause, HttpRetryDecision, HttpRetryDelaySource, HttpRetryError, HttpRetryPolicy,
-    HttpRetryStopReason, HttpRetryTransportFailure, HttpStaleValidatorPolicy, HttpTaskSpec,
-    HttpTaskWorker, HttpTransportError, HttpWorkerFuture, HttpWorkerSuccess, LeaseCommit,
-    LeaseWritePlan, RetryStateWrite, StorageEngine, StorageEngineConfig, StorageEngineError,
+    HttpRetryStopReason, HttpRetryTransportFailure, HttpStaleValidatorPolicy, HttpTaskWorker,
+    HttpTransportError, HttpWorkerFuture, HttpWorkerSuccess, LeaseCommit, LeaseWritePlan,
+    RetryStateWrite, StorageEngine, StorageEngineConfig, StorageEngineError, TransferTaskSpec,
     WriteAck, WriteBlock, WriteReject,
 };
 use ariax_core::{
@@ -944,7 +944,7 @@ impl HttpMultiRangeWorker {
 
     pub async fn run_task(
         &self,
-        task: Arc<HttpTaskSpec>,
+        task: Arc<TransferTaskSpec>,
         generation: Generation,
         cancellation: HttpCancellation,
     ) -> Result<HttpWorkerSuccess, HttpMultiRangeError> {
@@ -953,7 +953,7 @@ impl HttpMultiRangeWorker {
             .await
     }
 
-    fn initialize_task_rate(&self, task: &HttpTaskSpec) -> Result<(), HttpMultiRangeError> {
+    fn initialize_task_rate(&self, task: &TransferTaskSpec) -> Result<(), HttpMultiRangeError> {
         self.config
             .download_rate
             .set_scoped_limit(
@@ -965,7 +965,7 @@ impl HttpMultiRangeWorker {
 
     async fn run_initialized_task(
         &self,
-        task: Arc<HttpTaskSpec>,
+        task: Arc<TransferTaskSpec>,
         generation: Generation,
         cancellation: HttpCancellation,
     ) -> Result<HttpWorkerSuccess, HttpMultiRangeError> {
@@ -1004,7 +1004,7 @@ impl HttpMultiRangeWorker {
 
     async fn run_payload_task(
         &self,
-        task: Arc<HttpTaskSpec>,
+        task: Arc<TransferTaskSpec>,
         generation: Generation,
         cancellation: HttpCancellation,
     ) -> Result<HttpWorkerSuccess, HttpMultiRangeError> {
@@ -1198,7 +1198,7 @@ impl HttpMultiRangeWorker {
 
     async fn complete_storage_outcome(
         &self,
-        task: &HttpTaskSpec,
+        task: &TransferTaskSpec,
         mut storage: StorageEngine,
         layout_hash: ariax_storage::JournalHash,
         total_length: u64,
@@ -1244,7 +1244,7 @@ impl HttpMultiRangeWorker {
 
     async fn probe_sources(
         &self,
-        task: &HttpTaskSpec,
+        task: &TransferTaskSpec,
         cancellation: &HttpCancellation,
         stats: &HttpTransferStats,
         discard_task: &HttpDiscardTaskGuard,
@@ -1482,7 +1482,7 @@ impl HttpMultiRangeWorker {
 
     fn prepare_storage(
         &self,
-        task: &HttpTaskSpec,
+        task: &TransferTaskSpec,
         generation: Generation,
     ) -> Result<PreparedHttpStorage, HttpMultiRangeError> {
         let root = RootDirectoryCapability::open_trusted(task.output_root())
@@ -1620,7 +1620,7 @@ impl HttpMultiRangeWorker {
     fn finish_storage(
         &self,
         prepared: PreparedHttpStorage,
-        task: &HttpTaskSpec,
+        task: &TransferTaskSpec,
         generation: Generation,
         total_length: u64,
         sources: &mut Vec<PreparedSource>,
@@ -1792,7 +1792,7 @@ impl HttpMultiRangeWorker {
 
     async fn verify_expected_checksum(
         &self,
-        expected: Option<HttpContentChecksum>,
+        expected: Option<ContentChecksum>,
         output: Option<RootFileCapability>,
         total_length: u64,
         cancellation: &HttpCancellation,
@@ -1807,13 +1807,16 @@ impl HttpMultiRangeWorker {
         }
         let hash_cancellation = cancellation.clone();
         let actual = self
-            .cpu(128 * 1024, move || {
-                hash_output_sha256(&output, total_length, &hash_cancellation)
+            .cpu(HTTP_FINAL_DIGEST_READ_BUFFER_BYTES + 1024, move || {
+                hash_output(
+                    &output,
+                    total_length,
+                    expected.algorithm(),
+                    &hash_cancellation,
+                )
             })
             .await??;
-        let expected_value = expected.value();
-        if actual.algorithm() != expected.algorithm() || actual.value() != expected_value.as_slice()
-        {
+        if actual.algorithm() != expected.algorithm() || actual.value() != expected.value() {
             return Err(HttpMultiRangeError::ChecksumMismatch);
         }
         Ok(Some(actual))
@@ -1821,7 +1824,7 @@ impl HttpMultiRangeWorker {
 
     fn open_task_journal(
         &self,
-        task: &HttpTaskSpec,
+        task: &TransferTaskSpec,
         generation: Generation,
     ) -> Result<OpenedTaskJournal, HttpMultiRangeError> {
         if let Some(session) = &self.session {
@@ -1916,7 +1919,7 @@ impl HttpMultiRangeWorker {
 
     async fn handoff_new_or_recovered_journal(
         &self,
-        task: &HttpTaskSpec,
+        task: &TransferTaskSpec,
         generation: Generation,
     ) -> Result<(), HttpMultiRangeError> {
         if let Some(session) = &self.session {
@@ -1949,7 +1952,7 @@ impl HttpMultiRangeWorker {
     #[allow(clippy::too_many_arguments)]
     async fn run_ranges(
         &self,
-        task: &HttpTaskSpec,
+        task: &TransferTaskSpec,
         generation: Generation,
         cancellation: &HttpCancellation,
         stats: &HttpTransferStats,
@@ -2529,7 +2532,7 @@ impl HttpMultiRangeWorker {
 
     async fn revalidate_range_source(
         &self,
-        task: &HttpTaskSpec,
+        task: &TransferTaskSpec,
         current: PreparedSource,
         total_length: u64,
         cancellation: &HttpCancellation,
@@ -2595,7 +2598,7 @@ impl HttpTaskWorker for HttpMultiRangeWorker {
     }
     fn start(
         &self,
-        task: Arc<HttpTaskSpec>,
+        task: Arc<TransferTaskSpec>,
         generation: Generation,
         cancellation: HttpCancellation,
     ) -> HttpWorkerFuture {
@@ -2645,7 +2648,7 @@ struct HttpMirrorIdentityContext {
 }
 
 fn mirror_identity_context(
-    task: &HttpTaskSpec,
+    task: &TransferTaskSpec,
     sources: &[PreparedSource],
 ) -> HttpMirrorIdentityContext {
     HttpMirrorIdentityContext {
@@ -2833,9 +2836,10 @@ fn verify_recovered_piece_digests(
     Ok((durable_pieces, durable_bytes))
 }
 
-fn hash_output_sha256(
+fn hash_output(
     output: &RootFileCapability,
     total_length: u64,
+    algorithm: JournalDigestAlgorithm,
     cancellation: &HttpCancellation,
 ) -> Result<JournalDigest, HttpMultiRangeError> {
     let actual_length = output.len().map_err(KnownLengthHttpError::from)?;
@@ -2847,7 +2851,7 @@ fn hash_output_sha256(
             },
         ));
     }
-    let mut digest = Sha256::new();
+    let mut digest = crate::ContentHasher::new(algorithm);
     let mut buffer = vec![0_u8; HTTP_FINAL_DIGEST_READ_BUFFER_BYTES];
     let mut offset = 0_u64;
     while offset != total_length {
@@ -2878,9 +2882,7 @@ fn hash_output_sha256(
             },
         ));
     }
-    JournalDigest::new(JournalDigestAlgorithm::Sha256, digest.finalize().to_vec())
-        .map_err(KnownLengthHttpError::from)
-        .map_err(HttpMultiRangeError::from)
+    Ok(digest.finalize().journal_digest())
 }
 
 /// Assigns compact process-local host keys without hashing. Sources sharing an
@@ -2910,7 +2912,7 @@ fn discard_host_key(uri: &str) -> Result<String, HttpMultiRangeError> {
 }
 
 struct RecoveredRangeDigestVerification<'a> {
-    task: &'a HttpTaskSpec,
+    task: &'a TransferTaskSpec,
     cancellation: &'a HttpCancellation,
     stats: &'a HttpTransferStats,
     discard_task: &'a HttpDiscardTaskGuard,
@@ -3662,7 +3664,7 @@ fn record_attempt_discarded(
 }
 
 fn account_checksum_outcome(
-    task: &HttpTaskSpec,
+    task: &TransferTaskSpec,
     discard_task: &HttpDiscardTaskGuard,
     stats: &HttpTransferStats,
     total_length: u64,
@@ -3672,7 +3674,7 @@ fn account_checksum_outcome(
         let host = task
             .sources()
             .iter()
-            .find_map(crate::HttpSourceSpec::uri)
+            .find_map(crate::TransferSourceSpec::uri)
             .map(discard_host_key)
             .transpose()?
             .unwrap_or_else(|| format!("http-checksum-task-{}", task.task().get()));
@@ -4811,8 +4813,8 @@ mod tests {
         DEFAULT_HTTP_DISCARD_ATTEMPT_BYTES, DEFAULT_HTTP_DISCARD_HOST_BYTES,
         DEFAULT_HTTP_DISCARD_TASK_BYTES, HTTP_CONNECTION_RESERVATION_BYTES, HttpDestinationPolicy,
         HttpDirectTransportConfig, HttpDiscardScopeLimits, HttpPolicyClientConfig, HttpResolver,
-        HttpResolverBackend, HttpResolverConfig, HttpRetryBackoff, HttpTaskOptions,
-        HttpTransportBudgets, KnownLengthHttpRecoveryRequest, recover_known_length_http,
+        HttpResolverBackend, HttpResolverConfig, HttpRetryBackoff, HttpTransportBudgets,
+        KnownLengthHttpRecoveryRequest, TransferTaskOptions, recover_known_length_http,
     };
     use ariax_storage::{
         GenerationStartReason, JournalPayload, JournalStateLimits, OptionsSnapshotScope,
@@ -5299,7 +5301,7 @@ mod tests {
         root: &TestDirectory,
         sources: impl IntoIterator<Item = SocketAddr>,
         total_length: usize,
-    ) -> HttpTaskSpec {
+    ) -> TransferTaskSpec {
         task_with_retry(root, sources, total_length, None)
     }
 
@@ -5308,7 +5310,7 @@ mod tests {
         sources: impl IntoIterator<Item = SocketAddr>,
         total_length: usize,
         retry: Option<HttpRetryPolicy>,
-    ) -> HttpTaskSpec {
+    ) -> TransferTaskSpec {
         task_with_identity(
             root,
             sources,
@@ -5318,9 +5320,13 @@ mod tests {
         )
     }
 
-    fn endgame_task(root: &TestDirectory, source: SocketAddr, total_length: usize) -> HttpTaskSpec {
+    fn endgame_task(
+        root: &TestDirectory,
+        source: SocketAddr,
+        total_length: usize,
+    ) -> TransferTaskSpec {
         assert!(total_length >= MIB);
-        let options = HttpTaskOptions {
+        let options = TransferTaskOptions {
             transfer: crate::TransferOptions::default(),
             split: NonZeroUsize::new(1).expect("split"),
             max_connections_per_server: NonZeroUsize::new(2).expect("per server"),
@@ -5336,7 +5342,7 @@ mod tests {
             checksum: None,
             retry: None,
         };
-        HttpTaskSpec::new(
+        TransferTaskSpec::new(
             TaskId::new(1).expect("task"),
             Gid::new(7).expect("gid"),
             [format!("http://{source}/file")],
@@ -5353,9 +5359,9 @@ mod tests {
         root: &TestDirectory,
         sources: [SocketAddr; 2],
         total_length: usize,
-    ) -> HttpTaskSpec {
+    ) -> TransferTaskSpec {
         assert!(total_length >= MIB);
-        let options = HttpTaskOptions {
+        let options = TransferTaskOptions {
             transfer: crate::TransferOptions::default(),
             split: NonZeroUsize::new(1).expect("split"),
             max_connections_per_server: NonZeroUsize::new(1).expect("per server"),
@@ -5371,7 +5377,7 @@ mod tests {
             checksum: None,
             retry: None,
         };
-        HttpTaskSpec::new(
+        TransferTaskSpec::new(
             TaskId::new(1).expect("task"),
             Gid::new(7).expect("gid"),
             sources
@@ -5502,7 +5508,7 @@ mod tests {
         total_length: usize,
         retry: Option<HttpRetryPolicy>,
         mirror_identity: HttpMirrorIdentityPolicy,
-    ) -> HttpTaskSpec {
+    ) -> TransferTaskSpec {
         task_with_identity_and_checksum(root, sources, total_length, retry, mirror_identity, None)
     }
 
@@ -5512,9 +5518,9 @@ mod tests {
         total_length: usize,
         retry: Option<HttpRetryPolicy>,
         mirror_identity: HttpMirrorIdentityPolicy,
-        checksum: Option<HttpContentChecksum>,
-    ) -> HttpTaskSpec {
-        let options = HttpTaskOptions {
+        checksum: Option<ContentChecksum>,
+    ) -> TransferTaskSpec {
+        let options = TransferTaskOptions {
             transfer: crate::TransferOptions::default(),
             split: NonZeroUsize::new(2).expect("split"),
             max_connections_per_server: NonZeroUsize::new(1).expect("per server"),
@@ -5531,7 +5537,7 @@ mod tests {
             retry,
         };
         assert!(total_length >= MIB);
-        HttpTaskSpec::new(
+        TransferTaskSpec::new(
             TaskId::new(1).expect("task"),
             Gid::new(7).expect("gid"),
             sources
@@ -5551,9 +5557,9 @@ mod tests {
         source: SocketAddr,
         total_length: usize,
         retry: HttpRetryPolicy,
-    ) -> HttpTaskSpec {
+    ) -> TransferTaskSpec {
         assert!(total_length >= MIB);
-        let options = HttpTaskOptions {
+        let options = TransferTaskOptions {
             transfer: crate::TransferOptions::default(),
             split: NonZeroUsize::new(1).expect("split"),
             max_connections_per_server: NonZeroUsize::new(1).expect("per server"),
@@ -5569,7 +5575,7 @@ mod tests {
             checksum: None,
             retry: Some(retry),
         };
-        HttpTaskSpec::new(
+        TransferTaskSpec::new(
             TaskId::new(1).expect("task"),
             Gid::new(7).expect("gid"),
             [format!("http://{source}/file")],
@@ -5584,7 +5590,7 @@ mod tests {
 
     fn append_representation_generation(
         journal: &TestDirectory,
-        task: &HttpTaskSpec,
+        task: &TransferTaskSpec,
         generation: Generation,
     ) {
         let directory = http_journal_directory(&journal.0, task.gid());
@@ -5642,7 +5648,7 @@ mod tests {
 
     fn replay_payloads(
         journal: &TestDirectory,
-        task: &HttpTaskSpec,
+        task: &TransferTaskSpec,
         generation: Generation,
     ) -> Vec<JournalPayload> {
         let directory = http_journal_directory(&journal.0, task.gid());
@@ -5673,8 +5679,8 @@ mod tests {
         payloads
     }
 
-    fn checksum(data: &[u8]) -> HttpContentChecksum {
-        HttpContentChecksum::sha256(Sha256::digest(data).into())
+    fn checksum(data: &[u8]) -> ContentChecksum {
+        ContentChecksum::Sha256(Sha256::digest(data).into())
     }
 
     fn worker(
@@ -5698,7 +5704,7 @@ mod tests {
 
     async fn interrupt_after_first_durable_piece(
         worker: HttpMultiRangeWorker,
-        spec: &HttpTaskSpec,
+        spec: &TransferTaskSpec,
         stats: &SharedHttpTransferStats,
     ) {
         let cancellation = HttpCancellation::new();
@@ -6769,7 +6775,7 @@ mod tests {
             },
             safe,
         ];
-        let spec = HttpTaskSpec::from_persisted_sources(
+        let spec = TransferTaskSpec::from_persisted_sources(
             original.task(),
             original.gid(),
             records,
@@ -6906,63 +6912,149 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn strict_identity_with_user_checksum_uses_all_mirrors_and_persists_final_digest() {
-        let root = TestDirectory::new("strict-checksum-root");
-        let journal = TestDirectory::new("strict-checksum-journal");
-        let expected = data(2 * MIB);
-        let expected_checksum = checksum(expected.as_ref());
-        let (first, first_server) = serve_mirror(Arc::clone(&expected), MirrorMode::Valid, 2).await;
-        let (second, second_server) =
-            serve_mirror(Arc::clone(&expected), MirrorMode::Valid, 2).await;
-        let spec = task_with_identity_and_checksum(
-            &root,
-            [first, second],
-            expected.len(),
-            None,
-            HttpMirrorIdentityPolicy::RequireSharedDigest,
-            Some(expected_checksum),
-        );
-        let stats = SharedHttpTransferStats::new(NonZeroUsize::new(4).expect("stats"));
-        worker(&journal, stats, 4)
-            .run_task(
-                Arc::new(spec.clone()),
-                Generation::INITIAL,
-                HttpCancellation::new(),
+    async fn strict_identity_uses_all_mirrors_only_for_strong_checksums_and_persists_final_digest()
+    {
+        for algorithm in JournalDigestAlgorithm::ALL {
+            let root = TestDirectory::new("strict-checksum-root");
+            let journal = TestDirectory::new("strict-checksum-journal");
+            let expected = data(2 * MIB);
+            let expected_checksum = match algorithm {
+                JournalDigestAlgorithm::Md5 => {
+                    ContentChecksum::Md5(md5::Md5::digest(&expected).into())
+                }
+                JournalDigestAlgorithm::Sha1 => {
+                    ContentChecksum::Sha1(sha1::Sha1::digest(&expected).into())
+                }
+                JournalDigestAlgorithm::Sha256 => checksum(&expected),
+                JournalDigestAlgorithm::Sha512 => {
+                    ContentChecksum::Sha512(sha2::Sha512::digest(&expected).into())
+                }
+            };
+            let strong = expected_checksum.proves_strict_identity();
+            let (first, first_server) = serve_mirror(
+                Arc::clone(&expected),
+                MirrorMode::Valid,
+                if strong { 2 } else { 3 },
             )
-            .await
-            .expect("strict digest transfer");
-        first_server.await.expect("first server");
-        second_server.await.expect("second server");
-        assert_eq!(
-            fs::read(root.0.join("output.bin")).expect("output"),
-            expected.as_ref()
-        );
+            .await;
+            let (second, second_server) = serve_mirror(
+                Arc::clone(&expected),
+                MirrorMode::Valid,
+                if strong { 2 } else { 1 },
+            )
+            .await;
+            let spec = task_with_identity_and_checksum(
+                &root,
+                [first, second],
+                expected.len(),
+                None,
+                HttpMirrorIdentityPolicy::RequireSharedDigest,
+                Some(expected_checksum),
+            );
+            let stats = SharedHttpTransferStats::new(NonZeroUsize::new(4).expect("stats"));
+            worker(&journal, stats, 4)
+                .run_task(
+                    Arc::new(spec.clone()),
+                    Generation::INITIAL,
+                    HttpCancellation::new(),
+                )
+                .await
+                .expect("strict digest transfer");
+            first_server.await.expect("first server");
+            second_server.await.expect("second server");
+            assert_eq!(
+                fs::read(root.0.join("output.bin")).expect("output"),
+                expected.as_ref()
+            );
 
-        let recovered = recover_known_length_http(&KnownLengthHttpRecoveryRequest {
-            task: spec.task(),
-            gid: spec.gid(),
-            journal_id: derive_http_journal_id(spec.task(), spec.gid()),
-            generation: Generation::INITIAL,
-            journal_directory: http_journal_directory(&journal.0, spec.gid()),
-            output_root: root.0.clone(),
-            replay_limits: ReplayLimits::default(),
-            state_limits: JournalStateLimits::default(),
-        })
-        .expect("recover strict digest journal");
-        assert!(recovered.strong_validator.is_none());
-        let terminal = recovered
-            .replay
-            .state
-            .as_ref()
-            .and_then(RecoveredJournalState::terminal)
-            .expect("terminal evidence");
-        assert!(matches!(
-            terminal,
-            ariax_storage::RecoveredTerminal::Complete {
-                final_digest: Some(digest),
-                ..
-            } if digest == &expected_checksum.journal_digest()
-        ));
+            let recovered = recover_known_length_http(&KnownLengthHttpRecoveryRequest {
+                task: spec.task(),
+                gid: spec.gid(),
+                journal_id: derive_http_journal_id(spec.task(), spec.gid()),
+                generation: Generation::INITIAL,
+                journal_directory: http_journal_directory(&journal.0, spec.gid()),
+                output_root: root.0.clone(),
+                replay_limits: ReplayLimits::default(),
+                state_limits: JournalStateLimits::default(),
+            })
+            .expect("recover strict digest journal");
+            assert!(recovered.strong_validator.is_none());
+            let terminal = recovered
+                .replay
+                .state
+                .as_ref()
+                .and_then(RecoveredJournalState::terminal)
+                .expect("terminal evidence");
+            assert!(matches!(
+                terminal,
+                ariax_storage::RecoveredTerminal::Complete {
+                    final_digest: Some(digest),
+                    ..
+                } if digest == &expected_checksum.journal_digest()
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn all_checksum_algorithms_reject_mismatches_again_after_offline_recovery() {
+        for expected_checksum in [
+            ContentChecksum::Md5([0; 16]),
+            ContentChecksum::Sha1([0; 20]),
+            ContentChecksum::Sha256([0; 32]),
+            ContentChecksum::Sha512([0; 64]),
+        ] {
+            let root = TestDirectory::new("checksum-mismatch-root");
+            let journal = TestDirectory::new("checksum-mismatch-journal");
+            let payload = data(MIB);
+            let (mirror, server) = serve_mirror(payload.clone(), MirrorMode::Valid, 2).await;
+            let spec = Arc::new(task_with_identity_and_checksum(
+                &root,
+                [mirror],
+                payload.len(),
+                None,
+                HttpMirrorIdentityPolicy::RequireSharedDigest,
+                Some(expected_checksum),
+            ));
+            let stats = SharedHttpTransferStats::new(NonZeroUsize::new(2).unwrap());
+            let worker = worker(&journal, stats, 2);
+            assert!(matches!(
+                worker
+                    .run_task(spec.clone(), Generation::INITIAL, HttpCancellation::new())
+                    .await,
+                Err(HttpMultiRangeError::ChecksumMismatch)
+            ));
+            server.await.expect("all expected HTTP requests completed");
+            assert!(matches!(
+                tokio::time::timeout(
+                    Duration::from_secs(10),
+                    worker.run_task(spec.clone(), Generation::INITIAL, HttpCancellation::new())
+                )
+                .await
+                .expect("offline recheck"),
+                Err(HttpMultiRangeError::ChecksumMismatch)
+            ));
+            let recovered = recover_known_length_http(&KnownLengthHttpRecoveryRequest {
+                task: spec.task(),
+                gid: spec.gid(),
+                journal_id: derive_http_journal_id(spec.task(), spec.gid()),
+                generation: Generation::INITIAL,
+                journal_directory: http_journal_directory(&journal.0, spec.gid()),
+                output_root: root.0.clone(),
+                replay_limits: ReplayLimits::default(),
+                state_limits: JournalStateLimits::default(),
+            })
+            .expect("recover failed checksum");
+            assert_eq!(recovered.durable_prefix, MIB as u64);
+            assert!(
+                recovered
+                    .replay
+                    .state
+                    .as_ref()
+                    .unwrap()
+                    .terminal()
+                    .is_none()
+            );
+        }
     }
 
     #[tokio::test]

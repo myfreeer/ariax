@@ -75,6 +75,38 @@ class TemporaryDirectoryTests(unittest.TestCase):
                     ci.Runner("macos")
 
 
+class BitTorrentSafetyTests(unittest.TestCase):
+    def test_native_checks_precede_fuzzing_and_uninstrumented_results_fail(self):
+        for output, accepted in (("#123 DONE cov: 42\n", True), ("Done without coverage", False)):
+            with self.subTest(accepted=accepted), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                seeds = root / "fuzz/seeds/bittorrent_metadata"
+                seeds.mkdir(parents=True)
+                (seeds / "seed").write_bytes(b"de")
+                runner = mock.Mock()
+                runner.env = {}
+                runner.directory = root / "reports"
+                runner.directory.mkdir()
+                runner.target = root / "target"
+                runner.run.return_value = output
+                with mock.patch.object(ci, "ROOT", root), \
+                        mock.patch.object(ci, "provision_bt", return_value=root / "native") as provision, \
+                        mock.patch.object(ci, "native_security") as security:
+                    if accepted:
+                        ci.bt_safety(runner)
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "coverage instrumentation"):
+                            ci.bt_safety(runner)
+                    provision.assert_called_once_with(runner, "address")
+                    security.assert_called_once_with(runner, root / "native", True)
+                self.assertEqual(runner.cargo.call_args_list[0].args[0], "test")
+                fuzz_build = runner.cargo.call_args_list[1]
+                self.assertEqual(fuzz_build.args[0], "build")
+                self.assertEqual(fuzz_build.kwargs["env"]["RUSTC_BOOTSTRAP"], "1")
+                self.assertNotIn("RUSTC_BOOTSTRAP", runner.env)
+                self.assertTrue((runner.directory / "corpus/seed").is_file())
+
+
 class BenchmarkTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -87,9 +119,51 @@ class BenchmarkTests(unittest.TestCase):
         return result
 
     def test_complete_transport_and_administrative_shapes_pass(self):
-        for scenario in ci.SCENARIOS:
+        # Historical native reports predate the additional mixed-BT scenario.
+        for scenario in ("http", "websocket", "content-length", "ndjson", "administrative"):
             with self.subTest(scenario=scenario):
                 ci.validate_benchmark(self.report(scenario), scenario)
+
+    def mixed_report(self):
+        # A validator fixture, not claimed native performance evidence.
+        report = self.report()
+        report.update(scenario="mixed-bt", verificationCalls=2_000, btPeers=1_000,
+                      btPeerProjection=1_000, btControlCalls=1_000, perStatusPeerCheck=True,
+                      peerFixtureMemoryExcluded=True, btRenewedBarriers=report["bursts"],
+                      btDownloadedBytes=(report["bursts"] + 1) * 1_000 * 16_384)
+        operations = report["operations"]
+        latency = operations.pop("tellStatus")
+        operations.pop("getUris")
+        operations["tellWaiting"]["calls"] = 2_000
+        for name, calls in (("http.tellStatus", 6_000), ("bt.tellStatus", 6_000),
+                            ("bt.getPeers", 1_000), ("bt.getFiles", 1_000), ("bt.changeOption", 1_000)):
+            operations[name] = dict(latency, calls=calls)
+        return report
+
+    def test_mixed_bt_requires_both_payload_barriers_and_native_mutations(self):
+        self.assertIn("mixed-bt", ci.SCENARIOS)
+        ci.validate_benchmark(self.mixed_report(), "mixed-bt")
+        changes = {"btPeers": 999, "btPeerProjection": 999, "btControlCalls": 999,
+                   "verificationCalls": 1_000, "btRenewedBarriers": 0, "btDownloadedBytes": 0,
+                   "perStatusPeerCheck": False, "peerFixtureMemoryExcluded": False,
+                   "rssLimit": 2 * 1024**3, "residentLimit": 897 * 1024**2}
+        for field, value in changes.items():
+            with self.subTest(field=field):
+                report = self.mixed_report()
+                report[field] = value
+                with self.assertRaises(RuntimeError):
+                    ci.validate_benchmark(report, "mixed-bt")
+        for name in ("bt.tellStatus", "bt.getPeers", "bt.getFiles", "bt.changeOption"):
+            report = self.mixed_report()
+            del report["operations"][name]
+            with self.assertRaises(RuntimeError):
+                ci.validate_benchmark(report, "mixed-bt")
+
+    def test_old_transport_evidence_cannot_substitute_for_mixed_bt(self):
+        report = self.report()
+        report["scenario"] = "mixed-bt"
+        with self.assertRaises(RuntimeError):
+            ci.validate_benchmark(report, "mixed-bt")
 
     def test_missing_false_or_out_of_bounds_evidence_is_rejected(self):
         changes = {"complete": False, "passed": False, "os": "windows", "samples": 19_999,

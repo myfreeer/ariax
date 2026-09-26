@@ -49,6 +49,19 @@ fn invalid(message: &'static str) -> HttpControlError {
 fn bt_error(error: BtError) -> HttpControlError {
     HttpControlError::Persistence(error.to_string())
 }
+
+fn discovered_metainfo(info: &[u8], metadata: &TorrentMetadata) -> Result<Vec<u8>, BtError> {
+    let limits = MetadataLimits::default();
+    let mut bytes = torrent_from_info(info, limits)?;
+    if !metadata.trackers.is_empty() {
+        bytes = ariax_bt::with_trackers(&bytes, &metadata.trackers, &[], limits)?;
+    }
+    if !metadata.web_seeds.is_empty() {
+        bytes = with_web_seeds(&bytes, &metadata.web_seeds, limits)?;
+    }
+    Ok(bytes)
+}
+
 fn public_error(error: BtError) -> PublicError {
     let kind = match error {
         BtError::CheckpointFailed | BtError::CheckpointTimeout => {
@@ -319,7 +332,7 @@ impl Spec {
             })
             .collect()
     }
-    fn total_length(&self) -> u64 {
+    pub(super) fn total_length(&self) -> u64 {
         self.record
             .binding
             .files
@@ -366,7 +379,7 @@ pub(super) struct PendingAdmission {
 
 /// A checked catalog remains current across progress-only publications.
 struct MappingValidation {
-    http: Arc<crate::HttpTaskCatalog>,
+    http: Arc<crate::TransferTaskCatalog>,
     revision: Arc<()>,
     result: Receiver<Result<(), HttpControlError>>,
 }
@@ -375,7 +388,7 @@ fn validate_current_mapping(
     pending: &mut Option<MappingValidation>,
     spec: &Arc<Spec>,
     cpu: &ariax_runtime::CpuPool,
-    http: &SharedHttpTaskCatalog,
+    http: &SharedTransferTaskCatalog,
     catalog: &Arc<BTreeMap<Gid, Arc<QueryTask>>>,
     revision: &Arc<()>,
 ) -> Result<bool, HttpControlError> {
@@ -663,7 +676,7 @@ impl BtControl {
         runtime: &crate::RuntimeEffectHandle,
         session: &SessionHandle,
         cpu: &ariax_runtime::CpuPool,
-        http: &SharedHttpTaskCatalog,
+        http: &SharedTransferTaskCatalog,
     ) -> Result<bool, HttpControlError> {
         if let Some(request) =
             runtime.take_allocation_matching(|task| self.tasks.contains_key(&task))
@@ -999,7 +1012,7 @@ impl Task {
         runtime: &crate::RuntimeEffectHandle,
         session: &SessionHandle,
         cpu: &ariax_runtime::CpuPool,
-        http: &SharedHttpTaskCatalog,
+        http: &SharedTransferTaskCatalog,
         catalog: &Arc<BTreeMap<Gid, Arc<QueryTask>>>,
         mapping_revision: &Arc<()>,
         resident: &ByteBudget,
@@ -1184,7 +1197,7 @@ impl Task {
                                 record.binding.info = info.bytes().to_vec();
                                 if record.binding.metainfo.is_empty() {
                                     record.binding.metainfo =
-                                        torrent_from_info(info.bytes(), MetadataLimits::default())
+                                        discovered_metainfo(info.bytes(), &metadata)
                                             .map_err(bt_error)?;
                                 }
                                 record.binding.files = files(&mapping);
@@ -1861,7 +1874,7 @@ fn paths_overlap(first: &str, second: &str) -> bool {
 }
 
 pub(super) fn collision_transfer<'a>(
-    transfer: &HttpTaskSpec,
+    transfer: &TransferTaskSpec,
     bt: impl Iterator<Item = &'a Spec>,
 ) -> Result<(), HttpControlError> {
     let root =
@@ -1886,7 +1899,7 @@ pub(super) fn collision_transfer<'a>(
 
 pub(super) fn collision(
     spec: &Spec,
-    http: &crate::HttpTaskCatalog,
+    http: &crate::TransferTaskCatalog,
     bt: &BTreeMap<Gid, Arc<QueryTask>>,
 ) -> Result<(), HttpControlError> {
     let paths: Vec<_> = spec
@@ -2748,6 +2761,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn discovered_metainfo_retains_validated_endpoints_and_rejects_credentials() {
+        for torrent in [
+            include_bytes!("../../../ariax-bt-libtorrent-sys/tests/fixtures/v1.torrent").as_slice(),
+            include_bytes!("../../../ariax-bt-libtorrent-sys/tests/fixtures/v2.torrent").as_slice(),
+            include_bytes!("../../../ariax-bt-libtorrent-sys/tests/fixtures/hybrid.torrent")
+                .as_slice(),
+        ] {
+            let limits = MetadataLimits::default();
+            let info = info_section(torrent, limits).unwrap();
+            let mut metadata = parse_torrent(torrent, limits).unwrap();
+            metadata.trackers = vec!["https://tracker.example/announce".into()];
+            metadata.web_seeds = vec!["https://seed.example/payload.bin".into()];
+            let bytes = discovered_metainfo(info, &metadata).unwrap();
+            assert_eq!(info_section(&bytes, limits).unwrap(), info);
+            assert_eq!(parse_torrent(&bytes, limits).unwrap(), metadata);
+            metadata.trackers[0] = "https://tracker.example/announce?passkey=canary".into();
+            assert_eq!(
+                discovered_metainfo(info, &metadata),
+                Err(BtError::Credentials)
+            );
+            metadata.trackers.clear();
+            metadata.web_seeds[0] = "https://user:canary@seed.example/payload.bin".into();
+            assert_eq!(
+                discovered_metainfo(info, &metadata),
+                Err(BtError::Credentials)
+            );
+        }
+    }
+
+    #[test]
     fn attaching_transfer_arbiter_does_not_expand_an_existing_bt_allocation() {
         let directory = super::super::tests::TestDirectory::new();
         let mut plane = directory.control_plane();
@@ -2852,7 +2895,7 @@ mod tests {
             )
             .unwrap()
         );
-        let transfer = HttpTaskSpec::new(
+        let transfer = TransferTaskSpec::new(
             TaskId::new(2).unwrap(),
             Gid::new(2).unwrap(),
             vec!["https://example.test/file".into()],
@@ -2862,7 +2905,7 @@ mod tests {
                 PathPlatform::current(),
             )
             .unwrap(),
-            HttpTaskOptions::default(),
+            TransferTaskOptions::default(),
             false,
         )
         .unwrap();

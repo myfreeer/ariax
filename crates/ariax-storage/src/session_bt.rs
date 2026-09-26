@@ -587,8 +587,24 @@ impl SessionStore {
             ],
         )?;
         transaction.execute("UPDATE bt_resume SET resume_blob=COALESCE(?2,resume_blob),dirty=?3,request=?4,generation=?5,saved_ms=CASE WHEN ?2 IS NULL THEN saved_ms ELSE ?6 END WHERE gid=?1", params![checkpoint.gid.to_string(),checkpoint.resume_blob.as_deref(),bool_to_i64(checkpoint.resume_blob.is_none()),encode_u64(checkpoint.request),encode_u64(checkpoint.generation),time_to_i64(checkpoint.saved_ms,"bt.saved_ms")?])?;
+        #[cfg(test)]
+        checkpoint_crash(false);
         transaction.commit()?;
+        #[cfg(test)]
+        checkpoint_crash(true);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static CHECKPOINT_CRASH: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn checkpoint_crash(committed: bool) {
+    if CHECKPOINT_CRASH.with(|point| point.get() == Some(committed)) {
+        std::process::exit(78);
     }
 }
 
@@ -760,6 +776,105 @@ mod tests {
             })
             .unwrap();
         store
+    }
+
+    #[test]
+    fn checkpoint_crash_child() {
+        let Ok(database) = std::env::var("ARIAX_BT_CHECKPOINT_CRASH_DATABASE") else {
+            return;
+        };
+        let committed = std::env::var("ARIAX_BT_CHECKPOINT_CRASH_COMMITTED").unwrap() == "true";
+        let config = SessionStoreConfig {
+            prefer_wal: std::env::var("ARIAX_BT_CHECKPOINT_CRASH_WAL").unwrap() == "true",
+            ..SessionStoreConfig::default()
+        };
+        let mut store = SessionStore::open(database, config).unwrap();
+        CHECKPOINT_CRASH.with(|point| point.set(Some(committed)));
+        store
+            .checkpoint_bt(&SessionBtCheckpoint {
+                gid: Gid::new(1).unwrap(),
+                generation: 1,
+                request: 2,
+                resume_blob: Some(Arc::from(b"d1:ai1ee".as_slice())),
+                downloaded: 11,
+                uploaded: 5,
+                seed_millis: 3,
+                saved_ms: 3,
+            })
+            .unwrap();
+        panic!("checkpoint crash boundary was not reached");
+    }
+
+    #[test]
+    fn checkpoint_crashes_never_split_resume_data_from_counters_and_dirty_state() {
+        for (committed, prefer_wal) in [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let directory = Directory::new();
+            drop(store(&directory));
+            let config = SessionStoreConfig {
+                prefer_wal,
+                ..SessionStoreConfig::default()
+            };
+            let mut store = SessionStore::open(directory.database(), config).unwrap();
+            assert_eq!(
+                store.journal_mode(),
+                if prefer_wal {
+                    SessionJournalMode::Wal
+                } else {
+                    SessionJournalMode::Delete
+                }
+            );
+            let task = record();
+            store
+                .create_bt_task(&task, &SanitizedOptionMap::new([]).unwrap(), &policy)
+                .unwrap();
+            store
+                .checkpoint_bt(&SessionBtCheckpoint {
+                    gid: task.gid,
+                    generation: 1,
+                    request: 1,
+                    resume_blob: Some(Arc::from(b"de".as_slice())),
+                    downloaded: 7,
+                    uploaded: 3,
+                    seed_millis: 2,
+                    saved_ms: 2,
+                })
+                .unwrap();
+            store.mark_bt_dirty(task.gid, 1).unwrap();
+            let before = store.bt_tasks().unwrap().remove(0);
+            let old_resume = store.bt_resume(task.gid, 64).unwrap();
+            drop(store);
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "session_store::bt::tests::checkpoint_crash_child",
+                    "--nocapture",
+                ])
+                .env("ARIAX_BT_CHECKPOINT_CRASH_DATABASE", directory.database())
+                .env("ARIAX_BT_CHECKPOINT_CRASH_COMMITTED", committed.to_string())
+                .env("ARIAX_BT_CHECKPOINT_CRASH_WAL", prefer_wal.to_string())
+                .status()
+                .unwrap();
+            assert_eq!(status.code(), Some(78));
+            let store = SessionStore::open(directory.database(), config).unwrap();
+            let restored = store.bt_tasks().unwrap().remove(0);
+            let resume = store.bt_resume(task.gid, 64).unwrap();
+            if committed {
+                assert_eq!(
+                    (restored.downloaded, restored.uploaded, restored.seed_millis),
+                    (11, 5, 3)
+                );
+                assert_eq!(resume.request, 2);
+                assert_eq!(resume.saved_ms, 3);
+                assert_eq!(&*resume.resume_blob, b"d1:ai1ee");
+                assert!(!resume.dirty);
+                assert_eq!(restored.binding, before.binding);
+            } else {
+                assert_eq!(restored, before);
+                assert_eq!(resume, old_resume);
+                assert!(resume.dirty);
+            }
+        }
     }
     #[test]
     fn checkpoints_retain_safe_data_after_failure_and_reject_stale_completion() {

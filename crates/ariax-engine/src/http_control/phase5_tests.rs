@@ -271,7 +271,7 @@ struct ChallengeWorker(ariax_core::PresentedHostKeyChallenge);
 impl HttpTaskWorker for ChallengeWorker {
     fn start(
         &self,
-        _task: Arc<HttpTaskSpec>,
+        _task: Arc<TransferTaskSpec>,
         _generation: Generation,
         _cancel: crate::HttpCancellation,
     ) -> crate::HttpWorkerFuture {
@@ -513,7 +513,7 @@ struct HoldWorker;
 impl HttpTaskWorker for HoldWorker {
     fn start(
         &self,
-        _: Arc<HttpTaskSpec>,
+        _: Arc<TransferTaskSpec>,
         _: Generation,
         cancel: crate::HttpCancellation,
     ) -> crate::HttpWorkerFuture {

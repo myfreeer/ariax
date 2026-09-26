@@ -35,6 +35,9 @@ const BURST_LAUNCH_MS: u64 = 400;
 
 #[path = "rpc_active_profile/admin.rs"]
 mod admin;
+#[cfg(feature = "bt")]
+#[path = "rpc_active_profile/bittorrent.rs"]
+mod bittorrent;
 const TOTAL_BYTES: usize = RANGES * 2 * 1024 * 1024;
 const PULSE_BYTES: usize = 1024;
 const EVENT_BYTES: usize = 512 * 1024;
@@ -106,6 +109,8 @@ fn main() {
     let result = runtime.block_on(async {
         match args.first().map(String::as_str) {
             Some("--origin") => origin().await,
+            #[cfg(feature = "bt")]
+            Some("--bt-peers") if args.len() == 3 => bittorrent::peers(&args[1], &args[2]).await,
             Some("--administrative")
                 if std::env::var_os("ARIAX_RUN_ACTIVE_RPC_BENCH").is_some() =>
             {
@@ -128,6 +133,14 @@ fn main() {
             }
             _ => {
                 let selected = args.iter().find_map(|arg| arg.strip_prefix("--scenario="));
+                if selected == Some("mixed-bt") {
+                    if !cfg!(all(feature = "bt", target_os = "linux")) {
+                        return Err("mixed-bt requires the bt feature and native Linux".into());
+                    }
+                    return tokio::time::timeout(Duration::from_secs(90), measure("mixed-bt"))
+                        .await
+                        .map_err(|_| "mixed-bt exceeded its 90-second deadline")?;
+                }
                 if selected.is_some_and(|name| {
                     !["http", "websocket", "content-length", "ndjson"].contains(&name)
                 }) {
@@ -338,6 +351,8 @@ struct BenchBackend {
     resources: HttpProcessResources,
     stats: SharedHttpTransferStats,
     event: RpcEvent,
+    #[cfg(feature = "bt")]
+    bt: Option<(ariax_bt::BtHandle, u64)>,
 }
 impl HttpRpcBackend for BenchBackend {
     fn call(&self, method: &str, params: Value) -> RpcFuture {
@@ -363,6 +378,8 @@ impl HttpRpcBackend for BenchBackend {
         let resource = self.resources.clone();
         let control = self.inner.clone();
         let stats = self.stats.clone();
+        #[cfg(feature = "bt")]
+        let bt = self.bt.clone();
         Box::pin(async move {
             let first = METRICS_CALLS.fetch_add(1, Ordering::Relaxed) == 0;
             if first {
@@ -378,13 +395,18 @@ impl HttpRpcBackend for BenchBackend {
             if first {
                 eprintln!("benchmark setup: first metrics response ready");
             }
-            Ok(
-                json!({"connections":stats.active_connections, "network":stats.network_phase,
+            let metrics = json!({"connections":stats.active_connections, "network":stats.network_phase,
                 "received":stats.raw_body_bytes, "rss":rss, "resident":budget.resident_bytes,
                 "residentLimit":budget.resident_limit, "rssLimit":resource.profile().limits().resident_target_bytes,
                 "rpc":budget.bytes, "rpcLimit":budget.byte_limit, "items":budget.items,
-                "controlRuntime":control.control_runtime_metrics()}),
-            )
+                "controlRuntime":control.control_runtime_metrics()});
+            #[cfg(feature = "bt")]
+            let metrics = {
+                let mut metrics = metrics;
+                bittorrent::metrics(&mut metrics, &bt);
+                metrics
+            };
+            Ok(metrics)
         })
     }
     fn rpc_budgets(&self) -> RpcBudgets {
@@ -462,6 +484,10 @@ async fn engine(origins: &[SocketAddr], scenario: &str) -> Result<()> {
     let root = Root::new()?;
     let resources = HttpProcessResources::for_profile(RuntimeProfile::Concurrency)?;
     let (mut plane, journals) = build_control_plane(&root, &resources, 256)?;
+    #[cfg(feature = "bt")]
+    if scenario == "mixed-bt" {
+        bittorrent::configure(&mut plane)?;
+    }
     let mut transport = resources.policy_client_config();
     transport.destination.allow_loopback = true;
     transport.direct.max_connections_per_origin = RANGES_PER_ORIGIN;
@@ -540,7 +566,19 @@ async fn engine(origins: &[SocketAddr], scenario: &str) -> Result<()> {
         "aria2.addUri",
         json!([["http://example.test/auxiliary.bin"], {"pause":true,"out":"auxiliary.bin"}]),
     )?;
+    #[cfg(feature = "bt")]
+    let bt_task = if scenario == "mixed-bt" {
+        Some(bittorrent::admit(&mut plane)?)
+    } else {
+        None
+    };
     plane.attach_worker(Arc::new(worker))?;
+    #[cfg(feature = "bt")]
+    let bt = if let Some((gid, _)) = &bt_task {
+        Some(bittorrent::ready(&mut plane, gid).await?)
+    } else {
+        None
+    };
     eprintln!("benchmark setup: transport listeners");
     let stats = plane.stats_catalog();
     let backend = Arc::new(HttpControlBackend::new(plane));
@@ -548,6 +586,8 @@ async fn engine(origins: &[SocketAddr], scenario: &str) -> Result<()> {
         inner: backend.clone(),
         resources,
         stats,
+        #[cfg(feature = "bt")]
+        bt,
         event: RpcEvent::notification(
             "bench.onSample",
             json!({"padding":"x".repeat(EVENT_BYTES)}),
@@ -563,6 +603,23 @@ async fn engine(origins: &[SocketAddr], scenario: &str) -> Result<()> {
     let websocket = TcpListener::bind("127.0.0.1:0").await?;
     let slow_stdio = TcpListener::bind("127.0.0.1:0").await?;
     let info = json!({"http":http.local_addr()?.to_string(),"websocket":websocket.local_addr()?.to_string(),"slowStdio":slow_stdio.local_addr()?.to_string(),"gid":gid,"slowGid":slow_gid,"metadataGid":metadata_gid,"auxiliaryGid":auxiliary_gid,"projectionTasks":PROJECTION_TASKS,"metadataSources":PROJECTION_SOURCES});
+    #[cfg(feature = "bt")]
+    let info = {
+        let mut info = info;
+        if let Some((gid, hash)) = bt_task {
+            info["btGid"] = gid;
+            info["btHash"] = json!(hash);
+            info["btPort"] = json!(
+                metrics
+                    .bt
+                    .as_ref()
+                    .ok_or("BT metrics handle")?
+                    .0
+                    .listen_port()
+            );
+        }
+        info
+    };
     let (stop, _) = watch::channel(false);
     let mut transports = tokio::task::JoinSet::new();
     transports.spawn(serve_loopback_http_listener_until(
@@ -987,9 +1044,11 @@ fn spawn(args: &[&str]) -> Result<Child> {
 
 async fn measure(scenario: &str) -> Result<()> {
     let scenario_started = Instant::now();
-    if ariax_runtime::native_process_handle_limit()
-        .is_some_and(|limit| limit < RANGES + RANGES / RANGES_PER_ORIGIN + 128)
-    {
+    let mixed = scenario == "mixed-bt";
+    let transport = if mixed { "http" } else { scenario };
+    if ariax_runtime::native_process_handle_limit().is_some_and(|limit| {
+        limit < RANGES + RANGES / RANGES_PER_ORIGIN + 128 + if mixed { 1024 } else { 0 }
+    }) {
         return Err("benchmark requires a larger process handle limit; use an isolated Linux shell with ulimit -n 20000".into());
     }
     let mut origin_child = spawn(&["--origin"])?;
@@ -1051,6 +1110,12 @@ async fn measure(scenario: &str) -> Result<()> {
         }
         text
     });
+    #[cfg(feature = "bt")]
+    let mut peers = if mixed {
+        Some(bittorrent::PeerProcess::start(&info).await?)
+    } else {
+        None
+    };
     let address = |field| -> Result<SocketAddr> {
         Ok(info[field].as_str().ok_or("listener metadata")?.parse()?)
     };
@@ -1061,7 +1126,7 @@ async fn measure(scenario: &str) -> Result<()> {
             Wire::Framed(scenario == "ndjson"),
         )
     } else {
-        Client::connect(address(scenario)?, scenario).await?
+        Client::connect(address(transport)?, transport).await?
     };
     let status = request(
         "aria2.tellStatus",
@@ -1090,6 +1155,15 @@ async fn measure(scenario: &str) -> Result<()> {
     let files = request("aria2.getFiles", json!([info["metadataGid"]]));
     let uris = request("aria2.getUris", json!([info["metadataGid"]]));
     let options = request("aria2.getOption", json!([info["metadataGid"]]));
+    let bt_status = request(
+        "aria2.tellStatus",
+        json!([
+            info["btGid"],
+            ["gid", "status", "completedLength", "connections"]
+        ]),
+    );
+    let bt_peers = request("aria2.getPeers", json!([info["btGid"]]));
+    let bt_files = request("aria2.getFiles", json!([info["btGid"]]));
     let mut auxiliary = Auxiliary {
         gid: info["auxiliaryGid"].clone(),
         uri: "http://example.test/auxiliary.bin".to_owned(),
@@ -1105,6 +1179,10 @@ async fn measure(scenario: &str) -> Result<()> {
     }
     eprintln!("benchmark {scenario}: entering initial active-range barrier");
     barrier(origin, &mut client, false).await?;
+    #[cfg(feature = "bt")]
+    if let Some(peers) = &mut peers {
+        peers.barrier(&mut client, false).await?;
+    }
     eprintln!("benchmark {scenario}: 1,000 active HTTP ranges confirmed");
     let before = client.call(&request("bench.metrics", json!([]))).await?;
     let mut slow_events = Client::connect(address("websocket")?, "websocket").await?;
@@ -1126,9 +1204,9 @@ async fn measure(scenario: &str) -> Result<()> {
     let slow_address = if matches!(scenario, "content-length" | "ndjson") {
         address("slowStdio")?
     } else {
-        address(scenario)?
+        address(transport)?
     };
-    let mut slow = Client::connect(slow_address, scenario).await?;
+    let mut slow = Client::connect(slow_address, transport).await?;
     if scenario == "websocket" {
         slow.call(&no_fixture_events).await?;
     }
@@ -1149,6 +1227,7 @@ async fn measure(scenario: &str) -> Result<()> {
     let mut bursts = 0;
     let mut controls = 0;
     let mut verification_calls = 0;
+    let mut bt_controls = 0;
     let mut per_operation = std::collections::BTreeMap::<&str, Vec<Duration>>::new();
     let mut response_bytes = std::collections::BTreeMap::<&str, usize>::new();
     let mut max_burst_calls = 0;
@@ -1177,8 +1256,15 @@ async fn measure(scenario: &str) -> Result<()> {
         client.call(&refresh_event).await?;
         for _ in 0..32 {
             client.call(&status).await?;
+            if mixed {
+                client.call(&bt_status).await?;
+            }
         }
         observe(&barrier(origin, &mut client, true).await?)?;
+        #[cfg(feature = "bt")]
+        if let Some(peers) = &mut peers {
+            observe(&peers.barrier(&mut client, true).await?)?;
+        }
         let start = Instant::now();
         let mut count = 0;
         while samples.len() < SAMPLES
@@ -1186,17 +1272,49 @@ async fn measure(scenario: &str) -> Result<()> {
             && start.elapsed() < Duration::from_millis(BURST_LAUNCH_MS)
         {
             let index = samples.len() % 20;
-            let (method, payload) = match index {
-                0..=11 => ("tellStatus", status.clone()),
-                12..=15 => ("tellWaiting", list.clone()),
-                16 => ("getFiles", files.clone()),
-                17 => ("getUris", uris.clone()),
-                18 => ("getOption", options.clone()),
-                _ => auxiliary.request(),
+            let bt_limit = if bt_controls % 2 == 0 {
+                "1048576"
+            } else {
+                "2097152"
+            };
+            let (method, payload) = if mixed {
+                match index {
+                    0..=5 => ("http.tellStatus", status.clone()),
+                    6..=11 => ("bt.tellStatus", bt_status.clone()),
+                    12..=13 => ("tellWaiting", list.clone()),
+                    14 => ("bt.getPeers", bt_peers.clone()),
+                    15 => ("bt.getFiles", bt_files.clone()),
+                    16 => ("getFiles", files.clone()),
+                    17 => (
+                        "bt.changeOption",
+                        request(
+                            "aria2.changeOption",
+                            json!([info["btGid"], {"max-upload-limit":bt_limit}]),
+                        ),
+                    ),
+                    18 => ("getOption", options.clone()),
+                    _ => auxiliary.request(),
+                }
+            } else {
+                match index {
+                    0..=11 => ("tellStatus", status.clone()),
+                    12..=15 => ("tellWaiting", list.clone()),
+                    16 => ("getFiles", files.clone()),
+                    17 => ("getUris", uris.clone()),
+                    18 => ("getOption", options.clone()),
+                    _ => auxiliary.request(),
+                }
             };
             // A verification call accompanies each real mutation and counts
             // against the same 1,000-call burst limit.
-            if count + if index == 19 { 2 } else { 1 } > 1_000 {
+            if count
+                + if index == 19 || (mixed && index == 17) {
+                    2
+                } else {
+                    1
+                }
+                > 1_000
+            {
                 break;
             }
             let sent = Instant::now();
@@ -1209,6 +1327,30 @@ async fn measure(scenario: &str) -> Result<()> {
                 entry.insert(serde_json::to_vec(&result)?.len());
             }
             count += 1;
+            if mixed && index == 14 {
+                if result.as_array().map(Vec::len) != Some(1000) {
+                    return Err("BT peer projection lost a peer".into());
+                }
+                continue;
+            }
+            if mixed && index == 15 {
+                if result.as_array().map(Vec::len) != Some(1) || result[0]["selected"] != "true" {
+                    return Err("BT file projection changed".into());
+                }
+                continue;
+            }
+            if mixed && index == 17 {
+                let options = client
+                    .call(&request("aria2.getOption", json!([info["btGid"]])))
+                    .await?;
+                if result != "OK" || options["max-upload-limit"] != bt_limit {
+                    return Err("BT live option was not acknowledged and published".into());
+                }
+                bt_controls += 1;
+                verification_calls += 1;
+                count += 1;
+                continue;
+            }
             match index {
                 0..=11 => {
                     if result["status"] != "active" || result["connections"] != "1000" {
@@ -1255,6 +1397,10 @@ async fn measure(scenario: &str) -> Result<()> {
         max_burst = max_burst.max(elapsed);
         measured_bursts += elapsed;
         observe(&barrier(origin, &mut client, false).await?)?;
+        #[cfg(feature = "bt")]
+        if let Some(peers) = &mut peers {
+            observe(&peers.barrier(&mut client, false).await?)?;
+        }
         bursts += 1;
         if bursts % 5 == 0 {
             eprintln!(
@@ -1321,6 +1467,16 @@ async fn measure(scenario: &str) -> Result<()> {
         "stalledEventCreditBytes":released["rpc"].as_u64().unwrap().saturating_sub(events_released["rpc"].as_u64().unwrap()),
         "stalledEvents":"WebSocket; coalesced 512 KiB fixture notifications through production broker",
         "stdioStalledWriter":"loopback socket; measured stdio uses OS pipes","renewedBarrierAfterWarmup":true,"perStatusRangeCheck":true});
+    #[cfg(feature = "bt")]
+    if let Some(peers) = &peers {
+        report["btPeers"] = json!(1000);
+        report["btPeerProjection"] = json!(1000);
+        report["btControlCalls"] = json!(bt_controls);
+        report["btRenewedBarriers"] = json!(peers.renewed);
+        report["btDownloadedBytes"] = json!(peers.downloaded);
+        report["perStatusPeerCheck"] = json!(true);
+        report["peerFixtureMemoryExcluded"] = json!(true);
+    }
     let shutdown_started = Instant::now();
     client.call(&request("aria2.shutdown", json!([]))).await?;
     report["shutdownAcknowledgementUs"] = json!(shutdown_started.elapsed().as_micros());
@@ -1336,6 +1492,10 @@ async fn measure(scenario: &str) -> Result<()> {
     let cleanup_started = Instant::now();
     tokio::time::timeout(Duration::from_secs(5), origin_child.kill()).await??;
     tokio::time::timeout(Duration::from_secs(5), origin_errors).await??;
+    #[cfg(feature = "bt")]
+    if let Some(peers) = peers {
+        peers.stop().await?;
+    }
     report["fixtureCleanupUs"] = json!(cleanup_started.elapsed().as_micros());
     report["elapsedScenarioMs"] = json!(scenario_started.elapsed().as_millis());
     report["complete"] = json!(samples.len() == SAMPLES);

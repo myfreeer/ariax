@@ -4,6 +4,8 @@ from pathlib import Path
 import tarfile
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 import bt_native
 
@@ -74,6 +76,68 @@ class NativeBuildTests(unittest.TestCase):
             bt_native.native_target("x86_64-pc-windows-msvc", "Linux", "x86_64")
         with self.assertRaises(ValueError):
             bt_native.native_target("aarch64-unknown-linux-gnu", "Linux", "x86_64")
+
+    def test_sanitizer_builds_cannot_reuse_normal_or_other_platform_installations(self):
+        target = "x86_64-unknown-linux-gnu"
+        self.assertNotEqual(bt_native.work_directory(target, "none"),
+                            bt_native.work_directory(target, "address"))
+        for target, mode in ((target, "unknown"), ("x86_64-pc-windows-gnu", "address")):
+            with self.assertRaises(ValueError):
+                bt_native.work_directory(target, mode)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "ariax-native.json").write_text(json.dumps({
+                "target": "x86_64-unknown-linux-gnu", "inputs": {"sanitizer": "address"}, "files": {}}))
+            with self.assertRaisesRegex(ValueError, "stale or wrong-ABI"):
+                bt_native.verify_manifest(root, "x86_64-unknown-linux-gnu", {"sanitizer": "none"})
+
+    def test_instrumented_build_installs_the_same_configuration_it_compiles(self):
+        # Run the real orchestration against fake tool outputs, without fetching
+        # sources or compiling native dependencies in the Python regression.
+        for sanitizer, configuration in (("none", "Release"), ("address", "RelWithDebInfo")):
+            with self.subTest(sanitizer=sanitizer), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                spec = root / "sources.json"
+                spec.write_text(json.dumps({
+                    **{name: {"version": "test", "sha256": "fixed"} for name in ("boost", "openssl", "libtorrent")},
+                    "settings": {"CMAKE_BUILD_TYPE": "Release"}}))
+                patch = root / "ariax.patch"
+                patch.write_text("")
+                sources = {}
+                for name, license_file in (("boost", "LICENSE_1_0.txt"), ("openssl", "LICENSE.txt"), ("libtorrent", "LICENSE")):
+                    sources[name] = root / name
+                    sources[name].mkdir()
+                    (sources[name] / license_file).write_text("test license")
+                (sources["boost"] / "boost").mkdir()
+                (sources["boost"] / "boost/version.hpp").write_text("test header")
+                commands = []
+
+                def run(command, **kwargs):
+                    commands.append(command)
+                    if "install_dev" in command:
+                        prefix = Path(kwargs["cwd"]).parent / "openssl-install"
+                        (prefix / "include").mkdir(parents=True)
+                        (prefix / "lib").mkdir()
+                        (prefix / "lib/libcrypto.a").write_bytes(b"test library")
+                    if command[:2] == ["cmake", "--install"]:
+                        prefix = Path(command[2]).parent / "install"
+                        (prefix / "include").mkdir(parents=True)
+                        (prefix / "lib").mkdir()
+                    return SimpleNamespace(returncode=0, stdout="test compiler", stderr="")
+
+                with mock.patch.multiple(bt_native, ROOT=root, SPEC=spec, PATCH=patch), \
+                        mock.patch.object(bt_native, "native_target", return_value="linux-x86_64"), \
+                        mock.patch.object(bt_native, "source_tree", side_effect=lambda name, *_: sources[name]), \
+                        mock.patch.object(bt_native.subprocess, "run", side_effect=run):
+                    args = SimpleNamespace(target="x86_64-unknown-linux-gnu", sanitizer=sanitizer,
+                                           verify=False, dependencies_only=False, archive_dir=None, jobs=2)
+                    bt_native.build(args)
+                for verb in ("--build", "--install"):
+                    command = next(command for command in commands if command[:2] == ["cmake", verb])
+                    self.assertEqual(command[command.index("--config") + 1], configuration)
+                configure = next(command for command in commands if command[:2] == ["cmake", "-S"])
+                self.assertIn("-DCMAKE_BUILD_TYPE=" + configuration, configure)
+                self.assertEqual(any("fsanitize=address,undefined" in arg for arg in configure), sanitizer == "address")
 
 
 if __name__ == "__main__":

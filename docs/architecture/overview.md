@@ -163,7 +163,8 @@ bundles. BitTorrent integration in `full` and `compat` follows the
 Select `--features standard` when building the CLI for all Phase-5 protocols.
 `--add-metalink SESSION_DB CONTROL_DIR OUTPUT_ROOT FILE` accepts trailing
 download options such as `--select-file=1,3` and `--metalink-base-uri=URL`.
-JSON migration retains selected verification metadata without the original XML.
+Current-format JSON v3 retains selected verification metadata without the
+original XML and rejects older development documents unchanged.
 
 Binary-size rules:
 

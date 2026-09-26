@@ -71,6 +71,35 @@ The current implementation moves projection outside the owner and runs bounded
 mutation continuations through the managed runtime; deterministic tests and the
 expanded campaign validate those changes separately from the older results.
 
+### Mixed HTTP And BitTorrent Measurement
+
+Phase 6 adds `--scenario=mixed-bt` on native Linux with the `bt` feature.
+The existing 1,000 HTTP ranges remain active alongside 1,000 TCP BitTorrent
+peer simulators. Each peer binds a distinct loopback address, completes the
+v1 handshake, advertises a disjoint set of pieces and sends a requested 16 KiB
+block on each pulse. The sparse 8,000-piece fixture cannot complete during the
+bounded campaign. Peer framing and queued requests are bounded. Both fixture
+processes are outside the measured engine process.
+
+Each mixed run measures 6,000 HTTP status calls, 6,000 BT status calls, 2,000
+waiting-list projections, and 1,000 each of BT peer queries, BT file queries,
+HTTP file queries, acknowledged BT live-option changes, HTTP option queries
+and the existing auxiliary HTTP mutation cycle. Both mutation groups receive
+an additional state-verification call. All 22,000 calls count against the same
+burst limits; the 20,000 primary calls have separate operation latency reports.
+Every status response must retain its 1,000-connection count. Peer projections
+must contain exactly 1,000 peers. After warm-up, both fixtures must acknowledge
+every pulse and engine counters must advance by the corresponding payload
+bytes before the next measured burst starts.
+
+The mixed run retains the 50 ms p99, 500 ms/1,000-call burst, 400 ms launch
+cutoff, 250 ms cooldown, 90-second deadline, stalled-consumer credit and clean
+shutdown requirements. The concurrency profile retains its 1 GiB RSS target
+and 896 MiB accounted resident limit. Reports include peer cardinality, byte
+progress, live-option acknowledgements and renewed barriers. Missing evidence
+fails validation. This scenario is an additional acceptance gate; the five
+historical baseline reports do not establish mixed BT acceptance.
+
 ### Native Linux CI Baseline
 
 The September 22 campaign passes all five scenarios after the complete

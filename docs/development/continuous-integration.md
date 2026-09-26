@@ -87,16 +87,30 @@ The disposable macOS runner explicitly provisions the second loopback address
 used by active-FTPS peer-rejection fixtures. Those tests must exercise a real
 unapproved source address before the approved TLS data connection.
 
+The fail-fast matrix also contains `bt-safety`. It builds a separate native
+installation with AddressSanitizer and UndefinedBehaviorSanitizer, then runs the
+real bridge and adapter tests, including asynchronous destruction and failed
+checkpoints. A native security probe verifies redirect policy and DHT filtering
+at an actual UDP socket. Instrumented builds have distinct provenance and cannot
+be consumed by ordinary builds. The same job fuzzes the bounded BT parser for
+20 seconds and retains its corpus, crash inputs and logs. Rust fuzz instrumentation
+uses the pinned compiler with `RUSTC_BOOTSTRAP=1` confined to that command's
+environment; it does not change production or MSRV compilation.
+
 ## Native Linux Measurements
 
 Compile the optimized harness before collecting measurements and execute its
 resolved binary directly. Every report records the source commit, binary hash,
 host/toolchain and complete scenario results. Preserve failed-run diagnostics.
 
-Run the four transport scenarios followed by the administrative scenario
-sequentially. Each transport must finish 20,000 measured calls while its 1,000
+Run the four transport scenarios, the administrative scenario and the Phase-6
+mixed HTTP/BT scenario sequentially. Each transport must finish 20,000 measured calls while its 1,000
 Metalink-admitted ranges remain active. Existing per-operation p99, measured
 residency, resource, mutation and clean-shutdown gates remain enforced.
+The mixed scenario also requires 1,000 real BT peer connections, acknowledged
+payload pulses, exact peer projections and 1,000 acknowledged live BT option
+changes. Its 2,000 verification calls share the measured burst limits. Earlier
+five-scenario evidence does not satisfy this additional gate.
 
 Measured bursts contain at most 1,000 calls and last at most 500 ms, with at
 least 250 ms cooldown. Each scenario has a 90-second internal deadline. An

@@ -16,11 +16,15 @@ CLI, Rust API and RPC control plane. The
 on Linux, macOS, Windows MSVC and Windows GNU, including feature and MSRV checks
 and native Linux performance measurements.
 
-Phase 6 BitTorrent integration is in progress. Ariax remains unreleased;
+Phase 6 BitTorrent implementation and its acceptance harness are complete
+locally. Native CI, sanitizer/fuzz execution and the mixed HTTP/BT benchmark
+remain pending; the [local validation record](performance-evidence/phase6-local-validation-2026-09-26.md)
+separates these from passing focused checks. Ariax remains unreleased;
 the [implementation plan](docs/project/implementation-plan.md) tracks remaining
 protocol, native backend and hardening gates. HTTP/2, growing/chunked HTTP
 transfers, XML-RPC, the C ABI and complete aria2 compatibility are not yet
-available. Internal persistence formats may change before release.
+available. SQLite and JSON sessions require v3; older development formats reject
+unchanged, with no migration or compatibility reader.
 
 ## Capabilities
 
@@ -28,6 +32,9 @@ available. Internal persistence formats may change before release.
   proxies, verified TLS, bounded retries and resumable progress.
 - **Additional protocols:** Metalink v3/v4, FTP/FTPS and SFTP, with shared
   scheduling, verification and persistence.
+- **BitTorrent:** local implementation of v1/v2/hybrid torrents, magnets,
+  metadata-only downloads, selection and seeding in `full`/`compat`; native
+  acceptance remains pending.
 - **Control:** direct CLI commands, a typed Rust API, and JSON-RPC over loopback
   HTTP, WebSocket or stdio. Pause, resume, queue changes and status queries use
   the same engine.
@@ -81,7 +88,7 @@ Choose a CLI bundle with `--no-default-features --features <bundle>`.
 | Default | HTTP(S) and the shared control interfaces |
 | `minimal` | Default capabilities plus Metalink |
 | `standard` | `minimal` plus FTP/FTPS and SFTP |
-| `full` | `standard` plus the Phase 6 BitTorrent integration under development |
+| `full` | `standard` plus BitTorrent; local implementation complete, native acceptance pending |
 | `compat` | `full`; additional compatibility behavior remains subject to its gates |
 
 The completed CI baseline predates BitTorrent. Full/compat BT behavior requires

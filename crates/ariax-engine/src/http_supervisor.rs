@@ -1,8 +1,8 @@
 //! Bounded scheduler-owned supervision for public HTTP workers.
 
 use crate::{
-    ActiveTransferRequest, CancellationRequest, HttpCancellation, HttpTaskSpec,
-    RuntimeEffectHandle, RuntimeEventSubmission, RuntimeEventSubmitError, SharedHttpTaskCatalog,
+    ActiveTransferRequest, CancellationRequest, HttpCancellation, RuntimeEffectHandle,
+    RuntimeEventSubmission, RuntimeEventSubmitError, SharedTransferTaskCatalog, TransferTaskSpec,
 };
 use ariax_core::{ErrorKind, Generation, Gid, MonotonicInstant, PublicError, RetryClass, TaskId};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -43,7 +43,7 @@ pub trait HttpTaskWorker: Send + Sync + 'static {
     }
     fn start(
         &self,
-        task: Arc<HttpTaskSpec>,
+        task: Arc<TransferTaskSpec>,
         generation: Generation,
         cancellation: HttpCancellation,
     ) -> HttpWorkerFuture;
@@ -179,7 +179,7 @@ struct WorkerCompletion {
 /// lifecycle authorities.
 pub struct HttpWorkerSupervisor {
     runtime: RuntimeEffectHandle,
-    tasks: SharedHttpTaskCatalog,
+    tasks: SharedTransferTaskCatalog,
     worker: Arc<dyn HttpTaskWorker>,
     config: HttpWorkerSupervisorConfig,
     active: BTreeMap<TaskId, ActiveWorker>,
@@ -191,7 +191,7 @@ pub struct HttpWorkerSupervisor {
 impl HttpWorkerSupervisor {
     pub fn new(
         runtime: RuntimeEffectHandle,
-        tasks: SharedHttpTaskCatalog,
+        tasks: SharedTransferTaskCatalog,
         worker: Arc<dyn HttpTaskWorker>,
         config: HttpWorkerSupervisorConfig,
     ) -> Result<Self, HttpWorkerSupervisorConfigError> {
@@ -544,8 +544,8 @@ mod tests {
         Gid::new(value).expect("gid")
     }
 
-    fn task(task: TaskId, gid: Gid) -> HttpTaskSpec {
-        HttpTaskSpec::new(
+    fn task(task: TaskId, gid: Gid) -> TransferTaskSpec {
+        TransferTaskSpec::new(
             task,
             gid,
             ["https://example.test/file".to_owned()],
@@ -556,7 +556,7 @@ mod tests {
             }),
             SafePathBuilder::from_user_path("file.bin", PathPlatform::current())
                 .expect("safe output"),
-            crate::HttpTaskOptions::default(),
+            crate::TransferTaskOptions::default(),
             false,
         )
         .expect("task spec")
@@ -593,7 +593,7 @@ mod tests {
     impl HttpTaskWorker for ImmediateWorker {
         fn start(
             &self,
-            _task: Arc<HttpTaskSpec>,
+            _task: Arc<TransferTaskSpec>,
             _generation: Generation,
             _cancellation: HttpCancellation,
         ) -> HttpWorkerFuture {
@@ -620,7 +620,7 @@ mod tests {
     impl HttpTaskWorker for ShutdownWorker {
         fn start(
             &self,
-            _task: Arc<HttpTaskSpec>,
+            _task: Arc<TransferTaskSpec>,
             _generation: Generation,
             cancellation: HttpCancellation,
         ) -> HttpWorkerFuture {
@@ -642,7 +642,7 @@ mod tests {
     impl HttpTaskWorker for CancelWorker {
         fn start(
             &self,
-            _task: Arc<HttpTaskSpec>,
+            _task: Arc<TransferTaskSpec>,
             _generation: Generation,
             cancellation: HttpCancellation,
         ) -> HttpWorkerFuture {
@@ -664,7 +664,7 @@ mod tests {
     #[tokio::test]
     async fn successful_worker_reports_exact_lifecycle_order() {
         let runtime = runtime(8);
-        let tasks = SharedHttpTaskCatalog::new(NonZeroUsize::new(4).expect("tasks"));
+        let tasks = SharedTransferTaskCatalog::new(NonZeroUsize::new(4).expect("tasks"));
         tasks.insert(task(task_id(1), gid(7))).expect("insert");
         runtime.enqueue_allocation_for_test(task_id(1), gid(7), Generation::INITIAL);
         let worker = Arc::new(ImmediateWorker {
@@ -703,7 +703,7 @@ mod tests {
     #[tokio::test]
     async fn stale_restart_class_requests_a_new_generation_after_worker_drain() {
         let runtime = runtime(8);
-        let tasks = SharedHttpTaskCatalog::new(NonZeroUsize::new(1).expect("tasks"));
+        let tasks = SharedTransferTaskCatalog::new(NonZeroUsize::new(1).expect("tasks"));
         tasks.insert(task(task_id(1), gid(7))).expect("insert");
         runtime.enqueue_allocation_for_test(task_id(1), gid(7), Generation::INITIAL);
         let worker = Arc::new(ImmediateWorker {
@@ -742,7 +742,7 @@ mod tests {
     #[tokio::test]
     async fn non_validator_restart_class_remains_a_terminal_worker_failure() {
         let runtime = runtime(8);
-        let tasks = SharedHttpTaskCatalog::new(NonZeroUsize::new(1).expect("tasks"));
+        let tasks = SharedTransferTaskCatalog::new(NonZeroUsize::new(1).expect("tasks"));
         tasks.insert(task(task_id(1), gid(7))).expect("insert");
         runtime.enqueue_allocation_for_test(task_id(1), gid(7), Generation::INITIAL);
         let worker = Arc::new(ImmediateWorker {
@@ -776,7 +776,7 @@ mod tests {
     #[tokio::test]
     async fn cancellation_is_drained_only_after_worker_stops() {
         let runtime = runtime(8);
-        let tasks = SharedHttpTaskCatalog::new(NonZeroUsize::new(4).expect("tasks"));
+        let tasks = SharedTransferTaskCatalog::new(NonZeroUsize::new(4).expect("tasks"));
         tasks.insert(task(task_id(1), gid(7))).expect("insert");
         let started = Arc::new(Notify::new());
         let stopped = Arc::new(Notify::new());
@@ -820,7 +820,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_cancels_and_drains_live_workers() {
         let runtime = runtime(4);
-        let tasks = SharedHttpTaskCatalog::new(NonZeroUsize::new(1).expect("tasks"));
+        let tasks = SharedTransferTaskCatalog::new(NonZeroUsize::new(1).expect("tasks"));
         tasks.insert(task(task_id(1), gid(7))).expect("insert");
         let started = Arc::new(Notify::new());
         let stopped = Arc::new(AtomicBool::new(false));
@@ -847,7 +847,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_timeout_aborts_an_uncooperative_worker() {
         let runtime = runtime(4);
-        let tasks = SharedHttpTaskCatalog::new(NonZeroUsize::new(1).expect("tasks"));
+        let tasks = SharedTransferTaskCatalog::new(NonZeroUsize::new(1).expect("tasks"));
         tasks.insert(task(task_id(1), gid(7))).expect("insert");
         let started = Arc::new(Notify::new());
         let worker = Arc::new(CancelWorker {
@@ -890,7 +890,7 @@ mod tests {
     #[tokio::test]
     async fn missing_catalog_entry_fails_before_activation() {
         let runtime = runtime(4);
-        let tasks = SharedHttpTaskCatalog::new(NonZeroUsize::new(1).expect("tasks"));
+        let tasks = SharedTransferTaskCatalog::new(NonZeroUsize::new(1).expect("tasks"));
         runtime.enqueue_allocation_for_test(task_id(1), gid(7), Generation::INITIAL);
         let worker = Arc::new(ImmediateWorker {
             result: Mutex::new(Some(Ok(HttpWorkerSuccess::default()))),

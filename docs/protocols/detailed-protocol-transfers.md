@@ -6,31 +6,36 @@ Status: Phase 5 implementation and local validation are complete at `88d1a83`,
 following the accepted scope from `2892fec`. The
 [validation record](../../performance-evidence/phase5-validation-2026-09-15.md) covers
 Linux-under-WSL and native Windows-GNU tests, interoperability, bounded fuzzing
-and native Windows measurements. Native Linux acceptance remains deferred until
-CI is ready.
+and native Windows measurements. The
+[September 22 CI baseline](../../performance-evidence/ci-baseline-2026-09-22.md)
+adds passing native Linux acceptance at `af5d193`. Current persistence is
+SQLite/JSON v3 only. Phase 6 implementation is complete locally; its native
+acceptance is tracked separately in [implementation readiness](../project/implementation-readiness.md#phase-6-local-implementation-and-open-acceptance).
 
 ## Scope And Checkpoints
 
 | Gate | Required Result | Current Status |
 | --- | --- | --- |
-| `P5-01` Shared foundations | Protocol-neutral source/task dispatch, bounded CPU work, real feature bundles, existing HTTP compatibility | Passed locally |
+| `P5-01` Shared foundations | Protocol-neutral source/task dispatch, bounded CPU work, real feature bundles, existing HTTP behavior | Passed locally |
 | `P5-02` Verification and recovery | Four content digests, immutable verification manifests, multiple leases per chunk, ordered hashing and bounded readback fallback | Passed locally |
 | `P5-03` Metalink | Bounded v3/v4 parser, safe names, atomic selected-file admission, streaming downloads and follow behavior | Passed locally |
 | `P5-04` FTP/FTPS | Pinned parser/logging/active-peer patches, owned socket paths, sequential resume, protected FTPS data | Passed locally |
 | `P5-05` SFTP | Pinned framing patch, host-key approval, authentication policy and bounded offset pipeline | Passed locally |
-| `P5-06` Integration | Mixed-source scheduling, selectors/statistics, public parity, self-contained JSON migration and recorded validation | Passed locally |
+| `P5-06` Integration | Mixed-source scheduling, selectors/statistics, public parity, self-contained session documents and recorded validation | Passed locally |
 
-These local gates do not close the P4-11 native Linux gate. HTTP/2, BitTorrent,
-growing layouts, new native disk backends and release/tag qualification remain
-separate gates.
+These results apply to their recorded source. The later CI baseline closes the
+P4-11 native Linux gate. Phase-6 native acceptance, HTTP/2, growing layouts,
+new native disk backends and release/tag qualification remain separate gates.
 
 ## Shared Ownership
 
 Every transfer uses the existing managed control runtime, scheduler, immutable
 query roots, resource manager, persistence owner and shutdown coordinator.
 Protocol selection does not create another scheduler or progress driver.
-Protocol-neutral source/task specifications preserve the HTTP API through
-compatibility conversions while adding protocol-specific immutable options.
+`TransferTaskSpec`, `TransferSourceSpec`, `TransferTaskOptions` and
+`SharedTransferTaskCatalog` are the concrete shared types. The unreleased API
+has no historical HTTP aliases or checksum conversion layer. Protocol-specific
+immutable options remain part of the shared task specification.
 URI identity, persistence-safe URI text, live credentials and protocol identity
 are distinct fields; debug output never formats a live URI or credential.
 
@@ -63,6 +68,13 @@ The compact minimum-thread mode uses its shared bounded disk/CPU lane.
 
 Content checksums use canonical `TYPE=hex` values with exactly the digest's
 byte length. Supported algorithms are `sha-512`, `sha-256`, `sha-1` and `md5`.
+`ContentChecksum` is the only checksum type, and `TransferTaskOptions::checksum`
+is the only user-checksum field on a task. The native `DownloadOptions` exposes
+the same field; nested protocol options cannot supply another checksum.
+HTTP verifies all four algorithms through the same bounded final-read path,
+including a fully durable restart without network access. A verification
+manifest or non-HTTP source selects the shared protocol worker; the checksum
+algorithm does not select a different worker.
 Metadata selects the strongest complete supported set in that order and never
 downgrades after a mismatch. A separately supplied user checksum is additional.
 SHA-1 and MD5 are compatibility checksums, not strict cross-mirror identity
@@ -77,17 +89,18 @@ neither a partial response nor an independent lease digest proves a whole
 chunk. The exact coordinator, abort, overlap and readback rules are owned by
 [Metalink chunking](metalink-chunking.md).
 
-An empty file completes through the same manifest and whole-file verification
-barriers without issuing data leases. HTTP accepts an exact empty `200` response
+An empty file completes through its required verification barriers without
+issuing data leases. HTTP accepts an exact empty `200` response
 or a bodyless `416` with `Content-Range: bytes */0`; a nonempty response cannot
 stand in for an empty file. SFTP still performs final attribute validation and
 drains its handle before completion.
 
-New required journal records carry verification manifests, bounded manifest
-continuations and FTP/SFTP validator tuples. Existing record numbers/payloads,
-v1 framing and SQLite schema v2 retain their meanings. Existing HTTP journals
-remain readable; a reader that does not recognize a required record fails
-closed. A manifest must be complete and fingerprint-validated before network
+Required journal records carry verification manifests, bounded manifest
+continuations and FTP/SFTP validator tuples. Journal framing v1 is the current
+transfer format, independent of SQLite/JSON v3. Only current-schema stores can
+authorize those journals; older development stores and JSON documents reject
+unchanged. A reader that does not recognize a required record fails closed.
+A manifest must be complete and fingerprint-validated before network
 leases or recovered verification evidence can use it. Every continuation obeys
 the 16 MiB record cap and the aggregate metadata budget. Protocol validators
 bind the source identity, exact length and protocol-specific modification/key
@@ -117,14 +130,14 @@ atomic batch publication. Unsupported mirrors may be omitted only if each
 selected file still has a usable source; disabled-only files fail explicitly.
 Torrent metaurls do not activate Phase 6.
 
-Native JSON migration version 2 carries selected files, sanitized sources,
-checksum algorithms/values and chunk geometry without requiring the original
-XML. Version-1 import remains supported; exports requiring no new metadata
-retain version 1. JSON imports remain paused by default and never treat exported
-progress as crash-recovery authority. Existing export byte/item limits and
+Native JSON v3 carries selected files, sanitized sources, checksum
+algorithms/values and chunk geometry without requiring the original XML.
+All exports use v3; v1/v2 imports reject without mutation. JSON imports remain
+paused by default and never treat exported progress as crash-recovery
+authority. Existing export byte/item limits and
 credential placeholders apply. Aria2 text export fails atomically with a typed
 error when it cannot retain required Metalink verification metadata; JSON is
-the self-contained migration format for those tasks.
+the self-contained import/export format for those tasks.
 
 `aria2.addMetalink` accepts base64 bytes plus optional options/queue position and
 returns an array of GIDs. The native `AddMetalink` operation and CLI Metalink

@@ -41,7 +41,7 @@ pub(super) fn is_metalink_type(headers: &hyper::HeaderMap) -> bool {
 impl HttpMultiRangeWorker {
     pub(super) async fn follow_metadata(
         &self,
-        task: Arc<HttpTaskSpec>,
+        task: Arc<TransferTaskSpec>,
         generation: Generation,
         cancellation: HttpCancellation,
         uri: String,
@@ -183,7 +183,7 @@ impl HttpMultiRangeWorker {
             .cpu(256 * 1024, move || {
                 let document_hash = JournalHash::new(Sha256::digest(&bytes).into())
                     .ok_or(HttpMultiRangeError::Protocol)?;
-                if let Some(expected) = input_task.options().content_checksum() {
+                if let Some(expected) = input_task.options().checksum {
                     let mut hash = crate::ContentHasher::new(expected.algorithm());
                     hash.update(&bytes);
                     if hash.finalize() != expected {
@@ -271,7 +271,7 @@ impl HttpMultiRangeWorker {
 
     fn save_metadata_document(
         &self,
-        task: &HttpTaskSpec,
+        task: &TransferTaskSpec,
         generation: Generation,
         bytes: &[u8],
     ) -> Result<(), HttpMultiRangeError> {
@@ -333,7 +333,7 @@ impl HttpMultiRangeWorker {
 
     pub(super) async fn finish_metadata_parent(
         &self,
-        task: Arc<HttpTaskSpec>,
+        task: Arc<TransferTaskSpec>,
         generation: Generation,
         expansion: MetadataExpansion,
     ) -> Result<HttpWorkerSuccess, HttpMultiRangeError> {
@@ -516,7 +516,7 @@ mod tests {
             )
             .unwrap();
             let spec = Arc::new(
-                HttpTaskSpec::new(
+                TransferTaskSpec::new(
                     TaskId::new(1).unwrap(),
                     Gid::new(1).unwrap(),
                     ["https://example.test/metadata".into()],

@@ -1,5 +1,5 @@
 {
-  "patchLevel": 1,
+  "patchLevel": 2,
   "libtorrent": {
     "version": "2.1.1",
     "archive": "libtorrent-rasterbar-2.1.1.tar.gz",

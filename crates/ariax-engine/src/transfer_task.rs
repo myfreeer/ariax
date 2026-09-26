@@ -1,7 +1,5 @@
 //! Protocol selection and immutable protocol options shared by every surface.
-use crate::{
-    ChunkAlignment, ContentChecksum, HttpContentChecksum, HttpTaskOptions, HttpTaskSpecError,
-};
+use crate::{ChunkAlignment, ContentChecksum, TransferTaskOptions, TransferTaskSpecError};
 use ariax_storage::JournalHash;
 use std::{fmt, sync::Arc};
 
@@ -14,14 +12,14 @@ pub enum TransferProtocol {
     Sftp,
 }
 impl TransferProtocol {
-    pub fn parse(scheme: &str) -> Result<Self, HttpTaskSpecError> {
+    pub fn parse(scheme: &str) -> Result<Self, TransferTaskSpecError> {
         match scheme {
             "http" => Ok(Self::Http),
             "https" => Ok(Self::Https),
             "ftp" => Ok(Self::Ftp),
             "ftps" => Ok(Self::Ftps),
             "sftp" => Ok(Self::Sftp),
-            _ => Err(HttpTaskSpecError::UnsupportedScheme),
+            _ => Err(TransferTaskSpecError::UnsupportedScheme),
         }
     }
     pub const fn enabled(self) -> bool {
@@ -63,7 +61,7 @@ pub struct TransferCredentials {
     pub(crate) password: Option<Arc<str>>,
 }
 impl TransferCredentials {
-    pub fn new(username: String, password: Option<String>) -> Result<Self, HttpTaskSpecError> {
+    pub fn new(username: String, password: Option<String>) -> Result<Self, TransferTaskSpecError> {
         if username.is_empty()
             || username.len() > 1024
             || username.contains(['\r', '\n', '\0'])
@@ -71,7 +69,7 @@ impl TransferCredentials {
                 .as_ref()
                 .is_some_and(|value| value.len() > 4096 || value.contains(['\r', '\n', '\0']))
         {
-            return Err(HttpTaskSpecError::InvalidOptions);
+            return Err(TransferTaskSpecError::InvalidOptions);
         }
         Ok(Self {
             username: username.into(),
@@ -109,7 +107,6 @@ pub struct TransferOptions {
     pub sftp_use_agent: bool,
     pub netrc_path: Option<std::path::PathBuf>,
     pub no_netrc: bool,
-    pub checksum: Option<ContentChecksum>,
     pub alignment: ChunkAlignment,
     pub realtime_checksum: bool,
     pub follow_metalink: FollowMetadata,
@@ -143,7 +140,6 @@ impl Default for TransferOptions {
             sftp_use_agent: false,
             netrc_path: None,
             no_netrc: false,
-            checksum: None,
             alignment: ChunkAlignment::Auto,
             realtime_checksum: true,
             follow_metalink: FollowMetadata::Follow,
@@ -255,7 +251,7 @@ impl TransferOptions {
             })
     }
 
-    pub(crate) fn validate(&self) -> Result<(), HttpTaskSpecError> {
+    pub(crate) fn validate(&self) -> Result<(), TransferTaskSpecError> {
         if self.server_stat_timeout.as_secs() > 31_536_000
             || self.metalink_filters.iter().any(|(name, value)| {
                 !Self::is_metalink_filter(name)
@@ -277,7 +273,7 @@ impl TransferOptions {
                 .as_ref()
                 .is_some_and(|v| crate::transfer_task::parse_host_key_fingerprint(v).is_err())
         {
-            return Err(HttpTaskSpecError::InvalidOptions);
+            return Err(TransferTaskSpecError::InvalidOptions);
         }
         Ok(())
     }
@@ -320,8 +316,8 @@ impl TransferOptions {
                         | "ssh-host-key-md"
                 ))
     }
-    pub(crate) fn set(&mut self, name: &str, value: &str) -> Result<(), HttpTaskSpecError> {
-        let invalid = || HttpTaskSpecError::InvalidOptions;
+    pub(crate) fn set(&mut self, name: &str, value: &str) -> Result<(), TransferTaskSpecError> {
+        let invalid = || TransferTaskSpecError::InvalidOptions;
         match name {
             "follow-torrent" => {
                 self.follow_torrent = match value {
@@ -429,7 +425,7 @@ impl TransferOptions {
         Ok(())
     }
     pub(crate) fn persisted(&self) -> Vec<(String, String)> {
-        // Default-only fields do not change historical HTTP option snapshots.
+        // Omit protocol defaults so unrelated tasks do not acquire feature-gated options.
         let default = Self::default();
         let mut entries: Vec<_> = self
             .metalink_filters
@@ -558,9 +554,9 @@ impl TransferOptions {
 #[derive(Clone, Eq, PartialEq)]
 pub struct ProtocolSecret(Arc<str>);
 impl ProtocolSecret {
-    pub fn new(value: String) -> Result<Self, HttpTaskSpecError> {
+    pub fn new(value: String) -> Result<Self, TransferTaskSpecError> {
         if value.len() > 4096 || value.contains(['\0', '\r', '\n']) {
-            return Err(HttpTaskSpecError::InvalidOptions);
+            return Err(TransferTaskSpecError::InvalidOptions);
         }
         Ok(Self(value.into()))
     }
@@ -574,20 +570,20 @@ impl fmt::Debug for ProtocolSecret {
     }
 }
 
-pub(crate) fn parse_host_key_fingerprint(text: &str) -> Result<[u8; 32], HttpTaskSpecError> {
+pub(crate) fn parse_host_key_fingerprint(text: &str) -> Result<[u8; 32], TransferTaskSpecError> {
     use base64ct::Encoding;
     if let Some(value) = text.strip_prefix("SHA256:") {
         base64ct::Base64Unpadded::decode_vec(value)
-            .map_err(|_| HttpTaskSpecError::InvalidOptions)?
+            .map_err(|_| TransferTaskSpecError::InvalidOptions)?
             .try_into()
-            .map_err(|_| HttpTaskSpecError::InvalidOptions)
+            .map_err(|_| TransferTaskSpecError::InvalidOptions)
     } else {
         let digest = ContentChecksum::parse(&format!("sha-256={text}"))
-            .map_err(|_| HttpTaskSpecError::InvalidOptions)?;
+            .map_err(|_| TransferTaskSpecError::InvalidOptions)?;
         digest
             .value()
             .try_into()
-            .map_err(|_| HttpTaskSpecError::InvalidOptions)
+            .map_err(|_| TransferTaskSpecError::InvalidOptions)
     }
 }
 
@@ -601,23 +597,25 @@ pub(crate) fn hex_bytes(bytes: &[u8]) -> String {
     text
 }
 
-pub(crate) fn parse_hex_bytes<const N: usize>(text: &str) -> Result<[u8; N], HttpTaskSpecError> {
+pub(crate) fn parse_hex_bytes<const N: usize>(
+    text: &str,
+) -> Result<[u8; N], TransferTaskSpecError> {
     if text.len() != N * 2 || !text.is_ascii() {
-        return Err(HttpTaskSpecError::InvalidOptions);
+        return Err(TransferTaskSpecError::InvalidOptions);
     }
     let mut bytes = [0; N];
     for (byte, input) in bytes.iter_mut().zip(text.as_bytes().chunks_exact(2)) {
         let high = (input[0] as char)
             .to_digit(16)
-            .ok_or(HttpTaskSpecError::InvalidOptions)?;
+            .ok_or(TransferTaskSpecError::InvalidOptions)?;
         let low = (input[1] as char)
             .to_digit(16)
-            .ok_or(HttpTaskSpecError::InvalidOptions)?;
+            .ok_or(TransferTaskSpecError::InvalidOptions)?;
         *byte = (high * 16 + low) as u8;
     }
     Ok(bytes)
 }
-impl HttpTaskOptions {
+impl TransferTaskOptions {
     pub(crate) fn without_live_authority(&self) -> Self {
         let mut options = self.clone();
         let transfer = &mut options.transfer;
@@ -631,31 +629,11 @@ impl HttpTaskOptions {
         transfer.sftp_check_host_key = true;
         options
     }
-    pub fn content_checksum(&self) -> Option<ContentChecksum> {
-        self.transfer
-            .checksum
-            .or_else(|| self.checksum.map(ContentChecksum::from))
-    }
-    pub(crate) fn set_content_checksum(&mut self, value: &str) -> Result<(), HttpTaskSpecError> {
-        let checksum =
-            ContentChecksum::parse(value).map_err(|_| HttpTaskSpecError::InvalidOptions)?;
-        match HttpContentChecksum::try_from(checksum) {
-            Ok(http) => {
-                self.checksum = Some(http);
-                self.transfer.checksum = None;
-            }
-            Err(_) => {
-                self.checksum = None;
-                self.transfer.checksum = Some(checksum);
-            }
-        }
-        Ok(())
-    }
 }
 
-pub(crate) fn decode_uri_component(text: &str) -> Result<String, HttpTaskSpecError> {
+pub(crate) fn decode_uri_component(text: &str) -> Result<String, TransferTaskSpecError> {
     if text.len() > 16 * 1024 {
-        return Err(HttpTaskSpecError::InvalidUri);
+        return Err(TransferTaskSpecError::InvalidUri);
     }
     let mut bytes = Vec::with_capacity(text.len());
     let mut input = text.as_bytes().iter().copied();
@@ -664,27 +642,27 @@ pub(crate) fn decode_uri_component(text: &str) -> Result<String, HttpTaskSpecErr
             let high = input
                 .next()
                 .and_then(|v| (v as char).to_digit(16))
-                .ok_or(HttpTaskSpecError::InvalidUri)?;
+                .ok_or(TransferTaskSpecError::InvalidUri)?;
             let low = input
                 .next()
                 .and_then(|v| (v as char).to_digit(16))
-                .ok_or(HttpTaskSpecError::InvalidUri)?;
+                .ok_or(TransferTaskSpecError::InvalidUri)?;
             (high * 16 + low) as u8
         } else {
             byte
         };
         if matches!(byte, 0 | b'\r' | b'\n') {
-            return Err(HttpTaskSpecError::InvalidUri);
+            return Err(TransferTaskSpecError::InvalidUri);
         }
         bytes.push(byte);
     }
-    String::from_utf8(bytes).map_err(|_| HttpTaskSpecError::InvalidUri)
+    String::from_utf8(bytes).map_err(|_| TransferTaskSpecError::InvalidUri)
 }
 
 #[cfg(any(feature = "ftp", feature = "sftp"))]
 pub(crate) fn load_protocol_credentials(
     options: &TransferOptions,
-    source: &crate::HttpSourceSpec,
+    source: &crate::TransferSourceSpec,
 ) -> Result<Option<TransferCredentials>, crate::ProtocolFailure> {
     if let Some(credentials) = source.credentials().or(options.credentials.as_ref()) {
         return Ok(Some(credentials.clone()));

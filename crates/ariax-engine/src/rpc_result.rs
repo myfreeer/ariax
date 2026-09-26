@@ -35,7 +35,7 @@ impl<T: fmt::Display> Serialize for DisplayValue<T> {
 }
 
 pub(crate) struct SourceUris<'a> {
-    pub(crate) sources: &'a [crate::HttpSourceSpec],
+    pub(crate) sources: &'a [crate::TransferSourceSpec],
     pub(crate) status: bool,
 }
 
@@ -65,21 +65,21 @@ impl Serialize for SourceUris<'_> {
     }
 }
 
-pub(crate) struct SourceServers<'a>(pub(crate) &'a [crate::HttpSourceSpec]);
+pub(crate) struct SourceServers<'a>(pub(crate) &'a [crate::TransferSourceSpec]);
 
-pub(crate) struct PersistedUris<'a>(pub(crate) &'a [crate::HttpSourceSpec]);
+pub(crate) struct PersistedUris<'a>(pub(crate) &'a [crate::TransferSourceSpec]);
 
 impl Serialize for PersistedUris<'_> {
     fn serialize<S: ser::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_seq(
             self.0
                 .iter()
-                .filter_map(crate::HttpSourceSpec::persistence_safe_uri),
+                .filter_map(crate::TransferSourceSpec::persistence_safe_uri),
         )
     }
 }
 
-pub(crate) struct PersistedSources<'a>(pub(crate) &'a [crate::HttpSourceSpec]);
+pub(crate) struct PersistedSources<'a>(pub(crate) &'a [crate::TransferSourceSpec]);
 
 struct SourceFingerprint<'a>(&'a [u8; 32]);
 

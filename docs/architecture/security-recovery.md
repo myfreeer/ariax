@@ -4,7 +4,7 @@
 
 Status: reviewed contract with implementation in progress. Portable path
 normalization/rejection, persisted root bindings, and bounded control-journal
-framing/replay plus all 26 bounded typed payload codecs are executable.
+framing/replay plus bounded typed payload codecs are executable.
 Policy-gated option-secret rejection and typed semantic state recovery are also
 executable, including digest-bound different-identity rebind records. Native
 capability acquisition, safe descendant open/revalidation and central-journal
@@ -13,9 +13,8 @@ startup planner and atomic scheduler reconstruction are executable. Durable jour
 append/flush, latched appender failure, tail/content-validated final-segment
 reopen after portable exact-name preflight, and linked rotation are executable;
 that reopen does not establish native namespace authority. SQLite session schema
-v2 rejects newer/unversioned schemas fail-closed, preflights and privately backs
-up exact v1 databases before their transactional migration, verifies hard limits
-and bounded persisted records,
+v3 rejects older, newer and unversioned schemas unchanged, requires a fresh
+development store rather than a migration, verifies hard limits and bounded persisted records,
 rechecks task-option and host-key semantics on read, retains stopped results
 atomically with queue ownership, enforces private database artifacts, and
 transactionally rechecks tokenized journal-install pointers. A bounded

@@ -1,4 +1,4 @@
-//! Self-contained, bounded JSON migration representation of verification.
+//! Self-contained, bounded current-format JSON representation of verification.
 use crate::{ContentChecksum, HttpControlError, VerificationManifest};
 use ariax_storage::JournalDigest;
 use serde::{

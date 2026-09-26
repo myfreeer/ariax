@@ -39,8 +39,8 @@ pub struct DownloadOptions {
     pub connect_timeout_seconds: Option<u64>,
     pub lowest_speed_limit: Option<u64>,
     pub endgame_max_duplicates: Option<usize>,
-    pub checksum: Option<crate::HttpContentChecksum>,
-    /// Protocol-neutral options, including all four supported content digests.
+    pub checksum: Option<crate::ContentChecksum>,
+    /// Protocol options shared across admission and later option changes.
     pub transfer: Option<crate::TransferOptions>,
     pub mirror_identity: Option<crate::HttpMirrorIdentityPolicy>,
     pub retry: Option<crate::HttpRetryPolicy>,
@@ -176,14 +176,6 @@ impl DownloadOptions {
                     options.insert(name, Value::String(value));
                 }
             }
-            if let Some(checksum) = transfer.checksum {
-                if options.contains_key("checksum") {
-                    return Err(NativeApiError::InvalidConfiguration(
-                        "only one user checksum may be supplied",
-                    ));
-                }
-                options.insert("checksum".into(), Value::String(checksum.canonical()));
-            }
             if let Some(credentials) = transfer.credentials {
                 options.insert(
                     "ftp-user".into(),
@@ -234,9 +226,9 @@ impl DownloadOptions {
             );
         }
         if let Some(retry) = self.retry {
-            let canonical = crate::HttpTaskOptions {
+            let canonical = crate::TransferTaskOptions {
                 retry: Some(retry),
-                ..crate::HttpTaskOptions::default()
+                ..crate::TransferTaskOptions::default()
             }
             .sanitized()
             .map_err(|error| NativeApiError::Control(HttpControlError::TaskSpec(error)))?;
@@ -1502,6 +1494,45 @@ fn create_private_directory(
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn typed_checksums_round_trip_every_algorithm_and_reject_invalid_input() {
+        for checksum in [
+            crate::ContentChecksum::Md5([0xab; 16]),
+            crate::ContentChecksum::Sha1([0xab; 20]),
+            crate::ContentChecksum::Sha256([0xab; 32]),
+            crate::ContentChecksum::Sha512([0xab; 64]),
+        ] {
+            let canonical = checksum.canonical();
+            let (algorithm, digest) = canonical.split_once('=').unwrap();
+            let options = DownloadOptions::from_pairs([
+                (
+                    "checksum".to_owned(),
+                    format!("{algorithm}={}", digest.to_uppercase()),
+                ),
+                ("split".to_owned(), "2".to_owned()),
+            ])
+            .expect("parse typed checksum");
+            assert_eq!(options.checksum, Some(checksum));
+            let value = options.into_value(true).expect("serialize admission");
+            assert_eq!(value["checksum"], canonical);
+            assert_eq!(value["split"], 2);
+            assert_eq!(
+                DownloadOptions {
+                    checksum: Some(checksum),
+                    ..Default::default()
+                }
+                .into_value(false)
+                .expect("serialize patch")["checksum"],
+                canonical
+            );
+        }
+        for invalid in ["sha-256=00", "md5=secret-canary", "sha-512=", "sha3-256=00"] {
+            let error = DownloadOptions::from_pairs([("checksum".to_owned(), invalid.to_owned())])
+                .expect_err("reject malformed checksum");
+            assert!(!error.to_string().contains("secret-canary"));
+        }
+    }
 
     #[tokio::test]
     async fn typed_configuration_mutations_diagnostics_and_json_share_one_engine() {

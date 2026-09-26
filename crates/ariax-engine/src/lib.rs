@@ -46,7 +46,6 @@ mod http_response;
 mod http_retry;
 mod http_rpc;
 mod http_supervisor;
-mod http_task;
 mod http_transport;
 mod native_api;
 mod process_bootstrap;
@@ -61,6 +60,7 @@ mod startup_filesystem;
 mod startup_native;
 mod storage_engine;
 mod storage_journal;
+mod transfer_spec;
 
 pub use session_file::{
     MAX_SESSION_DOCUMENT_BYTES, MAX_SESSION_LINE_BYTES, SessionFormat, validate_session_syntax,
@@ -78,11 +78,6 @@ pub use transfer_task::{
     FollowMetadata, ProtocolSecret, TransferCredentials, TransferOptions, TransferProtocol,
     UriSelector,
 };
-/// Protocol-neutral names; historical HTTP names remain source compatible.
-pub type TransferTaskSpec = HttpTaskSpec;
-pub type TransferSourceSpec = HttpSourceSpec;
-pub type TransferTaskOptions = HttpTaskOptions;
-pub type SharedTransferTaskCatalog = SharedHttpTaskCatalog;
 pub const MAX_METALINK_DOCUMENT_BYTES: usize = 256 * 1024 * 1024;
 
 pub use effect_sink::{
@@ -226,15 +221,6 @@ pub use http_supervisor::{
     HttpWorkerSupervisorPoll, HttpWorkerSupervisorShutdown, MAX_HTTP_SUPERVISOR_ACTIVE_WORKERS,
     MAX_HTTP_SUPERVISOR_PENDING_EVENTS, MAX_HTTP_SUPERVISOR_SHUTDOWN_TIMEOUT,
 };
-pub use http_task::{
-    DEFAULT_HTTP_ENDGAME_MAX_DUPLICATES, DEFAULT_HTTP_MAX_CONNECTIONS_PER_SERVER,
-    DEFAULT_HTTP_MIN_SPLIT_SIZE, DEFAULT_HTTP_PIECE_LENGTH, DEFAULT_HTTP_SPLIT,
-    HTTP_SHA256_CHECKSUM_TEXT_BYTES, HTTP_SOURCE_FINGERPRINT_DOMAIN, HttpContentChecksum,
-    HttpContentChecksumError, HttpMirrorIdentityPolicy, HttpSourceSpec, HttpTaskCatalog,
-    HttpTaskCatalogError, HttpTaskOptions, HttpTaskSpec, HttpTaskSpecError,
-    MAX_HTTP_ENDGAME_MAX_DUPLICATES, MAX_HTTP_PIECE_LENGTH, MAX_HTTP_TASK_SOURCES,
-    MAX_HTTP_TIMEOUT_SECS, SharedHttpTaskCatalog,
-};
 pub use http_transport::{
     DEFAULT_HTTP_IDLE_TIMEOUT, DEFAULT_HTTP_MAX_CONNECTIONS_PER_ORIGIN,
     DEFAULT_HTTP_MAX_IDLE_CONNECTIONS_PER_ORIGIN, HTTP_CONNECTION_RESERVATION_BYTES,
@@ -290,6 +276,14 @@ pub use startup_native::{
 pub use storage_engine::{
     LeaseCommit, LeaseWritePlan, RetryStateWrite, StorageEngine, StorageEngineConfig,
     StorageEngineError, WriteAck, WriteBlock, WriteReject,
+};
+pub use transfer_spec::{
+    DEFAULT_HTTP_ENDGAME_MAX_DUPLICATES, DEFAULT_HTTP_MAX_CONNECTIONS_PER_SERVER,
+    DEFAULT_HTTP_MIN_SPLIT_SIZE, DEFAULT_HTTP_PIECE_LENGTH, DEFAULT_HTTP_SPLIT,
+    HTTP_SOURCE_FINGERPRINT_DOMAIN, HttpMirrorIdentityPolicy, MAX_HTTP_ENDGAME_MAX_DUPLICATES,
+    MAX_HTTP_PIECE_LENGTH, MAX_HTTP_TASK_SOURCES, MAX_HTTP_TIMEOUT_SECS, SharedTransferTaskCatalog,
+    TransferSourceSpec, TransferTaskCatalog, TransferTaskCatalogError, TransferTaskOptions,
+    TransferTaskSpec, TransferTaskSpecError,
 };
 
 use ariax_core::{

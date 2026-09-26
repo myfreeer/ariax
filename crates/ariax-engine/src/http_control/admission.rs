@@ -21,7 +21,7 @@ struct Preparation {
     next_id: u64,
     scheduler: RequestScheduler,
     local_admin: bool,
-    tasks: Arc<crate::HttpTaskCatalog>,
+    tasks: Arc<crate::TransferTaskCatalog>,
     #[cfg(feature = "bt")]
     bt_catalog: Arc<BTreeMap<Gid, Arc<super::bittorrent::QueryTask>>>,
     #[cfg(feature = "bt")]
@@ -31,7 +31,7 @@ struct Preparation {
 }
 
 struct TransferMember {
-    spec: HttpTaskSpec,
+    spec: TransferTaskSpec,
     metadata: SessionTaskMetadata,
     conditions: TaskConditions,
     appender: ControlJournalAppender,
@@ -103,7 +103,7 @@ impl Member {
 }
 
 enum Catalog {
-    Transfer(HttpTaskSpec, ControlJournalAppender),
+    Transfer(TransferTaskSpec, ControlJournalAppender),
     #[cfg(feature = "bt")]
     BitTorrent(Arc<super::bittorrent::Spec>),
 }
@@ -112,7 +112,7 @@ struct Prepared {
     members: Vec<Member>,
     next_id: u64,
     parent: Option<ariax_storage::MetadataParent>,
-    parent_spec: Option<Box<HttpTaskSpec>>,
+    parent_spec: Option<Box<TransferTaskSpec>>,
 }
 
 struct Revalidation {
@@ -127,7 +127,7 @@ struct Finalized {
     remaining: VecDeque<ImportMember>,
     result: Value,
     next_id: u64,
-    parent_spec: Option<Box<HttpTaskSpec>>,
+    parent_spec: Option<Box<TransferTaskSpec>>,
 }
 
 enum Stage {
@@ -145,7 +145,7 @@ pub(super) struct PendingAdmission {
     work: ControlWorkReservation,
     request: crate::rpc_budget::RpcRequestLease,
     writes: SessionWrites,
-    installing: Option<HttpTaskSpec>,
+    installing: Option<TransferTaskSpec>,
     installing_sequence: u64,
     installation_started: bool,
 }
@@ -681,7 +681,7 @@ impl Preparation {
             )
             .map_err(|_| HttpControlError::Busy)?;
         let mut validated: Vec<(
-            HttpTaskSpec,
+            TransferTaskSpec,
             SanitizedOptionMap,
             bool,
             usize,
@@ -759,10 +759,12 @@ impl Preparation {
                 options.piece_length = manifest.chunk_length();
             }
             let spec = match task.sources {
-                Some(sources) => HttpTaskSpec::from_persisted_sources(
+                Some(sources) => TransferTaskSpec::from_persisted_sources(
                     task_id, gid, sources, root, output, options,
                 ),
-                None => HttpTaskSpec::new(task_id, gid, task.uris, root, output, options, false),
+                None => {
+                    TransferTaskSpec::new(task_id, gid, task.uris, root, output, options, false)
+                }
             }
             .map_err(HttpControlError::TaskSpec)?;
             let spec = if let Some(manifest) = task.verification {
@@ -789,7 +791,7 @@ impl Preparation {
                         .map(Arc::as_ref)
                         .chain(validated.iter().map(
                             |entry: &(
-                                HttpTaskSpec,
+                                TransferTaskSpec,
                                 SanitizedOptionMap,
                                 bool,
                                 usize,
@@ -811,7 +813,7 @@ impl Preparation {
                 || !sanitized
                     .entries()
                     .all(|(name, _)| self.policy.permits(name))
-                || !HttpTaskOptions::from_sanitized(&sanitized)
+                || !TransferTaskOptions::from_sanitized(&sanitized)
                     .is_ok_and(|value| value == spec.options().without_live_authority())
                 || spec.sources().iter().any(|source| {
                     source
@@ -983,7 +985,7 @@ impl Preparation {
         &self,
         parent: ariax_storage::MetadataParent,
         children: Vec<Gid>,
-    ) -> Result<Box<HttpTaskSpec>, HttpControlError> {
+    ) -> Result<Box<TransferTaskSpec>, HttpControlError> {
         let spec = self
             .tasks
             .get_gid(parent.gid)
@@ -1088,8 +1090,8 @@ impl Preparation {
 }
 
 fn preflight_output<'a>(
-    spec: &HttpTaskSpec,
-    existing: impl Iterator<Item = &'a HttpTaskSpec>,
+    spec: &TransferTaskSpec,
+    existing: impl Iterator<Item = &'a TransferTaskSpec>,
 ) -> Result<(), HttpControlError> {
     let name = spec.output().canonical_string().to_lowercase();
     for other in existing {

@@ -12,7 +12,7 @@ async fn openssh_public_key_offsets_and_final_attributes_interoperate() {
     let uri = std::env::var("ARIAX_OPENSSH_URI").expect("provision a private OpenSSH fixture");
     let root = PathBuf::from(std::env::var_os("ARIAX_OPENSSH_OUTPUT").expect("fixture output"));
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sftp-test-host");
-    let mut options = HttpTaskOptions {
+    let mut options = TransferTaskOptions {
         connect_timeout: Duration::from_secs(3),
         response_body_timeout: Duration::from_secs(3),
         ..Default::default()
@@ -46,7 +46,7 @@ async fn openssh_public_key_offsets_and_final_attributes_interoperate() {
         .unwrap(),
     );
     let task = TaskId::new(1).unwrap();
-    let spec = HttpTaskSpec::new(
+    let spec = TransferTaskSpec::new(
         task,
         Gid::new(1).unwrap(),
         [uri],

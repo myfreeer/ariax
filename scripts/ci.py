@@ -22,8 +22,8 @@ ACTIONLINT_VERSION = "1.7.12"
 ACTIONLINT_SHA256 = "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
 CHECKS = ("linux", "macos", "windows-msvc", "windows-gnu", "msrv-linux",
           "msrv-windows-gnu", "feature-minimal", "feature-standard", "feature-full",
-          "feature-compat")
-SCENARIOS = ("http", "websocket", "content-length", "ndjson", "administrative")
+          "feature-compat", "bt-safety")
+SCENARIOS = ("http", "websocket", "content-length", "ndjson", "administrative", "mixed-bt")
 COMPILERS = {"rustc", "cargo", "clippy-driver", "gcc", "g++", "cc", "c++", "cc1",
              "cc1plus", "ld", "lld", "rust-lld", "collect2", "make", "ninja", "cmake"}
 
@@ -187,17 +187,66 @@ def preflight(runner):
                  "--", "--exact", env=environment)
 
 
-def provision_bt(runner):
+def provision_bt(runner, sanitizer="none"):
     compiler = runner.run([runner.tool("rustc"), "--version", "--verbose"], capture=True)
     target = re.search(r"^host: (\S+)$", compiler, re.MULTILINE)
     require(target, "missing native Rust host triple")
-    runner.run([sys.executable, "-B", "scripts/bt_native.py", "--target", target[1]])
-    runner.run([sys.executable, "-B", "scripts/bt_native.py", "--target", target[1], "--verify"])
+    command = [sys.executable, "-B", "scripts/bt_native.py", "--target", target[1], "--sanitizer", sanitizer]
+    runner.run(command)
+    runner.run([*command, "--verify"])
+    import bt_native
+    return bt_native.work_directory(target[1], sanitizer) / "install"
+
+
+def native_security(runner, prefix, sanitizer=False):
+    build = runner.target / "native-security"
+    runner.run(["cmake", "-S", ROOT / "native/libtorrent/tests", "-B", build,
+                "-DCMAKE_BUILD_TYPE=RelWithDebInfo", "-DCMAKE_POLICY_DEFAULT_CMP0167=OLD",
+                "-DCMAKE_PREFIX_PATH=" + str(prefix), "-DOPENSSL_ROOT_DIR=" + str(prefix),
+                "-DOPENSSL_USE_STATIC_LIBS=ON", "-DBOOST_ROOT=" + str(prefix),
+                "-DBoost_INCLUDE_DIR=" + str(prefix / "include"), "-DBoost_NO_SYSTEM_PATHS=ON",
+                "-DARIAX_SANITIZER=" + ("ON" if sanitizer else "OFF")])
+    runner.run(["cmake", "--build", build, "--parallel", "2"])
+    runner.run(["ctest", "--test-dir", build, "--output-on-failure"])
+
+
+def bt_safety(runner):
+    runner.env.update(CC="clang", CXX="clang++", ARIAX_BT_SANITIZER="address",
+                      ASAN_OPTIONS="detect_leaks=1:halt_on_error=1",
+                      UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1",
+                      RUSTFLAGS="-C linker=clang++ -C link-arg=-fsanitize=address,undefined")
+    prefix = provision_bt(runner, "address")
+    runner.env["ARIAX_BT_NATIVE_DIR"] = str(prefix)
+    native_security(runner, prefix, True)
+    runner.cargo("test", "--locked", "-p", "ariax-bt-libtorrent-sys", "-p", "ariax-bt", "--all-features")
+    env = runner.env.copy()
+    env.update(RUSTC_BOOTSTRAP="1", CARGO_TARGET_DIR=str(runner.target / "fuzz"),
+               RUSTFLAGS="-Zsanitizer=address -Cpasses=sancov-module "
+                         "-Cllvm-args=-sanitizer-coverage-level=4 "
+                         "-Cllvm-args=-sanitizer-coverage-inline-8bit-counters "
+                         "-Cllvm-args=-sanitizer-coverage-pc-table "
+                         "-Cllvm-args=-sanitizer-coverage-trace-compares")
+    runner.cargo("build", "--locked", "--manifest-path", "fuzz/Cargo.toml", "--release",
+                 "--target", "x86_64-unknown-linux-gnu", "--bin", "bittorrent_metadata", env=env)
+    import shutil
+    corpus = runner.directory / "corpus"
+    shutil.copytree(ROOT / "fuzz/seeds/bittorrent_metadata", corpus)
+    artifacts = runner.directory / "fuzz-artifacts"
+    artifacts.mkdir()
+    binary = runner.target / "fuzz/x86_64-unknown-linux-gnu/release/bittorrent_metadata"
+    output = runner.run([binary, corpus, "-max_total_time=20", "-timeout=2", "-rss_limit_mb=512",
+                         "-max_len=1048576", "-print_funcs=0", "-artifact_prefix=" + str(artifacts) + os.sep],
+                        env=env, capture=True)
+    require("DONE" in output and "cov:" in output, "fuzzer did not complete with coverage instrumentation")
 
 
 def validate(runner):
+    if runner.name == "bt-safety":
+        bt_safety(runner)
+        return
+    prefix = None
     if runner.name not in {"feature-minimal", "feature-standard"}:
-        provision_bt(runner)
+        prefix = provision_bt(runner)
     if runner.name.startswith("msrv-"):
         runner.cargo("check", "--locked", "--workspace", "--all-targets", "--all-features")
     elif runner.name.startswith("feature-"):
@@ -212,6 +261,7 @@ def validate(runner):
         runner.cargo("clippy", "--locked", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings")
         if runner.name == "linux":
             runner.cargo("build", "--locked", "-p", "ariax-core", "--profile", "release-capi")
+            native_security(runner, prefix)
 
 
 def integer(value, name, *, minimum=0, maximum=None):
@@ -260,9 +310,10 @@ def validate_benchmark(report, scenario, metalink=True):
         integer(report.get("shutdownAcknowledgementUs"), "shutdownAcknowledgementUs", maximum=50_000)
         return
     require(scenario in SCENARIOS, "unknown benchmark scenario")
+    mixed = scenario == "mixed-bt"
     require(report.get("rangeAdmission") == ("metalink" if metalink else "addUri"), "wrong admission fixture")
     require(report.get("ranges") == 1_000 and report.get("samples") == 20_000
-            and report.get("verificationCalls") == 1_000, "incomplete transport measurements")
+            and report.get("verificationCalls") == (2_000 if mixed else 1_000), "incomplete transport measurements")
     require(report.get("renewedBarrierAfterWarmup") is True and report.get("perStatusRangeCheck") is True,
             "missing renewed active-range evidence")
     require(report.get("controlCalls") == 1_000
@@ -279,6 +330,21 @@ def validate_benchmark(report, scenario, metalink=True):
               "getUris": 1_000, "getOption": 1_000,
               **dict.fromkeys(("addUri", "changeOption", "changePosition", "changeUri",
                                "pause", "remove", "removeDownloadResult", "unpause"), 125)}
+    if mixed:
+        counts.pop("tellStatus")
+        counts.pop("getUris")
+        counts.update({"http.tellStatus": 6_000, "bt.tellStatus": 6_000,
+                       "tellWaiting": 2_000, "bt.getPeers": 1_000,
+                       "bt.getFiles": 1_000, "bt.changeOption": 1_000})
+        require(report.get("btPeers") == 1_000 and report.get("btPeerProjection") == 1_000
+                and report.get("btControlCalls") == 1_000, "incomplete BT peers or live mutations")
+        require(report.get("perStatusPeerCheck") is True and report.get("peerFixtureMemoryExcluded") is True,
+                "missing BT activity or isolated memory evidence")
+        bursts = integer(report.get("bursts"), "bursts", minimum=22)
+        require(report.get("btRenewedBarriers") == bursts, "missing renewed BT payload barriers")
+        integer(report.get("btDownloadedBytes"), "btDownloadedBytes", minimum=(bursts + 1) * 1_000 * 16_384)
+        integer(report.get("rssLimit"), "rssLimit", minimum=1, maximum=1024 * 1024 * 1024)
+        integer(report.get("residentLimit"), "residentLimit", minimum=1, maximum=896 * 1024 * 1024)
     require({name: value["calls"] for name, value in report["operations"].items()} == counts,
             "incomplete per-operation measurements")
     for peak, cap in (("maxRpcBytes", "rpcLimit"), ("maxResidentBytes", "residentLimit"),

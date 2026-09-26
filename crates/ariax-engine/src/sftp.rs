@@ -3,7 +3,7 @@ use crate::protocol_transport::ProtocolStreamGuard;
 use crate::sftp_trust::HostTrust;
 use crate::{
     HttpCancellation, HttpIngressBudgets, HttpIngressPermit, HttpMultiRangeError, HttpPolicyClient,
-    HttpSourceSpec, HttpTaskSpec, ProtocolFailure, ProtocolValidator,
+    ProtocolFailure, ProtocolValidator, TransferSourceSpec, TransferTaskSpec,
 };
 use ariax_core::{Generation, PresentedHostKeyChallenge};
 use ariax_runtime::CpuPool;
@@ -33,7 +33,7 @@ struct TrustState {
 pub(crate) struct Handler {
     trust: HostTrust,
     state: Arc<Mutex<TrustState>>,
-    task: Arc<HttpTaskSpec>,
+    task: Arc<TransferTaskSpec>,
     generation: Generation,
     host: String,
     port: u16,
@@ -143,8 +143,8 @@ impl SftpSession {
     #[allow(clippy::too_many_arguments)]
     pub async fn connect(
         client: &HttpPolicyClient,
-        task: Arc<HttpTaskSpec>,
-        source: &HttpSourceSpec,
+        task: Arc<TransferTaskSpec>,
+        source: &TransferSourceSpec,
         generation: Generation,
         metadata: &HttpIngressBudgets,
         ingress: &HttpIngressBudgets,

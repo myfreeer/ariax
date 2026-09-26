@@ -824,12 +824,13 @@ Required tests:
 - range/resume requests send `Accept-Encoding: identity`,
 - content-coded body to a range request is rejected, not written,
 - strict concurrent ordinary multi-mirror split requires a persisted user
-  SHA-256; without it, matching probe `Repr-Digest` values retain secondary
-  mirrors only for exact-range endgame and otherwise strict mode uses one
-  ordinary source,
-- a user SHA-256 checksum admits strict concurrent mirrors, survives option
-  persistence/recovery, writes the matching final digest into `TaskComplete`,
-  and rejects a divergent equal-length mirror without terminal completion,
+  SHA-256/SHA-512 or strong verification manifest; without it, matching probe
+  `Repr-Digest` values retain secondary mirrors only for exact-range endgame
+  and otherwise strict mode uses one ordinary source,
+- all four user checksum algorithms survive option persistence/recovery,
+  write the matching final digest into `TaskComplete`, and reject a mismatch
+  without terminal completion; only SHA-256/SHA-512 admit strict concurrent
+  mirrors,
 - a fully durable checksum-bound task rehashes and completes or rejects locally
   without reconnecting, and partial checksum-bound recovery can retain verified
   local pieces despite a weak server ETag,

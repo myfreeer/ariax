@@ -1,6 +1,6 @@
 //! Shared fixed-layout verification and protocol dispatch inside the managed worker.
 use super::*;
-use crate::{ContentChecksum, ContentHasher, VerificationManifest};
+use crate::{ContentHasher, VerificationManifest};
 #[cfg(feature = "ftp")]
 mod ftp_transfer;
 #[cfg(any(feature = "ftp", feature = "sftp"))]
@@ -14,7 +14,7 @@ pub(super) enum PreparedValidator {
     #[cfg(feature = "sftp")]
     Sftp {
         session: Arc<crate::sftp::SftpSession>,
-        source: crate::HttpSourceSpec,
+        source: crate::TransferSourceSpec,
     },
 }
 impl fmt::Debug for PreparedValidator {
@@ -160,7 +160,7 @@ impl HttpMultiRangeWorker {
 
     pub(super) async fn run_protocol_task(
         &self,
-        task: Arc<HttpTaskSpec>,
+        task: Arc<TransferTaskSpec>,
         generation: Generation,
         cancellation: HttpCancellation,
     ) -> Result<HttpWorkerSuccess, HttpMultiRangeError> {
@@ -238,10 +238,7 @@ impl HttpMultiRangeWorker {
                 &sources,
                 HttpMirrorIdentityContext {
                     policy: task.options().mirror_identity,
-                    shared_whole_entity_digest: task
-                        .verification()
-                        .is_some_and(|manifest| manifest.proves_strict_identity())
-                        || task.content_identity_strong(),
+                    shared_whole_entity_digest: task.has_strict_content_identity(),
                     shared_range_digest: None,
                 },
                 &opened.durable,
@@ -265,7 +262,7 @@ impl HttpMultiRangeWorker {
 
     fn transfer_manifest(
         &self,
-        task: &HttpTaskSpec,
+        task: &TransferTaskSpec,
         total: u64,
     ) -> Result<Arc<VerificationManifest>, HttpMultiRangeError> {
         if let Some(manifest) = task.verification() {
@@ -276,7 +273,7 @@ impl HttpMultiRangeWorker {
         }
         let whole = task
             .options()
-            .content_checksum()
+            .checksum
             .into_iter()
             .map(|checksum| checksum.journal_digest())
             .collect();
@@ -288,7 +285,7 @@ impl HttpMultiRangeWorker {
 
     fn open_protocol_storage(
         &self,
-        task: &HttpTaskSpec,
+        task: &TransferTaskSpec,
         generation: Generation,
         manifest: Arc<VerificationManifest>,
     ) -> Result<OpenedProtocolStorage, HttpMultiRangeError> {
@@ -450,7 +447,7 @@ impl HttpMultiRangeWorker {
 
     async fn run_other_protocols(
         &self,
-        task: Arc<HttpTaskSpec>,
+        task: Arc<TransferTaskSpec>,
         generation: Generation,
         cancellation: HttpCancellation,
         stats: HttpTransferStats,
@@ -564,10 +561,9 @@ impl HttpMultiRangeWorker {
                                 .previous_validators
                                 .get(&session.validator.source)
                                 .is_some_and(|old| {
-                                    session.validator.permits_resume(
-                                        old,
-                                        task.options().content_checksum().is_some(),
-                                    )
+                                    session
+                                        .validator
+                                        .permits_resume(old, task.options().checksum.is_some())
                                 })
                         {
                             return Err(crate::ProtocolFailure::StaleValidator.into());
@@ -672,17 +668,6 @@ async fn drain_sources(sources: &[PreparedSource]) {
     let _ = sources;
 }
 
-impl HttpTaskSpec {
-    fn content_identity_strong(&self) -> bool {
-        self.options().content_checksum().is_some_and(|checksum| {
-            matches!(
-                checksum,
-                ContentChecksum::Sha256(_) | ContentChecksum::Sha512(_)
-            )
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -766,7 +751,7 @@ mod tests {
                 )
                 .unwrap(),
             );
-            let spec = HttpTaskSpec::new(
+            let spec = TransferTaskSpec::new(
                 task,
                 gid,
                 [uri],

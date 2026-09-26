@@ -149,7 +149,7 @@ pub(super) fn cause(error: &HttpMultiRangeError) -> HttpRetryCause {
 impl HttpMultiRangeWorker {
     pub(super) async fn connection_retry_budget(
         &self,
-        task: &HttpTaskSpec,
+        task: &TransferTaskSpec,
         generation: Generation,
     ) -> Result<ProtocolRetryBudget, HttpMultiRangeError> {
         let worker = self.clone();
@@ -181,7 +181,7 @@ impl HttpMultiRangeWorker {
     }
     pub(super) async fn persist_connection_retry(
         &self,
-        task: &HttpTaskSpec,
+        task: &TransferTaskSpec,
         generation: Generation,
         retry: RetryStateWrite,
     ) -> Result<(), HttpMultiRangeError> {

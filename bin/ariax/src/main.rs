@@ -1290,7 +1290,7 @@ mod phase5_cli_tests {
             ariax_engine::FollowMetadata::Memory
         );
         assert_eq!(transfer.server_stat_timeout, Duration::from_secs(2));
-        assert!(transfer.checksum.is_some());
+        assert!(options.checksum.is_some());
         for flags in [
             vec!["--follow-metalink=bad"],
             vec!["--server-stat-timeout=-1"],

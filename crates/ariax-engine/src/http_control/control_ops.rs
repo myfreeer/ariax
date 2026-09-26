@@ -165,7 +165,7 @@ impl HttpControlPlane {
         &self,
         gid: Gid,
         fingerprint: ariax_core::HostKeyFingerprint,
-    ) -> Result<HttpTaskSpec, HttpControlError> {
+    ) -> Result<TransferTaskSpec, HttpControlError> {
         let spec = self.tasks.get_gid(gid).ok_or(HttpControlError::NotFound)?;
         let mut options = spec.options().clone();
         options.transfer.sftp_host_key_sha256 =

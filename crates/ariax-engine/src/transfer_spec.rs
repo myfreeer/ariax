@@ -1,13 +1,13 @@
-//! Immutable shared transfer specifications; historical HTTP names are retained.
+//! Immutable shared transfer specifications and their bounded catalog.
 
+use crate::ContentChecksum;
 use crate::http_retry::{
     HttpRetryAfterPolicy, HttpRetryBackoff, HttpRetryPolicy, HttpRetryProfile, HttpRetryStatusSet,
     HttpRetryTriggerSet, HttpStaleValidatorPolicy,
 };
 use ariax_core::{Gid, TaskId, UriId};
 use ariax_storage::{
-    JournalDigest, JournalDigestAlgorithm, SafePathBuilder, SafeRelativePath, SanitizedOptionMap,
-    SessionTaskSourceRecord,
+    SafePathBuilder, SafeRelativePath, SanitizedOptionMap, SessionTaskSourceRecord,
 };
 use hyper::Uri;
 use sha2::{Digest, Sha256};
@@ -29,111 +29,6 @@ pub const MAX_HTTP_TIMEOUT_SECS: u64 = 600;
 pub const DEFAULT_HTTP_ENDGAME_MAX_DUPLICATES: usize = 2;
 pub const MAX_HTTP_ENDGAME_MAX_DUPLICATES: usize = 8;
 pub const HTTP_SOURCE_FINGERPRINT_DOMAIN: &str = "ariax/http-source/v1\0";
-pub const HTTP_SHA256_CHECKSUM_TEXT_BYTES: usize = 72;
-
-/// One canonical user-supplied whole-representation checksum accepted by the
-/// executable HTTP slice. The enum leaves room for the reviewed digest
-/// vocabulary while this milestone intentionally admits only SHA-256.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum HttpContentChecksum {
-    Sha256([u8; 32]),
-}
-
-impl HttpContentChecksum {
-    pub fn parse(value: &str) -> Result<Self, HttpContentChecksumError> {
-        if value.len() > HTTP_SHA256_CHECKSUM_TEXT_BYTES {
-            return Err(HttpContentChecksumError::InvalidLength);
-        }
-        let (algorithm, digest) = value
-            .split_once('=')
-            .ok_or(HttpContentChecksumError::InvalidFormat)?;
-        if digest.contains('=') {
-            return Err(HttpContentChecksumError::InvalidFormat);
-        }
-        if algorithm != JournalDigestAlgorithm::Sha256.code() {
-            return Err(HttpContentChecksumError::UnsupportedAlgorithm);
-        }
-        if digest.len() != JournalDigestAlgorithm::Sha256.value_len() * 2 {
-            return Err(HttpContentChecksumError::InvalidLength);
-        }
-        let mut bytes = [0_u8; 32];
-        for (target, pair) in bytes.iter_mut().zip(digest.as_bytes().chunks_exact(2)) {
-            let high = decode_hex_digit(pair[0]).ok_or(HttpContentChecksumError::InvalidHex)?;
-            let low = decode_hex_digit(pair[1]).ok_or(HttpContentChecksumError::InvalidHex)?;
-            *target = (high << 4) | low;
-        }
-        Ok(Self::Sha256(bytes))
-    }
-
-    #[must_use]
-    pub const fn sha256(value: [u8; 32]) -> Self {
-        Self::Sha256(value)
-    }
-
-    #[must_use]
-    pub const fn algorithm(self) -> JournalDigestAlgorithm {
-        match self {
-            Self::Sha256(_) => JournalDigestAlgorithm::Sha256,
-        }
-    }
-
-    #[must_use]
-    pub const fn value(self) -> [u8; 32] {
-        match self {
-            Self::Sha256(value) => value,
-        }
-    }
-
-    #[must_use]
-    pub fn canonical(self) -> String {
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        let value = self.value();
-        let mut canonical = String::with_capacity(HTTP_SHA256_CHECKSUM_TEXT_BYTES);
-        canonical.push_str(self.algorithm().code());
-        canonical.push('=');
-        for byte in value {
-            canonical.push(char::from(HEX[usize::from(byte >> 4)]));
-            canonical.push(char::from(HEX[usize::from(byte & 0x0f)]));
-        }
-        canonical
-    }
-
-    #[must_use]
-    pub fn journal_digest(self) -> JournalDigest {
-        JournalDigest::new(self.algorithm(), self.value().to_vec())
-            .expect("HTTP checksum has the canonical algorithm length")
-    }
-}
-
-fn decode_hex_digit(value: u8) -> Option<u8> {
-    match value {
-        b'0'..=b'9' => Some(value - b'0'),
-        b'a'..=b'f' => Some(value - b'a' + 10),
-        b'A'..=b'F' => Some(value - b'A' + 10),
-        _ => None,
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum HttpContentChecksumError {
-    InvalidFormat,
-    UnsupportedAlgorithm,
-    InvalidLength,
-    InvalidHex,
-}
-
-impl fmt::Display for HttpContentChecksumError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::InvalidFormat => "checksum must use TYPE=DIGEST syntax",
-            Self::UnsupportedAlgorithm => "only sha-256 checksums are supported",
-            Self::InvalidLength => "checksum has the wrong length",
-            Self::InvalidHex => "checksum digest is not hexadecimal",
-        })
-    }
-}
-
-impl Error for HttpContentChecksumError {}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum HttpMirrorIdentityPolicy {
@@ -153,7 +48,7 @@ impl HttpMirrorIdentityPolicy {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct HttpTaskOptions {
+pub struct TransferTaskOptions {
     pub transfer: crate::TransferOptions,
     pub split: NonZeroUsize,
     pub max_connections_per_server: NonZeroUsize,
@@ -174,13 +69,13 @@ pub struct HttpTaskOptions {
     pub mirror_identity: HttpMirrorIdentityPolicy,
     /// Optional whole-representation checksum used for terminal verification
     /// and as the shared identity proof for strict concurrent mirrors.
-    pub checksum: Option<HttpContentChecksum>,
+    pub checksum: Option<ContentChecksum>,
     /// An explicitly resolved per-task retry policy. Tasks without one inherit
     /// the process worker policy at admission.
     pub retry: Option<HttpRetryPolicy>,
 }
 
-impl Default for HttpTaskOptions {
+impl Default for TransferTaskOptions {
     fn default() -> Self {
         Self {
             transfer: crate::TransferOptions::default(),
@@ -202,8 +97,8 @@ impl Default for HttpTaskOptions {
     }
 }
 
-impl HttpTaskOptions {
-    fn validate(&self) -> Result<(), HttpTaskSpecError> {
+impl TransferTaskOptions {
+    fn validate(&self) -> Result<(), TransferTaskSpecError> {
         self.transfer.validate()?;
         if self.split.get() > MAX_HTTP_TASK_SOURCES
             || self.max_connections_per_server.get() > MAX_HTTP_TASK_SOURCES
@@ -226,12 +121,12 @@ impl HttpTaskOptions {
                 .as_ref()
                 .is_some_and(|retry| retry.validate().is_err())
         {
-            return Err(HttpTaskSpecError::InvalidOptions);
+            return Err(TransferTaskSpecError::InvalidOptions);
         }
         Ok(())
     }
 
-    pub fn sanitized(&self) -> Result<SanitizedOptionMap, HttpTaskSpecError> {
+    pub fn sanitized(&self) -> Result<SanitizedOptionMap, TransferTaskSpecError> {
         let mut entries = vec![
             (
                 "connect-timeout".to_owned(),
@@ -268,16 +163,16 @@ impl HttpTaskOptions {
         if let Some(retry) = &self.retry {
             entries.extend(retry_sanitized_entries(retry));
         }
-        if let Some(checksum) = self.content_checksum() {
+        if let Some(checksum) = self.checksum {
             entries.push(("checksum".to_owned(), checksum.canonical()));
         }
         entries.extend(self.transfer.persisted());
-        SanitizedOptionMap::new(entries).map_err(|_| HttpTaskSpecError::InvalidOptions)
+        SanitizedOptionMap::new(entries).map_err(|_| TransferTaskSpecError::InvalidOptions)
     }
 
-    /// Reconstructs the bounded HTTP options from the redacted persisted
+    /// Reconstructs the bounded transfer options from the redacted persisted
     /// option snapshot used during startup recovery.
-    pub fn from_sanitized(options: &SanitizedOptionMap) -> Result<Self, HttpTaskSpecError> {
+    pub fn from_sanitized(options: &SanitizedOptionMap) -> Result<Self, TransferTaskSpecError> {
         let mut value = Self::default();
         let mut retry_options = BTreeMap::new();
         for (name, setting) in options.entries() {
@@ -290,69 +185,72 @@ impl HttpTaskOptions {
                     value.connect_timeout = Duration::from_secs(
                         setting
                             .parse()
-                            .map_err(|_| HttpTaskSpecError::InvalidOptions)?,
+                            .map_err(|_| TransferTaskSpecError::InvalidOptions)?,
                     )
                 }
                 "max-connection-per-server" => {
                     value.max_connections_per_server = NonZeroUsize::new(
                         setting
                             .parse()
-                            .map_err(|_| HttpTaskSpecError::InvalidOptions)?,
+                            .map_err(|_| TransferTaskSpecError::InvalidOptions)?,
                     )
-                    .ok_or(HttpTaskSpecError::InvalidOptions)?;
+                    .ok_or(TransferTaskSpecError::InvalidOptions)?;
                 }
                 "min-split-size" => {
                     value.min_split_size = setting
                         .parse()
-                        .map_err(|_| HttpTaskSpecError::InvalidOptions)?;
+                        .map_err(|_| TransferTaskSpecError::InvalidOptions)?;
                 }
                 "piece-length" => {
                     value.piece_length = setting
                         .parse()
-                        .map_err(|_| HttpTaskSpecError::InvalidOptions)?;
+                        .map_err(|_| TransferTaskSpecError::InvalidOptions)?;
                 }
                 "timeout" => {
                     value.response_body_timeout = Duration::from_secs(
                         setting
                             .parse()
-                            .map_err(|_| HttpTaskSpecError::InvalidOptions)?,
+                            .map_err(|_| TransferTaskSpecError::InvalidOptions)?,
                     )
                 }
                 "max-download-limit" => {
                     value.max_download_limit = setting
                         .parse()
-                        .map_err(|_| HttpTaskSpecError::InvalidOptions)?;
+                        .map_err(|_| TransferTaskSpecError::InvalidOptions)?;
                 }
                 "lowest-speed-limit" => {
                     value.lowest_speed_limit = setting
                         .parse()
-                        .map_err(|_| HttpTaskSpecError::InvalidOptions)?;
+                        .map_err(|_| TransferTaskSpecError::InvalidOptions)?;
                 }
                 "endgame-max-duplicates" => {
                     value.endgame_max_duplicates = setting
                         .parse()
-                        .map_err(|_| HttpTaskSpecError::InvalidOptions)?;
+                        .map_err(|_| TransferTaskSpecError::InvalidOptions)?;
                 }
                 "split" => {
                     value.split = NonZeroUsize::new(
                         setting
                             .parse()
-                            .map_err(|_| HttpTaskSpecError::InvalidOptions)?,
+                            .map_err(|_| TransferTaskSpecError::InvalidOptions)?,
                     )
-                    .ok_or(HttpTaskSpecError::InvalidOptions)?;
+                    .ok_or(TransferTaskSpecError::InvalidOptions)?;
                 }
                 "verify-mirror-identity" => {
                     value.mirror_identity = match setting {
                         "strict" => HttpMirrorIdentityPolicy::RequireSharedDigest,
                         "off" => HttpMirrorIdentityPolicy::TrustSubmittedMirrors,
-                        _ => return Err(HttpTaskSpecError::InvalidOptions),
+                        _ => return Err(TransferTaskSpecError::InvalidOptions),
                     };
                 }
                 "checksum" => {
-                    value.set_content_checksum(setting)?;
+                    value.checksum = Some(
+                        ContentChecksum::parse(setting)
+                            .map_err(|_| TransferTaskSpecError::InvalidOptions)?,
+                    );
                 }
                 // Task placement is persisted in the same atomic option
-                // snapshot but is owned by `HttpTaskSpec`, not this protocol
+                // snapshot but is owned by `TransferTaskSpec`, not this protocol
                 // tuning structure.
                 "out" | "metalink-file-index" => {}
                 // Shared trust recovery can install this safe, typed pin even
@@ -363,7 +261,7 @@ impl HttpTaskOptions {
                 {
                     value.transfer.set(name, setting)?
                 }
-                _ => return Err(HttpTaskSpecError::InvalidOptions),
+                _ => return Err(TransferTaskSpecError::InvalidOptions),
             }
         }
         if !retry_options.is_empty() {
@@ -450,39 +348,39 @@ fn retry_sanitized_entries(policy: &HttpRetryPolicy) -> Vec<(String, String)> {
 
 fn retry_from_sanitized(
     options: &BTreeMap<&str, &str>,
-) -> Result<HttpRetryPolicy, HttpTaskSpecError> {
+) -> Result<HttpRetryPolicy, TransferTaskSpecError> {
     let profile = retry_value(options, "retry-profile")
         .map(HttpRetryProfile::parse)
         .transpose()
-        .map_err(|_| HttpTaskSpecError::InvalidOptions)?
+        .map_err(|_| TransferTaskSpecError::InvalidOptions)?
         .unwrap_or_default();
     let mut policy = HttpRetryPolicy::from_profile(profile);
 
     if let Some(value) = retry_value(options, "retry-on") {
         policy.retry_on =
-            HttpRetryTriggerSet::parse(value).map_err(|_| HttpTaskSpecError::InvalidOptions)?;
+            HttpRetryTriggerSet::parse(value).map_err(|_| TransferTaskSpecError::InvalidOptions)?;
     }
     if let Some(value) = retry_value(options, "retry-on-http-status") {
         policy.retryable_statuses = if value.is_empty() {
             HttpRetryStatusSet::default()
         } else {
-            HttpRetryStatusSet::parse(value).map_err(|_| HttpTaskSpecError::InvalidOptions)?
+            HttpRetryStatusSet::parse(value).map_err(|_| TransferTaskSpecError::InvalidOptions)?
         };
     }
     if let Some(value) = retry_value(options, "retry-on-http-status-add") {
         for code in HttpRetryStatusSet::parse(value)
-            .map_err(|_| HttpTaskSpecError::InvalidOptions)?
+            .map_err(|_| TransferTaskSpecError::InvalidOptions)?
             .iter()
         {
             policy
                 .retryable_statuses
                 .insert(code)
-                .map_err(|_| HttpTaskSpecError::InvalidOptions)?;
+                .map_err(|_| TransferTaskSpecError::InvalidOptions)?;
         }
     }
     if let Some(value) = retry_value(options, "retry-on-http-status-remove") {
         for code in HttpRetryStatusSet::parse(value)
-            .map_err(|_| HttpTaskSpecError::InvalidOptions)?
+            .map_err(|_| TransferTaskSpecError::InvalidOptions)?
             .iter()
         {
             policy.retryable_statuses.remove(code);
@@ -518,21 +416,22 @@ fn retry_from_sanitized(
     }
     if let Some(value) = retry_value(options, "retry-after") {
         policy.respect_retry_after = matches!(
-            HttpRetryAfterPolicy::parse(value).map_err(|_| HttpTaskSpecError::InvalidOptions)?,
+            HttpRetryAfterPolicy::parse(value)
+                .map_err(|_| TransferTaskSpecError::InvalidOptions)?,
             HttpRetryAfterPolicy::Respect
         );
     }
     if let Some(value) = retry_value(options, "retry-backoff") {
         policy.backoff =
-            HttpRetryBackoff::parse(value).map_err(|_| HttpTaskSpecError::InvalidOptions)?;
+            HttpRetryBackoff::parse(value).map_err(|_| TransferTaskSpecError::InvalidOptions)?;
     }
     if let Some(value) = retry_value(options, "stale-validator-policy") {
         policy.stale_validator_policy = HttpStaleValidatorPolicy::parse(value)
-            .map_err(|_| HttpTaskSpecError::InvalidOptions)?;
+            .map_err(|_| TransferTaskSpecError::InvalidOptions)?;
     }
     policy
         .validate()
-        .map_err(|_| HttpTaskSpecError::InvalidOptions)?;
+        .map_err(|_| TransferTaskSpecError::InvalidOptions)?;
     Ok(policy)
 }
 
@@ -540,12 +439,12 @@ fn retry_value<'a>(options: &'a BTreeMap<&str, &str>, name: &str) -> Option<&'a 
     options.get(name).copied()
 }
 
-fn parse_retry_attempt_cap(value: &str) -> Result<NonZeroU32, HttpTaskSpecError> {
+fn parse_retry_attempt_cap(value: &str) -> Result<NonZeroU32, TransferTaskSpecError> {
     value
         .parse()
         .ok()
         .and_then(NonZeroU32::new)
-        .ok_or(HttpTaskSpecError::InvalidOptions)
+        .ok_or(TransferTaskSpecError::InvalidOptions)
 }
 
 fn stricter_attempt_cap(
@@ -559,15 +458,15 @@ fn stricter_attempt_cap(
     }
 }
 
-fn parse_retry_duration(value: &str) -> Result<Duration, HttpTaskSpecError> {
+fn parse_retry_duration(value: &str) -> Result<Duration, TransferTaskSpecError> {
     value
         .parse::<u64>()
         .map(Duration::from_secs)
-        .map_err(|_| HttpTaskSpecError::InvalidOptions)
+        .map_err(|_| TransferTaskSpecError::InvalidOptions)
 }
 
 #[derive(Clone, Eq, PartialEq)]
-pub struct HttpSourceSpec {
+pub struct TransferSourceSpec {
     protocol: crate::TransferProtocol,
     credentials: Option<crate::TransferCredentials>,
     id: UriId,
@@ -578,7 +477,7 @@ pub struct HttpSourceSpec {
     needs_credentials: bool,
 }
 
-impl HttpSourceSpec {
+impl TransferSourceSpec {
     pub const fn protocol(&self) -> crate::TransferProtocol {
         self.protocol
     }
@@ -627,10 +526,10 @@ impl HttpSourceSpec {
     }
 }
 
-impl fmt::Debug for HttpSourceSpec {
+impl fmt::Debug for TransferSourceSpec {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("HttpSourceSpec")
+            .debug_struct("TransferSourceSpec")
             .field("id", &self.id)
             .field("protocol", &self.protocol)
             .field("persistence_safe_uri", &self.persistence_safe_uri)
@@ -641,18 +540,18 @@ impl fmt::Debug for HttpSourceSpec {
 }
 
 #[derive(Clone, Debug)]
-pub struct HttpTaskSpec {
+pub struct TransferTaskSpec {
     task: TaskId,
     gid: Gid,
-    sources: Arc<[HttpSourceSpec]>,
+    sources: Arc<[TransferSourceSpec]>,
     output_root: Arc<PathBuf>,
     output: SafeRelativePath,
-    options: HttpTaskOptions,
+    options: TransferTaskOptions,
     verification: Option<Arc<crate::VerificationManifest>>,
     metalink_index: Option<u32>,
     metadata_charge: Option<Arc<crate::HttpIngressPermit>>,
 }
-impl PartialEq for HttpTaskSpec {
+impl PartialEq for TransferTaskSpec {
     fn eq(&self, other: &Self) -> bool {
         self.task == other.task
             && self.gid == other.gid
@@ -664,9 +563,9 @@ impl PartialEq for HttpTaskSpec {
             && self.metalink_index == other.metalink_index
     }
 }
-impl Eq for HttpTaskSpec {}
+impl Eq for TransferTaskSpec {}
 
-impl HttpTaskSpec {
+impl TransferTaskSpec {
     fn retained_bytes(&self) -> usize {
         let paths = self
             .output_root
@@ -712,36 +611,36 @@ impl HttpTaskSpec {
         source_uris: impl IntoIterator<Item = String>,
         output_root: PathBuf,
         output: SafeRelativePath,
-        options: HttpTaskOptions,
+        options: TransferTaskOptions,
         needs_credentials: bool,
-    ) -> Result<Self, HttpTaskSpecError> {
+    ) -> Result<Self, TransferTaskSpecError> {
         options.validate()?;
         if output_root.as_os_str().is_empty() || !output_root.is_absolute() {
-            return Err(HttpTaskSpecError::InvalidOutputRoot);
+            return Err(TransferTaskSpecError::InvalidOutputRoot);
         }
         let mut seen = BTreeSet::new();
         let mut sources = Vec::new();
         for (index, uri_text) in source_uris.into_iter().enumerate() {
             if sources.len() == MAX_HTTP_TASK_SOURCES {
-                return Err(HttpTaskSpecError::TooManySources);
+                return Err(TransferTaskSpecError::TooManySources);
             }
             let mut uri_text = uri_text;
             let initial: Uri = uri_text
                 .parse()
-                .map_err(|_| HttpTaskSpecError::InvalidUri)?;
+                .map_err(|_| TransferTaskSpecError::InvalidUri)?;
             let protocol = crate::TransferProtocol::parse(
                 initial
                     .scheme_str()
-                    .ok_or(HttpTaskSpecError::UnsupportedScheme)?,
+                    .ok_or(TransferTaskSpecError::UnsupportedScheme)?,
             )?;
             if !protocol.enabled() {
-                return Err(HttpTaskSpecError::UnsupportedScheme);
+                return Err(TransferTaskSpecError::UnsupportedScheme);
             }
             let credentials = if !protocol.is_http() {
                 let mut url =
-                    url::Url::parse(&uri_text).map_err(|_| HttpTaskSpecError::InvalidUri)?;
+                    url::Url::parse(&uri_text).map_err(|_| TransferTaskSpecError::InvalidUri)?;
                 if url.query().is_some() || url.fragment().is_some() {
-                    return Err(HttpTaskSpecError::InvalidUri);
+                    return Err(TransferTaskSpecError::InvalidUri);
                 }
                 crate::transfer_task::decode_uri_component(url.path())?;
                 let credentials = if !url.username().is_empty() || url.password().is_some() {
@@ -755,9 +654,9 @@ impl HttpTaskSpec {
                     None
                 };
                 url.set_username("")
-                    .map_err(|_| HttpTaskSpecError::InvalidUri)?;
+                    .map_err(|_| TransferTaskSpecError::InvalidUri)?;
                 url.set_password(None)
-                    .map_err(|_| HttpTaskSpecError::InvalidUri)?;
+                    .map_err(|_| TransferTaskSpecError::InvalidUri)?;
                 uri_text = url.to_string();
                 credentials
             } else {
@@ -765,24 +664,27 @@ impl HttpTaskSpec {
             };
             let uri: Uri = uri_text
                 .parse()
-                .map_err(|_| HttpTaskSpecError::InvalidUri)?;
-            let authority = uri.authority().ok_or(HttpTaskSpecError::MissingAuthority)?;
+                .map_err(|_| TransferTaskSpecError::InvalidUri)?;
+            let authority = uri
+                .authority()
+                .ok_or(TransferTaskSpecError::MissingAuthority)?;
             if authority.as_str().contains('@') {
-                return Err(HttpTaskSpecError::UserInfoForbidden);
+                return Err(TransferTaskSpecError::UserInfoForbidden);
             }
             let canonical = uri.to_string();
             if !seen.insert(canonical.clone()) {
-                return Err(HttpTaskSpecError::DuplicateSource);
+                return Err(TransferTaskSpecError::DuplicateSource);
             }
             let id = u32::try_from(index)
                 .ok()
                 .map(UriId::new)
-                .ok_or(HttpTaskSpecError::TooManySources)?;
-            let priority = i64::try_from(index).map_err(|_| HttpTaskSpecError::TooManySources)?;
+                .ok_or(TransferTaskSpecError::TooManySources)?;
+            let priority =
+                i64::try_from(index).map_err(|_| TransferTaskSpecError::TooManySources)?;
             let canonical: Arc<str> = canonical.into();
             let persistence_safe_uri =
                 ariax_storage::uri_is_safe_to_persist(&canonical).then(|| canonical.clone());
-            sources.push(HttpSourceSpec {
+            sources.push(TransferSourceSpec {
                 protocol,
                 id,
                 redacted_fingerprint: source_fingerprint(&canonical),
@@ -801,7 +703,7 @@ impl HttpTaskSpec {
             });
         }
         if sources.is_empty() {
-            return Err(HttpTaskSpecError::NoSources);
+            return Err(TransferTaskSpecError::NoSources);
         }
         Ok(Self {
             task,
@@ -824,17 +726,17 @@ impl HttpTaskSpec {
         mut records: Vec<SessionTaskSourceRecord>,
         output_root: PathBuf,
         output: SafeRelativePath,
-        options: HttpTaskOptions,
-    ) -> Result<Self, HttpTaskSpecError> {
+        options: TransferTaskOptions,
+    ) -> Result<Self, TransferTaskSpecError> {
         options.validate()?;
         if output_root.as_os_str().is_empty() || !output_root.is_absolute() {
-            return Err(HttpTaskSpecError::InvalidOutputRoot);
+            return Err(TransferTaskSpecError::InvalidOutputRoot);
         }
         if records.is_empty() {
-            return Err(HttpTaskSpecError::NoSources);
+            return Err(TransferTaskSpecError::NoSources);
         }
         if records.len() > MAX_HTTP_TASK_SOURCES {
-            return Err(HttpTaskSpecError::TooManySources);
+            return Err(TransferTaskSpecError::TooManySources);
         }
         records.sort_unstable_by_key(|source| (source.priority, source.uri_id));
         let mut ids = BTreeSet::new();
@@ -842,29 +744,31 @@ impl HttpTaskSpec {
         for record in records {
             let mut protocol = crate::TransferProtocol::Http;
             if !ids.insert(record.uri_id) {
-                return Err(HttpTaskSpecError::DuplicateSource);
+                return Err(TransferTaskSpecError::DuplicateSource);
             }
             if let Some(text) = &record.persistence_safe_uri {
                 if !ariax_storage::uri_is_safe_to_persist(text) {
-                    return Err(HttpTaskSpecError::InvalidUri);
+                    return Err(TransferTaskSpecError::InvalidUri);
                 }
-                let uri: Uri = text.parse().map_err(|_| HttpTaskSpecError::InvalidUri)?;
+                let uri: Uri = text
+                    .parse()
+                    .map_err(|_| TransferTaskSpecError::InvalidUri)?;
                 protocol = crate::TransferProtocol::parse(
                     uri.scheme_str()
-                        .ok_or(HttpTaskSpecError::UnsupportedScheme)?,
+                        .ok_or(TransferTaskSpecError::UnsupportedScheme)?,
                 )?;
                 if !protocol.enabled() {
-                    return Err(HttpTaskSpecError::UnsupportedScheme);
+                    return Err(TransferTaskSpecError::UnsupportedScheme);
                 }
                 if uri.authority().is_none() {
-                    return Err(HttpTaskSpecError::MissingAuthority);
+                    return Err(TransferTaskSpecError::MissingAuthority);
                 }
             } else if !record.needs_credentials {
-                return Err(HttpTaskSpecError::InvalidUri);
+                return Err(TransferTaskSpecError::InvalidUri);
             }
             let persistence_safe_uri: Option<Arc<str>> =
                 record.persistence_safe_uri.map(Into::into);
-            sources.push(HttpSourceSpec {
+            sources.push(TransferSourceSpec {
                 protocol,
                 credentials: None,
                 id: UriId::new(record.uri_id),
@@ -901,7 +805,7 @@ impl HttpTaskSpec {
     }
 
     #[must_use]
-    pub fn sources(&self) -> &[HttpSourceSpec] {
+    pub fn sources(&self) -> &[TransferSourceSpec] {
         &self.sources
     }
 
@@ -916,7 +820,7 @@ impl HttpTaskSpec {
     }
 
     #[must_use]
-    pub const fn options(&self) -> &HttpTaskOptions {
+    pub const fn options(&self) -> &TransferTaskOptions {
         &self.options
     }
 
@@ -926,12 +830,10 @@ impl HttpTaskSpec {
     pub(crate) fn has_strict_content_identity(&self) -> bool {
         self.verification()
             .is_some_and(|manifest| manifest.proves_strict_identity())
-            || self.options().content_checksum().is_some_and(|checksum| {
-                matches!(
-                    checksum,
-                    crate::ContentChecksum::Sha256(_) | crate::ContentChecksum::Sha512(_)
-                )
-            })
+            || self
+                .options()
+                .checksum
+                .is_some_and(ContentChecksum::proves_strict_identity)
     }
     pub const fn metalink_index(&self) -> Option<u32> {
         self.metalink_index
@@ -940,14 +842,14 @@ impl HttpTaskSpec {
         mut self,
         manifest: Arc<crate::VerificationManifest>,
         index: Option<u32>,
-    ) -> Result<Self, HttpTaskSpecError> {
+    ) -> Result<Self, TransferTaskSpecError> {
         if self
             .options
             .transfer
             .verification_fingerprint
             .is_some_and(|hash| hash != manifest.fingerprint())
         {
-            return Err(HttpTaskSpecError::InvalidOptions);
+            return Err(TransferTaskSpecError::InvalidOptions);
         }
         self.options.transfer.verification_fingerprint = Some(manifest.fingerprint());
         self.options.piece_length = manifest.chunk_length();
@@ -961,9 +863,9 @@ impl HttpTaskSpec {
     pub(crate) fn with_source_priorities(
         mut self,
         priorities: &[i64],
-    ) -> Result<Self, HttpTaskSpecError> {
+    ) -> Result<Self, TransferTaskSpecError> {
         if priorities.len() != self.sources.len() {
-            return Err(HttpTaskSpecError::InvalidOptions);
+            return Err(TransferTaskSpecError::InvalidOptions);
         }
         for (source, priority) in Arc::make_mut(&mut self.sources).iter_mut().zip(priorities) {
             source.priority = *priority;
@@ -972,22 +874,20 @@ impl HttpTaskSpec {
     }
 
     pub fn requires_protocol_dispatch(&self) -> bool {
-        self.verification.is_some()
-            || self.options.transfer.checksum.is_some()
-            || self.sources.iter().any(|source| !source.protocol.is_http())
+        self.verification.is_some() || self.sources.iter().any(|source| !source.protocol.is_http())
     }
 
     pub(crate) fn with_options(
         &self,
         output: SafeRelativePath,
-        options: HttpTaskOptions,
-    ) -> Result<Self, HttpTaskSpecError> {
+        options: TransferTaskOptions,
+    ) -> Result<Self, TransferTaskSpecError> {
         options.validate()?;
         if self.verification.is_some()
             && (options.piece_length != self.options.piece_length
-                || options.content_checksum() != self.options.content_checksum())
+                || options.checksum != self.options.checksum)
         {
-            return Err(HttpTaskSpecError::InvalidOptions);
+            return Err(TransferTaskSpecError::InvalidOptions);
         }
         Ok(Self {
             task: self.task,
@@ -1006,11 +906,11 @@ impl HttpTaskSpec {
     pub fn persistence_sources(&self) -> Vec<SessionTaskSourceRecord> {
         self.sources
             .iter()
-            .map(HttpSourceSpec::persistence_record)
+            .map(TransferSourceSpec::persistence_record)
             .collect()
     }
 
-    pub fn persistence_options(&self) -> Result<SanitizedOptionMap, HttpTaskSpecError> {
+    pub fn persistence_options(&self) -> Result<SanitizedOptionMap, TransferTaskSpecError> {
         let base = self.options.sanitized()?;
         SanitizedOptionMap::new(
             base.entries()
@@ -1021,23 +921,23 @@ impl HttpTaskSpec {
                         .map(|index| ("metalink-file-index".to_owned(), index.to_string())),
                 ),
         )
-        .map_err(|_| HttpTaskSpecError::InvalidOptions)
+        .map_err(|_| TransferTaskSpecError::InvalidOptions)
     }
 
     pub fn persisted_output(
         options: &SanitizedOptionMap,
-    ) -> Result<SafeRelativePath, HttpTaskSpecError> {
+    ) -> Result<SafeRelativePath, TransferTaskSpecError> {
         let output = options
             .entries()
             .find_map(|(name, value)| (name == "out").then_some(value))
-            .ok_or(HttpTaskSpecError::InvalidOptions)?;
+            .ok_or(TransferTaskSpecError::InvalidOptions)?;
         SafePathBuilder::from_user_path(output, ariax_storage::PathPlatform::current())
-            .map_err(|_| HttpTaskSpecError::InvalidOptions)
+            .map_err(|_| TransferTaskSpecError::InvalidOptions)
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum HttpTaskSpecError {
+pub enum TransferTaskSpecError {
     NoSources,
     TooManySources,
     DuplicateSource,
@@ -1049,7 +949,7 @@ pub enum HttpTaskSpecError {
     InvalidOptions,
 }
 
-impl HttpTaskSpecError {
+impl TransferTaskSpecError {
     #[must_use]
     pub const fn code(self) -> &'static str {
         match self {
@@ -1066,33 +966,33 @@ impl HttpTaskSpecError {
     }
 }
 
-impl fmt::Display for HttpTaskSpecError {
+impl fmt::Display for TransferTaskSpecError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.code())
     }
 }
 
-impl Error for HttpTaskSpecError {}
+impl Error for TransferTaskSpecError {}
 
 #[derive(Clone, Debug)]
-pub struct HttpTaskCatalog {
+pub struct TransferTaskCatalog {
     capacity: NonZeroUsize,
-    by_task: BTreeMap<TaskId, Arc<HttpTaskSpec>>,
+    by_task: BTreeMap<TaskId, Arc<TransferTaskSpec>>,
     by_gid: BTreeMap<Gid, TaskId>,
     retained_bytes: usize,
     metadata_budget: crate::HttpIngressBudgets,
 }
 
-impl HttpTaskCatalog {
+impl TransferTaskCatalog {
     pub(crate) fn reserve_spec(
         &self,
-        mut spec: HttpTaskSpec,
-    ) -> Result<HttpTaskSpec, HttpTaskCatalogError> {
+        mut spec: TransferTaskSpec,
+    ) -> Result<TransferTaskSpec, TransferTaskCatalogError> {
         if spec.metadata_charge.is_none() {
             spec.metadata_charge = Some(Arc::new(
                 self.metadata_budget
                     .try_acquire(spec.retained_bytes())
-                    .map_err(|_| HttpTaskCatalogError::Full)?,
+                    .map_err(|_| TransferTaskCatalogError::Full)?,
             ));
         }
         Ok(spec)
@@ -1100,14 +1000,14 @@ impl HttpTaskCatalog {
     fn set_metadata_budget(
         &mut self,
         budget: crate::HttpIngressBudgets,
-    ) -> Result<(), HttpTaskCatalogError> {
+    ) -> Result<(), TransferTaskCatalogError> {
         let mut tasks = BTreeMap::new();
         for (id, spec) in &self.by_task {
             let mut replacement = spec.as_ref().clone();
             replacement.metadata_charge = Some(Arc::new(
                 budget
                     .try_acquire(spec.retained_bytes())
-                    .map_err(|_| HttpTaskCatalogError::Full)?,
+                    .map_err(|_| TransferTaskCatalogError::Full)?,
             ));
             tasks.insert(*id, Arc::new(replacement));
         }
@@ -1115,7 +1015,7 @@ impl HttpTaskCatalog {
         self.by_task = tasks;
         Ok(())
     }
-    pub(crate) fn entries(&self) -> impl Iterator<Item = &Arc<HttpTaskSpec>> {
+    pub(crate) fn entries(&self) -> impl Iterator<Item = &Arc<TransferTaskSpec>> {
         self.by_task.values()
     }
     pub(crate) const fn retained_bytes(&self) -> usize {
@@ -1135,13 +1035,13 @@ impl HttpTaskCatalog {
 
     pub fn insert(
         &mut self,
-        spec: HttpTaskSpec,
-    ) -> Result<Arc<HttpTaskSpec>, HttpTaskCatalogError> {
+        spec: TransferTaskSpec,
+    ) -> Result<Arc<TransferTaskSpec>, TransferTaskCatalogError> {
         if self.by_task.len() == self.capacity.get() {
-            return Err(HttpTaskCatalogError::Full);
+            return Err(TransferTaskCatalogError::Full);
         }
         if self.by_task.contains_key(&spec.task) || self.by_gid.contains_key(&spec.gid) {
-            return Err(HttpTaskCatalogError::Collision);
+            return Err(TransferTaskCatalogError::Collision);
         }
         let spec = self.reserve_spec(spec)?;
         self.retained_bytes = self.retained_bytes.saturating_add(spec.retained_bytes());
@@ -1152,16 +1052,16 @@ impl HttpTaskCatalog {
     }
 
     #[must_use]
-    pub fn get(&self, task: TaskId) -> Option<Arc<HttpTaskSpec>> {
+    pub fn get(&self, task: TaskId) -> Option<Arc<TransferTaskSpec>> {
         self.by_task.get(&task).cloned()
     }
 
     #[must_use]
-    pub fn get_gid(&self, gid: Gid) -> Option<Arc<HttpTaskSpec>> {
+    pub fn get_gid(&self, gid: Gid) -> Option<Arc<TransferTaskSpec>> {
         self.by_gid.get(&gid).and_then(|task| self.get(*task))
     }
 
-    pub fn remove(&mut self, task: TaskId) -> Option<Arc<HttpTaskSpec>> {
+    pub fn remove(&mut self, task: TaskId) -> Option<Arc<TransferTaskSpec>> {
         let spec = self.by_task.remove(&task)?;
         self.by_gid.remove(&spec.gid);
         self.retained_bytes = self.retained_bytes.saturating_sub(spec.retained_bytes());
@@ -1170,11 +1070,11 @@ impl HttpTaskCatalog {
 
     pub fn replace(
         &mut self,
-        spec: HttpTaskSpec,
-    ) -> Result<Arc<HttpTaskSpec>, HttpTaskCatalogError> {
+        spec: TransferTaskSpec,
+    ) -> Result<Arc<TransferTaskSpec>, TransferTaskCatalogError> {
         if self.by_gid.get(&spec.gid) != Some(&spec.task) || !self.by_task.contains_key(&spec.task)
         {
-            return Err(HttpTaskCatalogError::Collision);
+            return Err(TransferTaskCatalogError::Collision);
         }
         let spec = self.reserve_spec(spec)?;
         self.retained_bytes = self
@@ -1198,59 +1098,65 @@ impl HttpTaskCatalog {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum HttpTaskCatalogError {
+pub enum TransferTaskCatalogError {
     Full,
     Collision,
 }
 
-/// Cloneable, process-local ownership of the bounded public HTTP task catalog.
+/// Cloneable, process-local ownership of the bounded public transfer task catalog.
 ///
 /// Admission and worker supervision share this registry so an allocation can
 /// only start from the exact immutable specification that was admitted and
 /// persisted for its task/GID pair.
 #[derive(Clone, Debug)]
-pub struct SharedHttpTaskCatalog {
-    inner: Arc<RwLock<Arc<HttpTaskCatalog>>>,
+pub struct SharedTransferTaskCatalog {
+    inner: Arc<RwLock<Arc<TransferTaskCatalog>>>,
 }
 
-impl SharedHttpTaskCatalog {
+impl SharedTransferTaskCatalog {
     pub(crate) fn set_metadata_budget(
         &self,
         budget: crate::HttpIngressBudgets,
-    ) -> Result<(), HttpTaskCatalogError> {
+    ) -> Result<(), TransferTaskCatalogError> {
         Arc::make_mut(&mut write_unpoisoned(&self.inner)).set_metadata_budget(budget)
     }
     /// Captures immutable metadata without copying task payloads.
-    pub(crate) fn snapshot(&self) -> Arc<HttpTaskCatalog> {
+    pub(crate) fn snapshot(&self) -> Arc<TransferTaskCatalog> {
         Arc::clone(&read_unpoisoned(&self.inner))
     }
 
     #[must_use]
     pub fn new(capacity: NonZeroUsize) -> Self {
         Self {
-            inner: Arc::new(RwLock::new(Arc::new(HttpTaskCatalog::new(capacity)))),
+            inner: Arc::new(RwLock::new(Arc::new(TransferTaskCatalog::new(capacity)))),
         }
     }
 
-    pub fn insert(&self, spec: HttpTaskSpec) -> Result<Arc<HttpTaskSpec>, HttpTaskCatalogError> {
+    pub fn insert(
+        &self,
+        spec: TransferTaskSpec,
+    ) -> Result<Arc<TransferTaskSpec>, TransferTaskCatalogError> {
         Arc::make_mut(&mut write_unpoisoned(&self.inner)).insert(spec)
     }
 
     #[must_use]
-    pub fn get(&self, task: TaskId) -> Option<Arc<HttpTaskSpec>> {
+    pub fn get(&self, task: TaskId) -> Option<Arc<TransferTaskSpec>> {
         read_unpoisoned(&self.inner).get(task)
     }
 
     #[must_use]
-    pub fn get_gid(&self, gid: Gid) -> Option<Arc<HttpTaskSpec>> {
+    pub fn get_gid(&self, gid: Gid) -> Option<Arc<TransferTaskSpec>> {
         read_unpoisoned(&self.inner).get_gid(gid)
     }
 
-    pub fn remove(&self, task: TaskId) -> Option<Arc<HttpTaskSpec>> {
+    pub fn remove(&self, task: TaskId) -> Option<Arc<TransferTaskSpec>> {
         Arc::make_mut(&mut write_unpoisoned(&self.inner)).remove(task)
     }
 
-    pub fn replace(&self, spec: HttpTaskSpec) -> Result<Arc<HttpTaskSpec>, HttpTaskCatalogError> {
+    pub fn replace(
+        &self,
+        spec: TransferTaskSpec,
+    ) -> Result<Arc<TransferTaskSpec>, TransferTaskCatalogError> {
         Arc::make_mut(&mut write_unpoisoned(&self.inner)).replace(spec)
     }
 
@@ -1293,13 +1199,13 @@ mod tests {
         let pin = "05".repeat(32);
         let snapshot =
             SanitizedOptionMap::new([("sftp-host-key-sha256".to_owned(), pin.clone())]).unwrap();
-        let restored = HttpTaskOptions::from_sanitized(&snapshot).unwrap();
+        let restored = TransferTaskOptions::from_sanitized(&snapshot).unwrap();
         assert_eq!(restored.transfer.sftp_host_key_sha256, Some(pin));
         assert!(restored.transfer.sftp_check_host_key);
         for pin in ["05".repeat(31), "zz".repeat(32), "05".repeat(33)] {
             let snapshot =
                 SanitizedOptionMap::new([("sftp-host-key-sha256".to_owned(), pin)]).unwrap();
-            assert!(HttpTaskOptions::from_sanitized(&snapshot).is_err());
+            assert!(TransferTaskOptions::from_sanitized(&snapshot).is_err());
         }
         if !cfg!(feature = "sftp") {
             assert!(!crate::TransferOptions::handles("sftp-host-key-sha256"));
@@ -1308,13 +1214,13 @@ mod tests {
 
     #[test]
     fn catalog_reservations_include_live_authority_and_survive_removal() {
-        let mut options = HttpTaskOptions::default();
+        let mut options = TransferTaskOptions::default();
         options.transfer.credentials = Some(
             crate::TransferCredentials::new("user".into(), Some("secret".repeat(512))).unwrap(),
         );
         options.transfer.sftp_private_key = Some("private-key".repeat(300).into());
         options.transfer.sftp_host_key = Some("key".repeat(1000));
-        let spec = HttpTaskSpec::new(
+        let spec = TransferTaskSpec::new(
             task(1),
             gid(1),
             ["https://example.test/file".to_owned()],
@@ -1326,7 +1232,7 @@ mod tests {
         .unwrap();
         assert!(spec.retained_bytes() > 15_000);
         let budget = crate::HttpIngressBudgets::new(spec.retained_bytes());
-        let catalog = SharedHttpTaskCatalog::new(NonZeroUsize::new(2).unwrap());
+        let catalog = SharedTransferTaskCatalog::new(NonZeroUsize::new(2).unwrap());
         catalog.set_metadata_budget(budget.clone()).unwrap();
         let held = catalog.insert(spec.clone()).unwrap();
         assert_eq!(budget.used(), budget.limit());
@@ -1344,13 +1250,13 @@ mod tests {
         let uri = "https://example.test/file?token=secret-canary";
         let task = TaskId::new(1).expect("task");
         let gid = Gid::new(1).expect("gid");
-        let spec = HttpTaskSpec::new(
+        let spec = TransferTaskSpec::new(
             task,
             gid,
             [uri.to_owned(), "https://safe.test/file".to_owned()],
             std::env::temp_dir(),
             output(),
-            HttpTaskOptions::default(),
+            TransferTaskOptions::default(),
             false,
         )
         .expect("live sources");
@@ -1366,52 +1272,52 @@ mod tests {
             records[0].redacted_fingerprint,
             source_fingerprint("https://example.test/file?another-secret")
         );
-        let recovered = HttpTaskSpec::from_persisted_sources(
+        let recovered = TransferTaskSpec::from_persisted_sources(
             task,
             gid,
             records.clone(),
             std::env::temp_dir(),
             output(),
-            HttpTaskOptions::default(),
+            TransferTaskOptions::default(),
         )
         .expect("recovered sources");
         assert_eq!(recovered.sources()[0].uri(), None);
         assert_eq!(recovered.sources()[1].uri(), Some("https://safe.test/file"));
         assert_eq!(recovered.sources()[1].id().get(), 1);
         assert_eq!(recovered.persistence_sources(), records);
-        let blocked = HttpTaskSpec::from_persisted_sources(
+        let blocked = TransferTaskSpec::from_persisted_sources(
             task,
             gid,
             vec![records[0].clone()],
             std::env::temp_dir(),
             output(),
-            HttpTaskOptions::default(),
+            TransferTaskOptions::default(),
         )
         .expect("blocked task remains cataloged");
         assert_eq!(blocked.sources()[0].uri(), None);
         let mut invalid = records[0].clone();
         invalid.needs_credentials = false;
         assert!(
-            HttpTaskSpec::from_persisted_sources(
+            TransferTaskSpec::from_persisted_sources(
                 task,
                 gid,
                 vec![invalid],
                 std::env::temp_dir(),
                 output(),
-                HttpTaskOptions::default()
+                TransferTaskOptions::default()
             )
             .is_err()
         );
         let mut invalid = records[1].clone();
         invalid.persistence_safe_uri = Some(uri.to_owned());
         assert!(
-            HttpTaskSpec::from_persisted_sources(
+            TransferTaskSpec::from_persisted_sources(
                 task,
                 gid,
                 vec![invalid],
                 std::env::temp_dir(),
                 output(),
-                HttpTaskOptions::default()
+                TransferTaskOptions::default()
             )
             .is_err()
         );
@@ -1433,17 +1339,17 @@ mod tests {
 
     #[test]
     fn option_replacement_shares_validated_sources_and_rejects_invalid_options() {
-        let spec = HttpTaskSpec::new(
+        let spec = TransferTaskSpec::new(
             task(1),
             gid(1),
             ["https://example.test/file".to_owned()],
             std::env::current_dir().expect("absolute root"),
             output(),
-            HttpTaskOptions::default(),
+            TransferTaskOptions::default(),
             false,
         )
         .expect("task");
-        let options = HttpTaskOptions {
+        let options = TransferTaskOptions {
             split: NonZeroUsize::new(3).expect("split"),
             ..spec.options.clone()
         };
@@ -1454,25 +1360,25 @@ mod tests {
         assert!(Arc::ptr_eq(&spec.output_root, &replacement.output_root));
         assert_eq!(replacement.options, options);
         assert_ne!(spec.options, replacement.options);
-        let invalid = HttpTaskOptions {
+        let invalid = TransferTaskOptions {
             split: NonZeroUsize::new(MAX_HTTP_TASK_SOURCES + 1).expect("invalid split"),
             ..options
         };
         assert_eq!(
             spec.with_options(output(), invalid),
-            Err(HttpTaskSpecError::InvalidOptions)
+            Err(TransferTaskSpecError::InvalidOptions)
         );
         assert_eq!(spec.sources[0].uri(), Some("https://example.test/file"));
     }
 
     #[test]
     fn task_spec_canonicalizes_multiple_sources_and_builds_restart_rows() {
-        let options = HttpTaskOptions {
+        let options = TransferTaskOptions {
             max_download_limit: 64 * 1024,
-            checksum: Some(HttpContentChecksum::sha256([0xab; 32])),
-            ..HttpTaskOptions::default()
+            checksum: Some(ContentChecksum::Sha256([0xab; 32])),
+            ..TransferTaskOptions::default()
         };
-        let spec = HttpTaskSpec::new(
+        let spec = TransferTaskSpec::new(
             task(1),
             gid(1),
             [
@@ -1513,7 +1419,7 @@ mod tests {
             Some("65536")
         );
         assert_eq!(
-            HttpTaskOptions::from_sanitized(&spec.options().sanitized().expect("sanitized"))
+            TransferTaskOptions::from_sanitized(&spec.options().sanitized().expect("sanitized"))
                 .expect("recover options")
                 .max_download_limit,
             64 * 1024
@@ -1528,23 +1434,53 @@ mod tests {
             Some("sha-256=abababababababababababababababababababababababababababababababab")
         );
         assert_eq!(
-            HttpTaskOptions::from_sanitized(&spec.options().sanitized().expect("sanitized"))
+            TransferTaskOptions::from_sanitized(&spec.options().sanitized().expect("sanitized"))
                 .expect("recover options")
                 .checksum,
-            Some(HttpContentChecksum::sha256([0xab; 32]))
+            Some(ContentChecksum::Sha256([0xab; 32]))
         );
     }
 
     #[test]
-    fn checksum_parser_canonicalizes_sha256_and_rejects_unsafe_shapes() {
-        let uppercase = "sha-256=ABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD";
-        let checksum = HttpContentChecksum::parse(uppercase).expect("valid checksum");
-        assert_eq!(
-            checksum.canonical(),
-            "sha-256=abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"
-        );
-        assert_eq!(checksum.journal_digest().value(), checksum.value());
-
+    fn task_checksums_round_trip_without_changing_http_dispatch_and_reject_invalid_values() {
+        for checksum in [
+            ContentChecksum::Md5([0xab; 16]),
+            ContentChecksum::Sha1([0xab; 20]),
+            ContentChecksum::Sha256([0xab; 32]),
+            ContentChecksum::Sha512([0xab; 64]),
+        ] {
+            let options = TransferTaskOptions {
+                checksum: Some(checksum),
+                ..Default::default()
+            };
+            let persisted = options.sanitized().expect("persist checksum");
+            assert_eq!(
+                TransferTaskOptions::from_sanitized(&persisted).expect("recover checksum"),
+                options
+            );
+            assert_eq!(
+                persisted
+                    .entries()
+                    .filter(|(name, _)| *name == "checksum")
+                    .count(),
+                1
+            );
+            let spec = TransferTaskSpec::new(
+                TaskId::new(1).unwrap(),
+                Gid::new(1).unwrap(),
+                vec!["https://example.test/file".to_owned()],
+                std::env::temp_dir(),
+                output(),
+                options,
+                false,
+            )
+            .expect("shared task");
+            assert!(!spec.requires_protocol_dispatch());
+            assert_eq!(
+                spec.has_strict_content_identity(),
+                checksum.proves_strict_identity()
+            );
+        }
         for invalid in [
             "sha-256",
             "sha-512=abcdef",
@@ -1552,7 +1488,12 @@ mod tests {
             "sha-256=ggcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
             "sha-256=abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd=",
         ] {
-            assert!(HttpContentChecksum::parse(invalid).is_err(), "{invalid}");
+            let persisted =
+                SanitizedOptionMap::new([("checksum".to_owned(), invalid.to_owned())]).unwrap();
+            assert!(
+                TransferTaskOptions::from_sanitized(&persisted).is_err(),
+                "{invalid}"
+            );
         }
     }
 
@@ -1568,10 +1509,10 @@ mod tests {
         retry.max_attempts = NonZeroU32::new(4).expect("attempt cap");
         retry.max_attempts_per_mirror = NonZeroU32::new(2).expect("mirror cap");
         retry.respect_retry_after = false;
-        let options = HttpTaskOptions {
+        let options = TransferTaskOptions {
             retry: Some(retry.clone()),
             endgame_max_duplicates: 7,
-            ..HttpTaskOptions::default()
+            ..TransferTaskOptions::default()
         };
         let snapshot = options.sanitized().expect("sanitized");
         assert_eq!(
@@ -1588,7 +1529,7 @@ mod tests {
                 .map(|(_, value)| value),
             Some("custom")
         );
-        let restored = HttpTaskOptions::from_sanitized(&snapshot).expect("restored");
+        let restored = TransferTaskOptions::from_sanitized(&snapshot).expect("restored");
         assert_eq!(restored.retry, Some(retry));
         assert_eq!(restored.endgame_max_duplicates, 7);
     }
@@ -1596,66 +1537,69 @@ mod tests {
     #[test]
     fn task_spec_rejects_unsafe_or_ambiguous_sources_and_roots() {
         for (sources, expected) in [
-            (Vec::new(), HttpTaskSpecError::NoSources),
+            (Vec::new(), TransferTaskSpecError::NoSources),
             (
                 vec!["gopher://example.com/file".to_owned()],
-                HttpTaskSpecError::UnsupportedScheme,
+                TransferTaskSpecError::UnsupportedScheme,
             ),
             (
                 vec!["https://user:secret@example.com/file".to_owned()],
-                HttpTaskSpecError::UserInfoForbidden,
+                TransferTaskSpecError::UserInfoForbidden,
             ),
             (
                 vec![
                     "https://example.com/file".to_owned(),
                     "https://example.com/file".to_owned(),
                 ],
-                HttpTaskSpecError::DuplicateSource,
+                TransferTaskSpecError::DuplicateSource,
             ),
         ] {
             assert_eq!(
-                HttpTaskSpec::new(
+                TransferTaskSpec::new(
                     task(1),
                     gid(1),
                     sources,
                     std::env::temp_dir(),
                     output(),
-                    HttpTaskOptions::default(),
+                    TransferTaskOptions::default(),
                     false,
                 ),
                 Err(expected)
             );
         }
         assert_eq!(
-            HttpTaskSpec::new(
+            TransferTaskSpec::new(
                 task(1),
                 gid(1),
                 ["https://example.com/file".to_owned()],
                 PathBuf::from("relative"),
                 output(),
-                HttpTaskOptions::default(),
+                TransferTaskOptions::default(),
                 false,
             ),
-            Err(HttpTaskSpecError::InvalidOutputRoot)
+            Err(TransferTaskSpecError::InvalidOutputRoot)
         );
     }
 
     #[test]
     fn catalog_rejects_identity_collisions_and_releases_both_indexes() {
-        let mut catalog = HttpTaskCatalog::new(NonZeroUsize::new(2).expect("capacity"));
-        let spec = HttpTaskSpec::new(
+        let mut catalog = TransferTaskCatalog::new(NonZeroUsize::new(2).expect("capacity"));
+        let spec = TransferTaskSpec::new(
             task(1),
             gid(1),
             ["https://example.com/file".to_owned()],
             std::env::temp_dir(),
             output(),
-            HttpTaskOptions::default(),
+            TransferTaskOptions::default(),
             false,
         )
         .expect("spec");
         catalog.insert(spec.clone()).expect("insert");
         assert_eq!(catalog.get_gid(gid(1)).expect("by gid").task(), task(1));
-        assert_eq!(catalog.insert(spec), Err(HttpTaskCatalogError::Collision));
+        assert_eq!(
+            catalog.insert(spec),
+            Err(TransferTaskCatalogError::Collision)
+        );
         assert!(catalog.remove(task(1)).is_some());
         assert!(catalog.get_gid(gid(1)).is_none());
     }

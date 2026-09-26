@@ -275,9 +275,51 @@ fn paused_torrent_options_commit_without_native_start_and_reject_unsafe_replacem
         .call("aria2.getOption", json!([gid.to_string()]))
         .unwrap();
     assert_eq!(options["bt-resume-timeout"], "15");
+    let dump = plane
+        .call(
+            "ariax.dumpConfig",
+            json!(["task-effective", "json", gid.to_string()]),
+        )
+        .expect("BitTorrent task dump");
+    assert_eq!(dump["options"], options);
+    assert_eq!(dump["sources"]["bt-resume-timeout"], "task");
+    let flat = plane
+        .call(
+            "ariax.dumpConfig",
+            json!(["task-effective", "flat", gid.to_string()]),
+        )
+        .expect("flat BitTorrent task dump");
+    assert!(flat.as_str().unwrap().contains("bt-resume-timeout=15\n"));
+    let toml = plane
+        .call(
+            "ariax.dumpConfig",
+            json!(["task-effective", "toml", gid.to_string()]),
+        )
+        .expect("TOML BitTorrent task dump");
+    assert!(
+        toml.as_str()
+            .unwrap()
+            .contains("\"bt-resume-timeout\" = \"15\"")
+    );
+    for params in [
+        json!(["task-effective", "json"]),
+        json!(["task-effective", "json", "ffffffffffffffff"]),
+        json!(["task-effective", "legacy", gid.to_string()]),
+    ] {
+        assert!(plane.call("ariax.dumpConfig", params).is_err());
+    }
     plane.shutdown().unwrap();
     let mut recovered = directory.control_plane();
     assert!(recovered.bittorrent_handle().is_none());
+    assert_eq!(
+        recovered
+            .call(
+                "ariax.dumpConfig",
+                json!(["task-effective", "json", gid.to_string()])
+            )
+            .expect("recovered BitTorrent task dump")["options"],
+        options
+    );
     assert_eq!(
         recovered
             .call("aria2.getOption", json!([gid.to_string()]))

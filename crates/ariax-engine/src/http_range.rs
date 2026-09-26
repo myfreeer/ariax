@@ -1,6 +1,6 @@
 //! Deterministic, bounded coordination for parallel HTTP range workers.
 
-use crate::http_task::MAX_HTTP_ENDGAME_MAX_DUPLICATES;
+use crate::transfer_spec::MAX_HTTP_ENDGAME_MAX_DUPLICATES;
 use ariax_core::{LeaseId, OverlapGroupId, PieceId, UriId};
 use ariax_storage::GlobalSpan;
 use hyper::Uri;

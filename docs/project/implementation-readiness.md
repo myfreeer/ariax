@@ -24,7 +24,8 @@ criteria below and [implementation-plan.md](implementation-plan.md).
 Phase 5 implementation at `88d1a83` now passes all six local
 [shared transfer gates](../protocols/detailed-protocol-transfers.md#scope-and-checkpoints).
 The [September 15 validation record](../../performance-evidence/phase5-validation-2026-09-15.md)
-covers shared protocol transfers, verification, migration and current evidence.
+covers shared protocol transfers, verification and the historical session
+format. Current-format sessions require v3 as described below.
 
 This document is the handoff checklist from architecture design to detailed
 module design and implementation.
@@ -246,7 +247,7 @@ Phase 0 should generate or maintain:
 - error-code matrix,
 - control-journal record/schema/version matrix,
 - compact-checkpoint and persisted root-binding/rebind matrices,
-- exact SQLite schema, pragma, migration, and backup matrix,
+- exact SQLite schema, pragma, unsupported-format rejection, and backup matrix,
 - runtime resource/cap matrix, including metadata cardinality and global
   resident-permit accounting,
 - backend-epoch/live-failover and file-handle-budget matrices,
@@ -266,7 +267,7 @@ The first useful vertical slice spans implementation Phases 1–3 and should be:
 4. `BufferPool` and bounded queue wrappers,
 5. `ControlJournal` with lease commit/abort, serialized sequence assignment,
    balanced/strict durability ordering, and checkpoint-only `PieceStateChunk`,
-6. `SessionStore` with the exact v2 schema, v1 migration, root binding, and
+6. `SessionStore` with the exact v3 schema, older-format rejection, root binding, and
    explicit relocation/rebind entry point,
 7. known-length identity HTTP sequential download through `StorageEngine`,
 8. strict strong-ETag range resume with provisional writes and explicit
@@ -421,7 +422,8 @@ September 22 CI baseline closes its deferred native Linux measurement gate.
 | `P4-10` Slow-slot scheduling | Closed. Default `off`, demote/pause, queue ordering, cooldown, user precedence, recovery and concurrent local-pressure guards are covered. `slow_remote_workers_free_slots_and_user_controls_override_cooldown` and `retry_wait_slot_policy_uses_real_worker_deadlines` pass. Automatic retry readmission preserves range deadlines and attempt counts under unchanged snapshots; strict generation rejection remains tested. |
 | `P4-11` Performance and platform evidence | Implementation and expanded native Windows campaign pass: immutable queries outside the owner, one managed runtime, nonblocking mutation/admission work, bounded bulk continuation, later-action precedence, and cancellation ownership. Four transports each complete 20,000 measured calls under 1,000 active ranges; worst operation p99 is 37.543 ms and longest burst 421 ms. The separate 128-task administrative scenario also passes. [Reports and limits](../runtime/performance-profiles.md#native-windows-control-plane-evidence). Native Linux measurement and the full functional CI matrix pass at `af5d193`; native backend and release-packaging gates remain separate. |
 
-The session schema stays at v2 and journal replay remains strict. Native disk
+The recorded Phase-4B checkpoint used schema v2; current stores require v3
+and older stores reject unchanged. Journal replay remains strict. Native disk
 backend additions, hardware poweroff, release packaging, and tagging remain
 separate roadmap gates. Record checkpoints and bounded benchmark evidence before
 removing generated target outputs; preserve pinned toolchains and archives.
@@ -470,9 +472,10 @@ removing generated target outputs; preserve pinned toolchains and archives.
 transfer ownership, four checksum algorithms, multi-lease verification and
 recovery, streamed Metalink v3/v4 admission/following, patched FTP/FTPS and
 SFTP, mixed-source scheduling, selectors/statistics and CLI/RPC/Rust parity.
-JSON migration v2 retains selected verification without the original XML;
-version-1 import remains supported. Journal v1 gains required records 27–32;
-existing record meanings and SQLite schema v2 are unchanged.
+At that checkpoint, JSON v2 retained selected verification without the original
+XML and supported v1 import, while SQLite remained v2. Current SQLite/JSON v3
+replaces those development formats and rejects them unchanged. Journal framing
+v1 remains current, including required verification records 27–32.
 
 Default and all-feature workspace suites, builds and strict Clippy pass on
 Linux-under-WSL and native Windows-GNU. MSRV 1.88, generated contracts, all four
@@ -490,6 +493,47 @@ the separate 128-task administrative scenario. Worst operation p99 is
 [Phase 5 performance evidence](../runtime/performance-profiles.md#native-windows-phase-5-evidence)
 is separate from the historical P4 reports.
 
+## Phase 6 Local Implementation And Open Acceptance
+
+The local Phase-6 implementation and acceptance harness are complete, including
+native integration, safe metadata admission, shared scheduler/resource ownership,
+fresh SQLite/JSON v3 persistence
+and the Rust/CLI/RPC owners. `P6-01` through `P6-06` map to the
+[implementation work packages](implementation-plan.md#phase-6-bittorrent-full-build).
+Older development stores and JSON formats are rejected unchanged; the historical
+Phase-5 migration evidence does not describe the current v3 contract.
+
+The unreleased API now uses concrete shared transfer types and one
+`ContentChecksum` field for every supported algorithm. Obsolete HTTP type
+aliases, checksum conversions and the legacy config-dump shape are removed.
+HTTP final verification preserves fully durable offline rechecks for all four
+algorithms. JSON is the default config-dump format, BT task-effective dumps
+share the option query, and global statistics include BT download/upload rates
+and selected-file progress through immutable snapshots.
+
+The acceptance harness now covers real torrent and magnet transfers for v1, v2
+and hybrid metadata, multi-piece v2 hash recovery, selected-file collision
+mapping, seeding, dropped callers, checkpointed pause/removal, dirty payload
+rechecks and active shutdown. Separate native probes cover tracker/web-seed
+redirects, resolved private destinations, tracker-discovered peers and outgoing
+DHT filtering. The BT parser has a bounded fuzz target, and the native bridge
+has a separate ASan/UBSan job. The mixed benchmark adds 1,000 actual BT peers to
+the existing 1,000 HTTP ranges and preserves the established operation, burst,
+memory and complete-run limits.
+
+Only CI-dependent execution and acceptance remain for Phase 6. The new
+native tests, process-crash tests, sanitizer/fuzz campaign and mixed benchmark
+require recorded execution before any Phase-6 gate is closed. The current
+work is restricted to local edits and focused checks; no new upstream or CI
+action is part of this checkpoint. Historical native reports remain valid only
+for their recorded source and scenarios. This does not close the separate
+kernel/backend, custom BT storage, release-platform or tagging requirements.
+
+The [September 26 local validation record](../../performance-evidence/phase6-local-validation-2026-09-26.md)
+records passing offline parser, peer-framing, fixture, patch, Python and static
+checks. It also records the unavailable cached storage dependency and the
+uncompiled native suites, including the shutdown-deadline recovery regression.
+
 ## Deferred But Tracked
 
 The [remote and fail-fast CI prerequisite](../development/continuous-integration.md) passes
@@ -505,7 +549,7 @@ separate gates.
 These are intentionally not first-slice blockers, but their registry and
 feature-gate status must exist from the start:
 
-- libtorrent full build,
+- libtorrent native acceptance for the current Phase-6 implementation,
 - XML-RPC,
 - C ABI,
 - HTTP/3/QUIC,
@@ -577,7 +621,7 @@ A module is ready to implement when it has:
 - cross-platform behavior,
 - feature-gate and build-profile behavior,
 - externally visible compatibility behavior and any intentional divergence,
-- on-disk schema/version and migration behavior when persistence is touched,
+- on-disk schema/version and unsupported-format rejection when persistence is touched,
 - no unresolved P0 item assigned to it by [final-preimplementation-review.md](../reviews/final-preimplementation-review.md).
 
 If any item is missing, add it to the design before coding that module.

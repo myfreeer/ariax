@@ -31,6 +31,10 @@ fn native() {
             .join("install")
     });
     println!("cargo:rerun-if-env-changed=ARIAX_BT_NATIVE_DIR");
+    println!("cargo:rerun-if-env-changed=ARIAX_BT_SANITIZER");
+    let sanitizer = env::var("ARIAX_BT_SANITIZER").unwrap_or_else(|_| "none".into());
+    assert!(matches!(sanitizer.as_str(), "none" | "address"));
+    assert!(sanitizer == "none" || target == "x86_64-unknown-linux-gnu");
     for path in [
         "native/libtorrent/sources.json",
         "native/libtorrent/ariax.patch",
@@ -46,6 +50,10 @@ fn native() {
     )
     .expect("valid native provenance manifest");
     assert_eq!(manifest["target"], target, "native ABI mismatch");
+    assert_eq!(
+        manifest["inputs"]["sanitizer"], sanitizer,
+        "native instrumentation mismatch"
+    );
     for (key, path) in [
         ("sourcesSha256", "native/libtorrent/sources.json"),
         ("patchSha256", "native/libtorrent/ariax.patch"),
@@ -113,6 +121,11 @@ fn native() {
             .define("BOOST_ALL_NO_LIB", None)
             .flag("/EHsc")
             .flag("/bigobj");
+    }
+    if sanitizer == "address" {
+        bridge
+            .flag("-fsanitize=address,undefined")
+            .flag("-fno-omit-frame-pointer");
     }
     bridge.compile("ariax_bt_bridge");
     println!(

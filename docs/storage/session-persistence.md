@@ -529,6 +529,8 @@ Admission and recovery use the same bounded pure metadata parser. Storage
 rechecks info hashes, metainfo and magnet identities, file shapes, portable paths,
 and the absence of endpoint credentials. A pending magnet has an identity and
 protected root but no files; its first metadata commit fixes the complete mapping.
+That commit retains the magnet's validated trackers and web seeds in metainfo,
+so subsequent starts and JSON exports preserve discovery without resume authority.
 Subsequent metadata commits cannot change that binding. Checkpoint tokens include
 both generation and monotonically increasing request number. A stale completion
 cannot clear a dirty flag or replace a newer safe blob.
@@ -552,6 +554,11 @@ is acknowledged. The default limit is 16 MiB (maximum 64 MiB) and default timeou
 30 seconds (maximum 300 seconds). Failure, timeout or oversized output preserves
 the previous safe blob and sets `DirtyCheckpoint`. A caller disconnect does not
 cancel native ownership or the persistence completion.
+Process-crash tests stop immediately before and after the SQLite checkpoint
+commit. Recovery must observe the old dirty snapshot or the complete new blob,
+counters and request token together, in both WAL and DELETE journal modes.
+An expired shutdown deadline retains that last safe blob and the already
+persisted dirty generation; it cannot publish a clean shutdown result.
 
 A running task is marked dirty before it resumes native I/O. Restarts and JSON
 imports revalidate identities, root protection and stable mappings, and recheck

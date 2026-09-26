@@ -208,12 +208,20 @@ def verify_manifest(prefix, target, expected):
     return manifest
 
 
+def work_directory(target, sanitizer):
+    require(sanitizer in {"none", "address"}, "unknown native instrumentation")
+    require(sanitizer == "none" or target == "x86_64-unknown-linux-gnu",
+            "native sanitizer validation requires the Linux CI target")
+    return ROOT / "toolchains/bt-native" / (target + ("-sanitized" if sanitizer == "address" else ""))
+
+
 def build(args):
     openssl_target = native_target(args.target)
     spec = json.loads(SPEC.read_text())
     expected = {"sourcesSha256": digest(SPEC), "patchSha256": digest(PATCH),
-                "builderSha256": digest(Path(__file__))}
-    work = ROOT / "toolchains/bt-native" / args.target
+                "builderSha256": digest(Path(__file__)), "sanitizer": args.sanitizer}
+    work = work_directory(args.target, args.sanitizer)
+    flags = ["-fsanitize=address,undefined", "-fno-omit-frame-pointer"] if args.sanitizer == "address" else []
     cache = work / "cache"
     prefix = work / "install"
     if (prefix / "ariax-native.json").is_file():
@@ -251,7 +259,7 @@ def build(args):
         shutil.copytree(upstream, ssl)
         run(["perl", "Configure", openssl_target, "no-shared", "no-tests", "no-apps", "no-docs",
              "no-module", "no-legacy", "no-engine", "no-zlib", "no-asm", "--libdir=lib",
-             "--prefix=" + str(ssl_prefix), *([] if os.name == "nt" else ["-fPIC"])], cwd=ssl)
+             "--prefix=" + str(ssl_prefix), *([] if os.name == "nt" else ["-fPIC"]), *flags], cwd=ssl)
         make = "nmake" if args.target.endswith("msvc") else "make"
         parallel = [] if make == "nmake" else ["-j" + str(args.jobs)]
         run([make, *parallel, "build_libs"], cwd=ssl)
@@ -276,10 +284,15 @@ def build(args):
                "-DCMAKE_INSTALL_PREFIX=" + str(prefix), "-DCMAKE_INSTALL_LIBDIR=lib",
                "-DBoost_INCLUDE_DIR=" + str(boost), "-DBOOST_ROOT=" + str(boost),
                "-DOPENSSL_ROOT_DIR=" + str(ssl_prefix)]
-    command += ["-D" + key + "=" + value for key, value in spec["settings"].items()]
+    settings = spec["settings"].copy()
+    if flags:
+        settings.update(CMAKE_BUILD_TYPE="RelWithDebInfo", CMAKE_CXX_FLAGS=" ".join(flags),
+                        CMAKE_C_FLAGS=" ".join(flags), CMAKE_CXX_FLAGS_RELWITHDEBINFO="-O1 -g")
+    command += ["-D" + key + "=" + value for key, value in settings.items()]
     run(command)
-    run(["cmake", "--build", build_dir, "--config", "Release", "--parallel", str(args.jobs)])
-    run(["cmake", "--install", build_dir, "--config", "Release"])
+    configuration = settings["CMAKE_BUILD_TYPE"]
+    run(["cmake", "--build", build_dir, "--config", configuration, "--parallel", str(args.jobs)])
+    run(["cmake", "--install", build_dir, "--config", configuration])
     # The bridge consumes only inventoried installation headers, including Boost.
     shutil.copytree(boost / "boost", prefix / "include/boost", dirs_exist_ok=True)
     shutil.copytree(ssl_prefix / "include", prefix / "include", dirs_exist_ok=True)
@@ -294,7 +307,7 @@ def build(args):
     files = {str(p.relative_to(prefix)).replace("\\", "/"): digest(p)
              for p in sorted(prefix.rglob("*")) if p.is_file() and p.name != "ariax-native.json"}
     manifest = {"target": args.target, "inputs": expected, "versions": {n: spec[n]["version"] for n in ("libtorrent", "boost", "openssl")},
-                "settings": spec["settings"], "compiler": (result.stdout + result.stderr).strip(),
+                "settings": settings, "compiler": (result.stdout + result.stderr).strip(),
                 "files": files}
     (prefix / "ariax-native.json").write_text(json.dumps(manifest, indent=2) + "\n")
     verify_manifest(prefix, args.target, expected)
@@ -308,9 +321,10 @@ def main():
     parser.add_argument("--jobs", type=int, default=min(4, os.cpu_count() or 1))
     parser.add_argument("--verify", action="store_true")
     parser.add_argument("--dependencies-only", action="store_true")
+    parser.add_argument("--sanitizer", choices=("none", "address"), default="none")
     args = parser.parse_args()
     require(1 <= args.jobs <= 64, "invalid native build parallelism")
-    with target_lock(ROOT / "toolchains/bt-native" / args.target):
+    with target_lock(work_directory(args.target, args.sanitizer)):
         build(args)
 
 

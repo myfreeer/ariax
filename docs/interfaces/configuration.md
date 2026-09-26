@@ -377,6 +377,11 @@ ariax config export-url-rules --format=toml
 
 Rules:
 
+- `ariax.dumpConfig` defaults to `json`; accepted formats are `json`, `flat`
+  and `toml`. JSON contains `configGeneration`, `options` and `sources`.
+  The former unversioned `legacy` shape is rejected. `task-effective` uses the
+  same sanitized options as `aria2.getOption`, including BitTorrent tasks;
+  URL rules support JSON and TOML only.
 - default dump redacts secrets and unsafe exec command values,
 - `--include-secrets` is local CLI only, never allowed over unauthenticated
   RPC, and cannot be combined with `--write`; it is an explicit stdout-only
@@ -734,8 +739,8 @@ Protocol modernization:
 - `ech=false|true|auto`
 - `ca-store=os|mozilla|custom|os+custom`
 - `ca-directory`
-- `dns-backend=system|hickory|doh|dot` (`trust-dns` is an accepted
-  deprecated input alias; normalized output is `hickory`)
+- `dns-backend=system|hickory|doh|dot` (the renamed resolver uses only the
+  `hickory` spelling; `trust-dns` is not an input alias)
 - reserved `dns-backend=cares` rejects as unsupported in the baseline; it is
   neither parsed-only nor silently normalized to Hickory,
 - `doh-url`
@@ -747,14 +752,14 @@ Protocol modernization:
 
 Transfer integrity and redirects:
 
-- `checksum=sha-256=<64 hexadecimal digits>` (the executable HTTP slice accepts
-  SHA-256, persists its lowercase canonical form, verifies the complete
-  descriptor-bound file before terminal completion, and uses it as the shared
-  identity proof for strict concurrent mirrors; other algorithms remain
-  pending)
+- `checksum=TYPE=DIGEST` accepts `sha-512`, `sha-256`, `sha-1` and `md5` with
+  exactly the algorithm's hexadecimal digest length. It persists the lowercase
+  canonical value and verifies the complete descriptor-bound file before
+  terminal completion. Only SHA-256/SHA-512 establish strict mirror identity.
 - `verify-mirror-identity=off|strict` (default `off`, aria2-compatible: trust
   the mirror list for concurrent split; `strict` requires the persisted user
-  SHA-256 for ordinary concurrent mirrors, while matching bounded SHA-256
+  SHA-256/SHA-512 or strong manifest evidence for ordinary concurrent mirrors,
+  while matching bounded SHA-256
   `Repr-Digest` probes retain secondary origins only for exact-range endgame —
   see [split-download.md](../protocols/split-download.md))
 - `max-redirects` (default 20; see [redirect-policy.md](../protocols/redirect-policy.md))

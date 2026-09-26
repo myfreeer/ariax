@@ -1,11 +1,11 @@
 use super::*;
-use crate::{HttpSourceSpec, ProtocolFailure, TransferProtocol, ftp::FtpSession};
+use crate::{ProtocolFailure, TransferProtocol, TransferSourceSpec, ftp::FtpSession};
 
 impl HttpMultiRangeWorker {
     async fn connect_ftp(
         &self,
-        task: &HttpTaskSpec,
-        source: &HttpSourceSpec,
+        task: &TransferTaskSpec,
+        source: &TransferSourceSpec,
         cancellation: &HttpCancellation,
     ) -> Result<FtpSession, HttpMultiRangeError> {
         let tls = if source.protocol() == TransferProtocol::Ftps || task.options().transfer.ftp_tls
@@ -43,7 +43,7 @@ impl HttpMultiRangeWorker {
 
     pub(super) async fn run_ftp_task(
         &self,
-        task: Arc<HttpTaskSpec>,
+        task: Arc<TransferTaskSpec>,
         generation: Generation,
         cancellation: HttpCancellation,
         stats: HttpTransferStats,
@@ -148,12 +148,12 @@ impl HttpMultiRangeWorker {
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn run_ftp_sources(
         &self,
-        task: &HttpTaskSpec,
+        task: &TransferTaskSpec,
         generation: Generation,
         cancellation: &HttpCancellation,
         stats: &HttpTransferStats,
         discard: &HttpDiscardTaskGuard,
-        sources: &[&HttpSourceSpec],
+        sources: &[&TransferSourceSpec],
         first: usize,
         mut session: Option<FtpSession>,
         opened: &mut OpenedProtocolStorage,
@@ -200,7 +200,7 @@ impl HttpMultiRangeWorker {
                     return Err(ProtocolFailure::StaleValidator.into());
                 }
                 let pieces = opened.storage.verified_pieces();
-                let has_checksum = task.options().content_checksum().is_some()
+                let has_checksum = task.options().checksum.is_some()
                     || task.verification().is_some_and(|manifest| {
                         !manifest.chunks().is_empty() || !manifest.whole().is_empty()
                     });
@@ -303,7 +303,7 @@ impl HttpMultiRangeWorker {
     #[allow(clippy::too_many_arguments)]
     async fn stream_ftp(
         &self,
-        task: &HttpTaskSpec,
+        task: &TransferTaskSpec,
         generation: Generation,
         cancellation: &HttpCancellation,
         stats: &HttpTransferStats,
@@ -545,7 +545,7 @@ mod tests {
                 )
                 .unwrap(),
             );
-            let spec = HttpTaskSpec::new(
+            let spec = TransferTaskSpec::new(
                 task,
                 Gid::new(1).unwrap(),
                 [uri],
@@ -626,10 +626,10 @@ mod tests {
         ] {
             let directory = Directory::new();
             let (uri, offsets, connections, server) = server(false, false, false, failures).await;
-            let mut options = crate::HttpTaskOptions::default();
+            let mut options = crate::TransferTaskOptions::default();
             options.transfer.ftp_reuse_connection = reuse;
             if wrong_checksum {
-                options.transfer.checksum = Some(crate::ContentChecksum::Md5([0; 16]));
+                options.checksum = Some(crate::ContentChecksum::Md5([0; 16]));
             }
             options.retry = Some(HttpRetryPolicy {
                 max_attempts: std::num::NonZeroU32::new(3).unwrap(),
@@ -639,7 +639,7 @@ mod tests {
                 ..Default::default()
             });
             let spec = Arc::new(
-                HttpTaskSpec::new(
+                TransferTaskSpec::new(
                     TaskId::new(1).unwrap(),
                     Gid::new(1).unwrap(),
                     [uri.clone()],

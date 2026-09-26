@@ -177,7 +177,7 @@ async fn ftps_requires_private_data_trust_and_pre_tls_active_peer_authorization(
         let (uri, server) = server(scenario, commands.clone()).await;
         let ca = directory.0.join("root.pem");
         std::fs::write(&ca, crate::http_transport::tests::TEST_ROOT_CERTIFICATE_PEM).unwrap();
-        let mut options = crate::HttpTaskOptions {
+        let mut options = crate::TransferTaskOptions {
             connect_timeout: Duration::from_secs(2),
             response_body_timeout: Duration::from_secs(2),
             ..Default::default()
@@ -201,7 +201,7 @@ async fn ftps_requires_private_data_trust_and_pre_tls_active_peer_authorization(
             )
             .unwrap(),
         );
-        let spec = HttpTaskSpec::new(
+        let spec = TransferTaskSpec::new(
             TaskId::new(1).unwrap(),
             Gid::new(1).unwrap(),
             [uri],

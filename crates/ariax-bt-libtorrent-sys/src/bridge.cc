@@ -95,7 +95,7 @@ void validate_info(lt::torrent_info const& info, NativeOptions const& options) {
     }
 }
 
-void filter_private(lt::session& session) {
+lt::ip_filter private_filter() {
     lt::ip_filter filter;
     // The first full-build lane denies special-use destinations for untrusted
     // callers, including tracker resolutions and web seeds. Explicit trusted
@@ -125,7 +125,7 @@ void filter_private(lt::session& session) {
             std::pair{"fc00::", "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"}}) {
         filter.add_rule(lt::make_address(range.first), lt::make_address(range.second), lt::ip_filter::blocked);
     }
-    session.set_ip_filter(filter);
+    return filter;
 }
 }
 
@@ -167,6 +167,7 @@ NativeSession::NativeSession(NativeOptions const& options) try : impl_(std::make
     pack.set_bool(lt::settings_pack::enable_natpmp, false);
     pack.set_bool(lt::settings_pack::ssrf_mitigation, true);
     pack.set_bool(lt::settings_pack::apply_ip_filter_to_trackers, true);
+    pack.set_bool(lt::settings_pack::apply_filter_to_dht, true);
     pack.set_bool(lt::settings_pack::validate_https_trackers, true);
     pack.set_bool(lt::settings_pack::allow_idna, false);
     pack.set_int(lt::settings_pack::connections_limit, int(options.connections));
@@ -192,8 +193,9 @@ NativeSession::NativeSession(NativeOptions const& options) try : impl_(std::make
     pack.set_int(lt::settings_pack::upload_rate_limit, int(options.upload_limit));
     pack.set_int(lt::settings_pack::out_enc_policy, int(options.encryption));
     pack.set_int(lt::settings_pack::in_enc_policy, int(options.encryption));
-    impl_->session = std::make_unique<lt::session>(lt::session_params(pack));
-    if (!options.allow_private) filter_private(*impl_->session);
+    lt::session_params params(pack);
+    if (!options.allow_private) params.ip_filter = private_filter();
+    impl_->session = std::make_unique<lt::session>(std::move(params));
 } catch (...) { throw std::runtime_error("bt/native-session-rejected"); }
 
 NativeSession::~NativeSession() = default;

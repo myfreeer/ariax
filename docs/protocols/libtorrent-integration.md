@@ -2,8 +2,8 @@
 
 [Documentation](../README.md)
 
-Status: native adapter implemented; engine integration and Phase-6 acceptance
-are in progress. The gates below require complete CI and measurement evidence.
+Status: Phase-6 local implementation and acceptance harness are complete.
+The gates below remain open for CI, sanitizer/fuzz and measurement evidence.
 
 Decision: libtorrent runs outside the main control and HTTP network event loops.
 
@@ -15,6 +15,11 @@ Transfer and BT workers consume only their own allocation and cancellation
 requests from the shared runtime mailbox. Both publish through the existing
 scheduler. Native work advances through nonblocking command and persistence
 completions; query projection uses immutable, identity-bound BT snapshots.
+`aria2.getGlobalStat` aggregates both transfer families: BT payload download
+and upload rates contribute alongside HTTP/FTP/SFTP rates, and completed BT
+bytes are bounded by the selected non-padding file total. Global and task
+queries use the same captured snapshot. Task-effective configuration dumps
+share `aria2.getOption`'s sanitized BT option projection.
 
 Recovery validates the combined transfer/BT queue before normalizing active
 tasks to waiting or paused. BT tasks retain their GID and metadata identity;
@@ -79,6 +84,12 @@ Hybrid torrents retain their v1 file order and explicit padding after their
 real files and offsets are checked against the v2 tree. Pure v2 torrents use
 libtorrent's implicit alignment padding, including the last piece. A hybrid
 single-file torrent therefore does not acquire a synthetic trailing file.
+
+Metainfo reconstructed from a magnet preserves its validated tracker and web-seed
+URLs outside the unchanged info dictionary. Recovery uses those same endpoints.
+Libtorrent 2.1.1 accepts v2 info dictionaries without piece layers and retrieves
+missing hashes from peers; native regression fixtures cover multi-piece v2 and
+hybrid recovery with that representation and a tracked resume checkpoint.
 
 The checkpoint hook must complete after the native disk release barrier and
 must deliver success or failure through an owned tracked result. The upstream
@@ -194,6 +205,14 @@ DHT uses libtorrent's pinned public bootstrap defaults when enabled. Tests may
 disable discovery and explicitly connect approved local peers. Trackers, web
 seeds and peers resolved or discovered later remain subject to the session IP
 filter and SSRF policy.
+
+The IP filter is installed in the initial session parameters before discovery
+starts. The pinned patch also applies it to outgoing DHT packets, including
+bootstrap, discovered nodes and direct requests. Native tracker and web-seed
+redirects recheck the destination, reject embedded credentials and HTTPS
+downgrades, and keep web-seed chains within 20 hops. Redirect URLs are transient
+and never gain persistence authority. Tracker-generated protocol keys may
+survive a redirect only when they match the original request exactly.
 
 ### Torrent Following
 
@@ -418,6 +437,24 @@ maximum, and the pause/remove/shutdown barrier defaults to 30 seconds with a
 clean checkpoint.
 
 ## Tests
+
+The native engine acceptance suite drives the shared control owner with real
+v1, v2 and hybrid peers, including multi-piece v2 hashes. Torrent and magnet
+admission both cover downloading, seeding, live-option acknowledgement,
+checkpointed pause, restart with a payload recheck, and removal. Dropping an
+option or lifecycle caller must not abandon its accepted owner. A selected-file
+fixture uses disjoint pieces so an unselected file must remain absent; its
+persisted collision mapping and indexes survive restart. Late invalid selection
+must fail while magnet metadata is held, before any payload file is created.
+An expired engine shutdown deadline must report an unclean boundary, preserve
+the last safe resume blob and retain the dirty flag when the store is reopened.
+Native endpoint fixtures also require real tracker replies and web-seed payloads
+through allowed redirects. Secret-bearing redirects, resolved private targets,
+tracker-discovered blocked peers and overlong web-seed redirect chains must
+produce their expected native rejection without contacting the forbidden socket.
+CLI process tests reopen the same v3 task through typed Rust and JSON-RPC and
+compare identity, files, selection, options and pause state for every torrent
+version. Bundles without BT must reject admission before creating session state.
 
 Required adapter tests:
 

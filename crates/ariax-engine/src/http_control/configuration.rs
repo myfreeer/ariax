@@ -224,9 +224,9 @@ fn merge_resolved_layer(
             .filter(|(name, _)| is_retry_option(name))
             .map(|(name, value)| (name.clone(), Value::String(value.clone())))
             .collect();
-        let options = HttpTaskOptions {
+        let options = TransferTaskOptions {
             retry: Some(parse_retry_options(&values)?),
-            ..HttpTaskOptions::default()
+            ..TransferTaskOptions::default()
         }
         .sanitized()
         .map_err(HttpControlError::TaskSpec)?;
@@ -568,8 +568,10 @@ impl super::query::ConfigurationSnapshot {
                 .collect(),
         );
         let (options, _, _, _) = parse_add_options(&value, &self.config.output_root, &[])?;
-        HttpTaskOptions::from_sanitized(&options.sanitized().map_err(HttpControlError::TaskSpec)?)
-            .map_err(HttpControlError::TaskSpec)?;
+        TransferTaskOptions::from_sanitized(
+            &options.sanitized().map_err(HttpControlError::TaskSpec)?,
+        )
+        .map_err(HttpControlError::TaskSpec)?;
         #[cfg(feature = "bt")]
         super::bittorrent::Options::parse(&Value::Object(
             values

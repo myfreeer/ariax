@@ -63,7 +63,8 @@ charges process, canonical final-origin host, task, and attempt scopes without
 refund; body polling stops when no credit remains; probe, retry/cancel,
 checksum, stale queued-chunk, and endgame settlement paths reconcile the same
 counter; and RPC status exposes consumed/remaining task credit. Phase 5 wires
-FTP/SFTP to the shared accounting; libtorrent remains later adapter work. The standalone
+FTP/SFTP to the shared accounting; Phase 6 adds a separately reserved libtorrent
+lane. The standalone
 workspace-excluded `fuzz/` package now provides bounded cargo-fuzz targets for
 HTTP response/request headers, retry specifications, discard accounting, and
 journal replay. Deterministic storage-boundary ENOSPC, permission-denied, and
@@ -103,8 +104,8 @@ this scoped milestone.
 - Create RPC method matrix with source of truth for each response field.
 - Create the complete task-state transition and aria2 wire-projection matrices.
 - Freeze the v1 journal record layouts, checkpoint `PieceStateChunk` encoding,
-  persisted output-root binding/rebind protocol, and exact SQLite v2 schema,
-  v1 migration, pragmas, backup, and recovery-precedence matrices.
+  persisted output-root binding/rebind protocol, and exact SQLite v3 schema,
+  unsupported-format rejection, pragmas, backup, and recovery-precedence matrices.
 - Freeze the exact 16-hex GID codec, RPC token convention, error-code vocabulary,
   reserved-header policy, and secrets-at-rest policy.
 - Create a new-option inventory from the design docs and fail CI if a
@@ -172,7 +173,7 @@ Exit criteria:
 - `FileLayout`
 - `GlobalOffsetMapper`
 - `ControlJournal`, including checkpoint-only `PieceStateChunk`
-- Exact SQLite v2 `SessionStore` schema, v1 migration, pragmas, backup, and
+- Exact SQLite v3 `SessionStore` schema, older-format rejection, pragmas, backup, and
   identity-preserving relocation/digest-verified rebind entry points
 - `OptionRegistry`
 - Flat config parser, config check, and redacted effective-config dump
@@ -204,15 +205,15 @@ Exit criteria:
 - Root relocation/rebind tests prove that adjacency, names, mtimes, and copied
   control files cannot authorize progress; retained pieces require matching
   identities or per-piece digest evidence.
-- SQLite schema creation, exact v1-to-v2 migration, raw hot-rollback page-one
-  and committed-WAL unsupported-newer-version rejection without artifact
+- SQLite schema creation, older-format rejection, raw hot-rollback page-one
+  and committed-WAL unsupported-version rejection without artifact
   mutation, supported hot rollback recovery, legacy page-size-zero fail-closed
   behavior, owner-lock contention, private-path/artifact rejection, sidecar
   rejection beside a missing or empty main database, case-insensitive reserved
   backup-suffix rejection, bounded semantic reads, dense cross-queue
   transitions, one-to-one stopped task/result retention and atomic deletion,
-  host-key UTF-8/fingerprint/paused-task validation, preflight-before-backup
-  rejection of invalid v1 semantics, WAL/DELETE write probes and
+  host-key UTF-8/fingerprint/paused-task validation, semantic preflight before
+  current-format backup creation, WAL/DELETE write probes and
   checkpointing, file-synced no-clobber validated backup, and tokenized
   journal-install pointer transaction/reopen, stale-command, and crash-point
   tests pass. Backup crash-point coverage must prove that every crash from
@@ -282,9 +283,9 @@ hierarchical rate limiting, lowest-speed diagnostics, and persisted range retry
 waits. Single-source and strict-fallback recovery additionally verifies
 journaled durable-piece SHA-256 evidence before network access and requires the
 exact persisted strong ETag, resource fingerprint, and length before releasing
-pending ranges. A persisted user SHA-256 checksum additionally admits strict
-concurrent mirrors, permits digest-bound recovery, and gates `TaskComplete` on a
-bounded descriptor-based whole-file hash. Stale-validator `fail`, fresh
+pending ranges. User checksums support all four algorithms through bounded
+descriptor-based final verification and digest-bound recovery. SHA-256/SHA-512
+additionally admit strict concurrent mirrors. Stale-validator `fail`, fresh
 `revalidate`, and bounded `restart-if-safe` are wired through public option
 admission, worker supervision, exact next-admission snapshot persistence, and a
 durable `restarting` intent marker whose recovered exact snapshot promotes with
@@ -484,8 +485,9 @@ The [validation record](../../performance-evidence/phase5-validation-2026-09-15.
 records passing Linux-under-WSL and native Windows builds/tests/lints, MSRV,
 contracts, feature/fork checks, OpenSSH interoperability, ten bounded fuzz
 targets and all five native Windows benchmark scenarios. Native Linux
-acceptance passes in the September 22 CI baseline. Self-contained JSON migration v2
-is implemented with v1 import compatibility; HTTP/2 remains deferred.
+acceptance passes in the September 22 CI baseline. That historical checkpoint
+used JSON v2 with v1 import; Phase 6 replaces both with current-format JSON v3
+and rejects earlier documents unchanged. HTTP/2 remains deferred.
 
 - Metalink parser with safe XML settings and chunk checksums.
 - Metalink checksum-aligned verification with bounded ordered reassembly and
@@ -500,7 +502,8 @@ is implemented with v1 import compatibility; HTTP/2 remains deferred.
   policy, timeout/rekey handling, and secret redaction.
 - Mirror selection and server stats.
 - Shared CLI/RPC/Rust admission, exact SFTP challenge approval and self-contained
-  JSON v2 migration, retaining v1 import and atomic rejection of lossy text export.
+  JSON import/export and atomic rejection of lossy text export. The current
+  contract is v3 only.
 
 Local exit criteria (passed; named regressions are in the validation record):
 
@@ -556,16 +559,24 @@ older stores unchanged. Do not add v1/v2-to-v3 migrations, historical JSON
 readers, downgrade support or obsolete API aliases. Keep current-format
 self-contained import/export and the existing aria2-facing product contracts.
 
-- libtorrent adapter.
-- Safe path integration.
-- Queue and status integration.
-- Torrent/magnet add through CLI/RPC.
-- Select-file and index-out mapping.
-- Seeding and stopped result persistence.
-- Bounded command/event bridge outside the main event loop.
-- BT-specific live setting updates through the command channel.
-- Shutdown barrier that waits for requested resume data before the global session
-  checkpoint and BT teardown.
+Local implementation and acceptance-harness work are complete for all six
+packages below. CI-dependent execution and native acceptance remain open;
+the earlier five-scenario baseline does not establish Phase-6
+acceptance. See [current evidence and remaining gates](implementation-readiness.md#phase-6-local-implementation-and-open-acceptance).
+The [local validation record](../../performance-evidence/phase6-local-validation-2026-09-26.md)
+separates passing focused checks from unexecuted native acceptance.
+The final local cleanup removes obsolete HTTP type aliases, the SHA-256-only
+checksum API and duplicate checksum field, and the legacy config-dump shape.
+BT task dumps and aggregate transfer statistics share the current query owners.
+
+| Gate | Local Implementation | Required Acceptance Evidence |
+| --- | --- | --- |
+| `P6-01` Native integration | Pinned per-ABI builder, narrow CXX bridge, safe adapter, `full`/`compat` feature graph and separate sanitizer provenance. | Complete platform/MSRV matrix and ASan/UBSan execution for the current patch. |
+| `P6-02` Safe admission | Bounded v1/v2/hybrid parsing, magnets, metadata-only and torrent following; pre-storage hold, stable selection/collision mapping and destination policy. | Native malformed-metadata, tracker/web-seed/DNS/redirect and no-payload-on-rejection fixtures. |
+| `P6-03` Scheduler and resources | Shared lifecycle owner and immutable snapshots, bounded queues/blobs, cancellation ownership, resource reservations and reduce-before-increase bandwidth allocation. | Current bridge-pressure tests and mixed HTTP/BT native measurements. |
+| `P6-04` Persistence and recovery | Fresh SQLite/JSON v3, exact identity/root/mapping bindings and tracked periodic/pause/remove/shutdown checkpoints. Process-crash tests cover both sides of the SQLite commit in WAL and rollback-journal modes. | Current crash, dirty recovery, stale-completion and clean-shutdown tests on native platforms. |
+| `P6-05` Interfaces and options | Shared typed Rust, CLI and RPC admission/status/peer/file/option owners, acknowledged live updates and explicit active restart rejection. | Current feature-disabled rejection and interface/lifecycle parity regressions. |
+| `P6-06` Validation and performance | Native transfer/security/recovery fixtures, bounded parser fuzz target, sanitizer job and a sixth benchmark with 1,000 BT peers alongside 1,000 HTTP ranges. | Passing native test, sanitizer, fuzz and complete six-scenario reports from the same source. |
 
 Exit criteria:
 

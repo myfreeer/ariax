@@ -1,0 +1,1 @@
+magnet:?xt=urn:btih:1111111111111111111111111111111111111111&tr=https%3A%2F%2Ftracker.example%2Fannounce

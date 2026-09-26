@@ -14,11 +14,22 @@ local validation at `88d1a83`. The
 [validation record](../../performance-evidence/phase5-validation-2026-09-15.md) maps
 the gates to named regressions, protocol/security and OpenSSH evidence,
 Linux-under-WSL/native Windows checks, ten bounded fuzz targets and five passing
-native Windows scenarios. This includes self-contained Metalink JSON v2
-migration with v1 import. The
+native Windows scenarios. That historical checkpoint included Metalink JSON v2
+with v1 import; the current format is v3 only. The
 [September 22 CI baseline](../../performance-evidence/ci-baseline-2026-09-22.md)
 closes native Linux control-plane acceptance at `af5d193`, with all five reports
 and the complete passing platform/feature/MSRV matrix retained and verified.
+
+Phase 6 work packages `P6-01` through `P6-06` have completed local implementations
+and acceptance harnesses, mapped in the [implementation plan](implementation-plan.md#phase-6-bittorrent-full-build).
+The [current acceptance status](implementation-readiness.md#phase-6-local-implementation-and-open-acceptance)
+keeps native execution open for the new bridge patch, transfer/security/recovery
+fixtures, sanitizer/fuzz jobs and mixed 1,000-peer HTTP/BT benchmark. Current
+SQLite and JSON persistence require fresh v3 stores; older formats are rejected
+without migration or mutation. Historical Phase-5 v2 import evidence is not a
+current-format compatibility promise.
+The local cleanup consolidates shared task/checksum types, removes the legacy
+config-dump shape, and adds BT option-dump and aggregate-statistics coverage.
 
 Status: reviewed contract; the scoped Phase-3B/3C HTTP(S) downloader milestone
 is checkpointed at `1099be9`, and the bounded Phase-4 control-plane checkpoint
@@ -54,7 +65,7 @@ journaled error-class/reason reconstruction. Persisted user SHA-256 now also pro
 strict concurrent-mirror identity, digest-bound restart, bounded descriptor-
 based final verification, and terminal digest evidence. Persisted
 stale-validator `fail`, fresh `revalidate`, and descriptor-authorized bounded
-`restart-if-safe` now cross the worker, scheduler, session schema v2/control
+`restart-if-safe` now cross the worker, scheduler, session schema v3/control
 journal, and public option
 boundaries without retaining old durable bytes. A flushed `restarting` marker
 preserves representation-restart reason authority across the staged
@@ -69,7 +80,7 @@ digest/length identity now drives fail-closed restart reprobe and durable-range
 network revalidation before pending work is released. Phase 5 adds Metalink
 identity and SHA-512/SHA-256/SHA-1/MD5 content checksums. Broader RFC 9530
 identity, `Content-Digest`, Last-Modified/unsafe-override resume,
-BitTorrent/control APIs, adaptive
+BitTorrent native acceptance, adaptive
 profile tuning, and the complete release matrix remain incomplete. Optimized
 Linux and native Windows-GNU capacity evidence, including mandatory RSS or
 working-set samples, is recorded in [performance-profiles.md](../runtime/performance-profiles.md).
@@ -611,8 +622,8 @@ Acceptance:
   continuity,
 - checkpoints encode the durable piece map in bounded, canonical
   `PieceStateChunk` records rather than replaying an unbounded live history,
-- the exact SQLite v2 schema, exact v1 migration, pragmas, and fail-closed
-  version policy are validated; hot rollback recovery is process-crash tested,
+- the exact SQLite v3 schema, pragmas, and unchanged rejection of older/newer
+  development formats have validation coverage; hot rollback recovery is process-crash tested,
   backup publication has integrity and no-clobber coverage, and journal-install
   transitions have transaction, reopen, pointer-invariant, and stale-command
   coverage; explicit crash-point matrices remain phase gates,
@@ -633,8 +644,8 @@ Acceptance:
   result deletion removes metadata without deleting downloaded output,
 - host-key challenge text is valid UTF-8, the stored SHA-256 fingerprint matches
   the presented key, and the referenced task is paused; the same semantic
-  validation runs before v1 migration backup creation so invalid inputs do not
-  accumulate backups,
+  validation runs before current-format backup creation so invalid inputs do
+  not accumulate backups; unsupported formats never create migration backups,
 - WAL and DELETE are transactionally page-one write/rollback probed; truncate
   checkpoint behavior and validated, file-synced, no-clobber backup publication
   are tested, including orphan destination-sidecar rejection and

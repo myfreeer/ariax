@@ -311,8 +311,9 @@ Default behavior (`--verify-mirror-identity=off`, aria2-compatible):
 
 Strict opt-in (`--verify-mirror-identity=strict`):
 
-- A persisted user SHA-256 is required for ordinary concurrent multi-mirror
-  split and final whole-file verification. Without it, strict mode probes every
+- A persisted user SHA-256/SHA-512 or strong verification manifest is required
+  for ordinary concurrent multi-mirror split. Required chunk and whole-file
+  verification gates still apply. Without strong content evidence, strict mode probes every
   submitted mirror with `Want-Repr-Digest: sha-256=10`; matching probe values
   retain secondary mirrors only as exact-range endgame peers, while ordinary
   pieces remain on the first mirror. A missing, malformed, or different probe
@@ -322,13 +323,13 @@ Strict opt-in (`--verify-mirror-identity=strict`):
   compares exact-span digests at the cross-origin head fence. It deliberately
   does not infer whole-entity identity from a one-byte `206` digest.
 - `Content-Digest`, digest parameters/coverage metadata, alternate algorithms,
-  server-advertised whole-entity admission, Metalink chunk hashes, and broader
+  server-advertised whole-entity admission and broader
   RFC 9530 identity tuples remain deferred. A single source's own strong ETag
   (via `If-Range`) still provides the per-origin resume guarantee.
 
 A redirect target is not added as another eligible mirror implicitly. Under
 `off`, it is at most an exclusive replacement for the source of the redirected
-lease; under `strict`, only the persisted whole-file checksum can admit a
+lease; under `strict`, only strong persisted content evidence can admit a
 cross-origin target to the ordinary pool. The bounded range-digest profile is
 limited to explicitly submitted, independently probed sources and does not
 promote redirect targets. See [redirect-policy.md](redirect-policy.md).

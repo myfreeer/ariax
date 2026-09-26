@@ -21,16 +21,18 @@ protocol, control, session and journal paths:
   canonical/duplicate Basic authorization headers, response validity, and exact
   budget refunds. Its paused Tokio clock exercises authentication throttling
   without real-time sleeps in the fuzz loop.
-- `session_document`: strict JSON migration documents and aria2 input-file
+- `session_document`: strict current-format JSON documents and aria2 input-file
   syntax, including bounded metadata comments and exact safe projections.
-  Seeds include self-contained JSON v2 verification and rejected zero-length
-  chunk geometry, alongside v1 and aria2 inputs.
+  Older-format seeds exercise rejection; current v3 seeds exercise import.
 - `url_rules`: bounded TOML rule parsing, safe option admission, canonical
   round trips, and bounded URL matching without network access.
 - `metalink`: capped v3/v4 pull parsing, namespaces/entities, safe paths,
   selection and verification-manifest round trips.
 - `verification_manifest`: binary digest-table decoding, exact geometry,
   canonical encoding and fingerprint stability.
+- `bittorrent_metadata`: bounded torrent/info/magnet parsing, tracker and web-seed
+  overlays, resume authority rejection and exact info-hash round trips. Seeds
+  cover v1, v2, hybrid, multi-piece metadata and unsafe inputs.
 
 From the repository root, after installing `cargo-fuzz`, run for example:
 
@@ -45,6 +47,9 @@ cargo fuzz run --manifest-path fuzz/Cargo.toml url_rules
 CI should use a fixed corpus/time budget and retain only minimized inputs. The
 targets cap input-derived collections before constructing headers, scopes, or
 replay segments; they do not authorize network or filesystem access.
+The Phase 6 `bt-safety` job runs the BT target for 20 seconds with ASan and
+coverage instrumentation, a 1 MiB input cap, a two-second per-input timeout and
+a 512 MiB RSS cap. CI retains failure inputs and the resulting corpus.
 
 Local Phase 5 smoke runs use 16–128 executions per process, inputs capped at
 8 KiB, and at least 250 ms cooldown between processes. An accepted process must

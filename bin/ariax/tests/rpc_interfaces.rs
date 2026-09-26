@@ -84,6 +84,146 @@ fn command() -> Command {
     command
 }
 
+#[cfg(feature = "full")]
+#[tokio::test]
+async fn cli_torrents_reopen_with_identical_rust_and_rpc_state_for_every_version() {
+    use ariax_core::Gid;
+    use ariax_engine::{Aria2Status, BitTorrentConfig, Engine, RpcCompatibility};
+    for torrent in [
+        include_bytes!("../../../crates/ariax-bt-libtorrent-sys/tests/fixtures/v1.torrent")
+            .as_slice(),
+        include_bytes!("../../../crates/ariax-bt-libtorrent-sys/tests/fixtures/v2.torrent")
+            .as_slice(),
+        include_bytes!("../../../crates/ariax-bt-libtorrent-sys/tests/fixtures/hybrid.torrent")
+            .as_slice(),
+    ] {
+        let root = Root::new();
+        let input = root.0.join("input.torrent");
+        std::fs::write(&input, torrent).unwrap();
+        let mut child = Process(
+            command()
+                .args([
+                    "--enable-dht=false",
+                    "--enable-peer-exchange=false",
+                    "--add-torrent",
+                ])
+                .arg(root.0.join("session.db"))
+                .arg(root.0.join("control"))
+                .arg(root.0.join("output"))
+                .arg(input)
+                .args([
+                    "--pause=true",
+                    "--index-out=1=renamed.bin",
+                    "--bt-max-peers=32",
+                    "--enable-dht=false",
+                    "--enable-peer-exchange=false",
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        child.finish();
+        let mut output = String::new();
+        child
+            .0
+            .stdout
+            .take()
+            .unwrap()
+            .take(65536)
+            .read_to_string(&mut output)
+            .unwrap();
+        let gid: Gid = output
+            .lines()
+            .find_map(|line| line.strip_prefix("added "))
+            .unwrap()
+            .parse()
+            .unwrap();
+        let engine = Engine::builder()
+            .database_path(root.0.join("session.db"))
+            .control_directory(root.0.join("control"))
+            .output_root(root.0.join("output"))
+            .bittorrent(BitTorrentConfig {
+                dht: false,
+                peer_exchange: false,
+                ..BitTorrentConfig::default()
+            })
+            .build()
+            .await
+            .unwrap();
+        let status = engine.status(gid).await.unwrap();
+        assert_eq!(status.status, Aria2Status::Paused);
+        let identity = status.bittorrent.unwrap().info_hash;
+        let files = engine.files(gid).await.unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].length, 5000);
+        assert_eq!(files[0].completed_length, 0);
+        assert!(files[0].selected && files[0].path.ends_with("renamed.bin"));
+        let options = engine.options(gid).await.unwrap();
+        assert_eq!(options["bt-max-peers"], "32");
+        assert_eq!(options["enable-dht"], "false");
+        assert_eq!(options["enable-peer-exchange"], "false");
+        assert!(engine.peers(gid).await.unwrap().is_empty());
+        let query = json!({"jsonrpc":"2.0", "id":1, "method":"aria2.tellStatus",
+            "params":[gid.to_string(), ["status", "infoHash", "files"]]});
+        let response = engine
+            .rpc_json(
+                &serde_json::to_vec(&query).unwrap(),
+                RpcCompatibility::Aria2,
+            )
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&response).unwrap();
+        drop(response);
+        assert_eq!(value["result"]["status"], "paused");
+        assert_eq!(value["result"]["infoHash"], identity);
+        assert_eq!(value["result"]["files"][0]["selected"], "true");
+        assert_eq!(value["result"]["files"][0]["path"], files[0].path);
+        assert_eq!(value["result"]["files"][0]["length"], "5000");
+        assert_eq!(value["result"]["files"][0]["completedLength"], "0");
+        let query = json!({"jsonrpc":"2.0", "id":2, "method":"aria2.getOption",
+            "params":[gid.to_string()]});
+        let response = engine
+            .rpc_json(
+                &serde_json::to_vec(&query).unwrap(),
+                RpcCompatibility::Aria2,
+            )
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&response).unwrap();
+        drop(response);
+        assert_eq!(value["result"], serde_json::to_value(options).unwrap());
+        assert_eq!(std::fs::read_dir(root.0.join("output")).unwrap().count(), 0);
+        engine.shutdown().await.unwrap();
+    }
+}
+
+#[cfg(not(feature = "full"))]
+#[test]
+fn cli_feature_disabled_torrent_admission_creates_no_session_state() {
+    let root = Root::new();
+    let input = root.0.join("input.torrent");
+    std::fs::write(
+        &input,
+        include_bytes!("../../../crates/ariax-bt-libtorrent-sys/tests/fixtures/v1.torrent"),
+    )
+    .unwrap();
+    let output = command()
+        .arg("--add-torrent")
+        .arg(root.0.join("session.db"))
+        .arg(root.0.join("control"))
+        .arg(root.0.join("output"))
+        .arg(input)
+        .arg("--pause=true")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("BitTorrent feature unavailable"));
+    assert!(!root.0.join("session.db").exists());
+    assert!(!root.0.join("control").exists());
+    assert!(!root.0.join("output").exists());
+}
+
 fn http_call(address: SocketAddr, request: Value) -> Value {
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut socket = loop {

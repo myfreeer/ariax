@@ -612,6 +612,14 @@ Benefits:
 The native API still uses the same control plane and scheduler as RPC and CLI.
 There must not be separate engines with different behavior.
 
+Shared transfer specifications use the concrete `TransferTaskSpec`,
+`TransferSourceSpec`, `TransferTaskOptions`, `TransferTaskCatalog` and
+`SharedTransferTaskCatalog` types, with `TransferTaskSpecError` and
+`TransferTaskCatalogError`. Historical HTTP type aliases are removed before
+release. `ContentChecksum` represents all supported algorithms;
+`DownloadOptions::checksum` and `TransferTaskOptions::checksum` each provide
+one canonical checksum entry, with no duplicate field in `TransferOptions`.
+
 `Engine::subscribe()` returns a bounded subscription.  Snapshot/progress events
 may coalesce; a subscriber that cannot receive required terminal events is
 closed with `SlowConsumer` and can recover by querying a snapshot and creating a

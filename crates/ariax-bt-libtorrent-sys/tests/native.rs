@@ -6,10 +6,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 const PAYLOAD: &[u8] = include_bytes!("fixtures/payload.bin");
-const TORRENTS: [&[u8]; 3] = [
+const TORRENTS: [&[u8]; 5] = [
     include_bytes!("fixtures/v1.torrent"),
     include_bytes!("fixtures/v2.torrent"),
     include_bytes!("fixtures/hybrid.torrent"),
+    include_bytes!("fixtures/multi-piece-v2.torrent"),
+    include_bytes!("fixtures/multi-piece-hybrid.torrent"),
 ];
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
@@ -66,10 +68,20 @@ fn until(mut condition: impl FnMut() -> bool) {
 
 #[test]
 fn native_v1_v2_hybrid_transfers_hold_storage_and_checkpoint_without_alert_delivery() {
-    for torrent in TORRENTS {
+    for (index, torrent) in TORRENTS.into_iter().enumerate() {
+        let payload = if index < 3 {
+            PAYLOAD.to_vec()
+        } else {
+            b"ariax BitTorrent fixture\n"
+                .iter()
+                .copied()
+                .cycle()
+                .take(70_000)
+                .collect()
+        };
         let seed_root = Directory::new();
         let output_root = Directory::new();
-        std::fs::write(seed_root.0.join("payload.bin"), PAYLOAD).unwrap();
+        std::fs::write(seed_root.0.join("payload.bin"), &payload).unwrap();
         let mut seed = new_session(&options()).unwrap();
         let mut download = new_session(&options()).unwrap();
         seed.pin_mut()
@@ -119,7 +131,7 @@ fn native_v1_v2_hybrid_transfers_hold_storage_and_checkpoint_without_alert_deliv
         until(|| download.status(2).unwrap().seeding);
         assert_eq!(
             std::fs::read(output_root.0.join("payload.bin")).unwrap(),
-            PAYLOAD
+            payload
         );
         download
             .pin_mut()
@@ -154,10 +166,15 @@ fn native_v1_v2_hybrid_transfers_hold_storage_and_checkpoint_without_alert_deliv
         download.pin_mut().remove(2).unwrap();
         assert!(download.status(2).is_err());
         drop(download);
+        // A magnet persists its info dictionary without pre-fetched v2 piece
+        // layers. The tracked resume hint and actual payload are revalidated.
+        let mut info_only = b"d4:info".to_vec();
+        info_only.extend_from_slice(&metadata.info);
+        info_only.push(b'e');
         let mut restored = new_session(&options()).unwrap();
         restored
             .pin_mut()
-            .add(2, torrent, "", output_root.text(), &data)
+            .add(2, &info_only, "", output_root.text(), &data)
             .unwrap();
         restored.pin_mut().approve(2, &paths, &priorities).unwrap();
         restored.pin_mut().resume(2).unwrap();

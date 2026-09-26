@@ -188,7 +188,7 @@ snapshot must round-trip through the protocol parser before publication.
 
 Modifiers resolve before persistence: status additions/removals become the
 effective status set, and `max-tries`/`retry-max-attempts` resolve to the stricter
-cap. `HttpTaskOptions::sanitized` emits only canonical resolved settings, all
+cap. `TransferTaskOptions::sanitized` emits only canonical resolved settings, all
 permitted by the production policy derived from the registry. Do not widen
 `PersistedOptionPolicy` to accept arbitrary keys. `max-file-not-found` and
 `max-resume-failure-tries` remain outside this HTTP parser's executable set.
@@ -197,7 +197,7 @@ Admission validates the complete resolved option map against the registry and
 the storage `PersistedOptionPolicy` before creating a task row, source rows,
 journal, or scheduler-visible task. An unknown or unpersistable retry option is
 an invalid-parameter error before mutation. A successful admission must be
-recoverable through `HttpTaskOptions::from_sanitized` using the same canonical
+recoverable through `TransferTaskOptions::from_sanitized` using the same canonical
 set, and registry coverage tests must fail if parser, sanitizer, recovery, and
 persistence policy diverge.
 
