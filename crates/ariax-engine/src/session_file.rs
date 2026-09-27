@@ -55,12 +55,36 @@ impl SessionFormat {
 pub(crate) struct ImportedTask {
     #[cfg(feature = "bt")]
     pub bittorrent: Option<ImportedBt>,
-    pub uris: Vec<String>,
-    pub sources: Option<Vec<SessionTaskSourceRecord>>,
+    pub sources: ImportedSources,
     pub options: Value,
     pub verification: Option<std::sync::Arc<crate::VerificationManifest>>,
     pub metalink_index: Option<u32>,
     pub priorities: Option<Vec<i64>>,
+}
+
+pub(crate) enum ImportedSources {
+    Uris(Vec<String>),
+    Persisted(Vec<SessionTaskSourceRecord>),
+}
+
+impl Default for ImportedSources {
+    fn default() -> Self {
+        Self::Uris(Vec::new())
+    }
+}
+
+impl ImportedSources {
+    pub(crate) fn uris(&self) -> impl Iterator<Item = &str> {
+        let (uris, sources) = match self {
+            Self::Uris(uris) => (uris.as_slice(), &[][..]),
+            Self::Persisted(sources) => (&[][..], sources.as_slice()),
+        };
+        uris.iter().map(String::as_str).chain(
+            sources
+                .iter()
+                .filter_map(|source| source.persistence_safe_uri.as_deref()),
+        )
+    }
 }
 
 #[cfg(feature = "bt")]
@@ -202,18 +226,7 @@ pub(crate) fn parse_import(
         .and_then(Value::as_array)
         .filter(|tasks| tasks.len() <= SESSION_MAX_IMPORT_TASKS)
         .ok_or_else(|| invalid("invalid session task array"))?;
-    tasks
-        .iter()
-        .map(|task| {
-            if !matches!(
-                task.get("kind").and_then(Value::as_str),
-                Some("transfer" | "bittorrent")
-            ) {
-                return Err(invalid("session task requires an explicit supported kind"));
-            }
-            parse_task(task, true)
-        })
-        .collect()
+    tasks.iter().map(|task| parse_task(task, true)).collect()
 }
 
 fn parse_json(text: &str, request: &RpcRequestLease) -> Result<Value, HttpControlError> {
@@ -240,7 +253,6 @@ fn parse_task(task: &Value, force_pause: bool) -> Result<ImportedTask, HttpContr
         &[
             "kind",
             "gid",
-            "uris",
             "sources",
             "options",
             "state",
@@ -248,9 +260,13 @@ fn parse_task(task: &Value, force_pause: bool) -> Result<ImportedTask, HttpContr
             "bittorrent",
         ],
     )?;
-    let is_bt = object.get("kind").and_then(Value::as_str) == Some("bittorrent");
+    let is_bt = match object.get("kind").and_then(Value::as_str) {
+        Some("transfer") => false,
+        Some("bittorrent") => true,
+        _ => return Err(invalid("session task requires an explicit supported kind")),
+    };
     if is_bt {
-        if ["uris", "sources", "verification"]
+        if ["sources", "verification"]
             .iter()
             .any(|key| object.contains_key(*key))
         {
@@ -262,11 +278,7 @@ fn parse_task(task: &Value, force_pause: bool) -> Result<ImportedTask, HttpContr
         return Err(HttpControlError::Unsupported(
             "BitTorrent feature unavailable",
         ));
-    } else if object.contains_key("bittorrent")
-        || object
-            .get("kind")
-            .is_some_and(|kind| kind.as_str() != Some("transfer"))
-    {
+    } else if object.contains_key("bittorrent") {
         return Err(invalid("session task kind differs from its metadata"));
     }
     #[cfg(feature = "bt")]
@@ -296,50 +308,42 @@ fn parse_task(task: &Value, force_pause: bool) -> Result<ImportedTask, HttpContr
     }) {
         return Err(invalid("invalid task state hint"));
     }
-    let uris = object
-        .get("uris")
-        .map(|value| {
-            value
-                .as_array()
-                .filter(|values| values.len() <= MAX_HTTP_TASK_SOURCES)
-                .ok_or_else(|| invalid("invalid session URI array"))?
-                .iter()
-                .map(|value| {
-                    value
-                        .as_str()
-                        .map(str::to_owned)
-                        .ok_or_else(|| invalid("session URI must be text"))
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .transpose()?
-        .unwrap_or_default();
-    let sources = object
-        .get("sources")
-        .map(|value| {
-            value
-                .as_array()
+    let sources = if is_bt {
+        ImportedSources::default()
+    } else {
+        ImportedSources::Persisted(
+            object
+                .get("sources")
+                .and_then(Value::as_array)
                 .filter(|values| !values.is_empty() && values.len() <= MAX_HTTP_TASK_SOURCES)
                 .ok_or_else(|| invalid("invalid session sources"))?
                 .iter()
                 .map(parse_source)
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .transpose()?;
-    if let Some(sources) = &sources {
-        if object.contains_key("uris")
-            && !uris.iter().map(String::as_str).eq(sources
-                .iter()
-                .filter_map(|source| source.persistence_safe_uri.as_deref()))
-        {
-            return Err(invalid(
-                "session URI projection differs from its source records",
-            ));
-        }
-    } else if uris.is_empty() && !is_bt {
-        return Err(invalid("session task has no sources"));
-    }
+                .collect::<Result<Vec<_>, _>>()?,
+        )
+    };
     let mut options = object.get("options").cloned().unwrap_or_else(|| json!({}));
+    validate_options(&mut options, force_pause)?;
+    if verification.is_some() {
+        options
+            .as_object_mut()
+            .expect("validated options")
+            .remove("piece-length");
+    }
+    let (verification, metalink_index) =
+        verification.map_or((None, None), |(manifest, index)| (Some(manifest), index));
+    Ok(ImportedTask {
+        #[cfg(feature = "bt")]
+        bittorrent,
+        sources,
+        options,
+        verification,
+        metalink_index,
+        priorities: None,
+    })
+}
+
+fn validate_options(options: &mut Value, force_pause: bool) -> Result<(), HttpControlError> {
     let option_map = options
         .as_object_mut()
         .ok_or_else(|| invalid("session options must be an object"))?;
@@ -359,21 +363,7 @@ fn parse_task(task: &Value, force_pause: bool) -> Result<ImportedTask, HttpContr
             "internal verification bindings cannot be imported as options",
         ));
     }
-    if verification.is_some() {
-        option_map.remove("piece-length");
-    }
-    let (verification, metalink_index) =
-        verification.map_or((None, None), |(manifest, index)| (Some(manifest), index));
-    Ok(ImportedTask {
-        #[cfg(feature = "bt")]
-        bittorrent,
-        uris,
-        sources,
-        options,
-        verification,
-        metalink_index,
-        priorities: None,
-    })
+    Ok(())
 }
 
 fn parse_source(value: &Value) -> Result<SessionTaskSourceRecord, HttpControlError> {
@@ -473,14 +463,12 @@ fn parse_aria2(
         if let Some(json) = line.strip_prefix("# ariax-task ") {
             finish_aria2_task(&mut current, &mut marker, &mut tasks)?;
             let value = parse_json(json, request)?;
-            if value
-                .get("uris")
-                .and_then(Value::as_array)
-                .is_some_and(Vec::is_empty)
-            {
-                push_task(&mut tasks, parse_task(&value, false)?)?;
+            require_aria2_metadata(&value)?;
+            let task = parse_task(&value, false)?;
+            if task.sources.uris().next().is_none() {
+                push_task(&mut tasks, task)?;
             } else {
-                marker = Some(value);
+                marker = Some(task);
             }
         } else if line.trim().is_empty() || line.trim_start().starts_with('#') {
             continue;
@@ -491,7 +479,7 @@ fn parse_aria2(
                 .ok_or_else(|| invalid("session option requires '='"))?;
             let options = current
                 .as_mut()
-                .and_then(|task: &mut Value| task.get_mut("options"))
+                .map(|task: &mut ImportedTask| &mut task.options)
                 .and_then(Value::as_object_mut)
                 .ok_or_else(|| invalid("session option has no URI line"))?;
             let name = name.trim();
@@ -521,7 +509,11 @@ fn parse_aria2(
             if uris.is_empty() || uris.len() > MAX_HTTP_TASK_SOURCES {
                 return Err(invalid("invalid session URI line"));
             }
-            current = Some(json!({"uris": uris, "options": {}}));
+            current = Some(ImportedTask {
+                sources: ImportedSources::Uris(uris),
+                options: json!({}),
+                ..Default::default()
+            });
         }
     }
     finish_aria2_task(&mut current, &mut marker, &mut tasks)?;
@@ -529,29 +521,30 @@ fn parse_aria2(
 }
 
 fn finish_aria2_task(
-    current: &mut Option<Value>,
-    marker: &mut Option<Value>,
+    current: &mut Option<ImportedTask>,
+    marker: &mut Option<ImportedTask>,
     tasks: &mut Vec<ImportedTask>,
 ) -> Result<(), HttpControlError> {
-    if let Some(value) = current.take() {
+    if let Some(mut task) = current.take() {
+        validate_options(&mut task.options, false)?;
         let task = if let Some(marker) = marker.take() {
-            let projected_options_match = value
-                .get("options")
-                .and_then(Value::as_object)
-                .zip(marker.get("options").and_then(Value::as_object))
+            let projected_options_match = task
+                .options
+                .as_object()
+                .zip(marker.options.as_object())
                 .is_some_and(|(actual, expected)| {
                     actual
                         .iter()
                         .eq(expected.iter().filter(|(name, _)| aria2_option(name)))
                 });
-            if value.get("uris") != marker.get("uris") || !projected_options_match {
+            if !task.sources.uris().eq(marker.sources.uris()) || !projected_options_match {
                 return Err(invalid("aria2 projection differs from its source metadata"));
             }
             marker
         } else {
-            value
+            task
         };
-        push_task(tasks, parse_task(&task, false)?)?;
+        push_task(tasks, task)?;
     } else if marker.is_some() {
         return Err(invalid("session metadata has no URI projection"));
     }
@@ -573,36 +566,24 @@ fn push_task(tasks: &mut Vec<ImportedTask>, task: ImportedTask) -> Result<(), Ht
     Ok(())
 }
 
-pub(crate) fn render(document: &Value, format: SessionFormat) -> Result<Vec<u8>, HttpControlError> {
-    if format == SessionFormat::Aria2
-        && document
-            .get("tasks")
-            .and_then(Value::as_array)
-            .is_some_and(|tasks| {
-                tasks.iter().any(|task| {
-                    task.get("verification")
-                        .is_some_and(|value| !value.is_null())
-                })
-            })
+fn require_aria2_metadata(task: &Value) -> Result<(), HttpControlError> {
+    if task
+        .get("verification")
+        .is_some_and(|value| !value.is_null())
     {
         return Err(HttpControlError::Unsupported(
             "VerificationMetadataRequiresJson",
         ));
     }
-    if format == SessionFormat::Aria2
-        && document
-            .get("tasks")
-            .and_then(Value::as_array)
-            .is_some_and(|tasks| {
-                tasks
-                    .iter()
-                    .any(|task| task.get("kind").and_then(Value::as_str) == Some("bittorrent"))
-            })
-    {
+    if task.get("kind").and_then(Value::as_str) == Some("bittorrent") {
         return Err(HttpControlError::Unsupported(
             "BitTorrentMetadataRequiresJson",
         ));
     }
+    Ok(())
+}
+
+pub(crate) fn render(document: &Value, format: SessionFormat) -> Result<Vec<u8>, HttpControlError> {
     let mut writer = SessionWriter { bytes: Vec::new() };
     if format == SessionFormat::Json {
         serde_json::to_writer(&mut writer, document)
@@ -614,10 +595,12 @@ pub(crate) fn render(document: &Value, format: SessionFormat) -> Result<Vec<u8>,
         .and_then(Value::as_array)
         .ok_or_else(|| invalid("invalid export document"))?;
     for task in tasks {
-        let uris = task
-            .get("uris")
+        require_aria2_metadata(task)?;
+        let sources = task
+            .get("sources")
             .and_then(Value::as_array)
-            .ok_or_else(|| invalid("invalid export URIs"))?;
+            .filter(|sources| !sources.is_empty() && sources.len() <= MAX_HTTP_TASK_SOURCES)
+            .ok_or_else(|| invalid("invalid export sources"))?;
         let options = task
             .get("options")
             .and_then(Value::as_object)
@@ -633,19 +616,23 @@ pub(crate) fn render(document: &Value, format: SessionFormat) -> Result<Vec<u8>,
         writer
             .write_all(b"\n")
             .map_err(|_| HttpControlError::ResponseTooLarge)?;
-        if uris.is_empty() {
-            continue;
-        }
         let line_start = writer.bytes.len();
-        for (index, uri) in uris.iter().enumerate() {
-            let uri = uri
-                .as_str()
+        let mut has_uris = false;
+        for source in sources {
+            if source.get("uri") == Some(&Value::Null)
+                && source.get("needsCredentials") == Some(&Value::Bool(true))
+            {
+                continue;
+            }
+            let uri = source
+                .get("uri")
+                .and_then(Value::as_str)
                 .filter(|uri| {
                     ariax_storage::uri_is_safe_to_persist(uri)
                         && !uri.bytes().any(|byte| byte.is_ascii_whitespace())
                 })
                 .ok_or_else(|| invalid("URI cannot be exported as aria2 text"))?;
-            if index != 0 {
+            if has_uris {
                 writer
                     .write_all(b"\t")
                     .map_err(|_| HttpControlError::ResponseTooLarge)?;
@@ -653,6 +640,10 @@ pub(crate) fn render(document: &Value, format: SessionFormat) -> Result<Vec<u8>,
             writer
                 .write_all(uri.as_bytes())
                 .map_err(|_| HttpControlError::ResponseTooLarge)?;
+            has_uris = true;
+        }
+        if !has_uris {
+            continue;
         }
         if writer.bytes.len() - line_start > MAX_SESSION_LINE_BYTES {
             return Err(HttpControlError::ResponseTooLarge);
@@ -709,6 +700,13 @@ impl std::io::Write for SessionWriter {
 mod tests {
     use super::*;
 
+    fn source(uri: &str) -> Value {
+        json!({
+            "uriId": "11", "uri": uri, "fingerprint": "02".repeat(32),
+            "needsCredentials": false, "priority": "1"
+        })
+    }
+
     fn parse(params: Value) -> Result<Vec<ImportedTask>, HttpControlError> {
         let budgets = crate::RpcBudgets::process_default();
         let client = budgets.client().expect("client");
@@ -729,9 +727,6 @@ mod tests {
             r#"{"tasks":[],"formatVersion":2}"#,
             r#"{"tasks":[]}"#,
             r#"{"tasks":[],"formatVersion":4}"#,
-            r#"{"formatVersion":3,"tasks":[{"kind":"transfer","uris":["http://example.test/file"],"options":{"pause":"invalid"}}]}"#,
-            r#"{"formatVersion":3,"tasks":[{"kind":"transfer","uris":["http://example.test/file"],"options":false}]}"#,
-            r#"{"formatVersion":3,"tasks":[{"kind":"transfer","uris":["http://example.test/file"],"state":"unknown"}]}"#,
             r#"{"tasks":[]} trailing"#,
         ] {
             assert!(matches!(
@@ -758,24 +753,90 @@ mod tests {
     }
 
     #[test]
-    fn aria2_migration_comments_preserve_placeholders_and_reject_projection_changes() {
+    fn json_requires_one_source_representation_and_an_explicit_kind() {
+        let task = json!({"kind":"transfer","sources":[source("http://example.test/file")]});
+        let tasks =
+            parse(json!([{"formatVersion":3,"tasks":[task.clone()]}])).expect("source records");
+        let ImportedSources::Persisted(records) = &tasks[0].sources else {
+            panic!("JSON sources must retain their persisted identities");
+        };
+        assert_eq!(records[0].uri_id, 11);
+        assert_eq!(records[0].priority, 1);
+        assert_eq!(records[0].redacted_fingerprint, [2; 32]);
+        assert_eq!(tasks[0].options["pause"], true);
+
+        for name in ["kind", "sources"] {
+            let mut missing = task.clone();
+            missing.as_object_mut().expect("task").remove(name);
+            assert!(matches!(
+                parse(json!([{"formatVersion":3,"tasks":[missing]}])),
+                Err(HttpControlError::InvalidParams(_))
+            ));
+        }
+        for keep_sources in [false, true] {
+            let mut legacy = task.clone();
+            legacy["uris"] = json!(["http://example.test/file"]);
+            if !keep_sources {
+                legacy.as_object_mut().expect("task").remove("sources");
+            }
+            assert!(matches!(
+                parse(json!([{"formatVersion":3,"tasks":[legacy]}])),
+                Err(HttpControlError::InvalidParams("unknown session field"))
+            ));
+        }
+        for (name, value, error) in [
+            ("sources", json!([]), "invalid session sources"),
+            ("sources", Value::Null, "invalid session sources"),
+            ("options", json!(false), "session options must be an object"),
+            (
+                "options",
+                json!({"pause":"invalid"}),
+                "invalid session pause option",
+            ),
+            ("state", json!("unknown"), "invalid task state hint"),
+        ] {
+            let mut invalid = task.clone();
+            invalid[name] = value;
+            assert!(matches!(
+                parse(json!([{"formatVersion":3,"tasks":[invalid]}])),
+                Err(HttpControlError::InvalidParams(actual)) if actual == error
+            ));
+        }
+    }
+
+    #[test]
+    fn aria2_source_comments_preserve_placeholders_and_reject_projection_changes() {
         let unavailable = json!({"uriId":"9", "uri":null, "fingerprint":"01".repeat(32), "needsCredentials":true, "priority":"0"});
-        let safe = json!({"uriId":"11", "uri":"http://example.test/file", "fingerprint":"02".repeat(32), "needsCredentials":false, "priority":"1"});
         let document = json!({"formatVersion":3,"tasks":[
-            {"kind":"transfer","uris":[],"sources":[unavailable.clone()],"options":{"out":"blocked.bin","pause":"true"}},
-            {"kind":"transfer","uris":["http://example.test/file"],"sources":[unavailable,safe],"options":{"out":"file.bin","pause":"false"}}
+            {"kind":"transfer","sources":[unavailable.clone()],"options":{"out":"blocked.bin","pause":"true"}},
+            {"kind":"transfer","sources":[unavailable,source("http://example.test/file")],"options":{"out":"file.bin","pause":"false"}}
         ]});
         let text =
             String::from_utf8(render(&document, SessionFormat::Aria2).expect("aria2 export"))
                 .expect("UTF-8");
+        assert!(!text.contains("\"uris\""));
         let tasks = parse(json!([text, "aria2"])).expect("aria2 import");
         assert_eq!(tasks.len(), 2);
-        assert!(tasks[0].uris.is_empty());
-        assert_eq!(tasks[0].sources.as_ref().expect("placeholder")[0].uri_id, 9);
-        assert_eq!(tasks[1].sources.as_ref().expect("mixed mirrors").len(), 2);
+        assert!(tasks[0].sources.uris().next().is_none());
+        let ImportedSources::Persisted(blocked) = &tasks[0].sources else {
+            panic!("placeholder source records");
+        };
+        assert_eq!(blocked[0].uri_id, 9);
+        assert!(blocked[0].needs_credentials);
+        let ImportedSources::Persisted(mixed) = &tasks[1].sources else {
+            panic!("mixed source records");
+        };
+        assert_eq!(mixed.len(), 2);
         assert_eq!(tasks[1].options["pause"], "false");
         let changed = text.replace("  pause=false", "  pause=true");
         assert!(parse(json!([changed, "aria2"])).is_err());
+        let changed = text.replace("\nhttp://example.test/file\n", "\nhttp://other.test/file\n");
+        assert!(matches!(
+            parse(json!([changed, "aria2"])),
+            Err(HttpControlError::InvalidParams(
+                "aria2 projection differs from its source metadata"
+            ))
+        ));
         let json_bytes = render(&document, SessionFormat::Json).expect("JSON export");
         assert_eq!(
             serde_json::from_slice::<Value>(&json_bytes).expect("JSON"),
@@ -791,7 +852,7 @@ mod tests {
 
     #[test]
     fn aria2_option_lines_omit_extensions_while_metadata_round_trips_them() {
-        let document = json!({"formatVersion":3,"tasks":[{"kind":"transfer","uris":["http://example.test/file"],"options":{"pause":"true", "split":"3", "piece-length":"1048576", "retry-profile":"standard"}}]});
+        let document = json!({"formatVersion":3,"tasks":[{"kind":"transfer","sources":[source("http://example.test/file")],"options":{"pause":"true", "split":"3", "piece-length":"1048576", "retry-profile":"standard"}}]});
         let text = String::from_utf8(render(&document, SessionFormat::Aria2).expect("export"))
             .expect("text");
         assert!(text.contains("  split=3\n"));
@@ -807,5 +868,66 @@ mod tests {
             ]))
             .is_err()
         );
+    }
+
+    #[test]
+    fn plain_aria2_input_retains_uri_lists_and_validates_options() {
+        let text = "http://first.test/file\thttp://second.test/file\n  pause=false\n  split=2\nhttp://third.test/file\n  pause=true\n";
+        let tasks = parse(json!([text, "aria2"])).expect("ordinary aria2 input");
+        assert_eq!(tasks.len(), 2);
+        assert!(matches!(&tasks[0].sources, ImportedSources::Uris(uris) if uris.len() == 2));
+        assert_eq!(
+            tasks[0].sources.uris().collect::<Vec<_>>(),
+            ["http://first.test/file", "http://second.test/file"]
+        );
+        assert_eq!(tasks[0].options, json!({"pause":"false", "split":"2"}));
+        assert_eq!(tasks[1].options["pause"], "true");
+        assert!(matches!(
+            parse(json!([
+                text.replace("pause=false", "pause=invalid"),
+                "aria2"
+            ])),
+            Err(HttpControlError::InvalidParams(
+                "invalid session pause option"
+            ))
+        ));
+        for name in [
+            "verification-manifest",
+            "metadata-expansion",
+            "metalink-file-index",
+        ] {
+            assert!(matches!(
+                parse(json!([
+                    format!("http://example.test/file\n  {name}=1\n"),
+                    "aria2"
+                ])),
+                Err(HttpControlError::InvalidParams(
+                    "internal verification bindings cannot be imported as options"
+                ))
+            ));
+        }
+    }
+
+    #[test]
+    fn aria2_rejects_metadata_that_requires_json() {
+        for (task, error) in [
+            (
+                json!({"kind":"bittorrent"}),
+                "BitTorrentMetadataRequiresJson",
+            ),
+            (
+                json!({"kind":"transfer", "verification":{}}),
+                "VerificationMetadataRequiresJson",
+            ),
+        ] {
+            assert!(matches!(
+                render(&json!({"formatVersion":3,"tasks":[task.clone()]}), SessionFormat::Aria2),
+                Err(HttpControlError::Unsupported(actual)) if actual == error
+            ));
+            assert!(matches!(
+                parse(json!([format!("# ariax-task {task}\n"), "aria2"])),
+                Err(HttpControlError::Unsupported(actual)) if actual == error
+            ));
+        }
     }
 }

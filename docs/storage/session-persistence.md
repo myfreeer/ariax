@@ -924,18 +924,23 @@ hot progress bitmaps unless requested. Sensitive sources are represented by a
 needs-credentials placeholder. It is for migration and debugging, not the
 primary crash recovery path.
 
-JSON source entries include stable source identity, optional sanitized URI,
-priority, and the credential-required marker. The legacy `uris` projection
-contains only persistence-safe strings. These are migration hints, and a
-credential placeholder is never converted into a runnable URL. Debug formatting
-of source objects also omits sensitive live URI text.
-JSON files reject duplicate object fields and unknown migration fields. The
+Each JSON v3 transfer requires `kind=transfer` and a nonempty `sources` array.
+Source entries include stable source identity, optional sanitized URI,
+priority, and the credential-required marker. There is no duplicate `uris`
+field or URI-only JSON fallback; those older development shapes are rejected.
+These are import hints, and a credential placeholder is never converted into a
+runnable URL. Debug formatting of source objects also omits sensitive live URI
+text. Live URI input and persisted source records use distinct admission
+variants, so an import cannot carry competing source representations.
+JSON files reject duplicate object fields and unknown import fields. The
 aria2 text form includes a bounded `# ariax-task ` JSON comment per task so
 credential placeholders survive ariax reimport; ordinary aria2 readers ignore
 the comment. Ariax-only options remain in that comment; indented lines contain
 only options advertised by the pinned aria2 registry. When safe URI/option lines
-follow it, ariax requires them to match that projection of the comment exactly.
-A task containing only unavailable sources is comment-only.
+follow it, ariax derives the URI projection from the comment's `sources` and
+requires both lines to match the comment exactly. A task without a
+persistence-safe URI is comment-only. Ordinary aria2 input files continue to
+accept URI lines directly, without a metadata comment.
 
 Configured exports bind an existing absolute parent directory through the native
 directory capability. A bounded dedicated writer creates a private temporary

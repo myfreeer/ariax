@@ -34,10 +34,7 @@ impl<T: fmt::Display> Serialize for DisplayValue<T> {
     }
 }
 
-pub(crate) struct SourceUris<'a> {
-    pub(crate) sources: &'a [crate::TransferSourceSpec],
-    pub(crate) status: bool,
-}
+pub(crate) struct SourceUris<'a>(pub(crate) &'a [crate::TransferSourceSpec]);
 
 impl Serialize for SourceUris<'_> {
     fn serialize<S: ser::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -46,38 +43,22 @@ impl Serialize for SourceUris<'_> {
             uri: &'a str,
             status: &'static str,
         }
-        let mut sequence = serializer.serialize_seq(Some(self.sources.len()))?;
-        for source in self.sources {
-            if self.status {
-                sequence.serialize_element(&Uri {
-                    uri: source.uri().or(source.persistence_safe_uri()).unwrap_or(""),
-                    status: if source.uri().is_some() {
-                        "used"
-                    } else {
-                        "waiting"
-                    },
-                })?;
-            } else {
-                sequence.serialize_element(&source.uri().unwrap_or(""))?;
-            }
+        let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
+        for source in self.0 {
+            sequence.serialize_element(&Uri {
+                uri: source.uri().or(source.persistence_safe_uri()).unwrap_or(""),
+                status: if source.uri().is_some() {
+                    "used"
+                } else {
+                    "waiting"
+                },
+            })?;
         }
         sequence.end()
     }
 }
 
 pub(crate) struct SourceServers<'a>(pub(crate) &'a [crate::TransferSourceSpec]);
-
-pub(crate) struct PersistedUris<'a>(pub(crate) &'a [crate::TransferSourceSpec]);
-
-impl Serialize for PersistedUris<'_> {
-    fn serialize<S: ser::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_seq(
-            self.0
-                .iter()
-                .filter_map(crate::TransferSourceSpec::persistence_safe_uri),
-        )
-    }
-}
 
 pub(crate) struct PersistedSources<'a>(pub(crate) &'a [crate::TransferSourceSpec]);
 

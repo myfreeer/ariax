@@ -74,7 +74,7 @@ impl DownloadOptions {
         let (parsed, _, _, paused) = crate::http_control::parse_add_options_authorized(
             &Value::Object(values.clone()),
             &root,
-            &["https://options.invalid/download".to_owned()],
+            Some("https://options.invalid/download"),
             true,
         )
         .map_err(NativeApiError::Control)?;

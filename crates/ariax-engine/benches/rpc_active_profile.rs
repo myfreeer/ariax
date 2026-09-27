@@ -546,7 +546,10 @@ async fn engine(origins: &[SocketAddr], scenario: &str) -> Result<()> {
         .map(|index| {
             json!({
                 "kind":"transfer",
-                "uris":[format!("http://example.test/projection/{index}.bin")],
+                "sources":[{
+                    "uriId":"0", "uri":format!("http://example.test/projection/{index}.bin"),
+                    "fingerprint":"00".repeat(32), "needsCredentials":false, "priority":"0"
+                }],
                 "options":{"pause":true,"out":format!("projection-{index}.bin")}
             })
         })

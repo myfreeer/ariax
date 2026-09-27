@@ -140,12 +140,12 @@ pub(super) fn parse_upload(
             crate::session_file::ImportedTask {
                 #[cfg(feature = "bt")]
                 bittorrent: None,
-                uris: file
-                    .sources
-                    .iter()
-                    .map(|source| source.uri.clone())
-                    .collect(),
-                sources: None,
+                sources: crate::session_file::ImportedSources::Uris(
+                    file.sources
+                        .iter()
+                        .map(|source| source.uri.clone())
+                        .collect(),
+                ),
                 options: Value::Object(options),
                 verification: Some(file.verification),
                 metalink_index: Some(file.index),

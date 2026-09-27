@@ -559,10 +559,7 @@ impl ControlQueryRoot {
         }
         let spec = self.task_spec(gid).ok_or(HttpControlError::NotFound)?;
         Ok(crate::rpc_result::to_value(
-            &SourceUris {
-                sources: spec.sources(),
-                status: true,
-            },
+            &SourceUris(spec.sources()),
             RESULT_VALUE_BYTES,
         )?)
     }
@@ -605,10 +602,7 @@ impl ControlQueryRoot {
                 length: DisplayValue(total),
                 completed_length: DisplayValue(completed),
                 selected: "true",
-                uris: SourceUris {
-                    sources: spec.sources(),
-                    status: true,
-                },
+                uris: SourceUris(spec.sources()),
             }],
             RESULT_VALUE_BYTES,
         )?)
@@ -765,7 +759,6 @@ impl ControlQueryRoot {
             struct Task<'a> {
                 kind: &'static str,
                 gid: DisplayValue<Gid>,
-                uris: PersistedUris<'a>,
                 sources: PersistedSources<'a>,
                 options: SessionOptions<'a>,
                 state: &'static str,
@@ -775,7 +768,6 @@ impl ControlQueryRoot {
             tasks.push(&Task {
                 kind: "transfer",
                 gid: DisplayValue(applied.snapshot.gid),
-                uris: PersistedUris(spec.sources()),
                 sources: PersistedSources(spec.sources()),
                 options: SessionOptions {
                     options: &options,

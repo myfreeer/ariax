@@ -661,8 +661,7 @@ impl Preparation {
                     "addUri accepts a URI array and optional options object",
                 ))?;
             vec![crate::session_file::ImportedTask {
-                uris: parse_uri_array(&values[0])?,
-                sources: None,
+                sources: crate::session_file::ImportedSources::Uris(parse_uri_array(&values[0])?),
                 options: values.get(1).cloned().unwrap_or_else(|| json!({})),
                 ..Default::default()
             }]
@@ -745,25 +744,30 @@ impl Preparation {
                 continue;
             }
             let gid = derive_http_gid(self.session_id, task_id);
-            let options =
-                self.configuration
-                    .merged_add_options(task.options, &task.uris, import)?;
-            let (mut options, root, output, paused) = parse_add_options_authorized(
-                &options,
-                &self.configuration.config.output_root,
-                &task.uris,
-                self.local_admin,
-            )?;
+            let (mut options, root, output, paused) = {
+                let first_uri = task.sources.uris().next();
+                let options =
+                    self.configuration
+                        .merged_add_options(task.options, first_uri, import)?;
+                parse_add_options_authorized(
+                    &options,
+                    &self.configuration.config.output_root,
+                    first_uri,
+                    self.local_admin,
+                )?
+            };
             if let Some(manifest) = &task.verification {
                 options.transfer.verification_fingerprint = Some(manifest.fingerprint());
                 options.piece_length = manifest.chunk_length();
             }
             let spec = match task.sources {
-                Some(sources) => TransferTaskSpec::from_persisted_sources(
-                    task_id, gid, sources, root, output, options,
-                ),
-                None => {
-                    TransferTaskSpec::new(task_id, gid, task.uris, root, output, options, false)
+                crate::session_file::ImportedSources::Persisted(sources) => {
+                    TransferTaskSpec::from_persisted_sources(
+                        task_id, gid, sources, root, output, options,
+                    )
+                }
+                crate::session_file::ImportedSources::Uris(uris) => {
+                    TransferTaskSpec::new(task_id, gid, uris, root, output, options, false)
                 }
             }
             .map_err(HttpControlError::TaskSpec)?;

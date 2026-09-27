@@ -237,7 +237,13 @@ fn phase5_remote_authentication_does_not_grant_local_file_or_bypass_authority() 
     ] {
         assert!(parse_add_options(&options, &plane.config.output_root, &uris).is_err());
         assert!(
-            parse_add_options_authorized(&options, &plane.config.output_root, &uris, true).is_ok()
+            parse_add_options_authorized(
+                &options,
+                &plane.config.output_root,
+                uris.first().map(String::as_str),
+                true,
+            )
+            .is_ok()
         );
     }
     let request = plane.direct_client.try_request(0).unwrap();

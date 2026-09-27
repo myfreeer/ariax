@@ -23,7 +23,8 @@ protocol, control, session and journal paths:
   without real-time sleeps in the fuzz loop.
 - `session_document`: strict current-format JSON documents and aria2 input-file
   syntax, including bounded metadata comments and exact safe projections.
-  Older-format seeds exercise rejection; current v3 seeds exercise import.
+  Older-format and URI-only JSON seeds exercise rejection; current v3 seeds
+  exercise source records, credential placeholders and verification metadata.
 - `url_rules`: bounded TOML rule parsing, safe option admission, canonical
   round trips, and bounded URL matching without network access.
 - `metalink`: capped v3/v4 pull parsing, namespaces/entities, safe paths,

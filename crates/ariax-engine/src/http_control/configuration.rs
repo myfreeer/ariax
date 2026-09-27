@@ -393,7 +393,7 @@ impl super::query::ConfigurationSnapshot {
     pub(super) fn merged_add_options(
         &self,
         explicit: Value,
-        uris: &[String],
+        first_uri: Option<&str>,
         input_file: bool,
     ) -> Result<Value, HttpControlError> {
         let explicit = explicit.as_object().ok_or(HttpControlError::InvalidParams(
@@ -411,7 +411,7 @@ impl super::query::ConfigurationSnapshot {
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
         merge_resolved_layer(&mut options, &flat)?;
-        if let Some(uri) = uris.first() {
+        if let Some(uri) = first_uri {
             let rules = self.url_rules.matching_rules(uri).map_err(|_| {
                 HttpControlError::InvalidParams("URL rule matching exceeded its limits")
             })?;

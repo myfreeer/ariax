@@ -6,6 +6,10 @@ checkpoint and focused offline checks. It does not establish native acceptance
 or close any `P6-01` through `P6-06` gate. No remote, GitHub API, push or CI action
 was performed during this continuation.
 
+The subsequent [September 27 cleanup](pre-ci-cleanup-2026-09-27.md) records
+additional session-source simplification and aria2 RPC regression coverage.
+Its validation is separate from the checks recorded below.
+
 ## Local Scope
 
 The [implementation plan](../docs/project/implementation-plan.md#phase-6-bittorrent-full-build)

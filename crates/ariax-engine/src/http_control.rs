@@ -35,8 +35,8 @@ pub use control_runtime::ControlRuntimeMetrics;
 
 use crate::http_first_slice::append_initial_admission_with_options;
 use crate::rpc_result::{
-    DisplayValue, OptionMap, PersistedSources, PersistedUris, RESULT_VALUE_BYTES, ResultList,
-    SessionOptions, SourceServers, SourceUris,
+    DisplayValue, OptionMap, PersistedSources, RESULT_VALUE_BYTES, ResultList, SessionOptions,
+    SourceServers, SourceUris,
 };
 use crate::{
     HttpRetryAfterPolicy, HttpRetryBackoff, HttpRetryPolicy, HttpRetryProfile, HttpRetryStatusSet,
@@ -4125,13 +4125,18 @@ fn parse_add_options(
     ),
     HttpControlError,
 > {
-    parse_add_options_authorized(options, default_root, uris, false)
+    parse_add_options_authorized(
+        options,
+        default_root,
+        uris.first().map(String::as_str),
+        false,
+    )
 }
 
 pub(crate) fn parse_add_options_authorized(
     options: &Value,
     default_root: &Path,
-    uris: &[String],
+    first_uri: Option<&str>,
     local_admin: bool,
 ) -> Result<
     (
@@ -4302,7 +4307,7 @@ pub(crate) fn parse_add_options_authorized(
     if !root.is_absolute() {
         return Err(HttpControlError::InvalidParams("dir must be absolute"));
     }
-    let output = out.unwrap_or_else(|| default_output_name(uris));
+    let output = out.unwrap_or_else(|| default_output_name(first_uri));
     let output = SafePathBuilder::from_user_path(&output, PathPlatform::current())
         .map_err(|_| HttpControlError::InvalidParams("out is not a safe relative path"))?;
     Ok((parsed, root, output, paused))
@@ -4543,8 +4548,8 @@ fn parse_timeout(value: &Value) -> Result<u64, HttpControlError> {
     Ok(seconds)
 }
 
-fn default_output_name(uris: &[String]) -> String {
-    uris.first()
+fn default_output_name(first_uri: Option<&str>) -> String {
+    first_uri
         .and_then(|uri| uri.rsplit('/').find(|part| !part.is_empty()))
         .filter(|part| !part.contains('?') && !part.contains('#'))
         .unwrap_or("download")
@@ -6378,6 +6383,93 @@ mod tests {
     }
 
     #[test]
+    fn session_sources_preserve_aria2_rpc_uri_shapes_and_save_contract() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let uris = json!(["http://first.test/file.bin", "http://second.test/file.bin"]);
+        let gid = plane
+            .call("aria2.addUri", json!([uris, {"pause":true}]))
+            .expect("aria2 URI array admission");
+        assert_eq!(gid.as_str().expect("string GID").len(), 16);
+        let expected = json!([
+            {"uri":"http://first.test/file.bin", "status":"used"},
+            {"uri":"http://second.test/file.bin", "status":"used"}
+        ]);
+        assert_eq!(
+            plane
+                .call("aria2.getUris", json!([gid]))
+                .expect("URI query"),
+            expected
+        );
+        let files = plane
+            .call("aria2.getFiles", json!([gid]))
+            .expect("file query");
+        assert_eq!(files[0]["uris"], expected);
+        assert_eq!(files[0]["index"], "1");
+        assert_eq!(files[0]["length"], "0");
+        assert_eq!(files[0]["completedLength"], "0");
+        assert_eq!(files[0]["selected"], "true");
+        assert!(matches!(
+            plane.call("aria2.getUris", json!([gid, "extra"])),
+            Err(HttpControlError::InvalidParams(_))
+        ));
+
+        let mut document = plane
+            .call("ariax.exportSession", json!([]))
+            .expect("export");
+        assert!(document["tasks"][0].get("uris").is_none());
+        assert_eq!(
+            document["tasks"][0]["sources"]
+                .as_array()
+                .expect("sources")
+                .len(),
+            2
+        );
+        document["tasks"][0]["uris"] = uris;
+        assert!(matches!(
+            plane.call("ariax.importSession", json!([document])),
+            Err(HttpControlError::InvalidParams("unknown session field"))
+        ));
+        assert_eq!(plane.tasks.len(), 1);
+
+        let path = directory.root.join("session.txt");
+        plane
+            .configure_session_export(SessionExportConfig {
+                path: path.clone(),
+                format: crate::SessionFormat::Aria2,
+                interval: None,
+            })
+            .expect("local export destination");
+        assert!(matches!(
+            plane.call("aria2.saveSession", json!(["remote-path"])),
+            Err(HttpControlError::InvalidParams(_))
+        ));
+        assert_eq!(
+            plane.call("aria2.saveSession", json!([])).expect("save"),
+            "OK"
+        );
+        let text = fs::read_to_string(path).expect("saved aria2 text");
+        assert!(
+            text.lines()
+                .any(|line| line == "http://first.test/file.bin\thttp://second.test/file.bin")
+        );
+        assert!(!text.contains("\"uris\""));
+        let target = TestDirectory::new();
+        let mut imported = target.control_plane();
+        let gids = imported
+            .call("ariax.importSession", json!([text, "aria2"]))
+            .expect("import saved aria2 text");
+        assert_eq!(
+            imported
+                .call("aria2.getUris", json!([gids[0]]))
+                .expect("imported URIs"),
+            expected
+        );
+        imported.shutdown().expect("import shutdown");
+        plane.shutdown().expect("shutdown");
+    }
+
+    #[test]
     fn signed_sources_export_without_secrets_and_recover_as_manageable_placeholders() {
         for paused in [false, true] {
             let directory = TestDirectory::new();
@@ -6402,7 +6494,7 @@ mod tests {
                 .call("ariax.exportSession", json!([]))
                 .expect("sanitized export");
             assert!(!export.to_string().contains("secret-canary"));
-            assert_eq!(export["tasks"][0]["uris"], json!([]));
+            assert!(export["tasks"][0].get("uris").is_none());
             assert_eq!(export["tasks"][0]["sources"][0]["uri"], Value::Null);
             assert_eq!(export["tasks"][0]["sources"][0]["needsCredentials"], true);
             assert!(!format!("{live:?}").contains("secret-canary"));
@@ -6427,6 +6519,19 @@ mod tests {
             recovered
                 .call("aria2.getOption", json!([gid.to_string()]))
                 .expect("options");
+            let waiting = json!([{"uri":"", "status":"waiting"}]);
+            assert_eq!(
+                recovered
+                    .call("aria2.getUris", json!([gid.to_string()]))
+                    .expect("placeholder URIs"),
+                waiting
+            );
+            assert_eq!(
+                recovered
+                    .call("aria2.getFiles", json!([gid.to_string()]))
+                    .expect("placeholder file")[0]["uris"],
+                waiting
+            );
             assert!(
                 recovered
                     .call(
@@ -6494,7 +6599,10 @@ mod tests {
     fn import_document(count: usize) -> Value {
         json!({"formatVersion":3,"tasks": (0..count).map(|index| json!({
             "kind": "transfer",
-            "uris": [format!("http://example.test/import-{index}.bin")],
+            "sources": [{
+                "uriId": "0", "uri": format!("http://example.test/import-{index}.bin"),
+                "fingerprint": "00".repeat(32), "needsCredentials": false, "priority": "0"
+            }],
             "options": {"split": "2"}
         })).collect::<Vec<_>>()})
     }

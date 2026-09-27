@@ -76,6 +76,14 @@ JSON session export/import. They operate on the real scheduler and persisted
 session rather than placeholder state. GID lookup accepts unique hexadecimal
 prefixes from one through sixteen digits.
 
+`aria2.getUris` and each `aria2.getFiles` entry's `uris` field contain objects
+with the aria2 `uri` and `status` fields. The Ariax JSON session extension uses
+the separate persisted `sources` records described in
+[session persistence](../storage/session-persistence.md#text-export);
+changes to that unreleased format do not change aria2 RPC URI arguments or
+response shapes. `aria2.saveSession` retains its no-argument call and `OK`
+acknowledgement after the configured local export completes.
+
 `aria2.addMetalink([base64, options?, position?])` returns the selected child
 GIDs in document order. CLI `--add-metalink` and Rust `AddMetalink` use the same
 atomic admission, selection filters and portable output-name checks. A disabled
