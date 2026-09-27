@@ -6567,10 +6567,6 @@ mod tests {
             .expect("insert raw host-key challenge");
     }
 
-    fn seed_owner_lock(database: &Path) {
-        drop(super::acquire_session_owner_lock(database).expect("seed owner lock"));
-    }
-
     fn copy_fixture_file(source: &Path, destination: &Path) {
         let expected_bytes = fs::metadata(source).expect("source fixture metadata").len();
         let mut source_file = fs::File::open(source).expect("open source fixture");
@@ -8979,7 +8975,7 @@ mod tests {
         let reopened =
             SessionStore::open(directory.database(), SessionStoreConfig::default()).unwrap();
         assert_eq!(reopened.tasks().unwrap().len(), 1);
-        assert_eq!(reopened.bt_tasks().unwrap(), [task.clone()]);
+        assert_eq!(reopened.bt_tasks().unwrap(), std::slice::from_ref(task));
     }
 
     fn metadata_parent() -> (SessionTaskMetadata, crate::MetadataParent) {

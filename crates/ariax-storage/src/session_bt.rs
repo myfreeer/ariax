@@ -885,7 +885,7 @@ mod tests {
             .create_bt_task(&task, &SanitizedOptionMap::new([]).unwrap(), &policy)
             .unwrap();
         assert!(store.tasks().unwrap().is_empty());
-        assert_eq!(store.bt_tasks().unwrap(), [task.clone()]);
+        assert_eq!(store.bt_tasks().unwrap(), std::slice::from_ref(&task));
         let journal: Option<Vec<u8>> = store
             .connection
             .query_row("SELECT primary_journal_id FROM task", [], |row| row.get(0))
@@ -966,7 +966,7 @@ mod tests {
             store.replace_paused_bt_options(&patch, &option_policy),
             Err(SessionStoreError::Sqlite(_))
         ));
-        assert_eq!(store.bt_tasks().unwrap(), [original.clone()]);
+        assert_eq!(store.bt_tasks().unwrap(), std::slice::from_ref(&original));
         assert_eq!(
             store
                 .task_options(task.gid, OptionsSnapshotScope::CurrentGeneration, &policy)
