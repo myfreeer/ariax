@@ -43,7 +43,13 @@ platform matrix or accumulating native build artifacts. See the
 
 Install Rust 1.97.1 on each fresh runner and check the supported graph with
 Rust 1.88.0. CI helpers use Python 3.13, or MSYS2's native Python for GNU jobs.
-Use the locked dependency graph. The checkout must supply all
+Use the locked dependency graph.
+
+JavaScript actions in both workflows target Node.js 24 and use full commit
+pins. Preflight, every validation matrix job and native benchmark collection
+share the same Node.js 24 artifact uploader.
+
+The checkout must supply all
 tracked fixtures and pinned fork sources; ignored workstation toolchains,
 cached references and absolute local paths are not CI inputs.
 Git attributes select LF for text sources and generated contracts and preserve
