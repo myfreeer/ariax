@@ -103,6 +103,14 @@ be consumed by ordinary builds. The same job fuzzes the bounded BT parser for
 uses the pinned compiler with `RUSTC_BOOTSTRAP=1` confined to that command's
 environment; it does not change production or MSRV compilation.
 
+The benchmark's pure peer-framing regressions live in the engine integration-test
+target. The custom benchmark harness imports only the shared parser, so ordinary
+workspace tests execute the framing assertions and all-target checks stay clean.
+
+Loopback RPC process fixtures send each HTTP request in one buffer and disable
+Nagle's delay while retaining bounded response reads and shutdown waits. Failure
+diagnostics identify the stdio framing, EOF policy and child process.
+
 ## Native Linux Measurements
 
 Compile the optimized harness before collecting measurements and execute its

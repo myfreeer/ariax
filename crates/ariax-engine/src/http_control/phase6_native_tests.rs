@@ -708,6 +708,12 @@ fn expired_shutdown_retains_safe_resume_and_dirty_generation_on_recovery() {
         .unwrap();
     progress(&mut control, |plane| {
         status(plane, gid)["status"] == "paused"
+            && plane.engine_idle()
+            && plane
+                .engine
+                .scheduler()
+                .task(gid)
+                .is_some_and(|task| task.pending_barrier.is_none())
             && plane
                 .bittorrent_handle()
                 .is_some_and(|handle| handle.snapshot(gid.get()).is_none())

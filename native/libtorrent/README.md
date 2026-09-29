@@ -27,8 +27,13 @@ Patch level 2 also filters outgoing DHT packets and validates tracker/web-seed
 redirect credentials, schemes and hop bounds. The filter is installed before
 the session starts. `tests/security.cc` and `tests/endpoints.cc` exercise URL
 policy, allowed/blocked DHT traffic, real tracker and web-seed redirects, DNS
-filtering and tracker-discovered peers. The adapter and engine tests exercise
-real payload I/O and recovery.
+filtering and tracker-discovered peers. Allowed web-seed probes require an
+actual payload response and check the downloaded bytes after native shutdown
+has drained disk writes. Patch level 3 excludes web seeds with no remaining files
+from the connection-slot count, allowing redirect chains to progress under the
+default limit. Tests require payload delivery after 20 redirects and rejection
+of the next hop. The adapter and engine tests exercise real payload I/O and
+recovery.
 
 `--sanitizer address` builds libtorrent and OpenSSL with ASan/UBSan under a
 separate target directory. The manifest records the instrumentation, and Cargo

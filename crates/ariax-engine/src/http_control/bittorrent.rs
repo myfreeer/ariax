@@ -804,6 +804,8 @@ enum Boundary {
     Shutdown,
 }
 
+type PreparedCheckpoint = (Arc<SessionBtCheckpoint>, BytePermit);
+
 struct Task {
     mapping_validation: Option<MappingValidation>,
     resume_data: Option<Arc<ResumeData>>,
@@ -830,9 +832,8 @@ struct Task {
     add: Option<Box<BtAdmission>>,
     resume: Option<ariax_storage::SessionBtResumeRecord>,
     checkpoint: Option<Arc<OwnedBlob>>,
-    checkpoint_preparation:
-        Option<Receiver<Result<(Arc<SessionBtCheckpoint>, BytePermit), HttpControlError>>>,
-    prepared_checkpoint: Option<(Arc<SessionBtCheckpoint>, BytePermit)>,
+    checkpoint_preparation: Option<Receiver<Result<PreparedCheckpoint, HttpControlError>>>,
+    prepared_checkpoint: Option<PreparedCheckpoint>,
     snapshot: Option<Arc<BtSnapshot>>,
     peers: Arc<Vec<BtPeer>>,
     request: u64,

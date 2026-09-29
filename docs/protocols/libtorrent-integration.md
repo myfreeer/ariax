@@ -21,6 +21,10 @@ bytes are bounded by the selected non-padding file total. Global and task
 queries use the same captured snapshot. Task-effective configuration dumps
 share `aria2.getOption`'s sanitized BT option projection.
 
+Admission staging keeps large transfer records behind owned pointers so each
+BT member does not occupy a transfer-sized slot. Both protocols retain the same
+request reservations and atomic publication boundary.
+
 Recovery validates the combined transfer/BT queue before normalizing active
 tasks to waiting or paused. BT tasks retain their GID and metadata identity;
 they receive fresh scheduler IDs and never acquire transfer journals. A build
@@ -29,6 +33,7 @@ without BT support rejects a store containing BT tasks before admission.
 Periodic checkpoints pause through the native disk barrier, persist the tracked
 result, mark the resumed generation dirty, then resume. Pause, removal and
 shutdown retain ownership until that same boundary and native removal complete.
+Prepared checkpoint records retain their byte reservations through persistence.
 Checkpoint failure preserves the previous blob, records `DirtyCheckpoint`, and
 cannot acknowledge a drain while a native callback still owns the task.
 Unaccepted native commands return their metadata and resume ownership to the
@@ -442,19 +447,28 @@ The native engine acceptance suite drives the shared control owner with real
 v1, v2 and hybrid peers, including multi-piece v2 hashes. Torrent and magnet
 admission both cover downloading, seeding, live-option acknowledgement,
 checkpointed pause, restart with a payload recheck, and removal. Dropping an
-option or lifecycle caller must not abandon its accepted owner. A selected-file
-fixture uses disjoint pieces so an unselected file must remain absent; its
-persisted collision mapping and indexes survive restart. Late invalid selection
-must fail while magnet metadata is held, before any payload file is created.
+option or lifecycle caller must not abandon its accepted owner. Lifecycle
+fixtures wait for scheduler cancellation to drain as well as native removal
+before resuming a paused task. A selected-file fixture uses disjoint pieces so
+an unselected file must remain absent; its persisted collision mapping and
+indexes survive restart. Late invalid selection must fail while magnet metadata
+is held, before any payload file is created.
 An expired engine shutdown deadline must report an unclean boundary, preserve
 the last safe resume blob and retain the dirty flag when the store is reopened.
 Native endpoint fixtures also require real tracker replies and web-seed payloads
 through allowed redirects. Secret-bearing redirects, resolved private targets,
 tracker-discovered blocked peers and overlong web-seed redirect chains must
 produce their expected native rejection without contacting the forbidden socket.
+Web seeds known to have no remaining files do not consume connection slots.
+The default connection limit must permit a payload after 20 redirects and reject
+the next redirect with the native SSRF error.
 CLI process tests reopen the same v3 task through typed Rust and JSON-RPC and
 compare identity, files, selection, options and pause state for every torrent
-version. Bundles without BT must reject admission before creating session state.
+version. Option parity covers the full extended map and the aria2/strict
+projection, which omits engine checkpoint bounds.
+Newly created BT output roots must be private even under a permissive process
+umask; existing unprotected roots must reject without changing their permissions.
+Bundles without BT must reject admission before creating session state.
 
 Required adapter tests:
 

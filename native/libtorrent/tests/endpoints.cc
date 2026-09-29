@@ -7,9 +7,11 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iostream>
 #include <iterator>
 #include <string>
 #include <thread>
@@ -113,13 +115,14 @@ std::string read(fs::path const& path) {
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
-enum class Mode { direct, redirect, secret, credentials, dns, blocked, chain, peer_allowed, peer_blocked };
+enum class Mode { direct, redirect, secret, credentials, dns, blocked, chain, chain_allowed, peer_allowed, peer_blocked };
 
 void endpoint(bool web, Mode mode) {
     auto const payload = read(fs::path(ARIAX_FIXTURE_DIR) / "payload.bin");
     Origin forbidden("127.0.0.1");
     std::atomic<int> final_requests{0};
     auto const base = web ? std::string("/payload") : std::string("/announce");
+    bool const chain = mode == Mode::chain || mode == Mode::chain_allowed;
     Origin source("127.0.0.2", [&](std::string const& request, unsigned short port) {
         auto const first_space = request.find(' ');
         auto const second_space = request.find(' ', first_space + 1);
@@ -128,7 +131,7 @@ void endpoint(bool web, Mode mode) {
         auto const query_start = uri.find('?');
         auto const query = query_start == std::string::npos ? std::string() : uri.substr(query_start);
         auto const path = uri.substr(0, query_start);
-        if (path == base + "/final") {
+        if (path == base + "/final" || (mode == Mode::chain_allowed && path == base + "/20")) {
             ++final_requests;
             std::string body;
             std::string extra;
@@ -155,7 +158,7 @@ void endpoint(bool web, Mode mode) {
         if (mode == Mode::secret) target += "?%74oken=canary";
         else if (mode == Mode::credentials) target.insert(7, "user:canary@");
         else if (mode == Mode::dns) target = forbidden.url("localhost", base + "/final");
-        else if (mode == Mode::chain) {
+        else if (chain) {
             auto const hop = std::stoi(path.substr(base.size() + 1));
             target = "http://127.0.0.2:" + std::to_string(port) + base + "/" + std::to_string(hop + 1);
         }
@@ -164,7 +167,8 @@ void endpoint(bool web, Mode mode) {
     });
     Directory directory;
     bool const peer = mode == Mode::peer_allowed || mode == Mode::peer_blocked;
-    bool const allowed = mode == Mode::direct || mode == Mode::redirect || mode == Mode::peer_allowed;
+    bool const allowed = mode == Mode::direct || mode == Mode::redirect
+        || mode == Mode::chain_allowed || mode == Mode::peer_allowed;
     bool const filtered = mode == Mode::dns || mode == Mode::blocked || mode == Mode::peer_blocked;
     {
         lt::settings_pack settings;
@@ -176,8 +180,8 @@ void endpoint(bool web, Mode mode) {
         settings.set_bool(lt::settings_pack::ssrf_mitigation, true);
         settings.set_bool(lt::settings_pack::apply_ip_filter_to_trackers, true);
         settings.set_int(lt::settings_pack::stop_tracker_timeout, 1);
-        settings.set_int(lt::settings_pack::alert_mask, int(lt::alert_category::error | lt::alert_category::tracker
-            | lt::alert_category::peer | lt::alert_category::ip_block | lt::alert_category::connect));
+        settings.set_int(lt::settings_pack::alert_mask, int(std::uint32_t(lt::alert_category::error | lt::alert_category::tracker
+            | lt::alert_category::peer | lt::alert_category::ip_block | lt::alert_category::connect)));
         lt::session_params params(settings);
         if (filtered) {
             params.ip_filter.add_rule(lt::make_address("127.0.0.1"), lt::make_address("127.0.0.1"), lt::ip_filter::blocked);
@@ -189,7 +193,7 @@ void endpoint(bool web, Mode mode) {
         add.flags &= ~lt::torrent_flags::auto_managed;
         add.flags |= lt::torrent_flags::ariax_hold_metadata | lt::torrent_flags::paused | lt::torrent_flags::apply_ip_filter;
         auto const url = mode == Mode::blocked ? forbidden.url("localhost", base + "/final")
-            : source.url("127.0.0.2", base + (mode == Mode::direct || peer ? "/final" : mode == Mode::chain ? "/0" : "/start"));
+            : source.url("127.0.0.2", base + (mode == Mode::direct || peer ? "/final" : chain ? "/0" : "/start"));
         if (web) add.url_seeds.push_back(url);
         else add.trackers.push_back(url);
         auto handle = session.add_torrent(std::move(add));
@@ -198,7 +202,7 @@ void endpoint(bool web, Mode mode) {
         handle.resume();
         bool rejected = false;
         bool tracker_reply = false;
-        auto const deadline = std::chrono::steady_clock::now() + (mode == Mode::chain ? 45s : 8s);
+        auto const deadline = std::chrono::steady_clock::now() + (chain ? 45s : 8s);
         for (;;) {
             std::vector<lt::alert*> alerts;
             session.pop_alerts(&alerts);
@@ -216,19 +220,28 @@ void endpoint(bool web, Mode mode) {
                 tracker_reply |= lt::alert_cast<lt::tracker_reply_alert>(alert) != nullptr;
             }
             require(!source.failed && !forbidden.failed, "native endpoint fixture failed");
-            bool const completed = peer ? forbidden.requests > 0 : web ? handle.status().is_seeding : tracker_reply;
+            bool const completed = peer ? forbidden.requests > 0
+                : web ? final_requests > 0 && handle.status().is_seeding : tracker_reply;
             if ((allowed && completed) || (!allowed && rejected)) break;
-            require(std::chrono::steady_clock::now() < deadline, "native endpoint acceptance deadline");
+            if (std::chrono::steady_clock::now() >= deadline) {
+                std::cerr << "Native endpoint deadline: web=" << web << " mode=" << int(mode)
+                    << " origin_requests=" << source.requests.load()
+                    << " final_requests=" << final_requests.load()
+                    << " forbidden_requests=" << forbidden.requests.load()
+                    << " tracker_reply=" << tracker_reply << " rejected=" << rejected << '\n';
+                require(false, "native endpoint acceptance deadline");
+            }
             std::this_thread::sleep_for(5ms);
         }
-        if (allowed && web) require(read(directory.path / "payload.bin") == payload, "web-seed payload bytes");
         require(allowed != rejected, "unexpected native endpoint disposition");
     }
+    // Session shutdown drains disk writes before inspecting the downloaded file.
+    if (allowed && web) require(read(directory.path / "payload.bin") == payload, "web-seed payload bytes");
     require(mode == Mode::peer_allowed ? forbidden.requests > 0 : forbidden.requests == 0,
         "forbidden destination received a connection");
     if (mode == Mode::blocked) require(source.requests == 0, "blocked initial destination escaped filtering");
     else require(source.requests > 0, "endpoint test never contacted its origin");
-    if (mode == Mode::chain) require(source.requests == 21, "web-seed redirect limit changed");
+    if (chain) require(source.requests == 21, "web-seed redirect limit changed");
     if (mode == Mode::secret || mode == Mode::credentials) require(final_requests == 0, "unsafe redirect was followed");
 }
 
@@ -240,6 +253,7 @@ void endpoint_policy() {
             endpoint(web, mode);
         }
     }
+    endpoint(true, Mode::chain_allowed);
     endpoint(true, Mode::chain);
     endpoint(false, Mode::peer_allowed);
     endpoint(false, Mode::peer_blocked);

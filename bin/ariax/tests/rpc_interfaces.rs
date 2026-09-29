@@ -86,9 +86,9 @@ fn command() -> Command {
 
 #[cfg(feature = "full")]
 #[tokio::test]
-async fn cli_torrents_reopen_with_identical_rust_and_rpc_state_for_every_version() {
-    use ariax_core::Gid;
-    use ariax_engine::{Aria2Status, BitTorrentConfig, Engine, RpcCompatibility};
+async fn cli_torrents_reopen_with_matching_rust_and_rpc_projections_for_every_version() {
+    use ariax_core::{Aria2Status, Gid};
+    use ariax_engine::{BitTorrentConfig, Engine, RpcCompatibility};
     for torrent in [
         include_bytes!("../../../crates/ariax-bt-libtorrent-sys/tests/fixtures/v1.torrent")
             .as_slice(),
@@ -124,6 +124,20 @@ async fn cli_torrents_reopen_with_identical_rust_and_rpc_state_for_every_version
                 .unwrap(),
         );
         child.finish();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                std::fs::metadata(root.0.join("output"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+        }
+        #[cfg(windows)]
+        ariax_windows_security::verify_private_directory(&root.0.join("output")).unwrap();
         let mut output = String::new();
         child
             .0
@@ -183,19 +197,72 @@ async fn cli_torrents_reopen_with_identical_rust_and_rpc_state_for_every_version
         assert_eq!(value["result"]["files"][0]["completedLength"], "0");
         let query = json!({"jsonrpc":"2.0", "id":2, "method":"aria2.getOption",
             "params":[gid.to_string()]});
-        let response = engine
-            .rpc_json(
-                &serde_json::to_vec(&query).unwrap(),
-                RpcCompatibility::Aria2,
-            )
-            .await
-            .unwrap();
-        let value: Value = serde_json::from_slice(&response).unwrap();
-        drop(response);
-        assert_eq!(value["result"], serde_json::to_value(options).unwrap());
+        let mut aria2_options = options.clone();
+        assert_eq!(
+            aria2_options.remove("bt-resume-data-limit").as_deref(),
+            Some("16777216")
+        );
+        assert_eq!(
+            aria2_options.remove("bt-resume-timeout").as_deref(),
+            Some("30")
+        );
+        for (compatibility, expected) in [
+            (RpcCompatibility::Extended, &options),
+            (RpcCompatibility::Aria2, &aria2_options),
+            (RpcCompatibility::Strict, &aria2_options),
+        ] {
+            let response = engine
+                .rpc_json(&serde_json::to_vec(&query).unwrap(), compatibility)
+                .await
+                .unwrap();
+            let value: Value = serde_json::from_slice(&response).unwrap();
+            drop(response);
+            assert_eq!(value["result"], serde_json::to_value(expected).unwrap());
+        }
         assert_eq!(std::fs::read_dir(root.0.join("output")).unwrap().count(), 0);
         engine.shutdown().await.unwrap();
     }
+}
+
+#[cfg(all(feature = "full", unix))]
+#[test]
+fn cli_torrent_rejects_shared_output_root_without_changing_permissions() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let root = Root::new();
+    let input = root.0.join("input.torrent");
+    std::fs::write(
+        &input,
+        include_bytes!("../../../crates/ariax-bt-libtorrent-sys/tests/fixtures/v1.torrent"),
+    )
+    .unwrap();
+    let output_root = root.0.join("output");
+    std::fs::create_dir(&output_root).unwrap();
+    std::fs::set_permissions(&output_root, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let output = command()
+        .args([
+            "--enable-dht=false",
+            "--enable-peer-exchange=false",
+            "--add-torrent",
+        ])
+        .arg(root.0.join("session.db"))
+        .arg(root.0.join("control"))
+        .arg(&output_root)
+        .arg(input)
+        .arg("--pause=true")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("output root is not protected"));
+    assert!(output.stdout.is_empty());
+    assert_eq!(std::fs::read_dir(&output_root).unwrap().count(), 0);
+    assert_eq!(
+        std::fs::metadata(&output_root)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o777
+    );
 }
 
 #[cfg(not(feature = "full"))]
@@ -224,7 +291,7 @@ fn cli_feature_disabled_torrent_admission_creates_no_session_state() {
     assert!(!root.0.join("output").exists());
 }
 
-fn http_call(address: SocketAddr, request: Value) -> Value {
+fn http_call(address: SocketAddr, request: Value, case: (&str, &str, u32)) -> Value {
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut socket = loop {
         if let Ok(socket) = TcpStream::connect_timeout(&address, Duration::from_millis(100)) {
@@ -239,18 +306,23 @@ fn http_call(address: SocketAddr, request: Value) -> Value {
     socket
         .set_write_timeout(Some(Duration::from_secs(3)))
         .expect("write timeout");
+    socket.set_nodelay(true).expect("TCP_NODELAY");
     let body = serde_json::to_vec(&request).expect("request");
-    write!(socket, "POST /jsonrpc HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).expect("header");
-    socket.write_all(&body).expect("body");
+    let mut message = format!("POST /jsonrpc HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).into_bytes();
+    message.extend_from_slice(&body);
+    socket.write_all(&message).expect("HTTP request");
     let mut response = Vec::new();
     socket
         .take(16 * 1024 * 1024)
         .read_to_end(&mut response)
         .unwrap_or_else(|error| {
             panic!(
-                "bounded response for {} after {} bytes: {error}",
+                "bounded response for {} after {} bytes (framing={}, eof={}, pid={}): {error}",
                 request["method"],
-                response.len()
+                response.len(),
+                case.0,
+                case.1,
+                case.2
             )
         });
     let start = response
@@ -372,16 +444,19 @@ fn combined_http_and_both_stdio_framings_share_tasks_and_honor_eof() {
                 let options = http_call(
                     address,
                     json!({"jsonrpc":"2.0","id":2,"method":"aria2.getOption","params":[gid]}),
+                    (framing, eof, process.0.id()),
                 );
                 assert_eq!(options["result"]["split"], "3");
                 let diagnostics = http_call(
                     address,
                     json!({"jsonrpc":"2.0","id":3,"method":"ariax.getDiagnostics"}),
+                    (framing, eof, process.0.id()),
                 );
                 assert_eq!(diagnostics["result"]["profile"], "compact");
                 let shutdown = http_call(
                     address,
                     json!({"jsonrpc":"2.0","id":4,"method":"aria2.shutdown"}),
+                    (framing, eof, process.0.id()),
                 );
                 assert_eq!(shutdown["result"], "OK");
             }

@@ -583,7 +583,12 @@ impl EngineBuilder {
                 "output root must be absolute",
             ));
         }
-        std::fs::create_dir_all(&output_root)
+        let output_created = if self.bittorrent.is_some() {
+            bittorrent::create_output_directory(&output_root)
+        } else {
+            std::fs::create_dir_all(&output_root)
+        };
+        output_created
             .map_err(|_| NativeApiError::InvalidConfiguration("cannot create output root"))?;
         let control_directory = self
             .control_directory

@@ -39,7 +39,7 @@ struct TransferMember {
 }
 
 enum Member {
-    Transfer(TransferMember),
+    Transfer(Box<TransferMember>),
     #[cfg(feature = "bt")]
     BitTorrent(Arc<super::bittorrent::Spec>),
 }
@@ -103,7 +103,7 @@ impl Member {
 }
 
 enum Catalog {
-    Transfer(TransferTaskSpec, ControlJournalAppender),
+    Transfer(Box<(TransferTaskSpec, ControlJournalAppender)>),
     #[cfg(feature = "bt")]
     BitTorrent(Arc<super::bittorrent::Spec>),
 }
@@ -446,7 +446,8 @@ impl HttpControlPlane {
                 if let Some(catalog) = finalized.catalogs.pop_front() {
                     pending.installation_started = true;
                     match catalog {
-                        Catalog::Transfer(spec, appender) => {
+                        Catalog::Transfer(transfer) => {
+                            let (spec, appender) = *transfer;
                             pending.installing_sequence = appender.appended_sequence();
                             pending.writes.unit(SessionCommand::InstallJournalAppender {
                                 gid: spec.gid(),
@@ -544,6 +545,7 @@ fn finalize(prepared: Prepared, import: bool) -> Result<Finalized, HttpControlEr
         gids.push(Value::String(member.gid().to_string()));
         let step = match member {
             Member::Transfer(member) => {
+                let member = *member;
                 let step = if import {
                     PersistencePlanStep::ConfirmTaskMetadata(Arc::new(member.metadata.clone()))
                 } else {
@@ -556,7 +558,7 @@ fn finalize(prepared: Prepared, import: bool) -> Result<Finalized, HttpControlEr
                 metadata.push(ariax_storage::SessionAdmissionMetadata::Transfer(
                     member.metadata,
                 ));
-                catalogs.push_back(Catalog::Transfer(member.spec, member.appender));
+                catalogs.push_back(Catalog::Transfer(Box::new((member.spec, member.appender))));
                 step
             }
             #[cfg(feature = "bt")]
@@ -938,13 +940,13 @@ impl Preparation {
                 sources: spec.persistence_sources(),
                 options: sanitized,
             };
-            members.push(Member::Transfer(TransferMember {
+            members.push(Member::Transfer(Box::new(TransferMember {
                 spec,
                 metadata,
                 conditions,
                 appender,
                 requested_position,
-            }));
+            })));
         }
         #[cfg(feature = "bt")]
         members.extend(bt_validated.into_iter().map(Member::BitTorrent));

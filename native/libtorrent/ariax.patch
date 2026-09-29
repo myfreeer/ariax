@@ -342,6 +342,23 @@
  	}
  
  	// this is an async operation triggered by the client
+@@ -10866,12 +10972,16 @@
+ 		for (auto i = m_web_seeds.begin(); i != m_web_seeds.end() && limit > 0;)
+ 		{
+ 			auto const w = i++;
+ 			if (w->disabled || w->removed || w->retry > now || !w->interesting)
+ 				continue;
+ 
++			// Exhausted redirect sources cannot use a connection slot.
++			if (!w->have_files.empty() && w->have_files.none_set())
++				continue;
++
+ 			--limit;
+ 			if (w->peer_info.connection || w->resolving)
+ 				continue;
+ 
+ 			connect_to_url_seed(w);
+ 		}
 --- a/src/torrent_handle.cpp
 +++ b/src/torrent_handle.cpp
 @@ -344,6 +344,22 @@

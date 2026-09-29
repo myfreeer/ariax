@@ -2,6 +2,38 @@ use super::*;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
+pub(super) fn create_output_directory(path: &std::path::Path) -> std::io::Result<()> {
+    let mut missing = Vec::new();
+    let mut cursor = path;
+    loop {
+        match std::fs::symlink_metadata(cursor) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => break,
+            Ok(_) => {
+                return Err(std::io::Error::other(
+                    "BitTorrent output ancestor is not a directory",
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                missing.push(cursor);
+                cursor = cursor.parent().ok_or(error)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    // Create missing directories privately; never change an existing root's
+    // permissions to make it pass the admission and recovery checks.
+    for directory in missing.into_iter().rev() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt as _;
+            std::fs::DirBuilder::new().mode(0o700).create(directory)?;
+        }
+        #[cfg(windows)]
+        ariax_windows_security::create_private_directory(directory)?;
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum BitTorrentEncryption {
     Required,

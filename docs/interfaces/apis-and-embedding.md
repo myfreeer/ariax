@@ -96,6 +96,9 @@ protocol or Metalink feature rejects explicitly. `minimal` enables Metalink;
 metadata and seeding; `from_pairs` is the explicit registry-backed CLI adapter.
 `EngineBuilder::bittorrent` configures session-wide listening, encryption,
 discovery and private-destination policy before any imported task starts.
+When BitTorrent is configured, missing output directories are created with
+private permissions at creation. Existing directories keep their permissions
+and remain subject to the protected-root checks at admission and recovery.
 `Engine::peers` and `TaskStatus::bittorrent` expose typed peer and lifecycle
 snapshots. CLI `--add-torrent` and `--add-magnet` use those same owners; a magnet
 passed to `--add-uri` follows the same path. All three surfaces reject BT in
@@ -619,6 +622,14 @@ Benefits:
 
 The native API still uses the same control plane and scheduler as RPC and CLI.
 There must not be separate engines with different behavior.
+
+Rust clients import shared identity and status types, including `Gid` and
+`Aria2Status`, from `ariax-core`. The typed client facade and its request/result
+types are exported by `ariax-engine`.
+
+`Engine::options` returns the sanitized implemented option map, matching extended
+RPC mode. Aria2 and strict RPC modes project only aria2-supported options; they
+omit the engine's `bt-resume-data-limit` and `bt-resume-timeout` checkpoint bounds.
 
 Shared transfer specifications use the concrete `TransferTaskSpec`,
 `TransferSourceSpec`, `TransferTaskOptions`, `TransferTaskCatalog` and

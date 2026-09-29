@@ -40,13 +40,12 @@ fuzz_target!(|data: &[u8]| {
         v2: None,
     };
     let _ = validate_resume(data, &identity);
-    if let Ok(text) = std::str::from_utf8(data) {
-        if let Ok(magnet) = parse_magnet(text) {
-            if let Ok(uri) = magnet_with_trackers(text, &[], &["*".into()]) {
-                let clean = parse_magnet(&uri).unwrap();
-                assert_eq!(clean.identity, magnet.identity);
-                assert!(clean.trackers.is_empty());
-            }
-        }
+    if let Ok(text) = std::str::from_utf8(data)
+        && let Ok(magnet) = parse_magnet(text)
+        && let Ok(uri) = magnet_with_trackers(text, &[], &["*".into()])
+    {
+        let clean = parse_magnet(&uri).unwrap();
+        assert_eq!(clean.identity, magnet.identity);
+        assert!(clean.trackers.is_empty());
     }
 });
