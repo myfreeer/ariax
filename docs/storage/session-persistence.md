@@ -841,7 +841,16 @@ artifacts are rejected so path-derived owner locks cannot be bypassed by opening
 the same file through another name. Existing
 supported-version files inside an accepted private directory may be tightened
 before use, but symlinks and non-regular artifacts are rejected rather than
-followed or replaced. When the main database is absent, existing SQLite
+followed or replaced. Windows verification requires current-user ownership.
+SQLite-created files can initially be owned by Administrators when that is the
+process token's default owner. Tightening may normalize this owner to the current
+user only when it matches that token default and the file DACL already grants
+exactly FullControl to the current user, SYSTEM, and Administrators (inherited
+entries are permitted at this step). Owner and protected DACL are installed
+through the same checked no-follow, single-link handle and then verified.
+Other owners and broader ACLs on non-user-owned files remain rejected without
+mutation; no token defaults or process privileges are changed.
+When the main database is absent, existing SQLite
 sidecars are rejected as orphans rather than adopted. The same rule applies to
 an empty main file, so SQLite cannot silently initialize it while discarding an
 untrusted WAL, SHM, or rollback journal. A newer schema is rejected before any
