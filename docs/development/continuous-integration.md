@@ -113,6 +113,12 @@ Native endpoint tests flush stage, session-shutdown and fixture-worker progress
 so a timeout identifies the last operation reached, including shutdown during
 exception unwinding. The 90-second CTest deadline remains unchanged; an
 intermittent timeout still requires thread-stack capture and diagnosis.
+Every full platform job runs the native OpenSSL, destination-policy and private
+storage probes before its Rust workspace checks. GNU Windows selects MinGW
+Makefiles, MSVC selects NMake Makefiles, and Unix hosts select Unix Makefiles;
+build and CTest use the same `RelWithDebInfo` configuration. A failing native
+probe stops that platform job. Feature-bundle and MSRV jobs retain their own
+focused checks without duplicating the platform probes.
 The disposable macOS runner explicitly provisions the second loopback address
 used by active-FTPS peer-rejection fixtures. Those tests must exercise a real
 unapproved source address before the approved TLS data connection.

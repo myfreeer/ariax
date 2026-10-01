@@ -75,6 +75,54 @@ class TemporaryDirectoryTests(unittest.TestCase):
                     ci.Runner("macos")
 
 
+class PlatformNativeTests(unittest.TestCase):
+    def test_every_platform_runs_native_probes_and_a_failure_stops_workspace_work(self):
+        for name in ("linux", "macos", "windows-msvc", "windows-gnu"):
+            for fail in (False, True):
+                with self.subTest(platform=name, fail=fail):
+                    runner = mock.Mock()
+                    runner.name = name
+                    prefix = Path("native-install")
+                    error = RuntimeError("native probe failed") if fail else None
+                    with mock.patch.object(ci, "provision_bt", return_value=prefix), \
+                            mock.patch.object(ci, "native_security", side_effect=error) as native:
+                        if fail:
+                            with self.assertRaisesRegex(RuntimeError, "native probe failed"):
+                                ci.validate(runner)
+                            runner.cargo.assert_not_called()
+                        else:
+                            ci.validate(runner)
+                            self.assertTrue(runner.cargo.called)
+                        native.assert_called_once_with(runner, prefix)
+
+    def test_feature_and_msrv_jobs_do_not_duplicate_platform_probes(self):
+        for name in ("feature-minimal", "feature-standard", "feature-full", "feature-compat",
+                     "msrv-linux", "msrv-windows-gnu"):
+            with self.subTest(check=name):
+                runner = mock.Mock()
+                runner.name = name
+                with mock.patch.object(ci, "provision_bt") as provision, \
+                        mock.patch.object(ci, "native_security") as native:
+                    ci.validate(runner)
+                    native.assert_not_called()
+                    self.assertEqual(provision.called, name not in {"feature-minimal", "feature-standard"})
+                    self.assertTrue(runner.cargo.called)
+
+    def test_native_generators_match_platform_and_ctest_uses_the_built_configuration(self):
+        for name, generator in (("linux", "Unix Makefiles"), ("macos", "Unix Makefiles"),
+                                ("windows-msvc", "NMake Makefiles"), ("windows-gnu", "MinGW Makefiles")):
+            with self.subTest(platform=name):
+                runner = mock.Mock()
+                runner.name = name
+                runner.target = Path("target")
+                ci.native_security(runner, Path("native-install"))
+                configure, build, test = [call.args[0] for call in runner.run.call_args_list]
+                self.assertEqual(configure[configure.index("-G") + 1], generator)
+                self.assertEqual(build[build.index("--config") + 1],
+                                 test[test.index("--build-config") + 1])
+                self.assertIn("-DCMAKE_BUILD_TYPE=" + build[build.index("--config") + 1], configure)
+
+
 class BitTorrentSafetyTests(unittest.TestCase):
     def test_native_checks_precede_fuzzing_and_uninstrumented_results_fail(self):
         for output, accepted in (("#123 DONE cov: 42\n", True), ("Done without coverage", False)):

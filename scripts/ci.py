@@ -200,14 +200,18 @@ def provision_bt(runner, sanitizer="none"):
 
 def native_security(runner, prefix, sanitizer=False):
     build = runner.target / "native-security"
+    configuration = "RelWithDebInfo"
+    generator = {"windows-gnu": "MinGW Makefiles", "windows-msvc": "NMake Makefiles"}.get(
+        runner.name, "Unix Makefiles")
     runner.run(["cmake", "-S", ROOT / "native/libtorrent/tests", "-B", build,
-                "-DCMAKE_BUILD_TYPE=RelWithDebInfo", "-DCMAKE_POLICY_DEFAULT_CMP0167=OLD",
+                "-G", generator, "-DCMAKE_BUILD_TYPE=" + configuration,
+                "-DCMAKE_POLICY_DEFAULT_CMP0167=OLD",
                 "-DCMAKE_PREFIX_PATH=" + str(prefix), "-DOPENSSL_ROOT_DIR=" + str(prefix),
                 "-DOPENSSL_USE_STATIC_LIBS=ON", "-DBOOST_ROOT=" + str(prefix),
                 "-DBoost_INCLUDE_DIR=" + str(prefix / "include"), "-DBoost_NO_SYSTEM_PATHS=ON",
                 "-DARIAX_SANITIZER=" + ("ON" if sanitizer else "OFF")])
-    runner.run(["cmake", "--build", build, "--parallel", "2"])
-    runner.run(["ctest", "--test-dir", build, "--output-on-failure"])
+    runner.run(["cmake", "--build", build, "--config", configuration, "--parallel", "2"])
+    runner.run(["ctest", "--test-dir", build, "--build-config", configuration, "--output-on-failure"])
 
 
 def bt_safety(runner):
@@ -255,13 +259,13 @@ def validate(runner):
         runner.cargo("test", *arguments)
         runner.cargo("build", *arguments, "--profile", "release-cli")
     else:
+        native_security(runner, prefix)
         runner.cargo("build", "--locked", "--workspace")
         runner.cargo("test", "--locked", "--workspace")
         runner.cargo("test", "--locked", "--workspace", "--all-features")
         runner.cargo("clippy", "--locked", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings")
         if runner.name == "linux":
             runner.cargo("build", "--locked", "-p", "ariax-core", "--profile", "release-capi")
-            native_security(runner, prefix)
 
 
 def integer(value, name, *, minimum=0, maximum=None):
