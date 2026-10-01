@@ -1,13 +1,163 @@
 import io
+import errno
+import hashlib
+import http.client
+import http.server
 import json
 from pathlib import Path
 import tarfile
 import tempfile
+import socket
+import ssl
+import threading
 import unittest
+import urllib.error
 from types import SimpleNamespace
 from unittest import mock
 
 import bt_native
+
+
+class NativeDownloadTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.body = b"verified native archive"
+        self.spec = {"archive": "native.tar.gz", "url": "https://example.test/native.tar.gz",
+                     "sha256": hashlib.sha256(self.body).hexdigest()}
+        self.path = self.root / self.spec["archive"]
+        self.partial = self.root / "native.tar.gz.part"
+
+    def response(self, body=None, length=None):
+        response = io.BytesIO(self.body if body is None else body)
+        response.headers = {} if length is None else {"Content-Length": str(length)}
+        return response
+
+    def test_transient_open_failures_retry_then_reuse_only_verified_cache(self):
+        failures = [ConnectionResetError(54, "Connection reset by peer"),
+                    urllib.error.HTTPError(self.spec["url"], 503, "Unavailable", {}, None)]
+        with mock.patch.object(bt_native.urllib.request, "urlopen",
+                               side_effect=[*failures, self.response()]) as request, \
+                mock.patch.object(bt_native.time, "sleep") as sleep:
+            self.assertEqual(bt_native.fetch(self.spec, self.root, None), self.path)
+            self.assertEqual(self.path.read_bytes(), self.body)
+            bt_native.fetch(self.spec, self.root, None)
+            self.assertEqual(request.call_count, 3, "verified cache must avoid networking")
+            self.assertEqual(sleep.call_args_list, [mock.call(1), mock.call(2)])
+            self.assertTrue(all(call.kwargs["timeout"] == 60 for call in request.call_args_list))
+        self.assertFalse(self.partial.exists())
+
+    def test_interrupted_body_discards_partial_before_starting_fresh(self):
+        for error in (ConnectionResetError(54, "reset"), http.client.IncompleteRead(b"prefix", 4)):
+            with self.subTest(error=error):
+                response = self.response()
+                response.read = mock.Mock(side_effect=[b"partial content", error])
+                attempts = 0
+
+                def open_response(*args, **kwargs):
+                    nonlocal attempts
+                    self.assertFalse(self.path.exists())
+                    self.assertFalse(self.partial.exists())
+                    attempts += 1
+                    return response if attempts == 1 else self.response()
+
+                with mock.patch.object(bt_native.urllib.request, "urlopen", side_effect=open_response), \
+                        mock.patch.object(bt_native.time, "sleep"):
+                    bt_native.fetch(self.spec, self.root, None)
+                self.assertEqual(attempts, 2)
+                self.assertEqual(self.path.read_bytes(), self.body)
+                self.path.unlink()
+
+    def test_short_http_body_retries_before_hash_validation(self):
+        with mock.patch.object(bt_native.urllib.request, "urlopen", side_effect=[
+                self.response(b"short", len(self.body)), self.response(length=len(self.body))]) as request, \
+                mock.patch.object(bt_native.time, "sleep"):
+            bt_native.fetch(self.spec, self.root, None)
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(self.path.read_bytes(), self.body)
+
+    def test_real_http_transfer_recovers_from_truncation_and_service_unavailability(self):
+        body = self.body
+        attempts = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                attempts.append(self.path)
+                self.send_response(503 if len(attempts) == 2 else 200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body[:5] if len(attempts) == 1 else body)
+                self.wfile.flush()
+                self.close_connection = True
+
+        with http.server.HTTPServer(("127.0.0.1", 0), Handler) as server:
+            worker = threading.Thread(target=lambda: server.serve_forever(poll_interval=0.01))
+            worker.start()
+            try:
+                spec = dict(self.spec, url=f"http://127.0.0.1:{server.server_port}/native.tar.gz")
+                with mock.patch.object(bt_native.time, "sleep"):
+                    bt_native.fetch(spec, self.root, None)
+            finally:
+                server.shutdown()
+                worker.join(timeout=5)
+            self.assertFalse(worker.is_alive())
+        self.assertEqual(attempts, ["/native.tar.gz"] * 3)
+        self.assertEqual(self.path.read_bytes(), body)
+        self.assertFalse(self.partial.exists())
+
+    def test_exhausted_transient_download_fails_without_publishing_or_leaving_partial(self):
+        with mock.patch.object(bt_native.urllib.request, "urlopen",
+                               side_effect=urllib.error.URLError(TimeoutError("timed out"))) as request, \
+                mock.patch.object(bt_native.time, "sleep") as sleep:
+            with self.assertRaises(urllib.error.URLError):
+                bt_native.fetch(self.spec, self.root, None)
+        self.assertEqual(request.call_count, 3)
+        self.assertEqual(sleep.call_args_list, [mock.call(1), mock.call(2)])
+        self.assertFalse(self.path.exists())
+        self.assertFalse(self.partial.exists())
+
+    def test_integrity_and_size_failures_do_not_retry_or_publish(self):
+        for body, limit, message in ((b"tampered", 1024, "hash mismatch"),
+                                     (self.body, 1, "exceeds limit")):
+            with self.subTest(message=message), \
+                    mock.patch.object(bt_native.urllib.request, "urlopen", return_value=self.response(body)) as request, \
+                    mock.patch.object(bt_native, "DOWNLOAD_LIMIT", limit), \
+                    mock.patch.object(bt_native.time, "sleep") as sleep:
+                with self.assertRaisesRegex(ValueError, message):
+                    bt_native.fetch(self.spec, self.root, None)
+                request.assert_called_once()
+                sleep.assert_not_called()
+                self.assertFalse(self.path.exists())
+                self.assertFalse(self.partial.exists())
+
+    def test_permanent_http_tls_and_local_errors_are_not_retried(self):
+        errors = [urllib.error.HTTPError(self.spec["url"], code, "Rejected", {}, None)
+                  for code in (403, 404)]
+        errors += [urllib.error.URLError(ssl.SSLCertVerificationError(1, "untrusted certificate")),
+                   OSError(errno.ENOSPC, "disk full")]
+        for error in errors:
+            with self.subTest(error=error), \
+                    mock.patch.object(bt_native.urllib.request, "urlopen", side_effect=error) as request, \
+                    mock.patch.object(bt_native.time, "sleep") as sleep:
+                with self.assertRaises(type(error)):
+                    bt_native.fetch(self.spec, self.root, None)
+                request.assert_called_once()
+                sleep.assert_not_called()
+                self.assertFalse(self.path.exists())
+                self.assertFalse(self.partial.exists())
+
+    def test_retry_classification_keeps_permanent_dns_and_http_failures_fatal(self):
+        for code in (408, 429, 500, 502, 503, 504):
+            with urllib.error.HTTPError(self.spec["url"], code, "retry", {}, None) as error:
+                self.assertTrue(bt_native.transient_download_error(error))
+        self.assertTrue(bt_native.transient_download_error(
+            urllib.error.URLError(socket.gaierror(socket.EAI_AGAIN, "temporary DNS"))))
+        self.assertFalse(bt_native.transient_download_error(
+            urllib.error.URLError(socket.gaierror(socket.EAI_NONAME, "unknown host"))))
 
 
 class NativeBuildTests(unittest.TestCase):

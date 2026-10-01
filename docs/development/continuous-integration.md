@@ -24,7 +24,9 @@ The workflow has three ordered stages:
 2. One validation matrix contains all platform, feature-bundle and MSRV jobs.
    Its `fail-fast: true` cancels sibling jobs after a failure. Every script
    propagates native-command and pipeline failures; no required check uses
-   `continue-on-error` or automatic retry.
+   `continue-on-error` or automatic job/test retry. Native archive downloads
+   have bounded retries for transient transport failures; integrity failures
+   and exhausted downloads still fail provisioning.
 3. A successful push to `main` runs the reusable native Linux benchmark
    workflow against the same commit. Pull requests run functional validation;
    manual benchmark dispatch remains available for investigations.

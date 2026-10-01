@@ -6,6 +6,15 @@ SHA-256 values were independently verified before use. Downloads, source trees,
 native libraries and build logs live under ignored `toolchains/bt-native`.
 No installed system libtorrent or OpenSSL is substituted.
 
+Archive downloads retry transient connection failures, incomplete HTTP bodies,
+temporary DNS failures, and HTTP 408/429/500/502/503/504 responses up to three
+attempts, with one- and two-second delays. Each attempt starts a new partial
+file and retains the 60-second socket timeout and 512 MiB download limit.
+Failed partial files are removed. Only a complete archive with the pinned
+SHA-256 is published to the cache; checksum, size-limit, certificate and local
+filesystem failures are not retried. Exhausted downloads fail provisioning.
+Compilation and test failures are not retried.
+
 `openssl.patch` backports callback adapters onto OpenSSL 3.6.3. Its exact
 upstream commits and version-specific adjustments are documented in
 [`openssl-patch.md`](openssl-patch.md). Both the OpenSSL intermediate cache and

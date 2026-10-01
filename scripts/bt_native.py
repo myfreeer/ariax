@@ -3,23 +3,29 @@
 
 import argparse
 import contextlib
+import errno
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path, PurePosixPath
 import platform
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tarfile
 import time
+import urllib.error
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = ROOT / "native/libtorrent/sources.json"
 PATCH = ROOT / "native/libtorrent/ariax.patch"
 OPENSSL_PATCH = ROOT / "native/libtorrent/openssl.patch"
+DOWNLOAD_ATTEMPTS = 3
+DOWNLOAD_LIMIT = 512 * 1024**2
 TARGETS = {
     "x86_64-unknown-linux-gnu": ("Linux", "x86_64", "linux-x86_64"),
     "aarch64-unknown-linux-gnu": ("Linux", "aarch64", "linux-aarch64"),
@@ -158,6 +164,51 @@ def apply_patch(tree, patch):
         source.write_text(content, encoding="utf-8", newline="\n")
 
 
+def transient_download_error(error):
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code in {408, 429, 500, 502, 503, 504}
+    if isinstance(error, urllib.error.URLError):
+        error = error.reason
+    if isinstance(error, socket.gaierror):
+        return error.errno == socket.EAI_AGAIN
+    return (isinstance(error, (ConnectionError, TimeoutError, http.client.IncompleteRead,
+                              http.client.RemoteDisconnected))
+            or isinstance(error, OSError) and error.errno in {
+                errno.ECONNRESET, errno.ECONNABORTED, errno.ETIMEDOUT,
+                errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ECONNREFUSED, errno.EPIPE})
+
+
+def download_archive(spec, path):
+    temporary = path.with_suffix(path.suffix + ".part")
+    request = urllib.request.Request(spec["url"], headers={"User-Agent": "ariax-native-build"})
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        print(f"Downloading native archive {spec['archive']} (attempt {attempt}/{DOWNLOAD_ATTEMPTS})",
+              flush=True)
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response, temporary.open("wb") as output:
+                length = response.headers.get("Content-Length")
+                expected_length = int(length) if length is not None else None
+                total = 0
+                while block := response.read(1024 * 1024):
+                    total += len(block)
+                    require(total <= DOWNLOAD_LIMIT, "native archive download exceeds limit")
+                    output.write(block)
+                if expected_length is not None and total < expected_length:
+                    raise http.client.IncompleteRead(b"", expected_length - total)
+            require(digest(temporary) == spec["sha256"], "downloaded native archive hash mismatch")
+            temporary.replace(path)
+            return
+        except (OSError, http.client.HTTPException, urllib.error.URLError) as error:
+            if isinstance(error, urllib.error.HTTPError):
+                error.close()
+            if not transient_download_error(error) or attempt == DOWNLOAD_ATTEMPTS:
+                raise
+            print(f"Transient download failure for {spec['archive']}: {error}; retrying", flush=True)
+        finally:
+            temporary.unlink(missing_ok=True)
+        time.sleep(attempt)
+
+
 def fetch(spec, archives, supplied):
     archives.mkdir(parents=True, exist_ok=True)
     path = archives / spec["archive"]
@@ -167,16 +218,7 @@ def fetch(spec, archives, supplied):
             require(digest(local) == spec["sha256"], "supplied native archive hash mismatch")
             shutil.copyfile(local, path)
         else:
-            temporary = path.with_suffix(path.suffix + ".part")
-            request = urllib.request.Request(spec["url"], headers={"User-Agent": "ariax-native-build"})
-            with urllib.request.urlopen(request, timeout=60) as response, temporary.open("wb") as output:
-                total = 0
-                while block := response.read(1024 * 1024):
-                    total += len(block)
-                    require(total <= 512 * 1024**2, "native archive download exceeds limit")
-                    output.write(block)
-            require(digest(temporary) == spec["sha256"], "downloaded native archive hash mismatch")
-            temporary.replace(path)
+            download_archive(spec, path)
     require(digest(path) == spec["sha256"], "cached native archive hash mismatch")
     return path
 
