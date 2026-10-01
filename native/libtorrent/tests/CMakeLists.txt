@@ -15,12 +15,21 @@ get_filename_component(ARIAX_FIXTURE_DIR
 target_compile_definitions(ariax_bt_security PRIVATE
   ARIAX_FIXTURE_DIR="${ARIAX_FIXTURE_DIR}")
 target_link_libraries(ariax_bt_security PRIVATE LibtorrentRasterbar::torrent-rasterbar)
+add_executable(ariax_bt_bounded_output bounded_output.cc)
+target_compile_features(ariax_bt_bounded_output PRIVATE cxx_std_17)
+get_filename_component(ARIAX_BRIDGE_INCLUDE_DIR
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../../crates/ariax-bt-libtorrent-sys/include" ABSOLUTE)
+target_include_directories(ariax_bt_bounded_output PRIVATE
+  "${ARIAX_BRIDGE_INCLUDE_DIR}")
+target_link_libraries(ariax_bt_bounded_output PRIVATE LibtorrentRasterbar::torrent-rasterbar)
 enable_testing()
+add_test(NAME native_bounded_output COMMAND ariax_bt_bounded_output)
+set_tests_properties(native_bounded_output PROPERTIES TIMEOUT 10)
 add_test(NAME native_openssl_callbacks COMMAND ariax_openssl_callbacks)
 set_tests_properties(native_openssl_callbacks PROPERTIES TIMEOUT 30)
 add_test(NAME native_destination_policy COMMAND ariax_bt_security)
 set_tests_properties(native_destination_policy PROPERTIES TIMEOUT 90)
-set(ARIAX_NATIVE_TESTS ariax_bt_security ariax_openssl_callbacks)
+set(ARIAX_NATIVE_TESTS ariax_bt_security ariax_openssl_callbacks ariax_bt_bounded_output)
 if(UNIX OR WIN32)
   add_executable(ariax_bt_storage storage.cc)
   target_compile_features(ariax_bt_storage PRIVATE cxx_std_17)

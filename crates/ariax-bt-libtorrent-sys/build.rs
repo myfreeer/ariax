@@ -90,6 +90,7 @@ fn native() {
     println!("cargo:rerun-if-changed=src/lib.rs");
     println!("cargo:rerun-if-changed=src/bridge.cc");
     println!("cargo:rerun-if-changed=include/bridge.h");
+    println!("cargo:rerun-if-changed=include/bounded_output.h");
     let mut bridge = cxx_build::bridge("src/lib.rs");
     bridge
         .file("src/bridge.cc")

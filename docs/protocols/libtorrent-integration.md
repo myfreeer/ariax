@@ -462,6 +462,13 @@ maximum, and the pause/remove/shutdown barrier defaults to 30 seconds with a
 `DirtyCheckpoint`; it never allocates an unbounded bencode value or claims a
 clean checkpoint.
 
+The native bencode output iterator checks the byte cap before each append.
+Iterator copies and assignments share the selected destination and carry its
+limit, as required by C++ output algorithms on every supported toolchain.
+A native regression uses the production iterator to check assignment, nested
+preformatted bencode, exact-cap success and overflow rejection before Rust
+workspace tests on each platform.
+
 ## Tests
 
 The native engine acceptance suite drives the shared control owner with real

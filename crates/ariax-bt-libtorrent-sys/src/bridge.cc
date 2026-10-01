@@ -1,5 +1,6 @@
 #include "ariax-bt-libtorrent-sys/src/lib.rs.h"
 #include "bridge.h"
+#include "bounded_output.h"
 #include <libtorrent/add_torrent_params.hpp>
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/bencode.hpp>
@@ -44,28 +45,7 @@ std::uint64_t unsigned_count(std::int64_t value) {
     return static_cast<std::uint64_t>(std::max(std::int64_t(0), value));
 }
 
-// bencode checks its limit before every output growth. The bounded metadata,
-// peer and file counts separately bound the intermediate entry tree.
-struct BoundedOutput {
-    using difference_type = std::ptrdiff_t;
-    using value_type = void;
-    using pointer = void;
-    using reference = void;
-    using iterator_category = std::output_iterator_tag;
-    std::vector<char>& output;
-    std::size_t limit;
-    BoundedOutput& operator*() { return *this; }
-    BoundedOutput& operator++() { return *this; }
-    BoundedOutput operator++(int) { return *this; }
-    BoundedOutput& operator=(char value) {
-        require(output.size() < limit);
-        if (output.size() == output.capacity()) {
-            output.reserve(std::min(limit, std::max(std::size_t(256), output.capacity() * 2)));
-        }
-        output.push_back(value);
-        return *this;
-    }
-};
+using detail::BoundedOutput;
 
 struct CheckpointState {
     std::mutex mutex;
