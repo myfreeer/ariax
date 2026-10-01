@@ -3,12 +3,13 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && 'manual-full' || 'automatic' }}
   cancel-in-progress: true
 
 env:
@@ -17,17 +18,23 @@ env:
   CARGO_BUILD_JOBS: "2"
   RUST_BACKTRACE: "1"
   RUST_TEST_THREADS: "2"
+  ARIAX_BT_NATIVE_VERIFIED: "0"
 
 jobs:
   preflight:
     name: Preflight
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
       - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
         with:
           python-version: "3.13"
+      - name: Select routine or full validation
+        id: matrix
+        run: python3 scripts/ci.py matrix >> "$GITHUB_OUTPUT"
       - name: Install pinned Rust
         run: rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -36,7 +43,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             toolchains/ci-target/preflight
-          key: ci-preflight-${{ runner.os }}-${{ runner.arch }}-1.97.1-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml', 'scripts/ci.py') }}
+          key: ci-preflight-${{ runner.os }}-${{ runner.arch }}-1.97.1-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml') }}-${{ github.sha }}
+          restore-keys: ci-preflight-${{ runner.os }}-${{ runner.arch }}-1.97.1-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml') }}-
       - name: Check workflow, contracts and dependency policies
         run: python3 scripts/ci.py preflight
       - name: Retain preflight diagnostics
@@ -52,41 +60,7 @@ jobs:
     needs: preflight
     strategy:
       fail-fast: true
-      matrix:
-        include:
-          - check: linux
-            os: ubuntu-24.04
-            toolchain: "1.97.1"
-          - check: macos
-            os: macos-15
-            toolchain: "1.97.1"
-          - check: windows-msvc
-            os: windows-2022
-            toolchain: "1.97.1"
-          - check: windows-gnu
-            os: windows-2022
-            toolchain: "1.97.1-x86_64-pc-windows-gnu"
-          - check: msrv-linux
-            os: ubuntu-24.04
-            toolchain: "1.88.0"
-          - check: msrv-windows-gnu
-            os: windows-2022
-            toolchain: "1.88.0-x86_64-pc-windows-gnu"
-          - check: feature-minimal
-            os: ubuntu-24.04
-            toolchain: "1.97.1"
-          - check: feature-standard
-            os: ubuntu-24.04
-            toolchain: "1.97.1"
-          - check: feature-full
-            os: ubuntu-24.04
-            toolchain: "1.97.1"
-          - check: feature-compat
-            os: ubuntu-24.04
-            toolchain: "1.97.1"
-          - check: bt-safety
-            os: ubuntu-24.04
-            toolchain: "1.97.1"
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:
@@ -121,20 +95,23 @@ jobs:
           set -euo pipefail
           rustup toolchain install "$ARIAX_RUST_TOOLCHAIN" --profile minimal --component clippy --component rustfmt
           python scripts/ci.py resolve-toolchain >> "$GITHUB_ENV"
-      - name: Cache verified native installation
-        if: matrix.check != 'feature-minimal' && matrix.check != 'feature-standard'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Restore verified native installation
+        id: native-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: toolchains/bt-native/*/install
-          key: bt-native-${{ matrix.check }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native/libtorrent/**', 'scripts/bt_native.py') }}
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+          key: bt-native-${{ matrix.native }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native/libtorrent/sources.json', 'native/libtorrent/ariax.patch', 'native/libtorrent/openssl.patch', 'scripts/bt_native.py') }}
+      - name: Restore Cargo outputs
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             toolchains/ci-target/${{ matrix.check }}
             toolchains/ci-target/${{ matrix.check }}-clippy
-          key: ci-${{ matrix.check }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.toolchain }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml', 'scripts/ci.py') }}
+          key: ci-${{ matrix.check }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.toolchain }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml') }}-${{ github.sha }}
+          restore-keys: ci-${{ matrix.check }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.toolchain }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml') }}-
       - name: Validate native platform or feature bundle
         if: ${{ !contains(matrix.check, 'windows-gnu') && matrix.check != 'windows-msvc' }}
         shell: bash
@@ -154,6 +131,22 @@ jobs:
           export MSYSTEM=MINGW64
           export PATH=/mingw64/bin:/usr/local/bin:/usr/bin:/bin
           python scripts/ci.py validate --check "$ARIAX_CI_CHECK"
+      - name: Save verified native installation
+        if: ${{ !cancelled() && env.ARIAX_BT_NATIVE_VERIFIED == '1' && steps.native-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: toolchains/bt-native/*/install
+          key: ${{ steps.native-cache.outputs.cache-primary-key }}
+      - name: Save Cargo outputs
+        if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' && steps.cargo-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            toolchains/ci-target/${{ matrix.check }}
+            toolchains/ci-target/${{ matrix.check }}-clippy
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
       - name: Retain validation diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

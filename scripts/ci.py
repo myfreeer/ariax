@@ -22,7 +22,18 @@ ACTIONLINT_VERSION = "1.7.12"
 ACTIONLINT_SHA256 = "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
 CHECKS = ("linux", "macos", "windows-msvc", "windows-gnu", "msrv-linux",
           "msrv-windows-gnu", "feature-minimal", "feature-standard", "feature-full",
-          "feature-compat", "bt-safety")
+          "feature-compat", "feature-bundles", "bt-safety")
+FEATURE_BUNDLES = ("minimal", "standard", "full", "compat")
+VALIDATION_MATRIX = (
+    ("linux", "ubuntu-24.04", RUST_VERSION, "linux"),
+    ("windows-msvc", "windows-2022", RUST_VERSION, "windows-msvc"),
+    ("macos", "macos-15", RUST_VERSION, "macos"),
+    ("windows-gnu", "windows-2022", RUST_VERSION + "-x86_64-pc-windows-gnu", "windows-gnu"),
+    ("msrv-linux", "ubuntu-24.04", "1.88.0", "linux"),
+    ("msrv-windows-gnu", "windows-2022", "1.88.0-x86_64-pc-windows-gnu", "windows-gnu"),
+    ("feature-bundles", "ubuntu-24.04", RUST_VERSION, "linux"),
+    ("bt-safety", "ubuntu-24.04", RUST_VERSION, "bt-safety"),
+)
 SCENARIOS = ("http", "websocket", "content-length", "ndjson", "administrative", "mixed-bt")
 COMPILERS = {"rustc", "cargo", "clippy-driver", "gcc", "g++", "cc", "c++", "cc1",
              "cc1plus", "ld", "lld", "rust-lld", "collect2", "make", "ninja", "cmake"}
@@ -35,8 +46,17 @@ def require(condition, message):
 
 def aggregate_success(event, ref, preflight, validation, benchmarks):
     expected_benchmark = "success" if event == "push" and ref == "refs/heads/main" else "skipped"
-    return (event in {"push", "pull_request"} and preflight == "success"
+    return (event in {"push", "pull_request", "workflow_dispatch"} and preflight == "success"
             and validation == "success" and benchmarks == expected_benchmark)
+
+
+def validation_matrix(event, ref):
+    require(event in {"push", "pull_request", "workflow_dispatch"}, "unsupported CI event")
+    require(isinstance(ref, str) and ref.startswith("refs/"), "missing CI ref")
+    full = (event == "workflow_dispatch" or
+            event == "push" and (ref == "refs/heads/main" or ref.startswith("refs/tags/")))
+    checks = VALIDATION_MATRIX if full else VALIDATION_MATRIX[:2]
+    return {"include": [dict(zip(("check", "os", "toolchain", "native"), check)) for check in checks]}
 
 
 def resolve_toolchain():
@@ -194,6 +214,12 @@ def provision_bt(runner, sanitizer="none"):
     command = [sys.executable, "-B", "scripts/bt_native.py", "--target", target[1], "--sanitizer", sanitizer]
     runner.run(command)
     runner.run([*command, "--verify"])
+    # A later test failure must not discard a verified dependency build. The
+    # workflow resets this flag and saves only after this verification succeeds.
+    github_env = os.environ.get("GITHUB_ENV")
+    if github_env:
+        with Path(github_env).open("a", encoding="utf-8") as environment:
+            environment.write("ARIAX_BT_NATIVE_VERIFIED=1\n")
     import bt_native
     return bt_native.work_directory(target[1], sanitizer) / "install"
 
@@ -248,6 +274,12 @@ def validate(runner):
     if runner.name == "bt-safety":
         bt_safety(runner)
         return
+    if runner.name == "feature-bundles":
+        for feature in FEATURE_BUNDLES:
+            if feature == "full":
+                provision_bt(runner)
+            validate_feature(runner, feature)
+        return
     prefix = None
     if runner.name not in {"feature-minimal", "feature-standard"}:
         prefix = provision_bt(runner)
@@ -255,9 +287,7 @@ def validate(runner):
         runner.cargo("check", "--locked", "--workspace", "--all-targets", "--all-features")
     elif runner.name.startswith("feature-"):
         feature = runner.name.removeprefix("feature-")
-        arguments = ("--locked", "-p", "ariax-cli", "--no-default-features", "--features", feature)
-        runner.cargo("test", *arguments)
-        runner.cargo("build", *arguments, "--profile", "release-cli")
+        validate_feature(runner, feature)
     else:
         native_security(runner, prefix)
         runner.cargo("build", "--locked", "--workspace")
@@ -266,6 +296,12 @@ def validate(runner):
         runner.cargo("clippy", "--locked", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings")
         if runner.name == "linux":
             runner.cargo("build", "--locked", "-p", "ariax-core", "--profile", "release-capi")
+
+
+def validate_feature(runner, feature):
+    arguments = ("--locked", "-p", "ariax-cli", "--no-default-features", "--features", feature)
+    runner.cargo("test", *arguments)
+    runner.cargo("build", *arguments, "--profile", "release-cli")
 
 
 def integer(value, name, *, minimum=0, maximum=None):
@@ -459,10 +495,14 @@ def interrupted(_signum, _frame):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("resolve-toolchain", "preflight", "benchmark", "gate"):
+    for name in ("resolve-toolchain", "matrix", "preflight", "benchmark", "gate"):
         commands.add_parser(name)
     commands.add_parser("validate").add_argument("--check", choices=CHECKS, required=True)
     args = parser.parse_args()
+    if args.command == "matrix":
+        print("matrix=" + json.dumps(validation_matrix(os.environ.get("GITHUB_EVENT_NAME"),
+                                                       os.environ.get("GITHUB_REF"))))
+        return 0
     if args.command == "resolve-toolchain":
         print("ARIAX_TOOLCHAIN_ROOT=" + str(resolve_toolchain()))
         return 0

@@ -13,9 +13,11 @@ security boundaries and the supported aria2-facing behavior.
 
 Push changes or open a pull request to run [CI](continuous-integration.md).
 Preflight checks documentation, formatting, generated contracts and dependency
-policies before the platform, feature and MSRV matrix. Successful `main` pushes
-then run native Linux benchmarks. The workflow's `CI Required` job is the
-aggregate result.
+policies before Linux and Windows MSVC validation on routine branches and PRs.
+Manual full runs and `main` pushes also cover macOS, Windows GNU, MSRV, every
+feature bundle and sanitizers/fuzzing. Successful `main` pushes then run native
+Linux benchmarks. The workflow's `CI Required` job aggregates the checks selected
+for that event; routine success does not replace full validation.
 
 Keep local validation focused. Documentation changes need no Rust build:
 

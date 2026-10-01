@@ -13,6 +13,11 @@ import ci
 
 
 class AggregateTests(unittest.TestCase):
+    def test_manual_full_validation_requires_success_and_no_automatic_benchmark(self):
+        self.assertTrue(ci.aggregate_success("workflow_dispatch", "refs/heads/fix", "success", "success", "skipped"))
+        self.assertFalse(ci.aggregate_success("workflow_dispatch", "refs/heads/main", "success", "failure", "skipped"))
+        self.assertFalse(ci.aggregate_success("workflow_dispatch", "refs/heads/main", "success", "success", "failure"))
+
     def test_main_requires_benchmark_success(self):
         self.assertTrue(ci.aggregate_success("push", "refs/heads/main", "success", "success", "success"))
         for result in ("failure", "cancelled", "skipped", None):
@@ -49,6 +54,53 @@ class CommandTests(unittest.TestCase):
             self.assertEqual(result.strip(), "ok")
 
 
+class MatrixTests(unittest.TestCase):
+    def test_routine_pushes_and_pull_requests_keep_linux_and_msvc(self):
+        for event, ref in (("push", "refs/heads/fix"), ("pull_request", "refs/pull/1/merge")):
+            matrix = ci.validation_matrix(event, ref)["include"]
+            self.assertEqual({job["check"] for job in matrix}, {"linux", "windows-msvc"})
+
+    def test_main_tags_and_manual_runs_keep_every_full_coverage_group(self):
+        for event, ref in (("push", "refs/heads/main"), ("push", "refs/tags/candidate"),
+                           ("workflow_dispatch", "refs/heads/fix")):
+            with self.subTest(event=event, ref=ref):
+                matrix = ci.validation_matrix(event, ref)["include"]
+                self.assertEqual({job["check"] for job in matrix}, {
+                    "linux", "windows-msvc", "macos", "windows-gnu", "msrv-linux",
+                    "msrv-windows-gnu", "feature-bundles", "bt-safety"})
+                native = {job["check"]: job["native"] for job in matrix}
+                self.assertEqual(native["linux"], native["msrv-linux"])
+                self.assertEqual(native["linux"], native["feature-bundles"])
+                self.assertEqual(native["windows-gnu"], native["msrv-windows-gnu"])
+                self.assertNotEqual(native["windows-msvc"], native["windows-gnu"])
+                self.assertNotEqual(native["bt-safety"], native["linux"])
+
+    def test_missing_or_unknown_context_cannot_select_a_smaller_matrix(self):
+        for event, ref in ((None, None), ("schedule", "refs/heads/main"), ("push", None),
+                           ("workflow_dispatch", "main")):
+            with self.subTest(event=event, ref=ref), self.assertRaises(RuntimeError):
+                ci.validation_matrix(event, ref)
+
+
+class NativeCacheTests(unittest.TestCase):
+    def test_cache_save_is_authorized_only_after_native_verification(self):
+        for fail in (False, True):
+            with self.subTest(fail=fail), tempfile.TemporaryDirectory() as temporary:
+                environment = Path(temporary) / "github-env"
+                runner = mock.Mock()
+                runner.tool.return_value = Path("rustc")
+                runner.run.side_effect = ["host: x86_64-unknown-linux-gnu\n", "",
+                    RuntimeError("verification failed") if fail else ""]
+                with mock.patch.dict(os.environ, {"GITHUB_ENV": str(environment)}):
+                    if fail:
+                        with self.assertRaisesRegex(RuntimeError, "verification failed"):
+                            ci.provision_bt(runner)
+                        self.assertFalse(environment.exists())
+                    else:
+                        ci.provision_bt(runner)
+                        self.assertEqual(environment.read_text(), "ARIAX_BT_NATIVE_VERIFIED=1\n")
+
+
 @unittest.skipIf(os.name == "nt", "Unix temporary-directory aliases")
 class TemporaryDirectoryTests(unittest.TestCase):
     def test_runner_resolves_system_alias_before_creating_fixture_descendants(self):
@@ -76,6 +128,31 @@ class TemporaryDirectoryTests(unittest.TestCase):
 
 
 class PlatformNativeTests(unittest.TestCase):
+    def test_grouped_bundles_keep_all_tests_and_release_builds_and_provision_once(self):
+        runner = mock.Mock()
+        runner.name = "feature-bundles"
+        events = []
+        runner.cargo.side_effect = lambda *args: events.append((args[0], args[args.index("--features")+1]))
+        with mock.patch.object(ci, "provision_bt", side_effect=lambda _: events.append(("native", "full"))):
+            ci.validate(runner)
+        self.assertEqual(events, [("test", "minimal"), ("build", "minimal"),
+            ("test", "standard"), ("build", "standard"), ("native", "full"),
+            ("test", "full"), ("build", "full"), ("test", "compat"), ("build", "compat")])
+        for call in runner.cargo.call_args_list:
+            self.assertIn("--no-default-features", call.args)
+            if call.args[0] == "build":
+                self.assertEqual(call.args[-2:], ("--profile", "release-cli"))
+
+    def test_failed_bundle_stops_later_bundles_and_native_provisioning(self):
+        runner = mock.Mock()
+        runner.name = "feature-bundles"
+        runner.cargo.side_effect = [None, None, RuntimeError("standard failed")]
+        with mock.patch.object(ci, "provision_bt") as provision:
+            with self.assertRaisesRegex(RuntimeError, "standard failed"):
+                ci.validate(runner)
+            provision.assert_not_called()
+        self.assertEqual(runner.cargo.call_count, 3)
+
     def test_every_platform_runs_native_probes_and_a_failure_stops_workspace_work(self):
         for name in ("linux", "macos", "windows-msvc", "windows-gnu"):
             for fail in (False, True):

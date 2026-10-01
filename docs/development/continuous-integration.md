@@ -11,8 +11,11 @@ benchmark scenarios. The prerequisite is complete; Phase 6 may proceed.
 
 The canonical remote is `git@github.com:myfreeer/ariax.git`. Publish the
 existing history on `main`, which is the remote's default branch. CI runs on
-pushes and pull requests with read-only repository permissions. A newer run
-for the same ref cancels its predecessor.
+pushes and pull requests with read-only repository permissions. Routine branch
+and PR runs validate Linux and Windows MSVC. Pushes to `main`, tag pushes and
+manual workflow dispatch select the full matrix. A newer run for the same ref
+and validation scope cancels its predecessor; a manual full run is independent
+of an automatic routine run.
 
 ## Fail-Fast Topology
 
@@ -21,7 +24,13 @@ The workflow has three ordered stages:
 1. Preflight validates documentation links and navigation, formatting, workflow
    syntax, whitespace, generated contracts, pinned reference inputs, protocol
    forks and feature policies.
-2. One validation matrix contains all platform, feature-bundle and MSRV jobs.
+2. One event-selected validation matrix contains the required jobs. Routine
+   runs retain the complete Linux and Windows MSVC checks, including native
+   probes and default/all-feature workspace tests. Full runs additionally
+   include macOS, Windows GNU, both MSRV targets, all CLI feature bundles and
+   the sanitizer/fuzz job.
+   The four CLI feature bundles run sequentially in one job and share Cargo
+   outputs; each still runs its own tests and `release-cli` build.
    Its `fail-fast: true` cancels sibling jobs after a failure. Every script
    propagates native-command and pipeline failures; no required check uses
    `continue-on-error` or automatic job/test retry. Native archive downloads
@@ -35,6 +44,10 @@ The final `CI Required` job passes only if every stage required by the event
 passes. A failed, cancelled or unexpectedly skipped required stage cannot
 produce a green aggregate result. Job timeouts bound stuck work. Cleanup
 uploads available logs even on failure or cancellation.
+Routine success is not evidence that the full matrix passed. Run the full
+workflow manually on the candidate commit before release approval; the explicit
+release tag gate remains closed. Main pushes still require the full matrix and
+native acceptance benchmarks.
 
 Full builds, tests, native provisioning and benchmark collection run in CI.
 Local documentation checks and focused debugging should avoid recreating the
@@ -50,6 +63,18 @@ Use the locked dependency graph.
 JavaScript actions in both workflows target Node.js 24 and use full commit
 pins. Preflight, every validation matrix job and native benchmark collection
 share the same Node.js 24 artifact uploader.
+
+Native installation cache keys identify the platform ABI and instrumentation,
+not the Rust feature bundle or Rust version. Only the dependency manifest,
+patches and native builder invalidate those keys; changes to probes do not
+rebuild dependencies. A successful explicit native verification permits saving
+that installation even if a later test fails. Ordinary and sanitizer builds,
+and Windows MSVC and GNU, retain separate caches.
+Cargo caches use a commit-specific key with a toolchain/dependency-compatible
+restore prefix, so successful compilation work can be updated across commits.
+Validation and benchmark jobs save that work even after test failure; cancelled jobs do not
+spend additional time uploading caches. Restored native files are still fully
+verified, and Cargo validates its own build fingerprints before reuse.
 
 The checkout must supply all
 tracked fixtures and pinned fork sources; ignored workstation toolchains,
@@ -115,8 +140,8 @@ Native endpoint tests flush stage, session-shutdown and fixture-worker progress
 so a timeout identifies the last operation reached, including shutdown during
 exception unwinding. The 90-second CTest deadline remains unchanged; an
 intermittent timeout still requires thread-stack capture and diagnosis.
-Every full platform job runs the native OpenSSL, destination-policy and private
-storage probes before its Rust workspace checks. GNU Windows selects MinGW
+Every platform job runs the native OpenSSL, destination-policy, private
+storage and bounded-output probes before its Rust workspace checks. GNU Windows selects MinGW
 Makefiles, MSVC selects NMake Makefiles, and Unix hosts select Unix Makefiles;
 build and CTest use the same `RelWithDebInfo` configuration. A failing native
 probe stops that platform job. Feature-bundle and MSRV jobs retain their own
@@ -124,6 +149,24 @@ focused checks without duplicating the platform probes.
 The disposable macOS runner explicitly provisions the second loopback address
 used by active-FTPS peer-rejection fixtures. Those tests must exercise a real
 unapproved source address before the approved TLS data connection.
+
+### Upstream MSVC Coverage
+
+The pinned libtorrent 2.1.1 [Windows workflow](https://github.com/arvidn/libtorrent/blob/v2.1.1/.github/workflows/windows.yml)
+runs deterministic and integration tests, simulations, and additional Debug,
+Release, 32-bit and API/configuration builds. Its CMake job excludes tracker
+and SOCKS5 web-seed cases; some upstream jobs retry failures. Ariax retains its
+own real tracker/web-seed probes and fails tests without retries.
+Upstream's bencoding tests use `std::back_inserter`; they cannot validate
+Ariax's custom output iterator. Our early bounded-output probe compiles the
+production iterator and checks reassignment, nested preformatted bencode,
+exact limits and rejection paths on every platform, including MSVC.
+
+Ariax provisions the production static dependency with `build_tests=OFF`.
+Its probes and bridge/adapter tests do not constitute a run of the complete
+upstream suite against the patched fork. That wider suite remains separate
+dependency-upgrade evidence. Upstream's simulation-only IOCP/debug-iterator
+workarounds are not applied to production builds or used to bypass our tests.
 
 The fail-fast matrix also contains `bt-safety`. It builds a separate native
 installation with AddressSanitizer and UndefinedBehaviorSanitizer, then runs the
