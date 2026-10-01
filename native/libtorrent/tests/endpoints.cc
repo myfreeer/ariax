@@ -16,6 +16,7 @@
 #include <iterator>
 #include <string>
 #include <thread>
+#include "progress.hpp"
 
 namespace lt = libtorrent;
 namespace fs = std::filesystem;
@@ -95,7 +96,12 @@ public:
         });
     }
 
-    ~Origin() { stop = true; worker.join(); }
+    ~Origin() {
+        std::cerr << "Native fixture worker stopping: port=" << port << std::endl;
+        stop = true;
+        worker.join();
+        std::cerr << "Native fixture worker stopped: port=" << port << std::endl;
+    }
     unsigned short listen_port() const { return port; }
     std::string url(char const* host, std::string const& path) const {
         return "http://" + std::string(host) + ":" + std::to_string(port) + path;
@@ -123,14 +129,19 @@ enum class Mode { direct, redirect, secret, credentials, dns, blocked, chain, ch
 
 void endpoint(bool web, Mode mode) {
     char const* step = "read payload fixture";
+    auto mark = [&](char const* name) {
+        step = name;
+        std::cerr << "Native endpoint: web=" << web << " mode=" << int(mode)
+            << " step=" << name << std::endl;
+    };
     try {
         auto const payload = read(fs::path(ARIAX_FIXTURE_DIR) / "payload.bin");
-        step = "forbidden listener";
+        mark("forbidden listener");
         Origin forbidden("127.0.0.1");
         std::atomic<int> final_requests{0};
         auto const base = web ? std::string("/payload") : std::string("/announce");
         bool const chain = mode == Mode::chain || mode == Mode::chain_allowed;
-        step = "source listener";
+        mark("source listener");
         Origin source("127.0.0.2", [&](std::string const& request, unsigned short port) {
             auto const first_space = request.find(' ');
             auto const second_space = request.find(' ', first_space + 1);
@@ -173,7 +184,7 @@ void endpoint(bool web, Mode mode) {
             if (!web && mode != Mode::secret) target += query;
             return "HTTP/1.1 302 Found\r\nLocation: " + target + "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
         });
-        step = "private directory";
+        mark("private directory");
         Directory directory;
         bool const peer = mode == Mode::peer_allowed || mode == Mode::peer_blocked;
         bool const allowed = mode == Mode::direct || mode == Mode::redirect
@@ -196,9 +207,10 @@ void endpoint(bool web, Mode mode) {
                 params.ip_filter.add_rule(lt::make_address("127.0.0.1"), lt::make_address("127.0.0.1"), lt::ip_filter::blocked);
                 params.ip_filter.add_rule(lt::make_address("::1"), lt::make_address("::1"), lt::ip_filter::blocked);
             }
-            step = "native session";
+            mark("native session");
             lt::session session(std::move(params));
-            step = "load torrent fixture";
+            NativeShutdownTrace shutdown_trace{"endpoint session"};
+            mark("load torrent fixture");
             auto add = lt::load_torrent_file((fs::path(ARIAX_FIXTURE_DIR) / "v1.torrent").string());
             add.save_path = directory.path.string();
             add.flags &= ~lt::torrent_flags::auto_managed;
@@ -207,12 +219,12 @@ void endpoint(bool web, Mode mode) {
                 : source.url("127.0.0.2", base + (mode == Mode::direct || peer ? "/final" : chain ? "/0" : "/start"));
             if (web) add.url_seeds.push_back(url);
             else add.trackers.push_back(url);
-            step = "add torrent fixture";
+            mark("add torrent fixture");
             auto handle = session.add_torrent(std::move(add));
             require(handle.ariax_metadata_held(), "endpoint metadata hold");
             require(handle.ariax_approve_metadata({"payload.bin"}, {lt::download_priority_t(4)}), "endpoint metadata approval");
             handle.resume();
-            step = "transfer";
+            mark("transfer");
             bool rejected = false;
             bool tracker_reply = false;
             auto const deadline = std::chrono::steady_clock::now() + (chain ? 45s : 8s);
@@ -249,6 +261,7 @@ void endpoint(bool web, Mode mode) {
             require(allowed != rejected, "unexpected native endpoint disposition");
         }
         // Session shutdown drains disk writes before inspecting the downloaded file.
+        mark("session shutdown completed");
         if (allowed && web) require(read(directory.path / "payload.bin") == payload, "web-seed payload bytes");
         require(mode == Mode::peer_allowed ? forbidden.connections > 0 : forbidden.connections == 0,
             "forbidden destination received a connection");
@@ -271,11 +284,13 @@ void endpoint(bool web, Mode mode) {
 
 void endpoint_policy() {
     auto checked = [](bool web, Mode mode) {
+        std::cerr << "Native endpoint begins: web=" << web << " mode=" << int(mode) << std::endl;
         try { endpoint(web, mode); }
         catch (std::exception const& error) {
             throw std::runtime_error(std::string(web ? "web-seed" : "tracker")
                 + " mode " + std::to_string(static_cast<int>(mode)) + ": " + error.what());
         }
+        std::cerr << "Native endpoint completed: web=" << web << " mode=" << int(mode) << std::endl;
     };
     for (bool web : {false, true}) {
         for (auto mode : {Mode::direct, Mode::redirect, Mode::secret, Mode::credentials, Mode::dns, Mode::blocked}) {

@@ -109,6 +109,10 @@ bounded synchronous reads, including on Windows where listener mode is inherited
 Native-to-native fixtures retain the default encryption policy. Transfer fixtures
 wait for checkpoint completion before comparing payload bytes on disk; native
 seeding status can precede completion of queued disk writes.
+Native endpoint tests flush stage, session-shutdown and fixture-worker progress
+so a timeout identifies the last operation reached, including shutdown during
+exception unwinding. The 90-second CTest deadline remains unchanged; an
+intermittent timeout still requires thread-stack capture and diagnosis.
 The disposable macOS runner explicitly provisions the second loopback address
 used by active-FTPS peer-rejection fixtures. Those tests must exercise a real
 unapproved source address before the approved TLS data connection.
@@ -125,6 +129,11 @@ environment; it does not change production or MSRV compilation.
 The Rust sanitizer link flags explicitly include `libstdc++`: Rust passes
 `-nodefaultlibs`, while Clang's C++ sanitizer runtime requires C++ RTTI symbols
 even when linking an otherwise pure Rust build script.
+The pinned OpenSSL callback backport is hashed independently in native
+provenance and applied before header generation. A standalone callback test
+runs with strict sanitizers and known digest/cipher vectors, typed-stack
+failure cleanup, and certificate success/rejection paths. Its baseline fails
+against the unpatched dependency; sanitizer suppression is not a fix.
 
 The benchmark's pure peer-framing regressions live in the engine integration-test
 target. The custom benchmark harness imports only the shared parser, so ordinary

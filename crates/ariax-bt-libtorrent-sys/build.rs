@@ -38,6 +38,7 @@ fn native() {
     for path in [
         "native/libtorrent/sources.json",
         "native/libtorrent/ariax.patch",
+        "native/libtorrent/openssl.patch",
         "scripts/bt_native.py",
     ] {
         println!("cargo:rerun-if-changed={}", root.join(path).display());
@@ -57,6 +58,7 @@ fn native() {
     for (key, path) in [
         ("sourcesSha256", "native/libtorrent/sources.json"),
         ("patchSha256", "native/libtorrent/ariax.patch"),
+        ("opensslPatchSha256", "native/libtorrent/openssl.patch"),
         ("builderSha256", "scripts/bt_native.py"),
     ] {
         assert_eq!(

@@ -1,0 +1,1513 @@
+--- a/crypto/asn1/asn1_local.h
++++ b/crypto/asn1/asn1_local.h
+@@ -9,6 +9,7 @@
+ 
+ /* Internal ASN1 structures and functions: not for application use */
+ 
++#include <openssl/asn1t.h>
+ #include "crypto/asn1.h"
+ 
+ typedef const ASN1_VALUE const_ASN1_VALUE;
+@@ -94,3 +95,6 @@
+ 
+ int ossl_asn1_item_ex_new_intern(ASN1_VALUE **pval, const ASN1_ITEM *it,
+     OSSL_LIB_CTX *libctx, const char *propq);
++
++int ossl_asn1_call_aux_cb(const ASN1_AUX *aux, int operation,
++    const ASN1_VALUE **in, const ASN1_ITEM *it, void *exarg);
+--- a/crypto/asn1/tasn_enc.c
++++ b/crypto/asn1/tasn_enc.c
+@@ -85,15 +85,9 @@
+     int i, seqcontlen, seqlen, ndef = 1;
+     const ASN1_EXTERN_FUNCS *ef;
+     const ASN1_AUX *aux = it->funcs;
+-    ASN1_aux_const_cb *asn1_cb = NULL;
+ 
+     if ((it->itype != ASN1_ITYPE_PRIMITIVE) && *pval == NULL)
+         return 0;
+-
+-    if (aux != NULL) {
+-        asn1_cb = ((aux->flags & ASN1_AFLG_CONST_CB) != 0) ? aux->asn1_const_cb
+-                                                           : (ASN1_aux_const_cb *)aux->asn1_cb; /* backward compatibility */
+-    }
+ 
+     switch (it->itype) {
+ 
+@@ -123,7 +117,7 @@
+             ERR_raise(ERR_LIB_ASN1, ASN1_R_BAD_TEMPLATE);
+             return -1;
+         }
+-        if (asn1_cb && !asn1_cb(ASN1_OP_I2D_PRE, pval, it, NULL))
++        if (!ossl_asn1_call_aux_cb(aux, ASN1_OP_I2D_PRE, pval, it, NULL))
+             return 0;
+         i = ossl_asn1_get_choice_selector_const(pval, it);
+         if ((i >= 0) && (i < it->tcount)) {
+@@ -134,7 +128,7 @@
+             return asn1_template_ex_i2d(pchval, out, chtt, -1, aclass);
+         }
+         /* Fixme: error condition if selector out of range */
+-        if (asn1_cb && !asn1_cb(ASN1_OP_I2D_POST, pval, it, NULL))
++        if (!ossl_asn1_call_aux_cb(aux, ASN1_OP_I2D_POST, pval, it, NULL))
+             return 0;
+         break;
+ 
+@@ -166,7 +160,7 @@
+             aclass = (aclass & ~ASN1_TFLG_TAG_CLASS)
+                 | V_ASN1_UNIVERSAL;
+         }
+-        if (asn1_cb && !asn1_cb(ASN1_OP_I2D_PRE, pval, it, NULL))
++        if (!ossl_asn1_call_aux_cb(aux, ASN1_OP_I2D_PRE, pval, it, NULL))
+             return 0;
+         /* First work out sequence content length */
+         for (i = 0, tt = it->templates; i < it->tcount; tt++, i++) {
+@@ -200,7 +194,7 @@
+         }
+         if (ndef == 2)
+             ASN1_put_eoc(out);
+-        if (asn1_cb && !asn1_cb(ASN1_OP_I2D_POST, pval, it, NULL))
++        if (!ossl_asn1_call_aux_cb(aux, ASN1_OP_I2D_POST, pval, it, NULL))
+             return 0;
+         return seqlen;
+ 
+--- a/crypto/asn1/tasn_prn.c
++++ b/crypto/asn1/tasn_prn.c
+@@ -138,15 +138,12 @@
+     const ASN1_EXTERN_FUNCS *ef;
+     const ASN1_VALUE **tmpfld;
+     const ASN1_AUX *aux = it->funcs;
+-    ASN1_aux_const_cb *asn1_cb = NULL;
+     ASN1_PRINT_ARG parg;
+     int i;
+     if (aux != NULL) {
+         parg.out = out;
+         parg.indent = indent;
+         parg.pctx = pctx;
+-        asn1_cb = ((aux->flags & ASN1_AFLG_CONST_CB) != 0) ? aux->asn1_const_cb
+-                                                           : (ASN1_aux_const_cb *)aux->asn1_cb; /* backward compatibility */
+     }
+ 
+     if (((it->itype != ASN1_ITYPE_PRIMITIVE)
+@@ -220,13 +217,11 @@
+             }
+         }
+ 
+-        if (asn1_cb) {
+-            i = asn1_cb(ASN1_OP_PRINT_PRE, fld, it, &parg);
+-            if (i == 0)
+-                return 0;
+-            if (i == 2)
+-                return 1;
+-        }
++        i = ossl_asn1_call_aux_cb(aux, ASN1_OP_PRINT_PRE, fld, it, &parg);
++        if (i == 0)
++            return 0;
++        if (i == 2)
++            return 1;
+ 
+         /* Print each field entry */
+         for (i = 0, tt = it->templates; i < it->tcount; i++, tt++) {
+@@ -244,11 +239,9 @@
+                 return 0;
+         }
+ 
+-        if (asn1_cb) {
+-            i = asn1_cb(ASN1_OP_PRINT_POST, fld, it, &parg);
+-            if (i == 0)
+-                return 0;
+-        }
++        i = ossl_asn1_call_aux_cb(aux, ASN1_OP_PRINT_POST, fld, it, &parg);
++        if (i == 0)
++            return 0;
+         break;
+ 
+     default:
+--- a/crypto/asn1/tasn_utl.c
++++ b/crypto/asn1/tasn_utl.c
+@@ -288,3 +288,19 @@
+         ERR_raise(ERR_LIB_ASN1, ASN1_R_UNSUPPORTED_ANY_DEFINED_BY_TYPE);
+     return NULL;
+ }
++
++int ossl_asn1_call_aux_cb(const ASN1_AUX *aux, int operation,
++    const ASN1_VALUE **in, const ASN1_ITEM *it, void *exarg)
++{
++    if (aux == NULL)
++        return 1;
++
++    if ((aux->flags & ASN1_AFLG_CONST_CB) != 0) {
++        if (aux->asn1_const_cb != NULL)
++            return aux->asn1_const_cb(operation, in, it, exarg);
++    } else if (aux->asn1_cb != NULL) {
++        return aux->asn1_cb(operation, (ASN1_VALUE **)in, it, exarg);
++    }
++
++    return 1;
++}
+--- a/crypto/bsearch.c
++++ b/crypto/bsearch.c
+@@ -10,8 +10,10 @@
+ #include <stddef.h>
+ #include "internal/cryptlib.h"
+ 
++typedef int (*cmpthunk_fn)(const void *, const void *);
+ const void *ossl_bsearch(const void *key, const void *base, int num,
+     int size, int (*cmp)(const void *, const void *),
++    int (*cmp_thunk)(cmpthunk_fn real_cmp_fn, const void *, const void *),
+     int flags)
+ {
+     const char *base_ = base;
+@@ -25,7 +27,10 @@
+     while (l < h) {
+         i = l + (h - l) / 2;
+         p = &(base_[i * size]);
+-        c = (*cmp)(key, p);
++        if (cmp_thunk != NULL)
++            c = cmp_thunk((cmpthunk_fn)cmp, key, (const void *)p);
++        else
++            c = cmp(key, p);
+         if (c < 0)
+             h = i;
+         else if (c > 0)
+@@ -36,8 +41,16 @@
+     if (c != 0 && !(flags & OSSL_BSEARCH_VALUE_ON_NOMATCH))
+         p = NULL;
+     else if (c == 0 && (flags & OSSL_BSEARCH_FIRST_VALUE_ON_MATCH)) {
+-        while (i > 0 && (*cmp)(key, &(base_[(i - 1) * size])) == 0)
++        while (i > 0) {
++            if (cmp_thunk != NULL) {
++                if (cmp_thunk((cmpthunk_fn)cmp, key, (const void *)&(base_[(i - 1) * size])))
++                    break;
++            } else {
++                if (cmp(key, &(base_[(i - 1) * size])))
++                    break;
++            }
+             i--;
++        }
+         p = &(base_[i * size]);
+     }
+     return p;
+--- a/crypto/evp/asymcipher.c
++++ b/crypto/evp/asymcipher.c
+@@ -555,8 +555,12 @@
+         void *arg),
+     void *arg)
+ {
++    struct EVP_ASYM_CIPHER_do_all_provided_thunk t;
++
++    t.fn = fn;
++    t.arg = arg;
+     evp_generic_do_all(libctx, OSSL_OP_ASYM_CIPHER,
+-        (void (*)(void *, void *))fn, arg,
++        EVP_ASYM_CIPHER_do_all_provided_thunk, &t,
+         evp_asym_cipher_from_algorithm,
+         evp_asym_cipher_up_ref,
+         evp_asym_cipher_free);
+--- a/crypto/evp/digest.c
++++ b/crypto/evp/digest.c
+@@ -1192,8 +1192,12 @@
+     void (*fn)(EVP_MD *mac, void *arg),
+     void *arg)
+ {
++    struct EVP_MD_do_all_provided_thunk t;
++
++    t.fn = fn;
++    t.arg = arg;
+     evp_generic_do_all(libctx, OSSL_OP_DIGEST,
+-        (void (*)(void *, void *))fn, arg,
++        EVP_MD_do_all_provided_thunk, &t,
+         evp_md_from_algorithm, evp_md_up_ref, evp_md_free);
+ }
+ 
+--- a/crypto/evp/evp_enc.c
++++ b/crypto/evp/evp_enc.c
+@@ -2135,8 +2135,12 @@
+     void (*fn)(EVP_CIPHER *mac, void *arg),
+     void *arg)
+ {
++    struct EVP_CIPHER_do_all_provided_thunk t;
++
++    t.fn = fn;
++    t.arg = arg;
+     evp_generic_do_all(libctx, OSSL_OP_CIPHER,
+-        (void (*)(void *, void *))fn, arg,
++        EVP_CIPHER_do_all_provided_thunk, &t,
+         evp_cipher_from_algorithm, evp_cipher_up_ref,
+         evp_cipher_free);
+ }
+--- a/crypto/evp/evp_local.h
++++ b/crypto/evp/evp_local.h
+@@ -414,3 +414,27 @@
+     void (*fn)(const char *name, void *data),
+     void *data);
+ int evp_cipher_cache_constants(EVP_CIPHER *cipher);
++
++#define EVP_DO_ALL_PROVIDED_THUNK(type)                                                       \
++    struct type##_do_all_provided_thunk {                                                     \
++        void (*fn)(type * method, void *arg);                                                 \
++        void *arg;                                                                            \
++    };                                                                                        \
++    static ossl_inline ossl_unused void type##_do_all_provided_thunk(void *method, void *arg) \
++    {                                                                                         \
++        struct type##_do_all_provided_thunk *t = arg;                                         \
++        (*t->fn)((type *)method, t->arg);                                                     \
++    }
++
++EVP_DO_ALL_PROVIDED_THUNK(EVP_ASYM_CIPHER)
++EVP_DO_ALL_PROVIDED_THUNK(EVP_MD)
++EVP_DO_ALL_PROVIDED_THUNK(EVP_CIPHER)
++EVP_DO_ALL_PROVIDED_THUNK(EVP_RAND)
++EVP_DO_ALL_PROVIDED_THUNK(EVP_KEYEXCH)
++EVP_DO_ALL_PROVIDED_THUNK(EVP_KDF)
++EVP_DO_ALL_PROVIDED_THUNK(EVP_KEM)
++EVP_DO_ALL_PROVIDED_THUNK(EVP_KEYMGMT)
++EVP_DO_ALL_PROVIDED_THUNK(EVP_MAC)
++EVP_DO_ALL_PROVIDED_THUNK(EVP_SIGNATURE)
++EVP_DO_ALL_PROVIDED_THUNK(EVP_SKEYMGMT)
++
+--- a/crypto/evp/evp_rand.c
++++ b/crypto/evp/evp_rand.c
+@@ -492,8 +492,12 @@
+     void (*fn)(EVP_RAND *rand, void *arg),
+     void *arg)
+ {
++    struct EVP_RAND_do_all_provided_thunk t;
++
++    t.fn = fn;
++    t.arg = arg;
+     evp_generic_do_all(libctx, OSSL_OP_RAND,
+-        (void (*)(void *, void *))fn, arg,
++        EVP_RAND_do_all_provided_thunk, &t,
+         evp_rand_from_algorithm, evp_rand_up_ref,
+         evp_rand_free);
+ }
+--- a/crypto/evp/exchange.c
++++ b/crypto/evp/exchange.c
+@@ -670,8 +670,12 @@
+     void (*fn)(EVP_KEYEXCH *keyexch, void *arg),
+     void *arg)
+ {
++    struct EVP_KEYEXCH_do_all_provided_thunk t;
++
++    t.fn = fn;
++    t.arg = arg;
+     evp_generic_do_all(libctx, OSSL_OP_KEYEXCH,
+-        (void (*)(void *, void *))fn, arg,
++        EVP_KEYEXCH_do_all_provided_thunk, &t,
+         evp_keyexch_from_algorithm,
+         evp_keyexch_up_ref,
+         evp_keyexch_free);
+--- a/crypto/evp/kdf_meth.c
++++ b/crypto/evp/kdf_meth.c
+@@ -235,7 +235,11 @@
+     void (*fn)(EVP_KDF *kdf, void *arg),
+     void *arg)
+ {
++    struct EVP_KDF_do_all_provided_thunk t;
++
++    t.fn = fn;
++    t.arg = arg;
+     evp_generic_do_all(libctx, OSSL_OP_KDF,
+-        (void (*)(void *, void *))fn, arg,
++        EVP_KDF_do_all_provided_thunk, &t,
+         evp_kdf_from_algorithm, evp_kdf_up_ref, evp_kdf_free);
+ }
+--- a/crypto/evp/kem.c
++++ b/crypto/evp/kem.c
+@@ -501,7 +501,11 @@
+     void (*fn)(EVP_KEM *kem, void *arg),
+     void *arg)
+ {
+-    evp_generic_do_all(libctx, OSSL_OP_KEM, (void (*)(void *, void *))fn, arg,
++    struct EVP_KEM_do_all_provided_thunk t;
++
++    t.fn = fn;
++    t.arg = arg;
++    evp_generic_do_all(libctx, OSSL_OP_KEM, EVP_KEM_do_all_provided_thunk, &t,
+         evp_kem_from_algorithm,
+         evp_kem_up_ref,
+         evp_kem_free);
+--- a/crypto/evp/keymgmt_meth.c
++++ b/crypto/evp/keymgmt_meth.c
+@@ -342,8 +342,12 @@
+     void (*fn)(EVP_KEYMGMT *keymgmt, void *arg),
+     void *arg)
+ {
++    struct EVP_KEYMGMT_do_all_provided_thunk t;
++
++    t.fn = fn;
++    t.arg = arg;
+     evp_generic_do_all(libctx, OSSL_OP_KEYMGMT,
+-        (void (*)(void *, void *))fn, arg,
++        EVP_KEYMGMT_do_all_provided_thunk, &t,
+         keymgmt_from_algorithm,
+         evp_keymgmt_up_ref,
+         evp_keymgmt_free);
+--- a/crypto/evp/mac_meth.c
++++ b/crypto/evp/mac_meth.c
+@@ -246,8 +246,12 @@
+     void (*fn)(EVP_MAC *mac, void *arg),
+     void *arg)
+ {
++    struct EVP_MAC_do_all_provided_thunk t;
++
++    t.fn = fn;
++    t.arg = arg;
+     evp_generic_do_all(libctx, OSSL_OP_MAC,
+-        (void (*)(void *, void *))fn, arg,
++        EVP_MAC_do_all_provided_thunk, &t,
+         evp_mac_from_algorithm, evp_mac_up_ref, evp_mac_free);
+ }
+ 
+--- a/crypto/evp/signature.c
++++ b/crypto/evp/signature.c
+@@ -526,8 +526,12 @@
+         void *arg),
+     void *arg)
+ {
++    struct EVP_SIGNATURE_do_all_provided_thunk t;
++
++    t.fn = fn;
++    t.arg = arg;
+     evp_generic_do_all(libctx, OSSL_OP_SIGNATURE,
+-        (void (*)(void *, void *))fn, arg,
++        EVP_SIGNATURE_do_all_provided_thunk, &t,
+         evp_signature_from_algorithm,
+         evp_signature_up_ref,
+         evp_signature_free);
+--- a/crypto/evp/skeymgmt_meth.c
++++ b/crypto/evp/skeymgmt_meth.c
+@@ -197,8 +197,12 @@
+     void (*fn)(EVP_SKEYMGMT *skeymgmt, void *arg),
+     void *arg)
+ {
++    struct EVP_SKEYMGMT_do_all_provided_thunk t;
++
++    t.fn = fn;
++    t.arg = arg;
+     evp_generic_do_all(libctx, OSSL_OP_SKEYMGMT,
+-        (void (*)(void *, void *))fn, arg,
++        EVP_SKEYMGMT_do_all_provided_thunk, &t,
+         skeymgmt_from_algorithm,
+         (int (*)(void *))EVP_SKEYMGMT_up_ref,
+         (void (*)(void *))EVP_SKEYMGMT_free);
+--- a/crypto/objects/obj_dat.c
++++ b/crypto/objects/obj_dat.c
+@@ -618,7 +618,7 @@
+     int (*cmp)(const void *, const void *),
+     int flags)
+ {
+-    const char *p = ossl_bsearch(key, base, num, size, cmp, flags);
++    const char *p = ossl_bsearch(key, base, num, size, cmp, NULL, flags);
+ 
+ #ifdef CHARSET_EBCDIC
+     /*
+--- a/crypto/pem/pem_info.c
++++ b/crypto/pem/pem_info.c
+@@ -24,6 +24,14 @@
+ #include <openssl/dsa.h>
+ #include "crypto/evp.h"
+ 
++typedef enum {
++    PEM_INFO_NONE,
++    PEM_INFO_X509,
++    PEM_INFO_X509_AUX,
++    PEM_INFO_X509_CRL,
++    PEM_INFO_PKEY
++} pem_info_type;
++
+ #ifndef OPENSSL_NO_STDIO
+ STACK_OF(X509_INFO)
+ *PEM_X509_INFO_read_ex(FILE *fp, STACK_OF(X509_INFO) *sk, pem_password_cb *cb,
+@@ -63,7 +71,7 @@
+     int ok = 0;
+     STACK_OF(X509_INFO) *ret = NULL;
+     unsigned int i, raw, ptype;
+-    d2i_of_void *d2i = 0;
++    pem_info_type itype = PEM_INFO_NONE;
+ 
+     if (sk == NULL) {
+         if ((ret = sk_X509_INFO_new_null()) == NULL) {
+@@ -78,6 +86,7 @@
+     for (;;) {
+         raw = 0;
+         ptype = 0;
++        itype = PEM_INFO_NONE;
+         ERR_set_mark();
+         i = PEM_read_bio(bp, &name, &header, &data, &len);
+         if (i == 0) {
+@@ -102,15 +111,15 @@
+                 goto start;
+             }
+             if ((strcmp(name, PEM_STRING_X509_TRUSTED) == 0))
+-                d2i = (D2I_OF(void))d2i_X509_AUX;
++                itype = PEM_INFO_X509_AUX;
+             else
+-                d2i = (D2I_OF(void))d2i_X509;
++                itype = PEM_INFO_X509;
+             xi->x509 = X509_new_ex(libctx, propq);
+             if (xi->x509 == NULL)
+                 goto err;
+             pp = &(xi->x509);
+         } else if (strcmp(name, PEM_STRING_X509_CRL) == 0) {
+-            d2i = (D2I_OF(void))d2i_X509_CRL;
++            itype = PEM_INFO_X509_CRL;
+             if (xi->crl != NULL) {
+                 if (!sk_X509_INFO_push(ret, xi))
+                     goto err;
+@@ -137,7 +146,7 @@
+             xi->enc_data = NULL;
+             xi->enc_len = 0;
+ 
+-            d2i = (D2I_OF(void))d2i_AutoPrivateKey;
++            itype = PEM_INFO_PKEY;
+             xi->x_pkey = X509_PKEY_new();
+             if (xi->x_pkey == NULL)
+                 goto err;
+@@ -146,11 +155,11 @@
+                 || strcmp(name, PEM_STRING_PKCS8) == 0)
+                 raw = 1;
+         } else { /* unknown */
+-            d2i = NULL;
++            itype = PEM_INFO_NONE;
+             pp = NULL;
+         }
+ 
+-        if (d2i != NULL) {
++        if (itype != PEM_INFO_NONE) {
+             if (!raw) {
+                 EVP_CIPHER_INFO cipher;
+ 
+@@ -160,15 +169,36 @@
+                     goto err;
+                 p = data;
+                 if (ptype) {
+-                    if (d2i_PrivateKey_ex(ptype, pp, &p, len,
++                    if (d2i_PrivateKey_ex(ptype, (EVP_PKEY **)pp, &p, len,
+                             libctx, propq)
+                         == NULL) {
+                         ERR_raise(ERR_LIB_PEM, ERR_R_ASN1_LIB);
+                         goto err;
+                     }
+-                } else if (d2i(pp, &p, len) == NULL) {
+-                    ERR_raise(ERR_LIB_PEM, ERR_R_ASN1_LIB);
+-                    goto err;
++                } else {
++                    void *decoded = NULL;
++
++                    switch (itype) {
++                    case PEM_INFO_X509:
++                        decoded = d2i_X509((X509 **)pp, &p, len);
++                        break;
++                    case PEM_INFO_X509_AUX:
++                        decoded = d2i_X509_AUX((X509 **)pp, &p, len);
++                        break;
++                    case PEM_INFO_X509_CRL:
++                        decoded = d2i_X509_CRL((X509_CRL **)pp, &p, len);
++                        break;
++                    case PEM_INFO_PKEY:
++                        decoded = d2i_AutoPrivateKey_ex((EVP_PKEY **)pp, &p,
++                            len, libctx, propq);
++                        break;
++                    case PEM_INFO_NONE:
++                        break;
++                    }
++                    if (decoded == NULL) {
++                        ERR_raise(ERR_LIB_PEM, ERR_R_ASN1_LIB);
++                        goto err;
++                    }
+                 }
+             } else { /* encrypted key data */
+                 if (!PEM_get_EVP_CIPHER_INFO(header, &xi->enc_cipher))
+--- a/crypto/property/property_query.c
++++ b/crypto/property/property_query.c
+@@ -30,7 +30,7 @@
+         return NULL;
+ 
+     return ossl_bsearch(&name_idx, list->properties, list->num_properties,
+-        sizeof(*list->properties), &property_idx_cmp, 0);
++        sizeof(*list->properties), &property_idx_cmp, NULL, 0);
+ }
+ 
+ OSSL_PROPERTY_TYPE ossl_property_get_type(const OSSL_PROPERTY_DEFINITION *prop)
+--- a/crypto/stack/stack.c
++++ b/crypto/stack/stack.c
+@@ -31,7 +31,9 @@
+     int sorted;
+     int num_alloc;
+     OPENSSL_sk_compfunc comp;
++    int (*cmp_thunk)(OPENSSL_sk_compfunc, const void *, const void *);
+     OPENSSL_sk_freefunc_thunk free_thunk;
++    OPENSSL_sk_copyfunc_thunk copy_thunk;
+ };
+ 
+ OPENSSL_sk_compfunc OPENSSL_sk_set_cmp_func(OPENSSL_STACK *sk,
+@@ -46,11 +48,21 @@
+     return old;
+ }
+ 
++static void free_with_thunk(OPENSSL_STACK *sk, OPENSSL_sk_freefunc free_func, const void *data)
++{
++    if (data == NULL)
++        return;
++    if (sk->free_thunk != NULL)
++        sk->free_thunk(free_func, (void *)data);
++    else
++        free_func((void *)data);
++}
++
+ OPENSSL_STACK *OPENSSL_sk_dup(const OPENSSL_STACK *sk)
+ {
+     OPENSSL_STACK *ret;
+ 
+-    if ((ret = OPENSSL_malloc(sizeof(*ret))) == NULL)
++    if ((ret = OPENSSL_zalloc(sizeof(*ret))) == NULL)
+         goto err;
+ 
+     if (sk == NULL) {
+@@ -88,7 +100,7 @@
+     OPENSSL_STACK *ret;
+     int i;
+ 
+-    if ((ret = OPENSSL_malloc(sizeof(*ret))) == NULL)
++    if ((ret = OPENSSL_zalloc(sizeof(*ret))) == NULL)
+         goto err;
+ 
+     if (sk == NULL) {
+@@ -115,10 +127,13 @@
+     for (i = 0; i < ret->num; ++i) {
+         if (sk->data[i] == NULL)
+             continue;
+-        if ((ret->data[i] = copy_func(sk->data[i])) == NULL) {
++        if (ret->copy_thunk != NULL)
++            ret->data[i] = ret->copy_thunk(copy_func, sk->data[i]);
++        else
++            ret->data[i] = copy_func(sk->data[i]);
++        if (ret->data[i] == NULL) {
+             while (--i >= 0)
+-                if (ret->data[i] != NULL)
+-                    free_func((void *)ret->data[i]);
++                free_with_thunk(ret, free_func, ret->data[i]);
+             goto err;
+         }
+     }
+@@ -265,6 +280,21 @@
+     return st;
+ }
+ 
++OPENSSL_STACK *OPENSSL_sk_set_cmp_thunks(OPENSSL_STACK *st, int (*c_thunk)(int (*)(const void *, const void *), const void *, const void *))
++{
++    if (st != NULL)
++        st->cmp_thunk = c_thunk;
++
++    return st;
++}
++
++OPENSSL_STACK *OPENSSL_sk_set_copy_thunks(OPENSSL_STACK *st, OPENSSL_sk_copyfunc_thunk cp_thunk)
++{
++    if (st != NULL)
++        st->copy_thunk = cp_thunk;
++    return st;
++}
++
+ int OPENSSL_sk_insert(OPENSSL_STACK *st, const void *data, int loc)
+ {
+     if (st == NULL) {
+@@ -329,6 +359,7 @@
+ {
+     const void *r;
+     int i, count = 0;
++    int cmp_ret;
+     int *pnum = pnum_matched;
+ 
+     if (st == NULL || st->num == 0)
+@@ -353,8 +384,9 @@
+     if (!st->sorted) {
+         int res = -1;
+ 
+-        for (i = 0; i < st->num; i++)
+-            if (st->comp(&data, st->data + i) == 0) {
++        for (i = 0; i < st->num; i++) {
++            cmp_ret = (st->cmp_thunk == NULL) ? st->comp(&data, st->data + i) : st->cmp_thunk(st->comp, &data, st->data + i);
++            if (cmp_ret == 0) {
+                 if (res == -1)
+                     res = i;
+                 ++*pnum;
+@@ -362,6 +394,7 @@
+                 if (pnum_matched == NULL)
+                     return i;
+             }
++        }
+         if (res == -1)
+             *pnum = 0;
+         return res;
+@@ -369,7 +402,7 @@
+ 
+     if (pnum_matched != NULL)
+         ret_val_options |= OSSL_BSEARCH_FIRST_VALUE_ON_MATCH;
+-    r = ossl_bsearch(&data, st->data, st->num, sizeof(void *), st->comp,
++    r = ossl_bsearch(&data, st->data, st->num, sizeof(void *), st->comp, st->cmp_thunk,
+         ret_val_options);
+ 
+     if (pnum_matched != NULL) {
+@@ -378,7 +411,8 @@
+             const void **p = (const void **)r;
+ 
+             while (p < st->data + st->num) {
+-                if (st->comp(&data, p) != 0)
++                cmp_ret = st->cmp_thunk == NULL ? st->comp(&data, p) : st->cmp_thunk(st->comp, &data, p);
++                if (cmp_ret != 0)
+                     break;
+                 ++*pnum;
+                 ++p;
+@@ -445,14 +479,9 @@
+     if (st == NULL)
+         return;
+ 
+-    for (i = 0; i < st->num; i++) {
+-        if (st->data[i] != NULL) {
+-            if (st->free_thunk != NULL)
+-                st->free_thunk(func, (void *)st->data[i]);
+-            else
+-                func((void *)st->data[i]);
+-        }
+-    }
++    for (i = 0; i < st->num; i++)
++        free_with_thunk(st, func, st->data[i]);
++
+     OPENSSL_sk_free(st);
+ }
+ 
+--- a/include/crypto/sparse_array.h
++++ b/include/crypto/sparse_array.h
+@@ -22,6 +22,8 @@
+ 
+ #define DEFINE_SPARSE_ARRAY_OF_INTERNAL(type, ctype)                                                               \
+     SPARSE_ARRAY_OF(type);                                                                                         \
++    typedef void (*sa_##type##_leaffunc)(ossl_uintmax_t idx, type *t);                                             \
++    typedef void (*sa_##type##_leaffunc_arg)(ossl_uintmax_t idx, type *t, void *arg);                              \
+     static ossl_unused ossl_inline SPARSE_ARRAY_OF(type) * ossl_sa_##type##_new(void)                              \
+     {                                                                                                              \
+         return (SPARSE_ARRAY_OF(type) *)ossl_sa_new();                                                             \
+@@ -41,20 +43,40 @@
+     {                                                                                                              \
+         return ossl_sa_num((OPENSSL_SA *)sa);                                                                      \
+     }                                                                                                              \
++    static ossl_unused void                                                                                        \
++    ossl_sa_##type##_doall_thunk(ossl_uintmax_t idx, void *leaf, void *arg)                                        \
++    {                                                                                                              \
++        sa_##type##_leaffunc fn = *(sa_##type##_leaffunc *)arg;                                                    \
++        (*fn)(idx, (type *)leaf);                                                                                  \
++    }                                                                                                              \
+     static ossl_unused ossl_inline void                                                                            \
+     ossl_sa_##type##_doall(const SPARSE_ARRAY_OF(type) * sa,                                                       \
+         void (*leaf)(ossl_uintmax_t, type *))                                                                      \
+     {                                                                                                              \
+-        ossl_sa_doall((OPENSSL_SA *)sa,                                                                            \
+-            (void (*)(ossl_uintmax_t, void *))leaf);                                                               \
++        ossl_sa_doall_arg((OPENSSL_SA *)sa, ossl_sa_##type##_doall_thunk, &leaf);                                  \
++    }                                                                                                              \
++    struct ossl_sa_##type##_doall_thunk {                                                                          \
++        sa_##type##_leaffunc_arg fn;                                                                               \
++        void *arg;                                                                                                 \
++    };                                                                                                             \
++    static ossl_unused void                                                                                        \
++    ossl_sa_##type##_doall_arg_thunk(ossl_uintmax_t idx, void *leaf, void *arg)                                    \
++    {                                                                                                              \
++        struct ossl_sa_##type##_doall_thunk *t = arg;                                                              \
++                                                                                                                   \
++        (*t->fn)(idx, (type *)leaf, t->arg);                                                                       \
+     }                                                                                                              \
+     static ossl_unused ossl_inline void                                                                            \
+     ossl_sa_##type##_doall_arg(const SPARSE_ARRAY_OF(type) * sa,                                                   \
+         void (*leaf)(ossl_uintmax_t, type *, void *),                                                              \
+         void *arg)                                                                                                 \
+     {                                                                                                              \
++        struct ossl_sa_##type##_doall_thunk t;                                                                     \
++                                                                                                                   \
++        t.fn = leaf;                                                                                               \
++        t.arg = arg;                                                                                               \
+         ossl_sa_doall_arg((OPENSSL_SA *)sa,                                                                        \
+-            (void (*)(ossl_uintmax_t, void *, void *))leaf, arg);                                                  \
++            ossl_sa_##type##_doall_arg_thunk, &t);                                                                 \
+     }                                                                                                              \
+     static ossl_unused ossl_inline ctype *ossl_sa_##type##_get(const SPARSE_ARRAY_OF(type) * sa, ossl_uintmax_t n) \
+     {                                                                                                              \
+--- a/include/internal/cryptlib.h
++++ b/include/internal/cryptlib.h
+@@ -153,6 +153,7 @@
+ 
+ const void *ossl_bsearch(const void *key, const void *base, int num,
+     int size, int (*cmp)(const void *, const void *),
++    int (*cmp_thunk)(int (*real_cmp_fn)(const void *, const void *), const void *, const void *),
+     int flags);
+ 
+ char *ossl_sk_ASN1_UTF8STRING2text(STACK_OF(ASN1_UTF8STRING) *text,
+--- a/include/openssl/safestack.h.in
++++ b/include/openssl/safestack.h.in
+@@ -1,7 +1,7 @@
+ /*
+  * {- join("\n * ", @autowarntext) -}
+  *
+- * Copyright 1999-2025 The OpenSSL Project Authors. All Rights Reserved.
++ * Copyright 1999-2026 The OpenSSL Project Authors. All Rights Reserved.
+  *
+  * Licensed under the Apache License 2.0 (the "License").  You may not use
+  * this file except in compliance with the License.  You can obtain a copy
+@@ -36,39 +36,52 @@
+ #define STACK_OF(type) struct stack_st_##type
+ 
+ /* Helper macro for internal use */
+-#define SKM_DEFINE_STACK_OF_INTERNAL(t1, t2, t3)                                                                \
+-    STACK_OF(t1);                                                                                               \
+-    typedef int (*sk_##t1##_compfunc)(const t3 *const *a, const t3 *const *b);                                  \
+-    typedef void (*sk_##t1##_freefunc)(t3 * a);                                                                 \
+-    typedef t3 *(*sk_##t1##_copyfunc)(const t3 *a);                                                             \
+-    static ossl_inline void sk_##t1##_freefunc_thunk(OPENSSL_sk_freefunc freefunc_arg, void *ptr)               \
+-    {                                                                                                           \
+-        sk_##t1##_freefunc freefunc = (sk_##t1##_freefunc)freefunc_arg;                                         \
+-        freefunc((t3 *)ptr);                                                                                    \
+-    }                                                                                                           \
+-    static ossl_unused ossl_inline t2 *ossl_check_##t1##_type(t2 *ptr)                                          \
+-    {                                                                                                           \
+-        return ptr;                                                                                             \
+-    }                                                                                                           \
+-    static ossl_unused ossl_inline const OPENSSL_STACK *ossl_check_const_##t1##_sk_type(const STACK_OF(t1) *sk) \
+-    {                                                                                                           \
+-        return (const OPENSSL_STACK *)sk;                                                                       \
+-    }                                                                                                           \
+-    static ossl_unused ossl_inline OPENSSL_STACK *ossl_check_##t1##_sk_type(STACK_OF(t1) *sk)                   \
+-    {                                                                                                           \
+-        return (OPENSSL_STACK *)sk;                                                                             \
+-    }                                                                                                           \
+-    static ossl_unused ossl_inline OPENSSL_sk_compfunc ossl_check_##t1##_compfunc_type(sk_##t1##_compfunc cmp)  \
+-    {                                                                                                           \
+-        return (OPENSSL_sk_compfunc)cmp;                                                                        \
+-    }                                                                                                           \
+-    static ossl_unused ossl_inline OPENSSL_sk_copyfunc ossl_check_##t1##_copyfunc_type(sk_##t1##_copyfunc cpy)  \
+-    {                                                                                                           \
+-        return (OPENSSL_sk_copyfunc)cpy;                                                                        \
+-    }                                                                                                           \
+-    static ossl_unused ossl_inline OPENSSL_sk_freefunc ossl_check_##t1##_freefunc_type(sk_##t1##_freefunc fr)   \
+-    {                                                                                                           \
+-        return (OPENSSL_sk_freefunc)fr;                                                                         \
++#define SKM_DEFINE_STACK_OF_INTERNAL(t1, t2, t3)                                                                         \
++    STACK_OF(t1);                                                                                                        \
++    typedef int (*sk_##t1##_compfunc)(const t3 *const *a, const t3 *const *b);                                           \
++    typedef void (*sk_##t1##_freefunc)(t3 * a);                                                                          \
++    typedef t3 *(*sk_##t1##_copyfunc)(const t3 *a);                                                                      \
++    static ossl_inline void sk_##t1##_freefunc_thunk(OPENSSL_sk_freefunc freefunc_arg, void *ptr)                        \
++    {                                                                                                                    \
++        sk_##t1##_freefunc freefunc = (sk_##t1##_freefunc)freefunc_arg;                                                  \
++        freefunc((t3 *)ptr);                                                                                             \
++    }                                                                                                                    \
++    static ossl_inline void *sk_##t1##_copyfunc_thunk(OPENSSL_sk_copyfunc copyfunc_arg, const void *ptr)                 \
++    {                                                                                                                    \
++        sk_##t1##_copyfunc copyfunc = (sk_##t1##_copyfunc)copyfunc_arg;                                                  \
++        return (void *)copyfunc((const t3 *)ptr);                                                                        \
++    }                                                                                                                    \
++    static ossl_inline int sk_##t1##_cmpfunc_thunk(int (*cmp)(const void *, const void *), const void *a, const void *b) \
++    {                                                                                                                    \
++        int (*realcmp)(const t3 *const *a, const t3 *const *b) = (int (*)(const t3 *const *a, const t3 *const *b))(cmp); \
++        const t3 *const *at = (const t3 *const *)a;                                                                      \
++        const t3 *const *bt = (const t3 *const *)b;                                                                      \
++                                                                                                                         \
++        return realcmp(at, bt);                                                                                          \
++    }                                                                                                                    \
++    static ossl_unused ossl_inline t2 *ossl_check_##t1##_type(t2 *ptr)                                                   \
++    {                                                                                                                    \
++        return ptr;                                                                                                      \
++    }                                                                                                                    \
++    static ossl_unused ossl_inline const OPENSSL_STACK *ossl_check_const_##t1##_sk_type(const STACK_OF(t1) *sk)          \
++    {                                                                                                                    \
++        return (const OPENSSL_STACK *)sk;                                                                                \
++    }                                                                                                                    \
++    static ossl_unused ossl_inline OPENSSL_STACK *ossl_check_##t1##_sk_type(STACK_OF(t1) *sk)                            \
++    {                                                                                                                    \
++        return (OPENSSL_STACK *)sk;                                                                                      \
++    }                                                                                                                    \
++    static ossl_unused ossl_inline OPENSSL_sk_compfunc ossl_check_##t1##_compfunc_type(sk_##t1##_compfunc cmp)           \
++    {                                                                                                                    \
++        return (OPENSSL_sk_compfunc)cmp;                                                                                 \
++    }                                                                                                                    \
++    static ossl_unused ossl_inline OPENSSL_sk_copyfunc ossl_check_##t1##_copyfunc_type(sk_##t1##_copyfunc cpy)           \
++    {                                                                                                                    \
++        return (OPENSSL_sk_copyfunc)cpy;                                                                                 \
++    }                                                                                                                    \
++    static ossl_unused ossl_inline OPENSSL_sk_freefunc ossl_check_##t1##_freefunc_type(sk_##t1##_freefunc fr)            \
++    {                                                                                                                    \
++        return (OPENSSL_sk_freefunc)fr;                                                                                  \
+     }
+ 
+ #define SKM_DEFINE_STACK_OF(t1, t2, t3)                                                                                    \
+@@ -81,6 +94,19 @@
+         sk_##t1##_freefunc freefunc = (sk_##t1##_freefunc)freefunc_arg;                                                    \
+         freefunc((t3 *)ptr);                                                                                               \
+     }                                                                                                                      \
++    static ossl_inline void *sk_##t1##_copyfunc_thunk(OPENSSL_sk_copyfunc copyfunc_arg, const void *ptr)                   \
++    {                                                                                                                      \
++        sk_##t1##_copyfunc copyfunc = (sk_##t1##_copyfunc)copyfunc_arg;                                                    \
++        return (void *)copyfunc((const t3 *)ptr);                                                                          \
++    }                                                                                                                      \
++    static ossl_inline int sk_##t1##_cmpfunc_thunk(int (*cmp)(const void *, const void *), const void *a, const void *b)   \
++    {                                                                                                                      \
++        int (*realcmp)(const t3 *const *a, const t3 *const *b) = (int (*)(const t3 *const *a, const t3 *const *b))(cmp);   \
++        const t3 *const *at = (const t3 *const *)a;                                                                        \
++        const t3 *const *bt = (const t3 *const *)b;                                                                        \
++                                                                                                                           \
++        return realcmp(at, bt);                                                                                            \
++    }                                                                                                                      \
+     static ossl_unused ossl_inline int sk_##t1##_num(const STACK_OF(t1) *sk)                                               \
+     {                                                                                                                      \
+         return OPENSSL_sk_num((const OPENSSL_STACK *)sk);                                                                  \
+@@ -95,11 +121,19 @@
+         OPENSSL_sk_freefunc_thunk f_thunk;                                                                                 \
+                                                                                                                            \
+         f_thunk = (OPENSSL_sk_freefunc_thunk)sk_##t1##_freefunc_thunk;                                                     \
++        OPENSSL_sk_set_cmp_thunks(ret, sk_##t1##_cmpfunc_thunk);                                                           \
++        OPENSSL_sk_set_copy_thunks(ret, sk_##t1##_copyfunc_thunk);                                                         \
+         return (STACK_OF(t1) *)OPENSSL_sk_set_thunks(ret, f_thunk);                                                        \
+     }                                                                                                                      \
+     static ossl_unused ossl_inline STACK_OF(t1) *sk_##t1##_new_null(void)                                                  \
+     {                                                                                                                      \
+-        return (STACK_OF(t1) *)OPENSSL_sk_new_null();                                                                      \
++        OPENSSL_STACK *ret = OPENSSL_sk_new_null();                                                                        \
++        OPENSSL_sk_freefunc_thunk f_thunk;                                                                                 \
++                                                                                                                           \
++        f_thunk = (OPENSSL_sk_freefunc_thunk)sk_##t1##_freefunc_thunk;                                                     \
++        OPENSSL_sk_set_cmp_thunks(ret, sk_##t1##_cmpfunc_thunk);                                                           \
++        OPENSSL_sk_set_copy_thunks(ret, sk_##t1##_copyfunc_thunk);                                                         \
++        return (STACK_OF(t1) *)OPENSSL_sk_set_thunks(ret, f_thunk);                                                        \
+     }                                                                                                                      \
+     static ossl_unused ossl_inline STACK_OF(t1) *sk_##t1##_new_reserve(sk_##t1##_compfunc compare, int n)                  \
+     {                                                                                                                      \
+@@ -107,6 +141,8 @@
+         OPENSSL_sk_freefunc_thunk f_thunk;                                                                                 \
+                                                                                                                            \
+         f_thunk = (OPENSSL_sk_freefunc_thunk)sk_##t1##_freefunc_thunk;                                                     \
++        OPENSSL_sk_set_cmp_thunks(ret, sk_##t1##_cmpfunc_thunk);                                                           \
++        OPENSSL_sk_set_copy_thunks(ret, sk_##t1##_copyfunc_thunk);                                                         \
+         return (STACK_OF(t1) *)OPENSSL_sk_set_thunks(ret, f_thunk);                                                        \
+     }                                                                                                                      \
+     static ossl_unused ossl_inline int sk_##t1##_reserve(STACK_OF(t1) *sk, int n)                                          \
+@@ -163,17 +199,18 @@
+     {                                                                                                                      \
+         return (t2 *)OPENSSL_sk_set((OPENSSL_STACK *)sk, idx, (const void *)ptr);                                          \
+     }                                                                                                                      \
+-    static ossl_unused ossl_inline int sk_##t1##_find(STACK_OF(t1) *sk, t2 *ptr)                                           \
+-    {                                                                                                                      \
+-        return OPENSSL_sk_find((OPENSSL_STACK *)sk, (const void *)ptr);                                                    \
+-    }                                                                                                                      \
+-    static ossl_unused ossl_inline int sk_##t1##_find_ex(STACK_OF(t1) *sk, t2 *ptr)                                        \
+-    {                                                                                                                      \
+-        return OPENSSL_sk_find_ex((OPENSSL_STACK *)sk, (const void *)ptr);                                                 \
+-    }                                                                                                                      \
+-    static ossl_unused ossl_inline int sk_##t1##_find_all(STACK_OF(t1) *sk, t2 *ptr, int *pnum)                            \
+-    {                                                                                                                      \
+-        return OPENSSL_sk_find_all((OPENSSL_STACK *)sk, (const void *)ptr, pnum);                                          \
++    static ossl_unused ossl_inline int sk_##t1##_find(STACK_OF(t1) *sk, t2 *ptr)                                     \
++    {                                                                                                                      \
++        return OPENSSL_sk_find((OPENSSL_STACK *)sk, (const void *)ptr);                                              \
++    }                                                                                                                      \
++    static ossl_unused ossl_inline int sk_##t1##_find_ex(STACK_OF(t1) *sk, t2 *ptr)                                  \
++    {                                                                                                                      \
++        return OPENSSL_sk_find_ex((OPENSSL_STACK *)sk, (const void *)ptr);                                           \
++    }                                                                                                                      \
++    static ossl_unused ossl_inline int sk_##t1##_find_all(STACK_OF(t1) *sk, t2 *ptr,                                 \
++        int *pnum)                                                                                                         \
++    {                                                                                                                      \
++        return OPENSSL_sk_find_all((OPENSSL_STACK *)sk, (const void *)ptr, pnum);                                    \
+     }                                                                                                                      \
+     static ossl_unused ossl_inline void sk_##t1##_sort(STACK_OF(t1) *sk)                                                   \
+     {                                                                                                                      \
+@@ -185,15 +222,27 @@
+     }                                                                                                                      \
+     static ossl_unused ossl_inline STACK_OF(t1) *sk_##t1##_dup(const STACK_OF(t1) *sk)                                     \
+     {                                                                                                                      \
+-        return (STACK_OF(t1) *)OPENSSL_sk_dup((const OPENSSL_STACK *)sk);                                                  \
++        OPENSSL_STACK *ret = OPENSSL_sk_dup((const OPENSSL_STACK *)sk);                                                    \
++        OPENSSL_sk_freefunc_thunk f_thunk;                                                                                 \
++                                                                                                                           \
++        f_thunk = (OPENSSL_sk_freefunc_thunk)sk_##t1##_freefunc_thunk;                                                     \
++        OPENSSL_sk_set_cmp_thunks(ret, sk_##t1##_cmpfunc_thunk);                                                           \
++        OPENSSL_sk_set_copy_thunks(ret, sk_##t1##_copyfunc_thunk);                                                         \
++        return (STACK_OF(t1) *)OPENSSL_sk_set_thunks(ret, f_thunk);                                                        \
+     }                                                                                                                      \
+     static ossl_unused ossl_inline STACK_OF(t1) *sk_##t1##_deep_copy(const STACK_OF(t1) *sk,                               \
+         sk_##t1##_copyfunc copyfunc,                                                                                       \
+         sk_##t1##_freefunc freefunc)                                                                                       \
+     {                                                                                                                      \
+-        return (STACK_OF(t1) *)OPENSSL_sk_deep_copy((const OPENSSL_STACK *)sk,                                             \
++        OPENSSL_STACK *ret = OPENSSL_sk_deep_copy((const OPENSSL_STACK *)sk,                                               \
+             (OPENSSL_sk_copyfunc)copyfunc,                                                                                 \
+             (OPENSSL_sk_freefunc)freefunc);                                                                                \
++        OPENSSL_sk_freefunc_thunk f_thunk;                                                                                 \
++                                                                                                                           \
++        f_thunk = (OPENSSL_sk_freefunc_thunk)sk_##t1##_freefunc_thunk;                                                     \
++        OPENSSL_sk_set_cmp_thunks(ret, sk_##t1##_cmpfunc_thunk);                                                           \
++        OPENSSL_sk_set_copy_thunks(ret, sk_##t1##_copyfunc_thunk);                                                         \
++        return (STACK_OF(t1) *)OPENSSL_sk_set_thunks(ret, f_thunk);                                                        \
+     }                                                                                                                      \
+     static ossl_unused ossl_inline sk_##t1##_compfunc sk_##t1##_set_cmp_func(STACK_OF(t1) *sk, sk_##t1##_compfunc compare) \
+     {                                                                                                                      \
+--- a/include/openssl/stack.h
++++ b/include/openssl/stack.h
+@@ -26,6 +26,7 @@
+ typedef void (*OPENSSL_sk_freefunc)(void *);
+ typedef void (*OPENSSL_sk_freefunc_thunk)(OPENSSL_sk_freefunc, void *);
+ typedef void *(*OPENSSL_sk_copyfunc)(const void *);
++typedef void *(*OPENSSL_sk_copyfunc_thunk)(OPENSSL_sk_copyfunc, const void *);
+ 
+ int OPENSSL_sk_num(const OPENSSL_STACK *);
+ void *OPENSSL_sk_value(const OPENSSL_STACK *, int);
+@@ -36,6 +37,8 @@
+ OPENSSL_STACK *OPENSSL_sk_new_null(void);
+ OPENSSL_STACK *OPENSSL_sk_new_reserve(OPENSSL_sk_compfunc c, int n);
+ OPENSSL_STACK *OPENSSL_sk_set_thunks(OPENSSL_STACK *st, OPENSSL_sk_freefunc_thunk f_thunk);
++OPENSSL_STACK *OPENSSL_sk_set_cmp_thunks(OPENSSL_STACK *st, int (*c_thunk)(int (*)(const void *, const void *), const void *, const void *));
++OPENSSL_STACK *OPENSSL_sk_set_copy_thunks(OPENSSL_STACK *st, OPENSSL_sk_copyfunc_thunk cp_thunk);
+ int OPENSSL_sk_reserve(OPENSSL_STACK *st, int n);
+ void OPENSSL_sk_free(OPENSSL_STACK *);
+ void OPENSSL_sk_pop_free(OPENSSL_STACK *st, OPENSSL_sk_freefunc func);
+--- a/providers/implementations/ciphers/cipher_aes_hw.c
++++ b/providers/implementations/ciphers/cipher_aes_hw.c
+@@ -15,6 +15,16 @@
+ 
+ #include <openssl/proverr.h>
+ #include "cipher_aes.h"
++
++static void aes_encrypt_adapter(const unsigned char *in, unsigned char *out, const void *key)
++{
++    AES_encrypt(in, out, key);
++}
++
++static void aes_decrypt_adapter(const unsigned char *in, unsigned char *out, const void *key)
++{
++    AES_decrypt(in, out, key);
++}
+ 
+ static int cipher_hw_aes_initkey(PROV_CIPHER_CTX *dat,
+     const unsigned char *key, size_t keylen)
+@@ -45,7 +55,7 @@
+ #ifdef BSAES_CAPABLE
+             if (BSAES_CAPABLE && dat->mode == EVP_CIPH_CBC_MODE) {
+             ret = AES_set_decrypt_key(key, (int)(keylen * 8), ks);
+-            dat->block = (block128_f)AES_decrypt;
++            dat->block = aes_decrypt_adapter;
+             dat->stream.cbc = (cbc128_f)ossl_bsaes_cbc_encrypt;
+         } else
+ #endif
+@@ -60,7 +70,7 @@
+ #endif
+         {
+             ret = AES_set_decrypt_key(key, (int)(keylen * 8), ks);
+-            dat->block = (block128_f)AES_decrypt;
++            dat->block = aes_decrypt_adapter;
+             dat->stream.cbc = (dat->mode == EVP_CIPH_CBC_MODE)
+                 ? (cbc128_f)AES_cbc_encrypt
+                 : NULL;
+@@ -92,7 +102,7 @@
+ #ifdef BSAES_CAPABLE
+         if (BSAES_CAPABLE && dat->mode == EVP_CIPH_CTR_MODE) {
+         ret = AES_set_encrypt_key(key, (int)(keylen * 8), ks);
+-        dat->block = (block128_f)AES_encrypt;
++        dat->block = aes_encrypt_adapter;
+         dat->stream.ctr = (ctr128_f)ossl_bsaes_ctr32_encrypt_blocks;
+     } else
+ #endif
+@@ -107,7 +117,7 @@
+ #endif
+     {
+         ret = AES_set_encrypt_key(key, (int)(keylen * 8), ks);
+-        dat->block = (block128_f)AES_encrypt;
++        dat->block = aes_encrypt_adapter;
+         dat->stream.cbc = (dat->mode == EVP_CIPH_CBC_MODE)
+             ? (cbc128_f)AES_cbc_encrypt
+             : NULL;
+--- a/providers/implementations/digests/sha2_prov.c
++++ b/providers/implementations/digests/sha2_prov.c
+@@ -24,6 +24,32 @@
+ #include "crypto/sha.h"
+ 
+ #define SHA2_FLAGS PROV_DIGEST_FLAG_ALGID_ABSENT
++
++static int SHA1_Update_adapter(void *ctx, const unsigned char *data, size_t len)
++{
++    return SHA1_Update(ctx, data, len);
++}
++
++static int SHA224_Update_adapter(void *ctx, const unsigned char *data, size_t len)
++{
++    return SHA224_Update(ctx, data, len);
++}
++
++static int SHA256_Update_adapter(void *ctx, const unsigned char *data, size_t len)
++{
++    return SHA256_Update(ctx, data, len);
++}
++
++static int SHA384_Update_adapter(void *ctx, const unsigned char *data, size_t len)
++{
++    return SHA384_Update(ctx, data, len);
++}
++
++static int SHA512_Update_adapter(void *ctx, const unsigned char *data, size_t len)
++{
++    return SHA512_Update(ctx, data, len);
++}
++
+ 
+ static OSSL_FUNC_digest_set_ctx_params_fn sha1_set_ctx_params;
+ static OSSL_FUNC_digest_settable_ctx_params_fn sha1_settable_ctx_params;
+@@ -59,38 +85,38 @@
+ /* ossl_sha1_functions */
+ IMPLEMENT_digest_functions_with_settable_ctx(
+     sha1, SHA_CTX, SHA_CBLOCK, SHA_DIGEST_LENGTH, SHA2_FLAGS,
+-    SHA1_Init, SHA1_Update, SHA1_Final,
++    SHA1_Init, SHA1_Update_adapter, SHA1_Final,
+     sha1_settable_ctx_params, sha1_set_ctx_params)
+ 
+ /* ossl_sha224_functions */
+ IMPLEMENT_digest_functions(sha224, SHA256_CTX,
+     SHA256_CBLOCK, SHA224_DIGEST_LENGTH, SHA2_FLAGS,
+-    SHA224_Init, SHA224_Update, SHA224_Final)
++    SHA224_Init, SHA224_Update_adapter, SHA224_Final)
+ 
+ /* ossl_sha256_functions */
+ IMPLEMENT_digest_functions(sha256, SHA256_CTX,
+     SHA256_CBLOCK, SHA256_DIGEST_LENGTH, SHA2_FLAGS,
+-    SHA256_Init, SHA256_Update, SHA256_Final)
++    SHA256_Init, SHA256_Update_adapter, SHA256_Final)
+ /* ossl_sha256_192_internal_functions */
+ IMPLEMENT_digest_functions(sha256_192_internal, SHA256_CTX,
+     SHA256_CBLOCK, SHA256_192_DIGEST_LENGTH, SHA2_FLAGS,
+-    ossl_sha256_192_init, SHA256_Update, SHA256_Final)
++    ossl_sha256_192_init, SHA256_Update_adapter, SHA256_Final)
+ /* ossl_sha384_functions */
+ IMPLEMENT_digest_functions(sha384, SHA512_CTX,
+     SHA512_CBLOCK, SHA384_DIGEST_LENGTH, SHA2_FLAGS,
+-    SHA384_Init, SHA384_Update, SHA384_Final)
++    SHA384_Init, SHA384_Update_adapter, SHA384_Final)
+ 
+ /* ossl_sha512_functions */
+ IMPLEMENT_digest_functions(sha512, SHA512_CTX,
+     SHA512_CBLOCK, SHA512_DIGEST_LENGTH, SHA2_FLAGS,
+-    SHA512_Init, SHA512_Update, SHA512_Final)
++    SHA512_Init, SHA512_Update_adapter, SHA512_Final)
+ 
+ /* ossl_sha512_224_functions */
+ IMPLEMENT_digest_functions(sha512_224, SHA512_CTX,
+     SHA512_CBLOCK, SHA224_DIGEST_LENGTH, SHA2_FLAGS,
+-    sha512_224_init, SHA512_Update, SHA512_Final)
++    sha512_224_init, SHA512_Update_adapter, SHA512_Final)
+ 
+ /* ossl_sha512_256_functions */
+ IMPLEMENT_digest_functions(sha512_256, SHA512_CTX,
+     SHA512_CBLOCK, SHA256_DIGEST_LENGTH, SHA2_FLAGS,
+-    sha512_256_init, SHA512_Update, SHA512_Final)
++    sha512_256_init, SHA512_Update_adapter, SHA512_Final)
+--- a/providers/implementations/encode_decode/decode_der2key.c.in
++++ b/providers/implementations/encode_decode/decode_der2key.c.in
+@@ -413,11 +413,16 @@
+ /* ---------------------------------------------------------------------- */
+ 
+ #ifndef OPENSSL_NO_DH
++static void dh_free_key(void *key)
++{
++    DH_free(key);
++}
++
+ #define dh_evp_type EVP_PKEY_DH
+ #define dh_d2i_private_key NULL
+ #define dh_d2i_public_key NULL
+ #define dh_d2i_key_params (d2i_of_void *)d2i_DHparams
+-#define dh_free (free_key_fn *)DH_free
++#define dh_free dh_free_key
+ #define dh_check NULL
+ 
+ static void *dh_d2i_PKCS8(const unsigned char **der, long der_len,
+@@ -440,7 +445,7 @@
+ #define dhx_d2i_public_key NULL
+ #define dhx_d2i_key_params (d2i_of_void *)d2i_DHxparams
+ #define dhx_d2i_PKCS8 dh_d2i_PKCS8
+-#define dhx_free (free_key_fn *)DH_free
++#define dhx_free dh_free_key
+ #define dhx_check NULL
+ #define dhx_adjust dh_adjust
+ #endif
+@@ -448,11 +453,16 @@
+ /* ---------------------------------------------------------------------- */
+ 
+ #ifndef OPENSSL_NO_DSA
++static void dsa_free_key(void *key)
++{
++    DSA_free(key);
++}
++
+ #define dsa_evp_type EVP_PKEY_DSA
+ #define dsa_d2i_private_key (d2i_of_void *)d2i_DSAPrivateKey
+ #define dsa_d2i_public_key (d2i_of_void *)d2i_DSAPublicKey
+ #define dsa_d2i_key_params (d2i_of_void *)d2i_DSAparams
+-#define dsa_free (free_key_fn *)DSA_free
++#define dsa_free dsa_free_key
+ #define dsa_check NULL
+ 
+ static void *dsa_d2i_PKCS8(const unsigned char **der, long der_len,
+@@ -473,11 +483,16 @@
+ /* ---------------------------------------------------------------------- */
+ 
+ #ifndef OPENSSL_NO_EC
++static void ec_free_key(void *key)
++{
++    EC_KEY_free(key);
++}
++
+ #define ec_evp_type EVP_PKEY_EC
+ #define ec_d2i_private_key (d2i_of_void *)d2i_ECPrivateKey
+ #define ec_d2i_public_key NULL
+ #define ec_d2i_key_params (d2i_of_void *)d2i_ECParameters
+-#define ec_free (free_key_fn *)EC_KEY_free
++#define ec_free ec_free_key
+ 
+ static void *ec_d2i_PKCS8(const unsigned char **der, long der_len,
+     struct der2key_ctx_st *ctx)
+@@ -531,12 +546,17 @@
+     ossl_ecx_key_set0_libctx(key, PROV_LIBCTX_OF(ctx->provctx));
+ }
+ 
++static void ecx_free_key(void *key)
++{
++    ossl_ecx_key_free(key);
++}
++
+ #define ed25519_evp_type EVP_PKEY_ED25519
+ #define ed25519_d2i_private_key NULL
+ #define ed25519_d2i_public_key NULL
+ #define ed25519_d2i_key_params NULL
+ #define ed25519_d2i_PKCS8 ecx_d2i_PKCS8
+-#define ed25519_free (free_key_fn *)ossl_ecx_key_free
++#define ed25519_free ecx_free_key
+ #define ed25519_check NULL
+ #define ed25519_adjust ecx_key_adjust
+ 
+@@ -545,7 +565,7 @@
+ #define ed448_d2i_public_key NULL
+ #define ed448_d2i_key_params NULL
+ #define ed448_d2i_PKCS8 ecx_d2i_PKCS8
+-#define ed448_free (free_key_fn *)ossl_ecx_key_free
++#define ed448_free ecx_free_key
+ #define ed448_check NULL
+ #define ed448_adjust ecx_key_adjust
+ 
+@@ -554,7 +574,7 @@
+ #define x25519_d2i_public_key NULL
+ #define x25519_d2i_key_params NULL
+ #define x25519_d2i_PKCS8 ecx_d2i_PKCS8
+-#define x25519_free (free_key_fn *)ossl_ecx_key_free
++#define x25519_free ecx_free_key
+ #define x25519_check NULL
+ #define x25519_adjust ecx_key_adjust
+ 
+@@ -563,7 +583,7 @@
+ #define x448_d2i_public_key NULL
+ #define x448_d2i_key_params NULL
+ #define x448_d2i_PKCS8 ecx_d2i_PKCS8
+-#define x448_free (free_key_fn *)ossl_ecx_key_free
++#define x448_free ecx_free_key
+ #define x448_check NULL
+ #define x448_adjust ecx_key_adjust
+ #endif /* OPENSSL_NO_ECX */
+@@ -574,7 +594,7 @@
+ #define sm2_d2i_public_key NULL
+ #define sm2_d2i_key_params (d2i_of_void *)d2i_ECParameters
+ #define sm2_d2i_PUBKEY ec_d2i_PUBKEY
+-#define sm2_free (free_key_fn *)EC_KEY_free
++#define sm2_free ec_free_key
+ #define sm2_check ec_check
+ #define sm2_adjust ec_adjust
+ 
+@@ -614,6 +634,11 @@
+     if (key != NULL)
+         *der += der_len;
+     return key;
++}
++
++static void ml_kem_free_key(void *key)
++{
++    ossl_ml_kem_key_free(key);
+ }
+ 
+ #define ml_kem_512_evp_type EVP_PKEY_ML_KEM_512
+@@ -622,7 +647,7 @@
+ #define ml_kem_512_d2i_key_params NULL
+ #define ml_kem_512_d2i_PUBKEY ml_kem_d2i_PUBKEY
+ #define ml_kem_512_d2i_PKCS8 ml_kem_d2i_PKCS8
+-#define ml_kem_512_free (free_key_fn *)ossl_ml_kem_key_free
++#define ml_kem_512_free ml_kem_free_key
+ #define ml_kem_512_check NULL
+ #define ml_kem_512_adjust NULL
+ 
+@@ -632,7 +657,7 @@
+ #define ml_kem_768_d2i_key_params NULL
+ #define ml_kem_768_d2i_PUBKEY ml_kem_d2i_PUBKEY
+ #define ml_kem_768_d2i_PKCS8 ml_kem_d2i_PKCS8
+-#define ml_kem_768_free (free_key_fn *)ossl_ml_kem_key_free
++#define ml_kem_768_free ml_kem_free_key
+ #define ml_kem_768_check NULL
+ #define ml_kem_768_adjust NULL
+ 
+@@ -642,13 +667,18 @@
+ #define ml_kem_1024_d2i_PUBKEY ml_kem_d2i_PUBKEY
+ #define ml_kem_1024_d2i_PKCS8 ml_kem_d2i_PKCS8
+ #define ml_kem_1024_d2i_key_params NULL
+-#define ml_kem_1024_free (free_key_fn *)ossl_ml_kem_key_free
++#define ml_kem_1024_free ml_kem_free_key
+ #define ml_kem_1024_check NULL
+ #define ml_kem_1024_adjust NULL
+ 
+ #endif
+ 
+ #ifndef OPENSSL_NO_SLH_DSA
++static void slh_dsa_free_key(void *key)
++{
++    ossl_slh_dsa_key_free(key);
++}
++
+ static void *
+ slh_dsa_d2i_PKCS8(const uint8_t **der, long der_len, struct der2key_ctx_st *ctx)
+ {
+@@ -777,7 +807,7 @@
+ #define slh_dsa_sha2_128s_d2i_key_params NULL
+ #define slh_dsa_sha2_128s_d2i_PKCS8 slh_dsa_d2i_PKCS8
+ #define slh_dsa_sha2_128s_d2i_PUBKEY slh_dsa_d2i_PUBKEY
+-#define slh_dsa_sha2_128s_free (free_key_fn *)ossl_slh_dsa_key_free
++#define slh_dsa_sha2_128s_free slh_dsa_free_key
+ #define slh_dsa_sha2_128s_check NULL
+ #define slh_dsa_sha2_128s_adjust NULL
+ 
+@@ -787,7 +817,7 @@
+ #define slh_dsa_sha2_128f_d2i_key_params NULL
+ #define slh_dsa_sha2_128f_d2i_PKCS8 slh_dsa_d2i_PKCS8
+ #define slh_dsa_sha2_128f_d2i_PUBKEY slh_dsa_d2i_PUBKEY
+-#define slh_dsa_sha2_128f_free (free_key_fn *)ossl_slh_dsa_key_free
++#define slh_dsa_sha2_128f_free slh_dsa_free_key
+ #define slh_dsa_sha2_128f_check NULL
+ #define slh_dsa_sha2_128f_adjust NULL
+ 
+@@ -797,7 +827,7 @@
+ #define slh_dsa_sha2_192s_d2i_key_params NULL
+ #define slh_dsa_sha2_192s_d2i_PKCS8 slh_dsa_d2i_PKCS8
+ #define slh_dsa_sha2_192s_d2i_PUBKEY slh_dsa_d2i_PUBKEY
+-#define slh_dsa_sha2_192s_free (free_key_fn *)ossl_slh_dsa_key_free
++#define slh_dsa_sha2_192s_free slh_dsa_free_key
+ #define slh_dsa_sha2_192s_check NULL
+ #define slh_dsa_sha2_192s_adjust NULL
+ 
+@@ -807,7 +837,7 @@
+ #define slh_dsa_sha2_192f_d2i_key_params NULL
+ #define slh_dsa_sha2_192f_d2i_PKCS8 slh_dsa_d2i_PKCS8
+ #define slh_dsa_sha2_192f_d2i_PUBKEY slh_dsa_d2i_PUBKEY
+-#define slh_dsa_sha2_192f_free (free_key_fn *)ossl_slh_dsa_key_free
++#define slh_dsa_sha2_192f_free slh_dsa_free_key
+ #define slh_dsa_sha2_192f_check NULL
+ #define slh_dsa_sha2_192f_adjust NULL
+ 
+@@ -817,7 +847,7 @@
+ #define slh_dsa_sha2_256s_d2i_key_params NULL
+ #define slh_dsa_sha2_256s_d2i_PKCS8 slh_dsa_d2i_PKCS8
+ #define slh_dsa_sha2_256s_d2i_PUBKEY slh_dsa_d2i_PUBKEY
+-#define slh_dsa_sha2_256s_free (free_key_fn *)ossl_slh_dsa_key_free
++#define slh_dsa_sha2_256s_free slh_dsa_free_key
+ #define slh_dsa_sha2_256s_check NULL
+ #define slh_dsa_sha2_256s_adjust NULL
+ 
+@@ -827,7 +857,7 @@
+ #define slh_dsa_sha2_256f_d2i_key_params NULL
+ #define slh_dsa_sha2_256f_d2i_PKCS8 slh_dsa_d2i_PKCS8
+ #define slh_dsa_sha2_256f_d2i_PUBKEY slh_dsa_d2i_PUBKEY
+-#define slh_dsa_sha2_256f_free (free_key_fn *)ossl_slh_dsa_key_free
++#define slh_dsa_sha2_256f_free slh_dsa_free_key
+ #define slh_dsa_sha2_256f_check NULL
+ #define slh_dsa_sha2_256f_adjust NULL
+ 
+@@ -837,7 +867,7 @@
+ #define slh_dsa_shake_128s_d2i_key_params NULL
+ #define slh_dsa_shake_128s_d2i_PKCS8 slh_dsa_d2i_PKCS8
+ #define slh_dsa_shake_128s_d2i_PUBKEY slh_dsa_d2i_PUBKEY
+-#define slh_dsa_shake_128s_free (free_key_fn *)ossl_slh_dsa_key_free
++#define slh_dsa_shake_128s_free slh_dsa_free_key
+ #define slh_dsa_shake_128s_check NULL
+ #define slh_dsa_shake_128s_adjust NULL
+ 
+@@ -847,7 +877,7 @@
+ #define slh_dsa_shake_128f_d2i_key_params NULL
+ #define slh_dsa_shake_128f_d2i_PKCS8 slh_dsa_d2i_PKCS8
+ #define slh_dsa_shake_128f_d2i_PUBKEY slh_dsa_d2i_PUBKEY
+-#define slh_dsa_shake_128f_free (free_key_fn *)ossl_slh_dsa_key_free
++#define slh_dsa_shake_128f_free slh_dsa_free_key
+ #define slh_dsa_shake_128f_check NULL
+ #define slh_dsa_shake_128f_adjust NULL
+ 
+@@ -857,7 +887,7 @@
+ #define slh_dsa_shake_192s_d2i_key_params NULL
+ #define slh_dsa_shake_192s_d2i_PKCS8 slh_dsa_d2i_PKCS8
+ #define slh_dsa_shake_192s_d2i_PUBKEY slh_dsa_d2i_PUBKEY
+-#define slh_dsa_shake_192s_free (free_key_fn *)ossl_slh_dsa_key_free
++#define slh_dsa_shake_192s_free slh_dsa_free_key
+ #define slh_dsa_shake_192s_check NULL
+ #define slh_dsa_shake_192s_adjust NULL
+ 
+@@ -867,7 +897,7 @@
+ #define slh_dsa_shake_192f_d2i_key_params NULL
+ #define slh_dsa_shake_192f_d2i_PKCS8 slh_dsa_d2i_PKCS8
+ #define slh_dsa_shake_192f_d2i_PUBKEY slh_dsa_d2i_PUBKEY
+-#define slh_dsa_shake_192f_free (free_key_fn *)ossl_slh_dsa_key_free
++#define slh_dsa_shake_192f_free slh_dsa_free_key
+ #define slh_dsa_shake_192f_check NULL
+ #define slh_dsa_shake_192f_adjust NULL
+ 
+@@ -877,7 +907,7 @@
+ #define slh_dsa_shake_256s_d2i_key_params NULL
+ #define slh_dsa_shake_256s_d2i_PKCS8 slh_dsa_d2i_PKCS8
+ #define slh_dsa_shake_256s_d2i_PUBKEY slh_dsa_d2i_PUBKEY
+-#define slh_dsa_shake_256s_free (free_key_fn *)ossl_slh_dsa_key_free
++#define slh_dsa_shake_256s_free slh_dsa_free_key
+ #define slh_dsa_shake_256s_check NULL
+ #define slh_dsa_shake_256s_adjust NULL
+ 
+@@ -887,18 +917,23 @@
+ #define slh_dsa_shake_256f_d2i_key_params NULL
+ #define slh_dsa_shake_256f_d2i_PKCS8 slh_dsa_d2i_PKCS8
+ #define slh_dsa_shake_256f_d2i_PUBKEY slh_dsa_d2i_PUBKEY
+-#define slh_dsa_shake_256f_free (free_key_fn *)ossl_slh_dsa_key_free
++#define slh_dsa_shake_256f_free slh_dsa_free_key
+ #define slh_dsa_shake_256f_check NULL
+ #define slh_dsa_shake_256f_adjust NULL
+ #endif /* OPENSSL_NO_SLH_DSA */
+ 
+ /* ---------------------------------------------------------------------- */
++
++static void rsa_free_key(void *key)
++{
++    RSA_free(key);
++}
+ 
+ #define rsa_evp_type EVP_PKEY_RSA
+ #define rsa_d2i_private_key (d2i_of_void *)d2i_RSAPrivateKey
+ #define rsa_d2i_public_key (d2i_of_void *)d2i_RSAPublicKey
+ #define rsa_d2i_key_params NULL
+-#define rsa_free (free_key_fn *)RSA_free
++#define rsa_free rsa_free_key
+ 
+ static void *rsa_d2i_PKCS8(const unsigned char **der, long der_len,
+     struct der2key_ctx_st *ctx)
+@@ -946,13 +981,18 @@
+ #define rsapss_d2i_key_params NULL
+ #define rsapss_d2i_PKCS8 rsa_d2i_PKCS8
+ #define rsapss_d2i_PUBKEY rsa_d2i_PUBKEY
+-#define rsapss_free (free_key_fn *)RSA_free
++#define rsapss_free rsa_free_key
+ #define rsapss_check rsa_check
+ #define rsapss_adjust rsa_adjust
+ 
+ /* ---------------------------------------------------------------------- */
+ 
+ #ifndef OPENSSL_NO_ML_DSA
++static void ml_dsa_free_key(void *key)
++{
++    ossl_ml_dsa_key_free(key);
++}
++
+ static void *
+ ml_dsa_d2i_PKCS8(const uint8_t **der, long der_len, struct der2key_ctx_st *ctx)
+ {
+@@ -983,7 +1023,7 @@
+ #define ml_dsa_44_d2i_key_params NULL
+ #define ml_dsa_44_d2i_PUBKEY ml_dsa_d2i_PUBKEY
+ #define ml_dsa_44_d2i_PKCS8 ml_dsa_d2i_PKCS8
+-#define ml_dsa_44_free (free_key_fn *)ossl_ml_dsa_key_free
++#define ml_dsa_44_free ml_dsa_free_key
+ #define ml_dsa_44_check NULL
+ #define ml_dsa_44_adjust NULL
+ 
+@@ -993,7 +1033,7 @@
+ #define ml_dsa_65_d2i_key_params NULL
+ #define ml_dsa_65_d2i_PUBKEY ml_dsa_d2i_PUBKEY
+ #define ml_dsa_65_d2i_PKCS8 ml_dsa_d2i_PKCS8
+-#define ml_dsa_65_free (free_key_fn *)ossl_ml_dsa_key_free
++#define ml_dsa_65_free ml_dsa_free_key
+ #define ml_dsa_65_check NULL
+ #define ml_dsa_65_adjust NULL
+ 
+@@ -1003,7 +1043,7 @@
+ #define ml_dsa_87_d2i_PUBKEY ml_dsa_d2i_PUBKEY
+ #define ml_dsa_87_d2i_PKCS8 ml_dsa_d2i_PKCS8
+ #define ml_dsa_87_d2i_key_params NULL
+-#define ml_dsa_87_free (free_key_fn *)ossl_ml_dsa_key_free
++#define ml_dsa_87_free ml_dsa_free_key
+ #define ml_dsa_87_check NULL
+ #define ml_dsa_87_adjust NULL
+ 
+--- a/util/perl/OpenSSL/stackhash.pm
++++ b/util/perl/OpenSSL/stackhash.pm
+@@ -28,9 +28,30 @@
+ SKM_DEFINE_STACK_OF_INTERNAL(${nametype}, ${realtype}, ${plaintype})
+ #define sk_${nametype}_num(sk) OPENSSL_sk_num(ossl_check_const_${nametype}_sk_type(sk))
+ #define sk_${nametype}_value(sk, idx) ((${realtype} *)OPENSSL_sk_value(ossl_check_const_${nametype}_sk_type(sk), (idx)))
+-#define sk_${nametype}_new(cmp) ((STACK_OF(${nametype}) *)OPENSSL_sk_new(ossl_check_${nametype}_compfunc_type(cmp)))
+-#define sk_${nametype}_new_null() ((STACK_OF(${nametype}) *)OPENSSL_sk_new_null())
+-#define sk_${nametype}_new_reserve(cmp, n) ((STACK_OF(${nametype}) *)OPENSSL_sk_new_reserve(ossl_check_${nametype}_compfunc_type(cmp), (n)))
++#define sk_${nametype}_new(cmp) \\
++    ((STACK_OF(${nametype}) *)OPENSSL_sk_set_thunks( \\
++        OPENSSL_sk_set_copy_thunks( \\
++            OPENSSL_sk_set_cmp_thunks( \\
++                OPENSSL_sk_new(ossl_check_${nametype}_compfunc_type(cmp)), \\
++                sk_${nametype}_cmpfunc_thunk), \\
++            sk_${nametype}_copyfunc_thunk), \\
++        sk_${nametype}_freefunc_thunk))
++#define sk_${nametype}_new_null() \\
++    ((STACK_OF(${nametype}) *)OPENSSL_sk_set_thunks( \\
++        OPENSSL_sk_set_copy_thunks( \\
++            OPENSSL_sk_set_cmp_thunks( \\
++                OPENSSL_sk_new_null(), \\
++                sk_${nametype}_cmpfunc_thunk), \\
++            sk_${nametype}_copyfunc_thunk), \\
++        sk_${nametype}_freefunc_thunk))
++#define sk_${nametype}_new_reserve(cmp, n) \\
++    ((STACK_OF(${nametype}) *)OPENSSL_sk_set_thunks( \\
++        OPENSSL_sk_set_copy_thunks( \\
++            OPENSSL_sk_set_cmp_thunks( \\
++                OPENSSL_sk_new_reserve(ossl_check_${nametype}_compfunc_type(cmp), (n)), \\
++                sk_${nametype}_cmpfunc_thunk), \\
++            sk_${nametype}_copyfunc_thunk), \\
++        sk_${nametype}_freefunc_thunk))
+ #define sk_${nametype}_reserve(sk, n) OPENSSL_sk_reserve(ossl_check_${nametype}_sk_type(sk), (n))
+ #define sk_${nametype}_free(sk) OPENSSL_sk_free(ossl_check_${nametype}_sk_type(sk))
+ #define sk_${nametype}_zero(sk) OPENSSL_sk_zero(ossl_check_${nametype}_sk_type(sk))
+@@ -48,8 +69,25 @@
+ #define sk_${nametype}_find_all(sk, ptr, pnum) OPENSSL_sk_find_all(ossl_check_${nametype}_sk_type(sk), ossl_check_${nametype}_type(ptr), pnum)
+ #define sk_${nametype}_sort(sk) OPENSSL_sk_sort(ossl_check_${nametype}_sk_type(sk))
+ #define sk_${nametype}_is_sorted(sk) OPENSSL_sk_is_sorted(ossl_check_const_${nametype}_sk_type(sk))
+-#define sk_${nametype}_dup(sk) ((STACK_OF(${nametype}) *)OPENSSL_sk_dup(ossl_check_const_${nametype}_sk_type(sk)))
+-#define sk_${nametype}_deep_copy(sk, copyfunc, freefunc) ((STACK_OF(${nametype}) *)OPENSSL_sk_deep_copy(ossl_check_const_${nametype}_sk_type(sk), ossl_check_${nametype}_copyfunc_type(copyfunc), ossl_check_${nametype}_freefunc_type(freefunc)))
++#define sk_${nametype}_dup(sk) \\
++    ((STACK_OF(${nametype}) *)OPENSSL_sk_set_thunks( \\
++        OPENSSL_sk_set_copy_thunks( \\
++            OPENSSL_sk_set_cmp_thunks( \\
++                OPENSSL_sk_dup(ossl_check_const_${nametype}_sk_type(sk)), \\
++                sk_${nametype}_cmpfunc_thunk), \\
++            sk_${nametype}_copyfunc_thunk), \\
++        sk_${nametype}_freefunc_thunk))
++#define sk_${nametype}_deep_copy(sk, copyfunc, freefunc) \\
++    ((STACK_OF(${nametype}) *)OPENSSL_sk_set_thunks( \\
++        OPENSSL_sk_set_copy_thunks( \\
++            OPENSSL_sk_set_cmp_thunks( \\
++                OPENSSL_sk_deep_copy( \\
++                    ossl_check_const_${nametype}_sk_type(sk), \\
++                    ossl_check_${nametype}_copyfunc_type(copyfunc), \\
++                    ossl_check_${nametype}_freefunc_type(freefunc)), \\
++                sk_${nametype}_cmpfunc_thunk), \\
++            sk_${nametype}_copyfunc_thunk), \\
++        sk_${nametype}_freefunc_thunk))
+ #define sk_${nametype}_set_cmp_func(sk, cmp) ((sk_${nametype}_compfunc)OPENSSL_sk_set_cmp_func(ossl_check_${nametype}_sk_type(sk), ossl_check_${nametype}_compfunc_type(cmp)))
+ END_MACROS
+ 

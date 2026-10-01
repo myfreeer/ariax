@@ -128,6 +128,8 @@ class NativeBuildTests(unittest.TestCase):
                     "settings": {"CMAKE_BUILD_TYPE": "Release"}}))
                 patch = root / "ariax.patch"
                 patch.write_text("")
+                openssl_patch = root / "openssl.patch"
+                openssl_patch.write_text("--- a/callback.c\n+++ b/callback.c\n@@ -1 +1 @@\n-old\n+adapter\n")
                 sources = {}
                 for name, license_file in (("boost", "LICENSE_1_0.txt"), ("openssl", "LICENSE.txt"), ("libtorrent", "LICENSE")):
                     sources[name] = root / name
@@ -135,28 +137,44 @@ class NativeBuildTests(unittest.TestCase):
                     (sources[name] / license_file).write_text("test license")
                 (sources["boost"] / "boost").mkdir()
                 (sources["boost"] / "boost/version.hpp").write_text("test header")
+                (sources["openssl"] / "callback.c").write_text("old\n")
                 commands = []
 
                 def run(command, **kwargs):
                     commands.append(command)
                     if "install_dev" in command:
                         prefix = Path(kwargs["cwd"]).parent / "openssl-install"
-                        (prefix / "include").mkdir(parents=True)
-                        (prefix / "lib").mkdir()
+                        (prefix / "include").mkdir(parents=True, exist_ok=True)
+                        (prefix / "lib").mkdir(exist_ok=True)
                         (prefix / "lib/libcrypto.a").write_bytes(b"test library")
                     if command[:2] == ["cmake", "--install"]:
                         prefix = Path(command[2]).parent / "install"
-                        (prefix / "include").mkdir(parents=True)
-                        (prefix / "lib").mkdir()
+                        (prefix / "include").mkdir(parents=True, exist_ok=True)
+                        (prefix / "lib").mkdir(exist_ok=True)
                     return SimpleNamespace(returncode=0, stdout="test compiler", stderr="")
 
-                with mock.patch.multiple(bt_native, ROOT=root, SPEC=spec, PATCH=patch), \
+                with mock.patch.multiple(bt_native, ROOT=root, SPEC=spec, PATCH=patch,
+                                         OPENSSL_PATCH=openssl_patch), \
                         mock.patch.object(bt_native, "native_target", return_value="linux-x86_64"), \
                         mock.patch.object(bt_native, "source_tree", side_effect=lambda name, *_: sources[name]), \
                         mock.patch.object(bt_native.subprocess, "run", side_effect=run):
                     args = SimpleNamespace(target="x86_64-unknown-linux-gnu", sanitizer=sanitizer,
                                            verify=False, dependencies_only=False, archive_dir=None, jobs=2)
                     bt_native.build(args)
+                    work = bt_native.work_directory(args.target, sanitizer)
+                    self.assertEqual((work / "openssl-source/callback.c").read_text(), "adapter\n")
+                    count = len(commands)
+                    bt_native.build(args)
+                    self.assertEqual(len(commands), count, "unchanged native installation is reused")
+                    openssl_patch.write_text(openssl_patch.read_text().replace("+adapter", "+updated adapter"))
+                    args.verify = True
+                    with self.assertRaisesRegex(ValueError, "stale or wrong-ABI"):
+                        bt_native.build(args)
+                    self.assertEqual(len(commands), count, "verification must never rebuild")
+                    args.verify = False
+                    bt_native.build(args)
+                    self.assertGreater(len(commands), count)
+                    self.assertEqual((work / "openssl-source/callback.c").read_text(), "updated adapter\n")
                 for verb in ("--build", "--install"):
                     command = next(command for command in commands if command[:2] == ["cmake", verb])
                     self.assertEqual(command[command.index("--config") + 1], configuration)

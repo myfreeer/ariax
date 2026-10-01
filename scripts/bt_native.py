@@ -19,6 +19,7 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = ROOT / "native/libtorrent/sources.json"
 PATCH = ROOT / "native/libtorrent/ariax.patch"
+OPENSSL_PATCH = ROOT / "native/libtorrent/openssl.patch"
 TARGETS = {
     "x86_64-unknown-linux-gnu": ("Linux", "x86_64", "linux-x86_64"),
     "aarch64-unknown-linux-gnu": ("Linux", "aarch64", "linux-aarch64"),
@@ -219,6 +220,7 @@ def build(args):
     openssl_target = native_target(args.target)
     spec = json.loads(SPEC.read_text())
     expected = {"sourcesSha256": digest(SPEC), "patchSha256": digest(PATCH),
+                "opensslPatchSha256": digest(OPENSSL_PATCH),
                 "builderSha256": digest(Path(__file__)), "sanitizer": args.sanitizer}
     work = work_directory(args.target, args.sanitizer)
     flags = ["-fsanitize=address,undefined", "-fno-omit-frame-pointer"] if args.sanitizer == "address" else []
@@ -251,12 +253,15 @@ def build(args):
     ssl = work / "openssl-source"
     ssl_prefix = work / "openssl-install"
     ssl_marker = work / "openssl-inputs.json"
-    ssl_inputs = {"source": spec["openssl"]["sha256"], "builder": expected["builderSha256"], "target": args.target}
+    ssl_inputs = {"source": spec["openssl"]["sha256"], "builder": expected["builderSha256"],
+                  "patch": expected["opensslPatchSha256"], "target": args.target,
+                  "sanitizer": args.sanitizer}
     ssl_cached = json.loads(ssl_marker.read_text()) if ssl_marker.is_file() else {}
     if ssl_cached.get("inputs") != ssl_inputs or ssl_cached.get("files") != inventory(ssl_prefix):
         if ssl.exists():
             shutil.rmtree(ssl)
         shutil.copytree(upstream, ssl)
+        apply_patch(ssl, OPENSSL_PATCH)
         run(["perl", "Configure", openssl_target, "no-shared", "no-tests", "no-apps", "no-docs",
              "no-module", "no-legacy", "no-engine", "no-zlib", "no-asm", "--libdir=lib",
              "--prefix=" + str(ssl_prefix), *([] if os.name == "nt" else ["-fPIC"]), *flags], cwd=ssl)

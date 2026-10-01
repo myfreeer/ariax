@@ -10,6 +10,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <thread>
+#include "progress.hpp"
 
 namespace lt = libtorrent;
 using namespace std::chrono_literals;
@@ -55,6 +56,7 @@ void dht_destination(bool blocked) {
     lt::session_params params(settings);
     if (blocked) params.ip_filter.add_rule(lt::make_address("127.0.0.1"), lt::make_address("127.0.0.1"), lt::ip_filter::blocked);
     lt::session session(std::move(params));
+    NativeShutdownTrace shutdown_trace{"DHT session"};
     auto const deadline = std::chrono::steady_clock::now() + 5s;
     while (!session.is_dht_running() || session.listen_port() == 0) {
         require(std::chrono::steady_clock::now() < deadline, "DHT startup deadline");
@@ -86,8 +88,10 @@ void dht_destination(bool blocked) {
 
 template <typename Function>
 void stage(char const* name, Function function) {
+    std::cerr << "Native stage begins: " << name << std::endl;
     try { function(); }
     catch (std::exception const& error) { throw std::runtime_error(std::string(name) + ": " + error.what()); }
+    std::cerr << "Native stage completed: " << name << std::endl;
 }
 
 int main() try {
@@ -95,7 +99,7 @@ int main() try {
     stage("allowed DHT destination", [] { dht_destination(false); });
     stage("blocked DHT destination", [] { dht_destination(true); });
     stage("native endpoint policy", endpoint_policy);
-    std::cout << "Native destination policy passed.\n";
+    std::cout << "Native destination policy passed." << std::endl;
 } catch (std::exception const& error) {
     std::cerr << error.what() << '\n';
     return 1;

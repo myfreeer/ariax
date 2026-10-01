@@ -65,6 +65,14 @@ settings are specific to the target ABI; an installed system libtorrent is
 not a substitute for the pinned patched source. Disable WebTorrent, I2P,
 mutable torrents and dependency logging explicitly.
 
+The pinned OpenSSL source also receives the reviewed callback-adapter patch
+in `native/libtorrent/openssl.patch`. Typed callbacks must be invoked through
+their matching function signatures; sanitizer failures must not be hidden by
+disabling function-type checks. Native provenance includes this patch's digest.
+A standalone native regression exercises random generation, digest/cipher
+operations, certificate decoding and typed-stack success and cleanup paths
+before the libtorrent integration tests.
+
 The magnet gate must expose held metadata through tracked state even when its
 notification is dropped. Approval supplies the complete validated mapping and
 selection only after their session-store transaction succeeds. Pausing in

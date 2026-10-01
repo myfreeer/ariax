@@ -6,6 +6,13 @@ SHA-256 values were independently verified before use. Downloads, source trees,
 native libraries and build logs live under ignored `toolchains/bt-native`.
 No installed system libtorrent or OpenSSL is substituted.
 
+`openssl.patch` backports callback adapters onto OpenSSL 3.6.3. Its exact
+upstream commits and version-specific adjustments are documented in
+[`openssl-patch.md`](openssl-patch.md). Both the OpenSSL intermediate cache and
+the complete installation record its digest; Cargo rejects an installation
+with a different patch. Unchanged inputs reuse the verified installation for
+tests and release builds.
+
 CI runs `python3 scripts/bt_native.py --target <Rust-host-triple>` before building
 the `bt` feature. Cargo verifies an existing installation and never downloads or
 builds native dependencies implicitly. Full platform validation belongs in CI;
@@ -52,6 +59,13 @@ build and install use the same `RelWithDebInfo` configuration so installed
 CMake targets describe the instrumented library. This mode is used by native CI
 only.
 
+`tests/openssl_callbacks.cc` is a standalone dependency regression, linked to
+the pinned OpenSSL. It covers typed-stack lookup/copy/free, failed-copy cleanup,
+random generation, known SHA and AES vectors, certificate decoding/encoding,
+and rejected algorithm, key-length and malformed-certificate inputs. Run it
+with the same fail-fast sanitizers as the native integration tests.
+
 Libtorrent uses the upstream BSD license, Boost the Boost Software License 1.0,
 and OpenSSL Apache 2.0. The builder retains their license texts in the native
 installation. The project patch is distributed under the repository license.
+The OpenSSL backport retains OpenSSL's Apache 2.0 license.
