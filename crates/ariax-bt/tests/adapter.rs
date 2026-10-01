@@ -199,6 +199,28 @@ fn magnet_storage_waits_for_exact_approval_and_transfers_through_owned_commands(
     )
     .unwrap();
     until(|| oh.snapshot(2).is_some_and(|status| status.seeding));
+    assert!(matches!(
+        call(&oh, BtCommand::Remove { gid: 2 }),
+        Err(BtError::CheckpointFailed)
+    ));
+    let checkpoint = call(
+        &oh,
+        BtCommand::Checkpoint {
+            gid: 2,
+            request: 1,
+            limit: 1024 * 1024,
+            timeout: Duration::from_secs(5),
+        },
+    )
+    .unwrap();
+    let BtReply::Checkpoint { request: 1, data } = checkpoint else {
+        panic!("tracked checkpoint")
+    };
+    let identity = parse_torrent(V1, MetadataLimits::default())
+        .unwrap()
+        .identity;
+    validate_resume(data.bytes(), &identity).unwrap();
+    // Seeding may precede disk writes; the tracked checkpoint drains them.
     assert_eq!(
         std::fs::read(output_root.0.join(output_path)).unwrap(),
         PAYLOAD
@@ -230,27 +252,6 @@ fn magnet_storage_waits_for_exact_approval_and_transfers_through_owned_commands(
             );
         }
     }
-    assert!(matches!(
-        call(&oh, BtCommand::Remove { gid: 2 }),
-        Err(BtError::CheckpointFailed)
-    ));
-    let checkpoint = call(
-        &oh,
-        BtCommand::Checkpoint {
-            gid: 2,
-            request: 1,
-            limit: 1024 * 1024,
-            timeout: Duration::from_secs(5),
-        },
-    )
-    .unwrap();
-    let BtReply::Checkpoint { request: 1, data } = checkpoint else {
-        panic!("tracked checkpoint")
-    };
-    let identity = parse_torrent(V1, MetadataLimits::default())
-        .unwrap()
-        .identity;
-    validate_resume(data.bytes(), &identity).unwrap();
     call(&oh, BtCommand::Remove { gid: 2 }).unwrap();
     // A new native handle validates the saved identity and rechecks payload bytes.
     let restore = || {

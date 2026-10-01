@@ -477,10 +477,15 @@ admission both cover downloading, seeding, live-option acknowledgement,
 checkpointed pause, restart with a payload recheck, and removal. Dropping an
 option or lifecycle caller must not abandon its accepted owner. Lifecycle
 fixtures wait for scheduler cancellation to drain as well as native removal
-before resuming a paused task. A selected-file fixture uses disjoint pieces so
-an unselected file must remain absent; its persisted collision mapping and
-indexes survive restart. Late invalid selection must fail while magnet metadata
-is held, before any payload file is created.
+before resuming a paused task. Seeding reports verified piece availability and
+can precede completion of native disk writes. Payload byte assertions therefore
+run after the clean pause/remove checkpoint barrier has drained those writes;
+seeding alone is not a filesystem-read barrier. A selected-file fixture uses
+disjoint pieces so an unselected file must remain absent; its persisted collision
+mapping and indexes survive restart. The adapter magnet fixture also waits for
+its tracked checkpoint before inspecting downloaded bytes and creation
+permissions. Late invalid selection must fail while magnet metadata is held,
+before any payload file is created.
 An expired engine shutdown deadline must report an unclean boundary, preserve
 the last safe resume blob and retain the dirty flag when the store is reopened.
 Native endpoint fixtures also require real tracker replies and web-seed payloads

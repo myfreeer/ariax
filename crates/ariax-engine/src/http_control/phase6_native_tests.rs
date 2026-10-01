@@ -298,6 +298,19 @@ fn torrent_and_magnet_versions_transfer_checkpoint_recheck_and_remove_through_en
             let contents = payload(if index < 3 { 5000 } else { 70_000 });
             let seed = Seed::new(torrent, std::slice::from_ref(&contents));
             let directory = TestDirectory::new();
+            let assert_payload = |stage: &str| {
+                let actual = std::fs::read(directory.output.join("renamed.bin")).unwrap();
+                assert_eq!(
+                    actual.len(),
+                    contents.len(),
+                    "fixture {index}, magnet={magnet}, {stage}: payload length"
+                );
+                assert!(
+                    actual == contents,
+                    "fixture {index}, magnet={magnet}, {stage}: first differing byte {:?}",
+                    actual.iter().zip(&contents).position(|(a, b)| a != b)
+                );
+            };
             let mut control = plane(&directory);
             let gid = add(
                 &mut control,
@@ -320,10 +333,6 @@ fn torrent_and_magnet_versions_transfer_checkpoint_recheck_and_remove_through_en
                 assert_ne!(status["status"], "error", "{status}");
                 status["status"] == "active" && status["seeder"] == "true"
             });
-            assert_eq!(
-                std::fs::read(directory.output.join("renamed.bin")).unwrap(),
-                contents
-            );
             let binding = control.bt.catalog[&gid].spec.record.binding.clone();
             let generation = control.bt.catalog[&gid].spec.record.generation;
             assert!(
@@ -360,6 +369,9 @@ fn torrent_and_magnet_versions_transfer_checkpoint_recheck_and_remove_through_en
             });
             let safe = checkpoint(&control, gid);
             assert!(!safe.dirty && !safe.resume_blob.is_empty() && safe.request > 0);
+            // Seeding can precede disk completion; the clean pause checkpoint
+            // drains native writes before an independent filesystem read.
+            assert_payload("paused checkpoint");
             assert_eq!(control.bt.catalog[&gid].spec.record.binding, binding);
             assert!(control.shutdown().unwrap().is_clean());
 
@@ -403,10 +415,6 @@ fn torrent_and_magnet_versions_transfer_checkpoint_recheck_and_remove_through_en
             progress(&mut recovered, |plane| {
                 status(plane, gid)["seeder"] == "true"
             });
-            assert_eq!(
-                std::fs::read(directory.output.join("renamed.bin")).unwrap(),
-                contents
-            );
             recovered
                 .call("aria2.remove", json!([gid.to_string()]))
                 .unwrap();
@@ -414,6 +422,7 @@ fn torrent_and_magnet_versions_transfer_checkpoint_recheck_and_remove_through_en
                 status(plane, gid)["status"] == "removed" && handle.snapshot(gid.get()).is_none()
             });
             assert!(!checkpoint(&recovered, gid).dirty);
+            assert_payload("removed checkpoint after dirty recovery");
             assert!(directory.output.join("renamed.bin").exists());
             assert!(recovered.shutdown().unwrap().is_clean());
             seed.stop();
