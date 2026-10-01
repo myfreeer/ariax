@@ -129,10 +129,6 @@ fn native_v1_v2_hybrid_transfers_hold_storage_and_checkpoint_without_alert_deliv
             .connect_peer(2, "127.0.0.1", seed.listen_port())
             .unwrap();
         until(|| download.status(2).unwrap().seeding);
-        assert_eq!(
-            std::fs::read(output_root.0.join("payload.bin")).unwrap(),
-            payload
-        );
         download
             .pin_mut()
             .checkpoint(2, 10, 16 * 1024 * 1024)
@@ -149,6 +145,14 @@ fn native_v1_v2_hybrid_transfers_hold_storage_and_checkpoint_without_alert_deliv
             true
         });
         assert!(!data.is_empty());
+        // Seeding can precede disk completion; checkpoint drains native writes.
+        let actual = std::fs::read(output_root.0.join("payload.bin")).unwrap();
+        assert_eq!(
+            actual.len(),
+            payload.len(),
+            "fixture {index} payload length"
+        );
+        assert!(actual == payload, "fixture {index} payload bytes");
         assert!(download.pin_mut().poll_checkpoint(2, 10).is_err());
         // No alert was drained while metadata, pieces, completion and resume
         // were processed through the one-item upstream alert queue.

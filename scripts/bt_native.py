@@ -117,7 +117,7 @@ def extract(archive, destination, headers_only=False):
 
 def apply_patch(tree, patch):
     """Apply exact unified hunks without fuzz or external patch utilities."""
-    lines = patch.read_text().splitlines(keepends=True)
+    lines = patch.read_text(encoding="utf-8").splitlines(keepends=True)
     pos = 0
     pending = []
     while pos < len(lines):
@@ -128,7 +128,7 @@ def apply_patch(tree, patch):
         require(lines[pos + 1] == "+++ b/" + name + "\n", "native patch must modify existing files")
         source = tree / name
         require(source.is_file() and not source.is_symlink(), "invalid native patch source")
-        original = source.read_text().splitlines(keepends=True)
+        original = source.read_text(encoding="utf-8").splitlines(keepends=True)
         result = []
         cursor = 0
         pos += 2
@@ -154,7 +154,7 @@ def apply_patch(tree, patch):
         result.extend(original[cursor:])
         pending.append((source, "".join(result)))
     for source, content in pending:
-        source.write_text(content)
+        source.write_text(content, encoding="utf-8", newline="\n")
 
 
 def fetch(spec, archives, supplied):

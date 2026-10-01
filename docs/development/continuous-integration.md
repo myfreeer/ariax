@@ -89,6 +89,26 @@ on Windows. BT builds explicitly provision pinned libtorrent, Boost and OpenSSL
 sources for each native target, verify the patched installation, and retain
 its provenance and build logs. Cargo itself never downloads or builds those
 native dependencies. The minimal and standard bundles exclude the native graph.
+The native patcher reads source and patch text as UTF-8 and writes LF newlines,
+independently of the host locale, while requiring every hunk to match exactly
+before modifying any source file. Benchmark validator tests also read retained
+JSON fixtures as UTF-8 on every platform.
+Windows GNU links against the active MinGW toolchain with
+`link-self-contained=no`, as configured in `.cargo/config.toml`. This keeps
+Rust-linked C++ code on the same MinGW runtime as the native dependency build.
+Mixing Rust's bundled runtime archives with MSYS2's C++ runtime can leave
+Boost.Asio threads alive after session destruction and cause access violations.
+Native peer fixtures create seed files and intermediate directories with the
+same private permissions or Windows ACLs required by admission. Rate-allocation
+tests advance a paused clock before expecting replenished tokens. Lifecycle
+fixtures retry an unaccepted busy command within their deadline, then retain
+the accepted command's completion obligations after dropping its reply.
+The hand-written metadata peer explicitly disables encryption for its plaintext
+BEP 10 exchange and restores blocking mode on accepted sockets before using
+bounded synchronous reads, including on Windows where listener mode is inherited.
+Native-to-native fixtures retain the default encryption policy. Transfer fixtures
+wait for checkpoint completion before comparing payload bytes on disk; native
+seeding status can precede completion of queued disk writes.
 The disposable macOS runner explicitly provisions the second loopback address
 used by active-FTPS peer-rejection fixtures. Those tests must exercise a real
 unapproved source address before the approved TLS data connection.
@@ -102,6 +122,9 @@ be consumed by ordinary builds. The same job fuzzes the bounded BT parser for
 20 seconds and retains its corpus, crash inputs and logs. Rust fuzz instrumentation
 uses the pinned compiler with `RUSTC_BOOTSTRAP=1` confined to that command's
 environment; it does not change production or MSRV compilation.
+The Rust sanitizer link flags explicitly include `libstdc++`: Rust passes
+`-nodefaultlibs`, while Clang's C++ sanitizer runtime requires C++ RTTI symbols
+even when linking an otherwise pure Rust build script.
 
 The benchmark's pure peer-framing regressions live in the engine integration-test
 target. The custom benchmark harness imports only the shared parser, so ordinary

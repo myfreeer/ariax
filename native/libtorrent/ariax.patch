@@ -1,3 +1,94 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -645,7 +645,7 @@
+ if (WIN32)
+ 	target_link_libraries(torrent-rasterbar
+ 		PUBLIC
+-			bcrypt mswsock ws2_32 iphlpapi
++			bcrypt mswsock ws2_32 iphlpapi advapi32
+ 			debug dbghelp crypt32
+ 	)
+ 
+--- a/include/libtorrent/aux_/file_pointer.hpp
++++ b/include/libtorrent/aux_/file_pointer.hpp
+@@ -15,6 +15,16 @@
+ #include <cstdint>
+ 
+ #include "libtorrent/config.hpp"
++
++#include <cerrno>
++#include <fcntl.h>
++#ifdef TORRENT_WINDOWS
++#include "libtorrent/aux_/win_util.hpp"
++#include <io.h>
++#else
++#include <sys/stat.h>
++#include <unistd.h>
++#endif
+ 
+ namespace libtorrent {
+ namespace aux {
+@@ -37,6 +47,60 @@
+ 	FILE* ptr;
+ };
+ 
++#ifdef TORRENT_WINDOWS
++// Ariax: transfer the private kernel handle into stdio without reopening it.
++inline FILE* ariax_create_file(wchar_t const* const path)
++{
++	ariax_private_security security(false);
++	if (!security.valid()) { errno = EACCES; return nullptr; }
++	HANDLE const handle = CreateFileW(path, GENERIC_READ | GENERIC_WRITE,
++		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, &security.attributes,
++		CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
++	if (handle == INVALID_HANDLE_VALUE)
++	{
++		DWORD const error = GetLastError();
++		errno = error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND ? ENOENT
++			: error == ERROR_ACCESS_DENIED ? EACCES : EIO;
++		return nullptr;
++	}
++	int const fd = ::_open_osfhandle(reinterpret_cast<std::intptr_t>(handle), _O_RDWR | _O_BINARY);
++	if (fd < 0)
++	{
++		int const error = errno;
++		CloseHandle(handle);
++		errno = error;
++		return nullptr;
++	}
++	FILE* const file = ::_fdopen(fd, "wb+");
++	if (file == nullptr)
++	{
++		int const error = errno;
++		::_close(fd);
++		errno = error;
++	}
++	return file;
++}
++#else
++// Ariax: stdio storage must use the same private creation modes as file_handle.
++inline FILE* ariax_create_file(char const* const path, bool const executable = false)
++{
++	int flags = O_RDWR | O_CREAT | O_TRUNC;
++#ifdef O_CLOEXEC
++	flags |= O_CLOEXEC;
++#endif
++	int const fd = ::open(path, flags, S_IRUSR | S_IWUSR | (executable ? S_IXUSR : 0));
++	if (fd < 0) return nullptr;
++	FILE* const file = ::fdopen(fd, "wb+");
++	if (file == nullptr)
++	{
++		int const error = errno;
++		::close(fd);
++		errno = error;
++	}
++	return file;
++}
++#endif
++
+ inline int portable_fseeko(FILE* const f, std::int64_t const offset, int const whence)
+ {
+ #ifdef TORRENT_WINDOWS
 --- a/include/libtorrent/aux_/parse_url.hpp
 +++ b/include/libtorrent/aux_/parse_url.hpp
 @@ -51,6 +51,9 @@
@@ -44,6 +135,69 @@
  		// this is set to true while waiting for an async_set_file_priority
  		std::uint32_t m_outstanding_file_priority:1;
  
+--- a/include/libtorrent/aux_/win_util.hpp
++++ b/include/libtorrent/aux_/win_util.hpp
+@@ -13,8 +13,60 @@
+ #define TORRENT_WIN_UTIL_HPP
+ 
+ #include "libtorrent/config.hpp"
++#include "libtorrent/aux_/windows.hpp"
++#include <sddl.h>
++#include <array>
++#include <cstdint>
++#include <memory>
++#include <string>
+ 
+ namespace libtorrent { namespace aux {
++
++	// Ariax: install the same protected DACL as the admission layer at creation.
++	// Passing these attributes when opening an existing object leaves its ACL alone.
++	struct ariax_private_security
++	{
++		explicit ariax_private_security(bool const directory)
++		{
++			HANDLE token = nullptr;
++			if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
++			{ error = GetLastError(); return; }
++			std::array<std::uintptr_t, 128> buffer{};
++			DWORD size = sizeof(buffer);
++			BOOL const loaded = GetTokenInformation(token, TokenUser, buffer.data(), size, &size);
++			DWORD const token_error = GetLastError();
++			CloseHandle(token);
++			if (!loaded) { error = token_error; return; }
++			auto const user = reinterpret_cast<TOKEN_USER const*>(buffer.data());
++			LPWSTR sid = nullptr;
++			if (!ConvertSidToStringSidW(user->User.Sid, &sid))
++			{ error = GetLastError(); return; }
++			auto const release = [](wchar_t* p) { LocalFree(p); };
++			std::unique_ptr<wchar_t, decltype(release)> owned_sid(sid, release);
++			std::wstring const flags = directory ? L"OICI" : L"";
++			std::wstring const sddl = std::wstring(L"O:") + sid + L"D:P(A;" + flags
++				+ L";FA;;;" + sid + L")(A;" + flags + L";FA;;;SY)(A;" + flags + L";FA;;;BA)";
++			if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1,
++				&attributes.lpSecurityDescriptor, nullptr))
++			{ error = GetLastError(); return; }
++		}
++		~ariax_private_security()
++		{
++			DWORD const saved = GetLastError();
++			LocalFree(attributes.lpSecurityDescriptor);
++			SetLastError(saved);
++		}
++		ariax_private_security(ariax_private_security const&) = delete;
++		ariax_private_security& operator=(ariax_private_security const&) = delete;
++		bool valid() const
++		{
++			if (attributes.lpSecurityDescriptor != nullptr) return true;
++			SetLastError(error);
++			return false;
++		}
++		SECURITY_ATTRIBUTES attributes{sizeof(SECURITY_ATTRIBUTES), nullptr, FALSE};
++		DWORD error = ERROR_ACCESS_DENIED;
++	};
+ 
+ #ifdef TORRENT_WINRT
+ 	using LoadLibraryASignature = HMODULE WINAPI(_In_ LPCSTR lpLibFileName);
 --- a/include/libtorrent/settings_pack.hpp
 +++ b/include/libtorrent/settings_pack.hpp
 @@ -2179,6 +2179,10 @@
@@ -84,6 +238,50 @@
  		void save_resume_data(resume_data_flags_t flags = {}) const;
  		add_torrent_params get_resume_data(resume_data_flags_t flags = {}) const;
  
+--- a/src/file.cpp
++++ b/src/file.cpp
+@@ -463,6 +463,9 @@
+ 			file_attributes(mode),
+ 			file_flags(mode)
+ 		};
++		ariax_private_security security(false);
++		if (!security.valid()) return INVALID_HANDLE_VALUE;
++		Extended.lpSecurityAttributes = &security.attributes;
+ 
+ 		return CreateFile2(name.c_str()
+ 			, file_access(mode)
+@@ -498,10 +501,12 @@
+ 			std::call_once(g_once_flag, acquire_manage_volume_privs);
+ 		}
+ 
++		ariax_private_security security(false);
++		if (!security.valid()) return INVALID_HANDLE_VALUE;
+ 		return CreateFileW(name.c_str()
+ 			, file_access(mode)
+ 			, FILE_SHARE_WRITE | FILE_SHARE_READ | FILE_SHARE_DELETE
+-			, nullptr
++			, &security.attributes
+ 			, file_create(mode)
+ 			, file_flags(mode)
+ 			, nullptr);
+@@ -529,14 +534,11 @@
+ 
+ 	mode_t file_perms(open_mode_t const mode)
+ 	{
+-		// rely on default umask to filter x and w permissions
+-		// for group and others
+-		mode_t permissions = S_IRUSR | S_IWUSR
+-			| S_IRGRP | S_IWGRP
+-			| S_IROTH | S_IWOTH;
++		// Ariax: payload and part files stay private even with umask 0000.
++		mode_t permissions = S_IRUSR | S_IWUSR;
+ 
+ 		if ((mode & aux::open_mode::executable))
+-			permissions |= S_IXGRP | S_IXOTH | S_IXUSR;
++			permissions |= S_IXUSR;
+ 
+ 		return permissions;
+ 	}
 --- a/src/http_connection.cpp
 +++ b/src/http_connection.cpp
 @@ -761,6 +761,11 @@
@@ -175,6 +373,53 @@
 +	}
 +
  }
+--- a/src/path.cpp
++++ b/src/path.cpp
+@@ -359,11 +359,13 @@
+ 
+ 		native_path_string n = convert_to_native_path_string(f);
+ #ifdef TORRENT_WINDOWS
+-		if (CreateDirectoryW(n.c_str(), nullptr) == 0
++		aux::ariax_private_security security(true);
++		if (!security.valid()) { ec.assign(GetLastError(), system_category()); return; }
++		if (CreateDirectoryW(n.c_str(), &security.attributes) == 0
+ 			&& GetLastError() != ERROR_ALREADY_EXISTS)
+ 			ec.assign(GetLastError(), system_category());
+ #else
+-		int ret = ::mkdir(n.c_str(), S_IRWXU | S_IRWXG | S_IRWXO);
++		int ret = ::mkdir(n.c_str(), S_IRWXU);
+ 		if (ret < 0 && errno != EEXIST)
+ 			ec.assign(errno, system_category());
+ #endif
+--- a/src/posix_part_file.cpp
++++ b/src/posix_part_file.cpp
+@@ -297,9 +297,9 @@
+ 			if (ec) return {};
+ 
+ #ifdef TORRENT_WINDOWS
+-			ret = file_pointer(::_wfopen(convert_to_native_path_string(fn).c_str(), L"wb+"));
++			ret = file_pointer(ariax_create_file(convert_to_native_path_string(fn).c_str()));
+ #else
+-			ret = file_pointer(::fopen(fn.c_str(), "wb+"));
++			ret = file_pointer(ariax_create_file(fn.c_str()));
+ #endif
+ 			if (ret.file() == nullptr)
+ 				ec.assign(errno, generic_category());
+--- a/src/posix_storage.cpp
++++ b/src/posix_storage.cpp
+@@ -493,9 +493,10 @@
+ 				// reading and writing, but doesn't create the file. "w+" creates
+ 				// the file and truncates it
+ #ifdef TORRENT_WINDOWS
+-				f = ::_wfopen(convert_to_native_path_string(fn).c_str(), L"wb+");
++				f = ariax_create_file(convert_to_native_path_string(fn).c_str());
+ #else
+-				f = std::fopen(fn.c_str(), "wb+");
++				f = ariax_create_file(fn.c_str()
++					, bool(files().file_flags(idx) & file_storage::flag_executable));
+ #endif
+ 				if (f == nullptr)
+ 				{
 --- a/src/settings_pack.cpp
 +++ b/src/settings_pack.cpp
 @@ -390,7 +390,9 @@
@@ -342,23 +587,17 @@
  	}
  
  	// this is an async operation triggered by the client
-@@ -10866,12 +10972,16 @@
- 		for (auto i = m_web_seeds.begin(); i != m_web_seeds.end() && limit > 0;)
+@@ -10867,6 +10973,10 @@
  		{
  			auto const w = i++;
  			if (w->disabled || w->removed || w->retry > now || !w->interesting)
- 				continue;
- 
-+			// Exhausted redirect sources cannot use a connection slot.
-+			if (!w->have_files.empty() && w->have_files.none_set())
 +				continue;
 +
- 			--limit;
- 			if (w->peer_info.connection || w->resolving)
++			// Exhausted redirect sources cannot use a connection slot.
++			if (!w->have_files.empty() && w->have_files.none_set())
  				continue;
  
- 			connect_to_url_seed(w);
- 		}
+ 			--limit;
 --- a/src/torrent_handle.cpp
 +++ b/src/torrent_handle.cpp
 @@ -344,6 +344,22 @@

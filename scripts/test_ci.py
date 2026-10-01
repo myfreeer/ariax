@@ -111,7 +111,7 @@ class BenchmarkTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         evidence = ci.ROOT / "performance-evidence/phase5-windows-gnu-2026-09-15.json"
-        cls.reports = json.loads(evidence.read_text())["scenarios"]
+        cls.reports = json.loads(evidence.read_text(encoding="utf-8"))["scenarios"]
 
     def report(self, scenario="http"):
         result = copy.deepcopy(next(report for report in self.reports if report["scenario"] == scenario))

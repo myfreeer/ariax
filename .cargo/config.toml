@@ -3,3 +3,8 @@ xtask = "run --locked --package ariax-xtask --"
 
 [env]
 LIBSQLITE3_FLAGS = { value = "-DSQLITE_MAX_LIKE_PATTERN_LENGTH=65536", force = true }
+
+# Native C++ dependencies use the active MinGW runtime. Do not mix in
+# the standalone Rust distribution's bundled runtime archives.
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "link-self-contained=no"]

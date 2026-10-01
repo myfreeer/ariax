@@ -308,6 +308,19 @@ This means BT payload writes do not use the HTTP `StorageEngine` initially.
 That is acceptable only because libtorrent owns BT piece verification and
 resume semantics in the BT lane.
 
+On Unix, native payload and part-file creation uses owner-only read/write
+permissions (`0600`), adding only owner execute permission for executable
+payloads. New directories use `0700`. This applies to both the default disk
+backend and its stdio implementation, independently of a permissive process
+umask. Existing paths retain their permissions and must pass the protected-root
+checks again before restore; shared writable files or directories are rejected.
+On Windows, new files, part files, and directories receive a protected ACL at
+creation that grants full control only to the current user, SYSTEM, and
+Administrators. Directory entries propagate those principals to descendants,
+but each native-created descendant also protects its own ACL. Both native and
+stdio storage preserve existing ACLs; restore rejects inherited or widened ACLs
+instead of silently changing them.
+
 Per-file path validation (interim guarantee, required in the first full build):
 
 - Sanitizing the save-root alone is not sufficient. A multi-file torrent encodes

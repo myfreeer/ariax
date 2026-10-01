@@ -414,7 +414,13 @@ documented mutation/admission fence while allowing queries.
 
 Deterministic tests cover 1,000-task progress, later per-task precedence,
 coalescing barriers, queue saturation, stalled filesystem/SQLite work,
-cancellation ownership, and import fencing. A manually driven owner uses the
+cancellation ownership, and import fencing. The 1,000-task fixture imports its
+setup in small batches so input and preparation reservations fit alongside the
+growing scheduler and snapshot scratch within the existing request budget.
+Import preparation that exhausts this budget rejects before journal creation or
+publication and refunds its temporary credit; releasing retained credit permits
+a subsequent valid import.
+A manually driven owner uses the
 same productive-turn yield and idle-turn backoff as the managed runtime;
 unconditional sleeps must not multiply native timer granularity by the number
 of control steps. The unoptimized 1,000-task fixture checks a bounded interval

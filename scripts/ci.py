@@ -214,7 +214,7 @@ def bt_safety(runner):
     runner.env.update(CC="clang", CXX="clang++", ARIAX_BT_SANITIZER="address",
                       ASAN_OPTIONS="detect_leaks=1:halt_on_error=1",
                       UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1",
-                      RUSTFLAGS="-C linker=clang++ -C link-arg=-fsanitize=address,undefined")
+                      RUSTFLAGS="-C linker=clang++ -C link-arg=-fsanitize=address,undefined -C link-arg=-lstdc++")
     prefix = provision_bt(runner, "address")
     runner.env["ARIAX_BT_NATIVE_DIR"] = str(prefix)
     native_security(runner, prefix, True)

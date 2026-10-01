@@ -32,8 +32,18 @@ actual payload response and check the downloaded bytes after native shutdown
 has drained disk writes. Patch level 3 excludes web seeds with no remaining files
 from the connection-slot count, allowing redirect chains to progress under the
 default limit. Tests require payload delivery after 20 redirects and rejection
-of the next hop. The adapter and engine tests exercise real payload I/O and
-recovery.
+of the next hop. Patch level 4 creates Unix payload and part files with `0600`
+permissions, executable payloads with `0700`, and directories with `0700`,
+including stdio storage. Existing path permissions remain subject to adapter
+validation. Native tests exercise creation under umask `0000`; adapter tests
+cover nested payload restore and rejection of shared writable paths.
+Patch level 5 gives Windows native and stdio payloads, part files, and directories
+protected private ACLs at creation. Opening an existing path preserves its ACL.
+Native storage tests and adapter restore tests verify the resulting protection.
+
+The patcher reads UTF-8 and writes LF independently of the host locale. It
+validates all source hunks before writing, including on Windows with a legacy
+code page. The adapter and engine tests exercise real payload I/O and recovery.
 
 `--sanitizer address` builds libtorrent and OpenSSL with ASan/UBSan under a
 separate target directory. The manifest records the instrumentation, and Cargo

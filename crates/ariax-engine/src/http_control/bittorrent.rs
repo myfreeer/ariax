@@ -2791,8 +2791,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn attaching_transfer_arbiter_does_not_expand_an_existing_bt_allocation() {
+    #[tokio::test(start_paused = true)]
+    async fn attaching_transfer_arbiter_does_not_expand_an_existing_bt_allocation() {
         let directory = super::super::tests::TestDirectory::new();
         let mut plane = directory.control_plane();
         plane.bt.bandwidth = ariax_bt::BandwidthAllocation {
@@ -2818,11 +2818,17 @@ mod tests {
             .unwrap()
         {}
         assert_eq!(plane.bt.bandwidth.bt, Some(0));
+        assert!(
+            rate.try_acquire(path, NonZeroUsize::new(1).unwrap())
+                .unwrap()
+                .is_none()
+        );
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
         let granted = rate
             .try_acquire(path, NonZeroUsize::new(200).unwrap())
             .unwrap()
             .unwrap();
-        assert!(granted.reserved_bytes() <= 100);
+        assert_eq!(granted.reserved_bytes(), 100);
         plane.shutdown().unwrap();
     }
 

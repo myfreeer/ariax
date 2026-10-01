@@ -84,11 +84,17 @@ void dht_destination(bool blocked) {
     require(received != blocked, "DHT destination filter");
 }
 
+template <typename Function>
+void stage(char const* name, Function function) {
+    try { function(); }
+    catch (std::exception const& error) { throw std::runtime_error(std::string(name) + ": " + error.what()); }
+}
+
 int main() try {
-    redirects();
-    dht_destination(false);
-    dht_destination(true);
-    endpoint_policy();
+    stage("redirect policy", redirects);
+    stage("allowed DHT destination", [] { dht_destination(false); });
+    stage("blocked DHT destination", [] { dht_destination(true); });
+    stage("native endpoint policy", endpoint_policy);
     std::cout << "Native destination policy passed.\n";
 } catch (std::exception const& error) {
     std::cerr << error.what() << '\n';

@@ -113,16 +113,21 @@ fn stop(adapter: &mut BtAdapter) {
 fn magnet_storage_waits_for_exact_approval_and_transfers_through_owned_commands() {
     let seed_root = Directory::new();
     let output_root = Directory::new();
-    std::fs::write(seed_root.0.join("payload.bin"), PAYLOAD).unwrap();
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(
-            seed_root.0.join("payload.bin"),
-            std::fs::Permissions::from_mode(0o600),
-        )
-        .unwrap();
-    }
+    let mut payload = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(seed_root.0.join("payload.bin"))
+            .unwrap()
+    };
+    #[cfg(windows)]
+    let mut payload =
+        ariax_windows_security::create_private_file(&seed_root.0.join("payload.bin")).unwrap();
+    std::io::Write::write_all(&mut payload, PAYLOAD).unwrap();
+    drop(payload);
     let mut seed = BtAdapter::start(config(), resources()).unwrap();
     let mut output = BtAdapter::start(config(), resources()).unwrap();
     let sh = seed.handle();
@@ -142,6 +147,8 @@ fn magnet_storage_waits_for_exact_approval_and_transfers_through_owned_commands(
     until(|| sh.snapshot(1).is_some_and(|status| status.seeding) && sh.listen_port() != 0);
     let mut add = admission(&oh, &output_root, 2);
     add.torrent = None;
+    let output_path = "nested/deeper/payload.bin";
+    add.mapping.index_out.insert(1, output_path.into());
     let identity = parse_torrent(V1, MetadataLimits::default())
         .unwrap()
         .identity;
@@ -193,9 +200,36 @@ fn magnet_storage_waits_for_exact_approval_and_transfers_through_owned_commands(
     .unwrap();
     until(|| oh.snapshot(2).is_some_and(|status| status.seeding));
     assert_eq!(
-        std::fs::read(output_root.0.join("payload.bin")).unwrap(),
+        std::fs::read(output_root.0.join(output_path)).unwrap(),
         PAYLOAD
     );
+    #[cfg(windows)]
+    {
+        ariax_windows_security::verify_private_file(&output_root.0.join(output_path)).unwrap();
+        for directory in ["nested", "nested/deeper"] {
+            ariax_windows_security::verify_private_directory(&output_root.0.join(directory))
+                .unwrap();
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for (path, mode) in [
+            (output_path, 0o600),
+            ("nested", 0o700),
+            ("nested/deeper", 0o700),
+        ] {
+            assert_eq!(
+                std::fs::metadata(output_root.0.join(path))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                mode,
+                "native creation permissions for {path}"
+            );
+        }
+    }
     assert!(matches!(
         call(&oh, BtCommand::Remove { gid: 2 }),
         Err(BtError::CheckpointFailed)
@@ -219,10 +253,35 @@ fn magnet_storage_waits_for_exact_approval_and_transfers_through_owned_commands(
     validate_resume(data.bytes(), &identity).unwrap();
     call(&oh, BtCommand::Remove { gid: 2 }).unwrap();
     // A new native handle validates the saved identity and rechecks payload bytes.
-    let mut restored = admission(&oh, &output_root, 3);
-    restored.resume = Some(data);
-    restored.allow_existing = true;
-    call(&oh, BtCommand::Add(Box::new(restored))).unwrap();
+    let restore = || {
+        let mut restored = admission(&oh, &output_root, 3);
+        restored.resume = Some(data.clone());
+        restored.mapping.index_out.insert(1, output_path.into());
+        restored.allow_existing = true;
+        restored
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for (path, unsafe_mode, private_mode) in
+            [(output_path, 0o666, 0o600), ("nested/deeper", 0o777, 0o700)]
+        {
+            let path = output_root.0.join(path);
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(unsafe_mode)).unwrap();
+            assert!(matches!(
+                call(&oh, BtCommand::Add(Box::new(restore()))),
+                Err(BtError::UnprotectedRoot)
+            ));
+            assert!(oh.snapshot(3).is_none());
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                unsafe_mode,
+                "rejection preserves existing permissions"
+            );
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(private_mode)).unwrap();
+        }
+    }
+    call(&oh, BtCommand::Add(Box::new(restore()))).unwrap();
     call(
         &oh,
         BtCommand::Approve {
@@ -235,6 +294,32 @@ fn magnet_storage_waits_for_exact_approval_and_transfers_through_owned_commands(
     until(|| oh.snapshot(3).is_some_and(|status| status.seeding));
     stop(&mut output);
     stop(&mut seed);
+}
+
+#[cfg(windows)]
+#[test]
+fn inherited_existing_file_acl_is_rejected_without_modification() {
+    let root = Directory::new();
+    let path = root.0.join("payload.bin");
+    std::fs::write(&path, PAYLOAD).unwrap();
+    assert!(ariax_windows_security::verify_private_file(&path).is_err());
+    let mut adapter = BtAdapter::start(config(), resources()).unwrap();
+    let handle = adapter.handle();
+    let existing = || {
+        let mut add = admission(&handle, &root, 1);
+        add.allow_existing = true;
+        add
+    };
+    assert!(matches!(
+        call(&handle, BtCommand::Add(Box::new(existing()))),
+        Err(BtError::UnprotectedRoot)
+    ));
+    assert!(handle.snapshot(1).is_none());
+    assert!(ariax_windows_security::verify_private_file(&path).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), PAYLOAD);
+    ariax_windows_security::apply_private_file_acl(&path).unwrap();
+    call(&handle, BtCommand::Add(Box::new(existing()))).unwrap();
+    stop(&mut adapter);
 }
 
 #[test]

@@ -4896,7 +4896,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn create_private_directory(path: &Path) {
+    pub(super) fn create_private_directory(path: &Path) {
         use std::os::unix::fs::DirBuilderExt;
         let mut builder = fs::DirBuilder::new();
         builder.mode(0o700);
@@ -4904,7 +4904,7 @@ mod tests {
     }
 
     #[cfg(windows)]
-    fn create_private_directory(path: &Path) {
+    pub(super) fn create_private_directory(path: &Path) {
         ariax_windows_security::create_private_directory(path)
             .expect("create private test directory");
     }
@@ -6624,13 +6624,14 @@ mod tests {
         let directory = TestDirectory::new();
         let mut plane = directory.control_plane_with_capacity(1000);
         let mut gids = Vec::with_capacity(1000);
-        // Leave request budget for the growing scheduler and snapshot drafts
-        // alongside the explicit v3 task-kind envelope. This test exercises
-        // bulk control over 1,000 tasks, independent of import batch size.
-        for batch in 0..20 {
+        // At 950 tasks, 50 members need more than the 8-MiB request budget
+        // once input, preparation, scheduler and snapshot scratch coexist.
+        // Keep setup bounded without changing the 1,000-task bulk workload.
+        const IMPORT_BATCH: usize = 25;
+        for batch in 0..1000 / IMPORT_BATCH {
             gids.extend(
                 plane
-                    .call("ariax.importSession", json!([import_document(50)]))
+                    .call("ariax.importSession", json!([import_document(IMPORT_BATCH)]))
                     .unwrap_or_else(|error| panic!(
                         "bounded import batch {batch}: {error:?}; tasks={}, scheduler_bytes={}, draft_bytes={}, request_bytes={}, client_bytes={}, process={:?}",
                         plane.engine.scheduler().len(),
@@ -6646,6 +6647,8 @@ mod tests {
                     .map(|gid| gid.as_str().expect("gid").parse::<Gid>().expect("gid")),
             );
         }
+        assert_eq!(gids.len(), 1000);
+        assert_eq!(plane.engine.scheduler().len(), 1000);
         let ControlReply::Deferred(mut bulk) = plane
             .begin_call_admitted("aria2.unpauseAll", json!([]), None)
             .expect("bulk admission")
@@ -6801,6 +6804,65 @@ mod tests {
         let recovered = directory.control_plane();
         assert_eq!(recovered.tasks.len(), 3);
         recovered.shutdown().expect("recovered shutdown");
+    }
+
+    #[test]
+    fn import_preparation_budget_rejects_atomically_and_refunds_for_retry() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let client = plane.rpc_budgets.client().expect("client");
+        let request = client.try_request(0).expect("request");
+        let params = json!([import_document(16)]);
+        let input = plane
+            .reserve_command_memory("ariax.importSession", &params, Some(&request))
+            .expect("input reservation");
+        let work = plane
+            .reserve_scheduler_work(input.as_ref(), 0)
+            .expect("scheduler reservation");
+        // Leave room for those reservations, but not preparation of 16 members.
+        let held = request
+            .reserve_command(
+                crate::MAX_RPC_CLIENT_REQUEST_BYTES - client.request_bytes() - 64 * 1024,
+            )
+            .expect("retained request credit");
+        drop(work);
+        drop(input);
+        let baseline = client.request_bytes();
+        let ControlReply::Deferred(reply) = plane
+            .begin_call_admitted("ariax.importSession", params.clone(), Some(request.clone()))
+            .expect("input and scheduler scratch fit")
+        else {
+            panic!("import preparation continuation");
+        };
+        assert!(matches!(
+            plane.wait_for_mutation(reply),
+            Err(HttpControlError::Busy)
+        ));
+        assert!(plane.tasks.is_empty());
+        assert!(plane.engine.snapshot_reader().load().is_empty());
+        assert!(
+            fs::read_dir(&directory.journals)
+                .expect("journals")
+                .next()
+                .is_none()
+        );
+        assert!(
+            matches!(plane.session.execute(SessionCommand::ReadTasks).expect("persisted tasks"), SessionCommandResult::Tasks(tasks) if tasks.is_empty())
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while client.request_bytes() != baseline {
+            assert!(Instant::now() < deadline, "preparation credit refunded");
+            std::thread::yield_now();
+        }
+        drop(held);
+        let result = plane
+            .call_admitted("ariax.importSession", params, Some(request.clone()))
+            .expect("valid import after credit release");
+        assert_eq!(result.as_array().expect("gids").len(), 16);
+        drop(request);
+        plane.shutdown().expect("shutdown");
+        assert_eq!(client.request_bytes(), 0);
+        assert_eq!(client.outstanding_requests(), 0);
     }
 
     #[test]

@@ -69,6 +69,21 @@ fn progress(
     });
 }
 
+fn begin_when_ready(plane: &mut HttpControlPlane, method: &str, params: Value) -> ControlReply {
+    let mut accepted = None;
+    progress(plane, |plane| {
+        match plane.begin_call_admitted(method, params.clone(), None) {
+            Ok(reply) => {
+                accepted = Some(reply);
+                true
+            }
+            Err(HttpControlError::Busy) => false,
+            Err(error) => panic!("native fixture command {method} failed: {error:?}"),
+        }
+    });
+    accepted.unwrap()
+}
+
 fn status(plane: &mut HttpControlPlane, gid: Gid) -> Value {
     plane
         .call("aria2.tellStatus", json!([gid.to_string()]))
@@ -96,13 +111,26 @@ impl Seed {
         for (file, contents) in mapping.iter().filter(|file| !file.padding).zip(contents) {
             assert_eq!(file.length as usize, contents.len());
             let path = directory.output.join(&file.path);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(&path, contents).unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt as _;
-                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let mut parent = directory.output.clone();
+            for component in Path::new(&file.path).parent().unwrap().components() {
+                parent.push(component);
+                if !parent.exists() {
+                    super::tests::create_private_directory(&parent);
+                }
             }
+            #[cfg(unix)]
+            let mut output = {
+                use std::os::unix::fs::OpenOptionsExt as _;
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&path)
+                    .unwrap()
+            };
+            #[cfg(windows)]
+            let mut output = ariax_windows_security::create_private_file(&path).unwrap();
+            std::io::Write::write_all(&mut output, contents).unwrap();
         }
         let adapter = BtAdapter::start(config(), resources().bt_resources()).unwrap();
         let handle = adapter.handle();
@@ -307,15 +335,11 @@ fn torrent_and_magnet_versions_transfer_checkpoint_recheck_and_remove_through_en
                     .is_err()
             );
             // The accepted live patch owns completion even after the RPC caller disappears.
-            drop(
-                control
-                    .begin_call_admitted(
-                        "aria2.changeOption",
-                        json!([gid.to_string(), {"max-upload-limit":4096}]),
-                        None,
-                    )
-                    .unwrap(),
-            );
+            drop(begin_when_ready(
+                &mut control,
+                "aria2.changeOption",
+                json!([gid.to_string(), {"max-upload-limit":4096}]),
+            ));
             progress(&mut control, |plane| {
                 plane
                     .call("aria2.getOption", json!([gid.to_string()]))
@@ -323,11 +347,11 @@ fn torrent_and_magnet_versions_transfer_checkpoint_recheck_and_remove_through_en
                     == "4096"
             });
             assert_eq!(control.bt.catalog[&gid].spec.record.generation, generation);
-            drop(
-                control
-                    .begin_call_admitted("aria2.pause", json!([gid.to_string()]), None)
-                    .unwrap(),
-            );
+            drop(begin_when_ready(
+                &mut control,
+                "aria2.pause",
+                json!([gid.to_string()]),
+            ));
             progress(&mut control, |plane| {
                 let state = status(plane, gid);
                 state["status"] == "paused"
@@ -504,6 +528,8 @@ impl MetadataPeer {
                     Err(error) => return Err(error),
                 }
             };
+            // Windows accepts inherit the listener's nonblocking mode.
+            stream.set_nonblocking(false)?;
             stream.set_read_timeout(Some(Duration::from_secs(10)))?;
             stream.set_write_timeout(Some(Duration::from_secs(5)))?;
             let mut handshake = [0; 68];
@@ -620,6 +646,13 @@ fn late_traversal_and_symlink_metadata_are_rejected_before_payload_creation() {
         let peer = MetadataPeer::new(info.to_vec(), hash.into());
         let directory = TestDirectory::new();
         let mut control = plane(&directory);
+        // This bounded BEP 10 peer implements the plaintext wire handshake.
+        control
+            .configure_bittorrent(BtAdapterConfig {
+                encryption: 2,
+                ..config()
+            })
+            .unwrap();
         let gid: Gid = control
             .call(
                 "aria2.addUri",
@@ -644,10 +677,19 @@ fn late_traversal_and_symlink_metadata_are_rejected_before_payload_creation() {
                 address: peer.address,
             },
         );
-        progress(&mut control, |plane| {
-            status(plane, gid)["status"] == "error"
-        });
         peer.finish();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        progress(&mut control, |plane| {
+            let current = status(plane, gid);
+            assert!(
+                Instant::now() < deadline,
+                "unsafe metadata rejection deadline: {current}; native {:?}",
+                plane
+                    .bittorrent_handle()
+                    .and_then(|handle| handle.snapshot(gid.get()))
+            );
+            current["status"] == "error"
+        });
         assert_eq!(std::fs::read_dir(&directory.output).unwrap().count(), 0);
         assert!(!directory.root.join("escape").exists());
         control.shutdown().unwrap();

@@ -51,6 +51,31 @@ class NativeBuildTests(unittest.TestCase):
             self.assertEqual((root / "a").read_text(), "one\nsecond\n")
             self.assertEqual((root / "b").read_text(), "third\n")
 
+    def test_exact_patch_preserves_utf8_and_lf_under_a_legacy_locale(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.cc"
+            source.write_bytes("// caf\u00e9 \u2014 \U0001f512\nold\n".encode("utf-8"))
+            patch = root / "change.patch"
+            patch.write_bytes(("--- a/source.cc\n+++ b/source.cc\n@@ -1,2 +1,2 @@\n"
+                               " // caf\u00e9 \u2014 \U0001f512\n-old\n+new \U0001f512\n").encode("utf-8"))
+            original_open = Path.open
+
+            def legacy_open(path, mode="r", buffering=-1, encoding=None, errors=None, newline=None):
+                if "b" not in mode:
+                    if encoding in (None, "locale"):
+                        encoding = "gbk"
+                    if newline is None and "w" in mode:
+                        newline = "\r\n"
+                return original_open(path, mode, buffering, encoding, errors, newline)
+
+            with mock.patch.object(Path, "open", legacy_open):
+                bt_native.apply_patch(root, patch)
+                # Reapplying a valid patch still rejects changed source exactly.
+                with self.assertRaisesRegex(ValueError, "does not match"):
+                    bt_native.apply_patch(root, patch)
+            self.assertEqual(source.read_bytes(), "// caf\u00e9 \u2014 \U0001f512\nnew \U0001f512\n".encode("utf-8"))
+
     def test_manifest_rejects_tampering_and_target_or_source_mismatch(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
