@@ -26,6 +26,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8:backslashreplace"
       CARGO_INCREMENTAL: "0"
       CARGO_BUILD_JOBS: "2"
       ARIAX_BT_NATIVE_VERIFIED: "0"

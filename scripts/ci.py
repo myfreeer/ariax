@@ -74,6 +74,16 @@ def sha256(path):
         return hashlib.file_digest(source, "sha256").hexdigest()
 
 
+def write_console(text):
+    """Keep a legacy console from interrupting the UTF-8 command log."""
+    try:
+        sys.stdout.write(text)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+        sys.stdout.write(text.encode(encoding, errors="backslashreplace").decode(encoding))
+    sys.stdout.flush()
+
+
 def checked_command(command, log_path, *, env=None, cwd=ROOT, capture=False):
     """Preserve the child's exit status even when its output is streamed."""
     command = [str(arg) for arg in command]
@@ -86,7 +96,7 @@ def checked_command(command, log_path, *, env=None, cwd=ROOT, capture=False):
             for line in process.stdout:
                 log.write(line)
                 log.flush()
-                print(line, end="", flush=True)
+                write_console(line)
                 if capture:
                     lines.append(line)
             code = process.wait()
@@ -271,6 +281,8 @@ def bt_safety(runner):
 
 
 def validate(runner):
+    if runner.name in {"windows-msvc", "windows-gnu"}:
+        runner.run([sys.executable, "-B", "-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py"])
     if runner.name == "bt-safety":
         bt_safety(runner)
         return

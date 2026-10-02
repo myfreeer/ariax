@@ -1,5 +1,7 @@
 """Regressions for failure propagation and benchmark acceptance boundaries."""
 import copy
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -35,6 +37,50 @@ class AggregateTests(unittest.TestCase):
 
 
 class CommandTests(unittest.TestCase):
+    def test_unicode_diagnostics_preserve_output_and_exit_status_on_legacy_consoles(self):
+        # Rust renders MSVC linker carriage returns as U+240D. Later output
+        # exceeds a pipe buffer so the relay must keep draining after that line.
+        warning = "warning: LNK4099: debug symbols unavailable\u240d\n"
+        stderr = "stderr: \u4e2d\U0001f980\n"
+        tail = "remaining output " * 8192 + "done without newline"
+        expected = warning + stderr + tail
+        script = ("import sys; "
+                  f"sys.stdout.buffer.write({warning.encode('utf-8')!r}); sys.stdout.flush(); "
+                  f"sys.stderr.buffer.write({stderr.encode('utf-8')!r}); sys.stderr.flush(); "
+                  "sys.stdout.buffer.write(b'remaining output ' * 8192 + b'done without newline'); "
+                  "sys.stdout.flush(); sys.exit(int(sys.argv[1]))")
+        for encoding in ("cp1252", "ascii", "utf-8"):
+            for exit_code in (0, 7):
+                with self.subTest(encoding=encoding, exit_code=exit_code), \
+                        tempfile.TemporaryDirectory() as temporary:
+                    log = Path(temporary) / "command.log"
+                    raw = io.BytesIO()
+                    with io.TextIOWrapper(raw, encoding=encoding, errors="strict", newline="") as console:
+                        with contextlib.redirect_stdout(console):
+                            command = [sys.executable, "-c", script, str(exit_code)]
+                            if exit_code:
+                                with self.assertRaises(subprocess.CalledProcessError) as caught:
+                                    ci.checked_command(command, log, cwd=temporary, capture=True)
+                                self.assertEqual(caught.exception.returncode, exit_code)
+                                self.assertEqual(caught.exception.cmd, command)
+                            else:
+                                captured = ci.checked_command(command, log, cwd=temporary, capture=True)
+                                self.assertEqual(captured, expected)
+                        console.flush()
+                        displayed = raw.getvalue().decode(encoding)
+                        self.assertTrue(displayed.endswith(
+                            expected.encode(encoding, errors="backslashreplace").decode(encoding)))
+                    self.assertEqual(log.read_text(encoding="utf-8"), expected)
+
+    def test_malformed_utf8_is_visible_without_losing_later_output(self):
+        with tempfile.TemporaryDirectory() as temporary, contextlib.redirect_stdout(io.StringIO()):
+            log = Path(temporary) / "command.log"
+            output = ci.checked_command([sys.executable, "-c",
+                "import sys; sys.stdout.buffer.write(b'bad: \\xff\\nlast line')"],
+                log, cwd=temporary, capture=True)
+            self.assertEqual(output, "bad: \ufffd\nlast line")
+            self.assertEqual(log.read_text(encoding="utf-8"), output)
+
     def test_output_capture_retains_nonzero_exit_and_stops_following_work(self):
         with tempfile.TemporaryDirectory() as temporary:
             log = Path(temporary) / "command.log"
@@ -128,6 +174,20 @@ class TemporaryDirectoryTests(unittest.TestCase):
 
 
 class PlatformNativeTests(unittest.TestCase):
+    def test_windows_helper_failure_stops_before_native_provisioning(self):
+        for name in ("windows-msvc", "windows-gnu"):
+            with self.subTest(platform=name):
+                runner = mock.Mock()
+                runner.name = name
+                runner.run.side_effect = subprocess.CalledProcessError(7, ["helper tests"])
+                with mock.patch.object(ci, "provision_bt") as provision:
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        ci.validate(runner)
+                runner.run.assert_called_once_with([sys.executable, "-B", "-m", "unittest",
+                    "discover", "-s", "scripts", "-p", "test_*.py"])
+                provision.assert_not_called()
+                runner.cargo.assert_not_called()
+
     def test_grouped_bundles_keep_all_tests_and_release_builds_and_provision_once(self):
         runner = mock.Mock()
         runner.name = "feature-bundles"

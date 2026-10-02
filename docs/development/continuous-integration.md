@@ -87,6 +87,16 @@ On Unix, CI resolves the runner's temporary-directory alias before selecting
 the fixture parent. This avoids macOS system aliases without relaxing the
 application's rejection of symlinks in persistence paths. Test output is
 streamed immediately so a later blocked fixture cannot hide an earlier panic.
+Both workflows select UTF-8 for Python text and standard streams, including
+child helpers. The command relay writes UTF-8 logs and preserves captured
+Unicode output. If invoked with a legacy console encoding, it escapes only
+unrepresentable console characters; diagnostic text cannot replace the child's
+exit status with an encoding failure. Regression tests cover successful and
+failing children, merged stderr, malformed UTF-8 and output after a diagnostic
+that a Windows legacy encoding cannot represent.
+Windows platform jobs run the Python helper regressions before provisioning
+native dependencies or starting Rust builds, so host-specific driver failures
+are detected before the expensive checks.
 
 Before initial publication, preserve an ignored local history bundle and
 sanitize every reachable commit, including historical file versions and commit

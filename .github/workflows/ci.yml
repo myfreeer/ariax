@@ -13,6 +13,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8:backslashreplace"
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   CARGO_BUILD_JOBS: "2"
