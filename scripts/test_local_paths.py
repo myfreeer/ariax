@@ -43,8 +43,15 @@ class LocalPathTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 local_paths.msys2_env()
             self.tool("installation/usr/bin/bash.exe")
+            with self.assertRaises(RuntimeError):
+                local_paths.msys2_env()
             self.tool("installation/mingw64/bin/gcc.exe")
-            self.assertEqual(local_paths.msys2_env(), launcher)
+            # Discovery resolves aliases such as Windows RUNNER~1. Compare
+            # against the same resolved path even when TMP retains its alias.
+            self.assertEqual(local_paths.msys2_env(), launcher.resolve())
+        alias = launcher.parent / ".." / "bin" / launcher.name
+        with patch("local_paths.shutil.which", return_value=str(alias)):
+            self.assertEqual(local_paths.msys2_env(), launcher.resolve())
 
     def test_invalid_explicit_override_does_not_fall_back_to_path(self):
         tool = self.tool("path/whoami.exe")

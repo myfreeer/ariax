@@ -116,6 +116,8 @@ An optional ignored `toolchains/local-paths.json` can provide `msys2_root` and
 or invalid tools fail with a configuration error. Checkout, toolchain and
 output paths are derived from the repository location, never a drive letter
 or a particular developer's home directory.
+Tool-discovery tests compare resolved paths, including Windows 8.3 temporary
+directory aliases, while retaining rejection of incomplete tool installations.
 
 Validation covers Linux, macOS, Windows MSVC and Windows GNU, default and
 all-feature tests, strict Clippy, workspace builds, and the four existing
