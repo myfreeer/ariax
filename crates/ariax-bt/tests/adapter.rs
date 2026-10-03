@@ -309,6 +309,7 @@ fn inherited_existing_file_acl_is_rejected_without_modification() {
     let handle = adapter.handle();
     let existing = || {
         let mut add = admission(&handle, &root, 1);
+        add.root = ProtectedRoot::open_with_permissions(&root.0, true).unwrap();
         add.allow_existing = true;
         add
     };

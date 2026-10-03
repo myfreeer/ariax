@@ -521,6 +521,8 @@ On filesystems supporting private permissions, newly created BT output roots
 request private permissions even under a permissive process umask. Strict mode
 must reject existing unprotected roots without changing their permissions;
 default mode accepts them while rejecting unsafe paths and file aliases.
+Existing-file ACL rejection fixtures explicitly open the root with strict
+permission enforcement.
 Bundles without BT must reject admission before creating session state.
 
 Required adapter tests:
