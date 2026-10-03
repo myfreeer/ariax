@@ -44,8 +44,17 @@ RSS or budget evidence fails the run. Incomplete runs remain failures.
 A second consumer stops reading large source-list replies throughout the
 measured bursts. A separate WebSocket consumer stops reading 512 KiB coalesced
 fixture notifications through the production event broker; an event is refreshed
-before each warm-up. Both retained response and event credits must release after
-their respective consumers disconnect. For stdio, the measured client uses native OS pipes and the
+before each warm-up. Each consumer registers a weak connection-budget observer
+before stalling. After its registration reply drains, the harness records that
+client's idle baseline. It requires at least 256 KiB of additional credit and an
+outstanding response owner for each stalled consumer, including at burst
+barriers. Notification publications are paced so coalescing cannot turn the
+entire setup burst into one notification. Retention must persist across repeated
+samples; releases by other clients cannot satisfy or mask these checks.
+After each disconnect, that consumer's observer must expire within six seconds,
+proving all of its budget owners have released. Process totals remain the source
+for process memory ceilings, not consumer attribution.
+For stdio, the measured client uses native OS pipes and the
 second framed runner uses a loopback socket as its stalled writer. Both runners
 share the production dispatcher and process budgets. Reports distinguish this
 fixture from a second process-stdio handle, and record retained-credit growth,

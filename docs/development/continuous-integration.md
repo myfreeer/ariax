@@ -23,8 +23,11 @@ workflow, avoiding duplicate jobs for this investigation.
 publication-path and whitespace checks, and formatting before native provisioning.
 It verifies the cached libtorrent/OpenSSL installation, runs the native security
 probes, and tests storage recovery and permissions, BT roots and admission,
-benchmark framing/startup, engine credential-file permissions, and CLI RPC
-admission. Tests run serially with the locked dependency graph.
+benchmark framing/startup and consumer-credit attribution, engine credential-file
+permissions, and CLI RPC admission. Tests run serially with the locked dependency
+graph.
+Focused RPC unit tests cover weak observer lifetimes and stalled response/event
+owners before the load benchmark runs.
 
 The same job and release target directory then build the optimized benchmark and
 run `mixed-bt`, `http`, `websocket`, `content-length`, and `ndjson`, in that order.

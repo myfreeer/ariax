@@ -209,7 +209,8 @@ pub use http_rpc::{
 };
 pub use rpc_budget::{
     MAX_RPC_CLIENT_BYTES, MAX_RPC_CLIENT_REQUEST_BYTES, MAX_RPC_CLIENT_REQUESTS, RpcBudgetError,
-    RpcBudgetSnapshot, RpcBudgets, RpcClientBudget,
+    RpcBudgetSnapshot, RpcBudgets, RpcClientBudget, RpcClientBudgetObserver,
+    RpcClientBudgetSnapshot,
 };
 mod rpc_client;
 mod rpc_compat;

@@ -2,7 +2,7 @@
 
 use ariax_runtime::{ByteBudget, BytePermit, ResolvedRuntimeProfile, RuntimeProfile};
 use std::fmt;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 use tokio::sync::Notify;
 
@@ -174,7 +174,41 @@ pub struct RpcClientBudget {
     inner: Arc<ClientBudget>,
 }
 
+/// Read-only diagnostics that do not retain a connection or its credit owners.
+#[derive(Clone, Debug)]
+pub struct RpcClientBudgetObserver {
+    inner: Weak<ClientBudget>,
+}
+
+/// Independently sampled counters; not an atomic admission decision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RpcClientBudgetSnapshot {
+    pub bytes: usize,
+    pub outstanding_requests: usize,
+    pub outstanding_responses: usize,
+}
+
+impl RpcClientBudgetObserver {
+    /// Returns `None` after the final connection, request or response owner drops.
+    #[must_use]
+    pub fn snapshot(&self) -> Option<RpcClientBudgetSnapshot> {
+        let client = self.inner.upgrade()?;
+        Some(RpcClientBudgetSnapshot {
+            bytes: client.total.used(),
+            outstanding_requests: client.requests.used(),
+            outstanding_responses: client.responses.used(),
+        })
+    }
+}
+
 impl RpcClientBudget {
+    #[must_use]
+    pub fn observer(&self) -> RpcClientBudgetObserver {
+        RpcClientBudgetObserver {
+            inner: Arc::downgrade(&self.inner),
+        }
+    }
+
     #[must_use]
     pub fn outstanding_requests(&self) -> usize {
         self.inner.requests.used()
@@ -419,6 +453,58 @@ mod tests {
 
     fn budgets() -> RpcBudgets {
         RpcBudgets::new(32, 32 * 1024 * 1024, ByteBudget::new(40 * 1024 * 1024))
+    }
+
+    #[test]
+    fn observer_attributes_credit_despite_other_clients_releasing_more() {
+        let process = budgets();
+        let response_client = process.client().expect("response client");
+        let event_client = process.client().expect("event client");
+        let observer = response_client.observer();
+        let other_credit = event_client.event_charge(1024 * 1024).expect("event");
+        let baseline = observer.snapshot().expect("live");
+        let global_before = process.snapshot().bytes;
+        let response = response_client.response(None).expect("response");
+        let mut bytes = response.allocation();
+        bytes.reserve(512 * 1024).expect("response bytes");
+        drop(other_credit);
+        assert!(process.snapshot().bytes < global_before);
+        let retained = observer.snapshot().expect("live");
+        assert!(retained.bytes >= baseline.bytes + 512 * 1024);
+        assert_eq!(retained.outstanding_responses, 1);
+        // Unrelated release cannot serve as evidence that this client released.
+        drop(event_client);
+        assert_eq!(observer.snapshot(), Some(retained));
+        drop(bytes);
+        drop(response);
+        assert_eq!(observer.snapshot(), Some(baseline));
+        drop(response_client);
+        assert_eq!(observer.snapshot(), None);
+        assert_eq!(process.snapshot().bytes, 0);
+    }
+
+    #[test]
+    fn observer_follows_final_credit_owner_without_retaining_it() {
+        let process = budgets();
+        let client = process.client().expect("client");
+        let observer = client.observer();
+        let clone = observer.clone();
+        let request = client.try_request(1024).expect("request");
+        let response = client.response(Some(request)).expect("response");
+        let mut bytes = response.allocation();
+        bytes.reserve(512 * 1024).expect("response bytes");
+        drop(client);
+        assert_eq!(observer.snapshot().unwrap().outstanding_requests, 1);
+        assert_eq!(observer.snapshot().unwrap().outstanding_responses, 1);
+        drop(response);
+        assert_eq!(observer.snapshot().unwrap().outstanding_requests, 0);
+        assert_eq!(observer.snapshot().unwrap().outstanding_responses, 0);
+        assert!(observer.snapshot().unwrap().bytes >= 512 * 1024);
+        drop(bytes);
+        assert_eq!(observer.snapshot(), None);
+        assert_eq!(clone.snapshot(), None);
+        assert_eq!(process.snapshot().bytes, 0);
+        assert_eq!(process.snapshot().resident_bytes, 0);
     }
 
     #[test]

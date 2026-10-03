@@ -12,7 +12,7 @@ use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
 use std::time::{Duration, Instant};
@@ -43,6 +43,8 @@ use origin_metrics::query as origin_metrics;
 #[cfg(feature = "bt")]
 #[path = "rpc_active_profile/bittorrent.rs"]
 mod bittorrent;
+#[path = "rpc_active_profile/stalled_credit.rs"]
+mod stalled_credit;
 const TOTAL_BYTES: usize = RANGES * 2 * 1024 * 1024;
 const PULSE_BYTES: usize = 1024;
 const EVENT_BYTES: usize = 512 * 1024;
@@ -345,6 +347,7 @@ struct BenchBackend {
     resources: HttpProcessResources,
     stats: SharedHttpTransferStats,
     event: RpcEvent,
+    consumers: Mutex<[Option<RpcClientBudgetObserver>; 2]>,
     #[cfg(feature = "bt")]
     bt: Option<(ariax_bt::BtHandle, u64)>,
 }
@@ -358,6 +361,24 @@ impl HttpRpcBackend for BenchBackend {
         params: Value,
         context: RpcClientContext,
     ) -> RpcFuture {
+        if method == "bench.observe" {
+            let result = (|| {
+                let name = params[0].as_str().ok_or("missing stalled consumer name")?;
+                let index = stalled_credit::consumer_index(name)?;
+                let observer = context
+                    .budget_observer()
+                    .ok_or("missing transport budget")?;
+                let mut consumers = self.consumers.lock().expect("benchmark consumers");
+                if consumers[index].is_some() {
+                    return Err("stalled consumer already registered");
+                }
+                consumers[index] = Some(observer);
+                Ok(json!("OK"))
+            })();
+            return Box::pin(async move {
+                result.map_err(|error| HttpRpcBackendError::new(-32000, error))
+            });
+        }
         if method == "bench.events" {
             let broker = self.inner.event_broker();
             let event = self.event.clone();
@@ -372,6 +393,7 @@ impl HttpRpcBackend for BenchBackend {
         let resource = self.resources.clone();
         let control = self.inner.clone();
         let stats = self.stats.clone();
+        let consumers = self.consumers.lock().expect("benchmark consumers").clone();
         #[cfg(feature = "bt")]
         let bt = self.bt.clone();
         Box::pin(async move {
@@ -384,6 +406,22 @@ impl HttpRpcBackend for BenchBackend {
                 .map(|stats| stats.snapshot())
                 .unwrap_or_default();
             let budget = resource.rpc_budgets().snapshot();
+            let consumers: serde_json::Map<String, Value> = stalled_credit::CONSUMERS
+                .into_iter()
+                .zip(consumers)
+                .filter_map(|(name, observer)| {
+                    observer.map(|observer| {
+                        let snapshot = observer.snapshot().map(|snapshot| {
+                            json!({
+                                "bytes": snapshot.bytes,
+                                "requests": snapshot.outstanding_requests,
+                                "responses": snapshot.outstanding_responses,
+                            })
+                        });
+                        (name.to_owned(), json!(snapshot))
+                    })
+                })
+                .collect();
             let rss =
                 rss_bytes().map_err(|error| HttpRpcBackendError::new(-32000, error.to_string()))?;
             if first {
@@ -393,7 +431,7 @@ impl HttpRpcBackend for BenchBackend {
                 "received":stats.raw_body_bytes, "rss":rss, "resident":budget.resident_bytes,
                 "residentLimit":budget.resident_limit, "rssLimit":resource.profile().limits().resident_target_bytes,
                 "rpc":budget.bytes, "rpcLimit":budget.byte_limit, "items":budget.items,
-                "controlRuntime":control.control_runtime_metrics()});
+                "controlRuntime":control.control_runtime_metrics(), "stalledConsumers":consumers});
             #[cfg(feature = "bt")]
             let metrics = {
                 let mut metrics = metrics;
@@ -529,6 +567,7 @@ async fn engine(origins: &[SocketAddr], scenario: &str) -> Result<()> {
         inner: backend.clone(),
         resources,
         stats,
+        consumers: Mutex::new([None, None]),
         #[cfg(feature = "bt")]
         bt,
         event: RpcEvent::notification(
@@ -792,6 +831,44 @@ impl Client {
 }
 fn request(method: &str, params: Value) -> Vec<u8> {
     serde_json::to_vec(&json!({"jsonrpc":"2.0","id":1,"method":method,"params":params})).unwrap()
+}
+
+async fn wait_for_consumer(
+    client: &mut Client,
+    name: &str,
+    phase: &str,
+    condition: impl Fn(Option<stalled_credit::Sample>) -> bool,
+) -> Result<Value> {
+    let mut consecutive = 0;
+    let mut metrics = Value::Null;
+    tokio::time::timeout(Duration::from_secs(6), async {
+        loop {
+            metrics = client.call(&request("bench.metrics", json!([]))).await?;
+            let sample = stalled_credit::sample(&metrics, name)?;
+            consecutive = if condition(sample) {
+                consecutive + 1
+            } else {
+                0
+            };
+            // Avoid mistaking one transient serializer allocation for a stalled writer.
+            if consecutive == 3 {
+                return Ok(metrics.clone());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .map_err(|_| format!("stalled {name} consumer {phase} timed out: {metrics}"))?
+}
+
+async fn consumer_baseline(client: &mut Client, name: &str) -> Result<u64> {
+    let metrics = wait_for_consumer(client, name, "idle baseline", |sample| {
+        sample.is_some_and(|sample| sample.responses == 0)
+    })
+    .await?;
+    Ok(stalled_credit::sample(&metrics, name)?
+        .ok_or("consumer closed before stalling")?
+        .bytes)
 }
 
 fn latency_report(samples: &mut std::collections::BTreeMap<&str, Vec<Duration>>) -> Value {
@@ -1089,7 +1166,6 @@ async fn measure(scenario: &str) -> Result<()> {
         peers.barrier(&mut client, false).await?;
     }
     eprintln!("benchmark {scenario}: 1,000 active HTTP ranges confirmed");
-    let before = client.call(&request("bench.metrics", json!([]))).await?;
     let mut slow_events = Client::connect(address("websocket")?, "websocket").await?;
     slow_events
         .call(&request(
@@ -1097,15 +1173,22 @@ async fn measure(scenario: &str) -> Result<()> {
             json!([{"methods":["bench.onSample"]}]),
         ))
         .await?;
+    slow_events
+        .call(&request("bench.observe", json!(["events"])))
+        .await?;
+    let event_baseline = consumer_baseline(&mut client, "events").await?;
     let refresh_event = request("bench.events", json!([]));
     for _ in 0..32 {
         client.call(&refresh_event).await?;
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    let event_retained = client.call(&request("bench.metrics", json!([]))).await?;
-    if event_retained["rpc"].as_u64().unwrap() < before["rpc"].as_u64().unwrap() + 256 * 1024 {
-        return Err(format!("stalled event consumer did not retain credit: before={before} retained={event_retained}").into());
-    }
+    wait_for_consumer(
+        &mut client,
+        "events",
+        &format!("credit retention above baseline {event_baseline}"),
+        |sample| sample.is_some_and(|sample| sample.retains(event_baseline)),
+    )
+    .await?;
     let slow_address = if matches!(scenario, "content-length" | "ndjson") {
         address("slowStdio")?
     } else {
@@ -1115,19 +1198,21 @@ async fn measure(scenario: &str) -> Result<()> {
     if scenario == "websocket" {
         slow.call(&no_fixture_events).await?;
     }
+    slow.call(&request("bench.observe", json!(["response"])))
+        .await?;
+    let response_baseline = consumer_baseline(&mut client, "response").await?;
     let large = request("aria2.getUris", json!([info["slowGid"]]));
     for _ in 0..64 {
         tokio::time::timeout(Duration::from_secs(5), slow.send(&large)).await??;
     }
     eprintln!("benchmark {scenario}: stalled-consumer requests sent");
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    let retained = client.call(&request("bench.metrics", json!([]))).await?;
-    if retained["rpc"].as_u64().unwrap() < event_retained["rpc"].as_u64().unwrap() + 256 * 1024 {
-        return Err(format!(
-            "stalled consumer did not retain response credit: before={event_retained} retained={retained}"
-        )
-        .into());
-    }
+    let retained = wait_for_consumer(
+        &mut client,
+        "response",
+        &format!("credit retention above baseline {response_baseline}"),
+        |sample| sample.is_some_and(|sample| sample.retains(response_baseline)),
+    )
+    .await?;
     let mut samples = Vec::with_capacity(SAMPLES);
     let mut bursts = 0;
     let mut controls = 0;
@@ -1142,6 +1227,13 @@ async fn measure(scenario: &str) -> Result<()> {
     let mut max_rpc = 0;
     let mut max_resident = 0;
     let mut observe = |metrics: &Value| -> Result<()> {
+        for (name, baseline) in [("events", event_baseline), ("response", response_baseline)] {
+            if !stalled_credit::sample(metrics, name)?
+                .is_some_and(|sample| sample.retains(baseline))
+            {
+                return Err(format!("stalled {name} consumer lost retained credit: baseline={baseline} metrics={metrics}").into());
+            }
+        }
         for (value, limit) in [
             ("rss", "rssLimit"),
             ("rpc", "rpcLimit"),
@@ -1317,36 +1409,20 @@ async fn measure(scenario: &str) -> Result<()> {
     }
     eprintln!("benchmark {scenario}: samples complete, draining stalled consumer");
     let held = client.call(&request("bench.metrics", json!([]))).await?;
+    observe(&held)?;
     drop(slow);
-    let deadline = Instant::now() + Duration::from_secs(6);
-    let released = loop {
-        let metrics = client.call(&request("bench.metrics", json!([]))).await?;
-        if metrics["rpc"].as_u64().unwrap() + 128 * 1024 < held["rpc"].as_u64().unwrap() {
-            break metrics;
-        }
-        if Instant::now() >= deadline {
-            return Err(format!(
-                "stalled writer credit did not release: held={held} current={metrics}"
-            )
-            .into());
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    };
+    let released = wait_for_consumer(&mut client, "response", "credit release", |sample| {
+        sample.is_none()
+    })
+    .await?;
+    let event_held = stalled_credit::sample(&released, "events")?
+        .filter(|sample| sample.retains(event_baseline))
+        .ok_or("event consumer lost retained credit before disconnect")?;
     drop(slow_events);
-    let deadline = Instant::now() + Duration::from_secs(6);
-    let events_released = loop {
-        let metrics = client.call(&request("bench.metrics", json!([]))).await?;
-        if metrics["rpc"].as_u64().unwrap() + 256 * 1024 < released["rpc"].as_u64().unwrap() {
-            break metrics;
-        }
-        if Instant::now() >= deadline {
-            return Err(format!(
-                "stalled event credit did not release: held={released} current={metrics}"
-            )
-            .into());
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    };
+    let events_released = wait_for_consumer(&mut client, "events", "credit release", |sample| {
+        sample.is_none()
+    })
+    .await?;
     samples.sort_unstable();
     let p99 = samples[(SAMPLES * 99 / 100) - 1];
     let operations = latency_report(&mut per_operation);
@@ -1361,6 +1437,11 @@ async fn measure(scenario: &str) -> Result<()> {
         return Err("owner exceeded its step budget".into());
     }
     let measured_round_trips: Duration = samples.iter().copied().sum();
+    let response_credit = stalled_credit::sample(&held, "response")?
+        .ok_or("missing response owner")?
+        .bytes
+        .saturating_sub(response_baseline);
+    let event_credit = event_held.bytes.saturating_sub(event_baseline);
     let mut report = json!({"scenario":scenario,"profile":"concurrency","rangeAdmission":if phase5_metalink() {"metalink"} else {"addUri"},"ranges":RANGES,"samples":samples.len(),"controlCalls":controls,"bursts":bursts,"cooldownMs":250,
         "os":std::env::consts::OS,"arch":std::env::consts::ARCH,"origins":RANGES / RANGES_PER_ORIGIN,"workerThreads":2,
         "burstLimitCalls":1000,"burstLimitMs":500,"launchCutoffMs":BURST_LAUNCH_MS,"maxBurstCalls":max_burst_calls,"verificationCalls":verification_calls,"operations":operations,"firstResponseBytes":response_bytes,
@@ -1368,10 +1449,15 @@ async fn measure(scenario: &str) -> Result<()> {
         "p50Us":samples[SAMPLES / 2].as_micros(),"p99Us":p99.as_micros(),"maxBurstMs":max_burst.as_millis(),
         "maxSampledRssBytes":max_rss,"maxRpcBytes":max_rpc,"maxResidentBytes":max_resident,
         "rpcLimit":retained["rpcLimit"],"residentLimit":retained["residentLimit"],"rssLimit":retained["rssLimit"],
-        "stalledCreditBytes":held["rpc"].as_u64().unwrap().saturating_sub(released["rpc"].as_u64().unwrap()),
-        "stalledEventCreditBytes":released["rpc"].as_u64().unwrap().saturating_sub(events_released["rpc"].as_u64().unwrap()),
+        "stalledCreditBytes":response_credit,
+        "stalledEventCreditBytes":event_credit,
         "stalledEvents":"WebSocket; coalesced 512 KiB fixture notifications through production broker",
         "stdioStalledWriter":"loopback socket; measured stdio uses OS pipes","renewedBarrierAfterWarmup":true,"perStatusRangeCheck":true});
+    report["stalledCreditAccounting"] = json!(
+        "per-client weak observers; outstanding response owners; complete release after disconnect"
+    );
+    report["stalledConsumerBaselines"] =
+        json!({"events":event_baseline,"response":response_baseline});
     #[cfg(feature = "bt")]
     if let Some(peers) = &peers {
         report["btPeers"] = json!(1000);

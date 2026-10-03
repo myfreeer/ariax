@@ -94,6 +94,13 @@ impl RpcClientContext {
             .or_else(|| self.state.lock().expect("RPC client state").client.clone())
     }
 
+    /// Observes this connection without retaining its requests, results or credit.
+    /// Contexts without a transport budget return `None`.
+    #[must_use]
+    pub fn budget_observer(&self) -> Option<crate::RpcClientBudgetObserver> {
+        self.client_budget().map(|client| client.observer())
+    }
+
     #[must_use]
     pub fn is_authenticated(&self) -> bool {
         self.state.lock().expect("RPC client state").authenticated
@@ -131,5 +138,35 @@ impl RpcClientContext {
             .as_mut()
             .ok_or(RpcEventError::InvalidFilter)?
             .set_filter(filter)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn budget_observer_requires_a_transport_budget_and_does_not_retain_context() {
+        assert!(RpcClientContext::default().budget_observer().is_none());
+        let budgets = crate::RpcBudgets::process_default();
+        let client = budgets.client().expect("client");
+        let context =
+            RpcClientContext::default().with_request(client.try_request(1024).expect("request"));
+        context.retain_result(512 * 1024).expect("result");
+        let observer = context.budget_observer().expect("request budget");
+        drop(client);
+        assert_eq!(observer.snapshot().unwrap().outstanding_requests, 1);
+        drop(context);
+        assert_eq!(observer.snapshot(), None);
+    }
+
+    #[test]
+    fn budget_observer_uses_event_connection_before_a_request() {
+        let broker = crate::RpcEventBroker::with_budgets(crate::RpcBudgets::process_default());
+        let context = RpcClientContext::with_events(broker, false).expect("event context");
+        let observer = context.budget_observer().expect("connection budget");
+        assert_eq!(observer.snapshot().unwrap().outstanding_requests, 0);
+        drop(context);
+        assert_eq!(observer.snapshot(), None);
     }
 }

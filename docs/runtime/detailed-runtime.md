@@ -301,6 +301,14 @@ combined allocation ceiling is the smaller of 32 MiB and three quarters of the
 process RPC byte limit, so a single client cannot reserve the whole domain.
 The separate request/command ceiling remains 8 MiB.
 
+`RpcClientContext::budget_observer` exposes a read-only, weak observer of the
+connection's byte reservations and outstanding request/response slots. Samples
+are diagnostic observations, not atomic admission decisions. Observers retain
+neither the connection nor its requests or results, and report no snapshot once
+the final budget owner releases it. This allows diagnostics to attribute credit
+to one client without extending its lifetime or inferring ownership from changes
+in the process total.
+
 Request reservations precede body allocation and include parser scratch.
 Bounded Serde visitors reserve conservative node, container, and string storage
 before constructing owned values; a short JSON array of tiny values must not

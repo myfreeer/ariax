@@ -535,7 +535,10 @@ def focused(runner):
     runner.cargo("test", "--locked", "--release", "-p", "ariax-engine", "--all-features",
                  "--test", "rpc_origin_metrics", "--test", "bt_peer_fixture",
                  "--test", "bt_peer_startup", "--test", "rpc_benchmark_setup",
-                 "--test", "permission_policy", *serial)
+                 "--test", "rpc_stalled_credit", "--test", "permission_policy", *serial)
+    for group in ("rpc_budget::tests::", "rpc_client::tests::", "http_rpc::tests::stalled_"):
+        runner.cargo("test", "--locked", "--release", "-p", "ariax-engine", "--all-features",
+                     "--lib", group, *serial)
     for test in FOCUSED_ENGINE_TESTS:
         runner.cargo("test", "--locked", "--release", "-p", "ariax-engine", "--all-features",
                      "--lib", test, "--", "--exact", "--test-threads=1")

@@ -1956,6 +1956,7 @@ mod tests {
         budgets: RpcBudgets,
         events: crate::RpcEventBroker,
         calls: Arc<std::sync::atomic::AtomicUsize>,
+        observer: std::sync::Mutex<Option<crate::RpcClientBudgetObserver>>,
     }
 
     impl BudgetBackend {
@@ -1965,11 +1966,24 @@ mod tests {
                 events: crate::RpcEventBroker::with_budgets(budgets.clone()),
                 budgets,
                 calls: Arc::default(),
+                observer: std::sync::Mutex::new(None),
             }
         }
     }
 
     impl HttpRpcBackend for BudgetBackend {
+        fn call_with_context(
+            &self,
+            method: &str,
+            params: Value,
+            context: RpcClientContext,
+        ) -> RpcFuture {
+            if method == "large" {
+                *self.observer.lock().expect("observer") = context.budget_observer();
+            }
+            self.call(method, params)
+        }
+
         fn rpc_budgets(&self) -> RpcBudgets {
             self.budgets.clone()
         }
@@ -2092,6 +2106,14 @@ mod tests {
         assert_eq!(backend.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert!(backend.budgets.snapshot().bytes >= 4 * 1024 * 1024);
         assert_eq!(backend.budgets.snapshot().items, 5);
+        let observer = backend
+            .observer
+            .lock()
+            .expect("observer")
+            .clone()
+            .expect("transport observer");
+        assert_eq!(observer.snapshot().unwrap().outstanding_requests, 4);
+        assert_eq!(observer.snapshot().unwrap().outstanding_responses, 1);
         server.abort();
         assert!(
             server
@@ -2103,6 +2125,7 @@ mod tests {
         assert_eq!(backend.budgets.snapshot().bytes, 0);
         assert_eq!(backend.budgets.snapshot().resident_bytes, 0);
         assert_eq!(backend.events.subscriber_count(), 0);
+        assert_eq!(observer.snapshot(), None);
     }
 
     #[tokio::test]
@@ -2262,6 +2285,15 @@ mod tests {
                 "blocked response owns its request and serializer slots"
             );
             assert!(backend.budgets.snapshot().bytes >= 4 * 1024 * 1024);
+            let observer = backend
+                .observer
+                .lock()
+                .expect("observer")
+                .clone()
+                .expect("transport observer");
+            let retained = observer.snapshot().expect("stalled client");
+            assert!(retained.bytes >= 4 * 1024 * 1024);
+            assert_eq!(retained.outstanding_responses, 1);
             let small = br#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#;
             let mut frame = format!("POST /jsonrpc HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {}\r\n\r\n", small.len()).into_bytes();
             frame.extend_from_slice(small);
@@ -2289,7 +2321,41 @@ mod tests {
             http.await.expect("HTTP task").expect("HTTP shutdown");
             assert_eq!(backend.budgets.snapshot().bytes, 0);
             assert_eq!(backend.budgets.snapshot().resident_bytes, 0);
+            assert_eq!(observer.snapshot(), None);
         }
+    }
+
+    #[test]
+    fn stalled_event_observer_follows_serialized_owner_until_final_slice_drops() {
+        let budgets = isolated_budgets();
+        let broker = crate::RpcEventBroker::with_budgets(budgets.clone());
+        let context = RpcClientContext::with_events(broker.clone(), false).expect("context");
+        let observer = context.budget_observer().expect("observer");
+        let baseline = observer.snapshot().unwrap().bytes;
+        broker.publish(
+            crate::RpcEvent::notification(
+                "bench.onSample",
+                json!({"padding":"x".repeat(512 * 1024)}),
+                crate::RpcEventClass::Coalesced,
+                Some(crate::RpcEventKey::new(None, "benchmark")),
+            )
+            .expect("event"),
+        );
+        let delivery = context
+            .try_next_event()
+            .expect("delivery")
+            .expect("queued event");
+        let bytes =
+            serialize_delivery(&context.client_budget().unwrap(), delivery).expect("serialize");
+        assert!(observer.snapshot().unwrap().bytes >= baseline + 256 * 1024);
+        assert_eq!(observer.snapshot().unwrap().outstanding_responses, 1);
+        let slice = bytes.slice(..16);
+        drop(bytes);
+        drop(context);
+        assert_eq!(observer.snapshot().unwrap().outstanding_responses, 1);
+        drop(slice);
+        assert_eq!(observer.snapshot(), None);
+        assert_eq!(budgets.snapshot().bytes, 0);
     }
 
     #[derive(Default)]
