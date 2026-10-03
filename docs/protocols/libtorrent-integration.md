@@ -189,6 +189,11 @@ task still receives `requires_explicit_bt_restart`, and startup settings remain
 immutable. The shared native session is never rebuilt for a task option patch.
 
 Paused-only catalogs and their option updates do not initialize libtorrent.
+For a running task, a supported live option change may occupy its single pending
+option slot while a periodic peer-list request is queued or in flight. The owner
+finishes that read before applying and persisting the versioned option change.
+A second pending option change still rejects with `Busy`; lifecycle barriers and
+unsupported restart changes retain their existing rejection rules.
 Startup policy is applied before any recovered task can enter the adapter;
 restored task settings cannot exceed its discovery or peer permissions.
 

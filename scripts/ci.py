@@ -37,6 +37,7 @@ VALIDATION_MATRIX = (
 SCENARIOS = ("http", "websocket", "content-length", "ndjson", "administrative", "mixed-bt")
 FOCUSED_SCENARIOS = ("mixed-bt", "http", "websocket", "content-length", "ndjson")
 FOCUSED_ENGINE_TESTS = (
+    "http_control::bittorrent::tests::live_option_waits_for_peer_refresh_and_rejects_a_second_pending_change",
     "http_auth::tests::netrc_file_requires_private_permissions_and_rejects_symlinks",
     "http_cookie::tests::netscape_import_is_transactional_and_save_omits_session_cookies",
     "sftp_trust::tests::pins_are_exact_and_unknown_challenges_are_generation_bound",

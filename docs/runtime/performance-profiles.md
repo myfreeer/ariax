@@ -54,6 +54,10 @@ samples; releases by other clients cannot satisfy or mask these checks.
 After each disconnect, that consumer's observer must expire within six seconds,
 proving all of its budget owners have released. Process totals remain the source
 for process memory ceilings, not consumer attribution.
+A small socket integration test exercises simultaneous stalled WebSocket reply
+and event consumers without download files. It checks independent-client progress
+and requires each observer to expire on disconnect before listener shutdown.
+This isolates transport cleanup from transfer-load and host-timing failures.
 For stdio, the measured client uses native OS pipes and the
 second framed runner uses a loopback socket as its stalled writer. Both runners
 share the production dispatcher and process budgets. Reports distinguish this

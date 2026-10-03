@@ -818,7 +818,14 @@ impl Client {
         tokio::time::timeout(Duration::from_secs(10), async {
             self.send(request).await?;
             phase = "receive";
-            self.receive().await
+            self.receive().await.map_err(|error| {
+                let value: Value = serde_json::from_slice(request).unwrap_or(Value::Null);
+                format!(
+                    "RPC {} failed: {error}",
+                    value["method"].as_str().unwrap_or("unknown method")
+                )
+                .into()
+            })
         })
         .await
         .map_err(|_| {
@@ -1315,7 +1322,12 @@ async fn measure(scenario: &str) -> Result<()> {
                 break;
             }
             let sent = Instant::now();
-            let result = client.call(&payload).await?;
+            let result = client.call(&payload).await.map_err(|error| {
+                format!(
+                    "{scenario} operation {method} at sample {} failed: {error}",
+                    samples.len()
+                )
+            })?;
             let elapsed = sent.elapsed();
             samples.push(elapsed);
             per_operation.entry(method).or_default().push(elapsed);

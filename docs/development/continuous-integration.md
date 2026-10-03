@@ -28,6 +28,8 @@ permissions, and CLI RPC admission. Tests run serially with the locked dependenc
 graph.
 Focused RPC unit tests cover weak observer lifetimes and stalled response/event
 owners before the load benchmark runs.
+The BT live-option regression also covers admission during a peer-list refresh,
+the single pending-option limit, native acknowledgement and persisted recovery.
 
 The same job and release target directory then build the optimized benchmark and
 run `mixed-bt`, `http`, `websocket`, `content-length`, and `ndjson`, in that order.

@@ -2002,8 +2002,10 @@ impl HttpControlPlane {
             .ok_or(HttpControlError::NotFound)?;
         if task.option_change.is_some()
             || task.shutdown
-            || task.native.is_some()
-            || task.native_offered.is_some()
+            // Running tasks use these slots only for peer-list reads. The task
+            // poller drains that read before starting an accepted option update.
+            || ((task.native.is_some() || task.native_offered.is_some())
+                && task.phase != Phase::Running)
             || task.store.is_some()
             || task.offered.is_some()
             || task.event.is_some()
@@ -2777,6 +2779,127 @@ pub(super) fn query_for_import(spec: Arc<Spec>) -> Arc<QueryTask> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_option_waits_for_peer_refresh_and_rejects_a_second_pending_change() {
+        let directory = super::super::tests::TestDirectory::new();
+        let mut plane = directory.control_plane();
+        plane
+            .attach_process_resources(
+                crate::HttpProcessResources::for_profile(
+                    ariax_runtime::RuntimeProfile::Concurrency,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        plane
+            .configure_bittorrent(BtAdapterConfig {
+                allow_private: true,
+                dht: false,
+                pex: false,
+                ..BtAdapterConfig::default()
+            })
+            .unwrap();
+        let gid: Gid = plane.call("aria2.addTorrent", json!([
+            base64ct::Base64::encode_string(include_bytes!("../../../ariax-bt-libtorrent-sys/tests/fixtures/v1.torrent")),
+            [], {"enable-dht":false,"enable-peer-exchange":false}
+        ])).unwrap().as_str().unwrap().parse().unwrap();
+        let id = plane.engine.scheduler().task(gid).unwrap().task_id;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            plane.poll_once().unwrap();
+            let task = &plane.bt.tasks[&id];
+            if task.phase == Phase::Running
+                && task.native.is_none()
+                && task.native_offered.is_none()
+                && task.event.is_none()
+                && plane.engine_idle()
+                && plane.pending_mutation.is_none()
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "torrent did not become ready");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        for (queued, limit) in [(true, 4096), (false, 8192)] {
+            let version = plane.bt.tasks[&id].settings_version;
+            // Hold the peer refresh at its bounded native-queue admission boundary.
+            // No owner poll runs between injecting it and admitting the option call.
+            let peers = BtCommand::Peers {
+                gid: gid.get(),
+                limit: 8,
+            };
+            if queued {
+                plane.bt.tasks.get_mut(&id).unwrap().native_offered = Some(peers);
+            } else {
+                let pending = plane.bittorrent_handle().unwrap().submit(peers).unwrap();
+                plane.bt.tasks.get_mut(&id).unwrap().native = Some(pending);
+            }
+            let request = plane.direct_client.try_request(0).unwrap();
+            let reply =
+                plane.begin_bt_option_change(gid, &json!({"max-upload-limit":limit}), request);
+            let mut receiver = match reply {
+                Ok(ControlReply::Deferred(receiver)) => receiver,
+                Ok(_) => panic!("live update must wait for native and persistence acknowledgement"),
+                Err(error) => panic!("peer refresh must not reject a live update: {error}"),
+            };
+            assert!(
+                plane.bt.tasks[&id].native_offered.is_some()
+                    || plane.bt.tasks[&id].native.is_some()
+            );
+            assert!(!plane.bt.tasks[&id].option_change.as_ref().unwrap().started);
+            assert!(matches!(
+                plane.begin_bt_option_change(
+                    gid,
+                    &json!({"max-upload-limit":limit+1024}),
+                    plane.direct_client.try_request(0).unwrap()
+                ),
+                Err(HttpControlError::Busy)
+            ));
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                plane.poll_once().unwrap();
+                match receiver.try_recv() {
+                    Ok(result) => {
+                        assert_eq!(result.unwrap(), json!("OK"));
+                        break;
+                    }
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+                    Err(error) => panic!("option reply lost: {error}"),
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "queued option update did not complete"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert_eq!(plane.bt.tasks[&id].settings_version, version + 1);
+            assert!(plane.bt.tasks[&id].option_change.is_none());
+            assert_eq!(
+                plane
+                    .call("aria2.getOption", json!([gid.to_string()]))
+                    .unwrap()["max-upload-limit"],
+                limit.to_string()
+            );
+            assert!(matches!(
+                plane.begin_bt_option_change(
+                    gid,
+                    &json!({"out":"other.bin"}),
+                    plane.direct_client.try_request(0).unwrap()
+                ),
+                Err(HttpControlError::OptionPatchRejected(_))
+            ));
+        }
+        assert!(plane.shutdown().unwrap().is_clean());
+        let mut recovered = directory.control_plane();
+        assert_eq!(
+            recovered
+                .call("aria2.getOption", json!([gid.to_string()]))
+                .unwrap()["max-upload-limit"],
+            "8192"
+        );
+        assert!(recovered.shutdown().unwrap().is_clean());
+    }
 
     #[test]
     fn discovered_metainfo_retains_validated_endpoints_and_rejects_credentials() {
