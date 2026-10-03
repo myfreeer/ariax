@@ -130,7 +130,7 @@ pub(super) async fn measure() -> Result<()> {
     let scenario_started = Instant::now();
     let root = Root::new()?;
     let resources = HttpProcessResources::for_profile(RuntimeProfile::Concurrency)?;
-    let (mut plane, _) = build_control_plane(&root, &resources, TASKS + 1)?;
+    let (mut plane, _) = build_control_plane(&root.0, &resources, TASKS + 1, false)?;
     let export_path = root.0.join("export.json");
     plane.configure_session_export(SessionExportConfig {
         path: export_path.clone(),

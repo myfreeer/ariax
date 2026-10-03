@@ -10,25 +10,6 @@ use tokio::net::TcpSocket;
 mod peer_wire;
 use peer_wire::{BLOCK_BYTES, PEERS, PIECE_BYTES, PIECES, PeerWire};
 
-pub(super) fn configure(plane: &mut HttpControlPlane) -> Result<()> {
-    BitTorrentConfig {
-        allow_private_destinations: true,
-        dht: false,
-        peer_exchange: false,
-        encryption: BitTorrentEncryption::Disabled,
-        max_tasks: 4,
-        max_peers: 1024,
-        max_open_files: 4,
-        ..BitTorrentConfig::default()
-    }
-    .apply(plane)?;
-    plane.call(
-        "aria2.changeGlobalOption",
-        json!([{"max-concurrent-downloads":2}]),
-    )?;
-    Ok(())
-}
-
 pub(super) fn admit(plane: &mut HttpControlPlane) -> Result<(Value, String)> {
     use base64ct::Encoding as _;
     let digest = Sha1::digest(vec![0xa5; PIECE_BYTES]);

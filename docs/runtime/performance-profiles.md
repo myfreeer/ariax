@@ -74,9 +74,14 @@ expanded campaign validate those changes separately from the older results.
 ### Mixed HTTP And BitTorrent Measurement
 
 Phase 6 adds `--scenario=mixed-bt` on native Linux with the `bt` feature.
-The existing 1,000 HTTP ranges remain active alongside 1,000 TCP BitTorrent
-peer simulators. Each peer binds a distinct loopback address, completes the
-v1 handshake, advertises a disjoint set of pieces and sends a requested 16 KiB
+The fixture creates its scheduler with two active-task slots at process
+bootstrap so the HTTP and BT tasks can run together. The other scenarios retain
+one active-task slot. A shared setup helper is exercised by ordinary integration
+tests, including rejection of unsupported runtime options, before the opt-in
+load measurement. The existing 1,000 HTTP ranges remain active alongside 1,000
+TCP BitTorrent peer simulators. Each peer binds a distinct loopback address,
+completes the v1 handshake, advertises a disjoint set of pieces and sends a
+requested 16 KiB
 block on each pulse. The sparse 8,000-piece fixture cannot complete during the
 bounded campaign. Peer framing and queued requests are bounded. Both fixture
 processes are outside the measured engine process.

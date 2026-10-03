@@ -1,22 +1,21 @@
 //! Short real-worker RPC bursts. Origin, engine and client have separate processes.
 #![forbid(unsafe_code)]
 
-use ariax_core::{MonotonicInstant, SchedulerConfig, TaskId};
+use ariax_core::TaskId;
 use ariax_engine::*;
 use ariax_runtime::RuntimeProfile;
-use ariax_storage::{JournalStateLimits, ReplayLimits, SessionOwnerConfig};
 use futures_util::{SinkExt as _, StreamExt as _};
 use serde_json::{Value, json};
 use std::io::{self, Write as _};
 use std::net::SocketAddr;
-use std::num::{NonZeroU64, NonZeroUsize};
-use std::path::{Path, PathBuf};
+use std::num::NonZeroUsize;
+use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use tokio::io::{
     AsyncBufReadExt as _, AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, BufReader,
 };
@@ -35,6 +34,9 @@ const BURST_LAUNCH_MS: u64 = 400;
 
 #[path = "rpc_active_profile/admin.rs"]
 mod admin;
+#[path = "rpc_active_profile/setup.rs"]
+mod setup;
+use setup::{build_control_plane, private_directory};
 #[cfg(feature = "bt")]
 #[path = "rpc_active_profile/bittorrent.rs"]
 mod bittorrent;
@@ -176,17 +178,6 @@ impl Root {
 impl Drop for Root {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-fn private_directory(path: &Path) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt as _;
-        std::fs::DirBuilder::new().mode(0o700).create(path)
-    }
-    #[cfg(windows)]
-    {
-        ariax_windows_security::create_private_directory(path)
     }
 }
 
@@ -428,66 +419,12 @@ async fn stopped(mut receiver: watch::Receiver<bool>) -> io::Result<()> {
     Ok(())
 }
 
-fn build_control_plane(
-    root: &Root,
-    resources: &HttpProcessResources,
-    capacity: usize,
-) -> Result<(HttpControlPlane, PathBuf)> {
-    let control = root.0.join("control");
-    let output = root.0.join("output");
-    let journals = control.join("http-journals");
-    for path in [&control, &output, &journals] {
-        private_directory(path)?;
-    }
-    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
-    let config = ProcessBootstrapConfig {
-        session_owner: SessionOwnerConfig::new(root.0.join("session.db")),
-        control_directory: control,
-        allowed_output_roots: vec![output.clone()],
-        replay_limits: ReplayLimits::default(),
-        journal_state_limits: JournalStateLimits::default(),
-        recovery: StartupRecoveryConfig {
-            scheduler: SchedulerConfig::new(nz(capacity), nz(1), true)?,
-            now_wall_unix_ms: now,
-            now_monotonic: MonotonicInstant::now(),
-            max_retry_wait_ms: NonZeroU64::new(60000).unwrap(),
-            max_slow_wait_ms: NonZeroU64::new(60000).unwrap(),
-            max_no_space_wait_ms: NonZeroU64::new(60000).unwrap(),
-            max_retry_elapsed_ms: 60000,
-        },
-        runtime: RuntimeEffectConfig {
-            request_capacity: nz(64),
-            event_capacity: nz(64),
-            timer_capacity: nz(64),
-            option_plan_capacity: nz(64),
-        },
-        persistence_plan_capacity: nz(64),
-        shutdown_step_timeout_ms: DEFAULT_PROCESS_SHUTDOWN_STEP_TIMEOUT_MS,
-        updated_ms: now,
-        recovery_created_at_unix_ms: now,
-    };
-    let mut plane = HttpControlPlane::new(
-        bootstrap_process(config, ariax_config::persisted_option_is_safe)?,
-        HttpControlPlaneConfig {
-            output_root: output,
-            journal_root: journals.clone(),
-            task_capacity: nz(capacity),
-            supervisor: HttpWorkerSupervisorConfig::default(),
-        },
-    )?;
-    plane.attach_process_resources(resources.clone())?;
-    Ok((plane, journals))
-}
-
 async fn engine(origins: &[SocketAddr], scenario: &str) -> Result<()> {
     eprintln!("benchmark setup: process bootstrap");
     let root = Root::new()?;
     let resources = HttpProcessResources::for_profile(RuntimeProfile::Concurrency)?;
-    let (mut plane, journals) = build_control_plane(&root, &resources, 256)?;
-    #[cfg(feature = "bt")]
-    if scenario == "mixed-bt" {
-        bittorrent::configure(&mut plane)?;
-    }
+    let (mut plane, journals) =
+        build_control_plane(&root.0, &resources, 256, scenario == "mixed-bt")?;
     let mut transport = resources.policy_client_config();
     transport.destination.allow_loopback = true;
     transport.direct.max_connections_per_origin = RANGES_PER_ORIGIN;
