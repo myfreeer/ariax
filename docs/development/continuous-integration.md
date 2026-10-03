@@ -208,9 +208,21 @@ runs with strict sanitizers and known digest/cipher vectors, typed-stack
 failure cleanup, and certificate success/rejection paths. Its baseline fails
 against the unpatched dependency; sanitizer suppression is not a fix.
 
-The benchmark's pure peer-framing regressions live in the engine integration-test
-target. The custom benchmark harness imports only the shared parser, so ordinary
-workspace tests execute the framing assertions and all-target checks stay clean.
+The benchmark's peer-framing and startup regressions live in engine integration
+test targets. The custom benchmark harness imports shared fixture helpers, so
+ordinary workspace tests execute the assertions and all-target checks stay clean.
+The native Linux setup regression also fills a small loopback peer cap and
+checks rejection of excess connections. Peer fixture failures must identify
+the peer and phase, and failed peer-metrics queries must retain child-exit
+context. A bounded local startup reproduction can reduce declared payload
+sizes and HTTP ranges while retaining 1,000 BT peers; it is diagnostic evidence
+and does not satisfy the full measurement gates below.
+
+The peer fixture permits at most four concurrent connection handshakes, below
+the pinned native listener's five-entry backlog. Each permit is released after
+validating the handshake, so all 1,000 peers remain connected for measurement.
+Connection or handshake failure aborts the fixture without retry. Startup
+regressions cover the concurrency bound, rejected handshakes and early EOF.
 
 Loopback RPC process fixtures send each HTTP request in one buffer and disable
 Nagle's delay while retaining bounded response reads and shutdown waits. Failure

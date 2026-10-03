@@ -3,8 +3,10 @@
 use super::*;
 use ariax_bt::BtHandle;
 use sha1::{Digest as _, Sha1};
-use std::net::Ipv4Addr;
-use tokio::net::TcpSocket;
+use tokio::sync::Semaphore;
+
+#[path = "peer_startup.rs"]
+mod peer_startup;
 
 #[path = "peer_wire.rs"]
 mod peer_wire;
@@ -90,20 +92,32 @@ pub(super) async fn peers(port: &str, hash: &str) -> Result<()> {
     println!("{}", listener.local_addr()?);
     io::stdout().flush()?;
     let mut tasks = tokio::task::JoinSet::new();
-    tasks.spawn(origin_listener(listener, state.clone(), pulse.clone()));
+    let metrics_state = state.clone();
+    let metrics_pulse = pulse.clone();
+    tasks.spawn(async move {
+        origin_listener(listener, metrics_state, metrics_pulse)
+            .await
+            .map(|()| None)
+    });
+    let handshakes = Arc::new(Semaphore::new(peer_startup::HANDSHAKES));
     for index in 0..PEERS {
-        tasks.spawn(peer(
-            index,
-            port,
-            identity,
-            state.clone(),
-            pulse.subscribe(),
-        ));
+        let handshakes = handshakes.clone();
+        let state = state.clone();
+        let pulse = pulse.subscribe();
+        tasks.spawn(async move {
+            peer(index, port, identity, state, pulse, handshakes)
+                .await
+                .map(|()| Some(index))
+                .map_err(|error| -> Failure { format!("peer {index}: {error}").into() })
+        });
     }
-    tasks
+    if let Some(index) = tasks
         .join_next()
         .await
-        .ok_or("missing peer fixture task")???;
+        .ok_or("missing peer fixture task")???
+    {
+        eprintln!("peer {index} closed its connection; ending peer fixture");
+    }
     Ok(()) // Engine shutdown closes its peers; barriers detect any earlier exit.
 }
 
@@ -113,23 +127,9 @@ async fn peer(
     identity: [u8; 20],
     state: Arc<OriginState>,
     mut pulse: watch::Receiver<usize>,
+    handshakes: Arc<Semaphore>,
 ) -> Result<()> {
-    let socket = TcpSocket::new_v4()?;
-    // Libtorrent rejects duplicate peer IPs by default. Linux routes all 127/8
-    // locally, so every fixture connection has its own real source address.
-    let address = Ipv4Addr::new(127, 1, (index / 250 + 1) as u8, (index % 250 + 1) as u8);
-    socket.bind(SocketAddr::from((address, 0)))?;
-    let mut stream = socket.connect(([127, 0, 0, 1], port).into()).await?;
-    stream.set_nodelay(true)?;
-    let mut handshake = b"\x13BitTorrent protocol\0\0\0\0\0\0\0\0".to_vec();
-    handshake.extend_from_slice(&identity);
-    handshake.extend_from_slice(format!("-AX0600-{index:012}").as_bytes());
-    stream.write_all(&handshake).await?;
-    let mut reply = [0; 68];
-    tokio::time::timeout(Duration::from_secs(15), stream.read_exact(&mut reply)).await??;
-    if reply[..20] != handshake[..20] || reply[28..48] != identity {
-        return Err("peer handshake identity mismatch".into());
-    }
+    let mut stream = peer_startup::connect(index, port, identity, &handshakes).await?;
     let mut bitfield = vec![0; PIECES.div_ceil(8) + 1];
     bitfield[0] = 5;
     for piece in (index..PIECES).step_by(PEERS) {
@@ -171,7 +171,7 @@ async fn peer(
                 credit = true;
             }
             count = stream.read(&mut bytes) => {
-                let count = count?;
+                let count = count.map_err(|error| format!("peer message read: {error}"))?;
                 if count == 0 { return Ok(()); }
                 wire.push(&bytes[..count])?;
             }
@@ -189,6 +189,17 @@ pub(super) struct PeerProcess {
 }
 
 impl PeerProcess {
+    async fn metrics(&mut self, pulse: bool) -> Result<Value> {
+        origin_metrics(self.address, pulse).await.map_err(|error| {
+            let status = self.child.try_wait();
+            format!(
+                "BT peer metrics {} (pulse={pulse}) failed: {error}; child status: {status:?}",
+                self.address
+            )
+            .into()
+        })
+    }
+
     pub(super) async fn start(info: &Value) -> Result<Self> {
         let mut child = spawn(&[
             "--bt-peers",
@@ -231,12 +242,12 @@ impl PeerProcess {
             ((self.renewed + 1) * PEERS * BLOCK_BYTES) as u64
         };
         if renew {
-            origin_metrics(self.address, true).await?;
+            self.metrics(true).await?;
         }
         let deadline = Instant::now() + Duration::from_secs(25);
         loop {
             let metrics = client.call(&metric_request).await?;
-            let remote = origin_metrics(self.address, false).await?;
+            let remote = self.metrics(false).await?;
             if remote["active"] == PEERS
                 && metrics["btPeers"] == PEERS
                 && metrics["btDone"] == false

@@ -219,6 +219,14 @@ disable discovery and explicitly connect approved local peers. Trackers, web
 seeds and peers resolved or discovered later remain subject to the session IP
 filter and SSRF policy.
 
+The native session sets the LAN peer class connection-limit factor to `100`,
+so session and task peer caps count local connections without weighting.
+Libtorrent 2.1.1 defaults this factor to `150`; its incoming admission path
+divides the configured cap by that factor, which can reject loopback peers
+before the requested count is reached. Normalizing the factor preserves the
+configured cap and process reservation; it does not raise either limit or
+change destination filtering, rate limits or unchoke policy.
+
 The IP filter is installed in the initial session parameters before discovery
 starts. The pinned patch also applies it to outgoing DHT packets, including
 bootstrap, discovered nodes and direct requests. Native tracker and web-seed

@@ -45,6 +45,127 @@ fn scheduler_slots_allow_both_transfers_and_reject_insufficient_capacity() {
     assert!(setup::scheduler_config(0, false).is_err());
 }
 
+#[cfg(all(feature = "bt", target_os = "linux"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn local_peer_admission_reaches_its_configured_cap_and_rejects_excess() {
+    use base64ct::Encoding as _;
+    use sha1::{Digest as _, Sha1};
+    use std::net::{Ipv4Addr, SocketAddr};
+    use std::time::{Duration, Instant};
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::net::TcpSocket;
+
+    const PEERS: usize = 12;
+    let root = Root::new();
+    let resources = HttpProcessResources::for_profile(RuntimeProfile::Concurrency).unwrap();
+    let (mut plane, _) = setup::build_control_plane(&root.0, &resources, 32, true).unwrap();
+    let mut info =
+        b"d6:lengthi1048576e4:name11:payload.bin12:piece lengthi1048576e6:pieces20:".to_vec();
+    info.extend_from_slice(&Sha1::digest(vec![0xa5; 1024 * 1024]));
+    info.push(b'e');
+    let identity = Sha1::digest(&info);
+    let mut torrent = b"d4:info".to_vec();
+    torrent.extend_from_slice(&info);
+    torrent.push(b'e');
+    let gid = plane.call("aria2.addTorrent", json!([
+        base64ct::Base64::encode_string(&torrent), [],
+        {"bt-max-peers":PEERS,"enable-dht":false,"enable-peer-exchange":false,"seed-ratio":0}
+    ])).unwrap();
+    let native_id = u64::from_str_radix(gid.as_str().unwrap(), 16).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let native = loop {
+        plane.poll_once().unwrap();
+        if let Some(handle) = plane.bittorrent_handle()
+            && handle.listen_port() != 0
+            && handle
+                .snapshot(native_id)
+                .is_some_and(|s| s.metadata && !s.held && !s.paused && !s.checking && s.error == 0)
+        {
+            break handle;
+        }
+        assert!(Instant::now() < deadline, "torrent did not become ready");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    };
+    let mut sockets = Vec::new();
+    for index in 0..=PEERS {
+        let socket = TcpSocket::new_v4().unwrap();
+        socket
+            .bind(SocketAddr::from((
+                Ipv4Addr::new(127, 2, 0, index as u8 + 1),
+                0,
+            )))
+            .unwrap();
+        let mut stream = socket
+            .connect(([127, 0, 0, 1], native.listen_port()).into())
+            .await
+            .unwrap();
+        let mut handshake = b"\x13BitTorrent protocol\0\0\0\0\0\0\0\0".to_vec();
+        handshake.extend_from_slice(&identity);
+        handshake.extend_from_slice(format!("-AX0600-{index:012}").as_bytes());
+        stream.write_all(&handshake).await.unwrap();
+        if index < PEERS {
+            let mut reply = [0; 68];
+            tokio::time::timeout(Duration::from_secs(3), stream.read_exact(&mut reply))
+                .await
+                .unwrap()
+                .unwrap_or_else(|error| panic!("peer {index} rejected below cap {PEERS}: {error}"));
+            assert_eq!(&reply[28..48], identity.as_slice());
+            stream
+                .write_all(&[0, 0, 0, 2, 5, 0x80, 0, 0, 0, 1, 1])
+                .await
+                .unwrap();
+        }
+        sockets.push(stream);
+        if index == PEERS - 1 {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                plane.poll_once().unwrap();
+                if native.snapshot(native_id).unwrap().peers as usize == PEERS {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "native peer count did not reach configured cap"
+                );
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }
+    }
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        plane.poll_once().unwrap();
+        assert!(native.snapshot(native_id).unwrap().peers as usize <= PEERS);
+        let mut closed = false;
+        for stream in &sockets {
+            let mut bytes = [0; 4096];
+            match stream.try_read(&mut bytes) {
+                Ok(0) => closed = true,
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                    ) =>
+                {
+                    closed = true
+                }
+                Err(error) => panic!("unexpected peer read: {error}"),
+            }
+        }
+        if closed {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "excess connection was not rejected"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    drop(sockets);
+    plane.shutdown_async().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ordinary_setup_bootstraps_and_shuts_down() {
     let root = Root::new();

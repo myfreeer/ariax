@@ -7,6 +7,7 @@
 #include <libtorrent/ip_filter.hpp>
 #include <libtorrent/load_torrent.hpp>
 #include <libtorrent/magnet_uri.hpp>
+#include <libtorrent/peer_class.hpp>
 #include <libtorrent/peer_info.hpp>
 #include <libtorrent/read_resume_data.hpp>
 #include <libtorrent/session.hpp>
@@ -176,6 +177,12 @@ NativeSession::NativeSession(NativeOptions const& options) try : impl_(std::make
     lt::session_params params(pack);
     if (!options.allow_private) params.ip_filter = private_filter();
     impl_->session = std::make_unique<lt::session>(std::move(params));
+    // Incoming admission divides both session and torrent caps by the class
+    // factor. Count LAN peers at the configured cap, not the default 150% weight.
+    auto local = impl_->session->get_peer_class(lt::session::local_peer_class_id);
+    local.connection_limit_factor = 100;
+    impl_->session->set_peer_class(lt::session::local_peer_class_id, local);
+    require(impl_->session->get_peer_class(lt::session::local_peer_class_id).connection_limit_factor == 100);
 } catch (...) { throw std::runtime_error("bt/native-session-rejected"); }
 
 NativeSession::~NativeSession() = default;
