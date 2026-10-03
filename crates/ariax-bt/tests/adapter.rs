@@ -256,6 +256,7 @@ fn magnet_storage_waits_for_exact_approval_and_transfers_through_owned_commands(
     // A new native handle validates the saved identity and rechecks payload bytes.
     let restore = || {
         let mut restored = admission(&oh, &output_root, 3);
+        restored.root = ProtectedRoot::open_with_permissions(&output_root.0, true).unwrap();
         restored.resume = Some(data.clone());
         restored.mapping.index_out.insert(1, output_path.into());
         restored.allow_existing = true;

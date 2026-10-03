@@ -16,8 +16,8 @@ that reopen does not establish native namespace authority. SQLite session schema
 v3 rejects older, newer and unversioned schemas unchanged, requires a fresh
 development store rather than a migration, verifies hard limits and bounded persisted records,
 rechecks task-option and host-key semantics on read, retains stopped results
-atomically with queue ownership, enforces private database artifacts, and
-transactionally rechecks tokenized journal-install pointers. A bounded
+atomically with queue ownership, enforces the configured filesystem permission
+policy, and transactionally rechecks tokenized journal-install pointers. A bounded
 session-store owner thread and exact persistence-effect composition boundary
 are executable. The bounded SQLite-only application stage applies queue repairs
 before terminal repairs, then exact journal-authority repairs, and cannot expose
@@ -352,19 +352,22 @@ journals.
 
 ## Session Database Boundary
 
-The SQLite file and backups live in a dedicated private directory. Every
-existing path component must be a directory, not a symlink or Windows reparse
-point. An existing configured parent with broad Unix permissions or an
-inherited/foreign Windows allow ACL is rejected without being modified; a
-missing owned chain is created privately at each step. Database, WAL, SHM,
-rollback-journal, `${db}.ariax-owner-lock`, temporary, and backup artifacts must
-be private, uniquely linked regular files. Symlinks, hard-link aliases, and
-non-regular artifacts fail closed so a path-derived owner lock cannot protect a
-different name for the same database inode. If the main database is missing or
-empty, orphan `-wal`, `-shm`, or `-journal` files are rejected before SQLite can
-initialize or recover it. Windows ACL operations are direct Win32 calls isolated in
-`ariax-windows-security`; persistence startup does not spawn a shell or
-PowerShell process.
+Session permission enforcement is optional and disabled by default through
+`require-private-permissions=false`. In strict mode, the SQLite file and
+backups require a private parent, and database, WAL, SHM, rollback-journal,
+owner-lock and backup files require private permissions. Strict mode rejects
+an existing parent with broad Unix permissions or an inherited/foreign Windows
+allow ACL without modifying it. New objects request private permissions where
+the filesystem supports them; only strict mode requires privacy verification.
+
+Both modes require directory path components without symlinks or Windows
+reparse points, uniquely linked regular artifacts, and cooperative owner
+locks. Orphan SQLite sidecars are rejected when the main database is missing
+or empty. Disabling privacy checks does not disable identity, schema, integrity,
+or publication checks, and does not protect against another local principal
+with write access to the selected state directory. Filesystems still need the
+locking and publication capabilities required by each operation. Windows ACL
+operations remain isolated direct Win32 calls in `ariax-windows-security`.
 
 Before SQLite opens an existing database, streaming, fixed-buffer raw preflight
 recovers the committed header from a hot rollback journal's page-one
@@ -395,9 +398,12 @@ transaction.
 
 WAL and DELETE each receive a real `BEGIN IMMEDIATE` page-one write/rollback
 probe; WAL falls back to DELETE only when DELETE passes the same check. Truncate
-checkpoint reports busy rather than discarding WAL state. Backups are written
-privately, integrity/schema/semantic validated, file-synced, and published with
-a no-clobber hard link. Every destination filename ending in `-wal`, `-shm`, or
+checkpoint reports busy rather than discarding WAL state. Backups follow the
+configured permission policy, are integrity/schema/semantic validated,
+file-synced, and published without replacing an existing destination. Windows
+volumes without hard links use a handle-relative rename; other volumes retain
+hard-link publication. Every destination
+filename ending in `-wal`, `-shm`, or
 `-journal`, matched ASCII-case-insensitively, is rejected before filesystem
 mutation; pre-existing destination sidecars are also rejected rather than
 adopted. Unix syncs the parent directory; Windows does not yet claim

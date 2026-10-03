@@ -98,7 +98,10 @@ metadata and seeding; `from_pairs` is the explicit registry-backed CLI adapter.
 discovery and private-destination policy before any imported task starts.
 When BitTorrent is configured, missing output directories are created with
 private permissions at creation. Existing directories keep their permissions
-and remain subject to the protected-root checks at admission and recovery.
+and remain subject to path, type, link and identity checks at admission and
+recovery. `EngineBuilder::require_private_permissions(true)` additionally
+enforces session privacy and protected BT roots; it defaults to `false`, matching
+`--require-private-permissions=false` in the experimental CLI.
 `Engine::peers` and `TaskStatus::bittorrent` expose typed peer and lifecycle
 snapshots. CLI `--add-torrent` and `--add-magnet` use those same owners; a magnet
 passed to `--add-uri` follows the same path. All three surfaces reject BT in

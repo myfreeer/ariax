@@ -5,6 +5,8 @@ use std::fmt;
 pub const NATIVE_IDENTITY_VERSION: u8 = 1;
 pub const NATIVE_IDENTITY_UNIX_BYTES: usize = 18;
 pub const NATIVE_IDENTITY_WINDOWS_BYTES: usize = 26;
+pub const NATIVE_IDENTITY_WINDOWS_LEGACY_VERSION: u8 = 2;
+pub const NATIVE_IDENTITY_WINDOWS_LEGACY_BYTES: usize = 22;
 
 /// Stable platform-native file identity persisted inside root bindings.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -17,6 +19,11 @@ pub enum NativeIdentityV1 {
         volume_serial: u64,
         file_id: [u8; 16],
     },
+    WindowsLegacy {
+        volume_serial: u32,
+        file_index: u64,
+        creation_time: u64,
+    },
 }
 
 impl NativeIdentityV1 {
@@ -24,7 +31,7 @@ impl NativeIdentityV1 {
     pub const fn platform(self) -> PathPlatform {
         match self {
             Self::Unix { .. } => PathPlatform::Unix,
-            Self::Windows { .. } => PathPlatform::Windows,
+            Self::Windows { .. } | Self::WindowsLegacy { .. } => PathPlatform::Windows,
         }
     }
 
@@ -33,8 +40,13 @@ impl NativeIdentityV1 {
         let mut bytes = Vec::with_capacity(match self {
             Self::Unix { .. } => NATIVE_IDENTITY_UNIX_BYTES,
             Self::Windows { .. } => NATIVE_IDENTITY_WINDOWS_BYTES,
+            Self::WindowsLegacy { .. } => NATIVE_IDENTITY_WINDOWS_LEGACY_BYTES,
         });
-        bytes.push(NATIVE_IDENTITY_VERSION);
+        bytes.push(if self.is_legacy_windows() {
+            NATIVE_IDENTITY_WINDOWS_LEGACY_VERSION
+        } else {
+            NATIVE_IDENTITY_VERSION
+        });
         bytes.push(self.platform() as u8);
         match self {
             Self::Unix { device, inode } => {
@@ -48,6 +60,15 @@ impl NativeIdentityV1 {
                 bytes.extend_from_slice(&volume_serial.to_le_bytes());
                 bytes.extend_from_slice(&file_id);
             }
+            Self::WindowsLegacy {
+                volume_serial,
+                file_index,
+                creation_time,
+            } => {
+                bytes.extend_from_slice(&volume_serial.to_le_bytes());
+                bytes.extend_from_slice(&file_index.to_le_bytes());
+                bytes.extend_from_slice(&creation_time.to_le_bytes());
+            }
         }
         bytes.into_boxed_slice()
     }
@@ -56,6 +77,23 @@ impl NativeIdentityV1 {
         let (&version, rest) = bytes
             .split_first()
             .ok_or(NativeIdentityError::WrongLength)?;
+        if version == NATIVE_IDENTITY_WINDOWS_LEGACY_VERSION {
+            let (&platform, payload) =
+                rest.split_first().ok_or(NativeIdentityError::WrongLength)?;
+            if platform != PathPlatform::Windows as u8 {
+                return Err(NativeIdentityError::UnknownPlatform(platform));
+            }
+            let payload: &[u8; 20] = payload
+                .try_into()
+                .map_err(|_| NativeIdentityError::WrongLength)?;
+            return Ok(Self::WindowsLegacy {
+                volume_serial: u32::from_le_bytes(payload[..4].try_into().expect("legacy volume")),
+                file_index: u64::from_le_bytes(payload[4..12].try_into().expect("legacy index")),
+                creation_time: u64::from_le_bytes(
+                    payload[12..].try_into().expect("legacy creation time"),
+                ),
+            });
+        }
         if version != NATIVE_IDENTITY_VERSION {
             return Err(NativeIdentityError::UnsupportedVersion(version));
         }
@@ -106,6 +144,12 @@ impl NativeIdentityV1 {
             });
         }
         Ok(identity)
+    }
+
+    /// Distinguishes legacy directory-entry IDs from the original native codec.
+    #[must_use]
+    pub const fn is_legacy_windows(self) -> bool {
+        matches!(self, Self::WindowsLegacy { .. })
     }
 }
 
@@ -201,8 +245,8 @@ mod tests {
             Err(NativeIdentityError::WrongLength)
         );
         assert_eq!(
-            NativeIdentityV1::decode(&[2, PathPlatform::Unix as u8]),
-            Err(NativeIdentityError::UnsupportedVersion(2))
+            NativeIdentityV1::decode(&[3, PathPlatform::Unix as u8]),
+            Err(NativeIdentityError::UnsupportedVersion(3))
         );
         assert_eq!(
             NativeIdentityV1::decode(&[1, 99]),
@@ -224,5 +268,32 @@ mod tests {
             NativeIdentityV1::decode_for_current(&foreign.encode()),
             Err(NativeIdentityError::PlatformMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn legacy_windows_identity_is_distinct_and_rejects_wrong_encodings() {
+        let identity = NativeIdentityV1::WindowsLegacy {
+            volume_serial: 42,
+            file_index: 17,
+            creation_time: 99,
+        };
+        let encoded = identity.encode();
+        assert_eq!(encoded.len(), super::NATIVE_IDENTITY_WINDOWS_LEGACY_BYTES);
+        assert_eq!(&encoded[..2], &[2, 2]);
+        assert_eq!(NativeIdentityV1::decode(&encoded), Ok(identity));
+        assert!(identity.is_legacy_windows());
+        let modern = NativeIdentityV1::Windows {
+            volume_serial: 42,
+            file_id: [0; 16],
+        };
+        assert!(!modern.is_legacy_windows());
+        assert_ne!(modern, identity);
+        assert!(NativeIdentityV1::decode(&encoded[..21]).is_err());
+        let mut wrong = encoded.to_vec();
+        wrong[0] = 1;
+        assert!(NativeIdentityV1::decode(&wrong).is_err());
+        wrong[0] = 2;
+        wrong[1] = PathPlatform::Unix as u8;
+        assert!(NativeIdentityV1::decode(&wrong).is_err());
     }
 }

@@ -85,7 +85,8 @@ pub use native_capability::{
 };
 pub use native_identity::{
     ALL_NATIVE_IDENTITY_ERROR_CODES, NATIVE_IDENTITY_UNIX_BYTES, NATIVE_IDENTITY_VERSION,
-    NATIVE_IDENTITY_WINDOWS_BYTES, NativeIdentityError, NativeIdentityV1,
+    NATIVE_IDENTITY_WINDOWS_BYTES, NATIVE_IDENTITY_WINDOWS_LEGACY_BYTES,
+    NATIVE_IDENTITY_WINDOWS_LEGACY_VERSION, NativeIdentityError, NativeIdentityV1,
 };
 pub use path::{
     ALL_PATH_VALIDATION_ERRORS, MAX_SAFE_RELATIVE_BYTES, PathPlatform, PathValidationError,

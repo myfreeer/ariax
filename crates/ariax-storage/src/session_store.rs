@@ -605,6 +605,8 @@ impl fmt::Display for SessionId {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SessionStoreConfig {
+    /// Require private filesystem permissions in addition to structural safety.
+    pub require_private_permissions: bool,
     pub cache_kib: u32,
     pub busy_timeout_ms: u64,
     pub prefer_wal: bool,
@@ -613,6 +615,7 @@ pub struct SessionStoreConfig {
 impl Default for SessionStoreConfig {
     fn default() -> Self {
         Self {
+            require_private_permissions: false,
             cache_kib: SESSION_DEFAULT_CACHE_KIB,
             busy_timeout_ms: SESSION_BUSY_TIMEOUT_MS,
             prefer_wal: true,
@@ -1034,7 +1037,10 @@ impl SessionStore {
         validate_config(config)?;
         let path = path.as_ref().to_path_buf();
         validate_persistence_file_name(&path)?;
-        prepare_private_directory(required_private_parent(&path)?)?;
+        prepare_private_directory(
+            required_private_parent(&path)?,
+            config.require_private_permissions,
+        )?;
         let path = canonicalize_database_path(path)?;
         let existed_before_lock = validate_database_artifacts(&path)?;
         if existed_before_lock {
@@ -1046,8 +1052,8 @@ impl SessionStore {
                 });
             }
         }
-        let owner_lock = acquire_session_owner_lock(&path)?;
-        let existed = prepare_database_path(&path)?;
+        let owner_lock = acquire_session_owner_lock(&path, config.require_private_permissions)?;
+        let existed = prepare_database_path(&path, config.require_private_permissions)?;
         if existed {
             let version = inspect_persisted_user_version(&path)?;
             if version != 0 && version != SESSION_SCHEMA_VERSION {
@@ -1056,7 +1062,9 @@ impl SessionStore {
                     supported: SESSION_SCHEMA_VERSION,
                 });
             }
-            tighten_sqlite_artifact_permissions(&path)?;
+            if config.require_private_permissions {
+                tighten_sqlite_artifact_permissions(&path)?;
+            }
         }
         let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
         let mut connection = Connection::open_with_flags(&path, flags)?;
@@ -1090,7 +1098,9 @@ impl SessionStore {
         validate_schema(&connection)?;
         validate_integrity(&connection)?;
         validate_persisted_semantics(&connection)?;
-        tighten_sqlite_artifact_permissions(&path)?;
+        if config.require_private_permissions {
+            tighten_sqlite_artifact_permissions(&path)?;
+        }
         Ok(Self {
             path,
             connection,
@@ -2442,6 +2452,7 @@ impl SessionStore {
             &self.connection,
             destination.as_ref(),
             SessionBackupSchema::Current,
+            self.config.require_private_permissions,
         )
     }
 }
@@ -3802,6 +3813,7 @@ fn reconcile_backup_publication(
     parent: &JournalDirectoryCapability,
     destination: &Path,
     schema: SessionBackupSchema,
+    require_private_permissions: bool,
 ) -> Result<(), SessionStoreError> {
     let candidates = discover_backup_publication_candidates(parent, destination)?;
     if candidates.is_empty() {
@@ -3838,14 +3850,18 @@ fn reconcile_backup_publication(
                 "backup.publication_candidate",
             ));
         }
-        verify_private_backup_publication_permissions(destination)?;
+        if require_private_permissions {
+            verify_private_backup_publication_permissions(destination)?;
+        }
         validate_recovered_backup_database(destination, schema)?;
         remove_backup_publication_candidates(parent, destination_name, &candidates)?;
         parent
             .sync()
             .map_err(|error| session_capability_error(SessionIoOperation::CreateBackup, error))?;
         validate_regular_artifact(destination)?;
-        verify_private_file_permissions(destination)?;
+        if require_private_permissions {
+            verify_private_file_permissions(destination)?;
+        }
         return Ok(());
     }
 
@@ -3856,7 +3872,9 @@ fn reconcile_backup_publication(
     }
     let candidate = &candidates[0];
     validate_regular_artifact(&candidate.path)?;
-    verify_private_file_permissions(&candidate.path)?;
+    if require_private_permissions {
+        verify_private_file_permissions(&candidate.path)?;
+    }
     if parent
         .regular_file_link_count(&candidate.name)
         .map_err(|error| session_capability_error(SessionIoOperation::InspectPath, error))?
@@ -3867,13 +3885,14 @@ fn reconcile_backup_publication(
         ));
     }
     validate_recovered_backup_database(&candidate.path, schema)?;
-    match parent.link_no_replace(&candidate.name, destination_name) {
-        Ok(()) => {
+    let publication = match parent.publish_no_replace(&candidate.name, destination_name) {
+        Ok(publication) => {
             backup_test_crash("after_link");
             parent.sync().map_err(|error| {
                 session_capability_error(SessionIoOperation::CreateBackup, error)
             })?;
             backup_test_crash("after_link_sync");
+            publication
         }
         Err(error) if native_error_kind(&error) == io::ErrorKind::AlreadyExists => {
             if !parent
@@ -3882,6 +3901,7 @@ fn reconcile_backup_publication(
             {
                 return Err(SessionStoreError::BackupPathExists);
             }
+            crate::native_capability::FilePublication::Linked
         }
         Err(error) => {
             return Err(session_capability_error(
@@ -3889,6 +3909,13 @@ fn reconcile_backup_publication(
                 error,
             ));
         }
+    };
+    if publication == crate::native_capability::FilePublication::Renamed {
+        validate_regular_artifact(destination)?;
+        if require_private_permissions {
+            verify_private_file_permissions(destination)?;
+        }
+        return Ok(());
     }
     if !parent
         .same_regular_file(&candidate.name, destination_name)
@@ -3908,7 +3935,9 @@ fn reconcile_backup_publication(
         .sync()
         .map_err(|error| session_capability_error(SessionIoOperation::CreateBackup, error))?;
     validate_regular_artifact(destination)?;
-    verify_private_file_permissions(destination)?;
+    if require_private_permissions {
+        verify_private_file_permissions(destination)?;
+    }
     Ok(())
 }
 
@@ -3961,6 +3990,7 @@ fn backup_connection_to(
     connection: &Connection,
     destination: &Path,
     schema: SessionBackupSchema,
+    require_private_permissions: bool,
 ) -> Result<(), SessionStoreError> {
     let destination = destination.to_path_buf();
     validate_persistence_file_name(&destination)?;
@@ -3969,12 +3999,15 @@ fn backup_connection_to(
             "backup.reserved_sqlite_companion",
         ));
     }
-    prepare_private_directory(required_private_parent(&destination)?)?;
+    prepare_private_directory(
+        required_private_parent(&destination)?,
+        require_private_permissions,
+    )?;
     let destination = canonicalize_persistence_parent(destination)?;
     let parent =
         JournalDirectoryCapability::open_trusted(required_private_parent(&destination)?)
             .map_err(|error| session_capability_error(SessionIoOperation::InspectPath, error))?;
-    reconcile_backup_publication(&parent, &destination, schema)?;
+    reconcile_backup_publication(&parent, &destination, schema, require_private_permissions)?;
     if path_entry_exists(&destination)? {
         return Err(SessionStoreError::BackupPathExists);
     }
@@ -3997,11 +4030,15 @@ fn backup_connection_to(
         ));
     }
     create_secure_file(&temporary, SessionIoOperation::CreateBackup)?;
-    let mut installed = false;
+    let mut publication = None;
     let result = (|| {
-        tighten_database_permissions(&temporary)?;
+        if require_private_permissions {
+            tighten_database_permissions(&temporary)?;
+        }
         connection.backup(rusqlite::MAIN_DB, &temporary, None)?;
-        tighten_database_permissions(&temporary)?;
+        if require_private_permissions {
+            tighten_database_permissions(&temporary)?;
+        }
         validate_backup_database(&temporary, schema)?;
         remove_owned_sqlite_sidecars(&temporary)?;
         OpenOptions::new()
@@ -4010,8 +4047,8 @@ fn backup_connection_to(
             .open(&temporary)
             .and_then(|file| file.sync_all())
             .map_err(|error| session_io_error(SessionIoOperation::CreateBackup, error))?;
-        parent
-            .link_no_replace(&temporary_name, destination_name)
+        let installed = parent
+            .publish_no_replace(&temporary_name, destination_name)
             .map_err(|error| {
                 if native_error_kind(&error) == io::ErrorKind::AlreadyExists {
                     SessionStoreError::BackupPathExists
@@ -4019,7 +4056,7 @@ fn backup_connection_to(
                     session_capability_error(SessionIoOperation::CreateBackup, error)
                 }
             })?;
-        installed = true;
+        publication = Some(installed);
         backup_test_crash("after_link");
         parent
             .sync()
@@ -4032,17 +4069,20 @@ fn backup_connection_to(
         name: temporary_name.clone(),
         path: temporary.clone(),
     };
-    let temporary_cleanup = if installed {
-        remove_backup_publication_candidates(
-            &parent,
-            destination_name,
-            std::slice::from_ref(&publication_candidate),
-        )
-    } else {
-        remove_backup_temporary(&parent, &temporary_name)
-    };
+    let temporary_cleanup =
+        if publication == Some(crate::native_capability::FilePublication::Renamed) {
+            Ok(())
+        } else if publication.is_some() {
+            remove_backup_publication_candidates(
+                &parent,
+                destination_name,
+                std::slice::from_ref(&publication_candidate),
+            )
+        } else {
+            remove_backup_temporary(&parent, &temporary_name)
+        };
     if let Some(cleanup_error) = sidecar_cleanup.err().or_else(|| temporary_cleanup.err()) {
-        if installed {
+        if publication.is_some() {
             // Never risk deleting a raced destination replacement. A failed
             // temporary-link cleanup leaves two names for one inode, so the
             // operation cannot report success under the unique-link contract.
@@ -4053,7 +4093,7 @@ fn backup_connection_to(
         }
         return result.and(Err(cleanup_error));
     }
-    if installed {
+    if publication.is_some() {
         backup_test_crash("after_unlink");
         parent
             .sync()
@@ -4546,14 +4586,19 @@ fn validate_config(config: SessionStoreConfig) -> Result<(), SessionStoreError> 
     Ok(())
 }
 
-fn prepare_database_path(path: &Path) -> Result<bool, SessionStoreError> {
-    prepare_private_directory(required_private_parent(path)?)?;
+fn prepare_database_path(
+    path: &Path,
+    require_private_permissions: bool,
+) -> Result<bool, SessionStoreError> {
+    prepare_private_directory(required_private_parent(path)?, require_private_permissions)?;
     let existed = validate_database_artifacts(path)?;
     if existed {
         return Ok(true);
     }
     create_secure_file(path, SessionIoOperation::CreateDatabase)?;
-    tighten_database_permissions(path)?;
+    if require_private_permissions {
+        tighten_database_permissions(path)?;
+    }
     Ok(false)
 }
 
@@ -4579,7 +4624,10 @@ fn session_owner_lock_path(database_path: &Path) -> PathBuf {
     PathBuf::from(value)
 }
 
-fn acquire_session_owner_lock(database_path: &Path) -> Result<SessionOwnerLock, SessionStoreError> {
+fn acquire_session_owner_lock(
+    database_path: &Path,
+    require_private_permissions: bool,
+) -> Result<SessionOwnerLock, SessionStoreError> {
     let lock_path = session_owner_lock_path(database_path);
     if !path_entry_exists(&lock_path)? {
         match create_secure_file(&lock_path, SessionIoOperation::AcquireOwnerLock) {
@@ -4592,7 +4640,9 @@ fn acquire_session_owner_lock(database_path: &Path) -> Result<SessionOwnerLock, 
         }
     }
     validate_regular_artifact(&lock_path)?;
-    tighten_database_permissions(&lock_path)?;
+    if require_private_permissions {
+        tighten_database_permissions(&lock_path)?;
+    }
     let lock = OpenOptions::new()
         .read(true)
         .write(true)
@@ -4800,7 +4850,10 @@ fn validate_unique_file_identity(
         .map_err(|error| session_io_error(SessionIoOperation::InspectPath, error))
 }
 
-fn prepare_private_directory(path: &Path) -> Result<(), SessionStoreError> {
+fn prepare_private_directory(
+    path: &Path,
+    require_private_permissions: bool,
+) -> Result<(), SessionStoreError> {
     validate_directory_path_components(path)?;
     let mut missing = Vec::new();
     let mut cursor = path;
@@ -4828,11 +4881,17 @@ fn prepare_private_directory(path: &Path) -> Result<(), SessionStoreError> {
         ));
     }
     if missing.is_empty() {
-        return verify_private_directory(path);
+        return if require_private_permissions {
+            verify_private_directory(path)
+        } else {
+            Ok(())
+        };
     }
     for directory in missing.into_iter().rev() {
         create_private_directory(&directory)?;
-        tighten_directory_permissions(&directory)?;
+        if require_private_permissions {
+            tighten_directory_permissions(&directory)?;
+        }
     }
     Ok(())
 }
@@ -6854,14 +6913,14 @@ mod tests {
     #[test]
     fn owner_lock_drop_unlocks_before_duplicated_handles_close() {
         let directory = TestDirectory::new();
-        let owner =
-            super::acquire_session_owner_lock(&directory.database()).expect("acquire owner lock");
+        let owner = super::acquire_session_owner_lock(&directory.database(), true)
+            .expect("acquire owner lock");
         let inherited = owner.file.try_clone().expect("duplicate lock handle");
 
         drop(owner);
 
         drop(
-            super::acquire_session_owner_lock(&directory.database())
+            super::acquire_session_owner_lock(&directory.database(), true)
                 .expect("explicit unlock permits immediate reacquisition"),
         );
         drop(inherited);
@@ -6904,8 +6963,14 @@ mod tests {
         let directory = TestDirectory::new();
         let persistence = directory.path().join("nested").join("private");
         let database = persistence.join("session.db");
-        let mut store = SessionStore::open(&database, SessionStoreConfig::default())
-            .expect("open nested store");
+        let mut store = SessionStore::open(
+            &database,
+            SessionStoreConfig {
+                require_private_permissions: true,
+                ..SessionStoreConfig::default()
+            },
+        )
+        .expect("open nested store");
         store.put_session(&session_record()).expect("write session");
 
         #[cfg(unix)]
@@ -7058,7 +7123,13 @@ mod tests {
         fs::set_permissions(&broad, fs::Permissions::from_mode(0o777))
             .expect("make directory broad");
         assert!(matches!(
-            SessionStore::open(broad.join("session.db"), SessionStoreConfig::default()),
+            SessionStore::open(
+                broad.join("session.db"),
+                SessionStoreConfig {
+                    require_private_permissions: true,
+                    ..SessionStoreConfig::default()
+                }
+            ),
             Err(SessionStoreError::Io {
                 operation: super::SessionIoOperation::TightenPermissions,
                 kind: std::io::ErrorKind::PermissionDenied,
@@ -10474,6 +10545,31 @@ mod tests {
     }
 
     #[test]
+    fn removable_backup_recovers_valid_candidate_and_preserves_invalid_candidate() {
+        let directory = TestDirectory::new();
+        let mut store = open_store(&directory);
+        store.put_session(&session_record()).unwrap();
+        store.put_task(&task_record(gid(1), 0)).unwrap();
+        let destination = directory.path().join("candidate.backup.db");
+        let candidate = super::backup_temporary_path(&destination);
+        store.backup_to(&candidate).unwrap();
+        assert!(matches!(
+            store.backup_to(&destination),
+            Err(SessionStoreError::BackupPathExists)
+        ));
+        assert!(!candidate.exists());
+        let recovered = SessionStore::open(&destination, SessionStoreConfig::default()).unwrap();
+        assert_eq!(recovered.tasks().unwrap().len(), 1);
+        drop(recovered);
+        let invalid_destination = directory.path().join("invalid.backup.db");
+        let invalid_candidate = super::backup_temporary_path(&invalid_destination);
+        fs::write(&invalid_candidate, b"not a database").unwrap();
+        assert!(store.backup_to(&invalid_destination).is_err());
+        assert!(!invalid_destination.exists());
+        assert_eq!(fs::read(invalid_candidate).unwrap(), b"not a database");
+    }
+
+    #[test]
     fn hot_backup_recovery_preserves_a_raced_destination_replacement() {
         let directory = TestDirectory::new();
         let mut store = open_store(&directory);
@@ -10644,6 +10740,7 @@ mod tests {
                 &store.connection,
                 &destination,
                 super::SessionBackupSchema::Current,
+                store.config.require_private_permissions,
             ),
             Err(SessionStoreError::SchemaMismatch(_))
         ));

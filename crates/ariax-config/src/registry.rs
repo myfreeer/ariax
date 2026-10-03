@@ -1346,6 +1346,27 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         behavior_tests: NONE,
     },
     OptionDef {
+        name: "require-private-permissions",
+        short: None,
+        value_type: ValueType::Bool,
+        default: Some("false"),
+        category: "session",
+        scopes: STARTUP_ONLY,
+        runtime_update: RuntimeUpdate::StartupOnly,
+        owner: "session_store",
+        build_features: MINIMAL,
+        security: SecurityClass::LocalAdmin,
+        compat: CompatStatus::Implemented,
+        aria2_available: false,
+        aria2_runtime_update: RuntimeUpdate::None,
+        compatibility_difference: CompatibilityDifference::Intentional,
+        docs: "docs/storage/session-persistence.md#filesystem-permission-policy",
+        behavior_tests: &[
+            "default_policy_accepts_shared_directory_preserves_lock_and_reopens",
+            "strict_policy_rejects_shared_directory_before_creating_state",
+        ],
+    },
+    OptionDef {
         name: "session-store",
         short: None,
         value_type: ValueType::Enum {

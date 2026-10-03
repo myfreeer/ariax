@@ -702,7 +702,8 @@ must verify/finalize from the journal state before publishing completion.
 
 Startup:
 
-- require a dedicated private persistence directory; reject intermediate
+- enforce private persistence permissions only when `require-private-permissions=true`;
+  always reject intermediate
   symlink/reparse components, non-regular database/sidecar artifacts, and
   orphan `-wal`, `-shm`, or `-journal` files when the main database is missing
   or empty,
@@ -823,25 +824,67 @@ Consequences:
   encryption, key rotation, locked-key recovery, and export encryption. It does
   not weaken this default.
 
-The SQLite database and backups require a dedicated private parent directory.
-Every existing path component must be a real directory rather than a Unix
-symlink or Windows reparse point. If the exact parent already exists with
-group/other access on Unix or inherited or foreign allow entries on Windows,
-startup rejects it without changing the directory. A missing owned directory
-chain is created one component at a time with mode `0700` on Unix or a protected
-Windows ACL granting only the current user, SYSTEM, and Administrators. This
-avoids silently applying `chmod` or a new ACL to `/tmp`, a project directory, or
-another caller-owned broad parent. Windows creation and verification use the
-native `ariax-windows-security` adapter with no shell or PowerShell subprocess.
+### Filesystem Permission Policy
+
+`require-private-permissions=false` is the default startup policy. Existing
+session directories and files are accepted regardless of Unix mode bits or
+Windows ACL privacy when ordinary filesystem access succeeds. This permits
+filesystems that do not represent private modes or persistent ACLs. Ariax still
+requests private permissions when creating new state where the filesystem
+supports them; it does not tighten or reject existing permissions by default.
+The embedding builder follows this policy for its control and journal
+directories as well as the session database.
+
+`require-private-permissions=true` opts into the stricter persistence policy.
+The SQLite database and backups then require a dedicated private parent
+directory. An existing parent with group/other access on Unix or inherited or
+foreign allow entries on Windows is rejected without changing the directory.
+New directories request `0700` on Unix or a protected Windows ACL granting only
+the current user, SYSTEM, and Administrators, and strict mode verifies that the
+filesystem enforced the requested protection. Unsupported protection fails
+strict startup rather than silently falling back.
+
+Both policies reject Unix symlink and Windows reparse path components,
+non-regular artifacts, unexpected hard links, orphan SQLite sidecars, and
+unsupported schemas. Owner locks, identity checks, integrity validation, and
+atomic publication remain mandatory. Permissive mode does not protect state
+against another user who can modify the chosen directory. Disabling privacy
+checks does not establish support for other missing filesystem capabilities,
+such as locking or atomic no-clobber publication. In particular, FAT32's
+per-file size limit remains independent of this policy.
+On Windows volumes without hard links, backup publication uses a
+handle-relative, same-directory rename with replacement disabled. It preserves
+the no-clobber contract but consumes the candidate name at publication. Existing
+hard-link publication and recovery remain in use on supporting volumes.
+
+The option also selects the BitTorrent output-root permission policy at
+admission, recovery and revalidation. BitTorrent path, file-type, hard-link and
+root-identity validation remain enabled in both modes. Private-root checks
+remain required in the explicit strict mode. The policy is local and
+startup-only, cannot be changed over RPC, and is not a persisted task option.
+
+The native embedding API exposes `EngineBuilder::require_private_permissions`
+and the lower-level `SessionStoreConfig::require_private_permissions` boolean;
+both default to `false`. The experimental CLI accepts
+`--require-private-permissions=true|false` before a command. Invalid values and
+duplicate occurrences are rejected. This policy concerns state and payload
+filesystem permissions, not credential-file handling or network access.
+
+This default matches aria2's ordinary file-access approach. At the pinned
+aria2 reference commit, session export uses a temporary buffered file followed
+by rename, ordinary Unix file/directory creation uses `0666`/`0777` subject to
+umask, and Windows payload creation uses default security attributes. Aria2's
+separate documented `0600` requirement for `.netrc` is not a general persistence
+permission requirement.
 
 Database, WAL, SHM, rollback-journal, `${db}.ariax-owner-lock`,
-temporary-backup, and published-backup files are private regular files (`0600`
-on Unix and the corresponding protected Windows ACL). Hard-linked persistence
-artifacts are rejected so path-derived owner locks cannot be bypassed by opening
-the same file through another name. Existing
-supported-version files inside an accepted private directory may be tightened
-before use, but symlinks and non-regular artifacts are rejected rather than
-followed or replaced. Windows verification requires current-user ownership.
+temporary-backup, and published-backup files must be regular files. Strict
+mode additionally requires `0600` on Unix and the corresponding protected
+Windows ACL. Hard-linked persistence artifacts are rejected so path-derived
+owner locks cannot be bypassed by opening the same file through another name.
+Existing supported-version files may be tightened before use in strict mode,
+but symlinks and non-regular artifacts are rejected rather than followed or
+replaced. Strict Windows verification requires current-user ownership.
 SQLite-created files can initially be owned by Administrators when that is the
 process token's default owner. Tightening may normalize this owner to the current
 user only when it matches that token default and the file DACL already grants
@@ -857,8 +900,9 @@ untrusted WAL, SHM, or rollback journal. A newer schema is rejected before any
 such file-permission change. Journal, companion, metadata, and export artifacts
 follow their owning safe-creation rules.
 
-Atomic replacement never leaves a broad-permission temporary file. Rotated
-segments and backups retain the source ACL/mode. Deletion is best-effort and is
+Atomic replacement requests private temporary files where supported; strict
+mode verifies that protection. Rotated segments and backups retain their
+creation ACL/mode. Deletion is best-effort and is
 not claimed as secure erasure on copy-on-write, journaled, flash, or cloud-backed
 filesystems; omission is therefore the primary protection. Tests scan the raw
 database, WAL/SHM, journals, metadata, temporary/backup, companion, and export
@@ -1068,9 +1112,10 @@ SQLite:
 - WAL auto-checkpoint is 1000 pages. The executable truncate-checkpoint primitive
   reports a busy checkpoint and is a no-op in DELETE mode; clean-shutdown and
   size-trigger invocation of that primitive remain pending integration work,
-- the hot-backup primitive writes a private temporary database, validates its
+- the hot-backup primitive requests private creation for its temporary database, validates its
   integrity, exact schema, and persisted semantics, then `sync_all`s that file
-  and publishes it with a no-clobber hard link. It never overwrites an existing
+  and publishes it with a no-clobber hard link, or a no-replace rename on Windows
+  volumes without hard links. It never overwrites an existing
   destination, deletes a raced destination replacement, or accepts a
   destination filename ending in `-wal`, `-shm`, or `-journal` under
   ASCII-insensitive comparison;

@@ -2246,6 +2246,7 @@ impl HttpControlPlane {
         let resources = self.bt.resources.clone().expect("BT resources");
         let initialize = self.bt.adapter.is_none();
         let root = self.config.output_root.clone();
+        let require_private_permissions = self.engine.require_private_permissions();
         let task_id = TaskId::new(self.next_task_id).ok_or(HttpControlError::InvalidConfig)?;
         let session_id = self.session_id;
         let http = self.tasks.snapshot();
@@ -2282,6 +2283,7 @@ impl HttpControlPlane {
                 &resources.resident,
                 &retained,
                 false,
+                require_private_permissions,
             )?;
             if prepared.spec.options.settings.peers > config.peers
                 || prepared.spec.options.settings.dht && !config.dht
@@ -2460,7 +2462,11 @@ impl HttpControlPlane {
             options.paused = record.desired_paused;
             let root = ariax_storage::platform_path_to_current(&record.root_display)
                 .map_err(|_| bt_error(BtError::UnsafePath))?;
-            let root = ProtectedRoot::open(root).map_err(bt_error)?;
+            let root = ProtectedRoot::open_with_permissions(
+                root,
+                self.engine.require_private_permissions(),
+            )
+            .map_err(bt_error)?;
             if root.identity().as_ref() != record.binding.root_identity {
                 return Err(bt_error(BtError::IdentityMismatch));
             }
@@ -2530,6 +2536,7 @@ pub(super) fn prepare_admission(
     resident: &ByteBudget,
     request: &crate::rpc_budget::RpcRequestLease,
     allow_existing: bool,
+    require_private_permissions: bool,
 ) -> Result<PreparedAdmission, HttpControlError> {
     let args = params
         .as_array()
@@ -2629,7 +2636,8 @@ pub(super) fn prepare_admission(
     if !root.starts_with(&approved_root) {
         return Err(bt_error(BtError::UnsafePath));
     }
-    let root = ProtectedRoot::open(root).map_err(bt_error)?;
+    let root = ProtectedRoot::open_with_permissions(root, require_private_permissions)
+        .map_err(bt_error)?;
     let mapping = metadata
         .as_ref()
         .map(|metadata| map_files(metadata, &options.mapping))
@@ -2708,6 +2716,7 @@ pub(super) fn prepare_import(
     root: &Path,
     resident: &ByteBudget,
     request: &crate::rpc_budget::RpcRequestLease,
+    require_private_permissions: bool,
 ) -> Result<Arc<Spec>, HttpControlError> {
     let torrent = !imported.binding.metainfo.is_empty();
     let params = if torrent {
@@ -2727,7 +2736,15 @@ pub(super) fn prepare_import(
         ])
     };
     let mut prepared = prepare_admission(
-        params, torrent, task_id, session_id, root, resident, request, true,
+        params,
+        torrent,
+        task_id,
+        session_id,
+        root,
+        resident,
+        request,
+        true,
+        require_private_permissions,
     )?;
     let spec = Arc::get_mut(&mut prepared.spec).expect("unpublished imported BT task");
     if spec.record.binding.identity != imported.binding.identity
@@ -2870,7 +2887,7 @@ mod tests {
         let spec = prepare_admission(
             json!([base64ct::Base64::encode_string(include_bytes!("../../../ariax-bt-libtorrent-sys/tests/fixtures/v1.torrent")), [], {"pause":true}]),
             true, TaskId::new(1).unwrap(), plane.session_id, &directory.output,
-            &plane.bt.resources.as_ref().unwrap().resident, &request, false,
+            &plane.bt.resources.as_ref().unwrap().resident, &request, false, false,
         ).unwrap().spec;
         plane.bt.install(spec.clone());
         let mut validation = None;

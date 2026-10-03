@@ -4,7 +4,8 @@ use ariax_storage::{
     ALL_ROOT_BINDING_ERROR_CLASSES, LAYOUT_HASH_DOMAIN, MAX_IDENTITY_BYTES, MAX_LAYOUT_BYTES,
     MAX_LAYOUT_ENTRIES, MAX_PLATFORM_PATH_BYTES, MAX_SAFE_RELATIVE_BYTES,
     NATIVE_IDENTITY_UNIX_BYTES, NATIVE_IDENTITY_VERSION, NATIVE_IDENTITY_WINDOWS_BYTES,
-    PathPlatform, ROOT_BINDING_HASH_DOMAIN,
+    NATIVE_IDENTITY_WINDOWS_LEGACY_BYTES, NATIVE_IDENTITY_WINDOWS_LEGACY_VERSION, PathPlatform,
+    ROOT_BINDING_HASH_DOMAIN,
 };
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -68,6 +69,9 @@ fn render_storage_contracts() -> String {
         "  ],\n  \"native_identity_v1\": {{\"version\": {NATIVE_IDENTITY_VERSION}, \"platform_tag_offset\": 1, \"unix\": {{\"bytes\": {NATIVE_IDENTITY_UNIX_BYTES}, \"payload\": [\"st_dev_u64le\", \"st_ino_u64le\"]}}, \"windows\": {{\"bytes\": {NATIVE_IDENTITY_WINDOWS_BYTES}, \"payload\": [\"volume_serial_u64le\", \"file_id_128\"]}}, \"cross_platform_rejected\": true}},"
     )
     .expect("write to string");
+    writeln!(output,
+        "  \"windows_legacy_identity\": {{\"version\": {NATIVE_IDENTITY_WINDOWS_LEGACY_VERSION}, \"platform_tag\": 2, \"bytes\": {NATIVE_IDENTITY_WINDOWS_LEGACY_BYTES}, \"payload\": [\"volume_serial_u32le\", \"file_index_u64le\", \"creation_time_u64le\"], \"fast_resume_claims_trusted\": false}},"
+    ).expect("write to string");
     output.push_str("  \"path_rejections\": ");
     write_code_array(
         &mut output,

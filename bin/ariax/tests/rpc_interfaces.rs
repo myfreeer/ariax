@@ -226,7 +226,7 @@ async fn cli_torrents_reopen_with_matching_rust_and_rpc_projections_for_every_ve
 
 #[cfg(all(feature = "full", unix))]
 #[test]
-fn cli_torrent_rejects_shared_output_root_without_changing_permissions() {
+fn cli_strict_torrent_rejects_shared_output_root_without_changing_permissions() {
     use std::os::unix::fs::PermissionsExt as _;
     let root = Root::new();
     let input = root.0.join("input.torrent");
@@ -240,6 +240,7 @@ fn cli_torrent_rejects_shared_output_root_without_changing_permissions() {
     std::fs::set_permissions(&output_root, std::fs::Permissions::from_mode(0o777)).unwrap();
     let output = command()
         .args([
+            "--require-private-permissions=true",
             "--enable-dht=false",
             "--enable-peer-exchange=false",
             "--add-torrent",

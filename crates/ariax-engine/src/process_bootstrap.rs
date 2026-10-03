@@ -78,6 +78,11 @@ pub struct BootstrappedEngine {
 }
 
 impl BootstrappedEngine {
+    #[cfg(feature = "bt")]
+    pub(crate) fn require_private_permissions(&self) -> bool {
+        self.session_store_config.require_private_permissions
+    }
+
     pub(crate) fn persisted_option_policy(&self) -> Arc<dyn PersistedOptionPolicy + Send + Sync> {
         self.option_policy.clone()
     }

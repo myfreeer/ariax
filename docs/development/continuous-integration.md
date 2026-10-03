@@ -137,8 +137,18 @@ Windows GNU links against the active MinGW toolchain with
 Rust-linked C++ code on the same MinGW runtime as the native dependency build.
 Mixing Rust's bundled runtime archives with MSYS2's C++ runtime can leave
 Boost.Asio threads alive after session destruction and cause access violations.
+Removable-filesystem validation runs the same native Windows executables with
+their test temporary directory on FAT32 and on NTFS, keeping compiler outputs
+on the build volume. Required cases cover bootstrap, no-clobber journal/backup
+publication, backup crash recovery, file replacement, and an interrupted HTTP
+transfer whose changed durable bytes reject before a successful range resume.
+`removable_storage` is the bounded CLI regression for that transfer. Legacy
+identity codecs and unsupported-query filtering also have focused tests.
+exFAT must receive its own native run before support is certified; FAT32's
+per-file size limit and Windows directory-entry power-loss limitations remain.
 Native peer fixtures create seed files and intermediate directories with the
-same private permissions or Windows ACLs required by admission. Rate-allocation
+private permissions or Windows ACLs required by strict permission mode;
+default-mode tests also cover shared directories. Rate-allocation
 tests advance a paused clock before expecting replenished tokens. Lifecycle
 fixtures retry an unaccepted busy command within their deadline, then retain
 the accepted command's completion obligations after dropping its reply.

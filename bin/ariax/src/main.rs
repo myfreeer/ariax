@@ -108,6 +108,7 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
             profile,
             command,
             startup.bittorrent.clone(),
+            startup.require_private_permissions,
         )
     };
     match arguments {
@@ -128,6 +129,7 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
                 PathBuf::from(database),
                 PathBuf::from(control),
                 roots.iter().map(PathBuf::from).collect(),
+                startup.require_private_permissions,
             )
         }
         [command, database, control, output_root, bind] if command == "--rpc-http" => {
@@ -454,7 +456,7 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
     }
 }
 
-const RPC_STARTUP_HELP: &str = "\nRPC startup options (before the command):\n  --rpc-secret=VALUE   Method token; defaults to ARIAX_RPC_SECRET\n  --rpc-user=VALUE     HTTP Basic user; defaults to ARIAX_RPC_USER\n  --rpc-passwd=VALUE   HTTP Basic password; defaults to ARIAX_RPC_PASSWD\nBitTorrent startup options (before the command):\n  --bt-listen-address=IP:PORT  Native peer listener\n  --bt-encryption=required|preferred|disabled\n  --bt-allow-private-destinations=true|false  Default false\n  --enable-dht=true|false --enable-peer-exchange=true|false\nSession startup options:\n  --save-session=FILE  Atomically save unfinished downloads at shutdown\n  --save-session-format=aria2|json  Default aria2\n  --save-session-interval=SECONDS  Periodic saving; 0 disables it\n  --input-file=FILE    Import a complete bounded session before workers start\n  --input-file-format=aria2|json   Default aria2\nBoth Basic fields must be configured together. HTTP Basic applies to HTTP and WebSocket; method tokens also apply to stdio.\n";
+const RPC_STARTUP_HELP: &str = "\nRPC startup options (before the command):\n  --rpc-secret=VALUE   Method token; defaults to ARIAX_RPC_SECRET\n  --rpc-user=VALUE     HTTP Basic user; defaults to ARIAX_RPC_USER\n  --rpc-passwd=VALUE   HTTP Basic password; defaults to ARIAX_RPC_PASSWD\nBitTorrent startup options (before the command):\n  --bt-listen-address=IP:PORT  Native peer listener\n  --bt-encryption=required|preferred|disabled\n  --bt-allow-private-destinations=true|false  Default false\n  --enable-dht=true|false --enable-peer-exchange=true|false\nSession startup options:\n  --require-private-permissions=true|false  Enforce private state permissions; default false\n  --save-session=FILE  Atomically save unfinished downloads at shutdown\n  --save-session-format=aria2|json  Default aria2\n  --save-session-interval=SECONDS  Periodic saving; 0 disables it\n  --input-file=FILE    Import a complete bounded session before workers start\n  --input-file-format=aria2|json   Default aria2\nBoth Basic fields must be configured together. HTTP Basic applies to HTTP and WebSocket; method tokens also apply to stdio.\n";
 
 const RPC_INTERFACE_HELP: &str = "\nCombined RPC and compatibility commands:\n  --rpc SESSION_DB CONTROL_DIR OUTPUT_ROOT [LOOPBACK_ADDR]\n  --rpc-call SESSION_DB CONTROL_DIR OUTPUT_ROOT JSON_RPC_DOCUMENT\nAdditional startup options (before the command):\n  --rpc-transport=http|websocket|stdio|http+stdio|websocket+stdio\n  --rpc-stdio-framing=content-length|ndjson\n  --rpc-stdio-eof=shutdown|close-transport|ignore\n  --rpc-stdio-events=true|false\n  --rpc-stdio-max-request-size=SIZE  At most 2M\n  --rpc-compat=aria2|extended|strict\n  --conf-path=FILE   Reloadable HTTP task defaults\n  --url-rules=FILE   Bounded TOML rules\n";
 
@@ -477,6 +479,7 @@ fn run_direct_control(
     profile: RuntimeProfile,
     command: DirectControl,
     bittorrent: Option<ariax_engine::BitTorrentConfig>,
+    require_private_permissions: bool,
 ) -> ExitCode {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -491,6 +494,7 @@ fn run_direct_control(
     runtime.block_on(async move {
         let builder = Engine::builder()
             .database_path(database_path)
+            .require_private_permissions(require_private_permissions)
             .control_directory(control_directory)
             .output_root(output_root)
             .profile(profile);
@@ -956,6 +960,7 @@ fn process_bootstrap_config(
     database_path: PathBuf,
     control_directory: PathBuf,
     allowed_output_roots: Vec<PathBuf>,
+    require_private_permissions: bool,
 ) -> Result<ProcessBootstrapConfig, String> {
     let now_wall_unix_ms =
         now_unix_ms().ok_or_else(|| "system wall clock is before the Unix epoch".to_owned())?;
@@ -966,8 +971,10 @@ fn process_bootstrap_config(
     let max_wait_ms = NonZeroU64::new(86_400_000).expect("maximum wait is nonzero");
     let scheduler = SchedulerConfig::new(task_capacity, active_capacity, true)
         .map_err(|error| format!("invalid scheduler bootstrap policy: {error}"))?;
+    let mut session_owner = SessionOwnerConfig::new(database_path);
+    session_owner.store.require_private_permissions = require_private_permissions;
     Ok(ProcessBootstrapConfig {
-        session_owner: SessionOwnerConfig::new(database_path),
+        session_owner,
         control_directory,
         allowed_output_roots,
         replay_limits: ReplayLimits::default(),
@@ -1038,15 +1045,18 @@ fn run_rpc(
         eprintln!("ariax: cannot create HTTP journal root: {error}");
         return ExitCode::FAILURE;
     }
-    let config =
-        match process_bootstrap_config(database_path, control_directory, vec![output_root.clone()])
-        {
-            Ok(config) => config,
-            Err(error) => {
-                eprintln!("ariax: {error}");
-                return ExitCode::FAILURE;
-            }
-        };
+    let config = match process_bootstrap_config(
+        database_path,
+        control_directory,
+        vec![output_root.clone()],
+        startup.require_private_permissions,
+    ) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("ariax: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
     let engine = match ariax_engine::bootstrap_process(config, persisted_option_is_safe) {
         Ok(engine) => engine,
         Err(error) => {
@@ -1226,15 +1236,20 @@ fn check_bootstrap(
     database_path: PathBuf,
     control_directory: PathBuf,
     allowed_output_roots: Vec<PathBuf>,
+    require_private_permissions: bool,
 ) -> ExitCode {
-    let config =
-        match process_bootstrap_config(database_path, control_directory, allowed_output_roots) {
-            Ok(config) => config,
-            Err(error) => {
-                eprintln!("ariax: {error}");
-                return ExitCode::FAILURE;
-            }
-        };
+    let config = match process_bootstrap_config(
+        database_path,
+        control_directory,
+        allowed_output_roots,
+        require_private_permissions,
+    ) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("ariax: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
     match ariax_engine::bootstrap_process(config, persisted_option_is_safe) {
         Ok(engine) => {
             let tasks = engine.task_count();

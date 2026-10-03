@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "source": {"repository": "https://github.com/aria2/aria2", "commit": "9e7273583f83e881e3ec067b523ba88724088d2f"},
-  "counts": {"pinned_aria2_handlers": 207, "reviewed_registry_entries": 107, "reviewed_upstream_entries": 54, "extensions": 73, "upstream_without_registry": 153, "registry_claims_missing_upstream": 0},
+  "counts": {"pinned_aria2_handlers": 207, "reviewed_registry_entries": 108, "reviewed_upstream_entries": 54, "extensions": 74, "upstream_without_registry": 153, "registry_claims_missing_upstream": 0},
   "reviewed": [
     {"name": "allow-overwrite", "status": "partial", "aria2_available": true, "security": "normal", "features": ["minimal"], "docs": "docs/interfaces/configuration.md#compatibility-matrix-categories"},
     {"name": "bt-allow-private-destinations", "status": "feature_gated", "aria2_available": false, "security": "local_admin", "features": ["full", "compat"], "docs": "docs/protocols/libtorrent-integration.md#runtime-bt-option-updates"},
@@ -63,6 +63,7 @@
     {"name": "piece-length", "status": "partial", "aria2_available": true, "security": "normal", "features": ["minimal"], "docs": "docs/storage/detailed-storage.md#piece-model"},
     {"name": "profile", "status": "partial", "aria2_available": false, "security": "normal", "features": ["minimal"], "docs": "docs/runtime/performance-profiles.md#unified-user-profile"},
     {"name": "realtime-chunk-checksum", "status": "partial", "aria2_available": false, "security": "normal", "features": ["minimal"], "docs": "docs/protocols/detailed-protocol-transfers.md#scope-and-checkpoints"},
+    {"name": "require-private-permissions", "status": "implemented", "aria2_available": false, "security": "local_admin", "features": ["minimal"], "docs": "docs/storage/session-persistence.md#filesystem-permission-policy"},
     {"name": "retry-after", "status": "partial", "aria2_available": false, "security": "normal", "features": ["minimal"], "docs": "docs/protocols/retry-policy.md#policy-options"},
     {"name": "retry-after-max", "status": "partial", "aria2_available": false, "security": "normal", "features": ["minimal"], "docs": "docs/protocols/retry-policy.md#policy-options"},
     {"name": "retry-after-min", "status": "partial", "aria2_available": false, "security": "normal", "features": ["minimal"], "docs": "docs/protocols/retry-policy.md#policy-options"},

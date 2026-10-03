@@ -17,8 +17,9 @@ use windows_sys::Wdk::Storage::FileSystem::{
     NtQueryDirectoryFile, NtSetInformationFile,
 };
 use windows_sys::Win32::Foundation::{
-    GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE, LocalFree, OBJ_CASE_INSENSITIVE,
-    OBJ_DONT_REPARSE, RtlNtStatusToDosError, STATUS_NO_MORE_FILES, UNICODE_STRING,
+    ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED, GENERIC_READ,
+    GENERIC_WRITE, INVALID_HANDLE_VALUE, LocalFree, OBJ_CASE_INSENSITIVE, OBJ_DONT_REPARSE,
+    RtlNtStatusToDosError, STATUS_NO_MORE_FILES, UNICODE_STRING,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
@@ -38,12 +39,14 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
     FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FILE_LIST_DIRECTORY,
     FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileIdInfo,
-    GetFileInformationByHandle, GetFileInformationByHandleEx, OPEN_EXISTING, READ_CONTROL,
-    SYNCHRONIZE, WRITE_DAC, WRITE_OWNER,
+    GetFileInformationByHandle, GetFileInformationByHandleEx, GetVolumeInformationByHandleW,
+    OPEN_EXISTING, READ_CONTROL, SYNCHRONIZE, WRITE_DAC, WRITE_OWNER,
 };
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 use windows_sys::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
-use windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
+use windows_sys::Win32::System::SystemServices::{
+    ACCESS_ALLOWED_ACE_TYPE, FILE_SUPPORTS_HARD_LINKS,
+};
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
 const MAX_SID_STRING_UNITS: usize = 1_024;
@@ -52,9 +55,58 @@ const DIRECTORY_QUERY_BUFFER_BYTES: usize = 64 * 1024;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NativeFileInformation {
     pub volume_serial: u64,
-    pub file_id: [u8; 16],
+    pub file_id: NativeFileId,
     pub is_directory: bool,
     pub number_of_links: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeFileId {
+    Extended([u8; 16]),
+    Legacy { file_index: u64, creation_time: u64 },
+}
+
+fn volume_features(file: &File) -> io::Result<(u32, bool)> {
+    let mut flags = 0;
+    let mut name = [0_u16; 64];
+    // SAFETY: the file handle is live, the filesystem-name output buffer is
+    // valid for its specified length, and optional output pointers are null.
+    if unsafe {
+        GetVolumeInformationByHandleW(
+            file.as_raw_handle(),
+            ptr::null_mut(),
+            0,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &mut flags,
+            name.as_mut_ptr(),
+            name.len() as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let end = name
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(name.len());
+    let name = String::from_utf16_lossy(&name[..end]);
+    let legacy = ["FAT", "FAT32", "exFAT"]
+        .iter()
+        .any(|fs| name.eq_ignore_ascii_case(fs));
+    Ok((flags, legacy))
+}
+
+pub fn supports_hard_links(directory: &File) -> io::Result<bool> {
+    volume_features(directory).map(|(flags, _)| flags & FILE_SUPPORTS_HARD_LINKS != 0)
+}
+
+fn permits_legacy_identity(error: &io::Error, legacy_filesystem: bool) -> bool {
+    legacy_filesystem
+        && matches!(
+            error.raw_os_error().map(|code| code as u32),
+            Some(ERROR_INVALID_FUNCTION | ERROR_INVALID_PARAMETER | ERROR_NOT_SUPPORTED)
+        )
 }
 
 /// Returns the current process working-set size reported by Windows.
@@ -196,11 +248,29 @@ pub fn query_native_file_information(file: &File) -> io::Result<NativeFileInform
         )
     } == 0
     {
-        return Err(io::Error::last_os_error());
+        let error = io::Error::last_os_error();
+        if !permits_legacy_identity(&error, true) {
+            return Err(error);
+        }
+        let (_, legacy_filesystem) = volume_features(file)?;
+        if !permits_legacy_identity(&error, legacy_filesystem) {
+            return Err(error);
+        }
+        return Ok(NativeFileInformation {
+            volume_serial: u64::from(basic.dwVolumeSerialNumber),
+            file_id: NativeFileId::Legacy {
+                file_index: (u64::from(basic.nFileIndexHigh) << 32)
+                    | u64::from(basic.nFileIndexLow),
+                creation_time: (u64::from(basic.ftCreationTime.dwHighDateTime) << 32)
+                    | u64::from(basic.ftCreationTime.dwLowDateTime),
+            },
+            is_directory: basic.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0,
+            number_of_links: basic.nNumberOfLinks,
+        });
     }
     Ok(NativeFileInformation {
         volume_serial: id.VolumeSerialNumber,
-        file_id: id.FileId.Identifier,
+        file_id: NativeFileId::Extended(id.FileId.Identifier),
         is_directory: basic.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0,
         number_of_links: basic.nNumberOfLinks,
     })
@@ -352,6 +422,24 @@ pub fn rename_relative_replace(
     source_name: &OsStr,
     destination_name: &OsStr,
 ) -> io::Result<()> {
+    rename_relative(directory, source_name, destination_name, true)
+}
+
+/// Publishes a file within its retained directory without overwriting any name.
+pub fn rename_relative_no_replace(
+    directory: &File,
+    source_name: &OsStr,
+    destination_name: &OsStr,
+) -> io::Result<()> {
+    rename_relative(directory, source_name, destination_name, false)
+}
+
+fn rename_relative(
+    directory: &File,
+    source_name: &OsStr,
+    destination_name: &OsStr,
+    replace: bool,
+) -> io::Result<()> {
     let source = single_relative_name(source_name)?;
     let destination = single_relative_name(destination_name)?;
     let source = nt_open(
@@ -380,7 +468,7 @@ pub fn rename_relative_replace(
     // SAFETY: `storage` is aligned and large enough for the fixed structure and
     // flexible UTF-16 name written below.
     unsafe {
-        (*information).Anonymous.ReplaceIfExists = true;
+        (*information).Anonymous.ReplaceIfExists = replace;
         (*information).RootDirectory = directory.as_raw_handle();
         (*information).FileNameLength =
             u32::try_from(byte_length).map_err(|_| invalid_data("rename name is too long"))?;
@@ -1296,6 +1384,79 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     struct TestDirectory(std::path::PathBuf);
+
+    #[test]
+    fn legacy_fallback_requires_known_filesystem_and_unsupported_query() {
+        for code in [
+            ERROR_INVALID_FUNCTION,
+            ERROR_NOT_SUPPORTED,
+            ERROR_INVALID_PARAMETER,
+        ] {
+            let error = io::Error::from_raw_os_error(code as i32);
+            assert!(permits_legacy_identity(&error, true));
+            assert!(!permits_legacy_identity(&error, false));
+        }
+        for code in [5, 6, 23, 32] {
+            assert!(!permits_legacy_identity(
+                &io::Error::from_raw_os_error(code),
+                true
+            ));
+        }
+    }
+
+    #[test]
+    fn removable_identity_and_no_replace_rename_preserve_contents_and_collision() {
+        use std::io::Write as _;
+        let root = TestDirectory::new();
+        let directory = open_absolute_directory_no_reparse(root.path()).unwrap();
+        let mut source =
+            create_relative_file_no_reparse(&directory, OsStr::new("temporary")).unwrap();
+        source.write_all(b"new complete bytes").unwrap();
+        source.sync_all().unwrap();
+        let identity = query_native_file_information(&source).unwrap();
+        let reopened =
+            open_relative_regular_file_no_reparse(&directory, Path::new("temporary"), false)
+                .unwrap();
+        assert_eq!(identity, query_native_file_information(&reopened).unwrap());
+        drop(reopened);
+        fs::write(root.path().join("existing"), b"existing bytes").unwrap();
+        assert_eq!(
+            rename_relative_no_replace(&directory, OsStr::new("temporary"), OsStr::new("existing"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(
+            fs::read(root.path().join("existing")).unwrap(),
+            b"existing bytes"
+        );
+        assert_eq!(
+            fs::read(root.path().join("temporary")).unwrap(),
+            b"new complete bytes"
+        );
+        rename_relative_no_replace(&directory, OsStr::new("temporary"), OsStr::new("published"))
+            .unwrap();
+        assert!(!root.path().join("temporary").exists());
+        let published =
+            open_relative_regular_file_no_reparse(&directory, Path::new("published"), false)
+                .unwrap();
+        assert_eq!(
+            query_native_file_information(&source).unwrap(),
+            query_native_file_information(&published).unwrap()
+        );
+        assert_eq!(
+            fs::read(root.path().join("published")).unwrap(),
+            b"new complete bytes"
+        );
+        assert!(
+            rename_relative_no_replace(
+                &directory,
+                OsStr::new("published"),
+                OsStr::new("../escape")
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn current_process_working_set_is_nonzero() {

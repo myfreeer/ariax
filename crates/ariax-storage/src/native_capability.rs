@@ -136,6 +136,12 @@ pub struct RootDirectoryCapability(Arc<DirectoryCapability>);
 #[derive(Clone, Debug)]
 pub struct JournalDirectoryCapability(Arc<DirectoryCapability>);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FilePublication {
+    Linked,
+    Renamed,
+}
+
 /// One regular file opened relative to a trusted root without retaining a
 /// pathname as write authority.
 #[derive(Debug)]
@@ -402,6 +408,27 @@ impl JournalDirectoryCapability {
         validate_single_name(source)?;
         validate_single_name(destination)?;
         self.0.link_no_replace(source, destination)
+    }
+
+    /// Publish without replacement; a rename consumes the source name.
+    pub(crate) fn publish_no_replace(
+        &self,
+        source: &OsStr,
+        destination: &OsStr,
+    ) -> Result<FilePublication, NativeCapabilityError> {
+        validate_single_name(source)?;
+        validate_single_name(destination)?;
+        #[cfg(windows)]
+        if !ariax_windows_security::supports_hard_links(&self.0.native)? {
+            ariax_windows_security::rename_relative_no_replace(
+                &self.0.native,
+                source,
+                destination,
+            )?;
+            return Ok(FilePublication::Renamed);
+        }
+        self.link_no_replace(source, destination)?;
+        Ok(FilePublication::Linked)
     }
 
     pub(crate) fn rename_replace(
@@ -1087,9 +1114,22 @@ mod platform {
         {
             return Err(NativeCapabilityError::HardLinkAlias);
         }
-        Ok(NativeIdentityV1::Windows {
-            volume_serial: information.volume_serial,
-            file_id: information.file_id,
+        Ok(match information.file_id {
+            ariax_windows_security::NativeFileId::Extended(file_id) => NativeIdentityV1::Windows {
+                volume_serial: information.volume_serial,
+                file_id,
+            },
+            ariax_windows_security::NativeFileId::Legacy {
+                file_index,
+                creation_time,
+            } => NativeIdentityV1::WindowsLegacy {
+                volume_serial: information
+                    .volume_serial
+                    .try_into()
+                    .map_err(|_| NativeCapabilityError::IdentityMismatch)?,
+                file_index,
+                creation_time,
+            },
         })
     }
 }
@@ -1173,12 +1213,8 @@ mod tests {
         }
         #[cfg(windows)]
         {
-            let information = ariax_windows_security::query_native_file_information(file)
-                .expect("native file information");
-            NativeIdentityV1::Windows {
-                volume_serial: information.volume_serial,
-                file_id: information.file_id,
-            }
+            super::platform::file_identity(file, super::NativeObjectKind::RegularFile)
+                .expect("native file information")
         }
     }
 
@@ -1356,6 +1392,28 @@ mod tests {
             root.verify_file(&safe, &replacement_identity),
             Err(NativeCapabilityError::HardLinkAlias)
         ));
+    }
+
+    #[test]
+    fn removable_file_replacement_is_rejected_before_returning_write_authority() {
+        let directory = TestDirectory::new();
+        let root = RootDirectoryCapability::open_trusted(&directory.0).unwrap();
+        let safe =
+            SafePathBuilder::from_user_path("selected.bin", PathPlatform::current()).unwrap();
+        let file = root.create_new_file(&safe).unwrap();
+        let identity = FileIdentity::new(file.identity().encode()).unwrap();
+        drop(file);
+        let replacement = directory.0.join("replacement.bin");
+        fs::write(&replacement, b"replacement bytes").unwrap();
+        fs::rename(&replacement, directory.0.join("selected.bin")).unwrap();
+        assert!(matches!(
+            root.open_existing_file(&safe, &identity),
+            Err(NativeCapabilityError::IdentityMismatch)
+        ));
+        assert_eq!(
+            fs::read(directory.0.join("selected.bin")).unwrap(),
+            b"replacement bytes"
+        );
     }
 
     #[test]

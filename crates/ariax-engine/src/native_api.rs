@@ -524,6 +524,7 @@ pub struct EngineBuilder {
     output_root: Option<PathBuf>,
     control_directory: Option<PathBuf>,
     database_path: Option<PathBuf>,
+    require_private_permissions: bool,
     profile: RuntimeProfile,
     session_export: Option<crate::SessionExportConfig>,
     input_file: Option<(PathBuf, crate::SessionFormat)>,
@@ -531,6 +532,13 @@ pub struct EngineBuilder {
 }
 
 impl EngineBuilder {
+    /// Opt into strict private-state and BitTorrent root permissions.
+    #[must_use]
+    pub fn require_private_permissions(mut self, required: bool) -> Self {
+        self.require_private_permissions = required;
+        self
+    }
+
     #[must_use]
     pub fn bittorrent(mut self, config: BitTorrentConfig) -> Self {
         self.bittorrent = Some(config);
@@ -593,14 +601,23 @@ impl EngineBuilder {
         let control_directory = self
             .control_directory
             .unwrap_or_else(|| output_root.join(".ariax-control"));
-        create_private_directory(&control_directory, "cannot create control directory")?;
+        prepare_control_directory(
+            &control_directory,
+            self.require_private_permissions,
+            "cannot prepare control directory",
+        )?;
         let database_path = self
             .database_path
             .unwrap_or_else(|| control_directory.join("session.db"));
         let journal_root = control_directory.join("http-journals");
-        create_private_directory(&journal_root, "cannot create journal directory")?;
+        prepare_control_directory(
+            &journal_root,
+            self.require_private_permissions,
+            "cannot prepare journal directory",
+        )?;
 
-        let config = process_config(database_path, control_directory, output_root.clone())?;
+        let mut config = process_config(database_path, control_directory, output_root.clone())?;
+        config.session_owner.store.require_private_permissions = self.require_private_permissions;
         let engine = crate::bootstrap_process(config, persisted_option_is_safe)
             .map_err(|error| NativeApiError::Bootstrap(error.to_string()))?;
         let resources = HttpProcessResources::for_profile(self.profile)
@@ -1470,29 +1487,41 @@ fn process_config(
     })
 }
 
-fn create_private_directory(
+fn prepare_control_directory(
     path: &std::path::Path,
+    require_private_permissions: bool,
     error: &'static str,
 ) -> Result<(), NativeApiError> {
     #[cfg(windows)]
     {
         match ariax_windows_security::create_private_directory(path) {
             Ok(()) => Ok(()),
-            Err(failure) if failure.kind() == std::io::ErrorKind::AlreadyExists => {
-                ariax_windows_security::verify_private_directory(path)
-            }
+            Err(failure) if failure.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
             Err(failure) => Err(failure),
         }
-        .map_err(|_| NativeApiError::InvalidConfiguration(error))
+        .map_err(|_| NativeApiError::InvalidConfiguration(error))?;
+        if require_private_permissions {
+            ariax_windows_security::verify_private_directory(path)
+                .map_err(|_| NativeApiError::InvalidConfiguration(error))?;
+        }
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::create_dir_all(path).map_err(|_| NativeApiError::InvalidConfiguration(error))?;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+        use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)
             .map_err(|_| NativeApiError::InvalidConfiguration(error))?;
-        Ok(())
+        let metadata = std::fs::symlink_metadata(path)
+            .map_err(|_| NativeApiError::InvalidConfiguration(error))?;
+        if require_private_permissions && metadata.permissions().mode() & 0o077 != 0 {
+            return Err(NativeApiError::InvalidConfiguration(error));
+        }
     }
+    ariax_storage::RootDirectoryCapability::open_trusted(path)
+        .map(|_| ())
+        .map_err(|_| NativeApiError::InvalidConfiguration(error))
 }
 
 #[cfg(test)]

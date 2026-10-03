@@ -28,6 +28,8 @@ struct Preparation {
     bt_resources: ariax_bt::BtResources,
     #[cfg(feature = "bt")]
     bt_config: ariax_bt::BtAdapterConfig,
+    #[cfg(feature = "bt")]
+    require_private_permissions: bool,
 }
 
 struct TransferMember {
@@ -217,6 +219,8 @@ impl HttpControlPlane {
             bt_resources: self.bt.resources.clone().expect("BT resources"),
             #[cfg(feature = "bt")]
             bt_config: self.bt.config.clone(),
+            #[cfg(feature = "bt")]
+            require_private_permissions: self.engine.require_private_permissions(),
             configuration: self.configuration_snapshot(),
             policy: self.engine.persisted_option_policy(),
             session_id: self.session_id,
@@ -708,6 +712,7 @@ impl Preparation {
                     &self.configuration.config.output_root,
                     &self.bt_resources.resident,
                     request,
+                    self.require_private_permissions,
                 )?;
                 if spec.options.settings.peers > self.bt_config.peers
                     || !spec
@@ -1046,6 +1051,7 @@ impl Preparation {
             &self.bt_resources.resident,
             request,
             false,
+            self.require_private_permissions,
         )?;
         let spec = Arc::get_mut(&mut prepared.spec).expect("unpublished followed torrent");
         if spec.options.settings.peers > self.bt_config.peers

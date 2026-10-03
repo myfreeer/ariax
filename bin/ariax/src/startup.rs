@@ -13,6 +13,7 @@ use std::time::Duration;
 
 #[derive(Debug, Default)]
 pub(crate) struct StartupOptions {
+    pub require_private_permissions: bool,
     pub bittorrent: Option<ariax_engine::BitTorrentConfig>,
     pub profile: Option<RuntimeProfile>,
     pub session_export: Option<ariax_engine::SessionExportConfig>,
@@ -62,6 +63,20 @@ impl StartupOptions {
             let (local_name, inline) = argument
                 .split_once('=')
                 .map_or((argument, None), |(name, value)| (name, Some(value)));
+            if local_name == "--require-private-permissions" {
+                if !session_names.insert(local_name) {
+                    return Err("duplicate --require-private-permissions".to_owned());
+                }
+                options.require_private_permissions = match inline {
+                    Some("true") => true,
+                    Some("false") => false,
+                    _ => {
+                        return Err("--require-private-permissions requires =true|false".to_owned());
+                    }
+                };
+                cursor += 1;
+                continue;
+            }
             if matches!(
                 local_name,
                 "--bt-listen-address"
@@ -404,6 +419,41 @@ fn parse_credential(name: &'static str, value: &str) -> Result<SecretString, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn private_permissions_default_off_accept_boolean_and_reject_invalid_or_duplicate_values() {
+        assert!(
+            !StartupOptions::parse(&[])
+                .unwrap()
+                .0
+                .require_private_permissions
+        );
+        for (value, expected) in [("true", true), ("false", false)] {
+            let args = [
+                format!("--require-private-permissions={value}"),
+                "--check-bootstrap".to_owned(),
+            ]
+            .map(OsString::from);
+            let (options, rest) = StartupOptions::parse(&args).unwrap();
+            assert_eq!(options.require_private_permissions, expected);
+            assert_eq!(rest, &[OsString::from("--check-bootstrap")]);
+            assert!(!options.has_rpc_arguments());
+        }
+        for args in [
+            vec!["--require-private-permissions"],
+            vec!["--require-private-permissions=1"],
+            vec!["--require-private-permissions="],
+            vec![
+                "--require-private-permissions=true",
+                "--require-private-permissions=false",
+            ],
+        ] {
+            assert!(
+                StartupOptions::parse(&args.into_iter().map(OsString::from).collect::<Vec<_>>())
+                    .is_err()
+            );
+        }
+    }
 
     #[test]
     fn transport_modes_eof_policies_and_limits_validate_before_bootstrap() {

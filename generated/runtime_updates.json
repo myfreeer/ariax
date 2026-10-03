@@ -62,6 +62,7 @@
     {"name": "piece-length", "runtime_update": "new_generation", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
     {"name": "profile", "runtime_update": "startup_only", "scopes": ["startup"]},
     {"name": "realtime-chunk-checksum", "runtime_update": "waiting_only", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
+    {"name": "require-private-permissions", "runtime_update": "startup_only", "scopes": ["startup"]},
     {"name": "retry-after", "runtime_update": "waiting_only", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
     {"name": "retry-after-max", "runtime_update": "waiting_only", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
     {"name": "retry-after-min", "runtime_update": "waiting_only", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},

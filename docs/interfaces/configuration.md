@@ -782,6 +782,12 @@ SFTP security (see [detailed-ftp-sftp.md](../protocols/detailed-ftp-sftp.md)):
 
 Session and control files:
 
+- `require-private-permissions=true|false` is a startup-only local filesystem
+  policy, default `false`. `true` enforces private session permissions and the
+  BitTorrent output-root protection checks; both settings retain path, identity,
+  file-type, lock and integrity validation. It cannot be changed over RPC or
+  persisted as a task option. See
+  [persistence permissions](../storage/session-persistence.md).
 - `session-store=hybrid|memory` is implemented in the baseline (`memory` is
   explicit no-resume/test mode). Reserved values `sqlite|control-files` are
   visible as `feature_gated` compatibility entries and reject as unsupported

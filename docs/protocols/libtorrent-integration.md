@@ -320,14 +320,24 @@ On Unix, native payload and part-file creation uses owner-only read/write
 permissions (`0600`), adding only owner execute permission for executable
 payloads. New directories use `0700`. This applies to both the default disk
 backend and its stdio implementation, independently of a permissive process
-umask. Existing paths retain their permissions and must pass the protected-root
-checks again before restore; shared writable files or directories are rejected.
+umask where supported. Existing paths retain their permissions. With
+`require-private-permissions=true`, protected-root checks reject shared writable
+files or directories before admission and restore. The default `false` permits
+ordinary filesystem permissions while retaining path, type, hard-link and
+root-identity checks.
+Windows legacy file IDs do not authorize fast-resume piece claims. The existing
+native bridge clears restored have/verified-piece claims and seed/no-verify
+flags while preserving transfer counters; payload bytes must be checked before
+they count as verified progress. Identity mismatches remain errors; this policy
+does not authorize a root replacement.
 On Windows, new files, part files, and directories receive a protected ACL at
 creation that grants full control only to the current user, SYSTEM, and
 Administrators. Directory entries propagate those principals to descendants,
 but each native-created descendant also protects its own ACL. Both native and
-stdio storage preserve existing ACLs; restore rejects inherited or widened ACLs
-instead of silently changing them.
+stdio storage preserve existing ACLs. Strict permission mode rejects inherited
+or widened ACLs instead of silently changing them. Default permission mode does
+not require persistent ACL support; other filesystem capability requirements
+still apply.
 
 Per-file path validation (interim guarantee, required in the first full build):
 
@@ -499,8 +509,10 @@ CLI process tests reopen the same v3 task through typed Rust and JSON-RPC and
 compare identity, files, selection, options and pause state for every torrent
 version. Option parity covers the full extended map and the aria2/strict
 projection, which omits engine checkpoint bounds.
-Newly created BT output roots must be private even under a permissive process
-umask; existing unprotected roots must reject without changing their permissions.
+On filesystems supporting private permissions, newly created BT output roots
+request private permissions even under a permissive process umask. Strict mode
+must reject existing unprotected roots without changing their permissions;
+default mode accepts them while rejecting unsafe paths and file aliases.
 Bundles without BT must reject admission before creating session state.
 
 Required adapter tests:

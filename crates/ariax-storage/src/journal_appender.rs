@@ -1665,20 +1665,22 @@ fn install_segment(
         let _ = directory.remove_file(&temporary_name);
         return Err(io_error(JournalIoOperation::SyncSegment, error));
     }
-    if let Err(error) = directory.link_no_replace(&temporary_name, &final_name) {
-        drop(temporary);
-        let _ = directory.remove_file(&temporary_name);
-        return Err(
-            if capability_error_kind(&error) == io::ErrorKind::AlreadyExists {
-                JournalAppenderError::SegmentPathExists { temporary: false }
-            } else {
-                capability_error(JournalIoOperation::InstallSegment, error)
-            },
-        );
-    }
-    // The installed hard link and candidate name reference the same inode, so
-    // this second barrier covers the installed file before its directory entry
-    // is declared durable.
+    let publication = match directory.publish_no_replace(&temporary_name, &final_name) {
+        Ok(publication) => publication,
+        Err(error) => {
+            drop(temporary);
+            let _ = directory.remove_file(&temporary_name);
+            return Err(
+                if capability_error_kind(&error) == io::ErrorKind::AlreadyExists {
+                    JournalAppenderError::SegmentPathExists { temporary: false }
+                } else {
+                    capability_error(JournalIoOperation::InstallSegment, error)
+                },
+            );
+        }
+    };
+    // The retained handle still identifies the published file after either
+    // linking or renaming. Flush it again before the directory barrier.
     if let Err(error) = temporary.sync_all() {
         drop(temporary);
         return Err(io_error(JournalIoOperation::SyncSegment, error));
@@ -1688,9 +1690,11 @@ fn install_segment(
         return Err(capability_error(JournalIoOperation::SyncDirectory, error));
     }
     drop(temporary);
-    directory
-        .remove_file(&temporary_name)
-        .map_err(|error| capability_error(JournalIoOperation::InstallSegment, error))?;
+    if publication == crate::native_capability::FilePublication::Linked {
+        directory
+            .remove_file(&temporary_name)
+            .map_err(|error| capability_error(JournalIoOperation::InstallSegment, error))?;
+    }
     directory
         .sync()
         .map_err(|error| capability_error(JournalIoOperation::SyncDirectory, error))?;

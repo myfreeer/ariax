@@ -179,14 +179,51 @@ supported production backend that cannot provide race-resistant no-follow
 opening fails with `SafeOpenUnavailable`; it does not silently downgrade to a
 check-then-open path for an untrusted metadata-derived target.
 
-Native identities use the exact `NativeIdentityV1` byte codec. Byte zero is
-version `1`; byte one is the platform tag (`1` for Unix, `2` for Windows).
-The Unix payload is `st_dev:u64le || st_ino:u64le`. The Windows payload is
+Native identities use the byte codec exposed by `NativeIdentityV1`. In the
+original encoding, byte zero is version `1`; byte one is the platform tag
+(`1` for Unix, `2` for Windows). The Unix payload is
+`st_dev:u64le || st_ino:u64le`. The Windows payload is
 `volume_serial:u64le || FILE_ID_128`. Unix identities are therefore exactly
 18 bytes and Windows identities exactly 26 bytes. Unknown versions, wrong
 lengths, and identities from another platform fail closed. `RootIdentity` and
 `FileIdentity` use the same codec; object kind, link count, and containment are
 verified separately from the opened descriptor or handle.
+
+### Removable Windows Filesystems
+
+Windows capability opens first request `FileIdInfo`. If that information class
+is unsupported, FAT/FAT32/exFAT may use the legacy handle information instead.
+This fallback is automatic and independent of `require-private-permissions`.
+Access-denied and unrelated I/O failures must not trigger it. No-follow,
+reparse, type, link-count and retained-handle checks remain mandatory.
+
+Legacy identities have a distinct version `2`, Windows platform tag `2`, and
+payload `volume_serial:u32le || file_index:u64le || creation_time:u64le` (22
+bytes total). Existing version-1 identities remain byte-for-byte unchanged;
+older binaries that only decode version 1 cannot reopen state containing a
+version-2 identity. Legacy IDs must never be padded and mistaken for
+`FILE_ID_128`. Creation time
+supplements the directory-entry-based legacy index; neither establishes
+content integrity. Renames, defragmentation or replacement can change these
+identities. An identity mismatch still rejects recovery rather than silently
+adopting a different file. HTTP recovery rechecks retained piece contents;
+BitTorrent must not trust fast-resume piece claims on a legacy root.
+
+Publication on filesystems without hard links uses a same-directory,
+handle-relative rename with replacement disabled. Existing destinations are
+never overwritten. The temporary file is flushed before publication; a
+successful rename consumes its old name, so cleanup and recovery must not
+assume a second link remains. Windows directory-entry power-loss durability
+is not strengthened by this fallback.
+
+The compatibility target is ordinary downloads, session databases, journal
+publication and backups on removable filesystems. FAT32 files remain limited
+to `4 GiB - 1 byte`. Unsupported operations must still fail; private-permission
+mode requires a filesystem that can enforce its protection. FAT32 and exFAT
+require separate native coverage; a FAT32 result does not certify exFAT.
+
+### Identity Validation
+
 Regular-file link counts are widened to `u64` at the native boundary; Unix
 `nlink_t` widths differ across Linux and macOS. Missing entries and non-regular
 objects are rejected before their counts can authorize publication recovery.
@@ -981,7 +1018,7 @@ directory and must pass the portable regular-file preflight; the first header
 must match the task gid and installed `journal_id`. This lexical/path-metadata
 check is not a descriptor-safe descendant open and does not bind later pathname
 opens to the objects inspected by preflight. Native startup must acquire and
-revalidate the private journal directory and segment descriptors through the
+revalidate the bound journal directory and segment descriptors through the
 platform capability adapter, and must exclude namespace mutation for the full
 recovered-open call, so a symlink, hard-link alias, or replacement race cannot
 turn the portable preflight into authority. Empty
