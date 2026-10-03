@@ -9,17 +9,46 @@ benchmark scenarios. The prerequisite is complete; Phase 6 may proceed.
 
 ## Repository And Branch
 
-The canonical remote is `git@github.com:myfreeer/ariax.git`. Publish the
-existing history on `main`, which is the remote's default branch. CI runs on
-pushes and pull requests with read-only repository permissions. Routine branch
-and PR runs validate Linux and Windows MSVC. Pushes to `main`, tag pushes and
-manual workflow dispatch select the full matrix. A newer run for the same ref
-and validation scope cancels its predecessor; a manual full run is independent
-of an automatic routine run.
+The canonical remote is `git@github.com:myfreeer/ariax.git`; `main` is the remote's
+default branch. The temporary branch
+`local/removable-storage-mixed-bt-20261003` replaces `ci.yml` with one focused
+Ubuntu 24.04 job, triggered by pushes to that branch or manual dispatch. It uses
+read-only repository permissions and cancels an older run for the same ref.
+There is no pull-request trigger or automatic call to the separate benchmark
+workflow, avoiding duplicate jobs for this investigation.
+
+### Temporary Focused Validation
+
+`python3 scripts/ci.py focused` runs helper tests, documentation, workflow syntax,
+publication-path and whitespace checks, and formatting before native provisioning.
+It verifies the cached libtorrent/OpenSSL installation, runs the native security
+probes, and tests storage recovery and permissions, BT roots and admission,
+benchmark framing/startup, engine credential-file permissions, and CLI RPC
+admission. Tests run serially with the locked dependency graph.
+
+The same job and release target directory then build the optimized benchmark and
+run `mixed-bt`, `http`, `websocket`, `content-length`, and `ndjson`, in that order.
+Every workload size, deadline and acceptance threshold is retained. A failure
+stops subsequent work; reports and native diagnostics are uploaded even on
+failure. Verified native dependencies and Cargo outputs are cached separately,
+using the existing benchmark cache paths and restore prefix. Native provisioning
+occurs once, and builds use at most two jobs. The job has a 40-minute ceiling.
+
+This campaign requires native Linux and rejects WSL before running checks. It
+addresses the open local permission and transfer-benchmark findings; it does not
+run the full platform, MSRV, sanitizer or feature-bundle matrix. Administrative
+benchmarking is excluded because it does not use the changed metrics helper.
+Artifacts are named `ci-focused-linux`, and the job is not named `CI Required`.
+Focused success cannot stand in for the complete validation or release gates.
+
+Restore the full `ci.yml` from `9dc928c` before integrating this temporary workflow
+into `main` or attempting release validation. The full-workflow guidance below
+describes that restored topology. The standalone benchmark workflow remains
+available by explicit manual dispatch; this focused workflow does not invoke it.
 
 ## Fail-Fast Topology
 
-The workflow has three ordered stages:
+The full workflow has three ordered stages:
 
 1. Preflight validates documentation links and navigation, formatting, workflow
    syntax, whitespace, generated contracts, pinned reference inputs, protocol
@@ -102,7 +131,8 @@ Before initial publication, preserve an ignored local history bundle and
 sanitize every reachable commit, including historical file versions and commit
 messages. Remove machine-specific paths and local-only files; prune commits
 that become empty while retaining portable implementation and validation work.
-Push only the sanitized `main` branch. Historical benchmark measurements remain
+Publish sanitized history only; the named temporary validation branch is permitted
+for this investigation. Historical benchmark measurements remain
 unaltered; replace workstation paths in invocation records with portable
 placeholders and record that redaction explicitly.
 Run `python3 -B scripts/publication.py --history` before the first push;

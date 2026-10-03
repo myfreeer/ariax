@@ -35,6 +35,13 @@ VALIDATION_MATRIX = (
     ("bt-safety", "ubuntu-24.04", RUST_VERSION, "bt-safety"),
 )
 SCENARIOS = ("http", "websocket", "content-length", "ndjson", "administrative", "mixed-bt")
+FOCUSED_SCENARIOS = ("mixed-bt", "http", "websocket", "content-length", "ndjson")
+FOCUSED_ENGINE_TESTS = (
+    "http_auth::tests::netrc_file_requires_private_permissions_and_rejects_symlinks",
+    "http_cookie::tests::netscape_import_is_transactional_and_save_omits_session_cookies",
+    "sftp_trust::tests::pins_are_exact_and_unknown_challenges_are_generation_bound",
+    "http_multi::protocol::sftp_transfer::tests::sftp_trust_precedes_authentication_and_bounded_reads_share_http_ranges",
+)
 COMPILERS = {"rustc", "cargo", "clippy-driver", "gcc", "g++", "cc", "c++", "cc1",
              "cc1plus", "ld", "lld", "rust-lld", "collect2", "make", "ninja", "cmake"}
 
@@ -110,7 +117,8 @@ class Runner:
         self.name = name
         self.directory = ROOT / "toolchains/ci-reports" / name
         self.directory.mkdir(parents=True, exist_ok=True)
-        self.target = ROOT / "toolchains/ci-target" / name
+        # Focused tests and measurements reuse the existing release benchmark cache.
+        self.target = ROOT / "toolchains/ci-target" / ("benchmarks" if name == "focused" else name)
         self.tools = resolve_toolchain() / "bin"
         self.suffix = ".exe" if os.name == "nt" else ""
         self.env = os.environ.copy()
@@ -470,10 +478,15 @@ def measure_scenario(runner, binary, scenario, metalink):
         print(json.dumps({key: record[key] for key in ("scenario", "passed", "elapsedWallSeconds")}), flush=True)
 
 
-def benchmark(runner):
+def require_native_linux():
     require(sys.platform == "linux", "native Linux benchmark runner required")
     require("microsoft" not in platform.release().lower(), "WSL does not establish native Linux acceptance")
-    provision_bt(runner)
+
+
+def benchmark(runner, scenarios=SCENARIOS, *, provision=True):
+    require_native_linux()
+    if provision:
+        provision_bt(runner)
     build = runner.cargo("bench", "--locked", "-p", "ariax-engine", "--all-features",
                          "--bench", "rpc_active_profile", "--no-run", "--message-format=json", capture=True)
     executables = set()
@@ -492,12 +505,43 @@ def benchmark(runner):
     source_hashes = {os.fsdecode(path): sha256(ROOT / os.fsdecode(path)) for path in files if path}
     manifest = {"sourceCommit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                 "sourceFileSha256": source_hashes, "binarySha256": sha256(binary),
-                "host": platform.platform(), "machine": platform.machine(), "logicalCpus": os.cpu_count()}
+                "host": platform.platform(), "machine": platform.machine(), "logicalCpus": os.cpu_count(),
+                "scenarios": list(scenarios)}
     (runner.directory / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     metalink = os.environ.get("ARIAX_BENCH_METALINK", "1") == "1"
-    for scenario in SCENARIOS:
+    for scenario in scenarios:
         time.sleep(2)
         measure_scenario(runner, binary, scenario, metalink)
+
+
+def focused(runner):
+    """Temporary native Linux campaign for the remaining local validation findings."""
+    require_native_linux()
+    runner.env["RUST_TEST_THREADS"] = "1"
+    runner.run([sys.executable, "-B", "-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py"])
+    runner.run([sys.executable, "-B", "scripts/check_docs.py"])
+    runner.run([actionlint(), "-shellcheck=", "-pyflakes="])
+    runner.run([sys.executable, "-B", "scripts/publication.py"])
+    runner.run(["git", "show", "--format=", "--check", "HEAD"])
+    runner.cargo("fmt", "--all", "--", "--check")
+    prefix = provision_bt(runner)
+    runner.env["ARIAX_BT_NATIVE_DIR"] = str(prefix)
+    native_security(runner, prefix)
+    serial = ("--", "--test-threads=1")
+    runner.cargo("test", "--locked", "--release", "-p", "ariax-storage", "-p", "ariax-bt",
+                 "--all-features", "--lib", *serial)
+    runner.cargo("test", "--locked", "--release", "-p", "ariax-bt", "--all-features",
+                 "--test", "adapter", *serial)
+    runner.cargo("test", "--locked", "--release", "-p", "ariax-engine", "--all-features",
+                 "--test", "rpc_origin_metrics", "--test", "bt_peer_fixture",
+                 "--test", "bt_peer_startup", "--test", "rpc_benchmark_setup",
+                 "--test", "permission_policy", *serial)
+    for test in FOCUSED_ENGINE_TESTS:
+        runner.cargo("test", "--locked", "--release", "-p", "ariax-engine", "--all-features",
+                     "--lib", test, "--", "--exact", "--test-threads=1")
+    runner.cargo("test", "--locked", "--release", "-p", "ariax-cli", "--all-features",
+                 "--test", "rpc_interfaces", *serial)
+    benchmark(runner, FOCUSED_SCENARIOS, provision=False)
 
 
 def interrupted(_signum, _frame):
@@ -507,7 +551,7 @@ def interrupted(_signum, _frame):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("resolve-toolchain", "matrix", "preflight", "benchmark", "gate"):
+    for name in ("resolve-toolchain", "matrix", "preflight", "benchmark", "focused", "gate"):
         commands.add_parser(name)
     commands.add_parser("validate").add_argument("--check", choices=CHECKS, required=True)
     args = parser.parse_args()
@@ -528,7 +572,8 @@ def main():
     name = args.check if args.command == "validate" else "benchmarks" if args.command == "benchmark" else args.command
     runner = Runner(name)
     try:
-        {"preflight": preflight, "validate": validate, "benchmark": benchmark}[args.command](runner)
+        {"preflight": preflight, "validate": validate, "benchmark": benchmark,
+         "focused": focused}[args.command](runner)
     except BaseException as error:
         runner.finish(False, str(error) or type(error).__name__)
         raise

@@ -147,6 +147,118 @@ class NativeCacheTests(unittest.TestCase):
                         self.assertEqual(environment.read_text(), "ARIAX_BT_NATIVE_VERIFIED=1\n")
 
 
+class FocusedValidationTests(unittest.TestCase):
+    def test_non_native_hosts_fail_before_any_check_or_provisioning(self):
+        for system, release in (("win32", "10"), ("linux", "4.4.0-Microsoft")):
+            with self.subTest(system=system, release=release):
+                runner = mock.Mock()
+                with mock.patch.object(ci.sys, "platform", system), \
+                        mock.patch.object(ci.platform, "release", return_value=release), \
+                        mock.patch.object(ci, "provision_bt") as provision:
+                    with self.assertRaises(RuntimeError):
+                        ci.focused(runner)
+                    runner.run.assert_not_called()
+                    runner.cargo.assert_not_called()
+                    provision.assert_not_called()
+
+    def test_checks_gate_measurements_and_every_stage_propagates_failure(self):
+        for failure in (None, "precheck", "native", "test", "benchmark"):
+            with self.subTest(failure=failure):
+                runner = mock.Mock()
+                runner.env = {}
+                prefix = Path("native-install")
+                if failure == "precheck":
+                    runner.run.side_effect = RuntimeError("precheck failed")
+
+                def cargo(*args):
+                    if failure == "test" and args[0] == "test":
+                        raise RuntimeError("test failed")
+
+                runner.cargo.side_effect = cargo
+                with mock.patch.object(ci, "require_native_linux"), \
+                        mock.patch.object(ci, "actionlint", return_value=Path("actionlint")), \
+                        mock.patch.object(ci, "provision_bt", return_value=prefix) as provision, \
+                        mock.patch.object(ci, "native_security", side_effect=(
+                            RuntimeError("native failed") if failure == "native" else None)) as native, \
+                        mock.patch.object(ci, "benchmark", side_effect=(
+                            RuntimeError("benchmark failed") if failure == "benchmark" else None)) as benchmark:
+                    if failure:
+                        with self.assertRaisesRegex(RuntimeError, failure + " failed"):
+                            ci.focused(runner)
+                    else:
+                        ci.focused(runner)
+                    if failure == "precheck":
+                        provision.assert_not_called()
+                        native.assert_not_called()
+                    else:
+                        provision.assert_called_once_with(runner)
+                        native.assert_called_once_with(runner, prefix)
+                    if failure in {"precheck", "native", "test"}:
+                        benchmark.assert_not_called()
+                    else:
+                        benchmark.assert_called_once_with(runner, (
+                            "mixed-bt", "http", "websocket", "content-length", "ndjson"), provision=False)
+                        self.assertEqual(runner.env["ARIAX_BT_NATIVE_DIR"], str(prefix))
+                        self.assertEqual(runner.env["RUST_TEST_THREADS"], "1")
+                        tests = [call.args for call in runner.cargo.call_args_list if call.args[0] == "test"]
+                        self.assertTrue(tests)
+                        for args in tests:
+                            self.assertIn("--locked", args)
+                            self.assertIn("--release", args)
+                            self.assertIn("--test-threads=1", args)
+                            self.assertNotIn("--workspace", args)
+
+    def test_focused_reports_do_not_replace_full_reports_but_reuse_release_outputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            with mock.patch.object(ci, "ROOT", root), \
+                    mock.patch.object(ci, "resolve_toolchain", return_value=root):
+                focused = ci.Runner("focused")
+                full = ci.Runner("benchmarks")
+            self.assertEqual(focused.target, full.target)
+            self.assertNotEqual(focused.directory, full.directory)
+            self.assertEqual(focused.env["CARGO_TARGET_DIR"], str(full.target))
+
+    def test_benchmark_selection_preserves_full_default_and_stops_after_failure(self):
+        for focused, fail in ((False, False), (True, False), (True, True)):
+            with self.subTest(focused=focused, fail=fail), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                binary = directory / "benchmark"
+                binary.write_bytes(b"fixture executable")
+                runner = mock.Mock()
+                runner.directory = directory
+                runner.cargo.return_value = json.dumps({
+                    "reason": "compiler-artifact", "target": {"name": "rpc_active_profile"},
+                    "executable": str(binary)})
+                measured = []
+
+                def measure(_runner, _binary, scenario, _metalink):
+                    measured.append(scenario)
+                    if fail and scenario == "http":
+                        raise RuntimeError("measurement failed")
+
+                with mock.patch.object(ci, "require_native_linux"), \
+                        mock.patch.object(ci, "provision_bt") as provision, \
+                        mock.patch.object(ci.platform, "platform", return_value="Linux fixture"), \
+                        mock.patch.object(ci.subprocess, "check_output", side_effect=[b"", "a" * 40]), \
+                        mock.patch.object(ci.time, "sleep"), \
+                        mock.patch.object(ci, "measure_scenario", side_effect=measure):
+                    if not focused:
+                        ci.benchmark(runner)
+                        provision.assert_called_once_with(runner)
+                    elif fail:
+                        with self.assertRaisesRegex(RuntimeError, "measurement failed"):
+                            ci.benchmark(runner, ci.FOCUSED_SCENARIOS, provision=False)
+                        provision.assert_not_called()
+                    else:
+                        ci.benchmark(runner, ci.FOCUSED_SCENARIOS, provision=False)
+                        provision.assert_not_called()
+                expected = ci.FOCUSED_SCENARIOS if focused else ci.SCENARIOS
+                self.assertEqual(measured, ["mixed-bt", "http"] if fail else list(expected))
+                manifest = json.loads((directory / "manifest.json").read_text())
+                self.assertEqual(manifest["scenarios"], list(expected))
+
+
 @unittest.skipIf(os.name == "nt", "Unix temporary-directory aliases")
 class TemporaryDirectoryTests(unittest.TestCase):
     def test_runner_resolves_system_alias_before_creating_fixture_descendants(self):

@@ -1,196 +1,83 @@
-name: CI
+name: Focused Native Linux Validation
 
 on:
   push:
-  pull_request:
+    branches: [local/removable-storage-mixed-bt-20261003]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && 'manual-full' || 'automatic' }}
+  group: focused-linux-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  PYTHONUTF8: "1"
-  PYTHONIOENCODING: "utf-8:backslashreplace"
-  CARGO_TERM_COLOR: always
-  CARGO_INCREMENTAL: "0"
-  CARGO_BUILD_JOBS: "2"
-  RUST_BACKTRACE: "1"
-  RUST_TEST_THREADS: "2"
-  ARIAX_BT_NATIVE_VERIFIED: "0"
-
 jobs:
-  preflight:
-    name: Preflight
+  focused-linux:
+    name: Focused Native Linux
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    outputs:
-      matrix: ${{ steps.matrix.outputs.matrix }}
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
-        with:
-          python-version: "3.13"
-      - name: Select routine or full validation
-        id: matrix
-        run: python3 scripts/ci.py matrix >> "$GITHUB_OUTPUT"
-      - name: Install pinned Rust
-        run: rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            toolchains/ci-target/preflight
-          key: ci-preflight-${{ runner.os }}-${{ runner.arch }}-1.97.1-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml') }}-${{ github.sha }}
-          restore-keys: ci-preflight-${{ runner.os }}-${{ runner.arch }}-1.97.1-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml') }}-
-      - name: Check workflow, contracts and dependency policies
-        run: python3 scripts/ci.py preflight
-      - name: Retain preflight diagnostics
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ci-preflight
-          path: toolchains/ci-reports/preflight/
-          if-no-files-found: warn
-
-  validation:
-    name: Validate (${{ matrix.check }})
-    needs: preflight
-    strategy:
-      fail-fast: true
-      matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 40
     env:
-      ARIAX_RUST_TOOLCHAIN: ${{ matrix.toolchain }}
-      ARIAX_CI_CHECK: ${{ matrix.check }}
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8:backslashreplace"
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+      RUST_BACKTRACE: "1"
+      RUST_TEST_THREADS: "1"
+      ARIAX_BT_NATIVE_VERIFIED: "0"
+      ARIAX_BENCH_METALINK: "1"
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
       - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
         with:
           python-version: "3.13"
-      - name: Install MSYS2 MinGW64 dependencies
-        if: contains(matrix.check, 'windows-gnu')
-        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2.32.0
-        with:
-          msystem: MINGW64
-          path-type: minimal
-          install: >-
-            git
-            make
-            perl
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-python
-            mingw-w64-x86_64-pkgconf
-            mingw-w64-x86_64-cmake
-            mingw-w64-x86_64-make
-      - name: Provision macOS security fixture loopback address
-        if: runner.os == 'macOS'
-        run: sudo ifconfig lo0 alias 127.0.0.2 up
-      - name: Install and locate pinned Rust
-        shell: bash
-        run: |
-          set -euo pipefail
-          rustup toolchain install "$ARIAX_RUST_TOOLCHAIN" --profile minimal --component clippy --component rustfmt
-          python scripts/ci.py resolve-toolchain >> "$GITHUB_ENV"
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.97.1 --profile minimal --component rustfmt
       - name: Restore verified native installation
         id: native-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: toolchains/bt-native/*/install
-          key: bt-native-${{ matrix.native }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native/libtorrent/sources.json', 'native/libtorrent/ariax.patch', 'native/libtorrent/openssl.patch', 'scripts/bt_native.py') }}
-      - name: Restore Cargo outputs
+          key: bt-native-linux-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native/libtorrent/sources.json', 'native/libtorrent/ariax.patch', 'native/libtorrent/openssl.patch', 'scripts/bt_native.py') }}
+      - name: Restore release benchmark and test outputs
         id: cargo-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            toolchains/ci-target/${{ matrix.check }}
-            toolchains/ci-target/${{ matrix.check }}-clippy
-          key: ci-${{ matrix.check }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.toolchain }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml') }}-${{ github.sha }}
-          restore-keys: ci-${{ matrix.check }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.toolchain }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml') }}-
-      - name: Validate native platform or feature bundle
-        if: ${{ !contains(matrix.check, 'windows-gnu') && matrix.check != 'windows-msvc' }}
+            toolchains/ci-target/benchmarks
+          key: ci-benchmarks-${{ runner.os }}-${{ runner.arch }}-1.97.1-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml') }}-${{ github.sha }}
+          restore-keys: ci-benchmarks-${{ runner.os }}-${{ runner.arch }}-1.97.1-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml') }}-
+      - name: Validate affected tests and measure transfer scenarios
         shell: bash
-        run: python scripts/ci.py validate --check "$ARIAX_CI_CHECK"
-      - name: Validate through native MSVC
-        if: matrix.check == 'windows-msvc'
-        shell: cmd
-        run: |
-          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvars64.bat"
-          if errorlevel 1 exit /b %errorlevel%
-          python scripts\ci.py validate --check "%ARIAX_CI_CHECK%"
-      - name: Validate through native MINGW64
-        if: contains(matrix.check, 'windows-gnu')
-        shell: msys2 {0}
         run: |
           set -euo pipefail
-          export MSYSTEM=MINGW64
-          export PATH=/mingw64/bin:/usr/local/bin:/usr/bin:/bin
-          python scripts/ci.py validate --check "$ARIAX_CI_CHECK"
+          ulimit -n 20000
+          python3 -B scripts/ci.py focused
       - name: Save verified native installation
         if: ${{ !cancelled() && env.ARIAX_BT_NATIVE_VERIFIED == '1' && steps.native-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: toolchains/bt-native/*/install
           key: ${{ steps.native-cache.outputs.cache-primary-key }}
-      - name: Save Cargo outputs
+      - name: Save release benchmark and test outputs
         if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' && steps.cargo-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            toolchains/ci-target/${{ matrix.check }}
-            toolchains/ci-target/${{ matrix.check }}-clippy
+            toolchains/ci-target/benchmarks
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
-      - name: Retain validation diagnostics
+      - name: Retain focused validation diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ci-${{ matrix.check }}
+          name: ci-focused-linux
           path: |
-            toolchains/ci-reports/${{ matrix.check }}/
+            toolchains/ci-reports/focused/
             toolchains/bt-native/*/logs/
             toolchains/bt-native/*/install/ariax-native.json
           if-no-files-found: warn
-
-  native-linux-benchmarks:
-    name: Native Linux Acceptance
-    needs: [preflight, validation]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    uses: ./.github/workflows/native-linux-rpc-benchmarks.yml
-    with:
-      phase5: true
-
-  required:
-    name: CI Required
-    if: always()
-    needs: [preflight, validation, native-linux-benchmarks]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-      - name: Require every applicable stage
-        env:
-          ARIAX_CI_PREFLIGHT: ${{ needs.preflight.result }}
-          ARIAX_CI_VALIDATION: ${{ needs.validation.result }}
-          ARIAX_CI_BENCHMARKS: ${{ needs.native-linux-benchmarks.result }}
-        run: python3 scripts/ci.py gate
-
-  tag-gate:
-    name: Release Tag Gate
-    if: always() && startsWith(github.ref, 'refs/tags/')
-    needs: required
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - name: Retain the explicit release-platform gate
-        run: |
-          printf '%s\n' 'Tagging remains disabled until the full target and supply-chain matrix passes.' >&2
-          exit 1

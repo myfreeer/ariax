@@ -11,13 +11,13 @@ security boundaries and the supported aria2-facing behavior.
 
 ## Validation Workflow
 
-Push changes or open a pull request to run [CI](continuous-integration.md).
-Preflight checks documentation, formatting, generated contracts and dependency
-policies before Linux and Windows MSVC validation on routine branches and PRs.
-Manual full runs and `main` pushes also cover macOS, Windows GNU, MSRV, every
-feature bundle and sanitizers/fuzzing. Successful `main` pushes then run native
-Linux benchmarks. The workflow's `CI Required` job aggregates the checks selected
-for that event; routine success does not replace full validation.
+The temporary `local/removable-storage-mixed-bt-20261003` branch runs one focused
+native Linux [CI job](continuous-integration.md#temporary-focused-validation) on
+push or manual dispatch. It checks the affected permissions, recovery and
+benchmark fixtures, then runs the five full-size transfer scenarios, starting
+with mixed-BT. It stops on failure and retains diagnostics and verified caches.
+This temporary workflow does not run the platform matrix or replace full
+validation. Restore the complete workflow before integration into `main`.
 
 Keep local validation focused. Documentation changes need no Rust build:
 
@@ -37,7 +37,7 @@ should be retained during cleanup.
 ## Toolchain And Focused Builds
 
 The workspace uses Rust 2024. [rust-toolchain.toml](../../rust-toolchain.toml)
-pins Rust **1.97.1**, rustfmt and Clippy. CI also checks MSRV **1.88** against the
+pins Rust **1.97.1**, rustfmt and Clippy. Full validation checks MSRV **1.88** against the
 locked dependencies. Select the pinned toolchain for this checkout without
 changing the machine's global default.
 
