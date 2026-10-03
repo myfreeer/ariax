@@ -961,6 +961,13 @@ If an append fails after a sequence is assigned, the appender faults the task
 and emits no later sequence until recovery repairs or starts a new segment.
 Sequence numbering begins at 1; segment 0 therefore has `first_sequence = 1`.
 
+Journal I/O diagnostics retain the operation, portable error kind and optional
+native OS error code. Display may reconstruct the system message from that
+code, but must not retain arbitrary I/O error text, paths or credentials.
+This distinguishes device-removal errors that share a generic portable kind.
+The native code is diagnostic only; it does not change persisted journal
+records, stable error codes, retry decisions or durability acknowledgements.
+
 The appender may batch facts, but it reports two distinct acknowledgements:
 `Appended(sequence)` means the record bytes are in the active segment, while
 `Flushed(sequence)` means the required journal barrier has completed. A

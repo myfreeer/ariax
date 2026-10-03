@@ -2769,6 +2769,7 @@ mod tests {
                 error: JournalAppenderError::Io {
                     operation: JournalIoOperation::WriteRecord,
                     kind: std::io::ErrorKind::WriteZero,
+                    raw_os_error: None,
                 },
             },
         ))]);

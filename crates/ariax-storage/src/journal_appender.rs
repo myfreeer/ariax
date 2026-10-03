@@ -204,6 +204,7 @@ pub enum JournalAppenderError {
     Io {
         operation: JournalIoOperation,
         kind: io::ErrorKind,
+        raw_os_error: Option<i32>,
     },
     Faulted(JournalAppenderFault),
     FlushBeyondAppended {
@@ -277,8 +278,16 @@ impl fmt::Display for JournalAppenderError {
         match self {
             Self::Payload(error) => error.fmt(formatter),
             Self::Journal(error) => error.fmt(formatter),
-            Self::Io { operation, kind } => {
-                write!(formatter, "journal {} failed: {kind}", operation.code())
+            Self::Io {
+                operation,
+                kind,
+                raw_os_error,
+            } => {
+                write!(formatter, "journal {} failed: {kind}", operation.code())?;
+                if let Some(code) = raw_os_error {
+                    write!(formatter, "; {}", io::Error::from_raw_os_error(*code))?;
+                }
+                Ok(())
             }
             Self::Faulted(fault) => write!(formatter, "journal appender faulted: {}", fault.code()),
             Self::FlushBeyondAppended {
@@ -1849,6 +1858,7 @@ fn io_error(operation: JournalIoOperation, error: io::Error) -> JournalAppenderE
     JournalAppenderError::Io {
         operation,
         kind: error.kind(),
+        raw_os_error: error.raw_os_error(),
     }
 }
 
@@ -1856,9 +1866,13 @@ fn capability_error(
     operation: JournalIoOperation,
     error: NativeCapabilityError,
 ) -> JournalAppenderError {
+    if let NativeCapabilityError::Io(error) = error {
+        return io_error(operation, error);
+    }
     JournalAppenderError::Io {
         operation,
         kind: capability_error_kind(&error),
+        raw_os_error: None,
     }
 }
 
@@ -1959,6 +1973,58 @@ mod tests {
         JournalPayload::TaskPaused {
             reason: TaskPauseReason::User,
         }
+    }
+
+    #[test]
+    fn io_diagnostics_preserve_native_codes_without_arbitrary_error_text() {
+        use super::{capability_error, io_error};
+        use crate::NativeCapabilityError;
+        use std::io;
+
+        let operation = JournalIoOperation::WriteRecord;
+        // 1167 is ERROR_DEVICE_NOT_CONNECTED on Windows. Preserve numeric
+        // codes even on hosts whose standard library cannot classify them.
+        for code in [2, 1167] {
+            let native = io::Error::from_raw_os_error(code);
+            let expected = native.to_string();
+            let direct = io_error(operation, native);
+            let capability = capability_error(
+                operation,
+                NativeCapabilityError::Io(io::Error::from_raw_os_error(code)),
+            );
+            assert_eq!(direct, capability);
+            assert!(matches!(
+                direct,
+                JournalAppenderError::Io { raw_os_error: Some(value), .. } if value == code
+            ));
+            assert_eq!(direct.code(), "io");
+            assert!(direct.to_string().contains("journal write_record failed"));
+            assert!(direct.to_string().contains(&expected));
+            assert!(direct.to_string().contains(&code.to_string()));
+        }
+        let custom = io_error(
+            operation,
+            io::Error::other("private/path?token=credential-do-not-display"),
+        );
+        assert!(matches!(
+            custom,
+            JournalAppenderError::Io {
+                raw_os_error: None,
+                ..
+            }
+        ));
+        for rendered in [custom.to_string(), format!("{custom:?}")] {
+            assert!(!rendered.contains("private/path"));
+            assert!(!rendered.contains("credential-do-not-display"));
+        }
+        assert!(matches!(
+            capability_error(operation, NativeCapabilityError::OutsideAllowedRoot),
+            JournalAppenderError::Io {
+                kind: io::ErrorKind::PermissionDenied,
+                raw_os_error: None,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -2149,6 +2215,7 @@ mod tests {
             Err(JournalAppenderError::Io {
                 operation: JournalIoOperation::SyncSegment,
                 kind: std::io::ErrorKind::Other,
+                raw_os_error: None,
             })
         );
         assert_eq!(appender.appended_sequence(), 1);
