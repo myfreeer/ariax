@@ -27,6 +27,12 @@ No new measured request starts after 400 ms, leaving time for its response and
 any paired verification before the hard 500 ms limit.
 Each scenario has a 90-second overall deadline; setup, barrier queries and
 shutdown also have deadlines so a failed fixture cannot run indefinitely.
+Origin metrics reads complete at the declared HTTP `Content-Length`, without
+waiting for TCP EOF. They retain a five-second deadline and a 16 KiB combined
+header/body limit, and reject unsuccessful status, missing or ambiguous length,
+transfer encoding, truncated bodies and invalid JSON. Ordinary integration tests
+exercise delayed connection close and malformed or fragmented responses through
+the same helper used by the benchmark.
 After each warm-up the origin pulses every open response and the harness waits
 for both its 1,000-response acknowledgement and the engine's received-byte and
 connection barriers before timing calls. The barrier is checked again afterward.

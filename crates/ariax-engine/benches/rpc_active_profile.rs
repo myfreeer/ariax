@@ -37,6 +37,9 @@ mod admin;
 #[path = "rpc_active_profile/setup.rs"]
 mod setup;
 use setup::{build_control_plane, private_directory};
+#[path = "rpc_active_profile/origin_metrics.rs"]
+mod origin_metrics;
+use origin_metrics::query as origin_metrics;
 #[cfg(feature = "bt")]
 #[path = "rpc_active_profile/bittorrent.rs"]
 mod bittorrent;
@@ -896,44 +899,6 @@ impl Auxiliary {
         }
         Ok(())
     }
-}
-
-async fn origin_metrics(address: SocketAddr, pulse: bool) -> Result<Value> {
-    let mut phase = "connect";
-    tokio::time::timeout(
-        Duration::from_secs(5),
-        origin_metrics_inner(address, pulse, &mut phase),
-    )
-    .await
-    .map_err(|_| format!("origin metrics {phase} exceeded five seconds"))?
-}
-
-async fn origin_metrics_inner(
-    address: SocketAddr,
-    pulse: bool,
-    phase: &mut &'static str,
-) -> Result<Value> {
-    let mut stream = TcpStream::connect(address).await?;
-    *phase = "write";
-    stream
-        .write_all(if pulse {
-            b"GET /pulse HTTP/1.1\r\nHost: localhost\r\n\r\n"
-        } else {
-            b"GET /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n"
-        })
-        .await?;
-    *phase = "read";
-    let mut response = Vec::new();
-    stream.take(16385).read_to_end(&mut response).await?;
-    if response.len() > 16384 {
-        return Err("oversized origin metrics response".into());
-    }
-    let body = response
-        .windows(4)
-        .position(|bytes| bytes == b"\r\n\r\n")
-        .map(|offset| &response[offset + 4..])
-        .ok_or("missing origin response header")?;
-    Ok(serde_json::from_slice(body)?)
 }
 
 async fn barrier(origin: SocketAddr, client: &mut Client, renew: bool) -> Result<Value> {
