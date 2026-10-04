@@ -35,13 +35,8 @@ VALIDATION_MATRIX = (
     ("bt-safety", "ubuntu-24.04", RUST_VERSION, "bt-safety"),
 )
 SCENARIOS = ("http", "websocket", "content-length", "ndjson", "administrative", "mixed-bt")
-FOCUSED_SCENARIOS = ("mixed-bt", "http", "websocket", "content-length", "ndjson")
 FOCUSED_ENGINE_TESTS = (
     "http_control::bittorrent::tests::live_option_waits_for_peer_refresh_and_rejects_a_second_pending_change",
-    "http_auth::tests::netrc_file_requires_private_permissions_and_rejects_symlinks",
-    "http_cookie::tests::netscape_import_is_transactional_and_save_omits_session_cookies",
-    "sftp_trust::tests::pins_are_exact_and_unknown_challenges_are_generation_bound",
-    "http_multi::protocol::sftp_transfer::tests::sftp_trust_precedes_authentication_and_bounded_reads_share_http_ranges",
 )
 COMPILERS = {"rustc", "cargo", "clippy-driver", "gcc", "g++", "cc", "c++", "cc1",
              "cc1plus", "ld", "lld", "rust-lld", "collect2", "make", "ninja", "cmake"}
@@ -118,7 +113,7 @@ class Runner:
         self.name = name
         self.directory = ROOT / "toolchains/ci-reports" / name
         self.directory.mkdir(parents=True, exist_ok=True)
-        # Focused tests and measurements reuse the existing release benchmark cache.
+        # Focused tests reuse the existing release benchmark/test cache.
         self.target = ROOT / "toolchains/ci-target" / ("benchmarks" if name == "focused" else name)
         self.tools = resolve_toolchain() / "bin"
         self.suffix = ".exe" if os.name == "nt" else ""
@@ -226,12 +221,13 @@ def preflight(runner):
                  "--", "--exact", env=environment)
 
 
-def provision_bt(runner, sanitizer="none"):
+def provision_bt(runner, sanitizer="none", *, cached_only=False):
     compiler = runner.run([runner.tool("rustc"), "--version", "--verbose"], capture=True)
     target = re.search(r"^host: (\S+)$", compiler, re.MULTILINE)
     require(target, "missing native Rust host triple")
     command = [sys.executable, "-B", "scripts/bt_native.py", "--target", target[1], "--sanitizer", sanitizer]
-    runner.run(command)
+    if not cached_only:
+        runner.run(command)
     runner.run([*command, "--verify"])
     # A later test failure must not discard a verified dependency build. The
     # workflow resets this flag and saves only after this verification succeeds.
@@ -547,7 +543,7 @@ def benchmark(runner, scenarios=SCENARIOS, *, provision=True):
 
 
 def focused(runner):
-    """Temporary native Linux campaign for the remaining local validation findings."""
+    """Temporary native Linux regressions using cached libraries, without benchmarks."""
     require_native_linux()
     runner.env["RUST_TEST_THREADS"] = "1"
     runner.run([sys.executable, "-B", "-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py"])
@@ -556,14 +552,9 @@ def focused(runner):
     runner.run([sys.executable, "-B", "scripts/publication.py"])
     runner.run(["git", "show", "--format=", "--check", "HEAD"])
     runner.cargo("fmt", "--all", "--", "--check")
-    prefix = provision_bt(runner)
+    prefix = provision_bt(runner, cached_only=True)
     runner.env["ARIAX_BT_NATIVE_DIR"] = str(prefix)
-    native_security(runner, prefix)
     serial = ("--", "--test-threads=1")
-    runner.cargo("test", "--locked", "--release", "-p", "ariax-storage", "-p", "ariax-bt",
-                 "--all-features", "--lib", *serial)
-    runner.cargo("test", "--locked", "--release", "-p", "ariax-bt", "--all-features",
-                 "--test", "adapter", *serial)
     runner.cargo("test", "--locked", "--release", "-p", "ariax-engine", "--all-features",
                  "--test", "rpc_origin_metrics", "--test", "bt_peer_fixture",
                  "--test", "bt_peer_startup", "--test", "rpc_benchmark_setup",
@@ -575,9 +566,6 @@ def focused(runner):
     for test in FOCUSED_ENGINE_TESTS:
         runner.cargo("test", "--locked", "--release", "-p", "ariax-engine", "--all-features",
                      "--lib", test, "--", "--exact", "--test-threads=1")
-    runner.cargo("test", "--locked", "--release", "-p", "ariax-cli", "--all-features",
-                 "--test", "rpc_interfaces", *serial)
-    benchmark(runner, FOCUSED_SCENARIOS, provision=False)
 
 
 def interrupted(_signum, _frame):

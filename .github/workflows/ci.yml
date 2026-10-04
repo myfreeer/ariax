@@ -16,7 +16,7 @@ jobs:
   focused-linux:
     name: Focused Native Linux
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 20
     env:
       PYTHONUTF8: "1"
       PYTHONIOENCODING: "utf-8:backslashreplace"
@@ -26,7 +26,6 @@ jobs:
       RUST_BACKTRACE: "1"
       RUST_TEST_THREADS: "1"
       ARIAX_BT_NATIVE_VERIFIED: "0"
-      ARIAX_BENCH_METALINK: "1"
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
       - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
@@ -40,7 +39,8 @@ jobs:
         with:
           path: toolchains/bt-native/*/install
           key: bt-native-linux-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native/libtorrent/sources.json', 'native/libtorrent/ariax.patch', 'native/libtorrent/openssl.patch', 'scripts/bt_native.py') }}
-      - name: Restore release benchmark and test outputs
+          fail-on-cache-miss: true
+      - name: Restore release test outputs
         id: cargo-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -50,19 +50,12 @@ jobs:
             toolchains/ci-target/benchmarks
           key: ci-benchmarks-${{ runner.os }}-${{ runner.arch }}-1.97.1-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml') }}-${{ github.sha }}
           restore-keys: ci-benchmarks-${{ runner.os }}-${{ runner.arch }}-1.97.1-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml') }}-
-      - name: Validate affected tests and measure transfer scenarios
+      - name: Validate affected native regressions
         shell: bash
         run: |
           set -euo pipefail
-          ulimit -n 20000
           python3 -B scripts/ci.py focused
-      - name: Save verified native installation
-        if: ${{ !cancelled() && env.ARIAX_BT_NATIVE_VERIFIED == '1' && steps.native-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: toolchains/bt-native/*/install
-          key: ${{ steps.native-cache.outputs.cache-primary-key }}
-      - name: Save release benchmark and test outputs
+      - name: Save release test outputs
         if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' && steps.cargo-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

@@ -20,29 +20,27 @@ workflow, avoiding duplicate jobs for this investigation.
 ### Temporary Focused Validation
 
 `python3 scripts/ci.py focused` runs helper tests, documentation, workflow syntax,
-publication-path and whitespace checks, and formatting before native provisioning.
-It verifies the cached libtorrent/OpenSSL installation, runs the native security
-probes, and tests storage recovery and permissions, BT roots and admission,
-benchmark framing/startup and consumer-credit attribution, engine credential-file
-permissions, and CLI RPC admission. Tests run serially with the locked dependency
-graph.
-Focused RPC unit tests cover weak observer lifetimes and stalled response/event
-owners before the load benchmark runs.
+publication-path and whitespace checks, and formatting before verifying the
+cached libtorrent/OpenSSL installation. Missing or invalid native caches fail
+the job; this temporary campaign never rebuilds native dependencies. It runs
+only the affected engine regressions: origin framing, bounded peer startup,
+ordinary and mixed setup, the small workload preset, consumer-credit attribution
+and the permission-policy boundary. Tests run serially with the locked dependency
+graph. Focused RPC unit tests cover weak observer lifetimes and stalled
+response/event owners.
 The BT live-option regression also covers admission during a peer-list refresh,
 the single pending-option limit, native acknowledgement and persisted recovery.
 
-The same job and release target directory then build the optimized benchmark and
-run `mixed-bt`, `http`, `websocket`, `content-length`, and `ndjson`, in that order.
-Every workload size, deadline and acceptance threshold is retained. A failure
-stops subsequent work; reports and native diagnostics are uploaded even on
-failure. Verified native dependencies and Cargo outputs are cached separately,
-using the existing benchmark cache paths and restore prefix. Native provisioning
-occurs once, and builds use at most two jobs. The job has a 40-minute ceiling.
+No benchmark executable is built or run by this job. A failure stops subsequent
+work; reports and native diagnostics are uploaded even on failure. The job
+reuses the existing release benchmark/test cache paths and restore prefix,
+and saves updated Cargo outputs. Native verification occurs once, and Rust
+builds use at most two jobs. The job has a 20-minute ceiling.
 
 This campaign requires native Linux and rejects WSL before running checks. It
-addresses the open local permission and transfer-benchmark findings; it does not
-run the full platform, MSRV, sanitizer or feature-bundle matrix. Administrative
-benchmarking is excluded because it does not use the changed metrics helper.
+addresses the affected native regressions. The broad storage/BT/CLI suites,
+native security probes, full platform, MSRV, sanitizer and feature-bundle matrix,
+and every performance acceptance scenario remain separate required coverage.
 Artifacts are named `ci-focused-linux`, and the job is not named `CI Required`.
 Focused success cannot stand in for the complete validation or release gates.
 

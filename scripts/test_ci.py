@@ -146,6 +146,27 @@ class NativeCacheTests(unittest.TestCase):
                         ci.provision_bt(runner)
                         self.assertEqual(environment.read_text(), "ARIAX_BT_NATIVE_VERIFIED=1\n")
 
+    def test_cached_only_verifies_once_and_never_falls_back_to_building(self):
+        for fail in (False, True):
+            with self.subTest(fail=fail), tempfile.TemporaryDirectory() as temporary:
+                environment = Path(temporary) / "github-env"
+                runner = mock.Mock()
+                runner.tool.return_value = Path("rustc")
+                runner.run.side_effect = ["host: x86_64-unknown-linux-gnu\n",
+                    RuntimeError("missing or invalid cache") if fail else ""]
+                with mock.patch.dict(os.environ, {"GITHUB_ENV": str(environment)}):
+                    if fail:
+                        with self.assertRaisesRegex(RuntimeError, "missing or invalid cache"):
+                            ci.provision_bt(runner, cached_only=True)
+                        self.assertFalse(environment.exists())
+                    else:
+                        ci.provision_bt(runner, cached_only=True)
+                        self.assertEqual(environment.read_text(), "ARIAX_BT_NATIVE_VERIFIED=1\n")
+                self.assertEqual(runner.run.call_args_list, [
+                    mock.call([Path("rustc"), "--version", "--verbose"], capture=True),
+                    mock.call([sys.executable, "-B", "scripts/bt_native.py", "--target",
+                               "x86_64-unknown-linux-gnu", "--sanitizer", "none", "--verify"])])
+
 
 class FocusedValidationTests(unittest.TestCase):
     def test_non_native_hosts_fail_before_any_check_or_provisioning(self):
@@ -161,8 +182,8 @@ class FocusedValidationTests(unittest.TestCase):
                     runner.cargo.assert_not_called()
                     provision.assert_not_called()
 
-    def test_checks_gate_measurements_and_every_stage_propagates_failure(self):
-        for failure in (None, "precheck", "native", "test", "benchmark"):
+    def test_focused_failures_stop_work_and_no_stage_builds_or_runs_benchmarks(self):
+        for failure in (None, "precheck", "cache", "test"):
             with self.subTest(failure=failure):
                 runner = mock.Mock()
                 runner.env = {}
@@ -177,11 +198,10 @@ class FocusedValidationTests(unittest.TestCase):
                 runner.cargo.side_effect = cargo
                 with mock.patch.object(ci, "require_native_linux"), \
                         mock.patch.object(ci, "actionlint", return_value=Path("actionlint")), \
-                        mock.patch.object(ci, "provision_bt", return_value=prefix) as provision, \
-                        mock.patch.object(ci, "native_security", side_effect=(
-                            RuntimeError("native failed") if failure == "native" else None)) as native, \
-                        mock.patch.object(ci, "benchmark", side_effect=(
-                            RuntimeError("benchmark failed") if failure == "benchmark" else None)) as benchmark:
+                        mock.patch.object(ci, "provision_bt", return_value=prefix, side_effect=(
+                            RuntimeError("cache failed") if failure == "cache" else None)) as provision, \
+                        mock.patch.object(ci, "native_security") as native, \
+                        mock.patch.object(ci, "benchmark") as benchmark:
                     if failure:
                         with self.assertRaisesRegex(RuntimeError, failure + " failed"):
                             ci.focused(runner)
@@ -189,28 +209,33 @@ class FocusedValidationTests(unittest.TestCase):
                         ci.focused(runner)
                     if failure == "precheck":
                         provision.assert_not_called()
-                        native.assert_not_called()
                     else:
-                        provision.assert_called_once_with(runner)
-                        native.assert_called_once_with(runner, prefix)
-                    if failure in {"precheck", "native", "test"}:
-                        benchmark.assert_not_called()
+                        provision.assert_called_once_with(runner, cached_only=True)
+                    native.assert_not_called()
+                    benchmark.assert_not_called()
+                    for call in runner.cargo.call_args_list:
+                        self.assertIn(call.args[0], {"fmt", "test"})
+                        self.assertNotIn("--workspace", call.args)
+                    if failure:
+                        self.assertEqual(runner.cargo.call_count, {"precheck": 0, "cache": 1, "test": 2}[failure])
                     else:
-                        benchmark.assert_called_once_with(runner, (
-                            "mixed-bt", "http", "websocket", "content-length", "ndjson"), provision=False)
                         self.assertEqual(runner.env["ARIAX_BT_NATIVE_DIR"], str(prefix))
                         self.assertEqual(runner.env["RUST_TEST_THREADS"], "1")
                         tests = [call.args for call in runner.cargo.call_args_list if call.args[0] == "test"]
-                        self.assertTrue(tests)
-                        self.assertTrue(any("rpc_stalled_credit" in args for args in tests))
-                        self.assertTrue(any("rpc_benchmark_workload" in args for args in tests))
+                        targets = {args[index + 1] for args in tests
+                                   for index, value in enumerate(args) if value == "--test"}
+                        self.assertEqual(targets, {"rpc_origin_metrics", "bt_peer_fixture", "bt_peer_startup",
+                            "rpc_benchmark_setup", "rpc_benchmark_workload", "rpc_stalled_credit", "permission_policy"})
                         for group in ("rpc_budget::tests::", "rpc_client::tests::", "http_rpc::tests::stalled_"):
                             self.assertTrue(any(group in args and "--lib" in args for args in tests))
+                        regression = "http_control::bittorrent::tests::live_option_waits_for_peer_refresh_and_rejects_a_second_pending_change"
+                        self.assertTrue(any(regression in args and "--exact" in args for args in tests))
                         for args in tests:
+                            self.assertEqual(args.count("-p"), 1)
+                            self.assertEqual(args[args.index("-p") + 1], "ariax-engine")
                             self.assertIn("--locked", args)
                             self.assertIn("--release", args)
                             self.assertIn("--test-threads=1", args)
-                            self.assertNotIn("--workspace", args)
 
     def test_focused_reports_do_not_replace_full_reports_but_reuse_release_outputs(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -223,9 +248,10 @@ class FocusedValidationTests(unittest.TestCase):
             self.assertNotEqual(focused.directory, full.directory)
             self.assertEqual(focused.env["CARGO_TARGET_DIR"], str(full.target))
 
-    def test_benchmark_selection_preserves_full_default_and_stops_after_failure(self):
-        for focused, fail in ((False, False), (True, False), (True, True)):
-            with self.subTest(focused=focused, fail=fail), tempfile.TemporaryDirectory() as temporary:
+    def test_explicit_benchmark_selection_preserves_full_default_and_stops_after_failure(self):
+        scenarios = ("http", "ndjson")
+        for selected, fail in ((False, False), (True, False), (True, True)):
+            with self.subTest(selected=selected, fail=fail), tempfile.TemporaryDirectory() as temporary:
                 directory = Path(temporary)
                 binary = directory / "benchmark"
                 binary.write_bytes(b"fixture executable")
@@ -247,18 +273,18 @@ class FocusedValidationTests(unittest.TestCase):
                         mock.patch.object(ci.subprocess, "check_output", side_effect=[b"", "a" * 40]), \
                         mock.patch.object(ci.time, "sleep"), \
                         mock.patch.object(ci, "measure_scenario", side_effect=measure):
-                    if not focused:
+                    if not selected:
                         ci.benchmark(runner)
                         provision.assert_called_once_with(runner)
                     elif fail:
                         with self.assertRaisesRegex(RuntimeError, "measurement failed"):
-                            ci.benchmark(runner, ci.FOCUSED_SCENARIOS, provision=False)
+                            ci.benchmark(runner, scenarios, provision=False)
                         provision.assert_not_called()
                     else:
-                        ci.benchmark(runner, ci.FOCUSED_SCENARIOS, provision=False)
+                        ci.benchmark(runner, scenarios, provision=False)
                         provision.assert_not_called()
-                expected = ci.FOCUSED_SCENARIOS if focused else ci.SCENARIOS
-                self.assertEqual(measured, ["mixed-bt", "http"] if fail else list(expected))
+                expected = scenarios if selected else ci.SCENARIOS
+                self.assertEqual(measured, ["http"] if fail else list(expected))
                 manifest = json.loads((directory / "manifest.json").read_text())
                 self.assertEqual(manifest["scenarios"], list(expected))
 
