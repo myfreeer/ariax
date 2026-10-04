@@ -26,38 +26,39 @@ the job; this temporary campaign never rebuilds native dependencies. The
 [first focused slice passed](../../performance-evidence/phase6-focused-linux-2026-10-04.md).
 The [BT transfer, security and recovery slice also passed](../../performance-evidence/phase6-focused-bt-linux-2026-10-04.md)
 at `38d07e4`, with 24 Rust harness tests, four native probes and 70 Python helper
-tests. The current selection runs these existing tests:
+tests. The next slice targets the Rust/CLI/RPC interfaces and feature boundaries:
 
-- The four small native probes cover destination policy (real tracker, web-seed,
-  redirect, DNS and DHT fixtures), private storage, bounded output and OpenSSL
-  callbacks. Only the probes are compiled against the cached dependencies.
-- `ariax-bt-libtorrent-sys --test native` and `ariax-bt --test adapter` cover real
-  v1/v2/hybrid transfers, pre-storage metadata approval, bounded rejection,
-  completion ownership, checkpoint failures and resource release.
-- `ariax-engine --lib http_control::phase6_` selects both Phase-6 modules:
-  torrent/magnet transfers, selected-file collision mapping, metadata-only and
-  unsafe-metadata admission, pause/remove/shutdown checkpoints, dirty recovery,
-  option validation and atomic JSON import.
-- `ariax-storage --lib session_store::bt::tests::` covers stale checkpoints,
-  exact metadata binding, old-format rejection and process crashes before/after
-  the checkpoint commit in both WAL and rollback-journal modes.
+- `verify-protocol-features.py` checks all four resolved CLI feature graphs
+  before native verification or test compilation. `minimal` and `standard`
+  exclude the native BT dependency graph; `full` and `compat` require it.
+- `ariax-engine --lib native_api::bittorrent::tests::` runs with all features
+  and separately with no default features. It covers typed admission, status,
+  files, peers, acknowledged option changes, JSON projections, reply ownership
+  and explicit feature-disabled errors.
+- `ariax-cli --test rpc_interfaces` runs separately under `minimal`, `standard`,
+  `full` and `compat`, always with `--no-default-features`. Smaller bundles must
+  reject BT admission without creating session state. Full bundles cover
+  v1/v2/hybrid torrent admission, restart through the Rust API, matching RPC
+  projections and strict output-permission rejection. Every bundle also checks
+  HTTP/stdio ownership and EOF behavior, JSON calls and service-option rejection.
 
-Rust tests run in release mode with all features, the locked dependency graph
-and one test thread. Native probes also run serially, retaining their existing
-10/30/90-second CTest deadlines. The previous slice's RPC and benchmark-fixture
-regressions are not repeated in this slice.
+Tests run serially in release mode with the locked dependency graph. The
+separate Cargo invocations preserve each bundle's feature selection. This slice
+does not repeat the native security probes or transfer/recovery suites.
 
 No benchmark executable is built or run by this job. A failure stops subsequent
-work; reports, native diagnostics and CTest logs are uploaded even on failure. The job
+work; reports and native diagnostics are uploaded even on failure. The job
 reuses the existing release benchmark/test cache paths and restore prefix,
 and saves updated Cargo outputs. Native verification occurs once, and Rust
-builds use at most two jobs. The job has a 20-minute ceiling.
+builds use at most two jobs. The job has a 30-minute ceiling.
 
 This campaign requires native Linux and rejects WSL before running checks. It
-addresses the selected native BT regressions. The remaining storage/CLI suites,
-full platform, MSRV, sanitizer and feature-bundle matrix, and every performance
-acceptance scenario remain separate required coverage. The passing artifact
-establishes only the selected tests at its recorded source commit.
+addresses the selected interface and feature regressions. Remaining storage/CLI
+suites, the full platform/MSRV matrix, complete feature-bundle tests and
+`release-cli` builds, sanitizer/fuzz execution and every performance acceptance
+scenario remain separate required coverage. The earlier passing artifacts
+establish only their selected tests and source commits; the new slice requires
+its own result.
 Artifacts are named `ci-focused-linux`, and the job is not named `CI Required`.
 Focused success cannot stand in for the complete validation or release gates.
 

@@ -1,4 +1,4 @@
-name: Focused Native Linux BT Validation
+name: Focused Native Linux Interface Validation
 
 on:
   push:
@@ -14,9 +14,9 @@ concurrency:
 
 jobs:
   focused-linux:
-    name: Focused Native Linux BT
+    name: Focused Native Linux Interfaces
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       PYTHONUTF8: "1"
       PYTHONIOENCODING: "utf-8:backslashreplace"
@@ -50,7 +50,7 @@ jobs:
             toolchains/ci-target/benchmarks
           key: ci-benchmarks-${{ runner.os }}-${{ runner.arch }}-1.97.1-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml') }}-${{ github.sha }}
           restore-keys: ci-benchmarks-${{ runner.os }}-${{ runner.arch }}-1.97.1-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml') }}-
-      - name: Validate BT transfer, security and recovery
+      - name: Validate Rust, CLI and RPC feature boundaries
         shell: bash
         run: |
           set -euo pipefail
@@ -71,7 +71,6 @@ jobs:
           name: ci-focused-linux
           path: |
             toolchains/ci-reports/focused/
-            toolchains/ci-target/benchmarks/native-security/Testing/Temporary/
             toolchains/bt-native/*/logs/
             toolchains/bt-native/*/install/ariax-native.json
           if-no-files-found: warn

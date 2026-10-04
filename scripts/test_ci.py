@@ -183,13 +183,21 @@ class FocusedValidationTests(unittest.TestCase):
                     provision.assert_not_called()
 
     def test_focused_failures_stop_work_and_no_stage_builds_or_runs_benchmarks(self):
-        for failure in (None, "precheck", "cache", "native", "test-1", "test-2", "test-3", "test-4"):
+        failures = [None, "precheck", "graph", "cache"] + [f"test-{index}" for index in range(1, 7)]
+        for failure in failures:
             with self.subTest(failure=failure):
                 runner = mock.Mock()
                 runner.env = {}
+                runner.tool.return_value = Path("cargo")
                 prefix = Path("native-install")
-                if failure == "precheck":
-                    runner.run.side_effect = RuntimeError("precheck failed")
+
+                def run(command):
+                    if failure == "precheck":
+                        raise RuntimeError("precheck failed")
+                    if failure == "graph" and "scripts/verify-protocol-features.py" in command:
+                        raise RuntimeError("graph failed")
+
+                runner.run.side_effect = run
 
                 test_count = 0
 
@@ -205,22 +213,21 @@ class FocusedValidationTests(unittest.TestCase):
                         mock.patch.object(ci, "actionlint", return_value=Path("actionlint")), \
                         mock.patch.object(ci, "provision_bt", return_value=prefix, side_effect=(
                             RuntimeError("cache failed") if failure == "cache" else None)) as provision, \
-                        mock.patch.object(ci, "native_security", side_effect=(
-                            RuntimeError("native failed") if failure == "native" else None)) as native, \
+                        mock.patch.object(ci, "native_security") as native, \
                         mock.patch.object(ci, "benchmark") as benchmark:
                     if failure:
                         with self.assertRaisesRegex(RuntimeError, failure + " failed"):
                             ci.focused(runner)
                     else:
                         ci.focused(runner)
-                    if failure == "precheck":
+                    if failure in {"precheck", "graph"}:
                         provision.assert_not_called()
                     else:
                         provision.assert_called_once_with(runner, cached_only=True)
-                    if failure in {"precheck", "cache"}:
-                        native.assert_not_called()
-                    else:
-                        native.assert_called_once_with(runner, prefix)
+                    native.assert_not_called()
+                    if failure != "precheck":
+                        self.assertIn(mock.call([sys.executable, "-B", "scripts/verify-protocol-features.py",
+                                                "--cargo", Path("cargo")]), runner.run.call_args_list)
                     benchmark.assert_not_called()
                     for call in runner.cargo.call_args_list:
                         self.assertIn(call.args[0], {"fmt", "test"})
@@ -230,22 +237,22 @@ class FocusedValidationTests(unittest.TestCase):
                         self.assertNotIn("--benches", call.args)
                     if failure:
                         expected = 1 + int(failure[-1]) if failure.startswith("test-") else {
-                            "precheck": 0, "cache": 1, "native": 1}[failure]
+                            "precheck": 0, "graph": 1, "cache": 1}[failure]
                         self.assertEqual(runner.cargo.call_count, expected)
                     else:
                         self.assertEqual(runner.env["ARIAX_BT_NATIVE_DIR"], str(prefix))
                         self.assertEqual(runner.env["RUST_TEST_THREADS"], "1")
-                        self.assertEqual(runner.env["CTEST_PARALLEL_LEVEL"], "1")
                         self.assertEqual(runner.env["CARGO_BUILD_JOBS"], "2")
                         tests = [call.args for call in runner.cargo.call_args_list if call.args[0] == "test"]
                         selections = [(args[args.index("-p") + 1],
-                                       args[args.index("--all-features") + 1:args.index("--")])
+                                       args[args.index("-p") + 2:args.index("--")])
                                       for args in tests]
                         self.assertEqual(selections, [
-                            ("ariax-bt-libtorrent-sys", ("--test", "native")),
-                            ("ariax-bt", ("--test", "adapter")),
-                            ("ariax-engine", ("--lib", "http_control::phase6_")),
-                            ("ariax-storage", ("--lib", "session_store::bt::tests::")),
+                            ("ariax-engine", ("--all-features", "--lib", "native_api::bittorrent::tests::")),
+                            ("ariax-engine", ("--no-default-features", "--lib", "native_api::bittorrent::tests::")),
+                            *[("ariax-cli", ("--no-default-features", "--features", bundle,
+                                            "--test", "rpc_interfaces"))
+                              for bundle in ("minimal", "standard", "full", "compat")],
                         ])
                         for args in tests:
                             self.assertEqual(args.count("-p"), 1)

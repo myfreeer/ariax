@@ -540,27 +540,26 @@ def benchmark(runner, scenarios=SCENARIOS, *, provision=True):
 
 
 def focused(runner):
-    """Temporary native BT transfer/security/recovery slice, without benchmarks."""
+    """Temporary Rust/CLI/RPC interface and feature slice, without benchmarks."""
     require_native_linux()
-    runner.env.update(RUST_TEST_THREADS="1", CTEST_PARALLEL_LEVEL="1", CARGO_BUILD_JOBS="2")
+    runner.env.update(RUST_TEST_THREADS="1", CARGO_BUILD_JOBS="2")
     runner.run([sys.executable, "-B", "-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py"])
     runner.run([sys.executable, "-B", "scripts/check_docs.py"])
     runner.run([actionlint(), "-shellcheck=", "-pyflakes="])
     runner.run([sys.executable, "-B", "scripts/publication.py"])
     runner.run(["git", "show", "--format=", "--check", "HEAD"])
     runner.cargo("fmt", "--all", "--", "--check")
+    runner.run([sys.executable, "-B", "scripts/verify-protocol-features.py", "--cargo", runner.tool("cargo")])
     prefix = provision_bt(runner, cached_only=True)
     runner.env["ARIAX_BT_NATIVE_DIR"] = str(prefix)
-    native_security(runner, prefix)
     serial = ("--", "--test-threads=1")
-    runner.cargo("test", "--locked", "--release", "-p", "ariax-bt-libtorrent-sys", "--all-features",
-                 "--test", "native", *serial)
-    runner.cargo("test", "--locked", "--release", "-p", "ariax-bt", "--all-features",
-                 "--test", "adapter", *serial)
-    runner.cargo("test", "--locked", "--release", "-p", "ariax-engine", "--all-features",
-                 "--lib", "http_control::phase6_", *serial)
-    runner.cargo("test", "--locked", "--release", "-p", "ariax-storage", "--all-features",
-                 "--lib", "session_store::bt::tests::", *serial)
+    for features in ("--all-features", "--no-default-features"):
+        runner.cargo("test", "--locked", "--release", "-p", "ariax-engine", features,
+                     "--lib", "native_api::bittorrent::tests::", *serial)
+    for bundle in FEATURE_BUNDLES:
+        runner.cargo("test", "--locked", "--release", "-p", "ariax-cli",
+                     "--no-default-features", "--features", bundle,
+                     "--test", "rpc_interfaces", *serial)
 
 
 def interrupted(_signum, _frame):
