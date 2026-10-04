@@ -203,6 +203,7 @@ class FocusedValidationTests(unittest.TestCase):
                         tests = [call.args for call in runner.cargo.call_args_list if call.args[0] == "test"]
                         self.assertTrue(tests)
                         self.assertTrue(any("rpc_stalled_credit" in args for args in tests))
+                        self.assertTrue(any("rpc_benchmark_workload" in args for args in tests))
                         for group in ("rpc_budget::tests::", "rpc_client::tests::", "http_rpc::tests::stalled_"):
                             self.assertTrue(any(group in args and "--lib" in args for args in tests))
                         for args in tests:

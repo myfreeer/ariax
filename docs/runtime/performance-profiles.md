@@ -90,6 +90,29 @@ The current implementation moves projection outside the owner and runs bounded
 mutation continuations through the managed runtime; deterministic tests and the
 expanded campaign validate those changes separately from the older results.
 
+### Small Repeated Diagnostics
+
+`ARIAX_BENCH_DIAGNOSTIC_SMALL=1` selects 16 active HTTP ranges and 1,600
+measured calls for each transport, with a 30-second scenario deadline. The
+operation mix, 128-task projections, 32-source queries, acknowledged mutations,
+stalled-consumer retention and cleanup, renewed range barriers, memory limits
+and burst rules remain exercised. The preset is inherited by fixture children
+and rejects mixed-BT and administrative scenarios. Default runs retain the full
+measurement geometry above.
+
+Small reports carry `measurementKind="diagnostic-small"` and
+`acceptanceEligible=false`; the acceptance validator rejects them. Repeated
+diagnostics record compiler activity without aborting a run for that activity.
+They retain every raw attempt and count incomplete or invalid runs as failures.
+For at least five complete valid repeats, the timing score is the maximum of
+aggregate and per-operation p99. A fixed upper-tail filter flags scores above
+the median plus the greater of three scaled median absolute
+deviations, 25 percent of the median, or one millisecond. Report the retained
+median and range together with excluded attempts, raw latency-gate failures,
+compiler overlap and the quiet subset. Fewer than five valid repeats receive
+no outlier filtering. Timing filtering never turns a failed functional check
+or latency gate into passing acceptance evidence.
+
 ### Mixed HTTP And BitTorrent Measurement
 
 Phase 6 adds `--scenario=mixed-bt` on native Linux with the `bt` feature.

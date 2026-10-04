@@ -275,6 +275,11 @@ retain the same workload, latency, memory and shutdown checks. A report from a
 different OS is rejected. Mixed HTTP/BT measurements require Linux, and Windows
 results do not satisfy the native Linux gate.
 
+The small diagnostic preset and repeated-run timing filter are defined in
+[performance profiles](../runtime/performance-profiles.md#small-repeated-diagnostics).
+Diagnostic reports are explicitly ineligible for acceptance, even if their
+reported workload counts are altered to match the full campaign.
+
 Run the four transport scenarios, the administrative scenario and the Phase-6
 mixed HTTP/BT scenario sequentially. Each transport must finish 20,000 measured calls while its 1,000
 Metalink-admitted ranges remain active. Existing per-operation p99, measured

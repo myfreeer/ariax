@@ -331,20 +331,41 @@ def integer(value, name, *, minimum=0, maximum=None):
     return value
 
 
-def validate_latencies(values):
+def validate_latencies(values, maximum_us=50_000):
     require(isinstance(values, dict) and bool(values), "invalid operation latency report")
     for name, item in values.items():
         integer(item.get("calls"), name + ".calls", minimum=1)
-        integer(item.get("p99Us"), name + ".p99Us", maximum=50_000)
+        integer(item.get("p99Us"), name + ".p99Us", maximum=maximum_us)
 
 
 def validate_benchmark(report, scenario, metalink=True, *, expected_os="linux"):
+    return _validate_benchmark(report, scenario, metalink, expected_os=expected_os, diagnostic=False)
+
+
+def validate_diagnostic_benchmark(report, scenario, metalink=True, *, expected_os="windows"):
+    """Validate small-run structure and return its unfiltered latency-gate result."""
+    return _validate_benchmark(report, scenario, metalink, expected_os=expected_os, diagnostic=True)
+
+
+def _validate_benchmark(report, scenario, metalink, *, expected_os, diagnostic):
     require(expected_os in {"linux", "windows"}, "unsupported benchmark operating system")
     require(isinstance(report, dict) and report.get("scenario") == scenario, "wrong benchmark scenario")
+    if diagnostic:
+        require(scenario in {"http", "websocket", "content-length", "ndjson"}, "unsupported diagnostic scenario")
+        require(report.get("measurementKind") == "diagnostic-small"
+                and report.get("acceptanceEligible") is False, "missing diagnostic identity")
+        require(report.get("stalledConsumerCleanupVerified") is True, "missing consumer cleanup evidence")
+        for field in ("stalledCreditBytes", "stalledEventCreditBytes"):
+            integer(report.get(field), field, minimum=256 * 1024)
+    else:
+        require(report.get("measurementKind", "full") == "full"
+                and report.get("acceptanceEligible", True) is True,
+                "diagnostic benchmarks do not satisfy acceptance")
     require(report.get("os") == expected_os, "unexpected benchmark operating system")
     require(scenario != "mixed-bt" or expected_os == "linux", "mixed-bt requires native Linux evidence")
-    require(report.get("complete") is True and report.get("passed") is True, "incomplete or failed benchmark")
-    integer(report.get("elapsedScenarioMs"), "elapsedScenarioMs", maximum=90_000)
+    require(report.get("complete") is True and type(report.get("passed")) is bool
+            and (diagnostic or report["passed"]), "incomplete or failed benchmark")
+    integer(report.get("elapsedScenarioMs"), "elapsedScenarioMs", maximum=30_000 if diagnostic else 90_000)
     integer(report.get("controlRuntime", {}).get("maxSteps"), "controlRuntime.maxSteps", maximum=32)
     if scenario == "administrative":
         require(report.get("activeRanges") == 0 and report.get("resultSetupRemovals") == 128,
@@ -374,25 +395,28 @@ def validate_benchmark(report, scenario, metalink=True, *, expected_os="linux"):
         return
     require(scenario in SCENARIOS, "unknown benchmark scenario")
     mixed = scenario == "mixed-bt"
+    ranges, samples = (16, 1_600) if diagnostic else (1_000, 20_000)
+    controls = samples // 20
     require(report.get("rangeAdmission") == ("metalink" if metalink else "addUri"), "wrong admission fixture")
-    require(report.get("ranges") == 1_000 and report.get("samples") == 20_000
-            and report.get("verificationCalls") == (2_000 if mixed else 1_000), "incomplete transport measurements")
+    require(report.get("ranges") == ranges and report.get("samples") == samples
+            and report.get("verificationCalls") == (2_000 if mixed else controls), "incomplete transport measurements")
     require(report.get("renewedBarrierAfterWarmup") is True and report.get("perStatusRangeCheck") is True,
             "missing renewed active-range evidence")
-    require(report.get("controlCalls") == 1_000
+    require(report.get("controlCalls") == controls
             and report.get("shutdownDrainBoundary") == "engine process exit",
             "missing control mutation or shutdown evidence")
     integer(report.get("shutdownAcknowledgementUs"), "shutdownAcknowledgementUs", maximum=50_000)
     integer(report.get("maxBurstCalls"), "maxBurstCalls", minimum=1, maximum=1_000)
     integer(report.get("maxBurstMs"), "maxBurstMs", maximum=500)
     integer(report.get("cooldownMs"), "cooldownMs", minimum=250)
-    integer(report.get("p99Us"), "p99Us", maximum=50_000)
+    latency_maximum = 30_000_000 if diagnostic else 50_000
+    integer(report.get("p99Us"), "p99Us", maximum=latency_maximum)
     require(bool(report.get("operations")), "missing per-operation latency evidence")
-    validate_latencies(report["operations"])
-    counts = {"tellStatus": 12_000, "tellWaiting": 4_000, "getFiles": 1_000,
-              "getUris": 1_000, "getOption": 1_000,
+    validate_latencies(report["operations"], latency_maximum)
+    counts = {"tellStatus": 12 * controls, "tellWaiting": 4 * controls, "getFiles": controls,
+              "getUris": controls, "getOption": controls,
               **dict.fromkeys(("addUri", "changeOption", "changePosition", "changeUri",
-                               "pause", "remove", "removeDownloadResult", "unpause"), 125)}
+                               "pause", "remove", "removeDownloadResult", "unpause"), controls // 8)}
     if mixed:
         counts.pop("tellStatus")
         counts.pop("getUris")
@@ -413,6 +437,11 @@ def validate_benchmark(report, scenario, metalink=True, *, expected_os="linux"):
     for peak, cap in (("maxRpcBytes", "rpcLimit"), ("maxResidentBytes", "residentLimit"),
                       ("maxSampledRssBytes", "rssLimit")):
         integer(report.get(peak), peak, maximum=integer(report.get(cap), cap, minimum=1))
+    if diagnostic:
+        latency_passed = report["p99Us"] <= 50_000 and all(
+            operation["p99Us"] <= 50_000 for operation in report["operations"].values())
+        require(report["passed"] is latency_passed, "inconsistent diagnostic latency result")
+        return latency_passed
 
 
 def compiler_processes():
@@ -538,6 +567,7 @@ def focused(runner):
     runner.cargo("test", "--locked", "--release", "-p", "ariax-engine", "--all-features",
                  "--test", "rpc_origin_metrics", "--test", "bt_peer_fixture",
                  "--test", "bt_peer_startup", "--test", "rpc_benchmark_setup",
+                 "--test", "rpc_benchmark_workload",
                  "--test", "rpc_stalled_credit", "--test", "permission_policy", *serial)
     for group in ("rpc_budget::tests::", "rpc_client::tests::", "http_rpc::tests::stalled_"):
         runner.cargo("test", "--locked", "--release", "-p", "ariax-engine", "--all-features",

@@ -12,7 +12,7 @@ use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
     atomic::{AtomicUsize, Ordering},
 };
 use std::time::{Duration, Instant};
@@ -25,9 +25,7 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, tungstenite::Message};
 
 type Failure = Box<dyn std::error::Error + Send + Sync>;
 type Result<T> = std::result::Result<T, Failure>;
-const RANGES: usize = 1_000;
 const RANGES_PER_ORIGIN: usize = 8;
-const SAMPLES: usize = 20_000;
 const PROJECTION_TASKS: usize = 128;
 const PROJECTION_SOURCES: usize = 32;
 const BURST_LAUNCH_MS: u64 = 400;
@@ -45,10 +43,16 @@ use origin_metrics::query as origin_metrics;
 mod bittorrent;
 #[path = "rpc_active_profile/stalled_credit.rs"]
 mod stalled_credit;
-const TOTAL_BYTES: usize = RANGES * 2 * 1024 * 1024;
+#[path = "rpc_active_profile/workload.rs"]
+mod workload;
+static WORKLOAD: OnceLock<workload::Workload> = OnceLock::new();
 const PULSE_BYTES: usize = 1024;
 const EVENT_BYTES: usize = 512 * 1024;
 static METRICS_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+fn workload() -> workload::Workload {
+    *WORKLOAD.get().expect("benchmark workload initialized")
+}
 
 fn nz(value: usize) -> NonZeroUsize {
     NonZeroUsize::new(value).unwrap()
@@ -108,6 +112,17 @@ impl Drop for Child {
 
 fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
+    let preset =
+        match workload::Workload::from_setting(std::env::var_os(workload::SETTING).as_deref()) {
+            Ok(preset) => preset,
+            Err(error) => {
+                eprintln!("active RPC benchmark failed: {error}");
+                std::process::exit(1);
+            }
+        };
+    WORKLOAD
+        .set(preset)
+        .expect("workload initialized only once");
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -121,6 +136,7 @@ fn main() {
             Some("--administrative")
                 if std::env::var_os("ARIAX_RUN_ACTIVE_RPC_BENCH").is_some() =>
             {
+                workload().validate_scenario("administrative")?;
                 tokio::time::timeout(Duration::from_secs(90), admin::measure())
                     .await
                     .map_err(|_| "administrative scenario exceeded its 90-second deadline")?
@@ -140,6 +156,9 @@ fn main() {
             }
             _ => {
                 let selected = args.iter().find_map(|arg| arg.strip_prefix("--scenario="));
+                if let Some(scenario) = selected {
+                    workload().validate_scenario(scenario)?;
+                }
                 if selected == Some("mixed-bt") {
                     if !cfg!(all(feature = "bt", target_os = "linux")) {
                         return Err("mixed-bt requires the bt feature and native Linux".into());
@@ -155,9 +174,12 @@ fn main() {
                 }
                 for scenario in ["http", "websocket", "content-length", "ndjson"] {
                     if selected.is_none_or(|name| name == scenario) {
-                        tokio::time::timeout(Duration::from_secs(90), measure(scenario))
+                        let seconds = workload().scenario_seconds();
+                        tokio::time::timeout(Duration::from_secs(seconds), measure(scenario))
                             .await
-                            .map_err(|_| format!("{scenario} exceeded its 90-second deadline"))??;
+                            .map_err(|_| {
+                                format!("{scenario} exceeded its {seconds}-second deadline")
+                            })??;
                     }
                 }
                 Ok(())
@@ -239,7 +261,7 @@ async fn origin() -> Result<()> {
     let (pulse, _) = watch::channel(0_usize);
     let mut listeners = tokio::task::JoinSet::new();
     let mut addresses = Vec::new();
-    for _ in 0..RANGES / RANGES_PER_ORIGIN {
+    for _ in 0..workload().ranges / RANGES_PER_ORIGIN {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         addresses.push(listener.local_addr()?.to_string());
         listeners.spawn(origin_listener(listener, state.clone(), pulse.clone()));
@@ -315,7 +337,8 @@ async fn origin_connection(
         .and_then(|value| value.checked_add(1))
         .ok_or("invalid range")?;
     let mut epochs = pulse.subscribe();
-    stream.write_all(format!("HTTP/1.1 206 Partial Content\r\nContent-Length: {length}\r\nContent-Range: bytes {start}-{end}/{TOTAL_BYTES}\r\nETag: \"rpc-active-v1\"\r\nConnection: close\r\n\r\n").as_bytes()).await?;
+    let total_bytes = workload().total_bytes();
+    stream.write_all(format!("HTTP/1.1 206 Partial Content\r\nContent-Length: {length}\r\nContent-Range: bytes {start}-{end}/{total_bytes}\r\nETag: \"rpc-active-v1\"\r\nConnection: close\r\n\r\n").as_bytes()).await?;
     if length == 1 {
         stream.write_all(&[0x5a]).await?;
         return Ok(());
@@ -461,6 +484,8 @@ async fn stopped(mut receiver: watch::Receiver<bool>) -> io::Result<()> {
 }
 
 async fn engine(origins: &[SocketAddr], scenario: &str) -> Result<()> {
+    workload().validate_scenario(scenario)?;
+    let total_bytes = workload().total_bytes();
     eprintln!("benchmark setup: process bootstrap");
     let root = Root::new()?;
     let resources = HttpProcessResources::for_profile(RuntimeProfile::Concurrency)?;
@@ -483,7 +508,7 @@ async fn engine(origins: &[SocketAddr], scenario: &str) -> Result<()> {
         .map(|origin| format!("http://{origin}/work.bin"))
         .collect();
     let options = json!({
-        "split":RANGES, "max-connection-per-server":RANGES_PER_ORIGIN, "min-split-size":"1M", "piece-length":"1M", "timeout":600, "endgame-max-duplicates":0
+        "split":workload().ranges, "max-connection-per-server":RANGES_PER_ORIGIN, "min-split-size":"1M", "piece-length":"1M", "timeout":600, "endgame-max-duplicates":0
     });
     let gid = if phase5_metalink() {
         if !cfg!(feature = "metalink") {
@@ -495,13 +520,13 @@ async fn engine(origins: &[SocketAddr], scenario: &str) -> Result<()> {
         hash.update(&vec![0; chunk]);
         let checksum = hash.finalize().canonical();
         let digest = checksum.split_once('=').unwrap().1;
-        let pieces = format!("<hash>{digest}</hash>").repeat(TOTAL_BYTES.div_ceil(chunk));
+        let pieces = format!("<hash>{digest}</hash>").repeat(total_bytes.div_ceil(chunk));
         let urls = sources
             .iter()
             .map(|uri| format!("<url>{uri}</url>"))
             .collect::<String>();
         let xml = format!(
-            "<metalink xmlns='urn:ietf:params:xml:ns:metalink'><file name='work.bin'><size>{TOTAL_BYTES}</size><pieces type='sha-256' length='{chunk}'>{pieces}</pieces>{urls}</file></metalink>"
+            "<metalink xmlns='urn:ietf:params:xml:ns:metalink'><file name='work.bin'><size>{total_bytes}</size><pieces type='sha-256' length='{chunk}'>{pieces}</pieces>{urls}</file></metalink>"
         );
         plane.call(
             "aria2.addMetalink",
@@ -988,12 +1013,12 @@ impl Auxiliary {
 async fn barrier(origin: SocketAddr, client: &mut Client, renew: bool) -> Result<Value> {
     let metric_request = request("bench.metrics", json!([]));
     let before = client.call(&metric_request).await?;
-    if !renew && before["connections"] != RANGES {
+    if !renew && before["connections"] != workload().ranges {
         eprintln!("benchmark barrier: waiting for range startup: {before}");
     }
     let expected = before["received"].as_u64().unwrap_or(0)
         + if renew {
-            (RANGES * PULSE_BYTES) as u64
+            (workload().ranges * PULSE_BYTES) as u64
         } else {
             0
         };
@@ -1004,11 +1029,11 @@ async fn barrier(origin: SocketAddr, client: &mut Client, renew: bool) -> Result
     loop {
         let metrics = client.call(&metric_request).await?;
         let remote = origin_metrics(origin, false).await?;
-        if remote["active"] == RANGES
-            && metrics["connections"] == RANGES
+        if remote["active"] == workload().ranges
+            && metrics["connections"] == workload().ranges
             && metrics["network"] == true
             && (!renew
-                || (remote["acks"] == RANGES
+                || (remote["acks"] == workload().ranges
                     && metrics["received"].as_u64().unwrap_or(0) >= expected))
         {
             return Ok(metrics);
@@ -1035,8 +1060,13 @@ async fn measure(scenario: &str) -> Result<()> {
     let scenario_started = Instant::now();
     let mixed = scenario == "mixed-bt";
     let transport = if mixed { "http" } else { scenario };
+    let expected_connections = workload().ranges.to_string();
     if ariax_runtime::native_process_handle_limit().is_some_and(|limit| {
-        limit < RANGES + RANGES / RANGES_PER_ORIGIN + 128 + if mixed { 1024 } else { 0 }
+        limit
+            < workload().ranges
+                + workload().ranges / RANGES_PER_ORIGIN
+                + 128
+                + if mixed { 1024 } else { 0 }
     }) {
         return Err("benchmark requires a larger process handle limit; use an isolated Linux shell with ulimit -n 20000".into());
     }
@@ -1172,7 +1202,10 @@ async fn measure(scenario: &str) -> Result<()> {
     if let Some(peers) = &mut peers {
         peers.barrier(&mut client, false).await?;
     }
-    eprintln!("benchmark {scenario}: 1,000 active HTTP ranges confirmed");
+    eprintln!(
+        "benchmark {scenario}: {} active HTTP ranges confirmed",
+        workload().ranges
+    );
     let mut slow_events = Client::connect(address("websocket")?, "websocket").await?;
     slow_events
         .call(&request(
@@ -1220,7 +1253,7 @@ async fn measure(scenario: &str) -> Result<()> {
         |sample| sample.is_some_and(|sample| sample.retains(response_baseline)),
     )
     .await?;
-    let mut samples = Vec::with_capacity(SAMPLES);
+    let mut samples = Vec::with_capacity(workload().samples);
     let mut bursts = 0;
     let mut controls = 0;
     let mut verification_calls = 0;
@@ -1256,7 +1289,7 @@ async fn measure(scenario: &str) -> Result<()> {
         Ok(())
     };
     observe(&retained)?;
-    while samples.len() < SAMPLES {
+    while samples.len() < workload().samples {
         client.call(&refresh_event).await?;
         for _ in 0..32 {
             client.call(&status).await?;
@@ -1271,7 +1304,7 @@ async fn measure(scenario: &str) -> Result<()> {
         }
         let start = Instant::now();
         let mut count = 0;
-        while samples.len() < SAMPLES
+        while samples.len() < workload().samples
             && count < 1_000
             && start.elapsed() < Duration::from_millis(BURST_LAUNCH_MS)
         {
@@ -1362,7 +1395,9 @@ async fn measure(scenario: &str) -> Result<()> {
             }
             match index {
                 0..=11 => {
-                    if result["status"] != "active" || result["connections"] != "1000" {
+                    if result["status"] != "active"
+                        || result["connections"].as_str() != Some(expected_connections.as_str())
+                    {
                         return Err(format!("download left active state: {result}").into());
                     }
                 }
@@ -1436,7 +1471,7 @@ async fn measure(scenario: &str) -> Result<()> {
     })
     .await?;
     samples.sort_unstable();
-    let p99 = samples[(SAMPLES * 99 / 100) - 1];
+    let p99 = samples[(workload().samples * 99 / 100) - 1];
     let operations = latency_report(&mut per_operation);
     let ordinary_pass = per_operation.values().all(|samples| {
         samples[(samples.len() * 99).div_ceil(100) - 1] <= Duration::from_millis(50)
@@ -1454,11 +1489,11 @@ async fn measure(scenario: &str) -> Result<()> {
         .bytes
         .saturating_sub(response_baseline);
     let event_credit = event_held.bytes.saturating_sub(event_baseline);
-    let mut report = json!({"scenario":scenario,"profile":"concurrency","rangeAdmission":if phase5_metalink() {"metalink"} else {"addUri"},"ranges":RANGES,"samples":samples.len(),"controlCalls":controls,"bursts":bursts,"cooldownMs":250,
-        "os":std::env::consts::OS,"arch":std::env::consts::ARCH,"origins":RANGES / RANGES_PER_ORIGIN,"workerThreads":2,
+    let mut report = json!({"scenario":scenario,"profile":"concurrency","rangeAdmission":if phase5_metalink() {"metalink"} else {"addUri"},"ranges":workload().ranges,"samples":samples.len(),"controlCalls":controls,"bursts":bursts,"cooldownMs":250,
+        "os":std::env::consts::OS,"arch":std::env::consts::ARCH,"origins":workload().ranges / RANGES_PER_ORIGIN,"workerThreads":2,
         "burstLimitCalls":1000,"burstLimitMs":500,"launchCutoffMs":BURST_LAUNCH_MS,"maxBurstCalls":max_burst_calls,"verificationCalls":verification_calls,"operations":operations,"firstResponseBytes":response_bytes,
         "projectionTasks":PROJECTION_TASKS,"metadataSources":PROJECTION_SOURCES,"auxiliaryMutationTargets":1,"controlRuntime":events_released["controlRuntime"],"measuredBurstUs":measured_bursts.as_micros(),"measuredRoundTripUs":measured_round_trips.as_micros(),
-        "p50Us":samples[SAMPLES / 2].as_micros(),"p99Us":p99.as_micros(),"maxBurstMs":max_burst.as_millis(),
+        "p50Us":samples[workload().samples / 2].as_micros(),"p99Us":p99.as_micros(),"maxBurstMs":max_burst.as_millis(),
         "maxSampledRssBytes":max_rss,"maxRpcBytes":max_rpc,"maxResidentBytes":max_resident,
         "rpcLimit":retained["rpcLimit"],"residentLimit":retained["residentLimit"],"rssLimit":retained["rssLimit"],
         "stalledCreditBytes":response_credit,
@@ -1468,6 +1503,9 @@ async fn measure(scenario: &str) -> Result<()> {
     report["stalledCreditAccounting"] = json!(
         "per-client weak observers; outstanding response owners; complete release after disconnect"
     );
+    report["measurementKind"] = json!(workload().measurement_kind());
+    report["acceptanceEligible"] = json!(!workload().diagnostic_small);
+    report["stalledConsumerCleanupVerified"] = json!(true);
     report["stalledConsumerBaselines"] =
         json!({"events":event_baseline,"response":response_baseline});
     #[cfg(feature = "bt")]
@@ -1501,7 +1539,7 @@ async fn measure(scenario: &str) -> Result<()> {
     }
     report["fixtureCleanupUs"] = json!(cleanup_started.elapsed().as_micros());
     report["elapsedScenarioMs"] = json!(scenario_started.elapsed().as_millis());
-    report["complete"] = json!(samples.len() == SAMPLES);
+    report["complete"] = json!(samples.len() == workload().samples);
     report["passed"] = json!(ordinary_pass && p99 <= Duration::from_millis(50));
     println!("{report}");
     if !ordinary_pass || p99 > Duration::from_millis(50) {

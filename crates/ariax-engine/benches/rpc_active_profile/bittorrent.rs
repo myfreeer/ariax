@@ -252,7 +252,7 @@ impl PeerProcess {
                 && metrics["btPeers"] == PEERS
                 && metrics["btDone"] == false
                 && metrics["btError"] == 0
-                && metrics["connections"] == RANGES
+                && metrics["connections"] == workload().ranges
                 && metrics["btDownloaded"].as_u64().unwrap_or(0) >= expected
                 && (!renew || remote["acks"] == PEERS)
                 && client.call(&peer_request).await?.as_array().map(Vec::len) == Some(PEERS)
