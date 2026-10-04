@@ -529,9 +529,20 @@ verified the cached native dependencies and produced no benchmark measurements.
 This supplies the previously missing native Linux evidence for those focused
 regressions.
 
+The [second focused native Linux run](../../performance-evidence/phase6-focused-bt-linux-2026-10-04.md)
+passes at `38d07e4`: 24 Rust harness tests, four native probes and 70 Python
+helper tests. It validates bridge/adapter transfers and resource ownership,
+torrent/magnet admission and file selection, pause/remove/shutdown checkpoints,
+dirty-payload recovery and SQLite checkpoint crashes before/after commit in
+both journal modes. Native destination-policy, private-storage, bounded-output
+and OpenSSL callback probes pass; all 16 endpoint cases complete. Cached native
+input digests and all 15 command logs were verified. The validation command took
+285.902 seconds including compilation, with no benchmark execution.
+
 Phase-6 acceptance remains open. The complete platform/MSRV/feature matrix,
-broader native transfer/security/crash/recovery tests, sanitizer/fuzz execution
-and all six performance scenarios still require current-source evidence.
+remaining interface and platform coverage, sanitizer/fuzz execution and all six
+performance scenarios still require current-source evidence. These focused
+Linux runs do not establish the corresponding native behavior on other platforms.
 Historical reports remain valid only for their recorded source and scenarios.
 The focused pass also leaves the separate kernel/backend, custom BT storage,
 release-platform and tagging requirements open.

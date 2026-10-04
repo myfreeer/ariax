@@ -1,0 +1,393 @@
+{
+  "evidenceKind": "focused-native-linux-bt-transfer-security-recovery",
+  "sourceCommit": "38d07e48dce1f220bb55e88595f4e030a5960cf5",
+  "archive": {
+    "name": "ci-focused-linux.zip",
+    "sha256": "00bbb019421b163711ad4ed19c8037f152d76b1a4284a6ad9a203d486bbfc4f5",
+    "bytes": 760711
+  },
+  "resultSha256": "01ed36bf7932dd3e0ab454b8be88f6ec983c69c0f98903863acf081ba8d700e2",
+  "verifiedCommandLogs": 15,
+  "pythonTestsPassed": 70,
+  "rustTestsPassed": 24,
+  "rustTestsFailed": 0,
+  "rustTestsIgnored": 0,
+  "rustTestLogs": [
+    {
+      "log": "12.log",
+      "package": "ariax-bt-libtorrent-sys",
+      "selection": [
+        "--test",
+        "native"
+      ],
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "testSeconds": 3.81,
+      "testNames": [
+        "native_rejection_is_bounded_redacted_and_keeps_callbacks_owned_on_drop",
+        "native_v1_v2_hybrid_transfers_hold_storage_and_checkpoint_without_alert_delivery"
+      ]
+    },
+    {
+      "log": "13.log",
+      "package": "ariax-bt",
+      "selection": [
+        "--test",
+        "adapter"
+      ],
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "testSeconds": 0.91,
+      "testNames": [
+        "full_completion_capacity_returns_unaccepted_blob_ownership_for_retry",
+        "magnet_storage_waits_for_exact_approval_and_transfers_through_owned_commands",
+        "resource_exhaustion_and_private_peer_rejection_have_no_unowned_native_work",
+        "unread_completions_retain_credit_live_versions_reject_stale_and_shutdown_releases_resources"
+      ]
+    },
+    {
+      "log": "14.log",
+      "package": "ariax-engine",
+      "selection": [
+        "--lib",
+        "http_control::phase6_"
+      ],
+      "passed": 12,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 415,
+      "testSeconds": 41.28,
+      "testNames": [
+        "http_control::phase6_native_tests::active_shutdown_persists_bt_resume_before_closing_the_global_session",
+        "http_control::phase6_native_tests::expired_shutdown_retains_safe_resume_and_dirty_generation_on_recovery",
+        "http_control::phase6_native_tests::late_invalid_magnet_selection_fails_without_creating_payload_files",
+        "http_control::phase6_native_tests::late_traversal_and_symlink_metadata_are_rejected_before_payload_creation",
+        "http_control::phase6_native_tests::mixed_global_statistics_include_bt_rates_and_bound_selected_progress",
+        "http_control::phase6_native_tests::selected_collision_mapping_downloads_only_its_disjoint_piece_and_survives_restart",
+        "http_control::phase6_native_tests::torrent_and_magnet_versions_transfer_checkpoint_recheck_and_remove_through_engine",
+        "http_control::phase6_tests::bt_options_reject_invalid_selection_limits_and_unsupported_settings",
+        "http_control::phase6_tests::metadata_only_finishes_all_torrent_versions_without_payload_files_or_transfer_journals",
+        "http_control::phase6_tests::mixed_json_v3_import_validates_identity_mapping_and_atomic_rejection",
+        "http_control::phase6_tests::paused_torrent_options_commit_without_native_start_and_reject_unsafe_replacements",
+        "http_control::phase6_tests::torrent_following_is_atomic_respects_retention_and_survives_restart"
+      ]
+    },
+    {
+      "log": "15.log",
+      "package": "ariax-storage",
+      "selection": [
+        "--lib",
+        "session_store::bt::tests::"
+      ],
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 230,
+      "testSeconds": 0.11,
+      "testNames": [
+        "session_store::bt::tests::checkpoint_crash_child",
+        "session_store::bt::tests::checkpoint_crashes_never_split_resume_data_from_counters_and_dirty_state",
+        "session_store::bt::tests::checkpoints_retain_safe_data_after_failure_and_reject_stale_completion",
+        "session_store::bt::tests::metadata_binding_rejects_changed_paths_identity_and_duplicate_torrents",
+        "session_store::bt::tests::older_development_formats_are_rejected_without_mutating_artifacts",
+        "session_store::bt::tests::paused_option_replacement_is_atomic_and_retires_old_checkpoint_tokens"
+      ]
+    }
+  ],
+  "checkpointCrashExecutions": 4,
+  "checkpointCrashNote": "The storage harness count includes one child entry point; the parent regression checks four crash subprocesses before/after commit in WAL and rollback-journal modes. These are not added to the 24-test total.",
+  "nativeProbes": {
+    "passed": 4,
+    "failed": 0,
+    "tests": [
+      {
+        "name": "native_bounded_output",
+        "seconds": 0.0
+      },
+      {
+        "name": "native_openssl_callbacks",
+        "seconds": 0.0
+      },
+      {
+        "name": "native_destination_policy",
+        "seconds": 5.69
+      },
+      {
+        "name": "native_private_storage",
+        "seconds": 0.0
+      }
+    ],
+    "totalSeconds": 5.77,
+    "detailedLogSha256": "3b5a803ab747c2d9f37133fdb02ceacfcfc87d1e4baf3ed5f0a20499eebccb02",
+    "completedEndpointCases": 16
+  },
+  "benchmarkExecutions": 0,
+  "fullPhase6Acceptance": false,
+  "nativeProvenance": {
+    "target": "x86_64-unknown-linux-gnu",
+    "versions": {
+      "libtorrent": "2.1.1",
+      "boost": "1.91.0",
+      "openssl": "3.6.3"
+    },
+    "inputs": {
+      "sourcesSha256": "b55bc045afe126bad7e48d9ca6e9a5b40f762e2bdea6cbc54997dcee32991819",
+      "patchSha256": "8d377c5622d0308bda2f7fc161913954f4a4cb3af19f6e1400d2cde84446a409",
+      "opensslPatchSha256": "e12670d73045bda8fb086f51f1080ccaffd60e54dd8902577aea3b3ad2a5a748",
+      "builderSha256": "13876c4f9dc51f1bb4ef1ce48426b411792ad9ef086bad4add838e8e0a806f48",
+      "sanitizer": "none"
+    },
+    "manifestSha256": "0a11f7f24fd1fa043e703afcfc27a89a59bfd630e759858d8fac3f1fc40a93eb",
+    "installedFileCount": 16786,
+    "ciVerificationPassed": true,
+    "localReviewVerifiedInputDigests": true,
+    "installedLibrariesIncludedInArtifact": false
+  },
+  "ciReport": {
+    "check": "focused",
+    "sourceCommit": "38d07e48dce1f220bb55e88595f4e030a5960cf5",
+    "passed": true,
+    "host": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+    "machine": "x86_64",
+    "elapsedSeconds": 285.902,
+    "commands": [
+      {
+        "command": [
+          "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python3",
+          "-B",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "scripts",
+          "-p",
+          "test_*.py"
+        ],
+        "log": "01.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "e89c4669bdeff0785547172f81d00acfb7ec70e0b404f091901ededc5958c51a"
+      },
+      {
+        "command": [
+          "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python3",
+          "-B",
+          "scripts/check_docs.py"
+        ],
+        "log": "02.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "fb1cdd92034fc0e86621c537e95038d4ce97374d3071ef072fc4b9ef66fac5d4"
+      },
+      {
+        "command": [
+          "/home/runner/work/ariax/ariax/toolchains/ci-tools/actionlint-1.7.12/actionlint",
+          "-shellcheck=",
+          "-pyflakes="
+        ],
+        "log": "03.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "command": [
+          "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python3",
+          "-B",
+          "scripts/publication.py"
+        ],
+        "log": "04.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "1f2ae031b96c44e26b09a19b752facedafbd38b12f0b64d1fb2b8939f6b6d1d6"
+      },
+      {
+        "command": [
+          "git",
+          "show",
+          "--format=",
+          "--check",
+          "HEAD"
+        ],
+        "log": "05.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo-fmt",
+          "fmt",
+          "--all",
+          "--",
+          "--check"
+        ],
+        "log": "06.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/rustc",
+          "--version",
+          "--verbose"
+        ],
+        "log": "07.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "b2bdf493bcf6d1dc55181a0efc2774b6d9cf7bf5c8dcc5bed592c994b2ad38c4"
+      },
+      {
+        "command": [
+          "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python3",
+          "-B",
+          "scripts/bt_native.py",
+          "--target",
+          "x86_64-unknown-linux-gnu",
+          "--sanitizer",
+          "none",
+          "--verify"
+        ],
+        "log": "08.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "feaeef7629aa0b20e2d37c7f1cf0350f69d714039f946dc0f4c893d7a526a8f7"
+      },
+      {
+        "command": [
+          "cmake",
+          "-S",
+          "/home/runner/work/ariax/ariax/native/libtorrent/tests",
+          "-B",
+          "/home/runner/work/ariax/ariax/toolchains/ci-target/benchmarks/native-security",
+          "-G",
+          "Unix Makefiles",
+          "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+          "-DCMAKE_POLICY_DEFAULT_CMP0167=OLD",
+          "-DCMAKE_PREFIX_PATH=/home/runner/work/ariax/ariax/toolchains/bt-native/x86_64-unknown-linux-gnu/install",
+          "-DOPENSSL_ROOT_DIR=/home/runner/work/ariax/ariax/toolchains/bt-native/x86_64-unknown-linux-gnu/install",
+          "-DOPENSSL_USE_STATIC_LIBS=ON",
+          "-DBOOST_ROOT=/home/runner/work/ariax/ariax/toolchains/bt-native/x86_64-unknown-linux-gnu/install",
+          "-DBoost_INCLUDE_DIR=/home/runner/work/ariax/ariax/toolchains/bt-native/x86_64-unknown-linux-gnu/install/include",
+          "-DBoost_NO_SYSTEM_PATHS=ON",
+          "-DARIAX_SANITIZER=OFF"
+        ],
+        "log": "09.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "2db515d1e339ef7d00351ea54efc4cf913d20ec7f37ad4a4c879b8d76988ad23"
+      },
+      {
+        "command": [
+          "cmake",
+          "--build",
+          "/home/runner/work/ariax/ariax/toolchains/ci-target/benchmarks/native-security",
+          "--config",
+          "RelWithDebInfo",
+          "--parallel",
+          "2"
+        ],
+        "log": "10.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "b7d61f52aee5bcd7678b546a730fb71f50a2d6509f3ec40b5e244f57682612ac"
+      },
+      {
+        "command": [
+          "ctest",
+          "--test-dir",
+          "/home/runner/work/ariax/ariax/toolchains/ci-target/benchmarks/native-security",
+          "--build-config",
+          "RelWithDebInfo",
+          "--output-on-failure"
+        ],
+        "log": "11.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "432afd6c48de67896e10afbb098c59ac3e600fbf76d15786f164e67b03398b5e"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+          "test",
+          "--locked",
+          "--release",
+          "-p",
+          "ariax-bt-libtorrent-sys",
+          "--all-features",
+          "--test",
+          "native",
+          "--",
+          "--test-threads=1"
+        ],
+        "log": "12.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "031808ebd3debad8c840a4d8cf5cb3976c68fc2dadaaabe7b4f3b4f7d10e802a"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+          "test",
+          "--locked",
+          "--release",
+          "-p",
+          "ariax-bt",
+          "--all-features",
+          "--test",
+          "adapter",
+          "--",
+          "--test-threads=1"
+        ],
+        "log": "13.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "4ec5080b3ad54d1278a6535772ab192a3bc6fbcaab99f6c94d034a6201acdac1"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+          "test",
+          "--locked",
+          "--release",
+          "-p",
+          "ariax-engine",
+          "--all-features",
+          "--lib",
+          "http_control::phase6_",
+          "--",
+          "--test-threads=1"
+        ],
+        "log": "14.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "228a4c242a7f7cb2a583b6ead3313388400e593164bc65aa47b6baa29e79f1c5"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+          "test",
+          "--locked",
+          "--release",
+          "-p",
+          "ariax-storage",
+          "--all-features",
+          "--lib",
+          "session_store::bt::tests::",
+          "--",
+          "--test-threads=1"
+        ],
+        "log": "15.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "8f8b89d4d39b53d362da9a01d3cecbc86d54528b0bc687f9424a8685f01a6fea"
+      }
+    ],
+    "error": null
+  }
+}

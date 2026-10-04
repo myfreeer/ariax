@@ -24,7 +24,9 @@ publication-path and whitespace checks, and formatting before verifying the
 cached libtorrent/OpenSSL installation. Missing or invalid native caches fail
 the job; this temporary campaign never rebuilds native dependencies. The
 [first focused slice passed](../../performance-evidence/phase6-focused-linux-2026-10-04.md).
-The next slice selects existing BT transfer, security and recovery tests:
+The [BT transfer, security and recovery slice also passed](../../performance-evidence/phase6-focused-bt-linux-2026-10-04.md)
+at `38d07e4`, with 24 Rust harness tests, four native probes and 70 Python helper
+tests. The current selection runs these existing tests:
 
 - The four small native probes cover destination policy (real tracker, web-seed,
   redirect, DNS and DHT fixtures), private storage, bounded output and OpenSSL
@@ -54,8 +56,8 @@ builds use at most two jobs. The job has a 20-minute ceiling.
 This campaign requires native Linux and rejects WSL before running checks. It
 addresses the selected native BT regressions. The remaining storage/CLI suites,
 full platform, MSRV, sanitizer and feature-bundle matrix, and every performance
-acceptance scenario remain separate required coverage. Scheduling this slice
-does not establish a passing result; its artifact must be reviewed separately.
+acceptance scenario remain separate required coverage. The passing artifact
+establishes only the selected tests at its recorded source commit.
 Artifacts are named `ci-focused-linux`, and the job is not named `CI Required`.
 Focused success cannot stand in for the complete validation or release gates.
 
