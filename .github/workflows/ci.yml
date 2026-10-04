@@ -1,4 +1,4 @@
-name: Focused Native Linux Validation
+name: Focused Native Linux BT Validation
 
 on:
   push:
@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   focused-linux:
-    name: Focused Native Linux
+    name: Focused Native Linux BT
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -50,7 +50,7 @@ jobs:
             toolchains/ci-target/benchmarks
           key: ci-benchmarks-${{ runner.os }}-${{ runner.arch }}-1.97.1-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml') }}-${{ github.sha }}
           restore-keys: ci-benchmarks-${{ runner.os }}-${{ runner.arch }}-1.97.1-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml') }}-
-      - name: Validate affected native regressions
+      - name: Validate BT transfer, security and recovery
         shell: bash
         run: |
           set -euo pipefail
@@ -71,6 +71,7 @@ jobs:
           name: ci-focused-linux
           path: |
             toolchains/ci-reports/focused/
+            toolchains/ci-target/benchmarks/native-security/Testing/Temporary/
             toolchains/bt-native/*/logs/
             toolchains/bt-native/*/install/ariax-native.json
           if-no-files-found: warn

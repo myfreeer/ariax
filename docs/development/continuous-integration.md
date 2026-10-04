@@ -22,25 +22,40 @@ workflow, avoiding duplicate jobs for this investigation.
 `python3 scripts/ci.py focused` runs helper tests, documentation, workflow syntax,
 publication-path and whitespace checks, and formatting before verifying the
 cached libtorrent/OpenSSL installation. Missing or invalid native caches fail
-the job; this temporary campaign never rebuilds native dependencies. It runs
-only the affected engine regressions: origin framing, bounded peer startup,
-ordinary and mixed setup, the small workload preset, consumer-credit attribution
-and the permission-policy boundary. Tests run serially with the locked dependency
-graph. Focused RPC unit tests cover weak observer lifetimes and stalled
-response/event owners.
-The BT live-option regression also covers admission during a peer-list refresh,
-the single pending-option limit, native acknowledgement and persisted recovery.
+the job; this temporary campaign never rebuilds native dependencies. The
+[first focused slice passed](../../performance-evidence/phase6-focused-linux-2026-10-04.md).
+The next slice selects existing BT transfer, security and recovery tests:
+
+- The four small native probes cover destination policy (real tracker, web-seed,
+  redirect, DNS and DHT fixtures), private storage, bounded output and OpenSSL
+  callbacks. Only the probes are compiled against the cached dependencies.
+- `ariax-bt-libtorrent-sys --test native` and `ariax-bt --test adapter` cover real
+  v1/v2/hybrid transfers, pre-storage metadata approval, bounded rejection,
+  completion ownership, checkpoint failures and resource release.
+- `ariax-engine --lib http_control::phase6_` selects both Phase-6 modules:
+  torrent/magnet transfers, selected-file collision mapping, metadata-only and
+  unsafe-metadata admission, pause/remove/shutdown checkpoints, dirty recovery,
+  option validation and atomic JSON import.
+- `ariax-storage --lib session_store::bt::tests::` covers stale checkpoints,
+  exact metadata binding, old-format rejection and process crashes before/after
+  the checkpoint commit in both WAL and rollback-journal modes.
+
+Rust tests run in release mode with all features, the locked dependency graph
+and one test thread. Native probes also run serially, retaining their existing
+10/30/90-second CTest deadlines. The previous slice's RPC and benchmark-fixture
+regressions are not repeated in this slice.
 
 No benchmark executable is built or run by this job. A failure stops subsequent
-work; reports and native diagnostics are uploaded even on failure. The job
+work; reports, native diagnostics and CTest logs are uploaded even on failure. The job
 reuses the existing release benchmark/test cache paths and restore prefix,
 and saves updated Cargo outputs. Native verification occurs once, and Rust
 builds use at most two jobs. The job has a 20-minute ceiling.
 
 This campaign requires native Linux and rejects WSL before running checks. It
-addresses the affected native regressions. The broad storage/BT/CLI suites,
-native security probes, full platform, MSRV, sanitizer and feature-bundle matrix,
-and every performance acceptance scenario remain separate required coverage.
+addresses the selected native BT regressions. The remaining storage/CLI suites,
+full platform, MSRV, sanitizer and feature-bundle matrix, and every performance
+acceptance scenario remain separate required coverage. Scheduling this slice
+does not establish a passing result; its artifact must be reviewed separately.
 Artifacts are named `ci-focused-linux`, and the job is not named `CI Required`.
 Focused success cannot stand in for the complete validation or release gates.
 

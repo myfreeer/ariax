@@ -35,9 +35,6 @@ VALIDATION_MATRIX = (
     ("bt-safety", "ubuntu-24.04", RUST_VERSION, "bt-safety"),
 )
 SCENARIOS = ("http", "websocket", "content-length", "ndjson", "administrative", "mixed-bt")
-FOCUSED_ENGINE_TESTS = (
-    "http_control::bittorrent::tests::live_option_waits_for_peer_refresh_and_rejects_a_second_pending_change",
-)
 COMPILERS = {"rustc", "cargo", "clippy-driver", "gcc", "g++", "cc", "c++", "cc1",
              "cc1plus", "ld", "lld", "rust-lld", "collect2", "make", "ninja", "cmake"}
 
@@ -543,9 +540,9 @@ def benchmark(runner, scenarios=SCENARIOS, *, provision=True):
 
 
 def focused(runner):
-    """Temporary native Linux regressions using cached libraries, without benchmarks."""
+    """Temporary native BT transfer/security/recovery slice, without benchmarks."""
     require_native_linux()
-    runner.env["RUST_TEST_THREADS"] = "1"
+    runner.env.update(RUST_TEST_THREADS="1", CTEST_PARALLEL_LEVEL="1", CARGO_BUILD_JOBS="2")
     runner.run([sys.executable, "-B", "-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py"])
     runner.run([sys.executable, "-B", "scripts/check_docs.py"])
     runner.run([actionlint(), "-shellcheck=", "-pyflakes="])
@@ -554,18 +551,16 @@ def focused(runner):
     runner.cargo("fmt", "--all", "--", "--check")
     prefix = provision_bt(runner, cached_only=True)
     runner.env["ARIAX_BT_NATIVE_DIR"] = str(prefix)
+    native_security(runner, prefix)
     serial = ("--", "--test-threads=1")
+    runner.cargo("test", "--locked", "--release", "-p", "ariax-bt-libtorrent-sys", "--all-features",
+                 "--test", "native", *serial)
+    runner.cargo("test", "--locked", "--release", "-p", "ariax-bt", "--all-features",
+                 "--test", "adapter", *serial)
     runner.cargo("test", "--locked", "--release", "-p", "ariax-engine", "--all-features",
-                 "--test", "rpc_origin_metrics", "--test", "bt_peer_fixture",
-                 "--test", "bt_peer_startup", "--test", "rpc_benchmark_setup",
-                 "--test", "rpc_benchmark_workload",
-                 "--test", "rpc_stalled_credit", "--test", "permission_policy", *serial)
-    for group in ("rpc_budget::tests::", "rpc_client::tests::", "http_rpc::tests::stalled_"):
-        runner.cargo("test", "--locked", "--release", "-p", "ariax-engine", "--all-features",
-                     "--lib", group, *serial)
-    for test in FOCUSED_ENGINE_TESTS:
-        runner.cargo("test", "--locked", "--release", "-p", "ariax-engine", "--all-features",
-                     "--lib", test, "--", "--exact", "--test-threads=1")
+                 "--lib", "http_control::phase6_", *serial)
+    runner.cargo("test", "--locked", "--release", "-p", "ariax-storage", "--all-features",
+                 "--lib", "session_store::bt::tests::", *serial)
 
 
 def interrupted(_signum, _frame):

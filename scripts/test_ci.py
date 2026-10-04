@@ -183,7 +183,7 @@ class FocusedValidationTests(unittest.TestCase):
                     provision.assert_not_called()
 
     def test_focused_failures_stop_work_and_no_stage_builds_or_runs_benchmarks(self):
-        for failure in (None, "precheck", "cache", "test"):
+        for failure in (None, "precheck", "cache", "native", "test-1", "test-2", "test-3", "test-4"):
             with self.subTest(failure=failure):
                 runner = mock.Mock()
                 runner.env = {}
@@ -191,16 +191,22 @@ class FocusedValidationTests(unittest.TestCase):
                 if failure == "precheck":
                     runner.run.side_effect = RuntimeError("precheck failed")
 
+                test_count = 0
+
                 def cargo(*args):
-                    if failure == "test" and args[0] == "test":
-                        raise RuntimeError("test failed")
+                    nonlocal test_count
+                    if args[0] == "test":
+                        test_count += 1
+                        if failure == f"test-{test_count}":
+                            raise RuntimeError(f"{failure} failed")
 
                 runner.cargo.side_effect = cargo
                 with mock.patch.object(ci, "require_native_linux"), \
                         mock.patch.object(ci, "actionlint", return_value=Path("actionlint")), \
                         mock.patch.object(ci, "provision_bt", return_value=prefix, side_effect=(
                             RuntimeError("cache failed") if failure == "cache" else None)) as provision, \
-                        mock.patch.object(ci, "native_security") as native, \
+                        mock.patch.object(ci, "native_security", side_effect=(
+                            RuntimeError("native failed") if failure == "native" else None)) as native, \
                         mock.patch.object(ci, "benchmark") as benchmark:
                     if failure:
                         with self.assertRaisesRegex(RuntimeError, failure + " failed"):
@@ -211,28 +217,38 @@ class FocusedValidationTests(unittest.TestCase):
                         provision.assert_not_called()
                     else:
                         provision.assert_called_once_with(runner, cached_only=True)
-                    native.assert_not_called()
+                    if failure in {"precheck", "cache"}:
+                        native.assert_not_called()
+                    else:
+                        native.assert_called_once_with(runner, prefix)
                     benchmark.assert_not_called()
                     for call in runner.cargo.call_args_list:
                         self.assertIn(call.args[0], {"fmt", "test"})
                         self.assertNotIn("--workspace", call.args)
+                        self.assertNotIn("--bench", call.args)
+                        self.assertNotIn("--all-targets", call.args)
+                        self.assertNotIn("--benches", call.args)
                     if failure:
-                        self.assertEqual(runner.cargo.call_count, {"precheck": 0, "cache": 1, "test": 2}[failure])
+                        expected = 1 + int(failure[-1]) if failure.startswith("test-") else {
+                            "precheck": 0, "cache": 1, "native": 1}[failure]
+                        self.assertEqual(runner.cargo.call_count, expected)
                     else:
                         self.assertEqual(runner.env["ARIAX_BT_NATIVE_DIR"], str(prefix))
                         self.assertEqual(runner.env["RUST_TEST_THREADS"], "1")
+                        self.assertEqual(runner.env["CTEST_PARALLEL_LEVEL"], "1")
+                        self.assertEqual(runner.env["CARGO_BUILD_JOBS"], "2")
                         tests = [call.args for call in runner.cargo.call_args_list if call.args[0] == "test"]
-                        targets = {args[index + 1] for args in tests
-                                   for index, value in enumerate(args) if value == "--test"}
-                        self.assertEqual(targets, {"rpc_origin_metrics", "bt_peer_fixture", "bt_peer_startup",
-                            "rpc_benchmark_setup", "rpc_benchmark_workload", "rpc_stalled_credit", "permission_policy"})
-                        for group in ("rpc_budget::tests::", "rpc_client::tests::", "http_rpc::tests::stalled_"):
-                            self.assertTrue(any(group in args and "--lib" in args for args in tests))
-                        regression = "http_control::bittorrent::tests::live_option_waits_for_peer_refresh_and_rejects_a_second_pending_change"
-                        self.assertTrue(any(regression in args and "--exact" in args for args in tests))
+                        selections = [(args[args.index("-p") + 1],
+                                       args[args.index("--all-features") + 1:args.index("--")])
+                                      for args in tests]
+                        self.assertEqual(selections, [
+                            ("ariax-bt-libtorrent-sys", ("--test", "native")),
+                            ("ariax-bt", ("--test", "adapter")),
+                            ("ariax-engine", ("--lib", "http_control::phase6_")),
+                            ("ariax-storage", ("--lib", "session_store::bt::tests::")),
+                        ])
                         for args in tests:
                             self.assertEqual(args.count("-p"), 1)
-                            self.assertEqual(args[args.index("-p") + 1], "ariax-engine")
                             self.assertIn("--locked", args)
                             self.assertIn("--release", args)
                             self.assertIn("--test-threads=1", args)
