@@ -15,25 +15,34 @@ import ci
 
 
 class AggregateTests(unittest.TestCase):
-    def test_manual_full_validation_requires_success_and_no_automatic_benchmark(self):
-        self.assertTrue(ci.aggregate_success("workflow_dispatch", "refs/heads/fix", "success", "success", "skipped"))
-        self.assertFalse(ci.aggregate_success("workflow_dispatch", "refs/heads/main", "success", "failure", "skipped"))
-        self.assertFalse(ci.aggregate_success("workflow_dispatch", "refs/heads/main", "success", "success", "failure"))
+    def test_main_branch_tags_and_manual_runs_accept_complete_functional_validation(self):
+        for event, ref in (("push", "refs/heads/main"), ("push", "refs/heads/fix"),
+                           ("push", "refs/tags/candidate"), ("workflow_dispatch", "refs/heads/fix"),
+                           ("pull_request", "refs/pull/1/merge")):
+            with self.subTest(event=event, ref=ref):
+                self.assertTrue(ci.aggregate_success(event, ref, "success", "success"))
 
-    def test_main_requires_benchmark_success(self):
-        self.assertTrue(ci.aggregate_success("push", "refs/heads/main", "success", "success", "success"))
-        for result in ("failure", "cancelled", "skipped", None):
-            with self.subTest(result=result):
-                self.assertFalse(ci.aggregate_success("push", "refs/heads/main", "success", "success", result))
+    def test_incomplete_preflight_or_validation_cannot_pass(self):
+        for event in ("push", "pull_request", "workflow_dispatch"):
+            for result in ("failure", "cancelled", "skipped", None):
+                with self.subTest(event=event, result=result):
+                    self.assertFalse(ci.aggregate_success(event, "refs/heads/main", result, "success"))
+                    self.assertFalse(ci.aggregate_success(event, "refs/heads/main", "success", result))
 
-    def test_pull_request_requires_functional_success_and_expected_benchmark_skip(self):
-        self.assertTrue(ci.aggregate_success("pull_request", "refs/pull/1/merge", "success", "success", "skipped"))
-        for preflight, validation in (("failure", "skipped"), ("success", "cancelled"), ("success", "skipped")):
-            with self.subTest(preflight=preflight, validation=validation):
-                self.assertFalse(ci.aggregate_success("pull_request", "refs/pull/1/merge", preflight, validation, "skipped"))
+    def test_unknown_or_missing_event_and_ref_cannot_pass(self):
+        for event, ref in ((None, None), ("schedule", "refs/heads/main"),
+                           ("push", None), ("push", "main")):
+            with self.subTest(event=event, ref=ref):
+                self.assertFalse(ci.aggregate_success(event, ref, "success", "success"))
 
-    def test_unknown_event_is_not_a_success(self):
-        self.assertFalse(ci.aggregate_success(None, None, "success", "success", "skipped"))
+    def test_gate_command_needs_only_functional_results_and_propagates_failure(self):
+        for validation, expected in (("success", 0), ("failure", 1), ("cancelled", 1), ("skipped", 1)):
+            environment = {"GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main",
+                           "ARIAX_CI_PREFLIGHT": "success", "ARIAX_CI_VALIDATION": validation}
+            with self.subTest(validation=validation), mock.patch.dict(os.environ, environment, clear=True), \
+                    mock.patch.object(sys, "argv", ["ci.py", "gate"]), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(ci.main(), expected)
 
 
 class CommandTests(unittest.TestCase):

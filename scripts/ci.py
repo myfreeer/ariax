@@ -44,10 +44,10 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
-def aggregate_success(event, ref, preflight, validation, benchmarks):
-    expected_benchmark = "success" if event == "push" and ref == "refs/heads/main" else "skipped"
-    return (event in {"push", "pull_request", "workflow_dispatch"} and preflight == "success"
-            and validation == "success" and benchmarks == expected_benchmark)
+def aggregate_success(event, ref, preflight, validation):
+    return (event in {"push", "pull_request", "workflow_dispatch"}
+            and isinstance(ref, str) and ref.startswith("refs/")
+            and preflight == "success" and validation == "success")
 
 
 def validation_matrix(event, ref):
@@ -579,8 +579,7 @@ def main():
         return 0
     if args.command == "gate":
         passed = aggregate_success(os.environ.get("GITHUB_EVENT_NAME"), os.environ.get("GITHUB_REF"),
-                                   os.environ.get("ARIAX_CI_PREFLIGHT"), os.environ.get("ARIAX_CI_VALIDATION"),
-                                   os.environ.get("ARIAX_CI_BENCHMARKS"))
+                                   os.environ.get("ARIAX_CI_PREFLIGHT"), os.environ.get("ARIAX_CI_VALIDATION"))
         print("All required CI stages passed." if passed else "A required CI stage failed, was cancelled, or did not run.")
         return 0 if passed else 1
     signal.signal(signal.SIGTERM, interrupted)

@@ -10,16 +10,18 @@ benchmark scenarios. The prerequisite is complete; Phase 6 may proceed.
 ## Repository And Branch
 
 The canonical remote is `git@github.com:myfreeer/ariax.git`; `main` is the remote's
-default branch. The temporary branch
-`local/removable-storage-mixed-bt-20261003` replaces `ci.yml` with one focused
-Ubuntu 24.04 job, triggered by pushes to that branch or manual dispatch. It uses
-read-only repository permissions and cancels an older run for the same ref.
-There is no pull-request trigger or automatic call to the separate benchmark
-workflow, avoiding duplicate jobs for this investigation.
+default branch. The full `ci.yml` runs on pushes, pull requests and manual
+dispatch. Ordinary branch pushes and pull requests validate Linux and Windows
+MSVC; pushes to `main`, tag pushes and manual dispatch select the full matrix.
+The workflow uses read-only repository permissions and cancels an older run for
+the same ref and event group. Benchmarks run only through manual dispatch of
+`native-linux-rpc-benchmarks.yml`; CI never invokes or waits for that workflow.
 
 ### Temporary Focused Validation
 
-`python3 scripts/ci.py focused` runs helper tests, documentation, workflow syntax,
+The temporary branch `local/removable-storage-mixed-bt-20261003` used a single
+focused Ubuntu job during the investigation. Its retained helper command,
+`python3 scripts/ci.py focused`, runs helper tests, documentation, workflow syntax,
 publication-path and whitespace checks, and formatting before verifying the
 cached libtorrent/OpenSSL installation. Missing or invalid native caches fail
 the job; this temporary campaign never rebuilds native dependencies. The
@@ -80,14 +82,14 @@ artifact establishes only its selected tests and source commit.
 Artifacts are named `ci-focused-linux`, and the job is not named `CI Required`.
 Focused success cannot stand in for the complete validation or release gates.
 
-Restore the full `ci.yml` from `9dc928c` before integrating this temporary workflow
-into `main` or attempting release validation. The full-workflow guidance below
-describes that restored topology. The standalone benchmark workflow remains
-available by explicit manual dispatch; this focused workflow does not invoke it.
+The full `ci.yml` is restored from `9dc928c` with automatic benchmark invocation
+removed. The temporary job is no longer selected by CI. Its evidence remains
+bound to the source commits above; full validation and manually dispatched
+benchmarks require their own passing results.
 
 ## Fail-Fast Topology
 
-The full workflow has three ordered stages:
+The full workflow has two ordered stages:
 
 1. Preflight validates documentation links and navigation, formatting, workflow
    syntax, whitespace, generated contracts, pinned reference inputs, protocol
@@ -104,9 +106,11 @@ The full workflow has three ordered stages:
    `continue-on-error` or automatic job/test retry. Native archive downloads
    have bounded retries for transient transport failures; integrity failures
    and exhausted downloads still fail provisioning.
-3. A successful push to `main` runs the reusable native Linux benchmark
-   workflow against the same commit. Pull requests run functional validation;
-   manual benchmark dispatch remains available for investigations.
+
+The separate native Linux benchmark workflow accepts only manual dispatch.
+Run it against the same candidate commit to collect all six acceptance scenarios.
+Its result is independent of the functional `CI Required` check; performance
+acceptance remains required before closing Phase 6 or approving a release.
 
 The final `CI Required` job passes only if every stage required by the event
 passes. A failed, cancelled or unexpectedly skipped required stage cannot
@@ -114,8 +118,8 @@ produce a green aggregate result. Job timeouts bound stuck work. Cleanup
 uploads available logs even on failure or cancellation.
 Routine success is not evidence that the full matrix passed. Run the full
 workflow manually on the candidate commit before release approval; the explicit
-release tag gate remains closed. Main pushes still require the full matrix and
-native acceptance benchmarks.
+release tag gate remains closed. Main pushes require the full functional matrix;
+they do not launch benchmarks.
 
 Full builds, tests, native provisioning and benchmark collection run in CI.
 Local documentation checks and focused debugging should avoid recreating the

@@ -80,9 +80,10 @@ capacity harness; the default 1,024 limit cannot hold the origin listeners and
 
 Native Linux acceptance passes in the September 22, 2026
 [CI baseline](../../performance-evidence/ci-baseline-2026-09-22.md) at `af5d193`.
-The reusable `native-linux-rpc-benchmarks.yml` workflow runs the four optimized
-transport scenarios and the administrative scenario after the functional
-matrix. It fails on a missing barrier, incomplete call count, unreleased
+The manually dispatched `native-linux-rpc-benchmarks.yml` workflow runs the four
+optimized transport scenarios, the administrative scenario and the mixed HTTP/BT
+scenario. Dispatch it against the same commit after the functional matrix passes.
+It fails on a missing barrier, incomplete call count, unreleased
 stalled-consumer credit, memory overflow or latency-gate failure, and preserves
 complete JSON reports and failed-run diagnostics. WSL 1 timings remain local
 evidence; the retained passing native CI reports close the platform gate.

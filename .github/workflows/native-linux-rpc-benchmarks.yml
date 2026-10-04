@@ -1,12 +1,6 @@
 name: Native Linux RPC Benchmarks
 
 on:
-  workflow_call:
-    inputs:
-      phase5:
-        description: Admit active ranges through Metalink
-        type: boolean
-        default: true
   workflow_dispatch:
     inputs:
       phase5:
