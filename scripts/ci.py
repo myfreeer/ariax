@@ -338,9 +338,11 @@ def validate_latencies(values):
         integer(item.get("p99Us"), name + ".p99Us", maximum=50_000)
 
 
-def validate_benchmark(report, scenario, metalink=True):
+def validate_benchmark(report, scenario, metalink=True, *, expected_os="linux"):
+    require(expected_os in {"linux", "windows"}, "unsupported benchmark operating system")
     require(isinstance(report, dict) and report.get("scenario") == scenario, "wrong benchmark scenario")
-    require(report.get("os") == "linux", "native Linux evidence requires a Linux report")
+    require(report.get("os") == expected_os, "unexpected benchmark operating system")
+    require(scenario != "mixed-bt" or expected_os == "linux", "mixed-bt requires native Linux evidence")
     require(report.get("complete") is True and report.get("passed") is True, "incomplete or failed benchmark")
     integer(report.get("elapsedScenarioMs"), "elapsedScenarioMs", maximum=90_000)
     integer(report.get("controlRuntime", {}).get("maxSteps"), "controlRuntime.maxSteps", maximum=32)

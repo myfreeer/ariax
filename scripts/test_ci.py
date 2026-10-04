@@ -424,6 +424,35 @@ class BenchmarkTests(unittest.TestCase):
             with self.subTest(scenario=scenario):
                 ci.validate_benchmark(self.report(scenario), scenario)
 
+    def test_windows_reports_require_explicit_matching_platform(self):
+        for report in self.reports:
+            scenario = report["scenario"]
+            with self.subTest(scenario=scenario):
+                ci.validate_benchmark(report, scenario, expected_os="windows")
+                with self.assertRaisesRegex(RuntimeError, "operating system"):
+                    ci.validate_benchmark(report, scenario)
+                with self.assertRaisesRegex(RuntimeError, "operating system"):
+                    ci.validate_benchmark(self.report(scenario), scenario, expected_os="windows")
+
+    def test_windows_validation_retains_workload_and_latency_gates(self):
+        for field, value in (("samples", 19_999), ("ranges", 999), ("p99Us", 50_001),
+                             ("elapsedScenarioMs", 90_001), ("maxSampledRssBytes", 1 << 60)):
+            with self.subTest(field=field):
+                report = self.report()
+                report.update(os="windows", **{field: value})
+                with self.assertRaises(RuntimeError):
+                    ci.validate_benchmark(report, "http", expected_os="windows")
+
+    def test_unsupported_platform_and_windows_mixed_bt_evidence_are_rejected(self):
+        report = self.report()
+        report["os"] = "other"
+        with self.assertRaisesRegex(RuntimeError, "unsupported benchmark operating system"):
+            ci.validate_benchmark(report, "http", expected_os="other")
+        report = self.mixed_report()
+        report["os"] = "windows"
+        with self.assertRaisesRegex(RuntimeError, "mixed-bt requires native Linux"):
+            ci.validate_benchmark(report, "mixed-bt", expected_os="windows")
+
     def mixed_report(self):
         # A validator fixture, not claimed native performance evidence.
         report = self.report()

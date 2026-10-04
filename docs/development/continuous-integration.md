@@ -269,6 +269,12 @@ Compile the optimized harness before collecting measurements and execute its
 resolved binary directly. Every report records the source commit, binary hash,
 host/toolchain and complete scenario results. Preserve failed-run diagnostics.
 
+The shared report validator defaults to Linux evidence. Local native Windows
+transport and administrative measurements select `expected_os="windows"` and
+retain the same workload, latency, memory and shutdown checks. A report from a
+different OS is rejected. Mixed HTTP/BT measurements require Linux, and Windows
+results do not satisfy the native Linux gate.
+
 Run the four transport scenarios, the administrative scenario and the Phase-6
 mixed HTTP/BT scenario sequentially. Each transport must finish 20,000 measured calls while its 1,000
 Metalink-admitted ranges remain active. Existing per-operation p99, measured
