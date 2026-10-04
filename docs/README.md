@@ -12,7 +12,7 @@
 | Embed or control Ariax | [Rust API, RPC and embedding](interfaces/apis-and-embedding.md) |
 | Understand the design | [Architecture overview](architecture/overview.md), [library choices](architecture/library-choice.md) |
 | Find remaining work | [Implementation plan](project/implementation-plan.md), [readiness gates](project/implementation-readiness.md) |
-| Assess validation evidence | [Requirements traceability](project/requirements-traceability.md), [CI baseline](../performance-evidence/ci-baseline-2026-09-22.md), [Phase 6 local checks](../performance-evidence/phase6-local-validation-2026-09-26.md) |
+| Assess validation evidence | [Requirements traceability](project/requirements-traceability.md), [CI baseline](../performance-evidence/ci-baseline-2026-09-22.md), [Phase 6 focused Linux checks](../performance-evidence/phase6-focused-linux-2026-10-04.md) |
 
 ## Source Of Truth
 

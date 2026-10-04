@@ -1,0 +1,407 @@
+{
+  "evidenceKind": "focused-native-linux-regressions",
+  "sourceCommit": "12386f70096e2a54994412a9d166539f37a80904",
+  "archive": {
+    "name": "ci-focused-linux.zip",
+    "sha256": "5063cc2623a94193f52470af99f691d58d82ad0460d3d7d2ee66de448631201f",
+    "bytes": 757176
+  },
+  "resultSha256": "734c5fb7156b4c60169b40afa32fff73e99b042d8073f2bf517960d761d0531b",
+  "verifiedCommandLogs": 13,
+  "pythonTestsPassed": 70,
+  "rustTestsPassed": 35,
+  "rustTestsFailed": 0,
+  "rustTestsIgnored": 0,
+  "rustTestLogs": [
+    {
+      "log": "09.log",
+      "passed": 23,
+      "failed": 0,
+      "ignored": 0,
+      "testNames": [
+        "peer_wire::tests::fragmented_frames_survive_every_read_boundary_and_cancellation",
+        "peer_wire::tests::malformed_lengths_unadvertised_pieces_and_unbounded_queues_fail",
+        "pending_handshakes_are_bounded_but_established_peers_are_not",
+        "rejected_identity_and_early_eof_report_handshake_failure",
+        "stalled_handshake_has_a_deadline",
+        "default_builder_rejects_linked_control_directory",
+        "embedding_defaults_to_shared_state_and_strict_builder_rejects_it",
+        "permission_policy_cannot_be_changed_by_rpc_or_persisted_as_task_option",
+        "local_peer_admission_reaches_its_configured_cap_and_rejects_excess",
+        "mixed_setup_bootstraps_without_unsupported_runtime_patch",
+        "mixed_setup_runs_bt_beside_http_and_keeps_a_third_task_waiting",
+        "ordinary_setup_bootstraps_and_shuts_down",
+        "scheduler_slots_allow_both_transfers_and_reject_insufficient_capacity",
+        "default_geometry_and_small_diagnostics_preserve_complete_mutation_cycles",
+        "invalid_or_ambiguous_presets_are_rejected",
+        "origin_metrics::tests::combined_header_and_body_limit_is_checked_before_body_allocation",
+        "origin_metrics::tests::invalid_status_length_encoding_and_json_are_rejected",
+        "origin_metrics::tests::metrics_and_pulses_complete_before_fragmented_response_connection_closes",
+        "origin_metrics::tests::truncated_headers_and_bodies_fail_at_every_boundary",
+        "another_consumers_credit_cannot_satisfy_retention_or_release",
+        "cached_bytes_without_a_response_owner_do_not_prove_stalling",
+        "missing_or_malformed_evidence_does_not_count_as_release",
+        "socket_fixture::socket_stalls_retain_each_consumers_credit_and_release_on_disconnect"
+      ],
+      "harnessSummaries": [
+        {
+          "passed": 2,
+          "filteredOut": 0,
+          "testSeconds": 0.0
+        },
+        {
+          "passed": 3,
+          "filteredOut": 0,
+          "testSeconds": 0.16
+        },
+        {
+          "passed": 3,
+          "filteredOut": 0,
+          "testSeconds": 0.06
+        },
+        {
+          "passed": 5,
+          "filteredOut": 0,
+          "testSeconds": 0.55
+        },
+        {
+          "passed": 2,
+          "filteredOut": 0,
+          "testSeconds": 0.0
+        },
+        {
+          "passed": 4,
+          "filteredOut": 0,
+          "testSeconds": 0.0
+        },
+        {
+          "passed": 4,
+          "filteredOut": 0,
+          "testSeconds": 1.4
+        }
+      ]
+    },
+    {
+      "log": "10.log",
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0,
+      "testNames": [
+        "rpc_budget::tests::observer_attributes_credit_despite_other_clients_releasing_more",
+        "rpc_budget::tests::observer_follows_final_credit_owner_without_retaining_it",
+        "rpc_budget::tests::process_and_resident_exhaustion_roll_back_every_partial_charge",
+        "rpc_budget::tests::released_credit_wakes_a_backpressured_reader",
+        "rpc_budget::tests::request_slots_include_retained_commands_and_responses",
+        "rpc_budget::tests::sequential_commands_refund_temporary_state_but_deferred_commands_retain_it"
+      ],
+      "harnessSummaries": [
+        {
+          "passed": 6,
+          "filteredOut": 421,
+          "testSeconds": 0.01
+        }
+      ]
+    },
+    {
+      "log": "11.log",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "testNames": [
+        "rpc_client::tests::budget_observer_requires_a_transport_budget_and_does_not_retain_context",
+        "rpc_client::tests::budget_observer_uses_event_connection_before_a_request"
+      ],
+      "harnessSummaries": [
+        {
+          "passed": 2,
+          "filteredOut": 425,
+          "testSeconds": 0.0
+        }
+      ]
+    },
+    {
+      "log": "12.log",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "testNames": [
+        "http_rpc::tests::stalled_event_observer_follows_serialized_owner_until_final_slice_drops",
+        "http_rpc::tests::stalled_http_and_websocket_writers_hold_credit_without_exhausting_other_listeners",
+        "http_rpc::tests::stalled_stdio_counts_executing_queued_and_reader_held_requests_and_cancels_cleanly"
+      ],
+      "harnessSummaries": [
+        {
+          "passed": 3,
+          "filteredOut": 424,
+          "testSeconds": 0.1
+        }
+      ]
+    },
+    {
+      "log": "13.log",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "testNames": [
+        "http_control::bittorrent::tests::live_option_waits_for_peer_refresh_and_rejects_a_second_pending_change"
+      ],
+      "harnessSummaries": [
+        {
+          "passed": 1,
+          "filteredOut": 426,
+          "testSeconds": 0.13
+        }
+      ]
+    }
+  ],
+  "criticalRegressionsPassed": [
+    "socket_fixture::socket_stalls_retain_each_consumers_credit_and_release_on_disconnect",
+    "http_control::bittorrent::tests::live_option_waits_for_peer_refresh_and_rejects_a_second_pending_change",
+    "mixed_setup_runs_bt_beside_http_and_keeps_a_third_task_waiting",
+    "local_peer_admission_reaches_its_configured_cap_and_rejects_excess"
+  ],
+  "benchmarkExecutions": 0,
+  "fullPhase6Acceptance": false,
+  "nativeProvenance": {
+    "target": "x86_64-unknown-linux-gnu",
+    "versions": {
+      "libtorrent": "2.1.1",
+      "boost": "1.91.0",
+      "openssl": "3.6.3"
+    },
+    "inputs": {
+      "sourcesSha256": "b55bc045afe126bad7e48d9ca6e9a5b40f762e2bdea6cbc54997dcee32991819",
+      "patchSha256": "8d377c5622d0308bda2f7fc161913954f4a4cb3af19f6e1400d2cde84446a409",
+      "opensslPatchSha256": "e12670d73045bda8fb086f51f1080ccaffd60e54dd8902577aea3b3ad2a5a748",
+      "builderSha256": "13876c4f9dc51f1bb4ef1ce48426b411792ad9ef086bad4add838e8e0a806f48",
+      "sanitizer": "none"
+    },
+    "manifestSha256": "0a11f7f24fd1fa043e703afcfc27a89a59bfd630e759858d8fac3f1fc40a93eb",
+    "installedFileCount": 16786,
+    "ciVerificationPassed": true,
+    "localReviewVerifiedInputDigests": true,
+    "installedLibrariesIncludedInArtifact": false
+  },
+  "ciReport": {
+    "check": "focused",
+    "sourceCommit": "12386f70096e2a54994412a9d166539f37a80904",
+    "passed": true,
+    "host": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+    "machine": "x86_64",
+    "elapsedSeconds": 228.782,
+    "commands": [
+      {
+        "command": [
+          "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python3",
+          "-B",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "scripts",
+          "-p",
+          "test_*.py"
+        ],
+        "log": "01.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "6e0884ff60435c6a264a4749d424273a171ebf4b4c934fdf1e5cab7299829c3e"
+      },
+      {
+        "command": [
+          "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python3",
+          "-B",
+          "scripts/check_docs.py"
+        ],
+        "log": "02.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "a10834527c495327429ed9c8f9cbbf38970c7f62bd0f4329d0c789e22961ed9e"
+      },
+      {
+        "command": [
+          "/home/runner/work/ariax/ariax/toolchains/ci-tools/actionlint-1.7.12/actionlint",
+          "-shellcheck=",
+          "-pyflakes="
+        ],
+        "log": "03.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "command": [
+          "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python3",
+          "-B",
+          "scripts/publication.py"
+        ],
+        "log": "04.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "1f2ae031b96c44e26b09a19b752facedafbd38b12f0b64d1fb2b8939f6b6d1d6"
+      },
+      {
+        "command": [
+          "git",
+          "show",
+          "--format=",
+          "--check",
+          "HEAD"
+        ],
+        "log": "05.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo-fmt",
+          "fmt",
+          "--all",
+          "--",
+          "--check"
+        ],
+        "log": "06.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/rustc",
+          "--version",
+          "--verbose"
+        ],
+        "log": "07.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "b2bdf493bcf6d1dc55181a0efc2774b6d9cf7bf5c8dcc5bed592c994b2ad38c4"
+      },
+      {
+        "command": [
+          "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python3",
+          "-B",
+          "scripts/bt_native.py",
+          "--target",
+          "x86_64-unknown-linux-gnu",
+          "--sanitizer",
+          "none",
+          "--verify"
+        ],
+        "log": "08.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "feaeef7629aa0b20e2d37c7f1cf0350f69d714039f946dc0f4c893d7a526a8f7"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+          "test",
+          "--locked",
+          "--release",
+          "-p",
+          "ariax-engine",
+          "--all-features",
+          "--test",
+          "rpc_origin_metrics",
+          "--test",
+          "bt_peer_fixture",
+          "--test",
+          "bt_peer_startup",
+          "--test",
+          "rpc_benchmark_setup",
+          "--test",
+          "rpc_benchmark_workload",
+          "--test",
+          "rpc_stalled_credit",
+          "--test",
+          "permission_policy",
+          "--",
+          "--test-threads=1"
+        ],
+        "log": "09.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "dea18587bb98270fea04db42a88299c636da4fa8f034163b7773e5d49e8b3f26"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+          "test",
+          "--locked",
+          "--release",
+          "-p",
+          "ariax-engine",
+          "--all-features",
+          "--lib",
+          "rpc_budget::tests::",
+          "--",
+          "--test-threads=1"
+        ],
+        "log": "10.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "419310110cb669459c8ec66b02216cf31eb093a8176fed0b4b3c60ddbaf14338"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+          "test",
+          "--locked",
+          "--release",
+          "-p",
+          "ariax-engine",
+          "--all-features",
+          "--lib",
+          "rpc_client::tests::",
+          "--",
+          "--test-threads=1"
+        ],
+        "log": "11.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "3186a32465e37c91f552d5826e4173a1ce9c955b005c257f6800f8c72fe70497"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+          "test",
+          "--locked",
+          "--release",
+          "-p",
+          "ariax-engine",
+          "--all-features",
+          "--lib",
+          "http_rpc::tests::stalled_",
+          "--",
+          "--test-threads=1"
+        ],
+        "log": "12.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "b29caeb44f2c8ad9c6c116e150cf57f41d0b48f5867be891e548e826a635a407"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+          "test",
+          "--locked",
+          "--release",
+          "-p",
+          "ariax-engine",
+          "--all-features",
+          "--lib",
+          "http_control::bittorrent::tests::live_option_waits_for_peer_refresh_and_rejects_a_second_pending_change",
+          "--",
+          "--exact",
+          "--test-threads=1"
+        ],
+        "log": "13.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "6ec38a50c25e9a2e830221c81730dd464fa32395ec6877d09c6c72646c1cce86"
+      }
+    ],
+    "error": null
+  }
+}

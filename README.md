@@ -17,9 +17,10 @@ on Linux, macOS, Windows MSVC and Windows GNU, including feature and MSRV checks
 and native Linux performance measurements.
 
 Phase 6 BitTorrent implementation and its acceptance harness are complete
-locally. Native CI, sanitizer/fuzz execution and the mixed HTTP/BT benchmark
-remain pending; the [local validation record](performance-evidence/phase6-local-validation-2026-09-26.md)
-separates these from passing focused checks. Ariax remains unreleased;
+locally. [Focused native Linux regressions](performance-evidence/phase6-focused-linux-2026-10-04.md)
+pass at `12386f7`. The full platform/MSRV/feature matrix, broader native tests,
+sanitizer/fuzz execution and six-scenario performance campaign remain pending.
+Ariax remains unreleased;
 the [implementation plan](docs/project/implementation-plan.md) tracks remaining
 protocol, native backend and hardening gates. HTTP/2, growing/chunked HTTP
 transfers, XML-RPC, the C ABI and complete aria2 compatibility are not yet

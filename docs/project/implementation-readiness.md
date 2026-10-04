@@ -521,18 +521,24 @@ has a separate ASan/UBSan job. The mixed benchmark adds 1,000 actual BT peers to
 the existing 1,000 HTTP ranges and preserves the established operation, burst,
 memory and complete-run limits.
 
-Only CI-dependent execution and acceptance remain for Phase 6. The new
-native tests, process-crash tests, sanitizer/fuzz campaign and mixed benchmark
-require recorded execution before any Phase-6 gate is closed. The current
-work is restricted to local edits and focused checks; no new upstream or CI
-action is part of this checkpoint. Historical native reports remain valid only
-for their recorded source and scenarios. This does not close the separate
-kernel/backend, custom BT storage, release-platform or tagging requirements.
+The [October 4 focused native Linux run](../../performance-evidence/phase6-focused-linux-2026-10-04.md)
+passes at `12386f7`: 35 Rust regressions and 70 Python helper tests, including
+stalled-consumer socket cleanup, bounded peer and mixed-task setup, permission
+policy, and acknowledged BT option updates during a peer refresh. The run
+verified the cached native dependencies and produced no benchmark measurements.
+This supplies the previously missing native Linux evidence for those focused
+regressions.
 
-The [September 26 local validation record](../../performance-evidence/phase6-local-validation-2026-09-26.md)
-records passing offline parser, peer-framing, fixture, patch, Python and static
-checks. It also records the unavailable cached storage dependency and the
-uncompiled native suites, including the shutdown-deadline recovery regression.
+Phase-6 acceptance remains open. The complete platform/MSRV/feature matrix,
+broader native transfer/security/crash/recovery tests, sanitizer/fuzz execution
+and all six performance scenarios still require current-source evidence.
+Historical reports remain valid only for their recorded source and scenarios.
+The focused pass also leaves the separate kernel/backend, custom BT storage,
+release-platform and tagging requirements open.
+
+The historical [September 26 local validation record](../../performance-evidence/phase6-local-validation-2026-09-26.md)
+records the earlier offline checks, unavailable cached storage dependency and
+native suites that were uncompiled at that checkpoint.
 
 ## Deferred But Tracked
 
