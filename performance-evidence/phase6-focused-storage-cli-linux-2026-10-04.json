@@ -1,0 +1,1139 @@
+{
+  "evidenceKind": "focused-native-linux-storage-cli-and-release-bundles",
+  "sourceCommit": "6dab0a547f73719e03286cd0b19a97add86540ce",
+  "archive": {
+    "name": "ci-focused-linux.zip",
+    "sha256": "54848f6a3b70b5755ea01c12a546aec6e6aa4b764e45259a008c996777716ef7",
+    "bytes": 771203
+  },
+  "resultSha256": "d9865f5a030f8485b2988979492040ba39566cc7a208654ca9a7da6e0c667133",
+  "verifiedCommandLogs": 18,
+  "pythonTestsPassed": 70,
+  "rustTopLevelTestExecutionsPassed": 354,
+  "rustTopLevelTestsFailed": 0,
+  "rustTopLevelIgnoredHelpers": 5,
+  "storageChildProcessStarts": 23,
+  "countingNote": "Top-level harness totals exclude nested subprocess executions and their summaries. The five ignored storage entries are helper entry points exercised by passing parent tests. Four other child entry points are also included in the normal top-level pass count.",
+  "rustTestLogs": [
+    {
+      "log": "10.log",
+      "package": "ariax-storage",
+      "passed": 236,
+      "failed": 0,
+      "ignored": 5,
+      "testSeconds": 7.51,
+      "harnesses": [
+        {
+          "harness": "unittests src/lib.rs",
+          "passed": 231,
+          "failed": 0,
+          "ignored": 5,
+          "measured": 0,
+          "filteredOut": 0,
+          "testSeconds": 7.48,
+          "testNames": [
+            "journal::tests::all_record_numbers_are_closed_and_contiguous",
+            "journal::tests::framing_crc_commit_and_sequence_corruption_stop_replay",
+            "journal::tests::header_is_exact_length_crc_covered_and_round_trips",
+            "journal::tests::headers_reject_every_noncanonical_v1_field_class",
+            "journal::tests::oversized_append_does_not_consume_a_sequence",
+            "journal::tests::oversized_length_is_rejected_before_payload_collection",
+            "journal::tests::records_round_trip_with_global_sequence_and_commit_markers",
+            "journal::tests::replay_limits_stop_before_collecting_excess_state",
+            "journal::tests::replay_rejects_a_record_generation_before_its_segment",
+            "journal::tests::rotation_links_immutable_segments_and_detects_missing_or_corrupt_links",
+            "journal::tests::torn_active_tail_preserves_only_the_committed_prefix",
+            "journal_appender::tests::appender_vocabularies_are_closed_and_unique",
+            "journal_appender::tests::changed_closed_tail_latches_reopen_fault_and_blocks_later_sequences",
+            "journal_appender::tests::codec_and_flush_range_failures_do_not_consume_sequence_or_fault",
+            "journal_appender::tests::concurrent_segment_creators_publish_exactly_one_no_clobber_winner",
+            "journal_appender::tests::creation_never_overwrites_an_existing_segment",
+            "journal_appender::tests::forced_process_exit_child",
+            "journal_appender::tests::forced_process_exit_recovery_covers_torn_write_flush_and_rotation_alias",
+            "journal_appender::tests::forced_process_kill_recovers_the_last_durable_prefix",
+            "journal_appender::tests::injected_sync_failure_never_advances_the_durable_prefix",
+            "journal_appender::tests::io_diagnostics_preserve_native_codes_without_arbitrary_error_text",
+            "journal_appender::tests::prepared_recovery_defers_torn_tail_mutation_until_open",
+            "journal_appender::tests::recovered_open_adopts_only_a_same_inode_publication_candidate",
+            "journal_appender::tests::recovered_open_preserves_a_preexisting_candidate_and_torn_tail",
+            "journal_appender::tests::recovered_open_preserves_a_preexisting_successor_and_torn_tail",
+            "journal_appender::tests::recovered_open_preserves_a_same_inode_candidate_until_linkage_validates",
+            "journal_appender::tests::recovered_open_rejects_a_foreign_candidate_for_an_installed_segment",
+            "journal_appender::tests::recovered_open_rejects_a_mismatched_previous_segment_link",
+            "journal_appender::tests::recovered_open_rejects_a_nonfinal_corrupt_suffix_without_repairing_it",
+            "journal_appender::tests::recovered_open_rejects_a_sequence_gap_instead_of_discarding_it",
+            "journal_appender::tests::recovered_open_rejects_an_exact_named_symlink_during_portable_preflight",
+            "journal_appender::tests::recovered_open_rejects_empty_noncanonical_and_over_budget_sets",
+            "journal_appender::tests::recovered_open_rejects_expected_and_cross_segment_identity_mismatches",
+            "journal_appender::tests::recovered_open_rejects_reordered_paths_and_reordered_contents",
+            "journal_appender::tests::recovered_open_resumes_a_clean_empty_rotated_tail",
+            "journal_appender::tests::recovered_open_resumes_a_clean_tail_at_the_next_sequence",
+            "journal_appender::tests::recovered_open_rotates_a_torn_header_only_nonfirst_segment",
+            "journal_appender::tests::recovered_open_trims_a_torn_final_record_and_installs_a_linked_successor",
+            "journal_appender::tests::recovered_open_trims_a_torn_first_record_without_inventing_sequence_zero_linkage",
+            "journal_appender::tests::rotation_requires_a_flushed_boundary_and_links_immutable_segments",
+            "journal_appender::tests::segment_discovery_rejects_unrelated_entries_without_mutating_them",
+            "journal_appender::tests::segment_publication_rejects_a_raced_destination_without_overwriting_it",
+            "journal_appender::tests::snapshots_preserve_the_single_writer_and_latch_flush_failures",
+            "journal_appender::tests::successful_segment_publication_removes_only_its_owned_candidate_name",
+            "journal_appender::tests::typed_append_flush_close_reopen_and_replay",
+            "journal_payload::tests::bounded_collection_constructors_reject_noncanonical_values",
+            "journal_payload::tests::collection_decoders_reject_order_and_count_bombs_before_allocation",
+            "journal_payload::tests::decoders_reject_truncation_unknown_tags_and_invalid_scalars",
+            "journal_payload::tests::every_supported_payload_round_trips_without_trailing_bytes",
+            "journal_payload::tests::ids_spans_hashes_and_digests_fail_closed",
+            "journal_payload::tests::maximum_piece_state_bitmap_round_trips_with_bounded_metadata",
+            "journal_payload::tests::option_snapshot_hash_is_order_independent_and_value_sensitive",
+            "journal_payload::tests::payload_rejection_codes_are_unique_and_complete",
+            "journal_payload::tests::piece_state_chunks_require_exact_bitmap_evidence_coverage",
+            "journal_payload::tests::scalar_layout_is_exact_little_endian",
+            "journal_payload::tests::strong_http_validator_rejects_weak_malformed_oversized_and_mismatched_values",
+            "journal_payload::tests::typed_append_preserves_record_type_and_failed_codec_does_not_consume_sequence",
+            "journal_state::tests::automatic_readmission_preserves_range_waits_without_relaxing_generation_checks",
+            "journal_state::tests::checkpoint_hash_and_piece_state_are_all_or_nothing",
+            "journal_state::tests::checkpoint_state_hash_ignores_sequence_but_binds_generation_and_payload",
+            "journal_state::tests::crash_with_pending_overlap_candidates_replays_no_durable_piece",
+            "journal_state::tests::different_identity_rebind_requires_digest_bound_lease_free_evidence",
+            "journal_state::tests::digest_only_range_identity_replays_before_network_and_rejects_mismatch",
+            "journal_state::tests::finalization_pairs_exact_paths_identity_and_layout",
+            "journal_state::tests::generation_advance_requires_the_exact_staged_snapshot",
+            "journal_state::tests::incomplete_replacement_layout_exposes_neither_old_layout_nor_old_progress",
+            "journal_state::tests::invalid_tail_does_not_mutate_the_last_trusted_clean_shutdown",
+            "journal_state::tests::layout_chunks_are_immediate_exact_and_recomputed",
+            "journal_state::tests::live_recovery_promotes_only_verified_durable_pieces",
+            "journal_state::tests::metadata_completion_rejects_changed_snapshots_and_missing_retained_layout",
+            "journal_state::tests::piece_state_is_forbidden_outside_a_checkpoint",
+            "journal_state::tests::registry_policy_rejects_sensitive_unsafe_and_unknown_snapshot_keys",
+            "journal_state::tests::state_caps_and_error_codes_are_closed",
+            "journal_state::tests::strong_http_validator_replays_before_network_and_binds_lease_fingerprints",
+            "journal_state::tests::trust_decisions_require_the_exact_pending_challenge",
+            "journal_tags::tests::every_journal_tag_vocabulary_is_closed_and_contiguous",
+            "layout::tests::known_single_file_maps_exact_offsets",
+            "layout::tests::layout_hash_excludes_root_location_but_binding_hash_does_not",
+            "layout::tests::layout_validation_rejects_gaps_identity_drift_and_path_collisions",
+            "layout::tests::mapper_rejects_empty_overflow_and_outside_spans",
+            "layout::tests::mapper_rejects_unknown_cross_file_and_unselected_spans",
+            "metadata_expansion::tests::expansion_round_trip_rejects_duplicates_and_forged_shapes",
+            "native_capability::tests::bound_reopen_rejects_identity_mismatch_and_outside_root",
+            "native_capability::tests::intermediate_symlink_is_never_followed",
+            "native_capability::tests::link_count_rejects_directories_and_missing_entries",
+            "native_capability::tests::removable_file_replacement_is_rejected_before_returning_write_authority",
+            "native_capability::tests::root_file_capability_creates_and_reopens_for_random_writes",
+            "native_capability::tests::selected_regular_file_identity_is_revalidated",
+            "native_capability::tests::selected_regular_file_rejects_replacement_and_hard_link_aliases",
+            "native_capability::tests::trusted_directory_identity_is_stable_and_bound_reopen_matches",
+            "native_identity::tests::legacy_windows_identity_is_distinct_and_rejects_wrong_encodings",
+            "native_identity::tests::malformed_and_cross_platform_identities_are_rejected",
+            "native_identity::tests::unix_identity_round_trips_exact_bytes",
+            "native_identity::tests::windows_identity_round_trips_exact_bytes",
+            "path::tests::dir_and_out_override_metadata_deterministically",
+            "path::tests::encoded_relative_path_is_bounded",
+            "path::tests::metadata_components_are_normalized_to_nfc",
+            "path::tests::portable_spoofing_and_windows_reserved_names_are_rejected",
+            "path::tests::traversal_absolute_prefix_and_component_separators_are_rejected",
+            "path::tests::user_paths_split_both_separators_and_ignore_repeats",
+            "root_binding::tests::binding_hash_is_order_independent_but_evidence_sensitive",
+            "root_binding::tests::duplicate_file_identity_is_rejected",
+            "root_binding::tests::native_path_and_identity_caps_fail_before_storage",
+            "session_export::tests::export_crash_child",
+            "session_export::tests::export_crash_recovers_a_complete_document",
+            "session_export::tests::export_publication_keeps_complete_old_or_new_bytes_at_every_failure_boundary",
+            "session_export::tests::export_rejects_symlink_destinations_and_uses_held_parent_identity",
+            "session_export::tests::local_session_input_rejects_nonfiles_invalid_text_and_oversized_documents",
+            "session_owner::tests::accepted_install_validation_rejections_drop_appenders_on_the_owner_thread",
+            "session_owner::tests::bounded_admission_rejects_full_queue_without_blocking_completion_delivery",
+            "session_owner::tests::close_all_preflights_every_journal_before_closing_any",
+            "session_owner::tests::close_rejects_unflushed_data_without_removing_the_journal",
+            "session_owner::tests::command_rejection_is_typed_and_does_not_fault_owner",
+            "session_owner::tests::configured_shutdown_timeout_reports_typed_detached_uncertainty",
+            "session_owner::tests::flush_all_flushes_every_installed_journal",
+            "session_owner::tests::flush_all_reports_the_first_fault_but_attempts_later_journals",
+            "session_owner::tests::invalid_explicit_shutdown_wait_does_not_close_admission",
+            "session_owner::tests::journal_install_rejects_missing_duplicate_and_mismatched_identity",
+            "session_owner::tests::journal_snapshots_keep_native_ownership_and_preserve_command_order",
+            "session_owner::tests::last_handle_drop_is_zero_wait_and_drains_accepted_commands",
+            "session_owner::tests::owned_install_rejection_retries_the_same_appender_on_the_owner_thread",
+            "session_owner::tests::owned_prepared_install_rejection_retries_the_exact_open_authority",
+            "session_owner::tests::owned_submission_preserves_the_exact_command_across_admission_rejection",
+            "session_owner::tests::owned_submission_preserves_the_exact_command_while_shutting_down",
+            "session_owner::tests::owner_error_codes_are_closed_and_unique",
+            "session_owner::tests::owner_exclusively_owns_store_and_round_trips_commands",
+            "session_owner::tests::owner_installs_appends_flushes_and_closes_one_journal",
+            "session_owner::tests::owner_panic_closes_completions_and_is_reported_on_join",
+            "session_owner::tests::owner_rejects_invalid_capacity_and_waits_before_spawning",
+            "session_owner::tests::prepared_install_identity_rejections_do_not_repair_the_torn_set",
+            "session_owner::tests::shutdown_and_last_handle_drop_destroy_journals_on_the_owner_thread",
+            "session_owner::tests::shutdown_closes_admission_and_drains_already_accepted_commands",
+            "session_owner::tests::shutdown_timeout_detaches_without_fake_closing_and_later_drains",
+            "session_owner::tests::startup_store_failure_never_publishes_a_handle",
+            "session_owner::tests::startup_timeout_detaches_a_blocked_unpublished_owner",
+            "session_store::bt::tests::checkpoint_crash_child",
+            "session_store::bt::tests::checkpoint_crashes_never_split_resume_data_from_counters_and_dirty_state",
+            "session_store::bt::tests::checkpoints_retain_safe_data_after_failure_and_reject_stale_completion",
+            "session_store::bt::tests::metadata_binding_rejects_changed_paths_identity_and_duplicate_torrents",
+            "session_store::bt::tests::older_development_formats_are_rejected_without_mutating_artifacts",
+            "session_store::bt::tests::paused_option_replacement_is_atomic_and_retires_old_checkpoint_tokens",
+            "session_store::tests::backup_rejects_orphan_destination_sidecars_without_mutation",
+            "session_store::tests::backup_rejects_reserved_sqlite_companion_suffixes_in_wal_and_delete_modes",
+            "session_store::tests::backup_validation_failure_removes_temporary_database_and_sidecars",
+            "session_store::tests::bounded_count_rejects_negative_and_excessive_rows",
+            "session_store::tests::busy_timeout_is_an_exact_contract",
+            "session_store::tests::committed_wal_page_one_recovers_a_corrupt_main_header",
+            "session_store::tests::creates_exact_strict_schema_pragmas_and_limits",
+            "session_store::tests::creates_private_directory_tree_and_sqlite_artifacts",
+            "session_store::tests::current_schema_rejects_inconsistent_host_key_challenges_before_reopen",
+            "session_store::tests::demoted_task_round_trip_preserves_bounded_slow_slot_state",
+            "session_store::tests::demotion_transition_atomically_updates_queue_pause_and_slow_metadata",
+            "session_store::tests::exact_queue_transition_applies_only_complete_scheduler_orders",
+            "session_store::tests::exact_stopped_result_transition_verifies_both_final_orders",
+            "session_store::tests::followed_metadata_crash_child",
+            "session_store::tests::followed_metadata_crash_recovers_parent_and_children_together",
+            "session_store::tests::followed_mixed_batch_rolls_back_parent_with_children_and_rejects_replay",
+            "session_store::tests::host_key_challenges_require_paused_tasks_in_v3",
+            "session_store::tests::host_key_read_budgets_charge_owned_records_at_the_boundary",
+            "session_store::tests::host_key_resolution_is_exact_challenge_bound_and_atomic",
+            "session_store::tests::hot_backup_is_complete_refuses_overwrite_and_passes_integrity",
+            "session_store::tests::hot_backup_publication_child",
+            "session_store::tests::hot_backup_publication_crash_matrix_recovers_a_usable_destination",
+            "session_store::tests::hot_backup_recovery_preserves_a_raced_destination_replacement",
+            "session_store::tests::hot_backup_recovery_preserves_invalid_same_file_residue",
+            "session_store::tests::hot_backup_recovery_rejects_unaccounted_hard_links_without_cleanup",
+            "session_store::tests::hot_backup_temp_only_residue_is_published_without_rebuilding",
+            "session_store::tests::hot_backup_unlink_failure_is_verified_and_reconciled_on_retry",
+            "session_store::tests::hot_rollback_journal_child",
+            "session_store::tests::hot_rollback_journal_is_recovered_before_v3_validation",
+            "session_store::tests::hot_rollback_page_one_child",
+            "session_store::tests::hot_rollback_page_one_recovers_corrupt_main_headers",
+            "session_store::tests::import_batch_crash_child",
+            "session_store::tests::import_batch_is_atomic_and_member_confirmation_requires_exact_metadata",
+            "session_store::tests::import_batch_process_exit_recovers_none_or_the_whole_document",
+            "session_store::tests::journal_cache_reconciliation_changes_only_journal_owned_mirrors",
+            "session_store::tests::journal_install_abort_rechecks_token_and_retained_pointer",
+            "session_store::tests::journal_install_abort_rejects_pointer_change",
+            "session_store::tests::journal_install_completion_rechecks_the_old_authoritative_pointer",
+            "session_store::tests::journal_install_pointer_relations_are_validated_on_reopen",
+            "session_store::tests::journal_install_pointer_switch_is_transactional_and_recoverable",
+            "session_store::tests::journal_install_retirement_rechecks_the_new_authoritative_pointer",
+            "session_store::tests::journal_install_tokens_survive_reopen_and_reject_stale_commands",
+            "session_store::tests::mixed_import_crashes_recover_none_or_both_protocols",
+            "session_store::tests::mixed_session_batch_rolls_back_both_protocols_and_confirms_exact_binding",
+            "session_store::tests::no_space_updates_are_atomic_and_queue_gated",
+            "session_store::tests::option_promotion_requires_exact_staging_and_rolls_back_both_scopes",
+            "session_store::tests::option_reads_reapply_policy_to_tampered_rows",
+            "session_store::tests::option_replacement_is_atomic_and_registry_policy_gated",
+            "session_store::tests::owner_lock_child",
+            "session_store::tests::owner_lock_drop_unlocks_before_duplicated_handles_close",
+            "session_store::tests::owner_lock_excludes_other_processes_until_drop",
+            "session_store::tests::queue_density_failure_rolls_back_the_task_write",
+            "session_store::tests::queue_reorder_updates_all_members_in_one_dense_transaction",
+            "session_store::tests::queue_transition_inserts_into_nonempty_targets_and_rejects_stale_state",
+            "session_store::tests::queue_transition_moves_between_dense_queues_and_rolls_back_invalid_positions",
+            "session_store::tests::queue_transition_reorders_within_one_queue_and_supports_noop_updates",
+            "session_store::tests::rejects_broad_existing_parent_without_changing_its_mode",
+            "session_store::tests::rejects_checksum_valid_unsupported_wal_format_without_mutation",
+            "session_store::tests::rejects_database_and_sidecar_symlinks",
+            "session_store::tests::rejects_foreign_key_corruption_during_preflight",
+            "session_store::tests::rejects_hard_linked_database_aliases_before_owner_locking",
+            "session_store::tests::rejects_orphan_sidecars_before_creating_a_database",
+            "session_store::tests::rejects_parentless_database_and_backup_paths",
+            "session_store::tests::rejects_persisted_queue_corruption_during_preflight",
+            "session_store::tests::rejects_sidecars_beside_an_empty_database_before_mutation",
+            "session_store::tests::rejects_symlinks_in_intermediate_path_components",
+            "session_store::tests::rejects_unsupported_schema_committed_in_wal_without_touching_artifacts",
+            "session_store::tests::rejects_unsupported_schema_without_rewriting_database_bytes",
+            "session_store::tests::rejects_unversioned_nonempty_database",
+            "session_store::tests::removable_backup_recovers_valid_candidate_and_preserves_invalid_candidate",
+            "session_store::tests::retained_host_keys_block_nonterminal_departure_and_clear_with_terminal_state",
+            "session_store::tests::rollback_preflight_handles_empty_legacy_and_super_journal_cases",
+            "session_store::tests::rollback_preflight_uses_last_valid_page_one_and_skips_out_of_range_records",
+            "session_store::tests::session_and_task_round_trip_preserves_u64_blobs_and_paths",
+            "session_store::tests::session_identity_check_and_write_are_one_transaction",
+            "session_store::tests::slow_slot_state_rejects_inconsistent_queue_and_retry_values",
+            "session_store::tests::source_replacement_and_queue_transition_commit_or_rollback_together",
+            "session_store::tests::source_uri_secrecy_is_checked_before_writes_and_during_recovery",
+            "session_store::tests::startup_task_source_global_budget_charges_empty_sets_and_owned_rows_exactly",
+            "session_store::tests::stopped_result_payloads_and_generic_stopped_transitions_are_rejected",
+            "session_store::tests::stopped_results_retain_order_and_delete_metadata_atomically",
+            "session_store::tests::strict_v2_schema_rejects_invalid_slow_slot_tuples",
+            "session_store::tests::task_creation_persists_sources_and_options_atomically_without_replacement",
+            "session_store::tests::task_source_per_task_byte_budget_is_exact_and_revalidated_on_open",
+            "session_store::tests::task_sources_replace_atomically_and_read_in_priority_order",
+            "session_store::tests::unpaired_stopped_tasks_are_rejected_in_v3",
+            "session_store::tests::unsupported_journal_modes_fail_closed",
+            "session_store::tests::vocabularies_and_schema_objects_are_closed_and_unique",
+            "session_store::tests::wal_checkpoint_reports_busy_until_read_snapshot_is_released",
+            "session_store::tests::wal_checkpoint_truncates_and_delete_mode_is_a_noop",
+            "session_store::tests::wal_preflight_mutation_corpus_never_panics_or_authorizes_partial_frames",
+            "session_store::tests::wal_preflight_streams_valid_wal_above_checkpoint_trigger",
+            "session_store::tests::wal_version_preflight_handles_commits_endianness_and_corruption",
+            "verification::tests::continuation_parts_and_resume_identity_are_bounded",
+            "verification::tests::manifest_is_canonical_geometry_bound_and_fails_closed"
+          ],
+          "ignoredHelpers": [
+            {
+              "name": "journal_appender::tests::forced_process_exit_child",
+              "reason": "spawned by forced_process_exit_recovery_covers_torn_write_flush_and_rotation_alias"
+            },
+            {
+              "name": "session_store::tests::hot_backup_publication_child",
+              "reason": "spawned by hot_backup_publication_crash_matrix_recovers_a_usable_destination"
+            },
+            {
+              "name": "session_store::tests::hot_rollback_journal_child",
+              "reason": "spawned by hot_rollback_journal_is_recovered_before_v3_validation"
+            },
+            {
+              "name": "session_store::tests::hot_rollback_page_one_child",
+              "reason": "spawned by hot_rollback_page_one_recovers_corrupt_main_headers"
+            },
+            {
+              "name": "session_store::tests::owner_lock_child",
+              "reason": "spawned by owner_lock_excludes_other_processes_until_drop"
+            }
+          ],
+          "nestedChildSummaries": [
+            {
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filteredOut": 235,
+              "testSeconds": 0.0
+            }
+          ]
+        },
+        {
+          "harness": "tests/permission_policy.rs",
+          "passed": 5,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filteredOut": 0,
+          "testSeconds": 0.03,
+          "testNames": [
+            "backup_inherits_default_permission_policy_and_preserves_no_clobber",
+            "default_policy_accepts_shared_directory_preserves_lock_and_reopens",
+            "default_policy_preserves_existing_file_mode_and_rejects_symlinks_and_hardlinks",
+            "default_policy_still_rejects_orphan_sidecars_without_mutation",
+            "strict_policy_rejects_shared_directory_before_creating_state"
+          ],
+          "ignoredHelpers": [],
+          "nestedChildSummaries": []
+        },
+        {
+          "harness": "ariax_storage",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filteredOut": 0,
+          "testSeconds": 0.0,
+          "testNames": [],
+          "ignoredHelpers": [],
+          "nestedChildSummaries": []
+        }
+      ],
+      "childProcessStarts": {
+        "journal_appender::tests::forced_process_exit_child": 4,
+        "session_export::tests::export_crash_child": 3,
+        "session_store::bt::tests::checkpoint_crash_child": 4,
+        "session_store::tests::followed_metadata_crash_child": 2,
+        "session_store::tests::hot_backup_publication_child": 3,
+        "session_store::tests::hot_rollback_journal_child": 1,
+        "session_store::tests::hot_rollback_page_one_child": 1,
+        "session_store::tests::import_batch_crash_child": 4,
+        "session_store::tests::owner_lock_child": 1
+      }
+    },
+    {
+      "log": "11.log",
+      "package": "ariax-cli",
+      "passed": 29,
+      "failed": 0,
+      "ignored": 0,
+      "testSeconds": 0.93,
+      "harnesses": [
+        {
+          "harness": "unittests src/main.rs",
+          "passed": 8,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filteredOut": 0,
+          "testSeconds": 0.0,
+          "testNames": [
+            "bittorrent::tests::cli_torrent_options_share_bounds_and_feature_rejection",
+            "phase5_cli_tests::cli_options_use_shared_validation_and_reject_unknown_or_duplicate_flags",
+            "phase5_cli_tests::host_key_prompt_accepts_only_a_complete_explicit_yes_line",
+            "startup::tests::private_permissions_default_off_accept_boolean_and_reject_invalid_or_duplicate_values",
+            "startup::tests::rpc_startup_credentials_override_environment_without_exposure",
+            "startup::tests::rpc_startup_rejects_missing_duplicate_invalid_and_oversized_credentials",
+            "startup::tests::session_startup_options_validate_formats_intervals_and_required_paths",
+            "startup::tests::transport_modes_eof_policies_and_limits_validate_before_bootstrap"
+          ],
+          "ignoredHelpers": [],
+          "nestedChildSummaries": []
+        },
+        {
+          "harness": "tests/cli_smoke.rs",
+          "passed": 14,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filteredOut": 0,
+          "testSeconds": 0.2,
+          "testNames": [
+            "bootstrap_check_runs_the_publication_last_empty_session_path",
+            "direct_control_rejects_invalid_gid_before_bootstrap_work",
+            "help_succeeds",
+            "invalid_rpc_credentials_are_redacted_and_rejected_before_startup_work",
+            "invalid_runtime_profile_is_rejected_before_startup_work",
+            "local_session_input_and_shutdown_export_round_trip_without_partial_import",
+            "multiple_arguments_are_rejected",
+            "no_arguments_show_help",
+            "pinned_http_control_recovers_and_resumes_with_range_and_if_range",
+            "pinned_http_control_rejects_invalid_identity_before_network_or_filesystem_work",
+            "pinned_http_control_streams_through_storage_and_reports_completion",
+            "stdio_rpc_admits_paused_http_task_persists_metadata_and_shuts_down_on_eof",
+            "unknown_argument_is_rejected",
+            "version_reports_product_and_workspace_version"
+          ],
+          "ignoredHelpers": [],
+          "nestedChildSummaries": []
+        },
+        {
+          "harness": "tests/permission_policy.rs",
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filteredOut": 0,
+          "testSeconds": 0.09,
+          "testNames": [
+            "cli_default_and_explicit_false_bootstrap_shared_state",
+            "cli_strict_permissions_reject_shared_state_before_database_creation"
+          ],
+          "ignoredHelpers": [],
+          "nestedChildSummaries": []
+        },
+        {
+          "harness": "tests/removable_storage.rs",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filteredOut": 0,
+          "testSeconds": 0.06,
+          "testNames": [
+            "pinned_http_control_recovers_and_resumes_with_range_and_if_range"
+          ],
+          "ignoredHelpers": [],
+          "nestedChildSummaries": []
+        },
+        {
+          "harness": "tests/rpc_interfaces.rs",
+          "passed": 4,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filteredOut": 0,
+          "testSeconds": 0.58,
+          "testNames": [
+            "cli_feature_disabled_torrent_admission_creates_no_session_state",
+            "cli_json_call_rejects_service_only_options_before_creating_state",
+            "cli_json_call_uses_the_shared_catalog_and_compatibility_rejections",
+            "combined_http_and_both_stdio_framings_share_tasks_and_honor_eof"
+          ],
+          "ignoredHelpers": [],
+          "nestedChildSummaries": []
+        }
+      ],
+      "bundle": "minimal"
+    },
+    {
+      "log": "13.log",
+      "package": "ariax-cli",
+      "passed": 29,
+      "failed": 0,
+      "ignored": 0,
+      "testSeconds": 0.92,
+      "harnesses": [
+        {
+          "harness": "unittests src/main.rs",
+          "passed": 8,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filteredOut": 0,
+          "testSeconds": 0.0,
+          "testNames": [
+            "bittorrent::tests::cli_torrent_options_share_bounds_and_feature_rejection",
+            "phase5_cli_tests::cli_options_use_shared_validation_and_reject_unknown_or_duplicate_flags",
+            "phase5_cli_tests::host_key_prompt_accepts_only_a_complete_explicit_yes_line",
+            "startup::tests::private_permissions_default_off_accept_boolean_and_reject_invalid_or_duplicate_values",
+            "startup::tests::rpc_startup_credentials_override_environment_without_exposure",
+            "startup::tests::rpc_startup_rejects_missing_duplicate_invalid_and_oversized_credentials",
+            "startup::tests::session_startup_options_validate_formats_intervals_and_required_paths",
+            "startup::tests::transport_modes_eof_policies_and_limits_validate_before_bootstrap"
+          ],
+          "ignoredHelpers": [],
+          "nestedChildSummaries": []
+        },
+        {
+          "harness": "tests/cli_smoke.rs",
+          "passed": 14,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filteredOut": 0,
+          "testSeconds": 0.2,
+          "testNames": [
+            "bootstrap_check_runs_the_publication_last_empty_session_path",
+            "direct_control_rejects_invalid_gid_before_bootstrap_work",
+            "help_succeeds",
+            "invalid_rpc_credentials_are_redacted_and_rejected_before_startup_work",
+            "invalid_runtime_profile_is_rejected_before_startup_work",
+            "local_session_input_and_shutdown_export_round_trip_without_partial_import",
+            "multiple_arguments_are_rejected",
+            "no_arguments_show_help",
+            "pinned_http_control_recovers_and_resumes_with_range_and_if_range",
+            "pinned_http_control_rejects_invalid_identity_before_network_or_filesystem_work",
+            "pinned_http_control_streams_through_storage_and_reports_completion",
+            "stdio_rpc_admits_paused_http_task_persists_metadata_and_shuts_down_on_eof",
+            "unknown_argument_is_rejected",
+            "version_reports_product_and_workspace_version"
+          ],
+          "ignoredHelpers": [],
+          "nestedChildSummaries": []
+        },
+        {
+          "harness": "tests/permission_policy.rs",
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filteredOut": 0,
+          "testSeconds": 0.08,
+          "testNames": [
+            "cli_default_and_explicit_false_bootstrap_shared_state",
+            "cli_strict_permissions_reject_shared_state_before_database_creation"
+          ],
+          "ignoredHelpers": [],
+          "nestedChildSummaries": []
+        },
+        {
+          "harness": "tests/removable_storage.rs",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filteredOut": 0,
+          "testSeconds": 0.06,
+          "testNames": [
+            "pinned_http_control_recovers_and_resumes_with_range_and_if_range"
+          ],
+          "ignoredHelpers": [],
+          "nestedChildSummaries": []
+        },
+        {
+          "harness": "tests/rpc_interfaces.rs",
+          "passed": 4,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filteredOut": 0,
+          "testSeconds": 0.58,
+          "testNames": [
+            "cli_feature_disabled_torrent_admission_creates_no_session_state",
+            "cli_json_call_rejects_service_only_options_before_creating_state",
+            "cli_json_call_uses_the_shared_catalog_and_compatibility_rejections",
+            "combined_http_and_both_stdio_framings_share_tasks_and_honor_eof"
+          ],
+          "ignoredHelpers": [],
+          "nestedChildSummaries": []
+        }
+      ],
+      "bundle": "standard"
+    },
+    {
+      "log": "15.log",
+      "package": "ariax-cli",
+      "passed": 30,
+      "failed": 0,
+      "ignored": 0,
+      "testSeconds": 1.23,
+      "harnesses": [
+        {
+          "harness": "unittests src/main.rs",
+          "passed": 8,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filteredOut": 0,
+          "testSeconds": 0.0,
+          "testNames": [
+            "bittorrent::tests::cli_torrent_options_share_bounds_and_feature_rejection",
+            "phase5_cli_tests::cli_options_use_shared_validation_and_reject_unknown_or_duplicate_flags",
+            "phase5_cli_tests::host_key_prompt_accepts_only_a_complete_explicit_yes_line",
+            "startup::tests::private_permissions_default_off_accept_boolean_and_reject_invalid_or_duplicate_values",
+            "startup::tests::rpc_startup_credentials_override_environment_without_exposure",
+            "startup::tests::rpc_startup_rejects_missing_duplicate_invalid_and_oversized_credentials",
+            "startup::tests::session_startup_options_validate_formats_intervals_and_required_paths",
+            "startup::tests::transport_modes_eof_policies_and_limits_validate_before_bootstrap"
+          ],
+          "ignoredHelpers": [],
+          "nestedChildSummaries": []
+        },
+        {
+          "harness": "tests/cli_smoke.rs",
+          "passed": 14,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filteredOut": 0,
+          "testSeconds": 0.22,
+          "testNames": [
+            "bootstrap_check_runs_the_publication_last_empty_session_path",
+            "direct_control_rejects_invalid_gid_before_bootstrap_work",
+            "help_succeeds",
+            "invalid_rpc_credentials_are_redacted_and_rejected_before_startup_work",
+            "invalid_runtime_profile_is_rejected_before_startup_work",
+            "local_session_input_and_shutdown_export_round_trip_without_partial_import",
+            "multiple_arguments_are_rejected",
+            "no_arguments_show_help",
+            "pinned_http_control_recovers_and_resumes_with_range_and_if_range",
+            "pinned_http_control_rejects_invalid_identity_before_network_or_filesystem_work",
+            "pinned_http_control_streams_through_storage_and_reports_completion",
+            "stdio_rpc_admits_paused_http_task_persists_metadata_and_shuts_down_on_eof",
+            "unknown_argument_is_rejected",
+            "version_reports_product_and_workspace_version"
+          ],
+          "ignoredHelpers": [],
+          "nestedChildSummaries": []
+        },
+        {
+          "harness": "tests/permission_policy.rs",
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filteredOut": 0,
+          "testSeconds": 0.1,
+          "testNames": [
+            "cli_default_and_explicit_false_bootstrap_shared_state",
+            "cli_strict_permissions_reject_shared_state_before_database_creation"
+          ],
+          "ignoredHelpers": [],
+          "nestedChildSummaries": []
+        },
+        {
+          "harness": "tests/removable_storage.rs",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filteredOut": 0,
+          "testSeconds": 0.07,
+          "testNames": [
+            "pinned_http_control_recovers_and_resumes_with_range_and_if_range"
+          ],
+          "ignoredHelpers": [],
+          "nestedChildSummaries": []
+        },
+        {
+          "harness": "tests/rpc_interfaces.rs",
+          "passed": 5,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filteredOut": 0,
+          "testSeconds": 0.84,
+          "testNames": [
+            "cli_json_call_rejects_service_only_options_before_creating_state",
+            "cli_json_call_uses_the_shared_catalog_and_compatibility_rejections",
+            "cli_strict_torrent_rejects_shared_output_root_without_changing_permissions",
+            "cli_torrents_reopen_with_matching_rust_and_rpc_projections_for_every_version",
+            "combined_http_and_both_stdio_framings_share_tasks_and_honor_eof"
+          ],
+          "ignoredHelpers": [],
+          "nestedChildSummaries": []
+        }
+      ],
+      "bundle": "full"
+    },
+    {
+      "log": "17.log",
+      "package": "ariax-cli",
+      "passed": 30,
+      "failed": 0,
+      "ignored": 0,
+      "testSeconds": 1.23,
+      "harnesses": [
+        {
+          "harness": "unittests src/main.rs",
+          "passed": 8,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filteredOut": 0,
+          "testSeconds": 0.0,
+          "testNames": [
+            "bittorrent::tests::cli_torrent_options_share_bounds_and_feature_rejection",
+            "phase5_cli_tests::cli_options_use_shared_validation_and_reject_unknown_or_duplicate_flags",
+            "phase5_cli_tests::host_key_prompt_accepts_only_a_complete_explicit_yes_line",
+            "startup::tests::private_permissions_default_off_accept_boolean_and_reject_invalid_or_duplicate_values",
+            "startup::tests::rpc_startup_credentials_override_environment_without_exposure",
+            "startup::tests::rpc_startup_rejects_missing_duplicate_invalid_and_oversized_credentials",
+            "startup::tests::session_startup_options_validate_formats_intervals_and_required_paths",
+            "startup::tests::transport_modes_eof_policies_and_limits_validate_before_bootstrap"
+          ],
+          "ignoredHelpers": [],
+          "nestedChildSummaries": []
+        },
+        {
+          "harness": "tests/cli_smoke.rs",
+          "passed": 14,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filteredOut": 0,
+          "testSeconds": 0.22,
+          "testNames": [
+            "bootstrap_check_runs_the_publication_last_empty_session_path",
+            "direct_control_rejects_invalid_gid_before_bootstrap_work",
+            "help_succeeds",
+            "invalid_rpc_credentials_are_redacted_and_rejected_before_startup_work",
+            "invalid_runtime_profile_is_rejected_before_startup_work",
+            "local_session_input_and_shutdown_export_round_trip_without_partial_import",
+            "multiple_arguments_are_rejected",
+            "no_arguments_show_help",
+            "pinned_http_control_recovers_and_resumes_with_range_and_if_range",
+            "pinned_http_control_rejects_invalid_identity_before_network_or_filesystem_work",
+            "pinned_http_control_streams_through_storage_and_reports_completion",
+            "stdio_rpc_admits_paused_http_task_persists_metadata_and_shuts_down_on_eof",
+            "unknown_argument_is_rejected",
+            "version_reports_product_and_workspace_version"
+          ],
+          "ignoredHelpers": [],
+          "nestedChildSummaries": []
+        },
+        {
+          "harness": "tests/permission_policy.rs",
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filteredOut": 0,
+          "testSeconds": 0.09,
+          "testNames": [
+            "cli_default_and_explicit_false_bootstrap_shared_state",
+            "cli_strict_permissions_reject_shared_state_before_database_creation"
+          ],
+          "ignoredHelpers": [],
+          "nestedChildSummaries": []
+        },
+        {
+          "harness": "tests/removable_storage.rs",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filteredOut": 0,
+          "testSeconds": 0.07,
+          "testNames": [
+            "pinned_http_control_recovers_and_resumes_with_range_and_if_range"
+          ],
+          "ignoredHelpers": [],
+          "nestedChildSummaries": []
+        },
+        {
+          "harness": "tests/rpc_interfaces.rs",
+          "passed": 5,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filteredOut": 0,
+          "testSeconds": 0.85,
+          "testNames": [
+            "cli_json_call_rejects_service_only_options_before_creating_state",
+            "cli_json_call_uses_the_shared_catalog_and_compatibility_rejections",
+            "cli_strict_torrent_rejects_shared_output_root_without_changing_permissions",
+            "cli_torrents_reopen_with_matching_rust_and_rpc_projections_for_every_version",
+            "combined_http_and_both_stdio_framings_share_tasks_and_honor_eof"
+          ],
+          "ignoredHelpers": [],
+          "nestedChildSummaries": []
+        }
+      ],
+      "bundle": "compat"
+    }
+  ],
+  "featureGraphsVerified": [
+    "minimal",
+    "standard",
+    "full",
+    "compat"
+  ],
+  "releaseBuilds": [
+    {
+      "bundle": "minimal",
+      "log": "12.log",
+      "profile": "release-cli",
+      "passed": true,
+      "cargoReportedDuration": "2m 48s"
+    },
+    {
+      "bundle": "standard",
+      "log": "14.log",
+      "profile": "release-cli",
+      "passed": true,
+      "cargoReportedDuration": "3m 08s"
+    },
+    {
+      "bundle": "full",
+      "log": "16.log",
+      "profile": "release-cli",
+      "passed": true,
+      "cargoReportedDuration": "3m 01s"
+    },
+    {
+      "bundle": "compat",
+      "log": "18.log",
+      "profile": "release-cli",
+      "passed": true,
+      "cargoReportedDuration": "1m 28s"
+    }
+  ],
+  "releaseExecutablesIncludedInArtifact": false,
+  "expectedPanicDiagnostic": {
+    "log": "10.log",
+    "test": "session_owner::tests::owner_panic_closes_completions_and_is_reported_on_join",
+    "message": "session owner panic injection"
+  },
+  "nativeProvenance": {
+    "target": "x86_64-unknown-linux-gnu",
+    "inputs": {
+      "sourcesSha256": "b55bc045afe126bad7e48d9ca6e9a5b40f762e2bdea6cbc54997dcee32991819",
+      "patchSha256": "8d377c5622d0308bda2f7fc161913954f4a4cb3af19f6e1400d2cde84446a409",
+      "opensslPatchSha256": "e12670d73045bda8fb086f51f1080ccaffd60e54dd8902577aea3b3ad2a5a748",
+      "builderSha256": "13876c4f9dc51f1bb4ef1ce48426b411792ad9ef086bad4add838e8e0a806f48",
+      "sanitizer": "none"
+    },
+    "versions": {
+      "libtorrent": "2.1.1",
+      "boost": "1.91.0",
+      "openssl": "3.6.3"
+    },
+    "settings": {
+      "BUILD_SHARED_LIBS": "OFF",
+      "CMAKE_BUILD_TYPE": "Release",
+      "CMAKE_POSITION_INDEPENDENT_CODE": "ON",
+      "CMAKE_POLICY_DEFAULT_CMP0167": "OLD",
+      "build_tests": "OFF",
+      "build_examples": "OFF",
+      "build_tools": "OFF",
+      "python-bindings": "OFF",
+      "webtorrent": "OFF",
+      "i2p": "OFF",
+      "mutable-torrents": "OFF",
+      "logging": "OFF",
+      "dht": "ON",
+      "encryption": "ON",
+      "exceptions": "ON",
+      "gnutls": "OFF",
+      "OPENSSL_USE_STATIC_LIBS": "ON",
+      "Boost_NO_SYSTEM_PATHS": "ON",
+      "Boost_NO_BOOST_CMAKE": "ON"
+    },
+    "compiler": "c++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0\nCopyright (C) 2023 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.",
+    "manifestSha256": "0a11f7f24fd1fa043e703afcfc27a89a59bfd630e759858d8fac3f1fc40a93eb",
+    "installedFileCount": 16786,
+    "ciVerificationPassed": true,
+    "localReviewVerifiedInputDigests": true,
+    "installedLibrariesIncludedInArtifact": false
+  },
+  "benchmarkExecutions": 0,
+  "fullPhase6Acceptance": false,
+  "ciReport": {
+    "check": "focused",
+    "sourceCommit": "6dab0a547f73719e03286cd0b19a97add86540ce",
+    "passed": true,
+    "host": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+    "machine": "x86_64",
+    "elapsedSeconds": 937.483,
+    "commands": [
+      {
+        "command": [
+          "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python3",
+          "-B",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "scripts",
+          "-p",
+          "test_*.py"
+        ],
+        "log": "01.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "d80d46cdb1dfc8de6af8c217a860ef25e430682db7fb21212a090f75273d379d"
+      },
+      {
+        "command": [
+          "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python3",
+          "-B",
+          "scripts/check_docs.py"
+        ],
+        "log": "02.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "a25c80379b8b7a71cad6343d0b2134fb383d114211c01f0be9e8af1122b67254"
+      },
+      {
+        "command": [
+          "/home/runner/work/ariax/ariax/toolchains/ci-tools/actionlint-1.7.12/actionlint",
+          "-shellcheck=",
+          "-pyflakes="
+        ],
+        "log": "03.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "command": [
+          "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python3",
+          "-B",
+          "scripts/publication.py"
+        ],
+        "log": "04.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "1f2ae031b96c44e26b09a19b752facedafbd38b12f0b64d1fb2b8939f6b6d1d6"
+      },
+      {
+        "command": [
+          "git",
+          "show",
+          "--format=",
+          "--check",
+          "HEAD"
+        ],
+        "log": "05.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo-fmt",
+          "fmt",
+          "--all",
+          "--",
+          "--check"
+        ],
+        "log": "06.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/rustc",
+          "--version",
+          "--verbose"
+        ],
+        "log": "07.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "b2bdf493bcf6d1dc55181a0efc2774b6d9cf7bf5c8dcc5bed592c994b2ad38c4"
+      },
+      {
+        "command": [
+          "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python3",
+          "-B",
+          "scripts/bt_native.py",
+          "--target",
+          "x86_64-unknown-linux-gnu",
+          "--sanitizer",
+          "none",
+          "--verify"
+        ],
+        "log": "08.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "feaeef7629aa0b20e2d37c7f1cf0350f69d714039f946dc0f4c893d7a526a8f7"
+      },
+      {
+        "command": [
+          "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python3",
+          "-B",
+          "scripts/verify-protocol-features.py",
+          "--cargo",
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo"
+        ],
+        "log": "09.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "dd4c3991e652b8fe5902dac2a72c7eb0f5e5415a047d97fc3763d3223b4a388d"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+          "test",
+          "--locked",
+          "--release",
+          "-p",
+          "ariax-storage",
+          "--all-features"
+        ],
+        "log": "10.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "343374a80e931c54ae8db96ff39a9eb9e1afa69b3e1c876be444cd9e57f0e545"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ariax-cli",
+          "--no-default-features",
+          "--features",
+          "minimal",
+          "--release"
+        ],
+        "log": "11.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "795ca20aa8f9ba99e6e9d5daa7ff67f61aa6d635f231fec366c9e675d305b41a"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+          "build",
+          "--locked",
+          "-p",
+          "ariax-cli",
+          "--no-default-features",
+          "--features",
+          "minimal",
+          "--profile",
+          "release-cli"
+        ],
+        "log": "12.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "600713d8405087909ca2e0595582dc009e00060a949cb7b3867f43a61faefce9"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ariax-cli",
+          "--no-default-features",
+          "--features",
+          "standard",
+          "--release"
+        ],
+        "log": "13.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "ec356650ef6588f6944c64c1171a1fb7e6acd22db1c3a0332dac775edd30a6b7"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+          "build",
+          "--locked",
+          "-p",
+          "ariax-cli",
+          "--no-default-features",
+          "--features",
+          "standard",
+          "--profile",
+          "release-cli"
+        ],
+        "log": "14.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "f52da9fb3f3bfcdbe42025a55bacab2ffa7f4dd8a16f05e8e1830d4c45b08976"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ariax-cli",
+          "--no-default-features",
+          "--features",
+          "full",
+          "--release"
+        ],
+        "log": "15.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "fa9496ecdaa5bcfbeae040b225b0c679494e36a809ea1565de48c8d59f70d7c1"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+          "build",
+          "--locked",
+          "-p",
+          "ariax-cli",
+          "--no-default-features",
+          "--features",
+          "full",
+          "--profile",
+          "release-cli"
+        ],
+        "log": "16.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "f05393d013a9274618c05f4367a8cc2569a740860dc94cac1041673cbcb1d97d"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ariax-cli",
+          "--no-default-features",
+          "--features",
+          "compat",
+          "--release"
+        ],
+        "log": "17.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "125a27d2c41b609cc1e24c3122b86ae7aaa80ec83dc2e37728d4a8305fb659cc"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+          "build",
+          "--locked",
+          "-p",
+          "ariax-cli",
+          "--no-default-features",
+          "--features",
+          "compat",
+          "--profile",
+          "release-cli"
+        ],
+        "log": "18.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "77a10330c464021d14ff16bc694e535c255578910c347f9a110a5399c18a6f82"
+      }
+    ],
+    "error": null
+  }
+}

@@ -559,13 +559,17 @@ command took 187.679 seconds including compilation, without benchmark execution.
 This supplies passing evidence for the selected native sanitizer and bounded
 BT parser-fuzz campaign.
 
-The next [focused CI slice](../development/continuous-integration.md#temporary-focused-validation)
-is prepared to run complete storage tests and all CLI tests plus `release-cli`
-builds for `minimal`, `standard`, `full` and `compat`. It reuses verified ordinary
-native dependencies and runs sequentially on Linux. Its CI result is pending.
+The [storage/CLI and release-bundle slice](../../performance-evidence/phase6-focused-storage-cli-linux-2026-10-04.md)
+passes at `6dab0a5`: 236 storage passes, 118 CLI test executions, all four resolved
+feature graphs and `release-cli` builds, plus 70 Python helper tests. All CLI
+suites run without filters under `minimal`, `standard`, `full` and `compat`.
+Five storage entries are ignored child helpers exercised by passing parent tests;
+23 child-process runs are recorded separately from the top-level totals. All
+18 command-log hashes and ordinary native input digests were verified. The
+command took 937.483 seconds including compilation, without benchmark execution.
 
-Phase-6 acceptance remains open. The complete platform/MSRV/feature test and
-release-build matrix, remaining workspace and platform coverage, and all six
+Phase-6 acceptance remains open. The complete platform/MSRV matrix,
+remaining workspace and release-platform coverage, and all six
 performance scenarios still require current-source evidence. These focused
 Linux runs do not establish the corresponding native behavior on other platforms.
 Historical reports remain valid only for their recorded source and scenarios.

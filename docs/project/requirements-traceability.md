@@ -31,9 +31,13 @@ and all four resolved feature graphs. The
 at `596332b` passes four native ASan/UBSan probes, 14 Rust tests linked to the
 instrumented native runtime and 799,033 Rust-ASan parser fuzz executions without
 sanitizer diagnostics or crash artifacts. The
+[storage/CLI and release-bundle slice](../../performance-evidence/phase6-focused-storage-cli-linux-2026-10-04.md)
+at `6dab0a5` passes 236 storage tests and 118 CLI test executions plus all four
+Linux `release-cli` builds. Its five ignored storage helper entries are exercised
+by passing parent fixtures. The
 [current acceptance status](implementation-readiness.md#phase-6-local-implementation-and-open-acceptance)
-keeps the complete platform/MSRV/feature test and release-build matrix,
-remaining workspace coverage and all six performance scenarios, including the
+keeps the complete platform/MSRV matrix, remaining workspace and release-platform
+coverage and all six performance scenarios, including the
 mixed 1,000-peer HTTP/BT benchmark, open. Current
 SQLite and JSON persistence require fresh v3 stores; older formats are rejected
 without migration or mutation. Historical Phase-5 v2 import evidence is not a

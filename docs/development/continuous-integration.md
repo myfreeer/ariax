@@ -40,7 +40,13 @@ compilation. Its native C++/bridge code receives ASan/UBSan instrumentation;
 ordinary Rust test harnesses link the runtime, while the parser fuzz executable
 receives Rust ASan and coverage instrumentation.
 
-The next slice targets complete storage and CLI feature-bundle coverage:
+The [storage/CLI and release-bundle slice passed](../../performance-evidence/phase6-focused-storage-cli-linux-2026-10-04.md)
+at `6dab0a5`: 236 storage passes, 118 CLI test executions, all four `release-cli`
+builds and 70 Python helper tests. Five storage helpers are ignored by the
+top-level harness and exercised by passing parent tests; 23 child-process runs
+are recorded separately. All 18 command-log hashes and native input digests
+verify. The validation command took 937.483 seconds including compilation.
+The slice covers:
 
 - Verify the ordinary native installation once using the `bt-native-linux`
   cache and sanitizer mode `none`. Missing or invalid caches fail without
@@ -66,8 +72,8 @@ saves updated ordinary Cargo outputs. Rust builds use at most two jobs, and the
 job has a 30-minute ceiling.
 
 This campaign requires native Linux and rejects WSL before running checks. It
-has passing native sanitizer and bounded parser-fuzz evidence at `596332b`;
-the prepared storage/CLI and release-build slice still requires its own result.
+has passing native sanitizer and bounded parser-fuzz evidence at `596332b` and
+complete storage/CLI tests and Linux release-bundle builds at `6dab0a5`.
 The full platform/MSRV matrix, remaining workspace coverage and every
 performance acceptance scenario remain separate required coverage. Each passing
 artifact establishes only its selected tests and source commit.
