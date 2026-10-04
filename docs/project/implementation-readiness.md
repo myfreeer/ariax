@@ -539,8 +539,17 @@ and OpenSSL callback probes pass; all 16 endpoint cases complete. Cached native
 input digests and all 15 command logs were verified. The validation command took
 285.902 seconds including compilation, with no benchmark execution.
 
+The [interface and feature slice](../../performance-evidence/phase6-focused-interfaces-linux-2026-10-04.md)
+passes at `a1f8f4f`: 21 Rust test executions, 70 Python helper tests and all four
+CLI dependency graphs. Typed BT API tests pass with BT enabled and disabled.
+`minimal`/`standard` reject torrent admission without session artifacts;
+`full`/`compat` preserve v1/v2/hybrid admission and matching Rust/RPC projections
+after restart. HTTP/stdio ownership and EOF cases pass in every bundle.
+All 15 command logs and native input digests were verified. The command took
+468.687 seconds including compilation, without benchmark execution.
+
 Phase-6 acceptance remains open. The complete platform/MSRV/feature matrix,
-remaining interface and platform coverage, sanitizer/fuzz execution and all six
+remaining workspace and platform coverage, sanitizer/fuzz execution and all six
 performance scenarios still require current-source evidence. These focused
 Linux runs do not establish the corresponding native behavior on other platforms.
 Historical reports remain valid only for their recorded source and scenarios.

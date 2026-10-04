@@ -110,8 +110,8 @@ class Runner:
         self.name = name
         self.directory = ROOT / "toolchains/ci-reports" / name
         self.directory.mkdir(parents=True, exist_ok=True)
-        # Focused tests reuse the existing release benchmark/test cache.
-        self.target = ROOT / "toolchains/ci-target" / ("benchmarks" if name == "focused" else name)
+        # The focused sanitizer slice reuses only the instrumented Cargo cache.
+        self.target = ROOT / "toolchains/ci-target" / ("bt-safety" if name == "focused" else name)
         self.tools = resolve_toolchain() / "bin"
         self.suffix = ".exe" if os.name == "nt" else ""
         self.env = os.environ.copy()
@@ -252,12 +252,12 @@ def native_security(runner, prefix, sanitizer=False):
     runner.run(["ctest", "--test-dir", build, "--build-config", configuration, "--output-on-failure"])
 
 
-def bt_safety(runner):
+def bt_safety(runner, *, cached_only=False):
     runner.env.update(CC="clang", CXX="clang++", ARIAX_BT_SANITIZER="address",
                       ASAN_OPTIONS="detect_leaks=1:halt_on_error=1",
                       UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1",
                       RUSTFLAGS="-C linker=clang++ -C link-arg=-fsanitize=address,undefined -C link-arg=-lstdc++")
-    prefix = provision_bt(runner, "address")
+    prefix = provision_bt(runner, "address", cached_only=cached_only)
     runner.env["ARIAX_BT_NATIVE_DIR"] = str(prefix)
     native_security(runner, prefix, True)
     runner.cargo("test", "--locked", "-p", "ariax-bt-libtorrent-sys", "-p", "ariax-bt", "--all-features")
@@ -540,26 +540,16 @@ def benchmark(runner, scenarios=SCENARIOS, *, provision=True):
 
 
 def focused(runner):
-    """Temporary Rust/CLI/RPC interface and feature slice, without benchmarks."""
+    """Temporary cached native sanitizer and bounded parser-fuzz slice."""
     require_native_linux()
-    runner.env.update(RUST_TEST_THREADS="1", CARGO_BUILD_JOBS="2")
+    runner.env.update(RUST_TEST_THREADS="1", CTEST_PARALLEL_LEVEL="1", CARGO_BUILD_JOBS="2")
     runner.run([sys.executable, "-B", "-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py"])
     runner.run([sys.executable, "-B", "scripts/check_docs.py"])
     runner.run([actionlint(), "-shellcheck=", "-pyflakes="])
     runner.run([sys.executable, "-B", "scripts/publication.py"])
     runner.run(["git", "show", "--format=", "--check", "HEAD"])
     runner.cargo("fmt", "--all", "--", "--check")
-    runner.run([sys.executable, "-B", "scripts/verify-protocol-features.py", "--cargo", runner.tool("cargo")])
-    prefix = provision_bt(runner, cached_only=True)
-    runner.env["ARIAX_BT_NATIVE_DIR"] = str(prefix)
-    serial = ("--", "--test-threads=1")
-    for features in ("--all-features", "--no-default-features"):
-        runner.cargo("test", "--locked", "--release", "-p", "ariax-engine", features,
-                     "--lib", "native_api::bittorrent::tests::", *serial)
-    for bundle in FEATURE_BUNDLES:
-        runner.cargo("test", "--locked", "--release", "-p", "ariax-cli",
-                     "--no-default-features", "--features", bundle,
-                     "--test", "rpc_interfaces", *serial)
+    bt_safety(runner, cached_only=True)
 
 
 def interrupted(_signum, _frame):

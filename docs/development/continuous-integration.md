@@ -26,37 +26,45 @@ the job; this temporary campaign never rebuilds native dependencies. The
 [first focused slice passed](../../performance-evidence/phase6-focused-linux-2026-10-04.md).
 The [BT transfer, security and recovery slice also passed](../../performance-evidence/phase6-focused-bt-linux-2026-10-04.md)
 at `38d07e4`, with 24 Rust harness tests, four native probes and 70 Python helper
-tests. The next slice targets the Rust/CLI/RPC interfaces and feature boundaries:
+tests. The [interface and feature slice passed](../../performance-evidence/phase6-focused-interfaces-linux-2026-10-04.md)
+at `a1f8f4f`: 21 Rust test executions, 70 Python helper tests and all four CLI
+feature graphs. Typed Rust and CLI/RPC tests cover BT success, rejection without
+state creation, restart projections and transport ownership.
 
-- `verify-protocol-features.py` checks all four resolved CLI feature graphs
-  before native verification or test compilation. `minimal` and `standard`
-  exclude the native BT dependency graph; `full` and `compat` require it.
-- `ariax-engine --lib native_api::bittorrent::tests::` runs with all features
-  and separately with no default features. It covers typed admission, status,
-  files, peers, acknowledged option changes, JSON projections, reply ownership
-  and explicit feature-disabled errors.
-- `ariax-cli --test rpc_interfaces` runs separately under `minimal`, `standard`,
-  `full` and `compat`, always with `--no-default-features`. Smaller bundles must
-  reject BT admission without creating session state. Full bundles cover
-  v1/v2/hybrid torrent admission, restart through the Rust API, matching RPC
-  projections and strict output-permission rejection. Every bundle also checks
-  HTTP/stdio ownership and EOF behavior, JSON calls and service-option rejection.
+The next slice runs the existing `bt-safety` campaign with cached dependencies:
 
-Tests run serially in release mode with the locked dependency graph. The
-separate Cargo invocations preserve each bundle's feature selection. This slice
-does not repeat the native security probes or transfer/recovery suites.
+- Verify the separate ASan/UBSan native installation. The native cache key uses
+  `bt-safety`; an ordinary installation cannot satisfy its instrumentation
+  check. Missing or invalid caches fail without a dependency rebuild.
+- Compile and run all four native probes with Clang's AddressSanitizer and
+  UndefinedBehaviorSanitizer, leak detection and fail-fast settings. Probe
+  deadlines remain 10/30/90 seconds.
+- Run the bridge and adapter crate tests against that instrumented native
+  installation. Rust tests and CTest run serially; bridge/native code receives
+  ASan/UBSan instrumentation, while these ordinary Rust tests link its runtime.
+- Build the bounded BT metadata parser fuzz target with Rust ASan and coverage
+  instrumentation. Run the seeded corpus for 20 seconds with a two-second
+  input timeout, 512 MiB RSS limit and 1 MiB input limit. A successful exit must
+  also report completion and coverage. Retain the resulting corpus and crashes.
+
+The sanitizer command uses `toolchains/ci-target/bt-safety`, including its
+separate fuzz subdirectory, and reuses the full sanitizer job's Cargo cache
+paths and prefix. It does not consume the ordinary release benchmark/test
+target. The earlier October 2 sanitizer artifact has matching native input
+digests; actual cache availability is determined by the next workflow run.
+`RUSTC_BOOTSTRAP=1` is confined to the fuzz commands.
 
 No benchmark executable is built or run by this job. A failure stops subsequent
-work; reports and native diagnostics are uploaded even on failure. The job
-reuses the existing release benchmark/test cache paths and restore prefix,
-and saves updated Cargo outputs. Native verification occurs once, and Rust
+work; reports, CTest diagnostics, native provenance and fuzz artifacts are
+uploaded even on failure. The job saves updated sanitizer Cargo outputs.
+Native verification occurs once, and Rust
 builds use at most two jobs. The job has a 30-minute ceiling.
 
 This campaign requires native Linux and rejects WSL before running checks. It
-addresses the selected interface and feature regressions. Remaining storage/CLI
-suites, the full platform/MSRV matrix, complete feature-bundle tests and
-`release-cli` builds, sanitizer/fuzz execution and every performance acceptance
-scenario remain separate required coverage. The earlier passing artifacts
+addresses the native sanitizer and bounded parser-fuzz gate. Remaining
+storage/CLI suites, the full platform/MSRV matrix, complete feature-bundle tests
+and `release-cli` builds, and every performance acceptance scenario remain
+separate required coverage. The earlier passing artifacts
 establish only their selected tests and source commits; the new slice requires
 its own result.
 Artifacts are named `ci-focused-linux`, and the job is not named `CI Required`.

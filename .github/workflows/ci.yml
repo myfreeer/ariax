@@ -1,4 +1,4 @@
-name: Focused Native Linux Interface Validation
+name: Focused Native Linux Sanitizer Validation
 
 on:
   push:
@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   focused-linux:
-    name: Focused Native Linux Interfaces
+    name: Focused Native Linux Sanitizers
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -33,36 +33,38 @@ jobs:
           python-version: "3.13"
       - name: Install pinned Rust
         run: rustup toolchain install 1.97.1 --profile minimal --component rustfmt
-      - name: Restore verified native installation
+      - name: Restore instrumented native installation
         id: native-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: toolchains/bt-native/*/install
-          key: bt-native-linux-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native/libtorrent/sources.json', 'native/libtorrent/ariax.patch', 'native/libtorrent/openssl.patch', 'scripts/bt_native.py') }}
+          key: bt-native-bt-safety-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native/libtorrent/sources.json', 'native/libtorrent/ariax.patch', 'native/libtorrent/openssl.patch', 'scripts/bt_native.py') }}
           fail-on-cache-miss: true
-      - name: Restore release test outputs
+      - name: Restore sanitizer test and fuzz outputs
         id: cargo-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            toolchains/ci-target/benchmarks
-          key: ci-benchmarks-${{ runner.os }}-${{ runner.arch }}-1.97.1-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml') }}-${{ github.sha }}
-          restore-keys: ci-benchmarks-${{ runner.os }}-${{ runner.arch }}-1.97.1-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml') }}-
-      - name: Validate Rust, CLI and RPC feature boundaries
+            toolchains/ci-target/bt-safety
+            toolchains/ci-target/bt-safety-clippy
+          key: ci-bt-safety-${{ runner.os }}-${{ runner.arch }}-1.97.1-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml') }}-${{ github.sha }}
+          restore-keys: ci-bt-safety-${{ runner.os }}-${{ runner.arch }}-1.97.1-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml') }}-
+      - name: Validate native sanitizers and bounded parser fuzzing
         shell: bash
         run: |
           set -euo pipefail
           python3 -B scripts/ci.py focused
-      - name: Save release test outputs
+      - name: Save sanitizer test and fuzz outputs
         if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' && steps.cargo-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            toolchains/ci-target/benchmarks
+            toolchains/ci-target/bt-safety
+            toolchains/ci-target/bt-safety-clippy
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
       - name: Retain focused validation diagnostics
         if: always()
@@ -71,6 +73,7 @@ jobs:
           name: ci-focused-linux
           path: |
             toolchains/ci-reports/focused/
+            toolchains/ci-target/bt-safety/native-security/Testing/Temporary/
             toolchains/bt-native/*/logs/
             toolchains/bt-native/*/install/ariax-native.json
           if-no-files-found: warn

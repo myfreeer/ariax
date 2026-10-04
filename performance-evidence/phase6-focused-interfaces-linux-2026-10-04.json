@@ -1,0 +1,419 @@
+{
+  "evidenceKind": "focused-native-linux-interfaces-and-features",
+  "sourceCommit": "a1f8f4f5087150e6150be34d111c9fc1e0b38a29",
+  "archive": {
+    "name": "ci-focused-linux.zip",
+    "sha256": "35b5b9ddfef54c93a8e69b87fdb5a9fcde6ae960d9867eebe9eebc4ee9b566d6",
+    "bytes": 759436
+  },
+  "resultSha256": "32f0c5e5a250fd7193a60c1e5a412ca9d37c7315b9dca43677946426a7ff4f2d",
+  "verifiedCommandLogs": 15,
+  "pythonTestsPassed": 70,
+  "rustTestExecutionsPassed": 21,
+  "rustTestsFailed": 0,
+  "rustTestsIgnored": 0,
+  "featureGraphsVerified": [
+    "minimal",
+    "standard",
+    "full",
+    "compat"
+  ],
+  "rustTestLogs": [
+    {
+      "log": "10.log",
+      "package": "ariax-engine",
+      "selection": [
+        "--all-features",
+        "--lib",
+        "native_api::bittorrent::tests::"
+      ],
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 425,
+      "testSeconds": 0.04,
+      "testNames": [
+        "native_api::bittorrent::tests::bt_native_options_share_validation_and_explicit_feature_errors",
+        "native_api::bittorrent::tests::typed_torrent_admission_status_peers_options_and_json_use_the_same_owner"
+      ]
+    },
+    {
+      "log": "11.log",
+      "package": "ariax-engine",
+      "selection": [
+        "--no-default-features",
+        "--lib",
+        "native_api::bittorrent::tests::"
+      ],
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 390,
+      "testSeconds": 0.0,
+      "testNames": [
+        "native_api::bittorrent::tests::bt_native_options_share_validation_and_explicit_feature_errors"
+      ]
+    },
+    {
+      "log": "12.log",
+      "package": "ariax-cli",
+      "selection": [
+        "--no-default-features",
+        "--features",
+        "minimal",
+        "--test",
+        "rpc_interfaces"
+      ],
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "testSeconds": 0.57,
+      "testNames": [
+        "cli_feature_disabled_torrent_admission_creates_no_session_state",
+        "cli_json_call_rejects_service_only_options_before_creating_state",
+        "cli_json_call_uses_the_shared_catalog_and_compatibility_rejections",
+        "combined_http_and_both_stdio_framings_share_tasks_and_honor_eof"
+      ]
+    },
+    {
+      "log": "13.log",
+      "package": "ariax-cli",
+      "selection": [
+        "--no-default-features",
+        "--features",
+        "standard",
+        "--test",
+        "rpc_interfaces"
+      ],
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "testSeconds": 0.6,
+      "testNames": [
+        "cli_feature_disabled_torrent_admission_creates_no_session_state",
+        "cli_json_call_rejects_service_only_options_before_creating_state",
+        "cli_json_call_uses_the_shared_catalog_and_compatibility_rejections",
+        "combined_http_and_both_stdio_framings_share_tasks_and_honor_eof"
+      ]
+    },
+    {
+      "log": "14.log",
+      "package": "ariax-cli",
+      "selection": [
+        "--no-default-features",
+        "--features",
+        "full",
+        "--test",
+        "rpc_interfaces"
+      ],
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "testSeconds": 0.85,
+      "testNames": [
+        "cli_json_call_rejects_service_only_options_before_creating_state",
+        "cli_json_call_uses_the_shared_catalog_and_compatibility_rejections",
+        "cli_strict_torrent_rejects_shared_output_root_without_changing_permissions",
+        "cli_torrents_reopen_with_matching_rust_and_rpc_projections_for_every_version",
+        "combined_http_and_both_stdio_framings_share_tasks_and_honor_eof"
+      ]
+    },
+    {
+      "log": "15.log",
+      "package": "ariax-cli",
+      "selection": [
+        "--no-default-features",
+        "--features",
+        "compat",
+        "--test",
+        "rpc_interfaces"
+      ],
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "testSeconds": 0.83,
+      "testNames": [
+        "cli_json_call_rejects_service_only_options_before_creating_state",
+        "cli_json_call_uses_the_shared_catalog_and_compatibility_rejections",
+        "cli_strict_torrent_rejects_shared_output_root_without_changing_permissions",
+        "cli_torrents_reopen_with_matching_rust_and_rpc_projections_for_every_version",
+        "combined_http_and_both_stdio_framings_share_tasks_and_honor_eof"
+      ]
+    }
+  ],
+  "benchmarkExecutions": 0,
+  "fullPhase6Acceptance": false,
+  "nativeProvenance": {
+    "target": "x86_64-unknown-linux-gnu",
+    "versions": {
+      "libtorrent": "2.1.1",
+      "boost": "1.91.0",
+      "openssl": "3.6.3"
+    },
+    "inputs": {
+      "sourcesSha256": "b55bc045afe126bad7e48d9ca6e9a5b40f762e2bdea6cbc54997dcee32991819",
+      "patchSha256": "8d377c5622d0308bda2f7fc161913954f4a4cb3af19f6e1400d2cde84446a409",
+      "opensslPatchSha256": "e12670d73045bda8fb086f51f1080ccaffd60e54dd8902577aea3b3ad2a5a748",
+      "builderSha256": "13876c4f9dc51f1bb4ef1ce48426b411792ad9ef086bad4add838e8e0a806f48",
+      "sanitizer": "none"
+    },
+    "manifestSha256": "0a11f7f24fd1fa043e703afcfc27a89a59bfd630e759858d8fac3f1fc40a93eb",
+    "installedFileCount": 16786,
+    "ciVerificationPassed": true,
+    "localReviewVerifiedInputDigests": true,
+    "installedLibrariesIncludedInArtifact": false
+  },
+  "ciReport": {
+    "check": "focused",
+    "sourceCommit": "a1f8f4f5087150e6150be34d111c9fc1e0b38a29",
+    "passed": true,
+    "host": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+    "machine": "x86_64",
+    "elapsedSeconds": 468.687,
+    "commands": [
+      {
+        "command": [
+          "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python3",
+          "-B",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "scripts",
+          "-p",
+          "test_*.py"
+        ],
+        "log": "01.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "31dad2acb3d90867e6468c6ca473f98adbae32d0a47c092f9cb4d7033f7ac3de"
+      },
+      {
+        "command": [
+          "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python3",
+          "-B",
+          "scripts/check_docs.py"
+        ],
+        "log": "02.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "b3a7dff1683dd16d818644553d0e330a2764c275a378dc4aeee8bead699fb596"
+      },
+      {
+        "command": [
+          "/home/runner/work/ariax/ariax/toolchains/ci-tools/actionlint-1.7.12/actionlint",
+          "-shellcheck=",
+          "-pyflakes="
+        ],
+        "log": "03.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "command": [
+          "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python3",
+          "-B",
+          "scripts/publication.py"
+        ],
+        "log": "04.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "1f2ae031b96c44e26b09a19b752facedafbd38b12f0b64d1fb2b8939f6b6d1d6"
+      },
+      {
+        "command": [
+          "git",
+          "show",
+          "--format=",
+          "--check",
+          "HEAD"
+        ],
+        "log": "05.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo-fmt",
+          "fmt",
+          "--all",
+          "--",
+          "--check"
+        ],
+        "log": "06.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "command": [
+          "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python3",
+          "-B",
+          "scripts/verify-protocol-features.py",
+          "--cargo",
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo"
+        ],
+        "log": "07.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "eca69d1ce667e880dc24a0190eef9e8134bc07851599eb79134ca0159b529fa7"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/rustc",
+          "--version",
+          "--verbose"
+        ],
+        "log": "08.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "b2bdf493bcf6d1dc55181a0efc2774b6d9cf7bf5c8dcc5bed592c994b2ad38c4"
+      },
+      {
+        "command": [
+          "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python3",
+          "-B",
+          "scripts/bt_native.py",
+          "--target",
+          "x86_64-unknown-linux-gnu",
+          "--sanitizer",
+          "none",
+          "--verify"
+        ],
+        "log": "09.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "feaeef7629aa0b20e2d37c7f1cf0350f69d714039f946dc0f4c893d7a526a8f7"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+          "test",
+          "--locked",
+          "--release",
+          "-p",
+          "ariax-engine",
+          "--all-features",
+          "--lib",
+          "native_api::bittorrent::tests::",
+          "--",
+          "--test-threads=1"
+        ],
+        "log": "10.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "08b4f267b63722e1958360ed15744f3046b3ba1b18df929497cc4eced3a5e092"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+          "test",
+          "--locked",
+          "--release",
+          "-p",
+          "ariax-engine",
+          "--no-default-features",
+          "--lib",
+          "native_api::bittorrent::tests::",
+          "--",
+          "--test-threads=1"
+        ],
+        "log": "11.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "ea98208aa41713ac729fa6bd94dc38e1a38aeac1773cce96e49ebd2287ceb014"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+          "test",
+          "--locked",
+          "--release",
+          "-p",
+          "ariax-cli",
+          "--no-default-features",
+          "--features",
+          "minimal",
+          "--test",
+          "rpc_interfaces",
+          "--",
+          "--test-threads=1"
+        ],
+        "log": "12.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "ba4740e0669f2a953980384c2826e26dc12fbad42878673d0cb879b5f4922f33"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+          "test",
+          "--locked",
+          "--release",
+          "-p",
+          "ariax-cli",
+          "--no-default-features",
+          "--features",
+          "standard",
+          "--test",
+          "rpc_interfaces",
+          "--",
+          "--test-threads=1"
+        ],
+        "log": "13.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "0f90c1bcc9ef3e97bc4b805b4bfb19f81506681a93218752d1b897ad7e192a5d"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+          "test",
+          "--locked",
+          "--release",
+          "-p",
+          "ariax-cli",
+          "--no-default-features",
+          "--features",
+          "full",
+          "--test",
+          "rpc_interfaces",
+          "--",
+          "--test-threads=1"
+        ],
+        "log": "14.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "e4879c1710cdf48011842f5ddb2a0a446ae5896c12d5beb53da7a5c819e94f40"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+          "test",
+          "--locked",
+          "--release",
+          "-p",
+          "ariax-cli",
+          "--no-default-features",
+          "--features",
+          "compat",
+          "--test",
+          "rpc_interfaces",
+          "--",
+          "--test-threads=1"
+        ],
+        "log": "15.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "4661f4c3491bbffa9a014ed5a9f2d298fec234c4bea45264986508f28dad3213"
+      }
+    ],
+    "error": null
+  }
+}

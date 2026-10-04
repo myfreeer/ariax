@@ -24,9 +24,11 @@ Phase 6 work packages `P6-01` through `P6-06` have completed local implementatio
 and acceptance harnesses, mapped in the [implementation plan](implementation-plan.md#phase-6-bittorrent-full-build).
 The [focused native Linux BT evidence](../../performance-evidence/phase6-focused-bt-linux-2026-10-04.md)
 at `38d07e4` verifies the selected bridge/adapter, transfer/security/recovery and
-checkpoint-crash fixtures. The
+checkpoint-crash fixtures. The [interface and feature slice](../../performance-evidence/phase6-focused-interfaces-linux-2026-10-04.md)
+at `a1f8f4f` adds typed API, CLI/RPC restart parity, feature-disabled rejection
+and all four resolved feature graphs. The
 [current acceptance status](implementation-readiness.md#phase-6-local-implementation-and-open-acceptance)
-keeps the complete platform/MSRV/feature matrix, remaining interface coverage,
+keeps the complete platform/MSRV/feature matrix, remaining workspace coverage,
 sanitizer/fuzz jobs and mixed 1,000-peer HTTP/BT benchmark open. Current
 SQLite and JSON persistence require fresh v3 stores; older formats are rejected
 without migration or mutation. Historical Phase-5 v2 import evidence is not a

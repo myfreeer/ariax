@@ -147,8 +147,8 @@ class NativeCacheTests(unittest.TestCase):
                         self.assertEqual(environment.read_text(), "ARIAX_BT_NATIVE_VERIFIED=1\n")
 
     def test_cached_only_verifies_once_and_never_falls_back_to_building(self):
-        for fail in (False, True):
-            with self.subTest(fail=fail), tempfile.TemporaryDirectory() as temporary:
+        for fail, sanitizer in ((False, "none"), (True, "none"), (False, "address"), (True, "address")):
+            with self.subTest(fail=fail, sanitizer=sanitizer), tempfile.TemporaryDirectory() as temporary:
                 environment = Path(temporary) / "github-env"
                 runner = mock.Mock()
                 runner.tool.return_value = Path("rustc")
@@ -157,15 +157,15 @@ class NativeCacheTests(unittest.TestCase):
                 with mock.patch.dict(os.environ, {"GITHUB_ENV": str(environment)}):
                     if fail:
                         with self.assertRaisesRegex(RuntimeError, "missing or invalid cache"):
-                            ci.provision_bt(runner, cached_only=True)
+                            ci.provision_bt(runner, sanitizer, cached_only=True)
                         self.assertFalse(environment.exists())
                     else:
-                        ci.provision_bt(runner, cached_only=True)
+                        ci.provision_bt(runner, sanitizer, cached_only=True)
                         self.assertEqual(environment.read_text(), "ARIAX_BT_NATIVE_VERIFIED=1\n")
                 self.assertEqual(runner.run.call_args_list, [
                     mock.call([Path("rustc"), "--version", "--verbose"], capture=True),
                     mock.call([sys.executable, "-B", "scripts/bt_native.py", "--target",
-                               "x86_64-unknown-linux-gnu", "--sanitizer", "none", "--verify"])])
+                               "x86_64-unknown-linux-gnu", "--sanitizer", sanitizer, "--verify"])])
 
 
 class FocusedValidationTests(unittest.TestCase):
@@ -182,94 +182,99 @@ class FocusedValidationTests(unittest.TestCase):
                     runner.cargo.assert_not_called()
                     provision.assert_not_called()
 
-    def test_focused_failures_stop_work_and_no_stage_builds_or_runs_benchmarks(self):
-        failures = [None, "precheck", "graph", "cache"] + [f"test-{index}" for index in range(1, 7)]
-        for failure in failures:
-            with self.subTest(failure=failure):
+    def test_focused_sanitizer_failures_stop_later_work_without_benchmarks(self):
+        for failure in (None, "precheck", "format", "cache", "native", "test", "fuzz-build", "fuzz-run", "coverage"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                seeds = root / "fuzz/seeds/bittorrent_metadata"
+                seeds.mkdir(parents=True)
+                (seeds / "seed").write_bytes(b"de")
                 runner = mock.Mock()
                 runner.env = {}
-                runner.tool.return_value = Path("cargo")
-                prefix = Path("native-install")
+                runner.target = root / "target"
+                runner.directory = root / "reports"
+                runner.directory.mkdir()
+                prefix = root / "native-install"
 
-                def run(command):
+                def run(command, **kwargs):
                     if failure == "precheck":
                         raise RuntimeError("precheck failed")
-                    if failure == "graph" and "scripts/verify-protocol-features.py" in command:
-                        raise RuntimeError("graph failed")
+                    if command[0] == runner.target / "fuzz/x86_64-unknown-linux-gnu/release/bittorrent_metadata":
+                        if failure == "fuzz-run":
+                            raise RuntimeError("fuzz-run failed")
+                        if failure == "coverage":
+                            return "Done without coverage"
+                        return "#123 DONE cov: 42\n"
+
+                def cargo(*args, **kwargs):
+                    stage = {"fmt": "format", "test": "test", "build": "fuzz-build"}[args[0]]
+                    if failure == stage:
+                        raise RuntimeError(stage + " failed")
 
                 runner.run.side_effect = run
-
-                test_count = 0
-
-                def cargo(*args):
-                    nonlocal test_count
-                    if args[0] == "test":
-                        test_count += 1
-                        if failure == f"test-{test_count}":
-                            raise RuntimeError(f"{failure} failed")
-
                 runner.cargo.side_effect = cargo
-                with mock.patch.object(ci, "require_native_linux"), \
+                with mock.patch.object(ci, "ROOT", root), \
+                        mock.patch.object(ci, "require_native_linux"), \
                         mock.patch.object(ci, "actionlint", return_value=Path("actionlint")), \
                         mock.patch.object(ci, "provision_bt", return_value=prefix, side_effect=(
                             RuntimeError("cache failed") if failure == "cache" else None)) as provision, \
-                        mock.patch.object(ci, "native_security") as native, \
+                        mock.patch.object(ci, "native_security", side_effect=(
+                            RuntimeError("native failed") if failure == "native" else None)) as native, \
                         mock.patch.object(ci, "benchmark") as benchmark:
                     if failure:
-                        with self.assertRaisesRegex(RuntimeError, failure + " failed"):
+                        expected = "coverage instrumentation" if failure == "coverage" else failure + " failed"
+                        with self.assertRaisesRegex(RuntimeError, expected):
                             ci.focused(runner)
                     else:
                         ci.focused(runner)
-                    if failure in {"precheck", "graph"}:
+                    if failure in {"precheck", "format"}:
                         provision.assert_not_called()
                     else:
-                        provision.assert_called_once_with(runner, cached_only=True)
-                    native.assert_not_called()
-                    if failure != "precheck":
-                        self.assertIn(mock.call([sys.executable, "-B", "scripts/verify-protocol-features.py",
-                                                "--cargo", Path("cargo")]), runner.run.call_args_list)
-                    benchmark.assert_not_called()
-                    for call in runner.cargo.call_args_list:
-                        self.assertIn(call.args[0], {"fmt", "test"})
-                        self.assertNotIn("--workspace", call.args)
-                        self.assertNotIn("--bench", call.args)
-                        self.assertNotIn("--all-targets", call.args)
-                        self.assertNotIn("--benches", call.args)
-                    if failure:
-                        expected = 1 + int(failure[-1]) if failure.startswith("test-") else {
-                            "precheck": 0, "graph": 1, "cache": 1}[failure]
-                        self.assertEqual(runner.cargo.call_count, expected)
+                        provision.assert_called_once_with(runner, "address", cached_only=True)
+                    if failure in {"precheck", "format", "cache"}:
+                        native.assert_not_called()
                     else:
-                        self.assertEqual(runner.env["ARIAX_BT_NATIVE_DIR"], str(prefix))
-                        self.assertEqual(runner.env["RUST_TEST_THREADS"], "1")
-                        self.assertEqual(runner.env["CARGO_BUILD_JOBS"], "2")
-                        tests = [call.args for call in runner.cargo.call_args_list if call.args[0] == "test"]
-                        selections = [(args[args.index("-p") + 1],
-                                       args[args.index("-p") + 2:args.index("--")])
-                                      for args in tests]
-                        self.assertEqual(selections, [
-                            ("ariax-engine", ("--all-features", "--lib", "native_api::bittorrent::tests::")),
-                            ("ariax-engine", ("--no-default-features", "--lib", "native_api::bittorrent::tests::")),
-                            *[("ariax-cli", ("--no-default-features", "--features", bundle,
-                                            "--test", "rpc_interfaces"))
-                              for bundle in ("minimal", "standard", "full", "compat")],
-                        ])
-                        for args in tests:
-                            self.assertEqual(args.count("-p"), 1)
-                            self.assertIn("--locked", args)
-                            self.assertIn("--release", args)
-                            self.assertIn("--test-threads=1", args)
+                        native.assert_called_once_with(runner, prefix, True)
+                    benchmark.assert_not_called()
+                expected_calls = {"precheck": 0, "format": 1, "cache": 1, "native": 1, "test": 2}
+                self.assertEqual(runner.cargo.call_count, expected_calls.get(failure, 3))
+                if failure in expected_calls or failure == "fuzz-build":
+                    self.assertFalse((runner.directory / "corpus").exists())
+                else:
+                    self.assertEqual((runner.directory / "corpus/seed").read_bytes(), b"de")
+                for call in runner.cargo.call_args_list:
+                    for forbidden in ("--workspace", "--bench", "--benches", "--all-targets"):
+                        self.assertNotIn(forbidden, call.args)
+                if failure is None:
+                    self.assertEqual(runner.env["ARIAX_BT_NATIVE_DIR"], str(prefix))
+                    self.assertEqual(runner.env["RUST_TEST_THREADS"], "1")
+                    self.assertEqual(runner.env["CTEST_PARALLEL_LEVEL"], "1")
+                    self.assertEqual(runner.env["CARGO_BUILD_JOBS"], "2")
+                    self.assertEqual(runner.env["ARIAX_BT_SANITIZER"], "address")
+                    self.assertEqual(runner.env["ASAN_OPTIONS"], "detect_leaks=1:halt_on_error=1")
+                    self.assertEqual(runner.env["UBSAN_OPTIONS"], "halt_on_error=1:print_stacktrace=1")
+                    test = runner.cargo.call_args_list[1].args
+                    self.assertEqual(test, ("test", "--locked", "-p", "ariax-bt-libtorrent-sys",
+                                            "-p", "ariax-bt", "--all-features"))
+                    fuzz = runner.run.call_args_list[-1]
+                    for limit in ("-max_total_time=20", "-timeout=2", "-rss_limit_mb=512", "-max_len=1048576"):
+                        self.assertIn(limit, fuzz.args[0])
+                    self.assertEqual(fuzz.kwargs["env"]["RUSTC_BOOTSTRAP"], "1")
+                    self.assertNotIn("RUSTC_BOOTSTRAP", runner.env)
 
-    def test_focused_reports_do_not_replace_full_reports_but_reuse_release_outputs(self):
+    def test_focused_reports_are_separate_and_only_sanitizer_outputs_are_reused(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             with mock.patch.object(ci, "ROOT", root), \
                     mock.patch.object(ci, "resolve_toolchain", return_value=root):
                 focused = ci.Runner("focused")
-                full = ci.Runner("benchmarks")
-            self.assertEqual(focused.target, full.target)
-            self.assertNotEqual(focused.directory, full.directory)
-            self.assertEqual(focused.env["CARGO_TARGET_DIR"], str(full.target))
+                safety = ci.Runner("bt-safety")
+                benchmarks = ci.Runner("benchmarks")
+            self.assertEqual(focused.target, safety.target)
+            self.assertNotEqual(focused.target, benchmarks.target)
+            self.assertNotEqual(focused.directory, safety.directory)
+            self.assertNotEqual(focused.directory, benchmarks.directory)
+            self.assertEqual(focused.env["CARGO_TARGET_DIR"], str(safety.target))
 
     def test_explicit_benchmark_selection_preserves_full_default_and_stops_after_failure(self):
         scenarios = ("http", "ndjson")
@@ -447,7 +452,7 @@ class BitTorrentSafetyTests(unittest.TestCase):
                     else:
                         with self.assertRaisesRegex(RuntimeError, "coverage instrumentation"):
                             ci.bt_safety(runner)
-                    provision.assert_called_once_with(runner, "address")
+                    provision.assert_called_once_with(runner, "address", cached_only=False)
                     security.assert_called_once_with(runner, root / "native", True)
                 self.assertEqual(runner.cargo.call_args_list[0].args[0], "test")
                 fuzz_build = runner.cargo.call_args_list[1]
