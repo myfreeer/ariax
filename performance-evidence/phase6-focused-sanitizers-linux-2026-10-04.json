@@ -1,0 +1,456 @@
+{
+  "evidenceKind": "focused-native-linux-sanitizer-and-parser-fuzz",
+  "sourceCommit": "596332b872274b60d385b35824de36d387605dbf",
+  "archive": {
+    "name": "ci-focused-linux.zip",
+    "sha256": "1e2ad4e83d9149dcb6ce87f46753cfd7b2ad2a84cf8df6a3003e1e207f1a0fee",
+    "bytes": 1312204
+  },
+  "resultSha256": "254e9bfcffeff23e104134a968c80f2f2f6c6ef39cd82c358494c9ecfd8cc2df",
+  "verifiedCommandLogs": 14,
+  "pythonTestsPassed": 70,
+  "rustTestsPassed": 14,
+  "rustTestsFailed": 0,
+  "rustTestsIgnored": 0,
+  "rustTestLog": {
+    "log": "12.log",
+    "testNames": [
+      "bridge_budget::tests::accepted_work_retains_credit_after_caller_disconnect_until_completion_settles",
+      "bridge_budget::tests::byte_and_completion_limits_reject_atomically_and_blobs_have_separate_ownership",
+      "bridge_budget::tests::every_finite_share_and_transition_preserves_the_total_cap",
+      "mapping::tests::collisions_reserved_names_and_prefixes_are_stable_across_selection",
+      "mapping::tests::every_generated_mapping_is_unique_and_has_no_file_directory_alias",
+      "mapping::tests::unsafe_paths_and_invalid_selection_do_not_publish_a_mapping_prefix",
+      "root::tests::default_root_allows_shared_permissions_but_rejects_payload_aliases",
+      "root::tests::protected_root_rejects_shared_writes_links_and_replacement",
+      "full_completion_capacity_returns_unaccepted_blob_ownership_for_retry",
+      "magnet_storage_waits_for_exact_approval_and_transfers_through_owned_commands",
+      "resource_exhaustion_and_private_peer_rejection_have_no_unowned_native_work",
+      "unread_completions_retain_credit_live_versions_reject_stale_and_shutdown_releases_resources",
+      "native_rejection_is_bounded_redacted_and_keeps_callbacks_owned_on_drop",
+      "native_v1_v2_hybrid_transfers_hold_storage_and_checkpoint_without_alert_delivery"
+    ],
+    "harnessSummaries": [
+      {
+        "passed": 8,
+        "failed": 0,
+        "ignored": 0,
+        "filteredOut": 0,
+        "testSeconds": 1.55
+      },
+      {
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0,
+        "filteredOut": 0,
+        "testSeconds": 2.16
+      },
+      {
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "filteredOut": 0,
+        "testSeconds": 0.0
+      },
+      {
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "filteredOut": 0,
+        "testSeconds": 4.67
+      },
+      {
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "filteredOut": 0,
+        "testSeconds": 0.0
+      },
+      {
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "filteredOut": 0,
+        "testSeconds": 0.0
+      }
+    ]
+  },
+  "nativeProbes": {
+    "passed": 4,
+    "failed": 0,
+    "tests": [
+      {
+        "name": "native_bounded_output",
+        "seconds": 0.02
+      },
+      {
+        "name": "native_openssl_callbacks",
+        "seconds": 0.03
+      },
+      {
+        "name": "native_destination_policy",
+        "seconds": 6.28
+      },
+      {
+        "name": "native_private_storage",
+        "seconds": 0.03
+      }
+    ],
+    "totalSeconds": 6.42,
+    "detailedLogSha256": "82d38fac806c76b8e1f8a80f94c4045b90064b91bf30d5701832a0b178edf693",
+    "completedEndpointCases": 16
+  },
+  "fuzz": {
+    "target": "bittorrent_metadata",
+    "log": "14.log",
+    "configuredSeconds": 20,
+    "reportedSeconds": 21,
+    "executions": 799033,
+    "coverageCounters": 2894,
+    "features": 10567,
+    "instrumentedCounters": 19059,
+    "seed": 1692982595,
+    "initialSeeds": [
+      {
+        "name": "credentials.txt",
+        "sha256": "6ab0eb4f9c2730c28a5246b9c757eb814da1543e4f158a1ce3411a9f0f1818c5",
+        "bytes": 120
+      },
+      {
+        "name": "hybrid.torrent",
+        "sha256": "6e2a2aa189e440fe18e3164dd2257243b3b322edb884733196d7940f81335123",
+        "bytes": 211
+      },
+      {
+        "name": "invalid.bencode",
+        "sha256": "2eae49ef26f87de03b42e7505eda08db929e2597f91977fe7a64c4ec8c146730",
+        "bytes": 20
+      },
+      {
+        "name": "magnet.txt",
+        "sha256": "99205d66296ee649acdde57f5bcbf3974bc631fc38068f23162cad2a894118f7",
+        "bytes": 104
+      },
+      {
+        "name": "multi-piece-hybrid.torrent",
+        "sha256": "74ab389750f13917280714cfecfc0231da32a5a2985d4ace065d873d594c6f68",
+        "bytes": 510
+      },
+      {
+        "name": "multi-piece-v2.torrent",
+        "sha256": "f399e02131d78f18d578899deaa12bec650b04017dc10ad691e30cedd6325570",
+        "bytes": 383
+      },
+      {
+        "name": "selection-v1.torrent",
+        "sha256": "32d6c4f3a4e0b0a881bdda0168b577e87da965ca341b53314b24296e3539e662",
+        "bytes": 177
+      },
+      {
+        "name": "symlink-v1.torrent",
+        "sha256": "59aaf319f4e14e8af9abf476740be2909068d02b1ff54c2a4e4b60fb57d546e2",
+        "bytes": 188
+      },
+      {
+        "name": "unsafe-path-v1.torrent",
+        "sha256": "e8421030d201a1b33a19f7cccde66471cee2675762b022ff34b03ab034a3f97a",
+        "bytes": 91
+      },
+      {
+        "name": "v1.torrent",
+        "sha256": "e7842401f5ae269b57ab3bcc928d2333f49def0376eca679fdd61f7f64831525",
+        "bytes": 97
+      },
+      {
+        "name": "v2.torrent",
+        "sha256": "98e8cc057c8a5ecd35333df06d15480a4d7073700e67559533278cd4b80b7a08",
+        "bytes": 166
+      }
+    ],
+    "reportedLiveCorpusEntries": 1579,
+    "retainedCorpusFiles": 1573,
+    "retainedCorpusBytes": 246223,
+    "retainedCorpusMaxFileBytes": 967,
+    "corpusInventorySha256": "f23c1d461a492764d396e50c644ee609a006f4fe4782729dd4de63acb2a42d07",
+    "peakReportedRssMb": 314,
+    "inputTimeoutSeconds": 2,
+    "inputLimitBytes": 1048576,
+    "rssLimitMb": 512,
+    "crashArtifacts": 0,
+    "sanitizerDiagnosticsFound": 0,
+    "corpusNote": "The fuzzer reported 1579 live corpus entries; the supplied archive retains 1573 files. Both counts are preserved as distinct measurements."
+  },
+  "sanitizerConfiguration": {
+    "native": "ASan/UBSan",
+    "nativeRustHarnesses": "link instrumented native code; Rust harnesses are not compiled with -Zsanitizer",
+    "parserFuzz": "Rust ASan with coverage",
+    "ASAN_OPTIONS": "detect_leaks=1:halt_on_error=1",
+    "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1",
+    "configurationSource": "scripts/ci.py",
+    "configurationSourceSha256": "7408a9e1053f752c14436b0d607fbb9a83f2f6b3566bfed819018fc21c6e84e3"
+  },
+  "benchmarkExecutions": 0,
+  "fullPhase6Acceptance": false,
+  "nativeProvenance": {
+    "target": "x86_64-unknown-linux-gnu",
+    "versions": {
+      "libtorrent": "2.1.1",
+      "boost": "1.91.0",
+      "openssl": "3.6.3"
+    },
+    "inputs": {
+      "sourcesSha256": "b55bc045afe126bad7e48d9ca6e9a5b40f762e2bdea6cbc54997dcee32991819",
+      "patchSha256": "8d377c5622d0308bda2f7fc161913954f4a4cb3af19f6e1400d2cde84446a409",
+      "opensslPatchSha256": "e12670d73045bda8fb086f51f1080ccaffd60e54dd8902577aea3b3ad2a5a748",
+      "builderSha256": "13876c4f9dc51f1bb4ef1ce48426b411792ad9ef086bad4add838e8e0a806f48",
+      "sanitizer": "address"
+    },
+    "compiler": "Ubuntu clang version 18.1.3 (1ubuntu1)\nTarget: x86_64-pc-linux-gnu\nThread model: posix\nInstalledDir: /usr/bin",
+    "settings": {
+      "BUILD_SHARED_LIBS": "OFF",
+      "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+      "CMAKE_POSITION_INDEPENDENT_CODE": "ON",
+      "CMAKE_POLICY_DEFAULT_CMP0167": "OLD",
+      "build_tests": "OFF",
+      "build_examples": "OFF",
+      "build_tools": "OFF",
+      "python-bindings": "OFF",
+      "webtorrent": "OFF",
+      "i2p": "OFF",
+      "mutable-torrents": "OFF",
+      "logging": "OFF",
+      "dht": "ON",
+      "encryption": "ON",
+      "exceptions": "ON",
+      "gnutls": "OFF",
+      "OPENSSL_USE_STATIC_LIBS": "ON",
+      "Boost_NO_SYSTEM_PATHS": "ON",
+      "Boost_NO_BOOST_CMAKE": "ON",
+      "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+      "CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+      "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O1 -g"
+    },
+    "manifestSha256": "96608ed9962ee928b67c4bd608de0f81c76777ce578a51f4d12788d9b1353163",
+    "installedFileCount": 16786,
+    "ciVerificationPassed": true,
+    "localReviewVerifiedInputDigests": true,
+    "installedLibrariesIncludedInArtifact": false
+  },
+  "ciReport": {
+    "check": "focused",
+    "sourceCommit": "596332b872274b60d385b35824de36d387605dbf",
+    "passed": true,
+    "host": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+    "machine": "x86_64",
+    "elapsedSeconds": 187.679,
+    "commands": [
+      {
+        "command": [
+          "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python3",
+          "-B",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "scripts",
+          "-p",
+          "test_*.py"
+        ],
+        "log": "01.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "a07f319eedaaa2aa46900b67c421cdbde9f9832bfe7779dcfdb1086cbf4c72ff"
+      },
+      {
+        "command": [
+          "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python3",
+          "-B",
+          "scripts/check_docs.py"
+        ],
+        "log": "02.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "647b7d569b95533dab5962cc3c92e0d820bc4eb58d29a8a2d61dafe313a71c5b"
+      },
+      {
+        "command": [
+          "/home/runner/work/ariax/ariax/toolchains/ci-tools/actionlint-1.7.12/actionlint",
+          "-shellcheck=",
+          "-pyflakes="
+        ],
+        "log": "03.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "command": [
+          "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python3",
+          "-B",
+          "scripts/publication.py"
+        ],
+        "log": "04.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "1f2ae031b96c44e26b09a19b752facedafbd38b12f0b64d1fb2b8939f6b6d1d6"
+      },
+      {
+        "command": [
+          "git",
+          "show",
+          "--format=",
+          "--check",
+          "HEAD"
+        ],
+        "log": "05.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo-fmt",
+          "fmt",
+          "--all",
+          "--",
+          "--check"
+        ],
+        "log": "06.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/rustc",
+          "--version",
+          "--verbose"
+        ],
+        "log": "07.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "b2bdf493bcf6d1dc55181a0efc2774b6d9cf7bf5c8dcc5bed592c994b2ad38c4"
+      },
+      {
+        "command": [
+          "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python3",
+          "-B",
+          "scripts/bt_native.py",
+          "--target",
+          "x86_64-unknown-linux-gnu",
+          "--sanitizer",
+          "address",
+          "--verify"
+        ],
+        "log": "08.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "feaeef7629aa0b20e2d37c7f1cf0350f69d714039f946dc0f4c893d7a526a8f7"
+      },
+      {
+        "command": [
+          "cmake",
+          "-S",
+          "/home/runner/work/ariax/ariax/native/libtorrent/tests",
+          "-B",
+          "/home/runner/work/ariax/ariax/toolchains/ci-target/bt-safety/native-security",
+          "-G",
+          "Unix Makefiles",
+          "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+          "-DCMAKE_POLICY_DEFAULT_CMP0167=OLD",
+          "-DCMAKE_PREFIX_PATH=/home/runner/work/ariax/ariax/toolchains/bt-native/x86_64-unknown-linux-gnu-sanitized/install",
+          "-DOPENSSL_ROOT_DIR=/home/runner/work/ariax/ariax/toolchains/bt-native/x86_64-unknown-linux-gnu-sanitized/install",
+          "-DOPENSSL_USE_STATIC_LIBS=ON",
+          "-DBOOST_ROOT=/home/runner/work/ariax/ariax/toolchains/bt-native/x86_64-unknown-linux-gnu-sanitized/install",
+          "-DBoost_INCLUDE_DIR=/home/runner/work/ariax/ariax/toolchains/bt-native/x86_64-unknown-linux-gnu-sanitized/install/include",
+          "-DBoost_NO_SYSTEM_PATHS=ON",
+          "-DARIAX_SANITIZER=ON"
+        ],
+        "log": "09.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "ea5ba255457a9b4ed9711ce17f28e4644383d0670a0f1c506ab31d35269db200"
+      },
+      {
+        "command": [
+          "cmake",
+          "--build",
+          "/home/runner/work/ariax/ariax/toolchains/ci-target/bt-safety/native-security",
+          "--config",
+          "RelWithDebInfo",
+          "--parallel",
+          "2"
+        ],
+        "log": "10.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "b7d61f52aee5bcd7678b546a730fb71f50a2d6509f3ec40b5e244f57682612ac"
+      },
+      {
+        "command": [
+          "ctest",
+          "--test-dir",
+          "/home/runner/work/ariax/ariax/toolchains/ci-target/bt-safety/native-security",
+          "--build-config",
+          "RelWithDebInfo",
+          "--output-on-failure"
+        ],
+        "log": "11.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "5219c6c0169d12492899017b7b26114cb05eda5c512cdff335d9bdee08488ea6"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ariax-bt-libtorrent-sys",
+          "-p",
+          "ariax-bt",
+          "--all-features"
+        ],
+        "log": "12.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "ea31e217a96715d31aa5eedc9b1c7c800c8720f88544a5b5d13d67517595e8af"
+      },
+      {
+        "command": [
+          "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+          "build",
+          "--locked",
+          "--manifest-path",
+          "fuzz/Cargo.toml",
+          "--release",
+          "--target",
+          "x86_64-unknown-linux-gnu",
+          "--bin",
+          "bittorrent_metadata"
+        ],
+        "log": "13.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "7d7d4e33e42f553904ad42687f8d88c26a731b08663ae6e849de40cb52108409"
+      },
+      {
+        "command": [
+          "/home/runner/work/ariax/ariax/toolchains/ci-target/bt-safety/fuzz/x86_64-unknown-linux-gnu/release/bittorrent_metadata",
+          "/home/runner/work/ariax/ariax/toolchains/ci-reports/focused/corpus",
+          "-max_total_time=20",
+          "-timeout=2",
+          "-rss_limit_mb=512",
+          "-max_len=1048576",
+          "-print_funcs=0",
+          "-artifact_prefix=/home/runner/work/ariax/ariax/toolchains/ci-reports/focused/fuzz-artifacts/"
+        ],
+        "log": "14.log",
+        "passed": true,
+        "exitCode": 0,
+        "sha256": "aee20e47d324f4d8dcf8299de5f5808e375a46ab8db7214e5ab2d2029d7a18c5"
+      }
+    ],
+    "error": null
+  }
+}

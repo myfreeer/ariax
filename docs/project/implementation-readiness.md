@@ -548,8 +548,19 @@ after restart. HTTP/stdio ownership and EOF cases pass in every bundle.
 All 15 command logs and native input digests were verified. The command took
 468.687 seconds including compilation, without benchmark execution.
 
-Phase-6 acceptance remains open. The complete platform/MSRV/feature matrix,
-remaining workspace and platform coverage, sanitizer/fuzz execution and all six
+The [sanitizer and parser-fuzz slice](../../performance-evidence/phase6-focused-sanitizers-linux-2026-10-04.md)
+passes at `596332b`: four native ASan/UBSan probes, 14 Rust tests and 70 Python
+helper tests. All 16 endpoint cases complete. Native C++/bridge code is
+instrumented; ordinary Rust test harnesses link its sanitizer runtime. The
+Rust-ASan parser fuzz target completes 799,033 executions in a reported
+21 seconds against a 20-second budget, without sanitizer diagnostics or crash
+artifacts. All 14 command logs and native input digests were verified. The
+command took 187.679 seconds including compilation, without benchmark execution.
+This supplies passing evidence for the selected native sanitizer and bounded
+BT parser-fuzz campaign.
+
+Phase-6 acceptance remains open. The complete platform/MSRV/feature test and
+release-build matrix, remaining workspace and platform coverage, and all six
 performance scenarios still require current-source evidence. These focused
 Linux runs do not establish the corresponding native behavior on other platforms.
 Historical reports remain valid only for their recorded source and scenarios.

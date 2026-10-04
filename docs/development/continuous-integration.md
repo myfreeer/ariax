@@ -31,7 +31,13 @@ at `a1f8f4f`: 21 Rust test executions, 70 Python helper tests and all four CLI
 feature graphs. Typed Rust and CLI/RPC tests cover BT success, rejection without
 state creation, restart projections and transport ownership.
 
-The next slice runs the existing `bt-safety` campaign with cached dependencies:
+The [sanitizer and parser-fuzz slice passed](../../performance-evidence/phase6-focused-sanitizers-linux-2026-10-04.md)
+at `596332b`: four native ASan/UBSan probes, 14 Rust tests and 70 Python helper
+tests. The BT metadata parser completed 799,033 fuzz executions with no crash
+artifacts or sanitizer diagnostics. Its 20-second budget finished in a reported
+21 seconds; the complete validation command took 187.679 seconds including
+compilation. The job runs the existing `bt-safety` campaign with cached
+dependencies:
 
 - Verify the separate ASan/UBSan native installation. The native cache key uses
   `bt-safety`; an ordinary installation cannot satisfy its instrumentation
@@ -50,8 +56,8 @@ The next slice runs the existing `bt-safety` campaign with cached dependencies:
 The sanitizer command uses `toolchains/ci-target/bt-safety`, including its
 separate fuzz subdirectory, and reuses the full sanitizer job's Cargo cache
 paths and prefix. It does not consume the ordinary release benchmark/test
-target. The earlier October 2 sanitizer artifact has matching native input
-digests; actual cache availability is determined by the next workflow run.
+target. The passing run verified the instrumented native cache once, with source,
+patch and builder digests matching `596332b`, and did not rebuild dependencies.
 `RUSTC_BOOTSTRAP=1` is confined to the fuzz commands.
 
 No benchmark executable is built or run by this job. A failure stops subsequent
@@ -61,12 +67,11 @@ Native verification occurs once, and Rust
 builds use at most two jobs. The job has a 30-minute ceiling.
 
 This campaign requires native Linux and rejects WSL before running checks. It
-addresses the native sanitizer and bounded parser-fuzz gate. Remaining
-storage/CLI suites, the full platform/MSRV matrix, complete feature-bundle tests
+provides passing native sanitizer and bounded parser-fuzz evidence at `596332b`.
+Remaining storage/CLI suites, the full platform/MSRV matrix, complete feature-bundle tests
 and `release-cli` builds, and every performance acceptance scenario remain
-separate required coverage. The earlier passing artifacts
-establish only their selected tests and source commits; the new slice requires
-its own result.
+separate required coverage. Each passing artifact establishes only its selected
+tests and source commit.
 Artifacts are named `ci-focused-linux`, and the job is not named `CI Required`.
 Focused success cannot stand in for the complete validation or release gates.
 

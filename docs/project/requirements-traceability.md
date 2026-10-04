@@ -27,9 +27,14 @@ at `38d07e4` verifies the selected bridge/adapter, transfer/security/recovery an
 checkpoint-crash fixtures. The [interface and feature slice](../../performance-evidence/phase6-focused-interfaces-linux-2026-10-04.md)
 at `a1f8f4f` adds typed API, CLI/RPC restart parity, feature-disabled rejection
 and all four resolved feature graphs. The
+[sanitizer and parser-fuzz slice](../../performance-evidence/phase6-focused-sanitizers-linux-2026-10-04.md)
+at `596332b` passes four native ASan/UBSan probes, 14 Rust tests linked to the
+instrumented native runtime and 799,033 Rust-ASan parser fuzz executions without
+sanitizer diagnostics or crash artifacts. The
 [current acceptance status](implementation-readiness.md#phase-6-local-implementation-and-open-acceptance)
-keeps the complete platform/MSRV/feature matrix, remaining workspace coverage,
-sanitizer/fuzz jobs and mixed 1,000-peer HTTP/BT benchmark open. Current
+keeps the complete platform/MSRV/feature test and release-build matrix,
+remaining workspace coverage and all six performance scenarios, including the
+mixed 1,000-peer HTTP/BT benchmark, open. Current
 SQLite and JSON persistence require fresh v3 stores; older formats are rejected
 without migration or mutation. Historical Phase-5 v2 import evidence is not a
 current-format compatibility promise.
