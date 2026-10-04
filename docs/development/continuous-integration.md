@@ -36,42 +36,41 @@ at `596332b`: four native ASan/UBSan probes, 14 Rust tests and 70 Python helper
 tests. The BT metadata parser completed 799,033 fuzz executions with no crash
 artifacts or sanitizer diagnostics. Its 20-second budget finished in a reported
 21 seconds; the complete validation command took 187.679 seconds including
-compilation. The job runs the existing `bt-safety` campaign with cached
-dependencies:
+compilation. Its native C++/bridge code receives ASan/UBSan instrumentation;
+ordinary Rust test harnesses link the runtime, while the parser fuzz executable
+receives Rust ASan and coverage instrumentation.
 
-- Verify the separate ASan/UBSan native installation. The native cache key uses
-  `bt-safety`; an ordinary installation cannot satisfy its instrumentation
-  check. Missing or invalid caches fail without a dependency rebuild.
-- Compile and run all four native probes with Clang's AddressSanitizer and
-  UndefinedBehaviorSanitizer, leak detection and fail-fast settings. Probe
-  deadlines remain 10/30/90 seconds.
-- Run the bridge and adapter crate tests against that instrumented native
-  installation. Rust tests and CTest run serially; bridge/native code receives
-  ASan/UBSan instrumentation, while these ordinary Rust tests link its runtime.
-- Build the bounded BT metadata parser fuzz target with Rust ASan and coverage
-  instrumentation. Run the seeded corpus for 20 seconds with a two-second
-  input timeout, 512 MiB RSS limit and 1 MiB input limit. A successful exit must
-  also report completion and coverage. Retain the resulting corpus and crashes.
+The next slice targets complete storage and CLI feature-bundle coverage:
 
-The sanitizer command uses `toolchains/ci-target/bt-safety`, including its
-separate fuzz subdirectory, and reuses the full sanitizer job's Cargo cache
-paths and prefix. It does not consume the ordinary release benchmark/test
-target. The passing run verified the instrumented native cache once, with source,
-patch and builder digests matching `596332b`, and did not rebuild dependencies.
-`RUSTC_BOOTSTRAP=1` is confined to the fuzz commands.
+- Verify the ordinary native installation once using the `bt-native-linux`
+  cache and sanitizer mode `none`. Missing or invalid caches fail without
+  rebuilding native dependencies.
+- Validate all four resolved CLI feature graphs.
+- Run the complete `ariax-storage` test suite with all features, including
+  persistence, checkpoint/crash recovery and permission-policy tests.
+- For each of `minimal`, `standard`, `full` and `compat`, run the complete
+  `ariax-cli` test suite with default features disabled and the explicit bundle,
+  then build that bundle with the `release-cli` profile. This includes CLI smoke,
+  removable-storage, permission-policy and RPC interface tests without filters.
+
+Tests run in release mode with one test thread and the locked dependency graph.
+Each bundle's tests precede its release build; both must pass before the next
+bundle starts. The command reuses `toolchains/ci-target/benchmarks` and its
+ordinary `ci-benchmarks` cache from the earlier focused runs. Cargo keeps the
+`release-cli` outputs in their own profile directory under that target.
+The sanitizer campaign retains its separate `bt-safety` cache and evidence.
 
 No benchmark executable is built or run by this job. A failure stops subsequent
-work; reports, CTest diagnostics, native provenance and fuzz artifacts are
-uploaded even on failure. The job saves updated sanitizer Cargo outputs.
-Native verification occurs once, and Rust
-builds use at most two jobs. The job has a 30-minute ceiling.
+work; command logs and native provenance are uploaded even on failure. The job
+saves updated ordinary Cargo outputs. Rust builds use at most two jobs, and the
+job has a 30-minute ceiling.
 
 This campaign requires native Linux and rejects WSL before running checks. It
-provides passing native sanitizer and bounded parser-fuzz evidence at `596332b`.
-Remaining storage/CLI suites, the full platform/MSRV matrix, complete feature-bundle tests
-and `release-cli` builds, and every performance acceptance scenario remain
-separate required coverage. Each passing artifact establishes only its selected
-tests and source commit.
+has passing native sanitizer and bounded parser-fuzz evidence at `596332b`;
+the prepared storage/CLI and release-build slice still requires its own result.
+The full platform/MSRV matrix, remaining workspace coverage and every
+performance acceptance scenario remain separate required coverage. Each passing
+artifact establishes only its selected tests and source commit.
 Artifacts are named `ci-focused-linux`, and the job is not named `CI Required`.
 Focused success cannot stand in for the complete validation or release gates.
 

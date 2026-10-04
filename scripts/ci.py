@@ -110,8 +110,8 @@ class Runner:
         self.name = name
         self.directory = ROOT / "toolchains/ci-reports" / name
         self.directory.mkdir(parents=True, exist_ok=True)
-        # The focused sanitizer slice reuses only the instrumented Cargo cache.
-        self.target = ROOT / "toolchains/ci-target" / ("bt-safety" if name == "focused" else name)
+        # Reuse the earlier focused release tests; sanitizer outputs stay separate.
+        self.target = ROOT / "toolchains/ci-target" / ("benchmarks" if name == "focused" else name)
         self.tools = resolve_toolchain() / "bin"
         self.suffix = ".exe" if os.name == "nt" else ""
         self.env = os.environ.copy()
@@ -540,16 +540,23 @@ def benchmark(runner, scenarios=SCENARIOS, *, provision=True):
 
 
 def focused(runner):
-    """Temporary cached native sanitizer and bounded parser-fuzz slice."""
+    """Temporary complete storage/CLI tests and four release feature bundles."""
     require_native_linux()
-    runner.env.update(RUST_TEST_THREADS="1", CTEST_PARALLEL_LEVEL="1", CARGO_BUILD_JOBS="2")
+    runner.env.update(RUST_TEST_THREADS="1", CARGO_BUILD_JOBS="2")
     runner.run([sys.executable, "-B", "-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py"])
     runner.run([sys.executable, "-B", "scripts/check_docs.py"])
     runner.run([actionlint(), "-shellcheck=", "-pyflakes="])
     runner.run([sys.executable, "-B", "scripts/publication.py"])
     runner.run(["git", "show", "--format=", "--check", "HEAD"])
     runner.cargo("fmt", "--all", "--", "--check")
-    bt_safety(runner, cached_only=True)
+    prefix = provision_bt(runner, cached_only=True)
+    runner.env["ARIAX_BT_NATIVE_DIR"] = str(prefix)
+    runner.run([sys.executable, "-B", "scripts/verify-protocol-features.py", "--cargo", runner.tool("cargo")])
+    runner.cargo("test", "--locked", "--release", "-p", "ariax-storage", "--all-features")
+    for bundle in FEATURE_BUNDLES:
+        arguments = ("--locked", "-p", "ariax-cli", "--no-default-features", "--features", bundle)
+        runner.cargo("test", *arguments, "--release")
+        runner.cargo("build", *arguments, "--profile", "release-cli")
 
 
 def interrupted(_signum, _frame):

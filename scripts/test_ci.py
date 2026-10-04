@@ -182,87 +182,78 @@ class FocusedValidationTests(unittest.TestCase):
                     runner.cargo.assert_not_called()
                     provision.assert_not_called()
 
-    def test_focused_sanitizer_failures_stop_later_work_without_benchmarks(self):
-        for failure in (None, "precheck", "format", "cache", "native", "test", "fuzz-build", "fuzz-run", "coverage"):
-            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary)
-                seeds = root / "fuzz/seeds/bittorrent_metadata"
-                seeds.mkdir(parents=True)
-                (seeds / "seed").write_bytes(b"de")
+    def test_storage_and_every_bundle_stop_on_failure_before_later_tests_or_builds(self):
+        stages = ["precheck", "format", "cache", "graphs", "storage"]
+        for bundle in ("minimal", "standard", "full", "compat"):
+            stages.extend((bundle + "-test", bundle + "-build"))
+        for failure in (None, *stages):
+            with self.subTest(failure=failure):
                 runner = mock.Mock()
                 runner.env = {}
-                runner.target = root / "target"
-                runner.directory = root / "reports"
-                runner.directory.mkdir()
-                prefix = root / "native-install"
+                prefix = Path("native-install")
+                events = []
 
-                def run(command, **kwargs):
-                    if failure == "precheck":
-                        raise RuntimeError("precheck failed")
-                    if command[0] == runner.target / "fuzz/x86_64-unknown-linux-gnu/release/bittorrent_metadata":
-                        if failure == "fuzz-run":
-                            raise RuntimeError("fuzz-run failed")
-                        if failure == "coverage":
-                            return "Done without coverage"
-                        return "#123 DONE cov: 42\n"
-
-                def cargo(*args, **kwargs):
-                    stage = {"fmt": "format", "test": "test", "build": "fuzz-build"}[args[0]]
+                def record(stage):
+                    events.append(stage)
                     if failure == stage:
                         raise RuntimeError(stage + " failed")
 
+                def run(command, **kwargs):
+                    if "unittest" in command:
+                        record("precheck")
+                    elif "scripts/verify-protocol-features.py" in command:
+                        record("graphs")
+
+                def cargo(*args, **kwargs):
+                    if args[0] == "fmt":
+                        record("format")
+                    elif "ariax-storage" in args:
+                        record("storage")
+                    else:
+                        record(args[args.index("--features") + 1] + "-" + args[0])
+
+                def cached_native(*args, **kwargs):
+                    record("cache")
+                    return prefix
+
                 runner.run.side_effect = run
                 runner.cargo.side_effect = cargo
-                with mock.patch.object(ci, "ROOT", root), \
-                        mock.patch.object(ci, "require_native_linux"), \
+                with mock.patch.object(ci, "require_native_linux"), \
                         mock.patch.object(ci, "actionlint", return_value=Path("actionlint")), \
-                        mock.patch.object(ci, "provision_bt", return_value=prefix, side_effect=(
-                            RuntimeError("cache failed") if failure == "cache" else None)) as provision, \
-                        mock.patch.object(ci, "native_security", side_effect=(
-                            RuntimeError("native failed") if failure == "native" else None)) as native, \
+                        mock.patch.object(ci, "provision_bt", side_effect=cached_native) as provision, \
+                        mock.patch.object(ci, "native_security") as native, \
+                        mock.patch.object(ci, "bt_safety") as safety, \
                         mock.patch.object(ci, "benchmark") as benchmark:
                     if failure:
-                        expected = "coverage instrumentation" if failure == "coverage" else failure + " failed"
-                        with self.assertRaisesRegex(RuntimeError, expected):
+                        with self.assertRaisesRegex(RuntimeError, failure + " failed"):
                             ci.focused(runner)
+                        self.assertEqual(events, stages[:stages.index(failure) + 1])
                     else:
                         ci.focused(runner)
+                        self.assertEqual(events, stages)
                     if failure in {"precheck", "format"}:
                         provision.assert_not_called()
                     else:
-                        provision.assert_called_once_with(runner, "address", cached_only=True)
-                    if failure in {"precheck", "format", "cache"}:
-                        native.assert_not_called()
-                    else:
-                        native.assert_called_once_with(runner, prefix, True)
+                        provision.assert_called_once_with(runner, cached_only=True)
+                    native.assert_not_called()
+                    safety.assert_not_called()
                     benchmark.assert_not_called()
-                expected_calls = {"precheck": 0, "format": 1, "cache": 1, "native": 1, "test": 2}
-                self.assertEqual(runner.cargo.call_count, expected_calls.get(failure, 3))
-                if failure in expected_calls or failure == "fuzz-build":
-                    self.assertFalse((runner.directory / "corpus").exists())
-                else:
-                    self.assertEqual((runner.directory / "corpus/seed").read_bytes(), b"de")
-                for call in runner.cargo.call_args_list:
-                    for forbidden in ("--workspace", "--bench", "--benches", "--all-targets"):
-                        self.assertNotIn(forbidden, call.args)
                 if failure is None:
                     self.assertEqual(runner.env["ARIAX_BT_NATIVE_DIR"], str(prefix))
                     self.assertEqual(runner.env["RUST_TEST_THREADS"], "1")
-                    self.assertEqual(runner.env["CTEST_PARALLEL_LEVEL"], "1")
                     self.assertEqual(runner.env["CARGO_BUILD_JOBS"], "2")
-                    self.assertEqual(runner.env["ARIAX_BT_SANITIZER"], "address")
-                    self.assertEqual(runner.env["ASAN_OPTIONS"], "detect_leaks=1:halt_on_error=1")
-                    self.assertEqual(runner.env["UBSAN_OPTIONS"], "halt_on_error=1:print_stacktrace=1")
-                    test = runner.cargo.call_args_list[1].args
-                    self.assertEqual(test, ("test", "--locked", "-p", "ariax-bt-libtorrent-sys",
-                                            "-p", "ariax-bt", "--all-features"))
-                    fuzz = runner.run.call_args_list[-1]
-                    for limit in ("-max_total_time=20", "-timeout=2", "-rss_limit_mb=512", "-max_len=1048576"):
-                        self.assertIn(limit, fuzz.args[0])
-                    self.assertEqual(fuzz.kwargs["env"]["RUSTC_BOOTSTRAP"], "1")
+                    self.assertNotIn("ARIAX_BT_SANITIZER", runner.env)
                     self.assertNotIn("RUSTC_BOOTSTRAP", runner.env)
+                    calls = [call.args for call in runner.cargo.call_args_list]
+                    self.assertEqual(len(calls), 10)
+                    self.assertEqual(calls[1], ("test", "--locked", "--release", "-p",
+                                               "ariax-storage", "--all-features"))
+                    for index, bundle in enumerate(("minimal", "standard", "full", "compat")):
+                        arguments = ("--locked", "-p", "ariax-cli", "--no-default-features", "--features", bundle)
+                        self.assertEqual(calls[2 + 2 * index], ("test", *arguments, "--release"))
+                        self.assertEqual(calls[3 + 2 * index], ("build", *arguments, "--profile", "release-cli"))
 
-    def test_focused_reports_are_separate_and_only_sanitizer_outputs_are_reused(self):
+    def test_focused_reports_are_separate_and_only_ordinary_outputs_are_reused(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             with mock.patch.object(ci, "ROOT", root), \
@@ -270,11 +261,11 @@ class FocusedValidationTests(unittest.TestCase):
                 focused = ci.Runner("focused")
                 safety = ci.Runner("bt-safety")
                 benchmarks = ci.Runner("benchmarks")
-            self.assertEqual(focused.target, safety.target)
-            self.assertNotEqual(focused.target, benchmarks.target)
+            self.assertEqual(focused.target, benchmarks.target)
+            self.assertNotEqual(focused.target, safety.target)
             self.assertNotEqual(focused.directory, safety.directory)
             self.assertNotEqual(focused.directory, benchmarks.directory)
-            self.assertEqual(focused.env["CARGO_TARGET_DIR"], str(safety.target))
+            self.assertEqual(focused.env["CARGO_TARGET_DIR"], str(benchmarks.target))
 
     def test_explicit_benchmark_selection_preserves_full_default_and_stops_after_failure(self):
         scenarios = ("http", "ndjson")

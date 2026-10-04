@@ -559,6 +559,11 @@ command took 187.679 seconds including compilation, without benchmark execution.
 This supplies passing evidence for the selected native sanitizer and bounded
 BT parser-fuzz campaign.
 
+The next [focused CI slice](../development/continuous-integration.md#temporary-focused-validation)
+is prepared to run complete storage tests and all CLI tests plus `release-cli`
+builds for `minimal`, `standard`, `full` and `compat`. It reuses verified ordinary
+native dependencies and runs sequentially on Linux. Its CI result is pending.
+
 Phase-6 acceptance remains open. The complete platform/MSRV/feature test and
 release-build matrix, remaining workspace and platform coverage, and all six
 performance scenarios still require current-source evidence. These focused
