@@ -562,9 +562,13 @@ self-contained import/export and the existing aria2-facing product contracts.
 Local implementation and acceptance-harness work are complete for all six
 packages below. The [full functional CI matrix](../../performance-evidence/phase6-full-ci-2026-10-05.md)
 passes at `a6f9b0d`, covering every configured platform/MSRV/feature job and
-native sanitizer/parser fuzz execution. All six performance scenarios still
-require manual measurements; the earlier five-scenario baseline does not
-establish Phase-6 acceptance. See [current evidence and remaining gates](implementation-readiness.md#phase-6-local-implementation-and-open-acceptance).
+native sanitizer/parser fuzz execution. The
+[manual benchmark rerun](../../performance-evidence/phase6-benchmarks-rerun-2026-10-05.md)
+passes all six scenarios at `9107ecb`, including 1,000 BT peers alongside
+1,000 HTTP ranges. Only benchmark diagnostics, their tests and documentation
+changed since the full matrix; automatic functional CI was skipped for that
+commit. `P6-06` still requires the final evidence to converge on one candidate
+source. See [current evidence and remaining gates](implementation-readiness.md#phase-6-local-implementation-and-open-acceptance).
 The [local validation record](../../performance-evidence/phase6-local-validation-2026-09-26.md)
 separates passing focused checks from unexecuted native acceptance.
 The final local cleanup removes obsolete HTTP type aliases, the SHA-256-only

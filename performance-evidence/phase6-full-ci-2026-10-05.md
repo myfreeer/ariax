@@ -108,6 +108,10 @@ matrix now has passing evidence at one source commit. The subsequent
 passes the four transport scenarios and administrative scenario. Mixed HTTP/BT,
 with 1,000 BT peers alongside 1,000 HTTP ranges, fails its 500 ms burst gate at
 530.097 ms; performance acceptance remains open.
+The later [manual rerun](phase6-benchmarks-rerun-2026-10-05.md) passes all six
+scenarios at `9107ecb`, which changes only benchmark diagnostics, their tests
+and documentation/evidence. That commit skips automatic functional CI; the
+complete `P6-06` evidence still needs to converge on one final candidate source.
 Fresh live OpenSSH evidence and separately tracked backend/release-platform
 requirements are not supplied by this run. Release tagging remains disabled.
 The [Phase 6 acceptance status](../docs/project/implementation-readiness.md#phase-6-local-implementation-and-open-acceptance)

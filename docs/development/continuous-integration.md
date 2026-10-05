@@ -6,9 +6,11 @@ Status: the [full functional CI matrix passes](../../performance-evidence/phase6
 at `a6f9b0d`. Review verified nine artifacts and all 87 command-log hashes,
 including every configured platform, MSRV, feature-bundle and sanitizer job.
 Benchmarks remain manual-only. The separate
-[manual campaign](../../performance-evidence/phase6-benchmarks-2026-10-05.md)
-at the same source passes five scenarios; mixed HTTP/BT exceeds the 500 ms burst
-limit at 530.097 ms. Performance acceptance remains open.
+[manual rerun](../../performance-evidence/phase6-benchmarks-rerun-2026-10-05.md)
+passes all six scenarios at `9107ecb`; mixed HTTP/BT completes with 8.000 ms
+aggregate p99 and a 486 ms maximum burst. The earlier 530.097 ms mixed failure
+remains retained. Automatic functional CI was skipped at `9107ecb`; final
+Phase-6 evidence must still converge on one candidate source.
 The historical remote and CI baseline passes at `af5d193`.
 [Run 35720518419 and its retained evidence](../../performance-evidence/ci-baseline-2026-09-22.md)
 cover every required platform, feature and MSRV job and all five native Linux

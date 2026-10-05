@@ -7,6 +7,11 @@ Content-Length stdio, NDJSON and administrative scenarios pass. Mixed HTTP/BT
 fails: a measured burst lasts **530.097 ms**, exceeding the **500 ms** limit.
 Phase-6 performance acceptance remains open.
 
+The subsequent [manual rerun](phase6-benchmarks-rerun-2026-10-05.md) at
+`9107ecb` passes all six complete measurements with unchanged acceptance limits
+and added burst diagnostics. This earlier failure remains part of the evidence;
+the passing rerun does not establish its cause.
+
 ## Verified Results
 
 | Scenario | Wall Seconds | Aggregate p99 Milliseconds | Worst Operation p99 Milliseconds | Maximum Burst Milliseconds | Peak Sampled RSS Bytes |

@@ -580,9 +580,19 @@ The [manual native Linux campaign](../../performance-evidence/phase6-benchmarks-
 at the same `a6f9b0d` source passes HTTP, WebSocket, Content-Length, NDJSON and
 administrative scenarios. Mixed HTTP/BT fails on a 530.097 ms burst against
 the 500 ms limit after more than 9,500 primary calls; no complete mixed report
-is emitted. Added burst diagnostics still need native validation and do not
-establish a latency fix. Phase-6 performance acceptance remains open for mixed
-HTTP/BT; later candidates require their own reports. Live OpenSSH interoperability
+is emitted. The [manual rerun](../../performance-evidence/phase6-benchmarks-rerun-2026-10-05.md)
+at `9107ecb` then passes all six scenarios with added burst diagnostics and
+unchanged limits. All 488 source-file hashes and 17 command/scenario-log hashes
+verify. Mixed HTTP/BT completes 20,000 primary calls and 2,000 verifications;
+aggregate p99 is 8.000 ms, worst operation p99 is 31.311 ms, and maximum burst
+is 486 ms. All 44 renewed peer barriers, resource and cleanup checks pass.
+This supplies the complete mixed measurement; the earlier failure remains
+retained and its cause is unresolved.
+
+Automatic functional CI was skipped at `9107ecb`. Only benchmark diagnostics,
+their tests and documentation/evidence changed since the full `a6f9b0d` matrix;
+the six-scenario measurement gate passes, but final Phase-6 evidence must still
+converge on one candidate source under `P6-06`. Live OpenSSH interoperability
 remains ignored in the full all-feature runs and needs its separate fixture evidence.
 The configured full matrix passes; separate kernel/backend, custom BT storage,
 release-platform and tagging requirements remain open. Historical reports remain

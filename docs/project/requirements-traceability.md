@@ -43,12 +43,18 @@ parser fuzz executions pass. The
 [manual benchmark campaign](../../performance-evidence/phase6-benchmarks-2026-10-05.md)
 at the same source passes the four transport scenarios and administrative
 scenario, but mixed HTTP/BT fails on a 530.097 ms burst against the 500 ms limit.
-No complete mixed report is emitted; follow-up burst diagnostics still require
-native validation. The
+No complete mixed report is emitted. The
+[manual rerun](../../performance-evidence/phase6-benchmarks-rerun-2026-10-05.md)
+at `9107ecb` passes all six complete measurements with unchanged limits and
+added burst diagnostics. Mixed aggregate p99 is 8.000 ms, worst operation p99
+is 31.311 ms, and maximum burst is 486 ms. All 488 source hashes, five command
+logs and twelve scenario logs verify. The earlier failure remains retained;
+the rerun does not establish its cause or repeated-run stability. The
 [current acceptance status](implementation-readiness.md#phase-6-local-implementation-and-open-acceptance)
-keeps the mixed 1,000-peer HTTP/BT benchmark, fresh live OpenSSH and separate
-backend/release-platform evidence open. Later candidate sources need their own
-validation. Current
+records the six-scenario measurement gate as passing. Full functional evidence
+remains at `a6f9b0d`; `P6-06` still requires evidence on one final candidate.
+Fresh live OpenSSH and separate backend/release-platform evidence remain open.
+Current
 SQLite and JSON persistence require fresh v3 stores; older formats are rejected
 without migration or mutation. Historical Phase-5 v2 import evidence is not a
 current-format compatibility promise.

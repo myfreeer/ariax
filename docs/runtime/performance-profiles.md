@@ -158,12 +158,16 @@ progress, live-option acknowledgements and renewed barriers. Missing evidence
 fails validation. This scenario is an additional acceptance gate; the five
 historical baseline reports do not establish mixed BT acceptance.
 
-The [October 5 manual campaign](../../performance-evidence/phase6-benchmarks-2026-10-05.md)
-at `a6f9b0d` passes the four transport scenarios and administrative scenario,
-but mixed HTTP/BT fails on a 530.097 ms burst after more than 9,500 primary calls.
-It emits no complete mixed report. This source has passing full functional CI;
-mixed performance acceptance remains open, and follow-up diagnostics need a
-fresh native run.
+The [October 5 manual rerun](../../performance-evidence/phase6-benchmarks-rerun-2026-10-05.md)
+passes all six scenarios at `9107ecb`, including the complete mixed workload.
+Mixed aggregate p99 is 8.000 ms, worst operation p99 is 31.311 ms, and maximum
+reported burst is 486 ms. All 44 renewed BT payload barriers, memory,
+stalled-consumer cleanup and shutdown checks pass. The
+[earlier run](../../performance-evidence/phase6-benchmarks-2026-10-05.md)
+at `a6f9b0d` failed a mixed burst at 530.097 ms and remains retained.
+The rerun adds failure diagnostics without changing acceptance limits; one
+passing campaign does not identify the earlier failure's cause or establish
+repeated-run stability. Full functional CI remains recorded at `a6f9b0d`.
 
 ### Native Linux CI Baseline
 
