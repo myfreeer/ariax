@@ -576,9 +576,14 @@ default/all-feature tests and strict Clippy pass. Twenty native probe executions
 pass across the four platforms and the sanitizer job. The Rust-ASan parser
 fuzzer completes 709,762 executions without crash artifacts or sanitizer reports.
 
-Phase-6 acceptance remains open for all six manual performance scenarios,
-including mixed HTTP/BT measurements. Live OpenSSH interoperability remains
-ignored in the full all-feature runs and needs its separate fixture evidence.
+The [manual native Linux campaign](../../performance-evidence/phase6-benchmarks-2026-10-05.md)
+at the same `a6f9b0d` source passes HTTP, WebSocket, Content-Length, NDJSON and
+administrative scenarios. Mixed HTTP/BT fails on a 530.097 ms burst against
+the 500 ms limit after more than 9,500 primary calls; no complete mixed report
+is emitted. Added burst diagnostics still need native validation and do not
+establish a latency fix. Phase-6 performance acceptance remains open for mixed
+HTTP/BT; later candidates require their own reports. Live OpenSSH interoperability
+remains ignored in the full all-feature runs and needs its separate fixture evidence.
 The configured full matrix passes; separate kernel/backend, custom BT storage,
 release-platform and tagging requirements remain open. Historical reports remain
 valid only for their recorded source and scenarios.

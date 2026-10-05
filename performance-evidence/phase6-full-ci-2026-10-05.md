@@ -103,9 +103,11 @@ Windows runner-home paths; original archives/reports and their hashes remain unc
 ## Remaining Acceptance
 
 The configured platform/MSRV/workspace, CLI feature/release-build and sanitizer
-matrix now has passing evidence at one source commit. All six performance
-scenarios, including 1,000 BT peers alongside 1,000 HTTP ranges, still require
-manual benchmark execution and verified reports against that candidate source.
+matrix now has passing evidence at one source commit. The subsequent
+[manual benchmark review](phase6-benchmarks-2026-10-05.md) at that same source
+passes the four transport scenarios and administrative scenario. Mixed HTTP/BT,
+with 1,000 BT peers alongside 1,000 HTTP ranges, fails its 500 ms burst gate at
+530.097 ms; performance acceptance remains open.
 Fresh live OpenSSH evidence and separately tracked backend/release-platform
 requirements are not supplied by this run. Release tagging remains disabled.
 The [Phase 6 acceptance status](../docs/project/implementation-readiness.md#phase-6-local-implementation-and-open-acceptance)

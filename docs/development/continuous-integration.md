@@ -5,7 +5,10 @@
 Status: the [full functional CI matrix passes](../../performance-evidence/phase6-full-ci-2026-10-05.md)
 at `a6f9b0d`. Review verified nine artifacts and all 87 command-log hashes,
 including every configured platform, MSRV, feature-bundle and sanitizer job.
-Benchmarks remain manual-only; no performance result is included in this run.
+Benchmarks remain manual-only. The separate
+[manual campaign](../../performance-evidence/phase6-benchmarks-2026-10-05.md)
+at the same source passes five scenarios; mixed HTTP/BT exceeds the 500 ms burst
+limit at 530.097 ms. Performance acceptance remains open.
 The historical remote and CI baseline passes at `af5d193`.
 [Run 35720518419 and its retained evidence](../../performance-evidence/ci-baseline-2026-09-22.md)
 cover every required platform, feature and MSRV job and all five native Linux
@@ -337,6 +340,10 @@ least 250 ms cooldown. Each scenario has a 90-second internal deadline. An
 outer process deadline additionally bounds a stuck child tree. Incomplete or
 over-limit reports fail; they are never accepted because a process exited
 successfully. Compiler processes must be absent during collection.
+Transport and mixed burst failures retain primary/verification counts and
+the last and slowest timed steps with operation and sample attribution in
+stderr, as defined by the [measurement protocol](../runtime/performance-profiles.md#control-plane-measurement-protocol).
+These diagnostics do not replace a complete passing report.
 
 ## Acceptance And Scope
 

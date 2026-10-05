@@ -25,6 +25,16 @@ sizes. List requests use supported status fields.
 Runs use at most 1,000 calls or 500 ms per burst, followed by a 250 ms cooldown.
 No new measured request starts after 400 ms, leaving time for its response and
 any paired verification before the hard 500 ms limit.
+If a transport or mixed burst exceeds that limit, stderr records the burst
+number, first zero-based sample index, primary and verification call counts,
+and the last and slowest timed steps. Each step identifies the primary operation,
+whether it is the primary call or its verification, its sample index, start
+offset and duration in microseconds. Verification timing includes request
+construction and state validation. Total timed-step duration and remaining
+burst time distinguish those steps from other harness work or scheduling delays;
+they do not identify the cause of a delay. Bookkeeping retains only fixed-size
+summaries and formats diagnostics on failure. It does not change sample latency
+measurements or acceptance limits, and partial runs remain failures.
 Each scenario has a 90-second overall deadline; setup, barrier queries and
 shutdown also have deadlines so a failed fixture cannot run indefinitely.
 Origin metrics reads complete at the declared HTTP `Content-Length`, without
@@ -147,6 +157,13 @@ and 896 MiB accounted resident limit. Reports include peer cardinality, byte
 progress, live-option acknowledgements and renewed barriers. Missing evidence
 fails validation. This scenario is an additional acceptance gate; the five
 historical baseline reports do not establish mixed BT acceptance.
+
+The [October 5 manual campaign](../../performance-evidence/phase6-benchmarks-2026-10-05.md)
+at `a6f9b0d` passes the four transport scenarios and administrative scenario,
+but mixed HTTP/BT fails on a 530.097 ms burst after more than 9,500 primary calls.
+It emits no complete mixed report. This source has passing full functional CI;
+mixed performance acceptance remains open, and follow-up diagnostics need a
+fresh native run.
 
 ### Native Linux CI Baseline
 

@@ -40,10 +40,15 @@ at `a6f9b0d` now verifies all configured platform/MSRV/workspace, CLI feature an
 release-build, and sanitizer jobs at one source commit. Nine artifacts and
 87 command-log hashes match; 20 native probe executions and 709,762 bounded
 parser fuzz executions pass. The
+[manual benchmark campaign](../../performance-evidence/phase6-benchmarks-2026-10-05.md)
+at the same source passes the four transport scenarios and administrative
+scenario, but mixed HTTP/BT fails on a 530.097 ms burst against the 500 ms limit.
+No complete mixed report is emitted; follow-up burst diagnostics still require
+native validation. The
 [current acceptance status](implementation-readiness.md#phase-6-local-implementation-and-open-acceptance)
-keeps all six manual performance scenarios, including the mixed 1,000-peer HTTP/BT
-benchmark, plus fresh live OpenSSH and separate backend/release-platform evidence
-open. Current
+keeps the mixed 1,000-peer HTTP/BT benchmark, fresh live OpenSSH and separate
+backend/release-platform evidence open. Later candidate sources need their own
+validation. Current
 SQLite and JSON persistence require fresh v3 stores; older formats are rejected
 without migration or mutation. Historical Phase-5 v2 import evidence is not a
 current-format compatibility promise.

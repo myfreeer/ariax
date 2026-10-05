@@ -32,6 +32,9 @@ const BURST_LAUNCH_MS: u64 = 400;
 
 #[path = "rpc_active_profile/admin.rs"]
 mod admin;
+#[path = "rpc_active_profile/burst_timing.rs"]
+mod burst_timing;
+use burst_timing::{BurstTiming, Phase};
 #[path = "rpc_active_profile/setup.rs"]
 mod setup;
 use setup::{build_control_plane, private_directory};
@@ -1302,6 +1305,7 @@ async fn measure(scenario: &str) -> Result<()> {
         if let Some(peers) = &mut peers {
             observe(&peers.barrier(&mut client, true).await?)?;
         }
+        let mut timing = BurstTiming::new(samples.len());
         let start = Instant::now();
         let mut count = 0;
         while samples.len() < workload().samples
@@ -1362,6 +1366,13 @@ async fn measure(scenario: &str) -> Result<()> {
                 )
             })?;
             let elapsed = sent.elapsed();
+            timing.record(
+                method,
+                Phase::Primary,
+                samples.len(),
+                sent.duration_since(start),
+                elapsed,
+            );
             samples.push(elapsed);
             per_operation.entry(method).or_default().push(elapsed);
             if let std::collections::btree_map::Entry::Vacant(entry) = response_bytes.entry(method)
@@ -1382,12 +1393,20 @@ async fn measure(scenario: &str) -> Result<()> {
                 continue;
             }
             if mixed && index == 17 {
+                let sent = Instant::now();
                 let options = client
                     .call(&request("aria2.getOption", json!([info["btGid"]])))
                     .await?;
                 if result != "OK" || options["max-upload-limit"] != bt_limit {
                     return Err("BT live option was not acknowledged and published".into());
                 }
+                timing.record(
+                    method,
+                    Phase::Verification,
+                    samples.len() - 1,
+                    sent.duration_since(start),
+                    sent.elapsed(),
+                );
                 bt_controls += 1;
                 verification_calls += 1;
                 count += 1;
@@ -1422,7 +1441,15 @@ async fn measure(scenario: &str) -> Result<()> {
                     }
                 }
                 _ => {
+                    let sent = Instant::now();
                     auxiliary.verify(&mut client, result).await?;
+                    timing.record(
+                        method,
+                        Phase::Verification,
+                        samples.len() - 1,
+                        sent.duration_since(start),
+                        sent.elapsed(),
+                    );
                     controls += 1;
                     verification_calls += 1;
                     count += 1;
@@ -1430,13 +1457,7 @@ async fn measure(scenario: &str) -> Result<()> {
             }
         }
         let elapsed = start.elapsed();
-        if elapsed > Duration::from_millis(500) {
-            return Err(format!(
-                "{scenario} burst exceeded 500 ms: {} us",
-                elapsed.as_micros()
-            )
-            .into());
-        }
+        timing.check_limit(scenario, bursts + 1, elapsed)?;
         max_burst_calls = max_burst_calls.max(count);
         max_burst = max_burst.max(elapsed);
         measured_bursts += elapsed;
