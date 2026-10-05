@@ -568,13 +568,20 @@ Five storage entries are ignored child helpers exercised by passing parent tests
 18 command-log hashes and ordinary native input digests were verified. The
 command took 937.483 seconds including compilation, without benchmark execution.
 
-Phase-6 acceptance remains open. The complete platform/MSRV matrix,
-remaining workspace and release-platform coverage, and all six
-performance scenarios still require current-source evidence. These focused
-Linux runs do not establish the corresponding native behavior on other platforms.
-Historical reports remain valid only for their recorded source and scenarios.
-The focused pass also leaves the separate kernel/backend, custom BT storage,
-release-platform and tagging requirements open.
+The [full functional CI matrix](../../performance-evidence/phase6-full-ci-2026-10-05.md)
+passes at `a6f9b0d`. Review verifies nine artifacts and all 87 command-log hashes:
+preflight, Linux, macOS, Windows MSVC/GNU, both MSRV jobs, all four CLI feature
+tests/release builds and native sanitizers. All platform workspace builds,
+default/all-feature tests and strict Clippy pass. Twenty native probe executions
+pass across the four platforms and the sanitizer job. The Rust-ASan parser
+fuzzer completes 709,762 executions without crash artifacts or sanitizer reports.
+
+Phase-6 acceptance remains open for all six manual performance scenarios,
+including mixed HTTP/BT measurements. Live OpenSSH interoperability remains
+ignored in the full all-feature runs and needs its separate fixture evidence.
+The configured full matrix passes; separate kernel/backend, custom BT storage,
+release-platform and tagging requirements remain open. Historical reports remain
+valid only for their recorded source and scenarios.
 
 The historical [September 26 local validation record](../../performance-evidence/phase6-local-validation-2026-09-26.md)
 records the earlier offline checks, unavailable cached storage dependency and

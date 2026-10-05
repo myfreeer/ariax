@@ -35,10 +35,15 @@ sanitizer diagnostics or crash artifacts. The
 at `6dab0a5` passes 236 storage tests and 118 CLI test executions plus all four
 Linux `release-cli` builds. Its five ignored storage helper entries are exercised
 by passing parent fixtures. The
+[full functional CI matrix](../../performance-evidence/phase6-full-ci-2026-10-05.md)
+at `a6f9b0d` now verifies all configured platform/MSRV/workspace, CLI feature and
+release-build, and sanitizer jobs at one source commit. Nine artifacts and
+87 command-log hashes match; 20 native probe executions and 709,762 bounded
+parser fuzz executions pass. The
 [current acceptance status](implementation-readiness.md#phase-6-local-implementation-and-open-acceptance)
-keeps the complete platform/MSRV matrix, remaining workspace and release-platform
-coverage and all six performance scenarios, including the
-mixed 1,000-peer HTTP/BT benchmark, open. Current
+keeps all six manual performance scenarios, including the mixed 1,000-peer HTTP/BT
+benchmark, plus fresh live OpenSSH and separate backend/release-platform evidence
+open. Current
 SQLite and JSON persistence require fresh v3 stores; older formats are rejected
 without migration or mutation. Historical Phase-5 v2 import evidence is not a
 current-format compatibility promise.

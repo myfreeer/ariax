@@ -2,7 +2,11 @@
 
 [Documentation](../README.md)
 
-Status: the remote and CI baseline passes at `af5d193`.
+Status: the [full functional CI matrix passes](../../performance-evidence/phase6-full-ci-2026-10-05.md)
+at `a6f9b0d`. Review verified nine artifacts and all 87 command-log hashes,
+including every configured platform, MSRV, feature-bundle and sanitizer job.
+Benchmarks remain manual-only; no performance result is included in this run.
+The historical remote and CI baseline passes at `af5d193`.
 [Run 35720518419 and its retained evidence](../../performance-evidence/ci-baseline-2026-09-22.md)
 cover every required platform, feature and MSRV job and all five native Linux
 benchmark scenarios. The prerequisite is complete; Phase 6 may proceed.
@@ -76,9 +80,10 @@ job has a 30-minute ceiling.
 This campaign requires native Linux and rejects WSL before running checks. It
 has passing native sanitizer and bounded parser-fuzz evidence at `596332b` and
 complete storage/CLI tests and Linux release-bundle builds at `6dab0a5`.
-The full platform/MSRV matrix, remaining workspace coverage and every
-performance acceptance scenario remain separate required coverage. Each passing
-artifact establishes only its selected tests and source commit.
+Those focused artifacts alone do not establish the complete platform/MSRV matrix
+or workspace coverage; the later full run at `a6f9b0d` supplies that evidence.
+Every performance acceptance scenario remains separate required coverage. Each
+passing artifact establishes only its selected tests and source commit.
 Artifacts are named `ci-focused-linux`, and the job is not named `CI Required`.
 Focused success cannot stand in for the complete validation or release gates.
 

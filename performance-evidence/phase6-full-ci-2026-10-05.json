@@ -1,0 +1,2442 @@
+{
+  "evidenceKind": "full-functional-ci-matrix",
+  "reviewDate": "2026-10-05",
+  "sourceCommit": "a6f9b0db93e1af30f24d61aaf73b8cde8e4c6d23",
+  "verifiedArchives": 9,
+  "verifiedCommandLogs": 87,
+  "configuredFullMatrixPassed": true,
+  "ciRequiredStatus": "User reported green; aggregate job emits no supplied artifact. Its preflight and all eight matrix dependencies are verified here.",
+  "githubApiRequests": 0,
+  "nativeProbeExecutionsPassed": 20,
+  "rustCountNote": "Workspace logs retain nested crash/lock subprocess summaries; they are not summed into a cross-platform test total.",
+  "artifactLimitations": [
+    "No installed native libraries or release executables are included.",
+    "No detailed CTest endpoint logs are included.",
+    "No benchmark artifact is included; benchmarks are manual-only.",
+    "Live OpenSSH interop is ignored in all four all-feature workspace runs."
+  ],
+  "nativeInstrumentation": "ASan/UBSan on native C++ and bridge; ordinary Rust test harnesses link the runtime. Parser fuzz executable uses Rust ASan and coverage.",
+  "benchmarkExecutions": 0,
+  "fullPhase6Acceptance": false,
+  "jobs": [
+    {
+      "check": "preflight",
+      "archive": {
+        "name": "ci-preflight.zip",
+        "sha256": "161237155f335222c4d80eb09c64aadecd08073ffbc94376366f6f61e25b185e",
+        "bytes": 10085
+      },
+      "resultSha256": "2b24928ba4a9b4c32922af3e8120ca6579db3ff7d56ba228b6c880514feb5648",
+      "commandCount": 16,
+      "ciReport": {
+        "check": "preflight",
+        "sourceCommit": "a6f9b0db93e1af30f24d61aaf73b8cde8e4c6d23",
+        "passed": true,
+        "host": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+        "machine": "x86_64",
+        "elapsedSeconds": 36.964,
+        "commands": [
+          {
+            "command": [
+              "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python3",
+              "-B",
+              "-m",
+              "unittest",
+              "discover",
+              "-s",
+              "scripts",
+              "-p",
+              "test_*.py"
+            ],
+            "log": "01.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "96c2929df14c3d4b0bc366bad5df99e9e71a3f5fb6421f3c60dd3a3b99e26b9a"
+          },
+          {
+            "command": [
+              "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python3",
+              "-B",
+              "scripts/check_docs.py"
+            ],
+            "log": "02.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "2b3cf3e5b43c80e99a077a2d950405fed8f44013b7cbd676859bd93c3e382ac6"
+          },
+          {
+            "command": [
+              "/home/runner/work/ariax/ariax/toolchains/ci-tools/actionlint-1.7.12/actionlint",
+              "-shellcheck=",
+              "-pyflakes="
+            ],
+            "log": "03.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          {
+            "command": [
+              "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python3",
+              "-B",
+              "scripts/publication.py"
+            ],
+            "log": "04.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "1f2ae031b96c44e26b09a19b752facedafbd38b12f0b64d1fb2b8939f6b6d1d6"
+          },
+          {
+            "command": [
+              "git",
+              "show",
+              "--format=",
+              "--check",
+              "HEAD"
+            ],
+            "log": "05.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          {
+            "command": [
+              "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo-fmt",
+              "fmt",
+              "--all",
+              "--",
+              "--check"
+            ],
+            "log": "06.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          {
+            "command": [
+              "bash",
+              "scripts/test-verify-rusqlite-features.sh"
+            ],
+            "log": "07.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "e1b62f388d64a615cb2296e9d800349a31f7f8bda312e646ec6c481e28bfb684"
+          },
+          {
+            "command": [
+              "bash",
+              "scripts/verify-rusqlite-features.sh",
+              "--cargo",
+              "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo"
+            ],
+            "log": "08.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "59a6481385733e9fc4d3ead3c4a4c11b28dde552c91b94dc49ddb0e76ebb4588"
+          },
+          {
+            "command": [
+              "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python3",
+              "scripts/verify-protocol-vendors.py"
+            ],
+            "log": "09.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "aef820048fddda8fea53eb7ca9d8ec4a2b2f12c256985525ce46613479fde5ef"
+          },
+          {
+            "command": [
+              "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python3",
+              "scripts/verify-protocol-features.py",
+              "--cargo",
+              "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo"
+            ],
+            "log": "10.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "dd4c3991e652b8fe5902dac2a72c7eb0f5e5415a047d97fc3763d3223b4a388d"
+          },
+          {
+            "command": [
+              "git",
+              "init",
+              "/home/runner/work/ariax/ariax/toolchains/ci-reference"
+            ],
+            "log": "11.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "78e11e516a3c9fc7c81c0dce76788c6eb679f5624de914c228c0159957351cab"
+          },
+          {
+            "command": [
+              "git",
+              "-C",
+              "/home/runner/work/ariax/ariax/toolchains/ci-reference",
+              "fetch",
+              "--depth=1",
+              "https://github.com/aria2/aria2",
+              "9e7273583f83e881e3ec067b523ba88724088d2f"
+            ],
+            "log": "12.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "d9073aa496b6bd42b45b6c7c6e305a59fa66604a6a034e8472f4f5e4214dbc71"
+          },
+          {
+            "command": [
+              "git",
+              "-C",
+              "/home/runner/work/ariax/ariax/toolchains/ci-reference",
+              "checkout",
+              "--detach",
+              "FETCH_HEAD"
+            ],
+            "log": "13.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "2e104a469b8dbbd5e032a5285dd0c54bfaad0c1e2e185cd0ffa51aed05da3470"
+          },
+          {
+            "command": [
+              "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+              "xtask",
+              "verify-aria2",
+              "/home/runner/work/ariax/ariax/toolchains/ci-reference"
+            ],
+            "log": "14.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "f83286d2419d0ce77ff9c67fa809ad5e88480684fd8f1ec9274b2d42db64811a"
+          },
+          {
+            "command": [
+              "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+              "xtask",
+              "verify-contracts",
+              "/home/runner/work/ariax/ariax/toolchains/ci-reference"
+            ],
+            "log": "15.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "9ff841e4b87380ae1f4ab3819c726d9d31e59948b012c46c883ae6c5578d0d5f"
+          },
+          {
+            "command": [
+              "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+              "test",
+              "--locked",
+              "-p",
+              "ariax-xtask",
+              "session_contracts::tests::cargo_build_uses_repository_sqlite_flags",
+              "--",
+              "--exact"
+            ],
+            "log": "16.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "a0ef2a2d8b6cf05887d05dcdd22fbd6fd2c076e98ab6eca6a975f839e67335fa"
+          }
+        ],
+        "error": null
+      },
+      "rustTestCommands": [
+        {
+          "log": "16.log",
+          "harnessSummariesIncludingChildren": 2,
+          "failed": 0,
+          "ignoredEntries": []
+        }
+      ],
+      "pythonTestsReported": 70,
+      "pythonTestsPassed": 70,
+      "pythonTestsSkipped": 0
+    },
+    {
+      "check": "linux",
+      "archive": {
+        "name": "ci-linux.zip",
+        "sha256": "e5a5e832ecb41c1aa667306722e200fdf8fded2bf9b0b0bd2f01caab76fb6432",
+        "bytes": 813081
+      },
+      "resultSha256": "07aa5eed2c100126f3294568e7546f4eac86404769850aee192c94ff2c766d23",
+      "commandCount": 11,
+      "ciReport": {
+        "check": "linux",
+        "sourceCommit": "a6f9b0db93e1af30f24d61aaf73b8cde8e4c6d23",
+        "passed": true,
+        "host": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+        "machine": "x86_64",
+        "elapsedSeconds": 395.727,
+        "commands": [
+          {
+            "command": [
+              "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/rustc",
+              "--version",
+              "--verbose"
+            ],
+            "log": "01.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "b2bdf493bcf6d1dc55181a0efc2774b6d9cf7bf5c8dcc5bed592c994b2ad38c4"
+          },
+          {
+            "command": [
+              "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python",
+              "-B",
+              "scripts/bt_native.py",
+              "--target",
+              "x86_64-unknown-linux-gnu",
+              "--sanitizer",
+              "none"
+            ],
+            "log": "02.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "feaeef7629aa0b20e2d37c7f1cf0350f69d714039f946dc0f4c893d7a526a8f7"
+          },
+          {
+            "command": [
+              "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python",
+              "-B",
+              "scripts/bt_native.py",
+              "--target",
+              "x86_64-unknown-linux-gnu",
+              "--sanitizer",
+              "none",
+              "--verify"
+            ],
+            "log": "03.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "feaeef7629aa0b20e2d37c7f1cf0350f69d714039f946dc0f4c893d7a526a8f7"
+          },
+          {
+            "command": [
+              "cmake",
+              "-S",
+              "/home/runner/work/ariax/ariax/native/libtorrent/tests",
+              "-B",
+              "/home/runner/work/ariax/ariax/toolchains/ci-target/linux/native-security",
+              "-G",
+              "Unix Makefiles",
+              "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+              "-DCMAKE_POLICY_DEFAULT_CMP0167=OLD",
+              "-DCMAKE_PREFIX_PATH=/home/runner/work/ariax/ariax/toolchains/bt-native/x86_64-unknown-linux-gnu/install",
+              "-DOPENSSL_ROOT_DIR=/home/runner/work/ariax/ariax/toolchains/bt-native/x86_64-unknown-linux-gnu/install",
+              "-DOPENSSL_USE_STATIC_LIBS=ON",
+              "-DBOOST_ROOT=/home/runner/work/ariax/ariax/toolchains/bt-native/x86_64-unknown-linux-gnu/install",
+              "-DBoost_INCLUDE_DIR=/home/runner/work/ariax/ariax/toolchains/bt-native/x86_64-unknown-linux-gnu/install/include",
+              "-DBoost_NO_SYSTEM_PATHS=ON",
+              "-DARIAX_SANITIZER=OFF"
+            ],
+            "log": "04.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "4c0479284ceae39748270c46475f9e2a5510920263f331c78654a85a3896f673"
+          },
+          {
+            "command": [
+              "cmake",
+              "--build",
+              "/home/runner/work/ariax/ariax/toolchains/ci-target/linux/native-security",
+              "--config",
+              "RelWithDebInfo",
+              "--parallel",
+              "2"
+            ],
+            "log": "05.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "2399f96bca55a7c4d599257fa21e7655757aad14c26611ce2ac7acf0cd72edd5"
+          },
+          {
+            "command": [
+              "ctest",
+              "--test-dir",
+              "/home/runner/work/ariax/ariax/toolchains/ci-target/linux/native-security",
+              "--build-config",
+              "RelWithDebInfo",
+              "--output-on-failure"
+            ],
+            "log": "06.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "f00399ef17ce76a76cd5cccf572a16a0bda2d887fadc5bb94fb92dddbf2e5136"
+          },
+          {
+            "command": [
+              "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+              "build",
+              "--locked",
+              "--workspace"
+            ],
+            "log": "07.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "c54293fd4283c6d0260533a589385e2673d2295abdf95c1bb31f15d7cdfcd805"
+          },
+          {
+            "command": [
+              "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+              "test",
+              "--locked",
+              "--workspace"
+            ],
+            "log": "08.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "9af3bb4c1126bab725443ed841c10a882080c10ee7e53b4f4ecf7f376ae970b2"
+          },
+          {
+            "command": [
+              "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+              "test",
+              "--locked",
+              "--workspace",
+              "--all-features"
+            ],
+            "log": "09.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "3bc8c7f4bbde466734b9c8330bd14e146d7066ed45d77aa2e85dac950980384a"
+          },
+          {
+            "command": [
+              "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo-clippy",
+              "clippy",
+              "--locked",
+              "--workspace",
+              "--all-targets",
+              "--all-features",
+              "--",
+              "-D",
+              "warnings"
+            ],
+            "log": "10.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "234aa0d309eebca3af99611e54653caeebccc3307512aff325e85b0d18aed445"
+          },
+          {
+            "command": [
+              "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+              "build",
+              "--locked",
+              "-p",
+              "ariax-core",
+              "--profile",
+              "release-capi"
+            ],
+            "log": "11.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "17ce105f0ca0b60b6beee557e9ebc5cce9e786b1c976d09ed539dea1bf04ab0e"
+          }
+        ],
+        "error": null
+      },
+      "rustTestCommands": [
+        {
+          "log": "08.log",
+          "harnessSummariesIncludingChildren": 43,
+          "failed": 0,
+          "ignoredEntries": [
+            {
+              "name": "storage_engine::tests::forced_process_crash_child",
+              "reason": "spawned by forced_process_crashes_preserve_only_the_piece_durable_prefix",
+              "parentTestObserved": "storage_engine::tests::forced_process_crashes_preserve_only_the_piece_durable_prefix",
+              "childOutputVisible": false
+            },
+            {
+              "name": "journal_appender::tests::forced_process_exit_child",
+              "reason": "spawned by forced_process_exit_recovery_covers_torn_write_flush_and_rotation_alias",
+              "parentTestObserved": "journal_appender::tests::forced_process_exit_recovery_covers_torn_write_flush_and_rotation_alias",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::hot_backup_publication_child",
+              "reason": "spawned by hot_backup_publication_crash_matrix_recovers_a_usable_destination",
+              "parentTestObserved": "session_store::tests::hot_backup_publication_crash_matrix_recovers_a_usable_destination",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::hot_rollback_journal_child",
+              "reason": "spawned by hot_rollback_journal_is_recovered_before_v3_validation",
+              "parentTestObserved": "session_store::tests::hot_rollback_journal_is_recovered_before_v3_validation",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::hot_rollback_page_one_child",
+              "reason": "spawned by hot_rollback_page_one_recovers_corrupt_main_headers",
+              "parentTestObserved": "session_store::tests::hot_rollback_page_one_recovers_corrupt_main_headers",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::owner_lock_child",
+              "reason": "spawned by owner_lock_excludes_other_processes_until_drop",
+              "parentTestObserved": "session_store::tests::owner_lock_excludes_other_processes_until_drop",
+              "childOutputVisible": true
+            }
+          ]
+        },
+        {
+          "log": "09.log",
+          "harnessSummariesIncludingChildren": 43,
+          "failed": 0,
+          "ignoredEntries": [
+            {
+              "name": "storage_engine::tests::forced_process_crash_child",
+              "reason": "spawned by forced_process_crashes_preserve_only_the_piece_durable_prefix",
+              "parentTestObserved": "storage_engine::tests::forced_process_crashes_preserve_only_the_piece_durable_prefix",
+              "childOutputVisible": false
+            },
+            {
+              "name": "openssh_public_key_offsets_and_final_attributes_interoperate",
+              "reason": "run scripts/run-openssh-interop.py with a private loopback sshd",
+              "externalFixtureNotExecuted": true
+            },
+            {
+              "name": "journal_appender::tests::forced_process_exit_child",
+              "reason": "spawned by forced_process_exit_recovery_covers_torn_write_flush_and_rotation_alias",
+              "parentTestObserved": "journal_appender::tests::forced_process_exit_recovery_covers_torn_write_flush_and_rotation_alias",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::hot_backup_publication_child",
+              "reason": "spawned by hot_backup_publication_crash_matrix_recovers_a_usable_destination",
+              "parentTestObserved": "session_store::tests::hot_backup_publication_crash_matrix_recovers_a_usable_destination",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::hot_rollback_journal_child",
+              "reason": "spawned by hot_rollback_journal_is_recovered_before_v3_validation",
+              "parentTestObserved": "session_store::tests::hot_rollback_journal_is_recovered_before_v3_validation",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::hot_rollback_page_one_child",
+              "reason": "spawned by hot_rollback_page_one_recovers_corrupt_main_headers",
+              "parentTestObserved": "session_store::tests::hot_rollback_page_one_recovers_corrupt_main_headers",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::owner_lock_child",
+              "reason": "spawned by owner_lock_excludes_other_processes_until_drop",
+              "parentTestObserved": "session_store::tests::owner_lock_excludes_other_processes_until_drop",
+              "childOutputVisible": true
+            }
+          ]
+        }
+      ],
+      "rustVersion": "1.97.1",
+      "nativeProbes": {
+        "passed": 4,
+        "tests": [
+          {
+            "name": "native_bounded_output",
+            "seconds": 0.0
+          },
+          {
+            "name": "native_openssl_callbacks",
+            "seconds": 0.0
+          },
+          {
+            "name": "native_destination_policy",
+            "seconds": 5.65
+          },
+          {
+            "name": "native_private_storage",
+            "seconds": 0.0
+          }
+        ],
+        "seconds": 5.67,
+        "detailedCtestLogIncluded": false
+      },
+      "nativeProvenance": {
+        "target": "x86_64-unknown-linux-gnu",
+        "inputs": {
+          "sourcesSha256": "b55bc045afe126bad7e48d9ca6e9a5b40f762e2bdea6cbc54997dcee32991819",
+          "patchSha256": "8d377c5622d0308bda2f7fc161913954f4a4cb3af19f6e1400d2cde84446a409",
+          "opensslPatchSha256": "e12670d73045bda8fb086f51f1080ccaffd60e54dd8902577aea3b3ad2a5a748",
+          "builderSha256": "13876c4f9dc51f1bb4ef1ce48426b411792ad9ef086bad4add838e8e0a806f48",
+          "sanitizer": "none"
+        },
+        "versions": {
+          "libtorrent": "2.1.1",
+          "boost": "1.91.0",
+          "openssl": "3.6.3"
+        },
+        "settings": {
+          "BUILD_SHARED_LIBS": "OFF",
+          "CMAKE_BUILD_TYPE": "Release",
+          "CMAKE_POSITION_INDEPENDENT_CODE": "ON",
+          "CMAKE_POLICY_DEFAULT_CMP0167": "OLD",
+          "build_tests": "OFF",
+          "build_examples": "OFF",
+          "build_tools": "OFF",
+          "python-bindings": "OFF",
+          "webtorrent": "OFF",
+          "i2p": "OFF",
+          "mutable-torrents": "OFF",
+          "logging": "OFF",
+          "dht": "ON",
+          "encryption": "ON",
+          "exceptions": "ON",
+          "gnutls": "OFF",
+          "OPENSSL_USE_STATIC_LIBS": "ON",
+          "Boost_NO_SYSTEM_PATHS": "ON",
+          "Boost_NO_BOOST_CMAKE": "ON"
+        },
+        "compiler": "c++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0\nCopyright (C) 2023 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.",
+        "manifestSha256": "0a11f7f24fd1fa043e703afcfc27a89a59bfd630e759858d8fac3f1fc40a93eb",
+        "installedFileCount": 16786,
+        "inputDigestsMatchGit": true,
+        "ciVerificationPassed": true,
+        "installedLibrariesIncluded": false,
+        "dependencyRebuildObserved": false
+      }
+    },
+    {
+      "check": "macos",
+      "archive": {
+        "name": "ci-macos.zip",
+        "sha256": "56e283fe9f504e7cf76e71a4a49d7955ad8716783d1a95ff9a1c3c140e4cc228",
+        "bytes": 804587
+      },
+      "resultSha256": "579b28d852df97e6957f2355b633b1439af5dd7f41af7656dbc8072348e4a6e6",
+      "commandCount": 10,
+      "ciReport": {
+        "check": "macos",
+        "sourceCommit": "a6f9b0db93e1af30f24d61aaf73b8cde8e4c6d23",
+        "passed": true,
+        "host": "macOS-15.7.9-arm64-arm-64bit-Mach-O",
+        "machine": "arm64",
+        "elapsedSeconds": 427.787,
+        "commands": [
+          {
+            "command": [
+              "<runner-home>/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc",
+              "--version",
+              "--verbose"
+            ],
+            "log": "01.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "e794146d99fad54562fdcbd4a7c8b22b0240d2b0312ff6d879d67939b3131850"
+          },
+          {
+            "command": [
+              "/Library/Frameworks/Python.framework/Versions/3.13/bin/python",
+              "-B",
+              "scripts/bt_native.py",
+              "--target",
+              "aarch64-apple-darwin",
+              "--sanitizer",
+              "none"
+            ],
+            "log": "02.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "16f165decfef1f3a76e7936a2a69fdb1225ba0396247d782cba76d83ee59bf84"
+          },
+          {
+            "command": [
+              "/Library/Frameworks/Python.framework/Versions/3.13/bin/python",
+              "-B",
+              "scripts/bt_native.py",
+              "--target",
+              "aarch64-apple-darwin",
+              "--sanitizer",
+              "none",
+              "--verify"
+            ],
+            "log": "03.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "16f165decfef1f3a76e7936a2a69fdb1225ba0396247d782cba76d83ee59bf84"
+          },
+          {
+            "command": [
+              "cmake",
+              "-S",
+              "<runner-home>/work/ariax/ariax/native/libtorrent/tests",
+              "-B",
+              "<runner-home>/work/ariax/ariax/toolchains/ci-target/macos/native-security",
+              "-G",
+              "Unix Makefiles",
+              "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+              "-DCMAKE_POLICY_DEFAULT_CMP0167=OLD",
+              "-DCMAKE_PREFIX_PATH=<runner-home>/work/ariax/ariax/toolchains/bt-native/aarch64-apple-darwin/install",
+              "-DOPENSSL_ROOT_DIR=<runner-home>/work/ariax/ariax/toolchains/bt-native/aarch64-apple-darwin/install",
+              "-DOPENSSL_USE_STATIC_LIBS=ON",
+              "-DBOOST_ROOT=<runner-home>/work/ariax/ariax/toolchains/bt-native/aarch64-apple-darwin/install",
+              "-DBoost_INCLUDE_DIR=<runner-home>/work/ariax/ariax/toolchains/bt-native/aarch64-apple-darwin/install/include",
+              "-DBoost_NO_SYSTEM_PATHS=ON",
+              "-DARIAX_SANITIZER=OFF"
+            ],
+            "log": "04.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "2f340dde3b3be6ca99551580759a4aec7e8aff180ab5b98866ab8290471b5fe1"
+          },
+          {
+            "command": [
+              "cmake",
+              "--build",
+              "<runner-home>/work/ariax/ariax/toolchains/ci-target/macos/native-security",
+              "--config",
+              "RelWithDebInfo",
+              "--parallel",
+              "2"
+            ],
+            "log": "05.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "96b9b067a092b3a4ddfd94fd55fd14499a036cfaf92b9af32acb5ecf602a7606"
+          },
+          {
+            "command": [
+              "ctest",
+              "--test-dir",
+              "<runner-home>/work/ariax/ariax/toolchains/ci-target/macos/native-security",
+              "--build-config",
+              "RelWithDebInfo",
+              "--output-on-failure"
+            ],
+            "log": "06.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "5139448d66e74f54b74daddc2a4f727cf07cc4e05e9cbdfafb615e05d19a5842"
+          },
+          {
+            "command": [
+              "<runner-home>/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+              "build",
+              "--locked",
+              "--workspace"
+            ],
+            "log": "07.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "bcd30161d709b746b94dacf2ff17de0f4248d61e2847d82846fc7c17fe0f7d01"
+          },
+          {
+            "command": [
+              "<runner-home>/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+              "test",
+              "--locked",
+              "--workspace"
+            ],
+            "log": "08.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "af2333a2330ab9a212022dcdbd434b8def9e814355cae27a278b547fd0caa8eb"
+          },
+          {
+            "command": [
+              "<runner-home>/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+              "test",
+              "--locked",
+              "--workspace",
+              "--all-features"
+            ],
+            "log": "09.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "67d8e9e0990e48863236db175d7b593eed8341215f823c3e8fd026e483dbbaa3"
+          },
+          {
+            "command": [
+              "<runner-home>/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo-clippy",
+              "clippy",
+              "--locked",
+              "--workspace",
+              "--all-targets",
+              "--all-features",
+              "--",
+              "-D",
+              "warnings"
+            ],
+            "log": "10.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "0794fd6a4050790f260a3a677ee5541235acd86c88155a446705f07a50a44519"
+          }
+        ],
+        "error": null
+      },
+      "rustTestCommands": [
+        {
+          "log": "08.log",
+          "harnessSummariesIncludingChildren": 43,
+          "failed": 0,
+          "ignoredEntries": [
+            {
+              "name": "storage_engine::tests::forced_process_crash_child",
+              "reason": "spawned by forced_process_crashes_preserve_only_the_piece_durable_prefix",
+              "parentTestObserved": "storage_engine::tests::forced_process_crashes_preserve_only_the_piece_durable_prefix",
+              "childOutputVisible": false
+            },
+            {
+              "name": "journal_appender::tests::forced_process_exit_child",
+              "reason": "spawned by forced_process_exit_recovery_covers_torn_write_flush_and_rotation_alias",
+              "parentTestObserved": "journal_appender::tests::forced_process_exit_recovery_covers_torn_write_flush_and_rotation_alias",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::hot_backup_publication_child",
+              "reason": "spawned by hot_backup_publication_crash_matrix_recovers_a_usable_destination",
+              "parentTestObserved": "session_store::tests::hot_backup_publication_crash_matrix_recovers_a_usable_destination",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::hot_rollback_journal_child",
+              "reason": "spawned by hot_rollback_journal_is_recovered_before_v3_validation",
+              "parentTestObserved": "session_store::tests::hot_rollback_journal_is_recovered_before_v3_validation",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::hot_rollback_page_one_child",
+              "reason": "spawned by hot_rollback_page_one_recovers_corrupt_main_headers",
+              "parentTestObserved": "session_store::tests::hot_rollback_page_one_recovers_corrupt_main_headers",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::owner_lock_child",
+              "reason": "spawned by owner_lock_excludes_other_processes_until_drop",
+              "parentTestObserved": "session_store::tests::owner_lock_excludes_other_processes_until_drop",
+              "childOutputVisible": true
+            }
+          ]
+        },
+        {
+          "log": "09.log",
+          "harnessSummariesIncludingChildren": 43,
+          "failed": 0,
+          "ignoredEntries": [
+            {
+              "name": "storage_engine::tests::forced_process_crash_child",
+              "reason": "spawned by forced_process_crashes_preserve_only_the_piece_durable_prefix",
+              "parentTestObserved": "storage_engine::tests::forced_process_crashes_preserve_only_the_piece_durable_prefix",
+              "childOutputVisible": false
+            },
+            {
+              "name": "openssh_public_key_offsets_and_final_attributes_interoperate",
+              "reason": "run scripts/run-openssh-interop.py with a private loopback sshd",
+              "externalFixtureNotExecuted": true
+            },
+            {
+              "name": "journal_appender::tests::forced_process_exit_child",
+              "reason": "spawned by forced_process_exit_recovery_covers_torn_write_flush_and_rotation_alias",
+              "parentTestObserved": "journal_appender::tests::forced_process_exit_recovery_covers_torn_write_flush_and_rotation_alias",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::hot_backup_publication_child",
+              "reason": "spawned by hot_backup_publication_crash_matrix_recovers_a_usable_destination",
+              "parentTestObserved": "session_store::tests::hot_backup_publication_crash_matrix_recovers_a_usable_destination",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::hot_rollback_journal_child",
+              "reason": "spawned by hot_rollback_journal_is_recovered_before_v3_validation",
+              "parentTestObserved": "session_store::tests::hot_rollback_journal_is_recovered_before_v3_validation",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::hot_rollback_page_one_child",
+              "reason": "spawned by hot_rollback_page_one_recovers_corrupt_main_headers",
+              "parentTestObserved": "session_store::tests::hot_rollback_page_one_recovers_corrupt_main_headers",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::owner_lock_child",
+              "reason": "spawned by owner_lock_excludes_other_processes_until_drop",
+              "parentTestObserved": "session_store::tests::owner_lock_excludes_other_processes_until_drop",
+              "childOutputVisible": true
+            }
+          ]
+        }
+      ],
+      "rustVersion": "1.97.1",
+      "nativeProbes": {
+        "passed": 4,
+        "tests": [
+          {
+            "name": "native_bounded_output",
+            "seconds": 0.0
+          },
+          {
+            "name": "native_openssl_callbacks",
+            "seconds": 0.01
+          },
+          {
+            "name": "native_destination_policy",
+            "seconds": 5.49
+          },
+          {
+            "name": "native_private_storage",
+            "seconds": 0.02
+          }
+        ],
+        "seconds": 5.52,
+        "detailedCtestLogIncluded": false
+      },
+      "nativeProvenance": {
+        "target": "aarch64-apple-darwin",
+        "inputs": {
+          "sourcesSha256": "b55bc045afe126bad7e48d9ca6e9a5b40f762e2bdea6cbc54997dcee32991819",
+          "patchSha256": "8d377c5622d0308bda2f7fc161913954f4a4cb3af19f6e1400d2cde84446a409",
+          "opensslPatchSha256": "e12670d73045bda8fb086f51f1080ccaffd60e54dd8902577aea3b3ad2a5a748",
+          "builderSha256": "13876c4f9dc51f1bb4ef1ce48426b411792ad9ef086bad4add838e8e0a806f48",
+          "sanitizer": "none"
+        },
+        "versions": {
+          "libtorrent": "2.1.1",
+          "boost": "1.91.0",
+          "openssl": "3.6.3"
+        },
+        "settings": {
+          "BUILD_SHARED_LIBS": "OFF",
+          "CMAKE_BUILD_TYPE": "Release",
+          "CMAKE_POSITION_INDEPENDENT_CODE": "ON",
+          "CMAKE_POLICY_DEFAULT_CMP0167": "OLD",
+          "build_tests": "OFF",
+          "build_examples": "OFF",
+          "build_tools": "OFF",
+          "python-bindings": "OFF",
+          "webtorrent": "OFF",
+          "i2p": "OFF",
+          "mutable-torrents": "OFF",
+          "logging": "OFF",
+          "dht": "ON",
+          "encryption": "ON",
+          "exceptions": "ON",
+          "gnutls": "OFF",
+          "OPENSSL_USE_STATIC_LIBS": "ON",
+          "Boost_NO_SYSTEM_PATHS": "ON",
+          "Boost_NO_BOOST_CMAKE": "ON"
+        },
+        "compiler": "Apple clang version 17.0.0 (clang-1700.0.13.5)\nTarget: arm64-apple-darwin24.6.0\nThread model: posix\nInstalledDir: /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin",
+        "manifestSha256": "5f7c982ab055bb5e20470376c85ce2f0448db2316e7d94973e107878ed36be68",
+        "installedFileCount": 16786,
+        "inputDigestsMatchGit": true,
+        "ciVerificationPassed": true,
+        "installedLibrariesIncluded": false,
+        "dependencyRebuildObserved": false
+      }
+    },
+    {
+      "check": "windows-msvc",
+      "archive": {
+        "name": "ci-windows-msvc.zip",
+        "sha256": "43740b94b94495e71737f5c842b540af5a060acbbdb3b33b2a186e5b5c3f04f1",
+        "bytes": 817033
+      },
+      "resultSha256": "0ce6bd4a4cb73935b6438739917b076f80abd75a4a2d4da1bddd7aaee628bf84",
+      "commandCount": 11,
+      "ciReport": {
+        "check": "windows-msvc",
+        "sourceCommit": "a6f9b0db93e1af30f24d61aaf73b8cde8e4c6d23",
+        "passed": true,
+        "host": "Windows-2022Server-10.0.20348-SP0",
+        "machine": "AMD64",
+        "elapsedSeconds": 908.896,
+        "commands": [
+          {
+            "command": [
+              "C:\\hostedtoolcache\\windows\\Python\\3.13.15\\x64\\python.exe",
+              "-B",
+              "-m",
+              "unittest",
+              "discover",
+              "-s",
+              "scripts",
+              "-p",
+              "test_*.py"
+            ],
+            "log": "01.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "a0a1a4d2f738c0bd19aa6bae5b04033c65ff30ee43a7aadc895f71ae081192ff"
+          },
+          {
+            "command": [
+              "<runner-home>/.rustup\\toolchains\\1.97.1-x86_64-pc-windows-msvc\\bin\\rustc.exe",
+              "--version",
+              "--verbose"
+            ],
+            "log": "02.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "20815ee828e9107afea25520937957032db8ca234a25409cc7acffbdfbd4d392"
+          },
+          {
+            "command": [
+              "C:\\hostedtoolcache\\windows\\Python\\3.13.15\\x64\\python.exe",
+              "-B",
+              "scripts/bt_native.py",
+              "--target",
+              "x86_64-pc-windows-msvc",
+              "--sanitizer",
+              "none"
+            ],
+            "log": "03.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "146bf1da5814476c0f0a02227a38aaeb960553a3ff15f0b5d2a308333bc53585"
+          },
+          {
+            "command": [
+              "C:\\hostedtoolcache\\windows\\Python\\3.13.15\\x64\\python.exe",
+              "-B",
+              "scripts/bt_native.py",
+              "--target",
+              "x86_64-pc-windows-msvc",
+              "--sanitizer",
+              "none",
+              "--verify"
+            ],
+            "log": "04.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "146bf1da5814476c0f0a02227a38aaeb960553a3ff15f0b5d2a308333bc53585"
+          },
+          {
+            "command": [
+              "cmake",
+              "-S",
+              "D:\\a\\ariax\\ariax\\native\\libtorrent\\tests",
+              "-B",
+              "D:\\a\\ariax\\ariax\\toolchains\\ci-target\\windows-msvc\\native-security",
+              "-G",
+              "NMake Makefiles",
+              "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+              "-DCMAKE_POLICY_DEFAULT_CMP0167=OLD",
+              "-DCMAKE_PREFIX_PATH=D:\\a\\ariax\\ariax\\toolchains\\bt-native\\x86_64-pc-windows-msvc\\install",
+              "-DOPENSSL_ROOT_DIR=D:\\a\\ariax\\ariax\\toolchains\\bt-native\\x86_64-pc-windows-msvc\\install",
+              "-DOPENSSL_USE_STATIC_LIBS=ON",
+              "-DBOOST_ROOT=D:\\a\\ariax\\ariax\\toolchains\\bt-native\\x86_64-pc-windows-msvc\\install",
+              "-DBoost_INCLUDE_DIR=D:\\a\\ariax\\ariax\\toolchains\\bt-native\\x86_64-pc-windows-msvc\\install\\include",
+              "-DBoost_NO_SYSTEM_PATHS=ON",
+              "-DARIAX_SANITIZER=OFF"
+            ],
+            "log": "05.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "77cd57cdbaca7a4664443666dba67b65e6d7b35ffa5b43cf10d874ecaa50f969"
+          },
+          {
+            "command": [
+              "cmake",
+              "--build",
+              "D:\\a\\ariax\\ariax\\toolchains\\ci-target\\windows-msvc\\native-security",
+              "--config",
+              "RelWithDebInfo",
+              "--parallel",
+              "2"
+            ],
+            "log": "06.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "b391c077dc539e7f2119b611be4bb05dd4a2d584cd0d5720590598b8b8f5f5a9"
+          },
+          {
+            "command": [
+              "ctest",
+              "--test-dir",
+              "D:\\a\\ariax\\ariax\\toolchains\\ci-target\\windows-msvc\\native-security",
+              "--build-config",
+              "RelWithDebInfo",
+              "--output-on-failure"
+            ],
+            "log": "07.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "c9b275f089f4847598f36fc25b3da2bc6b0ec84595b05f059b328fbc8f7ea522"
+          },
+          {
+            "command": [
+              "<runner-home>/.rustup\\toolchains\\1.97.1-x86_64-pc-windows-msvc\\bin\\cargo.exe",
+              "build",
+              "--locked",
+              "--workspace"
+            ],
+            "log": "08.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "b2539a81ecbd0742b9a641742d6a0d6085896c5c5bd956468e1f2ddb3d89e9b2"
+          },
+          {
+            "command": [
+              "<runner-home>/.rustup\\toolchains\\1.97.1-x86_64-pc-windows-msvc\\bin\\cargo.exe",
+              "test",
+              "--locked",
+              "--workspace"
+            ],
+            "log": "09.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "721d046a66fbfcb0bad3abd5663967c68fa6917497341fe88e1f0c52c136fea0"
+          },
+          {
+            "command": [
+              "<runner-home>/.rustup\\toolchains\\1.97.1-x86_64-pc-windows-msvc\\bin\\cargo.exe",
+              "test",
+              "--locked",
+              "--workspace",
+              "--all-features"
+            ],
+            "log": "10.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "c7b79437fcdfd94c1b50a71793a1705e782540a760ee0d368e6d13c832f667b2"
+          },
+          {
+            "command": [
+              "<runner-home>/.rustup\\toolchains\\1.97.1-x86_64-pc-windows-msvc\\bin\\cargo-clippy.exe",
+              "clippy",
+              "--locked",
+              "--workspace",
+              "--all-targets",
+              "--all-features",
+              "--",
+              "-D",
+              "warnings"
+            ],
+            "log": "11.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "2e1504de96c7a5c38b9ba20b070022a387a67c2bd2ef109c23440e76a5cf0c81"
+          }
+        ],
+        "error": null
+      },
+      "rustTestCommands": [
+        {
+          "log": "09.log",
+          "harnessSummariesIncludingChildren": 43,
+          "failed": 0,
+          "ignoredEntries": [
+            {
+              "name": "storage_engine::tests::forced_process_crash_child",
+              "reason": "spawned by forced_process_crashes_preserve_only_the_piece_durable_prefix",
+              "parentTestObserved": "storage_engine::tests::forced_process_crashes_preserve_only_the_piece_durable_prefix",
+              "childOutputVisible": false
+            },
+            {
+              "name": "journal_appender::tests::forced_process_exit_child",
+              "reason": "spawned by forced_process_exit_recovery_covers_torn_write_flush_and_rotation_alias",
+              "parentTestObserved": "journal_appender::tests::forced_process_exit_recovery_covers_torn_write_flush_and_rotation_alias",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::hot_backup_publication_child",
+              "reason": "spawned by hot_backup_publication_crash_matrix_recovers_a_usable_destination",
+              "parentTestObserved": "session_store::tests::hot_backup_publication_crash_matrix_recovers_a_usable_destination",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::hot_rollback_journal_child",
+              "reason": "spawned by hot_rollback_journal_is_recovered_before_v3_validation",
+              "parentTestObserved": "session_store::tests::hot_rollback_journal_is_recovered_before_v3_validation",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::hot_rollback_page_one_child",
+              "reason": "spawned by hot_rollback_page_one_recovers_corrupt_main_headers",
+              "parentTestObserved": "session_store::tests::hot_rollback_page_one_recovers_corrupt_main_headers",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::owner_lock_child",
+              "reason": "spawned by owner_lock_excludes_other_processes_until_drop",
+              "parentTestObserved": "session_store::tests::owner_lock_excludes_other_processes_until_drop",
+              "childOutputVisible": true
+            }
+          ]
+        },
+        {
+          "log": "10.log",
+          "harnessSummariesIncludingChildren": 43,
+          "failed": 0,
+          "ignoredEntries": [
+            {
+              "name": "storage_engine::tests::forced_process_crash_child",
+              "reason": "spawned by forced_process_crashes_preserve_only_the_piece_durable_prefix",
+              "parentTestObserved": "storage_engine::tests::forced_process_crashes_preserve_only_the_piece_durable_prefix",
+              "childOutputVisible": false
+            },
+            {
+              "name": "openssh_public_key_offsets_and_final_attributes_interoperate",
+              "reason": "run scripts/run-openssh-interop.py with a private loopback sshd",
+              "externalFixtureNotExecuted": true
+            },
+            {
+              "name": "journal_appender::tests::forced_process_exit_child",
+              "reason": "spawned by forced_process_exit_recovery_covers_torn_write_flush_and_rotation_alias",
+              "parentTestObserved": "journal_appender::tests::forced_process_exit_recovery_covers_torn_write_flush_and_rotation_alias",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::hot_backup_publication_child",
+              "reason": "spawned by hot_backup_publication_crash_matrix_recovers_a_usable_destination",
+              "parentTestObserved": "session_store::tests::hot_backup_publication_crash_matrix_recovers_a_usable_destination",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::hot_rollback_journal_child",
+              "reason": "spawned by hot_rollback_journal_is_recovered_before_v3_validation",
+              "parentTestObserved": "session_store::tests::hot_rollback_journal_is_recovered_before_v3_validation",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::hot_rollback_page_one_child",
+              "reason": "spawned by hot_rollback_page_one_recovers_corrupt_main_headers",
+              "parentTestObserved": "session_store::tests::hot_rollback_page_one_recovers_corrupt_main_headers",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::owner_lock_child",
+              "reason": "spawned by owner_lock_excludes_other_processes_until_drop",
+              "parentTestObserved": "session_store::tests::owner_lock_excludes_other_processes_until_drop",
+              "childOutputVisible": true
+            }
+          ]
+        }
+      ],
+      "pythonTestsReported": 70,
+      "pythonTestsPassed": 68,
+      "pythonTestsSkipped": 2,
+      "rustVersion": "1.97.1",
+      "nativeProbes": {
+        "passed": 4,
+        "tests": [
+          {
+            "name": "native_bounded_output",
+            "seconds": 0.02
+          },
+          {
+            "name": "native_openssl_callbacks",
+            "seconds": 0.02
+          },
+          {
+            "name": "native_destination_policy",
+            "seconds": 6.75
+          },
+          {
+            "name": "native_private_storage",
+            "seconds": 0.02
+          }
+        ],
+        "seconds": 6.82,
+        "detailedCtestLogIncluded": false
+      },
+      "nativeProvenance": {
+        "target": "x86_64-pc-windows-msvc",
+        "inputs": {
+          "sourcesSha256": "b55bc045afe126bad7e48d9ca6e9a5b40f762e2bdea6cbc54997dcee32991819",
+          "patchSha256": "8d377c5622d0308bda2f7fc161913954f4a4cb3af19f6e1400d2cde84446a409",
+          "opensslPatchSha256": "e12670d73045bda8fb086f51f1080ccaffd60e54dd8902577aea3b3ad2a5a748",
+          "builderSha256": "13876c4f9dc51f1bb4ef1ce48426b411792ad9ef086bad4add838e8e0a806f48",
+          "sanitizer": "none"
+        },
+        "versions": {
+          "libtorrent": "2.1.1",
+          "boost": "1.91.0",
+          "openssl": "3.6.3"
+        },
+        "settings": {
+          "BUILD_SHARED_LIBS": "OFF",
+          "CMAKE_BUILD_TYPE": "Release",
+          "CMAKE_POSITION_INDEPENDENT_CODE": "ON",
+          "CMAKE_POLICY_DEFAULT_CMP0167": "OLD",
+          "build_tests": "OFF",
+          "build_examples": "OFF",
+          "build_tools": "OFF",
+          "python-bindings": "OFF",
+          "webtorrent": "OFF",
+          "i2p": "OFF",
+          "mutable-torrents": "OFF",
+          "logging": "OFF",
+          "dht": "ON",
+          "encryption": "ON",
+          "exceptions": "ON",
+          "gnutls": "OFF",
+          "OPENSSL_USE_STATIC_LIBS": "ON",
+          "Boost_NO_SYSTEM_PATHS": "ON",
+          "Boost_NO_BOOST_CMAKE": "ON"
+        },
+        "compiler": "Microsoft (R) C/C++ Optimizing Compiler Version 19.44.35229 for x64\nCopyright (C) Microsoft Corporation.  All rights reserved.\n\nCompiler Passes:\n C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\cl.exe:        Version 19.44.35229.0\n C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\c1.dll:        Version 19.44.35229.0\n C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\c1xx.dll:      Version 19.44.35229.0\n C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\c2.dll:        Version 19.44.35229.0\n C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\c1xx.dll:      Version 19.44.35229.0\n C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\link.exe:      Version 14.44.35229.0\n C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\mspdb140.dll:  Version 14.44.35229.0\n C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\1033\\clui.dll: Version 19.44.35229.0\n\ncl : Command line error D8003 : missing source filename",
+        "manifestSha256": "f9bf4618813bf9eddaae5eaf8ebabd9af1b6dd81b20c029f6a9099327b46e055",
+        "installedFileCount": 16785,
+        "inputDigestsMatchGit": true,
+        "ciVerificationPassed": true,
+        "installedLibrariesIncluded": false,
+        "dependencyRebuildObserved": false
+      },
+      "pythonSkippedReason": "Two TemporaryDirectoryTests cover Unix temporary-directory aliases and are excluded on Windows."
+    },
+    {
+      "check": "windows-gnu",
+      "archive": {
+        "name": "ci-windows-gnu.zip",
+        "sha256": "3cb3d540ab250131cfe2b9cbd812fbbb96b1a804613a13c9f6b24072fbebcc6f",
+        "bytes": 807380
+      },
+      "resultSha256": "163556247c2734e69ebeccc804203cce320e5128e72b62a30fd26582e54002ba",
+      "commandCount": 11,
+      "ciReport": {
+        "check": "windows-gnu",
+        "sourceCommit": "a6f9b0db93e1af30f24d61aaf73b8cde8e4c6d23",
+        "passed": true,
+        "host": "Windows-2022Server-10.0.20348-SP0",
+        "machine": "AMD64",
+        "elapsedSeconds": 841.96,
+        "commands": [
+          {
+            "command": [
+              "D:/a/_temp/msys64/mingw64/bin/python.exe",
+              "-B",
+              "-m",
+              "unittest",
+              "discover",
+              "-s",
+              "scripts",
+              "-p",
+              "test_*.py"
+            ],
+            "log": "01.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "4452cda2af355e82e0532529840daae2477864f269f123969dab758096173df6"
+          },
+          {
+            "command": [
+              "<runner-home>/.rustup/toolchains/1.97.1-x86_64-pc-windows-gnu/bin/rustc.exe",
+              "--version",
+              "--verbose"
+            ],
+            "log": "02.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "bfc521c53ecfdc13341d9fe68b1f3c14fe028103bb745674158a29050a1d0430"
+          },
+          {
+            "command": [
+              "D:/a/_temp/msys64/mingw64/bin/python.exe",
+              "-B",
+              "scripts/bt_native.py",
+              "--target",
+              "x86_64-pc-windows-gnu",
+              "--sanitizer",
+              "none"
+            ],
+            "log": "03.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "f1a94e95b886eb00b76ce0b6889793fb8eea5d4dd97dc8b45a6d866cf6ce0885"
+          },
+          {
+            "command": [
+              "D:/a/_temp/msys64/mingw64/bin/python.exe",
+              "-B",
+              "scripts/bt_native.py",
+              "--target",
+              "x86_64-pc-windows-gnu",
+              "--sanitizer",
+              "none",
+              "--verify"
+            ],
+            "log": "04.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "f1a94e95b886eb00b76ce0b6889793fb8eea5d4dd97dc8b45a6d866cf6ce0885"
+          },
+          {
+            "command": [
+              "cmake",
+              "-S",
+              "D:/a/ariax/ariax/native/libtorrent/tests",
+              "-B",
+              "D:/a/ariax/ariax/toolchains/ci-target/windows-gnu/native-security",
+              "-G",
+              "MinGW Makefiles",
+              "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+              "-DCMAKE_POLICY_DEFAULT_CMP0167=OLD",
+              "-DCMAKE_PREFIX_PATH=D:/a/ariax/ariax/toolchains/bt-native/x86_64-pc-windows-gnu/install",
+              "-DOPENSSL_ROOT_DIR=D:/a/ariax/ariax/toolchains/bt-native/x86_64-pc-windows-gnu/install",
+              "-DOPENSSL_USE_STATIC_LIBS=ON",
+              "-DBOOST_ROOT=D:/a/ariax/ariax/toolchains/bt-native/x86_64-pc-windows-gnu/install",
+              "-DBoost_INCLUDE_DIR=D:/a/ariax/ariax/toolchains/bt-native/x86_64-pc-windows-gnu/install/include",
+              "-DBoost_NO_SYSTEM_PATHS=ON",
+              "-DARIAX_SANITIZER=OFF"
+            ],
+            "log": "05.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "0f7e6f8b17b1354e8bb9ea537f7d366939139ac7b2059b4b2ed5c2122bc88a9d"
+          },
+          {
+            "command": [
+              "cmake",
+              "--build",
+              "D:/a/ariax/ariax/toolchains/ci-target/windows-gnu/native-security",
+              "--config",
+              "RelWithDebInfo",
+              "--parallel",
+              "2"
+            ],
+            "log": "06.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "e961920ff6b02cbd81ac55e653c34d762a0bbe292dc11b4a48c54a6e0b85b202"
+          },
+          {
+            "command": [
+              "ctest",
+              "--test-dir",
+              "D:/a/ariax/ariax/toolchains/ci-target/windows-gnu/native-security",
+              "--build-config",
+              "RelWithDebInfo",
+              "--output-on-failure"
+            ],
+            "log": "07.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "19a3cbd541f1a2ba7d7a600b100c2958331308b2e6dd032f10e239fa20e58628"
+          },
+          {
+            "command": [
+              "<runner-home>/.rustup/toolchains/1.97.1-x86_64-pc-windows-gnu/bin/cargo.exe",
+              "build",
+              "--locked",
+              "--workspace"
+            ],
+            "log": "08.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "656badddab714d932f3b28e1767cf51e28c265e7898ec8c86ec4dd1aece031d4"
+          },
+          {
+            "command": [
+              "<runner-home>/.rustup/toolchains/1.97.1-x86_64-pc-windows-gnu/bin/cargo.exe",
+              "test",
+              "--locked",
+              "--workspace"
+            ],
+            "log": "09.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "05fdd4c3bb681fa767b77b5edf9ec55cdc60bd8f89544b29670855480931ad00"
+          },
+          {
+            "command": [
+              "<runner-home>/.rustup/toolchains/1.97.1-x86_64-pc-windows-gnu/bin/cargo.exe",
+              "test",
+              "--locked",
+              "--workspace",
+              "--all-features"
+            ],
+            "log": "10.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "0bca30d166b1325731fcad3a121f140f3117c3d310d3cd43ad4b209fa5353251"
+          },
+          {
+            "command": [
+              "<runner-home>/.rustup/toolchains/1.97.1-x86_64-pc-windows-gnu/bin/cargo-clippy.exe",
+              "clippy",
+              "--locked",
+              "--workspace",
+              "--all-targets",
+              "--all-features",
+              "--",
+              "-D",
+              "warnings"
+            ],
+            "log": "11.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "d739ef09774dc40f49838cf569939114cf640acc79a756e92c714244f4922640"
+          }
+        ],
+        "error": null
+      },
+      "rustTestCommands": [
+        {
+          "log": "09.log",
+          "harnessSummariesIncludingChildren": 43,
+          "failed": 0,
+          "ignoredEntries": [
+            {
+              "name": "storage_engine::tests::forced_process_crash_child",
+              "reason": "spawned by forced_process_crashes_preserve_only_the_piece_durable_prefix",
+              "parentTestObserved": "storage_engine::tests::forced_process_crashes_preserve_only_the_piece_durable_prefix",
+              "childOutputVisible": false
+            },
+            {
+              "name": "journal_appender::tests::forced_process_exit_child",
+              "reason": "spawned by forced_process_exit_recovery_covers_torn_write_flush_and_rotation_alias",
+              "parentTestObserved": "journal_appender::tests::forced_process_exit_recovery_covers_torn_write_flush_and_rotation_alias",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::hot_backup_publication_child",
+              "reason": "spawned by hot_backup_publication_crash_matrix_recovers_a_usable_destination",
+              "parentTestObserved": "session_store::tests::hot_backup_publication_crash_matrix_recovers_a_usable_destination",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::hot_rollback_journal_child",
+              "reason": "spawned by hot_rollback_journal_is_recovered_before_v3_validation",
+              "parentTestObserved": "session_store::tests::hot_rollback_journal_is_recovered_before_v3_validation",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::hot_rollback_page_one_child",
+              "reason": "spawned by hot_rollback_page_one_recovers_corrupt_main_headers",
+              "parentTestObserved": "session_store::tests::hot_rollback_page_one_recovers_corrupt_main_headers",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::owner_lock_child",
+              "reason": "spawned by owner_lock_excludes_other_processes_until_drop",
+              "parentTestObserved": "session_store::tests::owner_lock_excludes_other_processes_until_drop",
+              "childOutputVisible": true
+            }
+          ]
+        },
+        {
+          "log": "10.log",
+          "harnessSummariesIncludingChildren": 43,
+          "failed": 0,
+          "ignoredEntries": [
+            {
+              "name": "storage_engine::tests::forced_process_crash_child",
+              "reason": "spawned by forced_process_crashes_preserve_only_the_piece_durable_prefix",
+              "parentTestObserved": "storage_engine::tests::forced_process_crashes_preserve_only_the_piece_durable_prefix",
+              "childOutputVisible": false
+            },
+            {
+              "name": "openssh_public_key_offsets_and_final_attributes_interoperate",
+              "reason": "run scripts/run-openssh-interop.py with a private loopback sshd",
+              "externalFixtureNotExecuted": true
+            },
+            {
+              "name": "journal_appender::tests::forced_process_exit_child",
+              "reason": "spawned by forced_process_exit_recovery_covers_torn_write_flush_and_rotation_alias",
+              "parentTestObserved": "journal_appender::tests::forced_process_exit_recovery_covers_torn_write_flush_and_rotation_alias",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::hot_backup_publication_child",
+              "reason": "spawned by hot_backup_publication_crash_matrix_recovers_a_usable_destination",
+              "parentTestObserved": "session_store::tests::hot_backup_publication_crash_matrix_recovers_a_usable_destination",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::hot_rollback_journal_child",
+              "reason": "spawned by hot_rollback_journal_is_recovered_before_v3_validation",
+              "parentTestObserved": "session_store::tests::hot_rollback_journal_is_recovered_before_v3_validation",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::hot_rollback_page_one_child",
+              "reason": "spawned by hot_rollback_page_one_recovers_corrupt_main_headers",
+              "parentTestObserved": "session_store::tests::hot_rollback_page_one_recovers_corrupt_main_headers",
+              "childOutputVisible": false
+            },
+            {
+              "name": "session_store::tests::owner_lock_child",
+              "reason": "spawned by owner_lock_excludes_other_processes_until_drop",
+              "parentTestObserved": "session_store::tests::owner_lock_excludes_other_processes_until_drop",
+              "childOutputVisible": true
+            }
+          ]
+        }
+      ],
+      "pythonTestsReported": 70,
+      "pythonTestsPassed": 68,
+      "pythonTestsSkipped": 2,
+      "rustVersion": "1.97.1",
+      "nativeProbes": {
+        "passed": 4,
+        "tests": [
+          {
+            "name": "native_bounded_output",
+            "seconds": 0.01
+          },
+          {
+            "name": "native_openssl_callbacks",
+            "seconds": 0.02
+          },
+          {
+            "name": "native_destination_policy",
+            "seconds": 6.79
+          },
+          {
+            "name": "native_private_storage",
+            "seconds": 0.02
+          }
+        ],
+        "seconds": 6.85,
+        "detailedCtestLogIncluded": false
+      },
+      "nativeProvenance": {
+        "target": "x86_64-pc-windows-gnu",
+        "inputs": {
+          "sourcesSha256": "b55bc045afe126bad7e48d9ca6e9a5b40f762e2bdea6cbc54997dcee32991819",
+          "patchSha256": "8d377c5622d0308bda2f7fc161913954f4a4cb3af19f6e1400d2cde84446a409",
+          "opensslPatchSha256": "e12670d73045bda8fb086f51f1080ccaffd60e54dd8902577aea3b3ad2a5a748",
+          "builderSha256": "13876c4f9dc51f1bb4ef1ce48426b411792ad9ef086bad4add838e8e0a806f48",
+          "sanitizer": "none"
+        },
+        "versions": {
+          "libtorrent": "2.1.1",
+          "boost": "1.91.0",
+          "openssl": "3.6.3"
+        },
+        "settings": {
+          "BUILD_SHARED_LIBS": "OFF",
+          "CMAKE_BUILD_TYPE": "Release",
+          "CMAKE_POSITION_INDEPENDENT_CODE": "ON",
+          "CMAKE_POLICY_DEFAULT_CMP0167": "OLD",
+          "build_tests": "OFF",
+          "build_examples": "OFF",
+          "build_tools": "OFF",
+          "python-bindings": "OFF",
+          "webtorrent": "OFF",
+          "i2p": "OFF",
+          "mutable-torrents": "OFF",
+          "logging": "OFF",
+          "dht": "ON",
+          "encryption": "ON",
+          "exceptions": "ON",
+          "gnutls": "OFF",
+          "OPENSSL_USE_STATIC_LIBS": "ON",
+          "Boost_NO_SYSTEM_PATHS": "ON",
+          "Boost_NO_BOOST_CMAKE": "ON"
+        },
+        "compiler": "g++.exe (Rev5, Built by MSYS2 project) 16.1.0\nCopyright (C) 2026 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.",
+        "manifestSha256": "9670e1c264e19dcfeef338036092b0239ae45899d622065e62a454b5b95f1353",
+        "installedFileCount": 16786,
+        "inputDigestsMatchGit": true,
+        "ciVerificationPassed": true,
+        "installedLibrariesIncluded": false,
+        "dependencyRebuildObserved": false
+      },
+      "pythonSkippedReason": "Two TemporaryDirectoryTests cover Unix temporary-directory aliases and are excluded on Windows."
+    },
+    {
+      "check": "msrv-linux",
+      "archive": {
+        "name": "ci-msrv-linux.zip",
+        "sha256": "77d607eede00bbcfc67fbb0bcb93df2dfe8bfdb9b32f173c559946f478cbf7a2",
+        "bytes": 756120
+      },
+      "resultSha256": "6f2ef52942abe75fa07869c133b836ca4fa057394af9b8daa781b2cfdcd86198",
+      "commandCount": 4,
+      "ciReport": {
+        "check": "msrv-linux",
+        "sourceCommit": "a6f9b0db93e1af30f24d61aaf73b8cde8e4c6d23",
+        "passed": true,
+        "host": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+        "machine": "x86_64",
+        "elapsedSeconds": 58.08,
+        "commands": [
+          {
+            "command": [
+              "/home/runner/.rustup/toolchains/1.88.0-x86_64-unknown-linux-gnu/bin/rustc",
+              "--version",
+              "--verbose"
+            ],
+            "log": "01.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "2775ffb86baebfb4c9959501cdd336fe315dd8e1229ffaede4f428f33862f10d"
+          },
+          {
+            "command": [
+              "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python",
+              "-B",
+              "scripts/bt_native.py",
+              "--target",
+              "x86_64-unknown-linux-gnu",
+              "--sanitizer",
+              "none"
+            ],
+            "log": "02.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "feaeef7629aa0b20e2d37c7f1cf0350f69d714039f946dc0f4c893d7a526a8f7"
+          },
+          {
+            "command": [
+              "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python",
+              "-B",
+              "scripts/bt_native.py",
+              "--target",
+              "x86_64-unknown-linux-gnu",
+              "--sanitizer",
+              "none",
+              "--verify"
+            ],
+            "log": "03.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "feaeef7629aa0b20e2d37c7f1cf0350f69d714039f946dc0f4c893d7a526a8f7"
+          },
+          {
+            "command": [
+              "/home/runner/.rustup/toolchains/1.88.0-x86_64-unknown-linux-gnu/bin/cargo",
+              "check",
+              "--locked",
+              "--workspace",
+              "--all-targets",
+              "--all-features"
+            ],
+            "log": "04.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "63e71c92e565ee871d445d21f273379e6c846a18714b859b34d13430b31fa4f6"
+          }
+        ],
+        "error": null
+      },
+      "rustTestCommands": [],
+      "rustVersion": "1.88.0",
+      "nativeProvenance": {
+        "target": "x86_64-unknown-linux-gnu",
+        "inputs": {
+          "sourcesSha256": "b55bc045afe126bad7e48d9ca6e9a5b40f762e2bdea6cbc54997dcee32991819",
+          "patchSha256": "8d377c5622d0308bda2f7fc161913954f4a4cb3af19f6e1400d2cde84446a409",
+          "opensslPatchSha256": "e12670d73045bda8fb086f51f1080ccaffd60e54dd8902577aea3b3ad2a5a748",
+          "builderSha256": "13876c4f9dc51f1bb4ef1ce48426b411792ad9ef086bad4add838e8e0a806f48",
+          "sanitizer": "none"
+        },
+        "versions": {
+          "libtorrent": "2.1.1",
+          "boost": "1.91.0",
+          "openssl": "3.6.3"
+        },
+        "settings": {
+          "BUILD_SHARED_LIBS": "OFF",
+          "CMAKE_BUILD_TYPE": "Release",
+          "CMAKE_POSITION_INDEPENDENT_CODE": "ON",
+          "CMAKE_POLICY_DEFAULT_CMP0167": "OLD",
+          "build_tests": "OFF",
+          "build_examples": "OFF",
+          "build_tools": "OFF",
+          "python-bindings": "OFF",
+          "webtorrent": "OFF",
+          "i2p": "OFF",
+          "mutable-torrents": "OFF",
+          "logging": "OFF",
+          "dht": "ON",
+          "encryption": "ON",
+          "exceptions": "ON",
+          "gnutls": "OFF",
+          "OPENSSL_USE_STATIC_LIBS": "ON",
+          "Boost_NO_SYSTEM_PATHS": "ON",
+          "Boost_NO_BOOST_CMAKE": "ON"
+        },
+        "compiler": "c++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0\nCopyright (C) 2023 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.",
+        "manifestSha256": "0a11f7f24fd1fa043e703afcfc27a89a59bfd630e759858d8fac3f1fc40a93eb",
+        "installedFileCount": 16786,
+        "inputDigestsMatchGit": true,
+        "ciVerificationPassed": true,
+        "installedLibrariesIncluded": false,
+        "dependencyRebuildObserved": false
+      }
+    },
+    {
+      "check": "msrv-windows-gnu",
+      "archive": {
+        "name": "ci-msrv-windows-gnu.zip",
+        "sha256": "0fccc838402bbf88d8dac4c1027558daface18dbaab1d1075f3c758b27c2dbed",
+        "bytes": 752863
+      },
+      "resultSha256": "9fed7c991d35871a313e7621cd15800b3d769f64800a336337413443576c0acb",
+      "commandCount": 4,
+      "ciReport": {
+        "check": "msrv-windows-gnu",
+        "sourceCommit": "a6f9b0db93e1af30f24d61aaf73b8cde8e4c6d23",
+        "passed": true,
+        "host": "Windows-2022Server-10.0.20348-SP0",
+        "machine": "AMD64",
+        "elapsedSeconds": 55.429,
+        "commands": [
+          {
+            "command": [
+              "<runner-home>/.rustup/toolchains/1.88.0-x86_64-pc-windows-gnu/bin/rustc.exe",
+              "--version",
+              "--verbose"
+            ],
+            "log": "01.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "a665910ff131e0660408b59ed62a5961fdbe2a963996429e504bf8f4ebfda184"
+          },
+          {
+            "command": [
+              "D:/a/_temp/msys64/mingw64/bin/python.exe",
+              "-B",
+              "scripts/bt_native.py",
+              "--target",
+              "x86_64-pc-windows-gnu",
+              "--sanitizer",
+              "none"
+            ],
+            "log": "02.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "f1a94e95b886eb00b76ce0b6889793fb8eea5d4dd97dc8b45a6d866cf6ce0885"
+          },
+          {
+            "command": [
+              "D:/a/_temp/msys64/mingw64/bin/python.exe",
+              "-B",
+              "scripts/bt_native.py",
+              "--target",
+              "x86_64-pc-windows-gnu",
+              "--sanitizer",
+              "none",
+              "--verify"
+            ],
+            "log": "03.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "f1a94e95b886eb00b76ce0b6889793fb8eea5d4dd97dc8b45a6d866cf6ce0885"
+          },
+          {
+            "command": [
+              "<runner-home>/.rustup/toolchains/1.88.0-x86_64-pc-windows-gnu/bin/cargo.exe",
+              "check",
+              "--locked",
+              "--workspace",
+              "--all-targets",
+              "--all-features"
+            ],
+            "log": "04.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "c28723b89ee0e7999e4aaf1eb12f9018933a22f47edec94a98159a27e20e7b0a"
+          }
+        ],
+        "error": null
+      },
+      "rustTestCommands": [],
+      "rustVersion": "1.88.0",
+      "nativeProvenance": {
+        "target": "x86_64-pc-windows-gnu",
+        "inputs": {
+          "sourcesSha256": "b55bc045afe126bad7e48d9ca6e9a5b40f762e2bdea6cbc54997dcee32991819",
+          "patchSha256": "8d377c5622d0308bda2f7fc161913954f4a4cb3af19f6e1400d2cde84446a409",
+          "opensslPatchSha256": "e12670d73045bda8fb086f51f1080ccaffd60e54dd8902577aea3b3ad2a5a748",
+          "builderSha256": "13876c4f9dc51f1bb4ef1ce48426b411792ad9ef086bad4add838e8e0a806f48",
+          "sanitizer": "none"
+        },
+        "versions": {
+          "libtorrent": "2.1.1",
+          "boost": "1.91.0",
+          "openssl": "3.6.3"
+        },
+        "settings": {
+          "BUILD_SHARED_LIBS": "OFF",
+          "CMAKE_BUILD_TYPE": "Release",
+          "CMAKE_POSITION_INDEPENDENT_CODE": "ON",
+          "CMAKE_POLICY_DEFAULT_CMP0167": "OLD",
+          "build_tests": "OFF",
+          "build_examples": "OFF",
+          "build_tools": "OFF",
+          "python-bindings": "OFF",
+          "webtorrent": "OFF",
+          "i2p": "OFF",
+          "mutable-torrents": "OFF",
+          "logging": "OFF",
+          "dht": "ON",
+          "encryption": "ON",
+          "exceptions": "ON",
+          "gnutls": "OFF",
+          "OPENSSL_USE_STATIC_LIBS": "ON",
+          "Boost_NO_SYSTEM_PATHS": "ON",
+          "Boost_NO_BOOST_CMAKE": "ON"
+        },
+        "compiler": "g++.exe (Rev5, Built by MSYS2 project) 16.1.0\nCopyright (C) 2026 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.",
+        "manifestSha256": "9670e1c264e19dcfeef338036092b0239ae45899d622065e62a454b5b95f1353",
+        "installedFileCount": 16786,
+        "inputDigestsMatchGit": true,
+        "ciVerificationPassed": true,
+        "installedLibrariesIncluded": false,
+        "dependencyRebuildObserved": false
+      }
+    },
+    {
+      "check": "feature-bundles",
+      "archive": {
+        "name": "ci-feature-bundles.zip",
+        "sha256": "d52c6fd512b15b3bf0361c7bf7e653e05fefbc488f107c14f1b5cade461b85bf",
+        "bytes": 759278
+      },
+      "resultSha256": "a52138c8d25ad0bdfd085ca58e386f7e2d8ba640dbb16c12b96e7c0db7d66d21",
+      "commandCount": 11,
+      "ciReport": {
+        "check": "feature-bundles",
+        "sourceCommit": "a6f9b0db93e1af30f24d61aaf73b8cde8e4c6d23",
+        "passed": true,
+        "host": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+        "machine": "x86_64",
+        "elapsedSeconds": 621.995,
+        "commands": [
+          {
+            "command": [
+              "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+              "test",
+              "--locked",
+              "-p",
+              "ariax-cli",
+              "--no-default-features",
+              "--features",
+              "minimal"
+            ],
+            "log": "01.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "273bee9268b5071209d53e2b67d1e31ba4f476d98f19876db712839c7361370d"
+          },
+          {
+            "command": [
+              "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+              "build",
+              "--locked",
+              "-p",
+              "ariax-cli",
+              "--no-default-features",
+              "--features",
+              "minimal",
+              "--profile",
+              "release-cli"
+            ],
+            "log": "02.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "60dcbd5d17a11b2ca90336c80406cd32052033b9522ab27f536dd5d329f46993"
+          },
+          {
+            "command": [
+              "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+              "test",
+              "--locked",
+              "-p",
+              "ariax-cli",
+              "--no-default-features",
+              "--features",
+              "standard"
+            ],
+            "log": "03.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "c0fc988907f3a305ec8d324824aad9d830b3a473ef9b0bee5290e937cb0db550"
+          },
+          {
+            "command": [
+              "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+              "build",
+              "--locked",
+              "-p",
+              "ariax-cli",
+              "--no-default-features",
+              "--features",
+              "standard",
+              "--profile",
+              "release-cli"
+            ],
+            "log": "04.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "1f08d43f3eae5b069eb6fedb41536cf278e3c861c89693f0bdc4a9b26007f7d2"
+          },
+          {
+            "command": [
+              "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/rustc",
+              "--version",
+              "--verbose"
+            ],
+            "log": "05.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "b2bdf493bcf6d1dc55181a0efc2774b6d9cf7bf5c8dcc5bed592c994b2ad38c4"
+          },
+          {
+            "command": [
+              "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python",
+              "-B",
+              "scripts/bt_native.py",
+              "--target",
+              "x86_64-unknown-linux-gnu",
+              "--sanitizer",
+              "none"
+            ],
+            "log": "06.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "feaeef7629aa0b20e2d37c7f1cf0350f69d714039f946dc0f4c893d7a526a8f7"
+          },
+          {
+            "command": [
+              "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python",
+              "-B",
+              "scripts/bt_native.py",
+              "--target",
+              "x86_64-unknown-linux-gnu",
+              "--sanitizer",
+              "none",
+              "--verify"
+            ],
+            "log": "07.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "feaeef7629aa0b20e2d37c7f1cf0350f69d714039f946dc0f4c893d7a526a8f7"
+          },
+          {
+            "command": [
+              "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+              "test",
+              "--locked",
+              "-p",
+              "ariax-cli",
+              "--no-default-features",
+              "--features",
+              "full"
+            ],
+            "log": "08.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "39e869f8497bb32bd0056b947de4f0fce7624ca14cf030cb637ef9111aea08ae"
+          },
+          {
+            "command": [
+              "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+              "build",
+              "--locked",
+              "-p",
+              "ariax-cli",
+              "--no-default-features",
+              "--features",
+              "full",
+              "--profile",
+              "release-cli"
+            ],
+            "log": "09.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "f8950cfaa5167f6ec5f34e92af28300c884884197c226543307cabc776387191"
+          },
+          {
+            "command": [
+              "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+              "test",
+              "--locked",
+              "-p",
+              "ariax-cli",
+              "--no-default-features",
+              "--features",
+              "compat"
+            ],
+            "log": "10.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "513c3a9d00d40213e65ded93cda9b0430038a89c16266f5566cf9dc7bc259c0c"
+          },
+          {
+            "command": [
+              "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+              "build",
+              "--locked",
+              "-p",
+              "ariax-cli",
+              "--no-default-features",
+              "--features",
+              "compat",
+              "--profile",
+              "release-cli"
+            ],
+            "log": "11.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "3eef1ac48b03058befa267d130ef69941951e0f3023e573629a4e7b35b4a4bd7"
+          }
+        ],
+        "error": null
+      },
+      "rustTestCommands": [
+        {
+          "log": "01.log",
+          "harnessSummariesIncludingChildren": 5,
+          "failed": 0,
+          "ignoredEntries": []
+        },
+        {
+          "log": "03.log",
+          "harnessSummariesIncludingChildren": 5,
+          "failed": 0,
+          "ignoredEntries": []
+        },
+        {
+          "log": "08.log",
+          "harnessSummariesIncludingChildren": 5,
+          "failed": 0,
+          "ignoredEntries": []
+        },
+        {
+          "log": "10.log",
+          "harnessSummariesIncludingChildren": 5,
+          "failed": 0,
+          "ignoredEntries": []
+        }
+      ],
+      "rustVersion": "1.97.1",
+      "nativeProvenance": {
+        "target": "x86_64-unknown-linux-gnu",
+        "inputs": {
+          "sourcesSha256": "b55bc045afe126bad7e48d9ca6e9a5b40f762e2bdea6cbc54997dcee32991819",
+          "patchSha256": "8d377c5622d0308bda2f7fc161913954f4a4cb3af19f6e1400d2cde84446a409",
+          "opensslPatchSha256": "e12670d73045bda8fb086f51f1080ccaffd60e54dd8902577aea3b3ad2a5a748",
+          "builderSha256": "13876c4f9dc51f1bb4ef1ce48426b411792ad9ef086bad4add838e8e0a806f48",
+          "sanitizer": "none"
+        },
+        "versions": {
+          "libtorrent": "2.1.1",
+          "boost": "1.91.0",
+          "openssl": "3.6.3"
+        },
+        "settings": {
+          "BUILD_SHARED_LIBS": "OFF",
+          "CMAKE_BUILD_TYPE": "Release",
+          "CMAKE_POSITION_INDEPENDENT_CODE": "ON",
+          "CMAKE_POLICY_DEFAULT_CMP0167": "OLD",
+          "build_tests": "OFF",
+          "build_examples": "OFF",
+          "build_tools": "OFF",
+          "python-bindings": "OFF",
+          "webtorrent": "OFF",
+          "i2p": "OFF",
+          "mutable-torrents": "OFF",
+          "logging": "OFF",
+          "dht": "ON",
+          "encryption": "ON",
+          "exceptions": "ON",
+          "gnutls": "OFF",
+          "OPENSSL_USE_STATIC_LIBS": "ON",
+          "Boost_NO_SYSTEM_PATHS": "ON",
+          "Boost_NO_BOOST_CMAKE": "ON"
+        },
+        "compiler": "c++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0\nCopyright (C) 2023 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.",
+        "manifestSha256": "0a11f7f24fd1fa043e703afcfc27a89a59bfd630e759858d8fac3f1fc40a93eb",
+        "installedFileCount": 16786,
+        "inputDigestsMatchGit": true,
+        "ciVerificationPassed": true,
+        "installedLibrariesIncluded": false,
+        "dependencyRebuildObserved": false
+      },
+      "bundles": [
+        {
+          "bundle": "minimal",
+          "testsPassed": 29,
+          "testLog": "01.log",
+          "releaseBuildLog": "02.log",
+          "releaseBuildPassed": true
+        },
+        {
+          "bundle": "standard",
+          "testsPassed": 29,
+          "testLog": "03.log",
+          "releaseBuildLog": "04.log",
+          "releaseBuildPassed": true
+        },
+        {
+          "bundle": "full",
+          "testsPassed": 30,
+          "testLog": "08.log",
+          "releaseBuildLog": "09.log",
+          "releaseBuildPassed": true
+        },
+        {
+          "bundle": "compat",
+          "testsPassed": 30,
+          "testLog": "10.log",
+          "releaseBuildLog": "11.log",
+          "releaseBuildPassed": true
+        }
+      ]
+    },
+    {
+      "check": "bt-safety",
+      "archive": {
+        "name": "ci-bt-safety.zip",
+        "sha256": "31974e3fe4e37847cdfca457d054aa9e7bb2a8940a955912337755c85dadecbd",
+        "bytes": 1355267
+      },
+      "resultSha256": "fb6cbbb2626634f8653ed6a1ef0e4a03a328888368683d86dfc630b9b623164b",
+      "commandCount": 9,
+      "ciReport": {
+        "check": "bt-safety",
+        "sourceCommit": "a6f9b0db93e1af30f24d61aaf73b8cde8e4c6d23",
+        "passed": true,
+        "host": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+        "machine": "x86_64",
+        "elapsedSeconds": 185.105,
+        "commands": [
+          {
+            "command": [
+              "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/rustc",
+              "--version",
+              "--verbose"
+            ],
+            "log": "01.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "b2bdf493bcf6d1dc55181a0efc2774b6d9cf7bf5c8dcc5bed592c994b2ad38c4"
+          },
+          {
+            "command": [
+              "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python",
+              "-B",
+              "scripts/bt_native.py",
+              "--target",
+              "x86_64-unknown-linux-gnu",
+              "--sanitizer",
+              "address"
+            ],
+            "log": "02.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "feaeef7629aa0b20e2d37c7f1cf0350f69d714039f946dc0f4c893d7a526a8f7"
+          },
+          {
+            "command": [
+              "/opt/hostedtoolcache/Python/3.13.15/x64/bin/python",
+              "-B",
+              "scripts/bt_native.py",
+              "--target",
+              "x86_64-unknown-linux-gnu",
+              "--sanitizer",
+              "address",
+              "--verify"
+            ],
+            "log": "03.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "feaeef7629aa0b20e2d37c7f1cf0350f69d714039f946dc0f4c893d7a526a8f7"
+          },
+          {
+            "command": [
+              "cmake",
+              "-S",
+              "/home/runner/work/ariax/ariax/native/libtorrent/tests",
+              "-B",
+              "/home/runner/work/ariax/ariax/toolchains/ci-target/bt-safety/native-security",
+              "-G",
+              "Unix Makefiles",
+              "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+              "-DCMAKE_POLICY_DEFAULT_CMP0167=OLD",
+              "-DCMAKE_PREFIX_PATH=/home/runner/work/ariax/ariax/toolchains/bt-native/x86_64-unknown-linux-gnu-sanitized/install",
+              "-DOPENSSL_ROOT_DIR=/home/runner/work/ariax/ariax/toolchains/bt-native/x86_64-unknown-linux-gnu-sanitized/install",
+              "-DOPENSSL_USE_STATIC_LIBS=ON",
+              "-DBOOST_ROOT=/home/runner/work/ariax/ariax/toolchains/bt-native/x86_64-unknown-linux-gnu-sanitized/install",
+              "-DBoost_INCLUDE_DIR=/home/runner/work/ariax/ariax/toolchains/bt-native/x86_64-unknown-linux-gnu-sanitized/install/include",
+              "-DBoost_NO_SYSTEM_PATHS=ON",
+              "-DARIAX_SANITIZER=ON"
+            ],
+            "log": "04.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "ea5ba255457a9b4ed9711ce17f28e4644383d0670a0f1c506ab31d35269db200"
+          },
+          {
+            "command": [
+              "cmake",
+              "--build",
+              "/home/runner/work/ariax/ariax/toolchains/ci-target/bt-safety/native-security",
+              "--config",
+              "RelWithDebInfo",
+              "--parallel",
+              "2"
+            ],
+            "log": "05.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "1efde6db73ec1e4fc13815cb1a85cc9ce0c76c8222c08d78f4b6bc38aa173881"
+          },
+          {
+            "command": [
+              "ctest",
+              "--test-dir",
+              "/home/runner/work/ariax/ariax/toolchains/ci-target/bt-safety/native-security",
+              "--build-config",
+              "RelWithDebInfo",
+              "--output-on-failure"
+            ],
+            "log": "06.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "cff3ba9e3ded20580c7953d939629282b26e57cf1a33f1b4d11521aa438c72f2"
+          },
+          {
+            "command": [
+              "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+              "test",
+              "--locked",
+              "-p",
+              "ariax-bt-libtorrent-sys",
+              "-p",
+              "ariax-bt",
+              "--all-features"
+            ],
+            "log": "07.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "02a088d0433595d35bbaa391cf1f70347b5124e22dd3e6053d28e5a0d9a08a64"
+          },
+          {
+            "command": [
+              "/home/runner/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+              "build",
+              "--locked",
+              "--manifest-path",
+              "fuzz/Cargo.toml",
+              "--release",
+              "--target",
+              "x86_64-unknown-linux-gnu",
+              "--bin",
+              "bittorrent_metadata"
+            ],
+            "log": "08.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "82143551e43d13d93f7adb9adc7a7f938a85a93a9b8e544e909249c0d94aeecb"
+          },
+          {
+            "command": [
+              "/home/runner/work/ariax/ariax/toolchains/ci-target/bt-safety/fuzz/x86_64-unknown-linux-gnu/release/bittorrent_metadata",
+              "/home/runner/work/ariax/ariax/toolchains/ci-reports/bt-safety/corpus",
+              "-max_total_time=20",
+              "-timeout=2",
+              "-rss_limit_mb=512",
+              "-max_len=1048576",
+              "-print_funcs=0",
+              "-artifact_prefix=/home/runner/work/ariax/ariax/toolchains/ci-reports/bt-safety/fuzz-artifacts/"
+            ],
+            "log": "09.log",
+            "passed": true,
+            "exitCode": 0,
+            "sha256": "5a50416aa9135d48a6e2a3f94d7ebe91c007582366a8657265f1a7ba00636ec5"
+          }
+        ],
+        "error": null
+      },
+      "rustTestCommands": [
+        {
+          "log": "07.log",
+          "harnessSummariesIncludingChildren": 6,
+          "failed": 0,
+          "ignoredEntries": []
+        }
+      ],
+      "rustVersion": "1.97.1",
+      "nativeProbes": {
+        "passed": 4,
+        "tests": [
+          {
+            "name": "native_bounded_output",
+            "seconds": 0.02
+          },
+          {
+            "name": "native_openssl_callbacks",
+            "seconds": 0.03
+          },
+          {
+            "name": "native_destination_policy",
+            "seconds": 6.27
+          },
+          {
+            "name": "native_private_storage",
+            "seconds": 0.03
+          }
+        ],
+        "seconds": 6.36,
+        "detailedCtestLogIncluded": false
+      },
+      "nativeProvenance": {
+        "target": "x86_64-unknown-linux-gnu",
+        "inputs": {
+          "sourcesSha256": "b55bc045afe126bad7e48d9ca6e9a5b40f762e2bdea6cbc54997dcee32991819",
+          "patchSha256": "8d377c5622d0308bda2f7fc161913954f4a4cb3af19f6e1400d2cde84446a409",
+          "opensslPatchSha256": "e12670d73045bda8fb086f51f1080ccaffd60e54dd8902577aea3b3ad2a5a748",
+          "builderSha256": "13876c4f9dc51f1bb4ef1ce48426b411792ad9ef086bad4add838e8e0a806f48",
+          "sanitizer": "address"
+        },
+        "versions": {
+          "libtorrent": "2.1.1",
+          "boost": "1.91.0",
+          "openssl": "3.6.3"
+        },
+        "settings": {
+          "BUILD_SHARED_LIBS": "OFF",
+          "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+          "CMAKE_POSITION_INDEPENDENT_CODE": "ON",
+          "CMAKE_POLICY_DEFAULT_CMP0167": "OLD",
+          "build_tests": "OFF",
+          "build_examples": "OFF",
+          "build_tools": "OFF",
+          "python-bindings": "OFF",
+          "webtorrent": "OFF",
+          "i2p": "OFF",
+          "mutable-torrents": "OFF",
+          "logging": "OFF",
+          "dht": "ON",
+          "encryption": "ON",
+          "exceptions": "ON",
+          "gnutls": "OFF",
+          "OPENSSL_USE_STATIC_LIBS": "ON",
+          "Boost_NO_SYSTEM_PATHS": "ON",
+          "Boost_NO_BOOST_CMAKE": "ON",
+          "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+          "CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+          "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O1 -g"
+        },
+        "compiler": "Ubuntu clang version 18.1.3 (1ubuntu1)\nTarget: x86_64-pc-linux-gnu\nThread model: posix\nInstalledDir: /usr/bin",
+        "manifestSha256": "96608ed9962ee928b67c4bd608de0f81c76777ce578a51f4d12788d9b1353163",
+        "installedFileCount": 16786,
+        "inputDigestsMatchGit": true,
+        "ciVerificationPassed": true,
+        "installedLibrariesIncluded": false,
+        "dependencyRebuildObserved": false
+      },
+      "fuzz": {
+        "target": "bittorrent_metadata",
+        "executions": 709762,
+        "configuredSeconds": 20,
+        "reportedSeconds": 21,
+        "coverageCounters": 2986,
+        "features": 11142,
+        "reportedLiveCorpusEntries": 1664,
+        "retainedCorpusFiles": 1661,
+        "retainedCorpusBytes": 280307,
+        "peakReportedRssMb": 305,
+        "seed": 2186854086,
+        "initialSeedsVerified": 11,
+        "corpusInventorySha256": "ac6ddee3d57793dad8c56209e7f33042857a1bc6283636f6a2a1cd8905890a21",
+        "crashArtifacts": 0,
+        "sanitizerDiagnosticsFound": 0,
+        "inputTimeoutSeconds": 2,
+        "rssLimitMb": 512,
+        "inputLimitBytes": 1048576,
+        "corpusNote": "Live fuzzer corpus and archived files are distinct reported counts."
+      },
+      "rustTestsPassed": 14
+    }
+  ],
+  "pathNormalization": "macOS and Windows runner-home prefixes in command metadata are replaced by <runner-home>; original archives/reports and their hashes are retained unchanged."
+}
