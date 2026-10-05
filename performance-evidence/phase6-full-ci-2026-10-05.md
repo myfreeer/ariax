@@ -114,5 +114,8 @@ and documentation/evidence. That commit skips automatic functional CI; the
 complete `P6-06` evidence still needs to converge on one final candidate source.
 Fresh live OpenSSH evidence and separately tracked backend/release-platform
 requirements are not supplied by this run. Release tagging remains disabled.
+The subsequent [local OpenSSH run](phase6-openssh-local-2026-10-05.md) at
+`624af25` supplies fresh live interoperability evidence for WSL Linux and
+native Windows-GNU clients, with complete fixture cleanup.
 The [Phase 6 acceptance status](../docs/project/implementation-readiness.md#phase-6-local-implementation-and-open-acceptance)
 remains open.

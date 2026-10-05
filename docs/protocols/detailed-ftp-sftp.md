@@ -6,7 +6,12 @@ Status: the Phase-5 [shared transfer gates](detailed-protocol-transfers.md)
 pass local validation at `88d1a83`. FTP/FTPS wire and security tests, SFTP trust
 and framing tests, and both clients against OpenSSH are recorded in the
 [validation evidence](../../performance-evidence/phase5-validation-2026-09-15.md).
-Native Linux acceptance remains deferred until CI is ready.
+The [full functional CI matrix](../../performance-evidence/phase6-full-ci-2026-10-05.md)
+passes at `a6f9b0d`. Fresh [local OpenSSH evidence](../../performance-evidence/phase6-openssh-local-2026-10-05.md)
+at `624af25` verifies public-key authentication, SHA-512 checked offset reads,
+final attributes and reservation cleanup with both WSL Linux and native
+Windows-GNU clients. The live server is OpenSSH 10.5p1 on Windows/MSYS2;
+the Linux client runs under WSL 1.
 
 The HTTP-centric resume/validation model (`EntityValidator` with
 ETag/Last-Modified, the HTTP `StaleValidator` classification, and

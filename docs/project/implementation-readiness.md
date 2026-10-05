@@ -592,8 +592,18 @@ retained and its cause is unresolved.
 Automatic functional CI was skipped at `9107ecb`. Only benchmark diagnostics,
 their tests and documentation/evidence changed since the full `a6f9b0d` matrix;
 the six-scenario measurement gate passes, but final Phase-6 evidence must still
-converge on one candidate source under `P6-06`. Live OpenSSH interoperability
-remains ignored in the full all-feature runs and needs its separate fixture evidence.
+converge on one candidate source under `P6-06`.
+
+Fresh [local OpenSSH interoperability](../../performance-evidence/phase6-openssh-local-2026-10-05.md)
+passes at `624af25` for both WSL Linux and native Windows-GNU clients against
+OpenSSH 10.5p1 on Windows/MSYS2. Each focused `sftp` test verifies public-key
+authentication, SHA-512 checked offset reads, final attributes, exact durable
+bytes and reservation refunds. Both servers terminate, their listeners close,
+and all temporary payload/credential directories are removed. The user-approved
+disk-backed WSL credential directory is also removed. All 490 source hashes
+and six build/test/server log hashes verify. Only documentation/evidence changed
+since the passing benchmark source. The live fixture remains opt-in in ordinary
+workspace CI; this separate run supplies its fresh local evidence.
 The configured full matrix passes; separate kernel/backend, custom BT storage,
 release-platform and tagging requirements remain open. Historical reports remain
 valid only for their recorded source and scenarios.

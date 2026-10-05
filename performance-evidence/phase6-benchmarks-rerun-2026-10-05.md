@@ -103,3 +103,7 @@ kernel/backend, custom BT storage and release-platform requirements remain
 tracked. Repeated mixed measurements can investigate burst stability without
 discarding the earlier failure. Benchmarks remain manual-only; this review
 launches no workflow or push and changes no runtime code.
+
+The subsequent [local OpenSSH run](phase6-openssh-local-2026-10-05.md) at
+`624af25` supplies the fresh live interoperability evidence for both clients.
+Only documentation/evidence changed between this benchmark source and that run.

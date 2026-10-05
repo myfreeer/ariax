@@ -311,6 +311,23 @@ Loopback RPC process fixtures send each HTTP request in one buffer and disable
 Nagle's delay while retaining bounded response reads and shutdown waits. Failure
 diagnostics identify the stdio framing, EOF policy and child process.
 
+## Local OpenSSH Interoperability
+
+`openssh_interop` is an opt-in engine test built with the `sftp` feature.
+Build only that target with `cargo test --locked -p ariax-engine --features sftp
+--test openssh_interop --no-run --message-format=json`, then select its resolved
+executable through `scripts/run-openssh-interop.py`. The runner takes an explicit
+OpenSSH server, test binary, local username and log path. It starts a private
+loopback daemon and explicitly runs the ignored interoperability test.
+
+The [October 5 local record](../../performance-evidence/phase6-openssh-local-2026-10-05.md)
+passes for WSL Linux and native Windows-GNU clients against MSYS2 OpenSSH 10.5p1.
+Unix credential files require real private modes; a metadata-disabled DrvFs
+mount cannot supply them. Windows credentials require protected ACLs. Preserve
+test/server logs and verify daemon termination, closed listeners and credential
+cleanup. This focused fixture can supply live interoperability evidence without
+running the workspace matrix or performance campaign.
+
 ## Native Linux Measurements
 
 Compile the optimized harness before collecting measurements and execute its

@@ -53,10 +53,14 @@ the rerun does not establish its cause or repeated-run stability. The
 [current acceptance status](implementation-readiness.md#phase-6-local-implementation-and-open-acceptance)
 records the six-scenario measurement gate as passing. Full functional evidence
 remains at `a6f9b0d`; `P6-06` still requires evidence on one final candidate.
-Fresh live OpenSSH and separate backend/release-platform evidence remain open.
-Current
-SQLite and JSON persistence require fresh v3 stores; older formats are rejected
-without migration or mutation. Historical Phase-5 v2 import evidence is not a
+Fresh [local OpenSSH evidence](../../performance-evidence/phase6-openssh-local-2026-10-05.md)
+at `624af25` passes for WSL Linux and native Windows-GNU clients, including
+private-key authentication, checked offset reads, final attributes and complete
+fixture/reservation cleanup. The server is OpenSSH 10.5p1 on Windows/MSYS2;
+all 490 source hashes and six build/test/server log hashes verify. Separate
+backend/release-platform evidence remains open.
+Current SQLite and JSON persistence require fresh v3 stores; older formats are
+rejected without migration or mutation. Historical Phase-5 v2 import evidence is not a
 current-format compatibility promise.
 The local cleanup consolidates shared task/checksum types, removes the legacy
 config-dump shape, and adds BT option-dump and aggregate-statistics coverage.
