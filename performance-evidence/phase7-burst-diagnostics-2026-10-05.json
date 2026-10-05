@@ -1,0 +1,711 @@
+{
+  "baseCommit": "cadbb80080a45bc70268ce2944e2803a49949c1a",
+  "scope": "Local implementation and focused checks for completed-burst diagnostics; no new performance measurement",
+  "fullPhase7Accepted": false,
+  "nativeMeasurementPending": true,
+  "commands": {
+    "final-checks/docs": {
+      "command": [
+        "/usr/bin/python3",
+        "-B",
+        "scripts/check_docs.py"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "RUSTC": "$REPO/toolchains/installed/linux/bin/rustc",
+        "TMPDIR": "$SLICE",
+        "TEMP": "$SLICE"
+      },
+      "binarySha256": "17b78e0a93175e86f9ac03141924fd7a7f0c0c52e66b34bfa0de20ffef989df1",
+      "processSeconds": 1.0818387000035727,
+      "elapsedSeconds": 1.0830547999939881,
+      "stdout.logSha256": "b00e596872f6951ec22abed31b5c6d96de4a199e780672a40be33ff6e24ecc0b",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "final-checks/format": {
+      "command": [
+        "$REPO/toolchains/installed/linux/bin/cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "RUSTC": "$REPO/toolchains/installed/linux/bin/rustc",
+        "TMPDIR": "$SLICE",
+        "TEMP": "$SLICE"
+      },
+      "binarySha256": "828980723df339d62434390e9fb8ef8831036583343ae2316b7ab5646b5c1953",
+      "processSeconds": 5.7734017000038875,
+      "elapsedSeconds": 5.773646200002986,
+      "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "final-checks/publication": {
+      "command": [
+        "/usr/bin/python3",
+        "-B",
+        "scripts/publication.py"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "RUSTC": "$REPO/toolchains/installed/linux/bin/rustc",
+        "TMPDIR": "$SLICE",
+        "TEMP": "$SLICE"
+      },
+      "binarySha256": "17b78e0a93175e86f9ac03141924fd7a7f0c0c52e66b34bfa0de20ffef989df1",
+      "processSeconds": 0.8902522999997018,
+      "elapsedSeconds": 0.8904274000087753,
+      "stdout.logSha256": "1f2ae031b96c44e26b09a19b752facedafbd38b12f0b64d1fb2b8939f6b6d1d6",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "final-checks": {
+      "commands": {
+        "docs": {
+          "command": [
+            "/usr/bin/python3",
+            "-B",
+            "scripts/check_docs.py"
+          ],
+          "passed": true,
+          "timeoutSeconds": 60,
+          "expectedTests": null,
+          "exitCode": 0,
+          "cleanup": "owned-process-group-terminated",
+          "environment": {
+            "RUSTC": "$REPO/toolchains/installed/linux/bin/rustc",
+            "TMPDIR": "$SLICE",
+            "TEMP": "$SLICE"
+          },
+          "binarySha256": "17b78e0a93175e86f9ac03141924fd7a7f0c0c52e66b34bfa0de20ffef989df1",
+          "processSeconds": 1.0818387000035727,
+          "elapsedSeconds": 1.0830547999939881,
+          "stdout.logSha256": "b00e596872f6951ec22abed31b5c6d96de4a199e780672a40be33ff6e24ecc0b",
+          "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "publication": {
+          "command": [
+            "/usr/bin/python3",
+            "-B",
+            "scripts/publication.py"
+          ],
+          "passed": true,
+          "timeoutSeconds": 60,
+          "expectedTests": null,
+          "exitCode": 0,
+          "cleanup": "owned-process-group-terminated",
+          "environment": {
+            "RUSTC": "$REPO/toolchains/installed/linux/bin/rustc",
+            "TMPDIR": "$SLICE",
+            "TEMP": "$SLICE"
+          },
+          "binarySha256": "17b78e0a93175e86f9ac03141924fd7a7f0c0c52e66b34bfa0de20ffef989df1",
+          "processSeconds": 0.8902522999997018,
+          "elapsedSeconds": 0.8904274000087753,
+          "stdout.logSha256": "1f2ae031b96c44e26b09a19b752facedafbd38b12f0b64d1fb2b8939f6b6d1d6",
+          "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "format": {
+          "command": [
+            "$REPO/toolchains/installed/linux/bin/cargo",
+            "fmt",
+            "--all",
+            "--",
+            "--check"
+          ],
+          "passed": true,
+          "timeoutSeconds": 60,
+          "expectedTests": null,
+          "exitCode": 0,
+          "cleanup": "owned-process-group-terminated",
+          "environment": {
+            "RUSTC": "$REPO/toolchains/installed/linux/bin/rustc",
+            "TMPDIR": "$SLICE",
+            "TEMP": "$SLICE"
+          },
+          "binarySha256": "828980723df339d62434390e9fb8ef8831036583343ae2316b7ab5646b5c1953",
+          "processSeconds": 5.7734017000038875,
+          "elapsedSeconds": 5.773646200002986,
+          "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "whitespace": {
+          "command": [
+            "git",
+            "diff",
+            "--check"
+          ],
+          "passed": true,
+          "timeoutSeconds": 60,
+          "expectedTests": null,
+          "exitCode": 0,
+          "cleanup": "owned-process-group-terminated",
+          "environment": {
+            "RUSTC": "$REPO/toolchains/installed/linux/bin/rustc",
+            "TMPDIR": "$SLICE",
+            "TEMP": "$SLICE"
+          },
+          "processSeconds": 0.06843559999833815,
+          "elapsedSeconds": 0.0685689999954775,
+          "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "staged-whitespace": {
+          "command": [
+            "git",
+            "diff",
+            "--cached",
+            "--check"
+          ],
+          "passed": true,
+          "timeoutSeconds": 60,
+          "expectedTests": null,
+          "exitCode": 0,
+          "cleanup": "owned-process-group-terminated",
+          "environment": {
+            "RUSTC": "$REPO/toolchains/installed/linux/bin/rustc",
+            "TMPDIR": "$SLICE",
+            "TEMP": "$SLICE"
+          },
+          "processSeconds": 0.058901799988234416,
+          "elapsedSeconds": 0.059061399995698594,
+          "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "passed": true
+    },
+    "final-checks/staged-whitespace": {
+      "command": [
+        "git",
+        "diff",
+        "--cached",
+        "--check"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "RUSTC": "$REPO/toolchains/installed/linux/bin/rustc",
+        "TMPDIR": "$SLICE",
+        "TEMP": "$SLICE"
+      },
+      "processSeconds": 0.058901799988234416,
+      "elapsedSeconds": 0.059061399995698594,
+      "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "final-checks/whitespace": {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "RUSTC": "$REPO/toolchains/installed/linux/bin/rustc",
+        "TMPDIR": "$SLICE",
+        "TEMP": "$SLICE"
+      },
+      "processSeconds": 0.06843559999833815,
+      "elapsedSeconds": 0.0685689999954775,
+      "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "format": {
+      "command": [
+        "toolchains/installed/linux/bin/cargo-fmt",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60.0,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "$SLICE",
+        "TEMP": "$SLICE"
+      },
+      "binarySha256": "07ce638a5be73e97defbf0864f32a64ed40a0b7682b85625e68790f9e68d19e9",
+      "processSeconds": 3.078325499998755,
+      "elapsedSeconds": 3.0784457999980077,
+      "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "helpers-final": {
+      "command": [
+        "python3",
+        "-B",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts",
+        "-p",
+        "test_*.py"
+      ],
+      "passed": true,
+      "timeoutSeconds": 120.0,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "$SLICE",
+        "TEMP": "$SLICE"
+      },
+      "processSeconds": 2.506526200013468,
+      "elapsedSeconds": 2.5069065000134287,
+      "stdout.logSha256": "4c1c20977a7832118d060576f435cce7c8bfe342f372e1e42167f15ae752de1f",
+      "stderr.logSha256": "0982b8a2e968a9f96addbc4e0c25b8547eef3e35fae5cdda0e40ea889dc8f1dd"
+    },
+    "python-first": {
+      "command": [
+        "python3",
+        "-B",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts",
+        "-p",
+        "test_burst_timing.py"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60.0,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "$SLICE",
+        "TEMP": "$SLICE"
+      },
+      "processSeconds": 0.2693475000123726,
+      "elapsedSeconds": 0.26953220000723377,
+      "stdout.logSha256": "ce5bd39cee72c86fb3ba6dea1418137cd8751880379c9890e14acf2782494acb",
+      "stderr.logSha256": "bc884d6812cc1e24f5fd1a7a8b04cc06665af06ea00dc4a25bd189907de9917e"
+    },
+    "rust-clippy": {
+      "command": [
+        "$REPO/toolchains/installed/linux/bin/cargo-clippy",
+        "clippy",
+        "--locked",
+        "--offline",
+        "-p",
+        "ariax-engine",
+        "--features",
+        "metalink,ftp,sftp",
+        "--bench",
+        "rpc_active_profile",
+        "--test",
+        "rpc_burst_timing",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "passed": true,
+      "timeoutSeconds": 180,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "RUSTC": "$REPO/toolchains/installed/linux/bin/rustc",
+        "CARGO_TARGET_DIR": "$BUILD_CACHE/target-linux",
+        "CARGO_BUILD_JOBS": "2",
+        "RUST_TEST_THREADS": "1",
+        "TMPDIR": "$SLICE",
+        "TEMP": "$SLICE"
+      },
+      "binarySha256": "a0a3808dddb32f525601e608740ee7c1c5df86db4a7183ea945449f60d29509d",
+      "processSeconds": 2.835116400005063,
+      "elapsedSeconds": 2.8353811999986647,
+      "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr.logSha256": "ccc0c5a749161d89a26ab57372a0c1e62f324d24397537e5a8825236ea93314e"
+    },
+    "rust-clippy-bt": {
+      "command": [
+        "$REPO/toolchains/installed/linux/bin/cargo-clippy",
+        "clippy",
+        "--locked",
+        "--offline",
+        "-p",
+        "ariax-engine",
+        "--all-features",
+        "--bench",
+        "rpc_active_profile",
+        "--test",
+        "rpc_burst_timing",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "passed": true,
+      "timeoutSeconds": 180,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "RUSTC": "$REPO/toolchains/installed/linux/bin/rustc",
+        "CARGO_TARGET_DIR": "$BUILD_CACHE/target-linux",
+        "CARGO_BUILD_JOBS": "2",
+        "RUST_TEST_THREADS": "1",
+        "TMPDIR": "$SLICE",
+        "TEMP": "$SLICE"
+      },
+      "binarySha256": "a0a3808dddb32f525601e608740ee7c1c5df86db4a7183ea945449f60d29509d",
+      "processSeconds": 72.33548330000485,
+      "elapsedSeconds": 72.33624209999107,
+      "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr.logSha256": "155e7d026bfc41077cf224af6260cf502382c90383052d2111dde25e3d4e0133"
+    },
+    "rust-test": {
+      "command": [
+        "$REPO/toolchains/installed/linux/bin/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "ariax-engine",
+        "--features",
+        "metalink,ftp,sftp",
+        "--test",
+        "rpc_burst_timing",
+        "--",
+        "--nocapture"
+      ],
+      "passed": true,
+      "timeoutSeconds": 180,
+      "expectedTests": 7,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "RUSTC": "$REPO/toolchains/installed/linux/bin/rustc",
+        "CARGO_TARGET_DIR": "$BUILD_CACHE/target-linux",
+        "CARGO_BUILD_JOBS": "2",
+        "RUST_TEST_THREADS": "1",
+        "TMPDIR": "$SLICE",
+        "TEMP": "$SLICE"
+      },
+      "binarySha256": "828980723df339d62434390e9fb8ef8831036583343ae2316b7ab5646b5c1953",
+      "processSeconds": 39.290523899995605,
+      "elapsedSeconds": 39.291523799998686,
+      "stdout.logSha256": "e6bf96b44449d2fd251bd44a2e155a4eb67ffa244f282259ef0f0a74a259be6b",
+      "stderr.logSha256": "e696b4dab06abc4215559a7dfcfaa99a44503317e84ab3c40eb346f802d7ade2"
+    }
+  },
+  "reportValidation": {
+    "rustGeneratedSyntheticFixture": {
+      "samples": 3,
+      "verificationCalls": 1,
+      "bursts": 3,
+      "maxBurstCalls": 2,
+      "maxBurstMs": 486,
+      "measuredBurstUs": 531000,
+      "measuredRoundTripUs": 130000,
+      "operations": {
+        "pause": {},
+        "bt.changeOption": {}
+      },
+      "burstTiming": {
+        "otherUs": 51000,
+        "primaryUs": 130000,
+        "verificationUs": 350000,
+        "version": 1,
+        "worstCompletedBurst": {
+          "burst": 2,
+          "elapsedNs": 486000000,
+          "elapsedUs": 486000,
+          "firstSampleIndex": 1,
+          "last": {
+            "durationUs": 350000,
+            "operation": "bt.changeOption",
+            "phase": "verification",
+            "sampleIndex": 1,
+            "startUs": 110000
+          },
+          "otherUs": 36000,
+          "primaryCalls": 1,
+          "primaryUs": 100000,
+          "slowest": {
+            "durationUs": 350000,
+            "operation": "bt.changeOption",
+            "phase": "verification",
+            "sampleIndex": 1,
+            "startUs": 110000
+          },
+          "verificationCalls": 1,
+          "verificationUs": 350000
+        }
+      }
+    },
+    "legacyReports": [
+      {
+        "record": "phase6-benchmarks-2026-10-05.json",
+        "recordSha256": "6486093a536d9ff822008938efa666b8b10dd4c2b7440def6d8c634ead3556ca",
+        "scenario": "http",
+        "passed": true
+      },
+      {
+        "record": "phase6-benchmarks-2026-10-05.json",
+        "recordSha256": "6486093a536d9ff822008938efa666b8b10dd4c2b7440def6d8c634ead3556ca",
+        "scenario": "websocket",
+        "passed": true
+      },
+      {
+        "record": "phase6-benchmarks-2026-10-05.json",
+        "recordSha256": "6486093a536d9ff822008938efa666b8b10dd4c2b7440def6d8c634ead3556ca",
+        "scenario": "content-length",
+        "passed": true
+      },
+      {
+        "record": "phase6-benchmarks-2026-10-05.json",
+        "recordSha256": "6486093a536d9ff822008938efa666b8b10dd4c2b7440def6d8c634ead3556ca",
+        "scenario": "ndjson",
+        "passed": true
+      },
+      {
+        "record": "phase6-benchmarks-2026-10-05.json",
+        "recordSha256": "6486093a536d9ff822008938efa666b8b10dd4c2b7440def6d8c634ead3556ca",
+        "scenario": "administrative",
+        "passed": true
+      },
+      {
+        "record": "phase6-benchmarks-rerun-2026-10-05.json",
+        "recordSha256": "68d1895d634b74aac6024946383b70c96bce98b55cf4ac699798713f4c824141",
+        "scenario": "http",
+        "passed": true
+      },
+      {
+        "record": "phase6-benchmarks-rerun-2026-10-05.json",
+        "recordSha256": "68d1895d634b74aac6024946383b70c96bce98b55cf4ac699798713f4c824141",
+        "scenario": "websocket",
+        "passed": true
+      },
+      {
+        "record": "phase6-benchmarks-rerun-2026-10-05.json",
+        "recordSha256": "68d1895d634b74aac6024946383b70c96bce98b55cf4ac699798713f4c824141",
+        "scenario": "content-length",
+        "passed": true
+      },
+      {
+        "record": "phase6-benchmarks-rerun-2026-10-05.json",
+        "recordSha256": "68d1895d634b74aac6024946383b70c96bce98b55cf4ac699798713f4c824141",
+        "scenario": "ndjson",
+        "passed": true
+      },
+      {
+        "record": "phase6-benchmarks-rerun-2026-10-05.json",
+        "recordSha256": "68d1895d634b74aac6024946383b70c96bce98b55cf4ac699798713f4c824141",
+        "scenario": "administrative",
+        "passed": true
+      },
+      {
+        "record": "phase6-benchmarks-rerun-2026-10-05.json",
+        "recordSha256": "68d1895d634b74aac6024946383b70c96bce98b55cf4ac699798713f4c824141",
+        "scenario": "mixed-bt",
+        "passed": true
+      }
+    ],
+    "passed": true,
+    "scope": "Serializer/validator interoperability and historical compatibility; no new performance measurement"
+  },
+  "rawFiles": {
+    "collect-evidence.py": {
+      "sha256": "7720d6d5740eb7c3aeaff2d80091d1b25b59972e1d30894e9b985e0485ec7d24",
+      "bytes": 3056
+    },
+    "final-checks/docs/result.json": {
+      "sha256": "7ceeb9b296bae31fedf4b03272b52d91cb9a8d8d1238dd75dfff28a763e3df58",
+      "bytes": 791
+    },
+    "final-checks/docs/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "final-checks/docs/stdout.log": {
+      "sha256": "b00e596872f6951ec22abed31b5c6d96de4a199e780672a40be33ff6e24ecc0b",
+      "bytes": 93
+    },
+    "final-checks/format/result.json": {
+      "sha256": "bff175b5cd89aa01c4f06ce6dbdef9f027892ced1f18a1b13e68ed41c6f4088d",
+      "bytes": 851
+    },
+    "final-checks/format/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "final-checks/format/stdout.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "final-checks/publication/result.json": {
+      "sha256": "cdc47b7629737eb7b8a4de0875c7f331ea1f1fffbdb7586f30350f3bd759ce7c",
+      "bytes": 792
+    },
+    "final-checks/publication/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "final-checks/publication/stdout.log": {
+      "sha256": "1f2ae031b96c44e26b09a19b752facedafbd38b12f0b64d1fb2b8939f6b6d1d6",
+      "bytes": 28
+    },
+    "final-checks/result.json": {
+      "sha256": "6bb5bb61fe171fb898032fc9c1ca93b764226c69d22150c0e1a1e362c6a402b7",
+      "bytes": 4373
+    },
+    "final-checks/staged-whitespace/result.json": {
+      "sha256": "8e6289a960aa69df7fb3005064392f62e9a9575cecb3b0dc6bbf01ab5855ab88",
+      "bytes": 700
+    },
+    "final-checks/staged-whitespace/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "final-checks/staged-whitespace/stdout.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "final-checks/whitespace/result.json": {
+      "sha256": "50334089e2940c07a9d085204efdf267f0c84931d0de028d4424b0b4ad4cfb63",
+      "bytes": 681
+    },
+    "final-checks/whitespace/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "final-checks/whitespace/stdout.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "final-checks.py": {
+      "sha256": "4d0b64f20bf213ac36a01891508f0578f308224b8b713c20a0277ee33829ce6c",
+      "bytes": 1038
+    },
+    "format/result.json": {
+      "sha256": "8a11cc58d7aa025466e54776d29ed6083456e638facab7a5c078358b799a2a74",
+      "bytes": 742
+    },
+    "format/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "format/stdout.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "helpers-final/result.json": {
+      "sha256": "a93dcffe3417e16505d3cbcef7ef908a5ed1eafda92484a9cfc4c4ee572b81ee",
+      "bytes": 679
+    },
+    "helpers-final/stderr.log": {
+      "sha256": "0982b8a2e968a9f96addbc4e0c25b8547eef3e35fae5cdda0e40ea889dc8f1dd",
+      "bytes": 198
+    },
+    "helpers-final/stdout.log": {
+      "sha256": "4c1c20977a7832118d060576f435cce7c8bfe342f372e1e42167f15ae752de1f",
+      "bytes": 6308
+    },
+    "python-first/result.json": {
+      "sha256": "a15e2a402d7d3f91da67534fbf07dd28204889c7c91028e722b2fcafe0eec230",
+      "bytes": 691
+    },
+    "python-first/stderr.log": {
+      "sha256": "bc884d6812cc1e24f5fd1a7a8b04cc06665af06ea00dc4a25bd189907de9917e",
+      "bytes": 106
+    },
+    "python-first/stdout.log": {
+      "sha256": "ce5bd39cee72c86fb3ba6dea1418137cd8751880379c9890e14acf2782494acb",
+      "bytes": 71
+    },
+    "report-validation.json": {
+      "sha256": "2502a5d41a3437b6c6d4fc36bfa2ae93f5f5ac0506ed957a7b68a8cad55d837a",
+      "bytes": 3597
+    },
+    "rust-checks.py": {
+      "sha256": "0a3b91ba80aeb69fcb01de641bc3127141c50540b9b91722b14130286a1ca5f3",
+      "bytes": 1602
+    },
+    "rust-clippy/result.json": {
+      "sha256": "a56ccd118dc6e835a1dd063f028041af3804c5efad10afff7cb585eab75133df",
+      "bytes": 1189
+    },
+    "rust-clippy/stderr.log": {
+      "sha256": "ccc0c5a749161d89a26ab57372a0c1e62f324d24397537e5a8825236ea93314e",
+      "bytes": 146
+    },
+    "rust-clippy/stdout.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "rust-clippy-bt/result.json": {
+      "sha256": "860679dcc89879396ec4b4918eb28b8176f11d3125bb2b913407172170145c8f",
+      "bytes": 1167
+    },
+    "rust-clippy-bt/stderr.log": {
+      "sha256": "155e7d026bfc41077cf224af6260cf502382c90383052d2111dde25e3d4e0133",
+      "bytes": 2570
+    },
+    "rust-clippy-bt/stdout.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "rust-test/result.json": {
+      "sha256": "f7cd79f9c9c4e38544583114a24fca380e9b7d5939e67ae01e080cb0b156c12e",
+      "bytes": 1130
+    },
+    "rust-test/stderr.log": {
+      "sha256": "e696b4dab06abc4215559a7dfcfaa99a44503317e84ab3c40eb346f802d7ade2",
+      "bytes": 896
+    },
+    "rust-test/stdout.log": {
+      "sha256": "e6bf96b44449d2fd251bd44a2e155a4eb67ffa244f282259ef0f0a74a259be6b",
+      "bytes": 1157
+    },
+    "verify-reports.py": {
+      "sha256": "3cfa1398768eec731b1a9c46d02a0bc948734fcc03fe8ce22615b167f576cab1",
+      "bytes": 1421
+    }
+  },
+  "rawFilesCount": 39,
+  "sourceSha256": {
+    "crates/ariax-engine/benches/rpc_active_profile.rs": "e52b51dd33fd41bbd10020b730300373cf8addc9d6b08cf97875d282430ff76b",
+    "crates/ariax-engine/benches/rpc_active_profile/burst_timing.rs": "8def0f1705874db7a64f2a9034a4f1876ab48fd915b13ff7884b9e09a55da0f9",
+    "crates/ariax-engine/tests/rpc_burst_timing.rs": "870b1ab9dad9ac70d8834d148417360c2d9c3ebd16495d3581d666410b71141a",
+    "scripts/ci.py": "006b533e2a6d871a5e3f6878cc14b3aeeaf0f25c418be7b8c24c310388c4b179",
+    "scripts/test_burst_timing.py": "6c300aaf83bc6df6fc94dcb3f6f7903f22a74262b3850807bccfb627dffbffac",
+    "docs/runtime/performance-profiles.md": "e8a9065c5c7f30407df686ad4d0ea454194b9b4fb7ce1d5001650d01a76ee4c6",
+    "docs/project/implementation-readiness.md": "11408f72b6cd140639faad16e9a50395c2efee706b9ed14afaa59e4590912d93",
+    "performance-evidence/phase7-burst-diagnostics-2026-10-05.md": "e88e90a80a26c9d25ccc2ed55ffddcd5fa81a30dff3469eb2be0e749f96a8342"
+  },
+  "rustRegressionCount": 7,
+  "pythonTestCount": 99,
+  "pathPlaceholders": {
+    "$SLICE": "local diagnostic-slice evidence",
+    "$REPO": "repository root",
+    "$BUILD_CACHE": "retained ordinary build cache",
+    "$VALIDATION_CACHE": "retained Cargo/native cache"
+  },
+  "pathNormalization": "Only the portable report normalizes paths; hashes bind unchanged raw files."
+}

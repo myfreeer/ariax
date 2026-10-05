@@ -650,6 +650,11 @@ do not approve a release or replace the remaining platform gates.
 | `P7-03` | All 11 Rust-ASan fuzz targets pass short and extended campaigns; native ASan/UBSan and TSan probes pass. Direct TSan driver passes ten native test executions; [maintained tooling](../development/local-hardening.md#maintained-direct-tsan-driver) verifies four additional executions using the retained binary. | Fully instrumented Rust standard-library/harness race coverage; nine failed native-only harness invocations remain retained. |
 | `P7-04` | 500 WSL and 600 Windows repeated lifecycle/recovery invocations pass. Independent Linux/Windows-GNU minimal/standard release builds match byte for byte; generated contracts and runtime imports checked. | macOS/MSVC and remaining release matrix, hardware power loss, license/notices and compatibility decisions; reviewed handler coverage remains 54/207. |
 
+The [completed-burst diagnostic slice](../../performance-evidence/phase7-burst-diagnostics-2026-10-05.md)
+adds a longest-burst snapshot and separate primary/verification/untimed totals.
+Focused regressions and report validation pass locally; new native Linux
+measurements are still needed to use these fields for attribution.
+
 Benchmarks remain manual-triggered. No push, CI dispatch, tag, migration or
 `aria2c` replacement is part of this local campaign.
 

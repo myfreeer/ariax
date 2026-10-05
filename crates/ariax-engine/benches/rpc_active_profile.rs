@@ -34,7 +34,7 @@ const BURST_LAUNCH_MS: u64 = 400;
 mod admin;
 #[path = "rpc_active_profile/burst_timing.rs"]
 mod burst_timing;
-use burst_timing::{BurstTiming, Phase};
+use burst_timing::{BurstTiming, CompletedBursts, Phase};
 #[path = "rpc_active_profile/setup.rs"]
 mod setup;
 use setup::{build_control_plane, private_directory};
@@ -1266,6 +1266,7 @@ async fn measure(scenario: &str) -> Result<()> {
     let mut max_burst_calls = 0;
     let mut max_burst = Duration::ZERO;
     let mut measured_bursts = Duration::ZERO;
+    let mut completed_bursts = CompletedBursts::default();
     let mut max_rss = 0;
     let mut max_rpc = 0;
     let mut max_resident = 0;
@@ -1457,7 +1458,7 @@ async fn measure(scenario: &str) -> Result<()> {
             }
         }
         let elapsed = start.elapsed();
-        timing.check_limit(scenario, bursts + 1, elapsed)?;
+        completed_bursts.record(scenario, bursts + 1, elapsed, timing)?;
         max_burst_calls = max_burst_calls.max(count);
         max_burst = max_burst.max(elapsed);
         measured_bursts += elapsed;
@@ -1524,6 +1525,7 @@ async fn measure(scenario: &str) -> Result<()> {
     report["stalledCreditAccounting"] = json!(
         "per-client weak observers; outstanding response owners; complete release after disconnect"
     );
+    report["burstTiming"] = completed_bursts.report();
     report["measurementKind"] = json!(workload().measurement_kind());
     report["acceptanceEligible"] = json!(!workload().diagnostic_small);
     report["stalledConsumerCleanupVerified"] = json!(true);

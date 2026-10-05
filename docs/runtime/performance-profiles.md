@@ -33,8 +33,24 @@ offset and duration in microseconds. Verification timing includes request
 construction and state validation. Total timed-step duration and remaining
 burst time distinguish those steps from other harness work or scheduling delays;
 they do not identify the cause of a delay. Bookkeeping retains only fixed-size
-summaries and formats diagnostics on failure. It does not change sample latency
-measurements or acceptance limits, and partial runs remain failures.
+summaries and formats diagnostics on failure. Primary and verification totals
+are reported separately, including in failure diagnostics.
+
+Complete transport and mixed reports include `burstTiming` version 1, with
+aggregate `primaryUs`, `verificationUs` and `otherUs`, plus one
+`worstCompletedBurst` snapshot. That snapshot identifies the burst and sample
+positions, call counts, separate totals, last/slowest steps and elapsed time in
+microseconds and nanoseconds. The longest duration wins; exact ties keep the
+earliest burst. `otherUs` includes harness work and scheduling outside timed
+steps, not an attribution to a particular subsystem. No per-burst history is
+retained, and JSON formatting occurs only after measurement.
+
+Report validation checks counts, step positions, timing composition and the
+unchanged exact 500 ms limit. Independently truncated microsecond components
+may sum to one or two microseconds less than their total. Fresh CI measurements
+require these diagnostics; historical reports without `burstTiming` remain
+readable, and any present diagnostics must validate. This does not change
+sample latency measurements or acceptance limits; partial runs remain failures.
 Each scenario has a 90-second overall deadline; setup, barrier queries and
 shutdown also have deadlines so a failed fixture cannot run indefinitely.
 Origin metrics reads complete at the declared HTTP `Content-Length`, without

@@ -331,16 +331,80 @@ def validate_latencies(values, maximum_us=50_000):
         integer(item.get("p99Us"), name + ".p99Us", maximum=maximum_us)
 
 
-def validate_benchmark(report, scenario, metalink=True, *, expected_os="linux"):
-    return _validate_benchmark(report, scenario, metalink, expected_os=expected_os, diagnostic=False)
+def validate_burst_timing(report, *, required=False):
+    if "burstTiming" not in report:
+        require(not required, "missing completed-burst timing diagnostics")
+        return
+    timing = report["burstTiming"]
+    require(isinstance(timing, dict) and type(timing.get("version")) is int
+            and timing["version"] == 1, "invalid burst timing version")
+    total = integer(report.get("measuredBurstUs"), "measuredBurstUs")
+    primary = integer(report.get("measuredRoundTripUs"), "measuredRoundTripUs", maximum=total)
+
+    def components(value, elapsed):
+        require(isinstance(value, dict), "invalid burst timing object")
+        parts = [integer(value.get(key), key, maximum=elapsed)
+                 for key in ("primaryUs", "verificationUs", "otherUs")]
+        # Three independently floored microsecond durations lose at most 2 us.
+        require(0 <= elapsed - sum(parts) <= 2, "inconsistent burst timing composition")
+        return parts
+
+    totals = components(timing, total)
+    require(totals[0] == primary, "primary timing disagrees with round trips")
+    worst = timing.get("worstCompletedBurst")
+    require(isinstance(worst, dict), "missing worst completed burst")
+    bursts = integer(report.get("bursts"), "bursts", minimum=1)
+    integer(worst.get("burst"), "worst.burst", minimum=1, maximum=bursts)
+    elapsed_ns = integer(worst.get("elapsedNs"), "worst.elapsedNs", maximum=500_000_000)
+    elapsed = integer(worst.get("elapsedUs"), "worst.elapsedUs", maximum=total)
+    require(elapsed == elapsed_ns // 1_000 and report.get("maxBurstMs") == elapsed_ns // 1_000_000,
+            "worst burst disagrees with maximum duration")
+    parts = components(worst, elapsed)
+    require(all(part <= summed for part, summed in zip(parts, totals)), "worst timing exceeds aggregate")
+    samples = integer(report.get("samples"), "samples", minimum=1)
+    first = integer(worst.get("firstSampleIndex"), "worst.firstSampleIndex", maximum=samples - 1)
+    calls = integer(worst.get("primaryCalls"), "worst.primaryCalls", maximum=samples - first)
+    verifications = integer(worst.get("verificationCalls"), "worst.verificationCalls", maximum=calls)
+    require(verifications <= integer(report.get("verificationCalls"), "verificationCalls"),
+            "worst verification count exceeds aggregate")
+    maximum_calls = integer(report.get("maxBurstCalls"), "maxBurstCalls", minimum=1, maximum=1_000)
+    require(calls + verifications <= maximum_calls, "worst call count exceeds maximum")
+    require(calls or parts[:2] == [0, 0], "empty burst contains timed work")
+    require(verifications or parts[1] == 0, "verification time has no calls")
+    if calls == 0:
+        require(worst.get("last") is None and worst.get("slowest") is None, "empty burst contains steps")
+        return
+    operations = report.get("operations")
+    require(isinstance(operations, dict), "missing operations for burst timing")
+    for name in ("last", "slowest"):
+        step = worst.get(name)
+        require(isinstance(step, dict), "missing worst burst step: " + name)
+        require(isinstance(step.get("operation"), str) and step["operation"] in operations,
+                "unknown burst step operation")
+        phase = step.get("phase")
+        require(phase in ("primary", "verification") and (phase == "primary" or verifications > 0),
+                "invalid burst step phase")
+        integer(step.get("sampleIndex"), name + ".sampleIndex", minimum=first, maximum=first + calls - 1)
+        start = integer(step.get("startUs"), name + ".startUs", maximum=elapsed)
+        duration = integer(step.get("durationUs"), name + ".durationUs",
+                           maximum=parts[0 if phase == "primary" else 1])
+        require(start + duration <= elapsed, "burst step escapes duration")
+    require(worst["last"]["sampleIndex"] == first + calls - 1, "last step has wrong sample position")
+    require(worst["slowest"]["durationUs"] >= worst["last"]["durationUs"], "slowest step is shorter than last")
 
 
-def validate_diagnostic_benchmark(report, scenario, metalink=True, *, expected_os="windows"):
+def validate_benchmark(report, scenario, metalink=True, *, expected_os="linux", require_burst_timing=False):
+    return _validate_benchmark(report, scenario, metalink, expected_os=expected_os, diagnostic=False,
+                               require_burst_timing=require_burst_timing)
+
+
+def validate_diagnostic_benchmark(report, scenario, metalink=True, *, expected_os="windows", require_burst_timing=False):
     """Validate small-run structure and return its unfiltered latency-gate result."""
-    return _validate_benchmark(report, scenario, metalink, expected_os=expected_os, diagnostic=True)
+    return _validate_benchmark(report, scenario, metalink, expected_os=expected_os, diagnostic=True,
+                               require_burst_timing=require_burst_timing)
 
 
-def _validate_benchmark(report, scenario, metalink, *, expected_os, diagnostic):
+def _validate_benchmark(report, scenario, metalink, *, expected_os, diagnostic, require_burst_timing):
     require(expected_os in {"linux", "windows"}, "unsupported benchmark operating system")
     require(isinstance(report, dict) and report.get("scenario") == scenario, "wrong benchmark scenario")
     if diagnostic:
@@ -427,6 +491,7 @@ def _validate_benchmark(report, scenario, metalink, *, expected_os, diagnostic):
         integer(report.get("residentLimit"), "residentLimit", minimum=1, maximum=896 * 1024 * 1024)
     require({name: value["calls"] for name, value in report["operations"].items()} == counts,
             "incomplete per-operation measurements")
+    validate_burst_timing(report, required=require_burst_timing)
     for peak, cap in (("maxRpcBytes", "rpcLimit"), ("maxResidentBytes", "residentLimit"),
                       ("maxSampledRssBytes", "rssLimit")):
         integer(report.get(peak), peak, maximum=integer(report.get(cap), cap, minimum=1))
@@ -481,7 +546,7 @@ def measure_scenario(runner, binary, scenario, metalink):
         reports = [json.loads(line) for line in (directory / "stdout.jsonl").read_text().splitlines() if line.strip()]
         require(len(reports) == 1, "benchmark must emit exactly one complete report")
         record["report"] = reports[0]
-        validate_benchmark(reports[0], scenario, metalink)
+        validate_benchmark(reports[0], scenario, metalink, require_burst_timing=True)
         record["passed"] = True
     except BaseException as error:
         record["error"] = str(error) or type(error).__name__
