@@ -100,6 +100,13 @@ Prebuilt Rust test-harness synchronization also requires its own capability
 check when linked with native-only TSan. A failing harness remains failed
 evidence until isolated; use a compatible instrumented Rust harness or an
 explicitly documented direct FFI driver with unchanged application assertions.
+The maintained `scripts/bt_tsan.py` driver derives those bodies from the native
+integration test, removes only its feature gate and test attributes, and runs
+each case directly on the main thread. Builds preserve repository-locked
+dependency identities. Reusing a binary requires matching source, fixtures,
+generated driver, lock and recorded binary identities, plus verified native
+TSan provenance. Each attempt retains strict runtime diagnostics and cleanup;
+this driver still supplies native FFI coverage only.
 
 The magnet gate must expose held metadata through tracked state even when its
 notification is dropped. Approval supplies the complete validated mapping and

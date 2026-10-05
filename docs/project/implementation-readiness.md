@@ -645,9 +645,9 @@ do not approve a release or replace the remaining platform gates.
 
 | Work Package | Completed Local Evidence | Remaining Acceptance |
 | --- | --- | --- |
-| `P7-01` | 41 retained native Windows transport diagnostics, including ten quiet observations per transport. | Attribute the retained native Linux 530.097 ms mixed-burst failure and establish repeated stability. |
+| `P7-01` | 41 retained native Windows transport diagnostics, including ten quiet observations per transport. [Short artifact comparison](../../performance-evidence/phase7-short-followup-2026-10-05.md#mixed-burst-comparison) identifies mutation-tail candidates and the missing historical attribution data. | Attribute the retained native Linux 530.097 ms mixed-burst failure and establish repeated stability. |
 | `P7-02` | Four security/resource repairs with success and rejection regressions; ownership, policy, persistence and dependency review. | Retain strict Unix fixture and kernel/backend coverage on suitable native systems. |
-| `P7-03` | All 11 Rust-ASan fuzz targets pass short and extended campaigns; native ASan/UBSan and TSan probes pass. Direct TSan driver passes ten native test executions. | Fully instrumented Rust standard-library/harness race coverage; nine failed native-only harness invocations remain retained. |
+| `P7-03` | All 11 Rust-ASan fuzz targets pass short and extended campaigns; native ASan/UBSan and TSan probes pass. Direct TSan driver passes ten native test executions; [maintained tooling](../development/local-hardening.md#maintained-direct-tsan-driver) verifies four additional executions using the retained binary. | Fully instrumented Rust standard-library/harness race coverage; nine failed native-only harness invocations remain retained. |
 | `P7-04` | 500 WSL and 600 Windows repeated lifecycle/recovery invocations pass. Independent Linux/Windows-GNU minimal/standard release builds match byte for byte; generated contracts and runtime imports checked. | macOS/MSVC and remaining release matrix, hardware power loss, license/notices and compatibility decisions; reviewed handler coverage remains 54/207. |
 
 Benchmarks remain manual-triggered. No push, CI dispatch, tag, migration or

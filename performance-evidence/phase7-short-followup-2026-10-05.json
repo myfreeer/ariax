@@ -1,0 +1,1212 @@
+{
+  "baseCommit": "4b5b117cab0680ef1f3aa4d4c8fdb7b8b18acbaa",
+  "scope": "Short local artifact analysis and maintained native TSan reuse; no new benchmark or dependency build",
+  "shortFollowupComplete": true,
+  "fullPhase7Accepted": false,
+  "burstAnalysis": {
+    "scope": "Offline comparison of two retained runs, not a new stability measurement",
+    "records": {
+      "failed": {
+        "sourceCommit": "a6f9b0db93e1af30f24d61aaf73b8cde8e4c6d23",
+        "archiveSha256": "443d6199997ce3d6cae62add8294961f970b39416b5bfcc38079bfe5e77d477e",
+        "reviewSha256": "6486093a536d9ff822008938efa666b8b10dd4c2b7440def6d8c634ead3556ca",
+        "verifiedSourceFiles": 482,
+        "run": {
+          "scenario": "mixed-bt",
+          "command": [
+            "/home/runner/work/ariax/ariax/toolchains/ci-target/benchmarks/release/deps/rpc_active_profile-9d993bc1ab56adc9",
+            "--scenario=mixed-bt"
+          ],
+          "passed": false,
+          "binarySha256": "255e2a77a9c3628a24450dd2682afdef1714a27ee1eb1fc00ba4afbc2b344a55",
+          "compilerProcessesObserved": [],
+          "exitCode": 1,
+          "error": "benchmark process failed",
+          "elapsedWallSeconds": 31.554,
+          "stdout.jsonlSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr.logSha256": "75ea8d01b9eaddc02be3301daf036cd13b93f00e78acc866dd9875b09fd70432"
+        },
+        "stderr": "benchmark mixed-bt: origin listening on 127.0.0.1:34971\norigin: first metrics query received\norigin: first metrics query answered\nbenchmark mixed-bt: origin ready: {\"acks\":0,\"active\":0}\nbenchmark setup: process bootstrap\nbenchmark setup: range task admission\nbenchmark setup: stalled-consumer source admission\nbenchmark setup: query projection and ordinary control tasks\norigin: 250 active range responses\norigin: 500 active range responses\norigin: 750 active range responses\norigin: 1000 active range responses\nbenchmark setup: transport listeners\nbenchmark mixed-bt: listener metadata received\nbenchmark mixed-bt: entering initial active-range barrier\nbenchmark setup: first metrics request dispatched\nbenchmark setup: first metrics response ready\nBT peers: first metrics query received\nBT peers: first metrics query answered\nbenchmark mixed-bt: 1000 active HTTP ranges confirmed\nbenchmark mixed-bt: stalled-consumer requests sent\nbenchmark mixed-bt: 1880 measured calls in 5 bursts\nbenchmark mixed-bt: 3798 measured calls in 10 bursts\nbenchmark mixed-bt: 5700 measured calls in 15 bursts\nbenchmark mixed-bt: 7615 measured calls in 20 bursts\nbenchmark mixed-bt: 9515 measured calls in 25 bursts\nactive RPC benchmark failed: mixed-bt burst exceeded 500 ms: 530097 us\n",
+        "rawHashes": {
+          "run.json": "541b858bcba18f00ceb069fcadc81e253a827898530c1195ef622f4594079abf",
+          "stderr.log": "75ea8d01b9eaddc02be3301daf036cd13b93f00e78acc866dd9875b09fd70432",
+          "stdout.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "passed": {
+        "sourceCommit": "9107ecb1b82b3e1c720de8bdc24d4a1e8657f774",
+        "archiveSha256": "cee8a63212b45c87e594f4588b015ce164fe7bdee87b1c324227f6fe55300f68",
+        "reviewSha256": "68d1895d634b74aac6024946383b70c96bce98b55cf4ac699798713f4c824141",
+        "verifiedSourceFiles": 488,
+        "run": {
+          "scenario": "mixed-bt",
+          "command": [
+            "/home/runner/work/ariax/ariax/toolchains/ci-target/benchmarks/release/deps/rpc_active_profile-9d993bc1ab56adc9",
+            "--scenario=mixed-bt"
+          ],
+          "passed": true,
+          "binarySha256": "36c75f7145a3e7f12bdd78f675e53f98b5fa6456367c843a67c4f6a68e885a1f",
+          "compilerProcessesObserved": [],
+          "exitCode": 0,
+          "report": {
+            "acceptanceEligible": true,
+            "arch": "x86_64",
+            "auxiliaryMutationTargets": 1,
+            "btControlCalls": 1000,
+            "btDownloadedBytes": 737280000,
+            "btPeerProjection": 1000,
+            "btPeers": 1000,
+            "btRenewedBarriers": 44,
+            "burstLimitCalls": 1000,
+            "burstLimitMs": 500,
+            "bursts": 44,
+            "complete": true,
+            "controlCalls": 1000,
+            "controlRuntime": {
+              "maxLockWaitUs": 189,
+              "maxSteps": 12,
+              "maxTurnUs": 3045,
+              "totalLockWaitUs": 47797,
+              "turns": 2124298
+            },
+            "cooldownMs": 250,
+            "elapsedScenarioMs": 47270,
+            "firstResponseBytes": {
+              "addUri": 18,
+              "bt.changeOption": 4,
+              "bt.getFiles": 149,
+              "bt.getPeers": 202569,
+              "bt.tellStatus": 87,
+              "changeOption": 4,
+              "changePosition": 1,
+              "changeUri": 5,
+              "getFiles": 67547,
+              "getOption": 267,
+              "http.tellStatus": 87,
+              "pause": 18,
+              "remove": 18,
+              "removeDownloadResult": 4,
+              "tellWaiting": 20609,
+              "unpause": 18
+            },
+            "fixtureCleanupUs": 21117,
+            "launchCutoffMs": 400,
+            "maxBurstCalls": 592,
+            "maxBurstMs": 486,
+            "maxResidentBytes": 376344996,
+            "maxRpcBytes": 21636042,
+            "maxSampledRssBytes": 194818048,
+            "measuredBurstUs": 17682260,
+            "measuredRoundTripUs": 17094668,
+            "measurementKind": "full",
+            "metadataSources": 32,
+            "operations": {
+              "addUri": {
+                "calls": 125,
+                "maxUs": 201000,
+                "p50Us": 7967,
+                "p99Us": 14026
+              },
+              "bt.changeOption": {
+                "calls": 1000,
+                "maxUs": 124371,
+                "p50Us": 2939,
+                "p99Us": 11376
+              },
+              "bt.getFiles": {
+                "calls": 1000,
+                "maxUs": 1549,
+                "p50Us": 110,
+                "p99Us": 468
+              },
+              "bt.getPeers": {
+                "calls": 1000,
+                "maxUs": 7934,
+                "p50Us": 3375,
+                "p99Us": 5795
+              },
+              "bt.tellStatus": {
+                "calls": 6000,
+                "maxUs": 946,
+                "p50Us": 84,
+                "p99Us": 239
+              },
+              "changeOption": {
+                "calls": 125,
+                "maxUs": 37755,
+                "p50Us": 2388,
+                "p99Us": 12828
+              },
+              "changePosition": {
+                "calls": 125,
+                "maxUs": 29290,
+                "p50Us": 2283,
+                "p99Us": 2599
+              },
+              "changeUri": {
+                "calls": 125,
+                "maxUs": 159952,
+                "p50Us": 10696,
+                "p99Us": 23175
+              },
+              "getFiles": {
+                "calls": 1000,
+                "maxUs": 2182,
+                "p50Us": 582,
+                "p99Us": 1423
+              },
+              "getOption": {
+                "calls": 1000,
+                "maxUs": 1848,
+                "p50Us": 99,
+                "p99Us": 179
+              },
+              "http.tellStatus": {
+                "calls": 6000,
+                "maxUs": 4302,
+                "p50Us": 86,
+                "p99Us": 237
+              },
+              "pause": {
+                "calls": 125,
+                "maxUs": 201133,
+                "p50Us": 6444,
+                "p99Us": 10546
+              },
+              "remove": {
+                "calls": 125,
+                "maxUs": 137869,
+                "p50Us": 6452,
+                "p99Us": 12747
+              },
+              "removeDownloadResult": {
+                "calls": 125,
+                "maxUs": 77578,
+                "p50Us": 2293,
+                "p99Us": 3427
+              },
+              "tellWaiting": {
+                "calls": 2000,
+                "maxUs": 3987,
+                "p50Us": 1051,
+                "p99Us": 1969
+              },
+              "unpause": {
+                "calls": 125,
+                "maxUs": 109072,
+                "p50Us": 2302,
+                "p99Us": 31311
+              }
+            },
+            "origins": 125,
+            "os": "linux",
+            "p50Us": 94,
+            "p99Us": 8000,
+            "passed": true,
+            "peerFixtureMemoryExcluded": true,
+            "perStatusPeerCheck": true,
+            "perStatusRangeCheck": true,
+            "profile": "concurrency",
+            "projectionTasks": 128,
+            "rangeAdmission": "metalink",
+            "ranges": 1000,
+            "renewedBarrierAfterWarmup": true,
+            "residentLimit": 939524096,
+            "rpcLimit": 67108864,
+            "rssLimit": 1073741824,
+            "samples": 20000,
+            "scenario": "mixed-bt",
+            "shutdownAcknowledgementUs": 103,
+            "shutdownDrainBoundary": "engine process exit",
+            "shutdownDrainUs": 697049,
+            "stalledConsumerBaselines": {
+              "events": 8476474,
+              "response": 65536
+            },
+            "stalledConsumerCleanupVerified": true,
+            "stalledCreditAccounting": "per-client weak observers; outstanding response owners; complete release after disconnect",
+            "stalledCreditBytes": 537600,
+            "stalledEventCreditBytes": 2631056,
+            "stalledEvents": "WebSocket; coalesced 512 KiB fixture notifications through production broker",
+            "stdioStalledWriter": "loopback socket; measured stdio uses OS pipes",
+            "verificationCalls": 2000,
+            "workerThreads": 2
+          },
+          "elapsedWallSeconds": 47.331,
+          "stdout.jsonlSha256": "b15713dd8a21bcd0ed11c4b0bce5a68b1310c20894c135e0b2adcfe268debbfa",
+          "stderr.logSha256": "29c6fe161d486347980878449703c3a5a356b7e9c67db564853fb31ad9bdbca0"
+        },
+        "stderr": "benchmark mixed-bt: origin listening on 127.0.0.1:40023\norigin: first metrics query received\norigin: first metrics query answered\nbenchmark mixed-bt: origin ready: {\"acks\":0,\"active\":0}\nbenchmark setup: process bootstrap\nbenchmark setup: range task admission\nbenchmark setup: stalled-consumer source admission\nbenchmark setup: query projection and ordinary control tasks\norigin: 250 active range responses\norigin: 500 active range responses\norigin: 750 active range responses\norigin: 1000 active range responses\nbenchmark setup: transport listeners\nbenchmark mixed-bt: listener metadata received\nbenchmark mixed-bt: entering initial active-range barrier\nbenchmark setup: first metrics request dispatched\nbenchmark setup: first metrics response ready\nBT peers: first metrics query received\nBT peers: first metrics query answered\nbenchmark mixed-bt: 1000 active HTTP ranges confirmed\nbenchmark mixed-bt: stalled-consumer requests sent\nbenchmark mixed-bt: 2375 measured calls in 5 bursts\nbenchmark mixed-bt: 4937 measured calls in 10 bursts\nbenchmark mixed-bt: 7495 measured calls in 15 bursts\nbenchmark mixed-bt: 9958 measured calls in 20 bursts\nbenchmark mixed-bt: 12418 measured calls in 25 bursts\nbenchmark mixed-bt: 14960 measured calls in 30 bursts\nbenchmark mixed-bt: 15775 measured calls in 35 bursts\nbenchmark mixed-bt: 18233 measured calls in 40 bursts\nbenchmark mixed-bt: samples complete, draining stalled consumer\nbenchmark mixed-bt: shutdown acknowledged\nBT peers: peer 0 closed its connection; ending peer fixture\n",
+        "rawHashes": {
+          "run.json": "b1b00e53593d98ad0e88f8026ace2a1f5496f97ea28c94372efbda7ad01a0b62",
+          "stderr.log": "29c6fe161d486347980878449703c3a5a356b7e9c67db564853fb31ad9bdbca0",
+          "stdout.jsonl": "b15713dd8a21bcd0ed11c4b0bce5a68b1310c20894c135e0b2adcfe268debbfa"
+        }
+      }
+    },
+    "changedCode": [
+      "crates/ariax-engine/benches/rpc_active_profile.rs",
+      "crates/ariax-engine/benches/rpc_active_profile/burst_timing.rs",
+      "crates/ariax-engine/tests/rpc_burst_timing.rs"
+    ],
+    "failure": {
+      "reportedBurstUs": 530097,
+      "overCapUs": 30097,
+      "beyondLaunchCutoffUs": 130097,
+      "lastProgressPrimaryCalls": 9515,
+      "lastProgressCompletedBursts": 25,
+      "possibleFailingBurstRangeInclusive": [
+        26,
+        30
+      ],
+      "detailedTimingAvailable": false
+    },
+    "passing": {
+      "maxBurstMsTruncated": 486,
+      "burstHeadroomMs": {
+        "lowerExclusive": 13,
+        "upperInclusive": 14
+      },
+      "primaryRoundTripUs": 17094668,
+      "totalMeasuredBurstUs": 17682260,
+      "verificationAndUntimedUs": 587592,
+      "primaryCallsOver50msCountBoundsInclusive": [
+        7,
+        16
+      ],
+      "operationsWithMaxOver50ms": {
+        "addUri": {
+          "calls": 125,
+          "maxUs": 201000,
+          "p50Us": 7967,
+          "p99Us": 14026
+        },
+        "bt.changeOption": {
+          "calls": 1000,
+          "maxUs": 124371,
+          "p50Us": 2939,
+          "p99Us": 11376
+        },
+        "changeUri": {
+          "calls": 125,
+          "maxUs": 159952,
+          "p50Us": 10696,
+          "p99Us": 23175
+        },
+        "pause": {
+          "calls": 125,
+          "maxUs": 201133,
+          "p50Us": 6444,
+          "p99Us": 10546
+        },
+        "remove": {
+          "calls": 125,
+          "maxUs": 137869,
+          "p50Us": 6452,
+          "p99Us": 12747
+        },
+        "removeDownloadResult": {
+          "calls": 125,
+          "maxUs": 77578,
+          "p50Us": 2293,
+          "p99Us": 3427
+        },
+        "unpause": {
+          "calls": 125,
+          "maxUs": 109072,
+          "p50Us": 2302,
+          "p99Us": 31311
+        }
+      },
+      "controlRuntime": {
+        "maxLockWaitUs": 189,
+        "maxSteps": 12,
+        "maxTurnUs": 3045,
+        "totalLockWaitUs": 47797,
+        "turns": 2124298
+      },
+      "memory": {
+        "maxSampledRssBytes": 194818048,
+        "rssLimit": 1073741824,
+        "maxResidentBytes": 376344996,
+        "residentLimit": 939524096,
+        "maxRpcBytes": 21636042,
+        "rpcLimit": 67108864
+      }
+    },
+    "conclusions": [
+      "The earlier failed burst lacks operation/sample/verification attribution; no retrospective root cause is supported.",
+      "Mutation primary calls are the only operations with >50 ms maxima in the passing run and are useful investigation candidates, not attribution for the failed run.",
+      "The 587592 us residual combines verification and untimed work across 44 bursts; it is not scheduler or disk latency.",
+      "Barriers before/after each timed burst and the 250 ms cooldown are outside the timed interval. Scheduling delays inside that interval remain possible.",
+      "No production/build change occurred between these runs. The diagnostic-only change is not evidence of a performance repair.",
+      "The synthetic 9517/burst-26 helper regression is not an observed failing sample.",
+      "Two separate campaigns do not establish a failure rate or repeated-run stability."
+    ],
+    "productionFixJustified": false,
+    "fullP701Accepted": false
+  },
+  "commands": {
+    "final-checks/docs": {
+      "command": [
+        "/usr/bin/python3",
+        "-B",
+        "scripts/check_docs.py"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "$FOLLOWUP",
+        "TEMP": "$FOLLOWUP"
+      },
+      "binarySha256": "17b78e0a93175e86f9ac03141924fd7a7f0c0c52e66b34bfa0de20ffef989df1",
+      "processSeconds": 0.4704305000050226,
+      "elapsedSeconds": 0.47059620000072755,
+      "stdout.logSha256": "00324e3fcc7df6c9a0b0b221cbb7950700c07e56fddd007b0911527baee3db54",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "final-checks/publication": {
+      "command": [
+        "/usr/bin/python3",
+        "-B",
+        "scripts/publication.py"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "$FOLLOWUP",
+        "TEMP": "$FOLLOWUP"
+      },
+      "binarySha256": "17b78e0a93175e86f9ac03141924fd7a7f0c0c52e66b34bfa0de20ffef989df1",
+      "processSeconds": 0.41989019999164157,
+      "elapsedSeconds": 0.42002449999563396,
+      "stdout.logSha256": "1f2ae031b96c44e26b09a19b752facedafbd38b12f0b64d1fb2b8939f6b6d1d6",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "final-checks": {
+      "commands": {
+        "docs": {
+          "command": [
+            "/usr/bin/python3",
+            "-B",
+            "scripts/check_docs.py"
+          ],
+          "passed": true,
+          "timeoutSeconds": 60,
+          "expectedTests": null,
+          "exitCode": 0,
+          "cleanup": "owned-process-group-terminated",
+          "environment": {
+            "TMPDIR": "$FOLLOWUP",
+            "TEMP": "$FOLLOWUP"
+          },
+          "binarySha256": "17b78e0a93175e86f9ac03141924fd7a7f0c0c52e66b34bfa0de20ffef989df1",
+          "processSeconds": 0.4704305000050226,
+          "elapsedSeconds": 0.47059620000072755,
+          "stdout.logSha256": "00324e3fcc7df6c9a0b0b221cbb7950700c07e56fddd007b0911527baee3db54",
+          "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "publication": {
+          "command": [
+            "/usr/bin/python3",
+            "-B",
+            "scripts/publication.py"
+          ],
+          "passed": true,
+          "timeoutSeconds": 60,
+          "expectedTests": null,
+          "exitCode": 0,
+          "cleanup": "owned-process-group-terminated",
+          "environment": {
+            "TMPDIR": "$FOLLOWUP",
+            "TEMP": "$FOLLOWUP"
+          },
+          "binarySha256": "17b78e0a93175e86f9ac03141924fd7a7f0c0c52e66b34bfa0de20ffef989df1",
+          "processSeconds": 0.41989019999164157,
+          "elapsedSeconds": 0.42002449999563396,
+          "stdout.logSha256": "1f2ae031b96c44e26b09a19b752facedafbd38b12f0b64d1fb2b8939f6b6d1d6",
+          "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "whitespace": {
+          "command": [
+            "git",
+            "diff",
+            "--check"
+          ],
+          "passed": true,
+          "timeoutSeconds": 60,
+          "expectedTests": null,
+          "exitCode": 0,
+          "cleanup": "owned-process-group-terminated",
+          "environment": {
+            "TMPDIR": "$FOLLOWUP",
+            "TEMP": "$FOLLOWUP"
+          },
+          "processSeconds": 0.034222200003569014,
+          "elapsedSeconds": 0.03432299999985844,
+          "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "staged-whitespace": {
+          "command": [
+            "git",
+            "diff",
+            "--cached",
+            "--check"
+          ],
+          "passed": true,
+          "timeoutSeconds": 60,
+          "expectedTests": null,
+          "exitCode": 0,
+          "cleanup": "owned-process-group-terminated",
+          "environment": {
+            "TMPDIR": "$FOLLOWUP",
+            "TEMP": "$FOLLOWUP"
+          },
+          "processSeconds": 0.019718299998203292,
+          "elapsedSeconds": 0.01981359999626875,
+          "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "passed": true
+    },
+    "final-checks/staged-whitespace": {
+      "command": [
+        "git",
+        "diff",
+        "--cached",
+        "--check"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "$FOLLOWUP",
+        "TEMP": "$FOLLOWUP"
+      },
+      "processSeconds": 0.019718299998203292,
+      "elapsedSeconds": 0.01981359999626875,
+      "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "final-checks/whitespace": {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "$FOLLOWUP",
+        "TEMP": "$FOLLOWUP"
+      },
+      "processSeconds": 0.034222200003569014,
+      "elapsedSeconds": 0.03432299999985844,
+      "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "helper-tests-first": {
+      "command": [
+        "python3",
+        "-B",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts",
+        "-p",
+        "test_bt_tsan.py"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60.0,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "$FOLLOWUP",
+        "TEMP": "$FOLLOWUP"
+      },
+      "processSeconds": 0.5924594999960391,
+      "elapsedSeconds": 0.5925931999954628,
+      "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr.logSha256": "d4abf49d388cbab99d78525181725f1acc236509132ff640b982fda6677c212a"
+    },
+    "helper-tests-second": {
+      "command": [
+        "python3",
+        "-B",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts",
+        "-p",
+        "test_bt_tsan.py"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60.0,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "$FOLLOWUP",
+        "TEMP": "$FOLLOWUP"
+      },
+      "processSeconds": 0.42155210000055376,
+      "elapsedSeconds": 0.4217052000021795,
+      "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr.logSha256": "a18864c93a0f59aee1004210b5e43af6e481122c1ec085985a0608cde126bfad"
+    },
+    "helpers-final": {
+      "command": [
+        "python3",
+        "-B",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts",
+        "-p",
+        "test_*.py"
+      ],
+      "passed": true,
+      "timeoutSeconds": 120.0,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "$FOLLOWUP",
+        "TEMP": "$FOLLOWUP"
+      },
+      "processSeconds": 1.8880162999994354,
+      "elapsedSeconds": 1.888165399999707,
+      "stdout.logSha256": "be5ea9a8939f09eec8b5a0d5e79bdc0eb6e20c4c094be7e093823c8503d69462",
+      "stderr.logSha256": "08222ec8ad6726c14699bc500344e246c69b4eea4714654e89e16fc68261340b"
+    },
+    "tsan-maintained-reuse/case-01": {
+      "command": [
+        "$P7/target-bt-thread/debug/ariax-local-tsan-driver",
+        "native_rejection_is_bounded_redacted_and_keeps_callbacks_owned_on_drop"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "CARGO_BUILD_JOBS": "2",
+        "ARIAX_BT_SANITIZER": "thread",
+        "TSAN_OPTIONS": "halt_on_error=1:exitcode=66",
+        "TMPDIR": "$FOLLOWUP/tsan-maintained-reuse/tmp",
+        "TEMP": "$FOLLOWUP/tsan-maintained-reuse/tmp"
+      },
+      "binarySha256": "67bd79004a51a1bb07585a2a35c57bc396db756dd0734bc6bf7b6402005601d8",
+      "processSeconds": 0.16825869999593124,
+      "elapsedSeconds": 0.16837949999899138,
+      "stdout.logSha256": "4c7c83bb1eef734cd9d8b519be30e38f8e12e77756496faa463e3d62426f4d23",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "tsan-maintained-reuse/case-02": {
+      "command": [
+        "$P7/target-bt-thread/debug/ariax-local-tsan-driver",
+        "native_v1_v2_hybrid_transfers_hold_storage_and_checkpoint_without_alert_delivery"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "CARGO_BUILD_JOBS": "2",
+        "ARIAX_BT_SANITIZER": "thread",
+        "TSAN_OPTIONS": "halt_on_error=1:exitcode=66",
+        "TMPDIR": "$FOLLOWUP/tsan-maintained-reuse/tmp",
+        "TEMP": "$FOLLOWUP/tsan-maintained-reuse/tmp"
+      },
+      "binarySha256": "67bd79004a51a1bb07585a2a35c57bc396db756dd0734bc6bf7b6402005601d8",
+      "processSeconds": 4.706896299991058,
+      "elapsedSeconds": 4.707008800003678,
+      "stdout.logSha256": "2af09130c743f39865cb02cd3ab7fd9fe8d677cc08201a5879c27b92f2f92e2a",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "tsan-maintained-reuse": {
+      "passed": true,
+      "scope": "Native C/C++ and FFI only; no Rust race coverage",
+      "mode": "reuse",
+      "runnerSha256": "af1b728a9cb7b0ed0c7beab92c91c5ffc859af7734655c8e1d4612239462bcf5",
+      "nativeManifestSha256": "891691eaf7ef501e335d2e542234c90e184373cc4273b935b86ff17fba61215a",
+      "sourceHashes": {
+        ".cargo/config.toml": "40f7eff51709953ad5e870a5e98187dba0661d820d6631ef6f8fd364b69c7f4d",
+        "Cargo.lock": "0a9174da9937800e0e077561527d2c9002dffe06e14e6d6534568bed1723d876",
+        "Cargo.toml": "e554e60f2600c31ecc43aa9279e23fba3e6257c534133a1c8d5ec3701ce440be",
+        "crates/ariax-bt-libtorrent-sys/Cargo.toml": "c88a3e4cab7d47703da1a8848e8a6c93b2b55edb9a2e373835c77d45cb1057be",
+        "crates/ariax-bt-libtorrent-sys/build.rs": "f7f36c669ffa21609c7a7f54eb5c91322b4fd682f8c2c7403643657b814a524b",
+        "crates/ariax-bt-libtorrent-sys/include/bounded_output.h": "0f76c37104e2ce52501797447525a87846c83dd19f10fc98fee59f7de21192fe",
+        "crates/ariax-bt-libtorrent-sys/include/bridge.h": "9b2d84db9ad50bbbb0a08e23e13d789b1cb0c348996558915336292a7984226f",
+        "crates/ariax-bt-libtorrent-sys/src/bridge.cc": "5152245cef05d2d64f3511cbfe7aff924307b63cdbd910184fe8d98f3f6bbb00",
+        "crates/ariax-bt-libtorrent-sys/src/lib.rs": "bc5141f4159b4142806eb915a62648d17ad7a685a21dc66ff7f3d65c9e5deccc",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/README.md": "fd209a42c9cd621967a397b740a8366f8b5d2a7183fb5bb290bca5a09bdd459c",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/generate.py": "91edbac6bb6227d6b0b866f7c7764ad64d6a2115993638dee8cf994094204bf1",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/hybrid.torrent": "6e2a2aa189e440fe18e3164dd2257243b3b322edb884733196d7940f81335123",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/multi-piece-hybrid.torrent": "74ab389750f13917280714cfecfc0231da32a5a2985d4ace065d873d594c6f68",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/multi-piece-v2.torrent": "f399e02131d78f18d578899deaa12bec650b04017dc10ad691e30cedd6325570",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/payload.bin": "2e49cc8ac17cc60b8210ad5ccfcad4c7bcc3c160c8f84b8668fd0f2af37d1068",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/selection-v1.torrent": "32d6c4f3a4e0b0a881bdda0168b577e87da965ca341b53314b24296e3539e662",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/symlink-v1.torrent": "59aaf319f4e14e8af9abf476740be2909068d02b1ff54c2a4e4b60fb57d546e2",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/unsafe-path-v1.torrent": "e8421030d201a1b33a19f7cccde66471cee2675762b022ff34b03ab034a3f97a",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/v1.torrent": "e7842401f5ae269b57ab3bcc928d2333f49def0376eca679fdd61f7f64831525",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/v2.torrent": "98e8cc057c8a5ecd35333df06d15480a4d7073700e67559533278cd4b80b7a08",
+        "crates/ariax-bt-libtorrent-sys/tests/native.rs": "90126f8b22f850fea649f11134d55a54760524714d54405c3ac76e1642b2b72e",
+        "native/libtorrent/ariax.patch": "8d377c5622d0308bda2f7fc161913954f4a4cb3af19f6e1400d2cde84446a409",
+        "native/libtorrent/openssl.patch": "e12670d73045bda8fb086f51f1080ccaffd60e54dd8902577aea3b3ad2a5a748",
+        "native/libtorrent/sources.json": "b55bc045afe126bad7e48d9ca6e9a5b40f762e2bdea6cbc54997dcee32991819",
+        "rust-toolchain.toml": "8e390d6a0838315f972690f46ef8bae8b7ecc9ee6c1ed70140ef852869c2482e",
+        "scripts/bt_native.py": "311fd9d1cfc31d603cdfc107bbe233474899d02bda00445802cfa333c2d2a2ca"
+      },
+      "reusedRecordSha256": "8ca8494209228fb88c31393114f10fbec2c2241ffefa827b0aeb055a34012dd5",
+      "build": {
+        "command": [
+          "$REPO/toolchains/installed/linux/bin/cargo",
+          "build",
+          "--locked",
+          "--offline",
+          "--manifest-path",
+          "$P7/tsan-direct-driver-locked/project/Cargo.toml"
+        ],
+        "passed": true,
+        "timeoutSeconds": 900,
+        "expectedTests": null,
+        "exitCode": 0,
+        "cleanup": "owned-process-group-terminated",
+        "environment": {
+          "RUSTC": "$REPO/toolchains/installed/linux/bin/rustc",
+          "RUSTFLAGS": "-C linker=clang++ -C link-arg=-fsanitize=thread -C link-arg=-lstdc++",
+          "CARGO_TARGET_DIR": "$P7/target-bt-thread",
+          "CARGO_BUILD_JOBS": "2",
+          "ARIAX_BT_SANITIZER": "thread",
+          "TSAN_OPTIONS": "halt_on_error=1",
+          "TMPDIR": "$P7",
+          "TEMP": "$P7"
+        },
+        "binarySha256": "828980723df339d62434390e9fb8ef8831036583343ae2316b7ab5646b5c1953",
+        "processSeconds": 24.490093299988075,
+        "elapsedSeconds": 24.49020259999088,
+        "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr.logSha256": "b664091b97a3a3d08027a7f0708d8f2ae222857722ac69dff58ac5ae0fa35889"
+      },
+      "project": "$P7/tsan-direct-driver-locked/project",
+      "originalSourceSha256": "90126f8b22f850fea649f11134d55a54760524714d54405c3ac76e1642b2b72e",
+      "driverSourceSha256": "313486c746efb7a74abe5cd0edcdec12ee9a38855983bf45e171794169901f7f",
+      "lockSha256": "2ae90010c27376799c33431b7b716501dbb27f3ffe3633f88988d4f53c131383",
+      "dependenciesMatchRepositoryLock": true,
+      "tests": [
+        {
+          "test": "native_rejection_is_bounded_redacted_and_keeps_callbacks_owned_on_drop",
+          "repetition": 1,
+          "command": [
+            "$P7/target-bt-thread/debug/ariax-local-tsan-driver",
+            "native_rejection_is_bounded_redacted_and_keeps_callbacks_owned_on_drop"
+          ],
+          "passed": true,
+          "timeoutSeconds": 60,
+          "expectedTests": null,
+          "exitCode": 0,
+          "cleanup": "owned-process-group-terminated",
+          "environment": {
+            "CARGO_BUILD_JOBS": "2",
+            "ARIAX_BT_SANITIZER": "thread",
+            "TSAN_OPTIONS": "halt_on_error=1:exitcode=66",
+            "TMPDIR": "$FOLLOWUP/tsan-maintained-reuse/tmp",
+            "TEMP": "$FOLLOWUP/tsan-maintained-reuse/tmp"
+          },
+          "binarySha256": "67bd79004a51a1bb07585a2a35c57bc396db756dd0734bc6bf7b6402005601d8",
+          "processSeconds": 0.16825869999593124,
+          "elapsedSeconds": 0.16837949999899138,
+          "stdout.logSha256": "4c7c83bb1eef734cd9d8b519be30e38f8e12e77756496faa463e3d62426f4d23",
+          "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "caseReportVerified": true,
+          "sanitizerReportObserved": false,
+          "remainingFixtures": []
+        },
+        {
+          "test": "native_v1_v2_hybrid_transfers_hold_storage_and_checkpoint_without_alert_delivery",
+          "repetition": 1,
+          "command": [
+            "$P7/target-bt-thread/debug/ariax-local-tsan-driver",
+            "native_v1_v2_hybrid_transfers_hold_storage_and_checkpoint_without_alert_delivery"
+          ],
+          "passed": true,
+          "timeoutSeconds": 60,
+          "expectedTests": null,
+          "exitCode": 0,
+          "cleanup": "owned-process-group-terminated",
+          "environment": {
+            "CARGO_BUILD_JOBS": "2",
+            "ARIAX_BT_SANITIZER": "thread",
+            "TSAN_OPTIONS": "halt_on_error=1:exitcode=66",
+            "TMPDIR": "$FOLLOWUP/tsan-maintained-reuse/tmp",
+            "TEMP": "$FOLLOWUP/tsan-maintained-reuse/tmp"
+          },
+          "binarySha256": "67bd79004a51a1bb07585a2a35c57bc396db756dd0734bc6bf7b6402005601d8",
+          "processSeconds": 4.706896299991058,
+          "elapsedSeconds": 4.707008800003678,
+          "stdout.logSha256": "2af09130c743f39865cb02cd3ab7fd9fe8d677cc08201a5879c27b92f2f92e2a",
+          "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "caseReportVerified": true,
+          "sanitizerReportObserved": false,
+          "remainingFixtures": []
+        }
+      ]
+    },
+    "tsan-reuse-complete-sources/case-01": {
+      "command": [
+        "$P7/target-bt-thread/debug/ariax-local-tsan-driver",
+        "native_rejection_is_bounded_redacted_and_keeps_callbacks_owned_on_drop"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "CARGO_BUILD_JOBS": "2",
+        "ARIAX_BT_SANITIZER": "thread",
+        "TSAN_OPTIONS": "halt_on_error=1:exitcode=66",
+        "TMPDIR": "$FOLLOWUP/tsan-reuse-complete-sources/tmp",
+        "TEMP": "$FOLLOWUP/tsan-reuse-complete-sources/tmp"
+      },
+      "binarySha256": "67bd79004a51a1bb07585a2a35c57bc396db756dd0734bc6bf7b6402005601d8",
+      "processSeconds": 0.1686928999988595,
+      "elapsedSeconds": 0.16881950000242796,
+      "stdout.logSha256": "4c7c83bb1eef734cd9d8b519be30e38f8e12e77756496faa463e3d62426f4d23",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "tsan-reuse-complete-sources/case-02": {
+      "command": [
+        "$P7/target-bt-thread/debug/ariax-local-tsan-driver",
+        "native_v1_v2_hybrid_transfers_hold_storage_and_checkpoint_without_alert_delivery"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "CARGO_BUILD_JOBS": "2",
+        "ARIAX_BT_SANITIZER": "thread",
+        "TSAN_OPTIONS": "halt_on_error=1:exitcode=66",
+        "TMPDIR": "$FOLLOWUP/tsan-reuse-complete-sources/tmp",
+        "TEMP": "$FOLLOWUP/tsan-reuse-complete-sources/tmp"
+      },
+      "binarySha256": "67bd79004a51a1bb07585a2a35c57bc396db756dd0734bc6bf7b6402005601d8",
+      "processSeconds": 5.017036399993231,
+      "elapsedSeconds": 5.017148599989014,
+      "stdout.logSha256": "2af09130c743f39865cb02cd3ab7fd9fe8d677cc08201a5879c27b92f2f92e2a",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "tsan-reuse-complete-sources": {
+      "passed": true,
+      "scope": "Native C/C++ and FFI only; no Rust race coverage",
+      "mode": "reuse",
+      "runnerSha256": "dad4cc8097b937cb61f3d1670eba75febb81d83161dfe9d4ed2579d8c1f414f3",
+      "nativeManifestSha256": "891691eaf7ef501e335d2e542234c90e184373cc4273b935b86ff17fba61215a",
+      "sourceHashes": {
+        ".cargo/config.toml": "40f7eff51709953ad5e870a5e98187dba0661d820d6631ef6f8fd364b69c7f4d",
+        "Cargo.lock": "0a9174da9937800e0e077561527d2c9002dffe06e14e6d6534568bed1723d876",
+        "Cargo.toml": "e554e60f2600c31ecc43aa9279e23fba3e6257c534133a1c8d5ec3701ce440be",
+        "crates/ariax-bt-libtorrent-sys/Cargo.toml": "c88a3e4cab7d47703da1a8848e8a6c93b2b55edb9a2e373835c77d45cb1057be",
+        "crates/ariax-bt-libtorrent-sys/build.rs": "f7f36c669ffa21609c7a7f54eb5c91322b4fd682f8c2c7403643657b814a524b",
+        "crates/ariax-bt-libtorrent-sys/include/bounded_output.h": "0f76c37104e2ce52501797447525a87846c83dd19f10fc98fee59f7de21192fe",
+        "crates/ariax-bt-libtorrent-sys/include/bridge.h": "9b2d84db9ad50bbbb0a08e23e13d789b1cb0c348996558915336292a7984226f",
+        "crates/ariax-bt-libtorrent-sys/src/bridge.cc": "5152245cef05d2d64f3511cbfe7aff924307b63cdbd910184fe8d98f3f6bbb00",
+        "crates/ariax-bt-libtorrent-sys/src/lib.rs": "bc5141f4159b4142806eb915a62648d17ad7a685a21dc66ff7f3d65c9e5deccc",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/README.md": "fd209a42c9cd621967a397b740a8366f8b5d2a7183fb5bb290bca5a09bdd459c",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/generate.py": "91edbac6bb6227d6b0b866f7c7764ad64d6a2115993638dee8cf994094204bf1",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/hybrid.torrent": "6e2a2aa189e440fe18e3164dd2257243b3b322edb884733196d7940f81335123",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/multi-piece-hybrid.torrent": "74ab389750f13917280714cfecfc0231da32a5a2985d4ace065d873d594c6f68",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/multi-piece-v2.torrent": "f399e02131d78f18d578899deaa12bec650b04017dc10ad691e30cedd6325570",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/payload.bin": "2e49cc8ac17cc60b8210ad5ccfcad4c7bcc3c160c8f84b8668fd0f2af37d1068",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/selection-v1.torrent": "32d6c4f3a4e0b0a881bdda0168b577e87da965ca341b53314b24296e3539e662",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/symlink-v1.torrent": "59aaf319f4e14e8af9abf476740be2909068d02b1ff54c2a4e4b60fb57d546e2",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/unsafe-path-v1.torrent": "e8421030d201a1b33a19f7cccde66471cee2675762b022ff34b03ab034a3f97a",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/v1.torrent": "e7842401f5ae269b57ab3bcc928d2333f49def0376eca679fdd61f7f64831525",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/v2.torrent": "98e8cc057c8a5ecd35333df06d15480a4d7073700e67559533278cd4b80b7a08",
+        "crates/ariax-bt-libtorrent-sys/tests/native.rs": "90126f8b22f850fea649f11134d55a54760524714d54405c3ac76e1642b2b72e",
+        "native/libtorrent/ariax.patch": "8d377c5622d0308bda2f7fc161913954f4a4cb3af19f6e1400d2cde84446a409",
+        "native/libtorrent/openssl.patch": "e12670d73045bda8fb086f51f1080ccaffd60e54dd8902577aea3b3ad2a5a748",
+        "native/libtorrent/sources.json": "b55bc045afe126bad7e48d9ca6e9a5b40f762e2bdea6cbc54997dcee32991819",
+        "rust-toolchain.toml": "8e390d6a0838315f972690f46ef8bae8b7ecc9ee6c1ed70140ef852869c2482e",
+        "scripts/bt_native.py": "311fd9d1cfc31d603cdfc107bbe233474899d02bda00445802cfa333c2d2a2ca"
+      },
+      "reusedRecordSha256": "59b448405a68d754c8d91f4879d41ff8148f979a400b61e37dc021864e3daea1",
+      "reuseSourceSnapshotSha256": [
+        "e32f76dd874b6b574a966f722c302ed61aaccfe4a462dfc034792da38f7eb485",
+        "72de449e02ab4b8e3dfaaf24a7844e3bb4eaa899d1f84e2dd2ce07b09013e352"
+      ],
+      "build": {
+        "command": [
+          "$REPO/toolchains/installed/linux/bin/cargo",
+          "build",
+          "--locked",
+          "--offline",
+          "--manifest-path",
+          "$P7/tsan-direct-driver-locked/project/Cargo.toml"
+        ],
+        "passed": true,
+        "timeoutSeconds": 900,
+        "expectedTests": null,
+        "exitCode": 0,
+        "cleanup": "owned-process-group-terminated",
+        "environment": {
+          "RUSTC": "$REPO/toolchains/installed/linux/bin/rustc",
+          "RUSTFLAGS": "-C linker=clang++ -C link-arg=-fsanitize=thread -C link-arg=-lstdc++",
+          "CARGO_TARGET_DIR": "$P7/target-bt-thread",
+          "CARGO_BUILD_JOBS": "2",
+          "ARIAX_BT_SANITIZER": "thread",
+          "TSAN_OPTIONS": "halt_on_error=1",
+          "TMPDIR": "$P7",
+          "TEMP": "$P7"
+        },
+        "binarySha256": "828980723df339d62434390e9fb8ef8831036583343ae2316b7ab5646b5c1953",
+        "processSeconds": 24.490093299988075,
+        "elapsedSeconds": 24.49020259999088,
+        "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr.logSha256": "b664091b97a3a3d08027a7f0708d8f2ae222857722ac69dff58ac5ae0fa35889"
+      },
+      "project": "$P7/tsan-direct-driver-locked/project",
+      "originalSourceSha256": "90126f8b22f850fea649f11134d55a54760524714d54405c3ac76e1642b2b72e",
+      "driverSourceSha256": "313486c746efb7a74abe5cd0edcdec12ee9a38855983bf45e171794169901f7f",
+      "lockSha256": "2ae90010c27376799c33431b7b716501dbb27f3ffe3633f88988d4f53c131383",
+      "dependenciesMatchRepositoryLock": true,
+      "tests": [
+        {
+          "test": "native_rejection_is_bounded_redacted_and_keeps_callbacks_owned_on_drop",
+          "repetition": 1,
+          "command": [
+            "$P7/target-bt-thread/debug/ariax-local-tsan-driver",
+            "native_rejection_is_bounded_redacted_and_keeps_callbacks_owned_on_drop"
+          ],
+          "passed": true,
+          "timeoutSeconds": 60,
+          "expectedTests": null,
+          "exitCode": 0,
+          "cleanup": "owned-process-group-terminated",
+          "environment": {
+            "CARGO_BUILD_JOBS": "2",
+            "ARIAX_BT_SANITIZER": "thread",
+            "TSAN_OPTIONS": "halt_on_error=1:exitcode=66",
+            "TMPDIR": "$FOLLOWUP/tsan-reuse-complete-sources/tmp",
+            "TEMP": "$FOLLOWUP/tsan-reuse-complete-sources/tmp"
+          },
+          "binarySha256": "67bd79004a51a1bb07585a2a35c57bc396db756dd0734bc6bf7b6402005601d8",
+          "processSeconds": 0.1686928999988595,
+          "elapsedSeconds": 0.16881950000242796,
+          "stdout.logSha256": "4c7c83bb1eef734cd9d8b519be30e38f8e12e77756496faa463e3d62426f4d23",
+          "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "caseReportVerified": true,
+          "sanitizerReportObserved": false,
+          "remainingFixtures": []
+        },
+        {
+          "test": "native_v1_v2_hybrid_transfers_hold_storage_and_checkpoint_without_alert_delivery",
+          "repetition": 1,
+          "command": [
+            "$P7/target-bt-thread/debug/ariax-local-tsan-driver",
+            "native_v1_v2_hybrid_transfers_hold_storage_and_checkpoint_without_alert_delivery"
+          ],
+          "passed": true,
+          "timeoutSeconds": 60,
+          "expectedTests": null,
+          "exitCode": 0,
+          "cleanup": "owned-process-group-terminated",
+          "environment": {
+            "CARGO_BUILD_JOBS": "2",
+            "ARIAX_BT_SANITIZER": "thread",
+            "TSAN_OPTIONS": "halt_on_error=1:exitcode=66",
+            "TMPDIR": "$FOLLOWUP/tsan-reuse-complete-sources/tmp",
+            "TEMP": "$FOLLOWUP/tsan-reuse-complete-sources/tmp"
+          },
+          "binarySha256": "67bd79004a51a1bb07585a2a35c57bc396db756dd0734bc6bf7b6402005601d8",
+          "processSeconds": 5.017036399993231,
+          "elapsedSeconds": 5.017148599989014,
+          "stdout.logSha256": "2af09130c743f39865cb02cd3ab7fd9fe8d677cc08201a5879c27b92f2f92e2a",
+          "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "caseReportVerified": true,
+          "sanitizerReportObserved": false,
+          "remainingFixtures": []
+        }
+      ]
+    },
+    "tsan-reuse-first": {
+      "passed": false,
+      "scope": "Native C/C++ and FFI only; no Rust race coverage",
+      "mode": "reuse",
+      "runnerSha256": "8729e999a8c41d2705fa67c684aefefa6b95e4da24eb08b120a044af279db17b",
+      "nativeManifestSha256": "891691eaf7ef501e335d2e542234c90e184373cc4273b935b86ff17fba61215a",
+      "sourceHashes": {
+        ".cargo/config.toml": "40f7eff51709953ad5e870a5e98187dba0661d820d6631ef6f8fd364b69c7f4d",
+        "Cargo.lock": "0a9174da9937800e0e077561527d2c9002dffe06e14e6d6534568bed1723d876",
+        "Cargo.toml": "e554e60f2600c31ecc43aa9279e23fba3e6257c534133a1c8d5ec3701ce440be",
+        "crates/ariax-bt-libtorrent-sys/Cargo.toml": "c88a3e4cab7d47703da1a8848e8a6c93b2b55edb9a2e373835c77d45cb1057be",
+        "crates/ariax-bt-libtorrent-sys/build.rs": "f7f36c669ffa21609c7a7f54eb5c91322b4fd682f8c2c7403643657b814a524b",
+        "crates/ariax-bt-libtorrent-sys/include/bounded_output.h": "0f76c37104e2ce52501797447525a87846c83dd19f10fc98fee59f7de21192fe",
+        "crates/ariax-bt-libtorrent-sys/include/bridge.h": "9b2d84db9ad50bbbb0a08e23e13d789b1cb0c348996558915336292a7984226f",
+        "crates/ariax-bt-libtorrent-sys/src/bridge.cc": "5152245cef05d2d64f3511cbfe7aff924307b63cdbd910184fe8d98f3f6bbb00",
+        "crates/ariax-bt-libtorrent-sys/src/lib.rs": "bc5141f4159b4142806eb915a62648d17ad7a685a21dc66ff7f3d65c9e5deccc",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/README.md": "fd209a42c9cd621967a397b740a8366f8b5d2a7183fb5bb290bca5a09bdd459c",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/generate.py": "91edbac6bb6227d6b0b866f7c7764ad64d6a2115993638dee8cf994094204bf1",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/hybrid.torrent": "6e2a2aa189e440fe18e3164dd2257243b3b322edb884733196d7940f81335123",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/multi-piece-hybrid.torrent": "74ab389750f13917280714cfecfc0231da32a5a2985d4ace065d873d594c6f68",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/multi-piece-v2.torrent": "f399e02131d78f18d578899deaa12bec650b04017dc10ad691e30cedd6325570",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/payload.bin": "2e49cc8ac17cc60b8210ad5ccfcad4c7bcc3c160c8f84b8668fd0f2af37d1068",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/selection-v1.torrent": "32d6c4f3a4e0b0a881bdda0168b577e87da965ca341b53314b24296e3539e662",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/symlink-v1.torrent": "59aaf319f4e14e8af9abf476740be2909068d02b1ff54c2a4e4b60fb57d546e2",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/unsafe-path-v1.torrent": "e8421030d201a1b33a19f7cccde66471cee2675762b022ff34b03ab034a3f97a",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/v1.torrent": "e7842401f5ae269b57ab3bcc928d2333f49def0376eca679fdd61f7f64831525",
+        "crates/ariax-bt-libtorrent-sys/tests/fixtures/v2.torrent": "98e8cc057c8a5ecd35333df06d15480a4d7073700e67559533278cd4b80b7a08",
+        "crates/ariax-bt-libtorrent-sys/tests/native.rs": "90126f8b22f850fea649f11134d55a54760524714d54405c3ac76e1642b2b72e",
+        "native/libtorrent/ariax.patch": "8d377c5622d0308bda2f7fc161913954f4a4cb3af19f6e1400d2cde84446a409",
+        "native/libtorrent/openssl.patch": "e12670d73045bda8fb086f51f1080ccaffd60e54dd8902577aea3b3ad2a5a748",
+        "native/libtorrent/sources.json": "b55bc045afe126bad7e48d9ca6e9a5b40f762e2bdea6cbc54997dcee32991819",
+        "rust-toolchain.toml": "8e390d6a0838315f972690f46ef8bae8b7ecc9ee6c1ed70140ef852869c2482e",
+        "scripts/bt_native.py": "311fd9d1cfc31d603cdfc107bbe233474899d02bda00445802cfa333c2d2a2ca"
+      },
+      "error": "stale driver build sources"
+    }
+  },
+  "cleanup": {
+    "activeDriverProcesses": [],
+    "remainingFixtures": [],
+    "passed": true
+  },
+  "sourceSha256": {
+    "scripts/bt_tsan.py": "af1b728a9cb7b0ed0c7beab92c91c5ffc859af7734655c8e1d4612239462bcf5",
+    "scripts/test_bt_tsan.py": "efd3f872d4fa084adbe8b209445bd0cfe3611d5457e0a059b65638b9ad04663a",
+    "docs/development/local-hardening.md": "eebc1fd25dde8fc49bb05ea4b255b906b03ce0c3fe95003115501b65aeeeeed4",
+    "docs/protocols/libtorrent-integration.md": "29b2a683e1533049b5118e759fd42cd6fddb545e13e83d95cde11abd2da2100c",
+    "docs/project/implementation-readiness.md": "f4eda7615dbb09597bb79f8e055ed89673413c1e16c7aea075ffa9a206974506",
+    "docs/project/implementation-plan.md": "469471c9ff3ef14441d8a07beb8f51d6940d3332d02da5f4c23248a1eb45f72a",
+    "performance-evidence/phase7-short-followup-2026-10-05.md": "5ce4ebbed0b991843d4d60a41e83365d7b7648a5f523ccfbbe6c6fa32034ee30"
+  },
+  "rawFiles": {
+    "analyze-bursts.py": {
+      "sha256": "fb270f7b0d339ef70202b01d315d889c8e98faaadb6651c75f16e7c3273dd30f",
+      "bytes": 5011
+    },
+    "burst-analysis.json": {
+      "sha256": "b250f6e5cabfd1425f94ce657ba14bbfb97b03b022b9c0f828456196bdbec6d7",
+      "bytes": 14279
+    },
+    "burst-failed/run.json": {
+      "sha256": "541b858bcba18f00ceb069fcadc81e253a827898530c1195ef622f4594079abf",
+      "bytes": 603
+    },
+    "burst-failed/stderr.log": {
+      "sha256": "75ea8d01b9eaddc02be3301daf036cd13b93f00e78acc866dd9875b09fd70432",
+      "bytes": 1268
+    },
+    "burst-passed/run.json": {
+      "sha256": "b1b00e53593d98ad0e88f8026ace2a1f5496f97ea28c94372efbda7ad01a0b62",
+      "bytes": 5085
+    },
+    "burst-passed/stderr.log": {
+      "sha256": "29c6fe161d486347980878449703c3a5a356b7e9c67db564853fb31ad9bdbca0",
+      "bytes": 1526
+    },
+    "cleanup.json": {
+      "sha256": "49eedd7e409012b220f42ede3403ceb111488106378a5edc7347b4c12b2f71f8",
+      "bytes": 79
+    },
+    "collect-followup.py": {
+      "sha256": "99a877288b9938919b928c9dc4dae3043cd6aa28352584bfc4c6ce662a79e98e",
+      "bytes": 3666
+    },
+    "final-checks/docs/result.json": {
+      "sha256": "b8960e3a922b64f4d91490e821417819c7b300f9f99dfe7aba1c67b0a1bb37e0",
+      "bytes": 704
+    },
+    "final-checks/docs/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "final-checks/docs/stdout.log": {
+      "sha256": "00324e3fcc7df6c9a0b0b221cbb7950700c07e56fddd007b0911527baee3db54",
+      "bytes": 93
+    },
+    "final-checks/publication/result.json": {
+      "sha256": "f91d4ba71063ca744e6a86e3de483b1d5f3a43efd67516adc1ccb13c2c1a34a2",
+      "bytes": 706
+    },
+    "final-checks/publication/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "final-checks/publication/stdout.log": {
+      "sha256": "1f2ae031b96c44e26b09a19b752facedafbd38b12f0b64d1fb2b8939f6b6d1d6",
+      "bytes": 28
+    },
+    "final-checks/result.json": {
+      "sha256": "9234f0029547449138b64436171fee6be53e81d9afbcf382a8fac960688cd310",
+      "bytes": 3051
+    },
+    "final-checks/staged-whitespace/result.json": {
+      "sha256": "0b8930123af1c7a76401e050d31be15d4dd9c665e8449a1621c7a1565259a680",
+      "bytes": 611
+    },
+    "final-checks/staged-whitespace/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "final-checks/staged-whitespace/stdout.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "final-checks/whitespace/result.json": {
+      "sha256": "ff1161e7a3d4f70caf308ea4ec1ad4ceefc70d3dad8a8180691282583c562419",
+      "bytes": 595
+    },
+    "final-checks/whitespace/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "final-checks/whitespace/stdout.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "final-checks.py": {
+      "sha256": "90b2bafb8c21bcd55f45e9a7941f5a652d2319ced52bd20a7602971ca3bfaa93",
+      "bytes": 838
+    },
+    "helper-tests-first/result.json": {
+      "sha256": "0639ce7c6e8797b77f38239f82e3e7ebc557e1871cc8b4c52e1099ff6e979b5f",
+      "bytes": 681
+    },
+    "helper-tests-first/stderr.log": {
+      "sha256": "d4abf49d388cbab99d78525181725f1acc236509132ff640b982fda6677c212a",
+      "bytes": 107
+    },
+    "helper-tests-first/stdout.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "helper-tests-second/result.json": {
+      "sha256": "ffa08f1794b474db189b331fa594f6e6176ce2fff57757f070fca4e46feb91ee",
+      "bytes": 682
+    },
+    "helper-tests-second/stderr.log": {
+      "sha256": "a18864c93a0f59aee1004210b5e43af6e481122c1ec085985a0608cde126bfad",
+      "bytes": 109
+    },
+    "helper-tests-second/stdout.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "helpers-final/result.json": {
+      "sha256": "534ea1332bb76bb6cb3fae431edf5f8679701e2aee7ac03d590bc4fd5120504c",
+      "bytes": 675
+    },
+    "helpers-final/stderr.log": {
+      "sha256": "08222ec8ad6726c14699bc500344e246c69b4eea4714654e89e16fc68261340b",
+      "bytes": 190
+    },
+    "helpers-final/stdout.log": {
+      "sha256": "be5ea9a8939f09eec8b5a0d5e79bdc0eb6e20c4c094be7e093823c8503d69462",
+      "bytes": 6201
+    },
+    "tsan-maintained-reuse/case-01/result.json": {
+      "sha256": "02d879b372015b26f453e9d7241e8fac537b03f8953bb317388473961d93cce6",
+      "bytes": 982
+    },
+    "tsan-maintained-reuse/case-01/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "tsan-maintained-reuse/case-01/stdout.log": {
+      "sha256": "4c7c83bb1eef734cd9d8b519be30e38f8e12e77756496faa463e3d62426f4d23",
+      "bytes": 84
+    },
+    "tsan-maintained-reuse/case-02/result.json": {
+      "sha256": "3b650c291a8f84a113925ef647e05a4ad00bfcadeef30544ba8e703ad6951c20",
+      "bytes": 988
+    },
+    "tsan-maintained-reuse/case-02/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "tsan-maintained-reuse/case-02/stdout.log": {
+      "sha256": "2af09130c743f39865cb02cd3ab7fd9fe8d677cc08201a5879c27b92f2f92e2a",
+      "bytes": 94
+    },
+    "tsan-maintained-reuse/result.json": {
+      "sha256": "f0f68dc32a962431de4e1f89c71d8d788e77996af9b1303e53fd50e091416d38",
+      "bytes": 7853
+    },
+    "tsan-maintained-reuse/tests.json": {
+      "sha256": "ed54a9ea43cbb133a3d11be17cc2684c87093e7f9a5f03528cb37f1ac913ecc7",
+      "bytes": 2489
+    },
+    "tsan-reuse-complete-sources/case-01/result.json": {
+      "sha256": "12c9db992ca92d12b36357ef6d7311d06743bb8448700d768aed3c57ece7f4c2",
+      "bytes": 993
+    },
+    "tsan-reuse-complete-sources/case-01/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "tsan-reuse-complete-sources/case-01/stdout.log": {
+      "sha256": "4c7c83bb1eef734cd9d8b519be30e38f8e12e77756496faa463e3d62426f4d23",
+      "bytes": 84
+    },
+    "tsan-reuse-complete-sources/case-02/result.json": {
+      "sha256": "784b9e379a78f64bc543ed7bb7cd8f710498cf2e10932c3ff1502de3b727ea43",
+      "bytes": 1000
+    },
+    "tsan-reuse-complete-sources/case-02/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "tsan-reuse-complete-sources/case-02/stdout.log": {
+      "sha256": "2af09130c743f39865cb02cd3ab7fd9fe8d677cc08201a5879c27b92f2f92e2a",
+      "bytes": 94
+    },
+    "tsan-reuse-complete-sources/result.json": {
+      "sha256": "8ca8494209228fb88c31393114f10fbec2c2241ffefa827b0aeb055a34012dd5",
+      "bytes": 8057
+    },
+    "tsan-reuse-complete-sources/tests.json": {
+      "sha256": "21b1eb23d257c6e45c0e6f2143aeee14493b09cdc882d933418d904374665404",
+      "bytes": 2512
+    },
+    "tsan-reuse-first/result.json": {
+      "sha256": "dbdfc8551a88768013324d75b4d62ad2a3d191a54df9379c2057deb4e1db718c",
+      "bytes": 3484
+    }
+  },
+  "rawFilesCount": 48,
+  "helperTests": 91,
+  "validationLimits": [
+    "Fresh driver build orchestration tested with fake command results; native executable reused after source/lock verification.",
+    "Native TSan only; full Rust instrumentation and original libtest reports remain separate.",
+    "No retrospective root-cause attribution or stability claim for the old mixed-burst failure."
+  ],
+  "pathPlaceholders": {
+    "$FOLLOWUP": "short follow-up evidence directory",
+    "$REPO": "repository root",
+    "$P7": "original local Phase 7 campaign",
+    "$VALIDATION_CACHE": "retained dependency/native cache"
+  },
+  "pathNormalization": "Only this portable report normalizes paths; hashes bind unchanged raw files."
+}

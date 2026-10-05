@@ -96,6 +96,50 @@ locked dependencies and coverage boundary. It still supplies no Rust race
 coverage. Fully instrumented Rust validation requires a compatible instrumented
 standard library and harness. Do not suppress reports to obtain a pass.
 
+### Maintained Direct TSan Driver
+
+[`scripts/bt_tsan.py`](../../scripts/bt_tsan.py) derives its two direct entry
+points from `ariax-bt-libtorrent-sys/tests/native.rs`. It preserves the native
+test bodies, assertions, fixtures and synchronization. An unexpected test
+inventory fails preparation. The driver verifies the separate native TSan
+installation without provisioning or downloading dependencies.
+
+For a short run of a previously recorded driver, select absolute disk-backed
+paths for `NATIVE_TSAN`, `PREVIOUS` and a fresh `OUTPUT`, then run:
+
+```bash
+python3 -B scripts/bt_tsan.py reuse --native-dir "$NATIVE_TSAN" \
+  --record "$PREVIOUS/result.json" --output "$OUTPUT"
+```
+
+The default runs each case once, serially, with a 60-second process timeout.
+`--repetitions` accepts one through five. `TSAN_OPTIONS` is set to
+`halt_on_error=1:exitcode=66`; reports, missing case markers and leftover
+fixture directories fail the attempt. Each run uses its output's `tmp`
+directory and retains immutable logs, binary/source identities and cleanup
+results. A failed case stops the run without retrying it.
+
+Reuse checks current native/build inputs, the generated project and fixture
+bytes, repository-locked dependency identities, the prior case inventory and
+the executable hash. The initial temporary campaign predates embedded source
+inventories: importing it additionally requires `--source-snapshot` for its
+first-pass snapshot and again for its later partial second-pass snapshot, in
+that order. Missing source entries fail closed. Subsequent maintained records
+embed the complete relevant source inventory and need no snapshot arguments.
+
+To create a fresh driver, select the pinned `RUSTC`, `RUSTDOC`, local Cargo
+cache and an absolute, separate `CARGO_TARGET_DIR`; set `CC=clang`,
+`CXX=clang++`, and
+`RUSTFLAGS='-C linker=clang++ -C link-arg=-fsanitize=thread -C link-arg=-lstdc++'`.
+Invoke `build` instead of `reuse` and supply `--cargo "$RUST_BIN/cargo"`.
+Preparation copies the repository lock, runs `cargo update --offline
+--workspace`, and rejects dependency identity drift before `cargo build
+--locked --offline`. Two compiler workers and a 180-second build timeout bound
+this focused build. An exhausted budget remains failed evidence; do not launch
+native provisioning implicitly. Reuse does not invoke Cargo or rebuild.
+The [short follow-up evidence](../../performance-evidence/phase7-short-followup-2026-10-05.md)
+records the initial import and subsequent maintained-record reuse.
+
 ## Local Release Preparation
 
 Build the supported CLI bundles through the documented `release-cli` profile

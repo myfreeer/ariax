@@ -605,6 +605,9 @@ Status: active after the accepted Phase-6 milestone. Existing
 passing CI, sanitizer/fuzz, benchmark and OpenSSH evidence supplies its baseline.
 The [local hardening campaign](../../performance-evidence/phase7-local-hardening-2026-10-05.md)
 records review repairs, bounded local campaigns and their platform limits.
+The [short local follow-up](../../performance-evidence/phase7-short-followup-2026-10-05.md)
+compares the retained mixed-burst artifacts and maintains the direct native
+TSan driver without another benchmark or dependency build.
 The work below retains its full acceptance requirements; Phase-6 completion
 and local hardening results are not release approval.
 
