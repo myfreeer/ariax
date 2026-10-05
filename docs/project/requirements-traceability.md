@@ -20,8 +20,10 @@ with v1 import; the current format is v3 only. The
 closes native Linux control-plane acceptance at `af5d193`, with all five reports
 and the complete passing platform/feature/MSRV matrix retained and verified.
 
-Phase 6 work packages `P6-01` through `P6-06` have completed local implementations
-and acceptance harnesses, mapped in the [implementation plan](implementation-plan.md#phase-6-bittorrent-full-build).
+Phase 6 work packages `P6-01` through `P6-06` are accepted in the
+[closure record](../../performance-evidence/phase6-acceptance-2026-10-05.md),
+with their behavior mapped in the [implementation plan](implementation-plan.md#phase-6-bittorrent-full-build).
+Phase 7 hardening is the active next phase.
 The [focused native Linux BT evidence](../../performance-evidence/phase6-focused-bt-linux-2026-10-04.md)
 at `38d07e4` verifies the selected bridge/adapter, transfer/security/recovery and
 checkpoint-crash fixtures. The [interface and feature slice](../../performance-evidence/phase6-focused-interfaces-linux-2026-10-04.md)
@@ -50,9 +52,12 @@ added burst diagnostics. Mixed aggregate p99 is 8.000 ms, worst operation p99
 is 31.311 ms, and maximum burst is 486 ms. All 488 source hashes, five command
 logs and twelve scenario logs verify. The earlier failure remains retained;
 the rerun does not establish its cause or repeated-run stability. The
-[current acceptance status](implementation-readiness.md#phase-6-local-implementation-and-open-acceptance)
+[current acceptance status](implementation-readiness.md#phase-6-acceptance-and-phase-7-handoff)
 records the six-scenario measurement gate as passing. Full functional evidence
-remains at `a6f9b0d`; `P6-06` still requires evidence on one final candidate.
+remains at `a6f9b0d`; the closure audit verifies 418 unchanged production and
+validation-input files across the evidence commits. The only code changes are
+three separately validated benchmark diagnostic/test files. This satisfies
+`P6-06` through recorded source equivalence, preserving each run's actual SHA.
 Fresh [local OpenSSH evidence](../../performance-evidence/phase6-openssh-local-2026-10-05.md)
 at `624af25` passes for WSL Linux and native Windows-GNU clients, including
 private-key authentication, checked offset reads, final attributes and complete
@@ -113,9 +118,9 @@ admits secondary origins only for exact-range endgame. Its persisted
 digest/length identity now drives fail-closed restart reprobe and durable-range
 network revalidation before pending work is released. Phase 5 adds Metalink
 identity and SHA-512/SHA-256/SHA-1/MD5 content checksums. Broader RFC 9530
-identity, `Content-Digest`, Last-Modified/unsafe-override resume,
-BitTorrent native acceptance, adaptive
-profile tuning, and the complete release matrix remain incomplete. Optimized
+identity, `Content-Digest`, Last-Modified/unsafe-override resume, adaptive
+profile tuning, and the complete release matrix remain incomplete. BitTorrent
+native acceptance is closed by the Phase-6 record above. Optimized
 Linux and native Windows-GNU capacity evidence, including mandatory RSS or
 working-set samples, is recorded in [performance-profiles.md](../runtime/performance-profiles.md).
 

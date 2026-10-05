@@ -1,5 +1,11 @@
 # Phase 6 Native Linux Benchmark Review
 
+Acceptance update: the [Phase 6 closure](phase6-acceptance-2026-10-05.md)
+accepts the milestone using verified production/build source equivalence and
+separate validation of benchmark changes. It supersedes the provisional open
+acceptance and identical-commit requirement below. The original run outcomes,
+failures, source identities and platform limits remain unchanged.
+
 Review on October 5, 2026 verifies the supplied manual benchmark artifact for
 `a6f9b0db93e1af30f24d61aaf73b8cde8e4c6d23`, the same source as the passing
 [full functional CI matrix](phase6-full-ci-2026-10-05.md). HTTP, WebSocket,

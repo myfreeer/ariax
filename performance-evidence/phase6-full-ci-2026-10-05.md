@@ -1,5 +1,11 @@
 # Phase 6 Full Functional CI Validation
 
+Acceptance update: the [Phase 6 closure](phase6-acceptance-2026-10-05.md)
+accepts the milestone using verified production/build source equivalence and
+separate validation of benchmark changes. It supersedes the provisional open
+acceptance and identical-commit requirement below. The original run outcomes,
+failures, source identities and platform limits remain unchanged.
+
 Review on October 5, 2026 verifies the supplied full-CI artifacts for
 `a6f9b0db93e1af30f24d61aaf73b8cde8e4c6d23` on `main`. All nine archives match
 that source commit, and all 87 command-log SHA-256 values and successful exit

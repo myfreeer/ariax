@@ -1,5 +1,11 @@
 # Phase 6 Local OpenSSH Interoperability
 
+Acceptance update: the [Phase 6 closure](phase6-acceptance-2026-10-05.md)
+accepts the milestone using verified production/build source equivalence and
+separate validation of benchmark changes. It supersedes the provisional open
+acceptance and identical-commit requirement below. The original run outcomes,
+failures, source identities and platform limits remain unchanged.
+
 On October 5, 2026, both the WSL Linux and native Windows-GNU clients pass
 `openssh_public_key_offsets_and_final_attributes_interoperate` at
 `624af250863193b6c7e438d02c55e55499f634a7`. Each connects to an isolated

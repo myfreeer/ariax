@@ -10,7 +10,10 @@ Benchmarks remain manual-only. The separate
 passes all six scenarios at `9107ecb`; mixed HTTP/BT completes with 8.000 ms
 aggregate p99 and a 486 ms maximum burst. The earlier 530.097 ms mixed failure
 remains retained. Automatic functional CI was skipped at `9107ecb`; final
-Phase-6 evidence must still converge on one candidate source.
+Phase-6 acceptance is now [closed by audited source equivalence](../../performance-evidence/phase6-acceptance-2026-10-05.md).
+Production code and build inputs match the full-CI source; the benchmark
+diagnostics have separate focused and native validation. Phase 7 hardening is
+next. Each retained run keeps its original source and binary identity.
 The historical remote and CI baseline passes at `af5d193`.
 [Run 35720518419 and its retained evidence](../../performance-evidence/ci-baseline-2026-09-22.md)
 cover every required platform, feature and MSRV job and all five native Linux
@@ -118,7 +121,11 @@ The full workflow has two ordered stages:
    and exhausted downloads still fail provisioning.
 
 The separate native Linux benchmark workflow accepts only manual dispatch.
-Run it against the same candidate commit to collect all six acceptance scenarios.
+Collect all six acceptance scenarios for the candidate. Functional and benchmark
+evidence normally use the same commit; an explicit
+[source-equivalence review](../protocols/libtorrent-integration.md#phase-6-gates)
+can reuse earlier full CI when production/build inputs are unchanged and any
+test/benchmark differences receive their own validation.
 Its result is independent of the functional `CI Required` check; performance
 acceptance remains required before closing Phase 6 or approving a release.
 
@@ -371,7 +378,8 @@ Linux measurement campaign retained for `af5d193`. Remaining
 kernel/backend and release-platform requirements are separate gates; this
 workflow does not authorize a release tag.
 
-Phase 6 may then change unreleased internal APIs and persistence formats
-without compatibility shims. Schema/JSON v3 will use fresh stores and reject
-older development formats unchanged. Existing aria2-facing behavior, torrent
+Phase 6 is accepted in the [closure record](../../performance-evidence/phase6-acceptance-2026-10-05.md),
+and Phase 7 hardening is next. Phase 6 changed unreleased internal APIs and
+persistence formats without compatibility shims. Schema/JSON v3 uses fresh
+stores and rejects older development formats unchanged. Existing aria2-facing behavior, torrent
 protocol support, feature bundles and MSRV remain product requirements.

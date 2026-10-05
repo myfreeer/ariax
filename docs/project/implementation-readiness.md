@@ -27,6 +27,11 @@ The [September 15 validation record](../../performance-evidence/phase5-validatio
 covers shared protocol transfers, verification and the historical session
 format. Current-format sessions require v3 as described below.
 
+Phase 6 is [accepted](../../performance-evidence/phase6-acceptance-2026-10-05.md)
+with verified production/build source equivalence and separate validation of
+benchmark-only changes. Phase 7 hardening is the active next phase. Remaining
+backend, release and compatibility requirements retain their existing scope.
+
 This document is the handoff checklist from architecture design to detailed
 module design and implementation.
 
@@ -493,7 +498,15 @@ the separate 128-task administrative scenario. Worst operation p99 is
 [Phase 5 performance evidence](../runtime/performance-profiles.md#native-windows-phase-5-evidence)
 is separate from the historical P4 reports.
 
-## Phase 6 Local Implementation And Open Acceptance
+<a id="phase-6-local-implementation-and-open-acceptance"></a>
+
+## Phase 6 Acceptance And Phase 7 Handoff
+
+Status: `P6-01` through `P6-06` are accepted for the scoped BitTorrent milestone.
+The [closure record](../../performance-evidence/phase6-acceptance-2026-10-05.md)
+maps their behavior and evidence and records the audited source equivalence.
+Historical records below retain their actual commits and earlier open items;
+this closure supersedes those provisional acceptance statuses.
 
 The local Phase-6 implementation and acceptance harness are complete, including
 native integration, safe metadata admission, shared scheduler/resource ownership,
@@ -591,8 +604,12 @@ retained and its cause is unresolved.
 
 Automatic functional CI was skipped at `9107ecb`. Only benchmark diagnostics,
 their tests and documentation/evidence changed since the full `a6f9b0d` matrix;
-the six-scenario measurement gate passes, but final Phase-6 evidence must still
-converge on one candidate source under `P6-06`.
+the six-scenario measurement gate passes. The closure audit confirms identical
+paths, modes and content for all 418 compared files outside documentation and
+the three reviewed benchmark/test files. Separate focused tests and the passing
+native benchmark validate those code changes. This satisfies `P6-06` under the
+[source-equivalence rule](../protocols/libtorrent-integration.md#phase-6-gates)
+without claiming a second full matrix execution.
 
 Fresh [local OpenSSH interoperability](../../performance-evidence/phase6-openssh-local-2026-10-05.md)
 passes at `624af25` for both WSL Linux and native Windows-GNU clients against
@@ -604,9 +621,14 @@ disk-backed WSL credential directory is also removed. All 490 source hashes
 and six build/test/server log hashes verify. Only documentation/evidence changed
 since the passing benchmark source. The live fixture remains opt-in in ordinary
 workspace CI; this separate run supplies its fresh local evidence.
-The configured full matrix passes; separate kernel/backend, custom BT storage,
-release-platform and tagging requirements remain open. Historical reports remain
-valid only for their recorded source and scenarios.
+The configured full matrix passes and fresh local OpenSSH evidence is complete.
+Phase 7 starts with the [hardening work packages](implementation-plan.md#phase-7-hardening),
+including repeated mixed-burst diagnostics, security/FFI review, extended
+sanitizer/fuzz coverage and platform stress. The earlier burst failure remains
+unexplained; the passing campaign is not a repeated-run stability claim.
+Separate kernel/backend, custom BT storage, release-platform and tagging
+requirements remain open. Historical reports retain their recorded scope;
+reuse across commits requires the explicit source audit.
 
 The historical [September 26 local validation record](../../performance-evidence/phase6-local-validation-2026-09-26.md)
 records the earlier offline checks, unavailable cached storage dependency and
@@ -627,7 +649,6 @@ separate gates.
 These are intentionally not first-slice blockers, but their registry and
 feature-gate status must exist from the start:
 
-- libtorrent native acceptance for the current Phase-6 implementation,
 - XML-RPC,
 - C ABI,
 - HTTP/3/QUIC,

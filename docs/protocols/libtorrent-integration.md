@@ -2,8 +2,11 @@
 
 [Documentation](../README.md)
 
-Status: Phase-6 local implementation and acceptance harness are complete.
-The gates below remain open for CI, sanitizer/fuzz and measurement evidence.
+Status: Phase 6 implementation and acceptance are complete for the scoped
+BitTorrent milestone. The [acceptance record](../../performance-evidence/phase6-acceptance-2026-10-05.md)
+maps all six gates to passing functional, sanitizer/fuzz, measurement and
+interoperability evidence. Phase 7 hardening is next; release and deferred
+backend requirements remain separate.
 
 Decision: libtorrent runs outside the main control and HTTP network event loops.
 
@@ -58,6 +61,19 @@ milestone has six gates:
 | `P6-04` Persistence | Fresh SQLite/JSON v3 stores distinguish transfers from BT without requiring transfer journals for BT. Tracked periodic, pause, remove and shutdown checkpoints survive alert loss; failure preserves the last safe resume data with `DirtyCheckpoint`. |
 | `P6-05` Public interfaces | Shared Rust, CLI and RPC torrent/magnet admission, peer/file/status queries, seeding events and exact supported option mappings with acknowledged live updates. |
 | `P6-06` Acceptance | Real native transfers, security and crash tests, bounded parser fuzzing, FFI lifetime/exception coverage, the complete CI matrix, and native measurements with 1,000 BT peers and mixed HTTP/BT controls. |
+
+All six gates are accepted in the linked record. Evidence retains the actual
+commit and binary identity of each run. Full CI may be reused across commits
+when a recorded file-inventory and content-hash comparison proves production
+code, dependencies, native patches, toolchain/build configuration and workflows
+unchanged. Documentation/evidence changes do not invalidate that result.
+Test or benchmark changes require an explicit scope review and focused
+validation, including native execution of an affected benchmark. Changes to
+production or build inputs require fresh validation for the affected scope.
+This rule preserves each platform and behavior requirement; it does not claim
+that a later commit executed the earlier matrix or permit an untested runtime
+change. The Phase-6 audit allows only the three recorded benchmark diagnostic
+and regression-test files in addition to documentation/evidence changes.
 
 The native dependency graph uses Boost 1.91.0 headers and OpenSSL 3.6.3,
 verified from upstream source archives. Native libraries and their build

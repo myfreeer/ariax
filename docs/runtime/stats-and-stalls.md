@@ -8,7 +8,8 @@ sampling, integer EWMA decay, diagnostic-condition separation, and
 query-derived sample age are executable. The HTTP producer, timeout/lowest-speed
 diagnostics, hierarchical discard-budget counters, and RPC rendering are also
 executable. Phase 5 adds FTP/SFTP producers and bounded origin feedback for
-mirror selection; libtorrent import remains pending.
+mirror selection. Phase 6 adds immutable BT snapshots and shared task/global
+query aggregation, with [native acceptance evidence](../../performance-evidence/phase6-acceptance-2026-10-05.md).
 
 Problem: many downloaders update speed only when bytes arrive. If a socket gets
 stuck, the displayed speed can freeze at the previous value until another packet

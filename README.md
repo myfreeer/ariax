@@ -16,10 +16,13 @@ CLI, Rust API and RPC control plane. The
 on Linux, macOS, Windows MSVC and Windows GNU, including feature and MSRV checks
 and native Linux performance measurements.
 
-Phase 6 BitTorrent implementation and its acceptance harness are complete
-locally. [Focused native Linux regressions](performance-evidence/phase6-focused-linux-2026-10-04.md)
-pass at `12386f7`. The full platform/MSRV/feature matrix, broader native tests,
-sanitizer/fuzz execution and six-scenario performance campaign remain pending.
+Phase 6 BitTorrent implementation and acceptance are
+[complete](performance-evidence/phase6-acceptance-2026-10-05.md). Verified evidence
+covers the full platform/MSRV/feature matrix, native transfer/security/recovery
+tests, ASan/UBSan and bounded parser fuzzing, all six native Linux benchmark
+scenarios, and local OpenSSH interoperability. A source audit establishes the
+unchanged production/build inputs across those runs and separately validates
+the benchmark diagnostic changes. Phase 7 hardening is next.
 Ariax remains unreleased;
 the [implementation plan](docs/project/implementation-plan.md) tracks remaining
 protocol, native backend and hardening gates. HTTP/2, growing/chunked HTTP
@@ -33,9 +36,9 @@ unchanged, with no migration or compatibility reader.
   proxies, verified TLS, bounded retries and resumable progress.
 - **Additional protocols:** Metalink v3/v4, FTP/FTPS and SFTP, with shared
   scheduling, verification and persistence.
-- **BitTorrent:** local implementation of v1/v2/hybrid torrents, magnets,
-  metadata-only downloads, selection and seeding in `full`/`compat`; native
-  acceptance remains pending.
+- **BitTorrent:** v1/v2/hybrid torrents, magnets, metadata-only downloads,
+  selection and seeding in `full`/`compat`, with Phase-6 native acceptance
+  evidence retained.
 - **Control:** direct CLI commands, a typed Rust API, and JSON-RPC over loopback
   HTTP, WebSocket or stdio. Pause, resume, queue changes and status queries use
   the same engine.
@@ -89,11 +92,11 @@ Choose a CLI bundle with `--no-default-features --features <bundle>`.
 | Default | HTTP(S) and the shared control interfaces |
 | `minimal` | Default capabilities plus Metalink |
 | `standard` | `minimal` plus FTP/FTPS and SFTP |
-| `full` | `standard` plus BitTorrent; local implementation complete, native acceptance pending |
+| `full` | `standard` plus BitTorrent, with Phase-6 native acceptance complete |
 | `compat` | `full`; additional compatibility behavior remains subject to its gates |
 
-The completed CI baseline predates BitTorrent. Full/compat BT behavior requires
-the [six Phase 6 gates](docs/protocols/libtorrent-integration.md#phase-6-gates).
+Full/compat BT behavior passes the
+[six Phase 6 gates](docs/protocols/libtorrent-integration.md#phase-6-gates).
 Shell hooks remain unsupported. Runtime `--profile` settings are separate from
 these compile-time feature bundles.
 

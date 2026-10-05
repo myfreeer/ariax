@@ -92,7 +92,9 @@ Native Linux acceptance passes in the September 22, 2026
 [CI baseline](../../performance-evidence/ci-baseline-2026-09-22.md) at `af5d193`.
 The manually dispatched `native-linux-rpc-benchmarks.yml` workflow runs the four
 optimized transport scenarios, the administrative scenario and the mixed HTTP/BT
-scenario. Dispatch it against the same commit after the functional matrix passes.
+scenario. Use the candidate commit after the functional matrix passes, or
+record [equivalent production/build inputs](../protocols/libtorrent-integration.md#phase-6-gates)
+and separate validation of any test/benchmark changes.
 It fails on a missing barrier, incomplete call count, unreleased
 stalled-consumer credit, memory overflow or latency-gate failure, and preserves
 complete JSON reports and failed-run diagnostics. WSL 1 timings remain local
@@ -168,6 +170,9 @@ at `a6f9b0d` failed a mixed burst at 530.097 ms and remains retained.
 The rerun adds failure diagnostics without changing acceptance limits; one
 passing campaign does not identify the earlier failure's cause or establish
 repeated-run stability. Full functional CI remains recorded at `a6f9b0d`.
+The [Phase-6 acceptance record](../../performance-evidence/phase6-acceptance-2026-10-05.md)
+combines these results through the source audit. Repeated mixed-burst
+diagnostics remain a Phase-7 hardening work item.
 
 ### Native Linux CI Baseline
 

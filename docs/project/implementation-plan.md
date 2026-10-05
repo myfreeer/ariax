@@ -559,16 +559,22 @@ older stores unchanged. Do not add v1/v2-to-v3 migrations, historical JSON
 readers, downgrade support or obsolete API aliases. Keep current-format
 self-contained import/export and the existing aria2-facing product contracts.
 
-Local implementation and acceptance-harness work are complete for all six
-packages below. The [full functional CI matrix](../../performance-evidence/phase6-full-ci-2026-10-05.md)
+Phase 6 implementation and acceptance are complete for all six packages below.
+The [acceptance record](../../performance-evidence/phase6-acceptance-2026-10-05.md)
+maps each gate to retained passing evidence and the source-equivalence audit.
+The [full functional CI matrix](../../performance-evidence/phase6-full-ci-2026-10-05.md)
 passes at `a6f9b0d`, covering every configured platform/MSRV/feature job and
 native sanitizer/parser fuzz execution. The
 [manual benchmark rerun](../../performance-evidence/phase6-benchmarks-rerun-2026-10-05.md)
 passes all six scenarios at `9107ecb`, including 1,000 BT peers alongside
 1,000 HTTP ranges. Only benchmark diagnostics, their tests and documentation
 changed since the full matrix; automatic functional CI was skipped for that
-commit. `P6-06` still requires the final evidence to converge on one candidate
-source. See [current evidence and remaining gates](implementation-readiness.md#phase-6-local-implementation-and-open-acceptance).
+commit. All 418 compared production and validation-input files match the full
+CI baseline; the only code changes are separately validated benchmark diagnostics
+and tests. The [source-equivalence rule](../protocols/libtorrent-integration.md#phase-6-gates)
+closes `P6-06` using the actual recorded commits. Fresh local OpenSSH evidence
+also passes for WSL Linux and Windows-GNU clients. See
+[current evidence and remaining gates](implementation-readiness.md#phase-6-acceptance-and-phase-7-handoff).
 The [local validation record](../../performance-evidence/phase6-local-validation-2026-09-26.md)
 separates passing focused checks from unexecuted native acceptance.
 The final local cleanup removes obsolete HTTP type aliases, the SHA-256-only
@@ -582,7 +588,7 @@ BT task dumps and aggregate transfer statistics share the current query owners.
 | `P6-03` Scheduler and resources | Shared lifecycle owner and immutable snapshots, bounded queues/blobs, cancellation ownership, resource reservations and reduce-before-increase bandwidth allocation. | Current bridge-pressure tests and mixed HTTP/BT native measurements. |
 | `P6-04` Persistence and recovery | Fresh SQLite/JSON v3, exact identity/root/mapping bindings and tracked periodic/pause/remove/shutdown checkpoints. Process-crash tests cover both sides of the SQLite commit in WAL and rollback-journal modes. | Current crash, dirty recovery, stale-completion and clean-shutdown tests on native platforms. |
 | `P6-05` Interfaces and options | Shared typed Rust, CLI and RPC admission/status/peer/file/option owners, acknowledged live updates and explicit active restart rejection. | Current feature-disabled rejection and interface/lifecycle parity regressions. |
-| `P6-06` Validation and performance | Native transfer/security/recovery fixtures, bounded parser fuzz target, sanitizer job and a sixth benchmark with 1,000 BT peers alongside 1,000 HTTP ranges. | Passing native test, sanitizer, fuzz and complete six-scenario reports from the same source. |
+| `P6-06` Validation and performance | Native transfer/security/recovery fixtures, bounded parser fuzz target, sanitizer job and a sixth benchmark with 1,000 BT peers alongside 1,000 HTTP ranges. | Passing native test, sanitizer, fuzz and complete six-scenario reports for matching production/build inputs, with an explicit source audit and separate validation of any test/benchmark changes. |
 
 Exit criteria:
 
@@ -595,10 +601,17 @@ Exit criteria:
 
 ## Phase 7: Hardening
 
-- Security review.
-- Fuzzing budget in CI.
-- ASAN/UBSAN/TSAN for FFI builds.
-- Internal stress/scalability validation on Linux, Windows, macOS.
+Status: the active next phase after the accepted Phase-6 milestone. Existing
+passing CI, sanitizer/fuzz, benchmark and OpenSSH evidence supplies its baseline.
+The work below remains open; Phase-6 completion is not release approval.
+
+| Priority | Work | Required Evidence |
+| --- | --- | --- |
+| `P7-01` Mixed-burst stability | Investigate the retained 530.097 ms failure alongside the later 486 ms maximum passing burst. Run bounded repeated native Linux measurements with the existing workload, limits and failed-step diagnostics. | Every attempt retained, including failures; tail latency and failure frequency reported, with attributed delays guiding any fix. One passing rerun is not a stability claim. |
+| `P7-02` Security and FFI review | Review unsafe/ABI ownership, metadata admission, destination policy, private files, cancellation and persistence boundaries. | Findings tied to code and success/rejection regressions; security fixes retain resource and recovery invariants. |
+| `P7-03` Fuzzing and sanitizers | Extend bounded parser fuzz campaigns and ASan/UBSan coverage; establish TSan coverage for supported FFI configurations. | Reproducible seeds/budgets, instrumentation provenance and retained failures; unsupported configurations are explicit. |
+| `P7-04` Platform stress and release preparation | Stress lifecycle/resource/recovery behavior on Linux, Windows and macOS; verify generated documentation, compatibility parity and reproducible release artifacts. | Platform-specific results, bounded-resource and forced-kill evidence, and documented release/compatibility decisions. |
+
 - Documentation generated from metadata.
 - Decide, from recorded parity results, whether `ariax` remains parallel or may
   provide the `aria2c` compatibility artifact; document migration and rollback.

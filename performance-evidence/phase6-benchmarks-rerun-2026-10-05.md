@@ -1,5 +1,11 @@
 # Phase 6 Passing Native Linux Benchmark Rerun
 
+Acceptance update: the [Phase 6 closure](phase6-acceptance-2026-10-05.md)
+accepts the milestone using verified production/build source equivalence and
+separate validation of benchmark changes. It supersedes the provisional open
+acceptance and identical-commit requirement below. The original run outcomes,
+failures, source identities and platform limits remain unchanged.
+
 Review on October 5, 2026 verifies all six manual benchmark scenarios at
 `9107ecb1b82b3e1c720de8bdc24d4a1e8657f774`. HTTP, WebSocket, Content-Length
 stdio, NDJSON, administrative and mixed HTTP/BT reports pass the shared

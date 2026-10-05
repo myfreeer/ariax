@@ -9,8 +9,10 @@ Linux-under-WSL and native Windows-GNU tests, interoperability, bounded fuzzing
 and native Windows measurements. The
 [September 22 CI baseline](../../performance-evidence/ci-baseline-2026-09-22.md)
 adds passing native Linux acceptance at `af5d193`. Current persistence is
-SQLite/JSON v3 only. Phase 6 implementation is complete locally; its native
-acceptance is tracked separately in [implementation readiness](../project/implementation-readiness.md#phase-6-local-implementation-and-open-acceptance).
+SQLite/JSON v3 only. Phase 6 implementation and scoped native acceptance are
+[complete](../../performance-evidence/phase6-acceptance-2026-10-05.md), with
+production/build source equivalence and separate benchmark-change validation.
+Phase 7 hardening is tracked in [implementation readiness](../project/implementation-readiness.md#phase-6-acceptance-and-phase-7-handoff).
 
 ## Scope And Checkpoints
 
@@ -24,8 +26,8 @@ acceptance is tracked separately in [implementation readiness](../project/implem
 | `P5-06` Integration | Mixed-source scheduling, selectors/statistics, public parity, self-contained session documents and recorded validation | Passed locally |
 
 These results apply to their recorded source. The later CI baseline closes the
-P4-11 native Linux gate. Phase-6 native acceptance, HTTP/2, growing layouts,
-new native disk backends and release/tag qualification remain separate gates.
+P4-11 native Linux gate. HTTP/2, growing layouts, new native disk backends and
+release/tag qualification remain separate gates after Phase-6 acceptance.
 
 ## Shared Ownership
 
