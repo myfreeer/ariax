@@ -155,9 +155,37 @@ paths. Supply platform-native source prefixes to `--remap-path-prefix` and inspe
 the final binaries for absolute workstation/cache paths. The retained October 5
 minimal/standard artifacts match independent builds but retain dependency source
 paths; the [package review](release-packaging.md#package-manifests) records this
-release blocker. Preserve `-C link-self-contained=no` for Windows-GNU. Native
+historical blocker and the passing remapped follow-up. Preserve
+`-C link-self-contained=no` for Windows-GNU. Native
 C/C++ sources may also require file/debug-prefix mapping, with their normal
 provenance/cache checks retained. Do not patch the finished binary to hide paths.
+
+`scripts/release_build.py` maintains this local preparation for the native
+Linux and Windows-GNU `minimal`/`standard` bundles. Supply `--toolchain` pointing
+to the pinned distribution's `bin`, `--cargo-home` for the existing offline
+cache, and a fresh absolute `--output` directory on the temporary volume.
+Run Windows preparation through MSYS2 with MinGW64 first on `PATH`, as above.
+The helper uses two workers and a ten-minute timeout per bundle, checks the
+toolchain host, and records source hashes, compiler identity and build flags.
+It replaces inherited Rust flags with encoded arguments and supplies quoted
+C/C++ prefix maps for repository, dependency-cache, target and temporary roots.
+Windows keeps the native-runtime and deterministic PE timestamp flags.
+
+Preparation checks known absolute-path patterns, actual runtime imports,
+`--help` and unknown-option rejection. It fails on an unexpected runtime or
+path finding. `--prune-target` removes only its own compilation directory after
+both bundles pass, retaining a file-size inventory, binaries and logs. A failed
+attempt retains its intermediates. Rebuilding these bundles once does not
+establish independent reproducibility, clean-host acceptance or the full matrix.
+Full/compat require their separate native provenance and packaging review.
+
+After a helper assertion repair, `--reuse-cache PREVIOUS_OUTPUT` permits a new
+immutable attempt using the previous target and temporary directories. It
+requires identical compiled-source hashes, flags, epoch and compiler identities;
+only this uncompiled Python driver's hash may differ. Both driver identities
+and the prior result hash remain recorded. This is cache reuse, not an
+independent reproducibility build. With `--prune-target`, successful completion
+can then prune those reused intermediates while preserving the failed record.
 
 The generated inventory remains the parity authority. Keep Ariax parallel to
 aria2 while reviewed handler coverage is incomplete; do not publish an

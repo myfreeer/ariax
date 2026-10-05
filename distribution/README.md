@@ -14,11 +14,16 @@ imports are verified. macOS and MSVC need separate manifests.
 
 Run `python3 -B scripts/release_manifest.py` to validate the catalog. To stage
 the four retained drafts, supply `--artifacts ARTIFACT_ROOT --output NEW_DIR`.
-The artifact root contains the retained `release-linux-first` and
-`release-windows-first` directories. Preparation verifies hashes before copying,
+The current artifact root contains the `linux-complete` and `windows-complete`
+directories from the [remapping follow-up](../performance-evidence/phase7-release-paths-2026-10-05.md).
+Preparation verifies hashes before copying,
 rejects unsafe or duplicate paths and unknown runtime dependencies, and writes
 per-package manifests and checksums. It never builds, executes the binaries,
 dispatches CI or publishes a package.
+
+The four rebuilt drafts pass their path and runtime inspections. Their manifest
+records do not claim an independent repeat build. Earlier binaries and failed
+path audits remain in the prior evidence and Git history.
 
 The conservative dependency notice collection includes normal/build dependency
 closures across all eight bundles. It can contain unused source notices and

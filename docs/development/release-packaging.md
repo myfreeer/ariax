@@ -103,13 +103,25 @@ interpreter, required shared objects and maximum required glibc symbol version.
 Windows records case-insensitive DLL imports; system DLLs come from Windows,
 while each additional DLL must have an explicit reviewed source, hash and notice.
 An unknown import or missing required file rejects preparation.
-The retained binaries fail the absolute-path audit because dependency Cargo-cache
-paths were not remapped. This is recorded in every draft; byte-for-byte
-reproducibility does not establish path portability. Candidate builds must add
+The initial October 5 binaries failed the absolute-path audit because dependency
+Cargo-cache paths were not remapped. The historical manifests retain that
+finding; byte-for-byte reproducibility does not establish path portability.
+Candidate builds must add
 Cargo registry/git-cache source remaps, preserve existing repository/output
 remaps, and inspect the resulting binary. Native C/C++ objects need equivalent
 file/debug-prefix mapping when their paths are present. Reuse of native builds
 must still satisfy the existing provenance checks.
+
+The maintained [local build helper](local-hardening.md#local-release-preparation)
+selects the pinned native toolchain and prepares these remaps for minimal and
+standard. Its records include source hashes, encoded Rust arguments, quoted
+C/C++ flags, actual imports and CLI startup checks. A single rebuilt artifact
+must not inherit a prior artifact's independent-reproducibility result.
+The [remapping follow-up](../../performance-evidence/phase7-release-paths-2026-10-05.md)
+rebuilds all four local drafts and verifies zero known absolute-path matches,
+the expected remapped dependency paths, unchanged imports and CLI startup.
+Their new manifests leave independent-repeat results unset. Clean-host and
+candidate-matrix acceptance remain separate gates.
 
 `full` and `compat` have planned layouts with BT/native notice requirements.
 They need a matching release binary and actual runtime import inspection before

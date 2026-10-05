@@ -3,9 +3,10 @@ Ariax experimental CLI package draft
 These files are prepared from retained local validation artifacts. The package
 manifest identifies the exact binary, historical evidence, feature bundle,
 runtime requirements and notices. This is not an approved release candidate.
-All four retained binaries contain absolute Cargo-cache paths. Their manifests
-record the failed path audit. A candidate build must remap dependency sources
-as well as repository/output paths and pass a fresh binary path inspection.
+These rebuilt minimal/standard binaries pass the recorded source-path audit.
+Repository, dependency-cache, target and temporary source paths are remapped.
+Each bundle has one fresh build; independent reproducibility and clean-host
+acceptance remain open. Earlier binaries and their failed audits stay historical.
 
 Ariax remains parallel to aria2; reviewed option-handler coverage is 54/207.
 Do not install this draft as an aria2c replacement or infer a data migration.

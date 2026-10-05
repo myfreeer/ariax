@@ -1,0 +1,248 @@
+#!/usr/bin/env python3
+"""Build and inspect two native CLI drafts with explicit source-path remapping."""
+import argparse
+import json
+import os
+from pathlib import Path, PurePosixPath, PureWindowsPath
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+
+import local_hardening as h
+import release_manifest as rm
+
+ROOT = Path(__file__).resolve().parents[1]
+VERSION = '1.97.1'
+LINUX = 'x86_64-unknown-linux-gnu'
+WINDOWS = 'x86_64-pc-windows-gnu'
+
+
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+
+def read_utf8(path):
+    return path.read_text(encoding='utf-8')
+
+
+def remap_flags(roots, windows):
+    """Use native spellings; more specific roots take precedence in rustc."""
+    expected = {'repo', 'cargo', 'target', 'temp'}
+    require(set(roots) == expected, 'all four remap roots are required')
+    path_type = PureWindowsPath if windows else PurePosixPath
+    mappings = []
+    identities = set()
+    for name, value in roots.items():
+        require(isinstance(value, str) and not any(c in value for c in '\x00\x1f\r\n='),
+                'invalid remap root')
+        path = path_type(value)
+        require(path.is_absolute() and path != path_type(path.anchor), 'absolute non-root path required')
+        source = path.as_posix()
+        identity = source.casefold() if windows else source
+        require(identity not in identities, 'remap roots must be distinct')
+        identities.add(identity)
+        destination = '/ariax' if name == 'repo' else '/ariax-' + name
+        spellings = {source}
+        if windows:
+            spellings |= {str(path), source[0].lower() + source[1:],
+                          str(path)[0].lower() + str(path)[1:]}
+        mappings.extend((spelling, destination) for spelling in spellings)
+    mappings.sort(key=lambda item: (len(item[0]), item[0]))
+    rust = ['--remap-path-prefix=' + source + '=' + destination for source, destination in mappings]
+    if windows:
+        rust += ['-C', 'link-self-contained=no', '-C', 'link-arg=-Wl,--no-insert-timestamp']
+    native = ['-ffile-prefix-map=' + source + '=' + destination for source, destination in mappings]
+    return {'rust': rust, 'native': native}
+
+
+def build_environment(base, roots, toolchain, windows, epoch):
+    flags = remap_flags(roots, windows)
+    env = dict(base)
+    for key in tuple(env):
+        if key in {'RUSTFLAGS', 'RUSTC_WRAPPER', 'RUSTC_WORKSPACE_WRAPPER', 'CARGO_BUILD_TARGET'} or (
+                key.startswith(('HOST_', 'TARGET_')) and key.endswith(('CFLAGS', 'CXXFLAGS'))) or (
+                key.startswith(('CFLAGS_', 'CXXFLAGS_'))):
+            env.pop(key)
+    suffix = '.exe' if windows else ''
+    env.update(RUSTC=str(toolchain / ('rustc' + suffix)), RUSTDOC=str(toolchain / ('rustdoc' + suffix)),
+               CARGO_ENCODED_RUSTFLAGS='\x1f'.join(flags['rust']), CARGO_TARGET_DIR=roots['target'],
+               CARGO_HOME=roots['cargo'], CARGO_BUILD_JOBS='2', CARGO_INCREMENTAL='0',
+               CARGO_NET_OFFLINE='true', CARGO_CACHE_AUTO_CLEAN_FREQUENCY='never',
+               SOURCE_DATE_EPOCH=str(epoch), TMPDIR=roots['temp'], TMP=roots['temp'], TEMP=roots['temp'],
+               CFLAGS=shlex.join(flags['native']), CXXFLAGS=shlex.join(flags['native']),
+               CC_SHELL_ESCAPED_FLAGS='1')
+    # Windows PATH is set by MSYS2; putting standalone Rust first mixes GCC DLLs.
+    if not windows:
+        env['PATH'] = str(toolchain) + os.pathsep + env.get('PATH', '')
+    for variable, program in (('CC', 'gcc'), ('CXX', 'g++'), ('AR', 'ar')):
+        selected = shutil.which(program + suffix, path=env.get('PATH'))
+        require(selected is not None, 'missing native compiler tool: ' + program)
+        env[variable] = selected
+    return env, flags
+
+
+def toolchain_matches(output, target):
+    return ('release: ' + VERSION) in output.splitlines() and ('host: ' + target) in output.splitlines()
+
+
+def option_rejected(result, stderr):
+    return result['exitCode'] == 2 and 'unknown argument' in stderr
+
+
+def runtime_inventory(output, windows):
+    if windows:
+        libraries = sorted({value.lower() for value in re.findall(r'DLL Name:\s*(\S+)', output)})
+        require(set(libraries) == rm.WINDOWS_SYSTEM, 'unexpected Windows runtime imports')
+        return {'systemLibraries': libraries, 'additionalRuntimeFiles': []}
+    libraries = sorted(set(re.findall(r'Shared library: \[([^\]]+)\]', output)))
+    require(set(libraries) == rm.LINUX_SYSTEM, 'unexpected Linux runtime imports')
+    versions = re.findall(r'GLIBC_([0-9.]+)', output)
+    require(bool(versions), 'missing glibc version requirements')
+    minimum = max(versions, key=lambda value: tuple(map(int, value.split('.'))))
+    match = re.search(r'Requesting program interpreter: ([^\]]+)\]', output)
+    require(match is not None and match[1] == '/lib64/ld-linux-x86-64.so.2' and minimum == '2.34',
+            'unexpected Linux loader or glibc requirement')
+    return {'systemLibraries': libraries, 'additionalRuntimeFiles': [],
+            'minimumGlibc': minimum, 'interpreter': match[1]}
+
+
+def source_hashes(root):
+    names = subprocess.check_output(['git', 'ls-files', '-z'], cwd=root).decode().split('\0')
+    selected = [name for name in names if name and (name.startswith((
+        'crates/', 'bin/', 'vendor/', 'native/', 'assets/', 'compat/', 'generated/', '.cargo/'))
+        or name in {'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml'})]
+    selected += ['scripts/release_build.py', 'scripts/release_manifest.py', 'scripts/local_hardening.py']
+    return {name: h.digest(root / name) for name in sorted(set(selected))}
+
+
+def verify_cache_sources(previous, current):
+    # This Python driver is not compiled into the executable. Repairs to its
+    # assertions may reuse Cargo's intermediates; retain both driver identities.
+    excluded = {'scripts/release_build.py'}
+    require({k: v for k, v in previous.items() if k not in excluded} ==
+            {k: v for k, v in current.items() if k not in excluded}, 'cached build source drift')
+
+
+def prepare(args, root=ROOT):
+    windows = os.name == 'nt'
+    require(windows or sys.platform == 'linux', 'only native Linux and Windows-GNU are supported')
+    target = WINDOWS if windows else LINUX
+    require(args.output.is_absolute() and args.toolchain.is_absolute() and args.cargo_home.is_absolute(),
+            'absolute output, toolchain and Cargo-home paths required')
+    require(args.cargo_home.is_dir() and args.toolchain.is_dir(), 'existing toolchain and cache required')
+    require(args.output.parent.is_dir() and not args.output.exists(), 'fresh output directory required')
+    minimum_free = (768 if args.reuse_cache else 1536) * 1024 ** 2
+    require(shutil.disk_usage(args.output.parent).free >= minimum_free, 'insufficient space for build intermediates')
+    roots = {'repo': str(root.resolve()), 'cargo': str(args.cargo_home.resolve()),
+             'target': str(args.output / 'target'), 'temp': str(args.output / 'tmp')}
+    previous = None
+    if args.reuse_cache:
+        require(args.reuse_cache.is_absolute(), 'absolute cache record directory required')
+        previous = json.loads(read_utf8(args.reuse_cache / 'result.json'))
+        require(previous['target'] == target, 'cached target mismatch')
+        verify_cache_sources(previous['sourceHashes'], source_hashes(root))
+        for key, variable in (('target', 'CARGO_TARGET_DIR'), ('temp', 'TMPDIR')):
+            path = Path(previous['environment'][variable])
+            expected = args.reuse_cache / ('target' if key == 'target' else 'tmp')
+            require(path.resolve() == expected.resolve() and path.is_dir() and not path.is_symlink(),
+                    'cache directory identity mismatch')
+            roots[key] = str(path)
+    epoch = subprocess.check_output(['git', 'show', '-s', '--format=%ct', 'HEAD'], cwd=root).decode().strip()
+    env, flags = build_environment(os.environ, roots, args.toolchain, windows, epoch)
+    if previous:
+        require(flags == previous['flags'] and epoch == previous['sourceDateEpoch'] and
+                all(env.get(k) == v for k, v in previous['environment'].items()), 'cached build environment drift')
+    args.output.mkdir()
+    if not previous:
+        (args.output / 'tmp').mkdir()
+    record = {'schema': 1, 'passed': False, 'releaseApproved': False, 'target': target,
+              'sourceCommit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root).decode().strip(),
+              'sourceHashes': source_hashes(root), 'flags': flags, 'sourceDateEpoch': epoch,
+              'environment': {key: env[key] for key in ('RUSTC', 'RUSTDOC', 'CARGO_HOME', 'CARGO_TARGET_DIR',
+                  'CARGO_ENCODED_RUSTFLAGS', 'CFLAGS', 'CXXFLAGS', 'CC_SHELL_ESCAPED_FLAGS',
+                  'CC', 'CXX', 'AR', 'CARGO_BUILD_JOBS', 'CARGO_INCREMENTAL', 'TMPDIR')}, 'builds': []}
+    suffix = '.exe' if windows else ''
+    cargo = args.toolchain / ('cargo' + suffix)
+    if previous:
+        record['cacheReuse'] = {'recordSha256': h.digest(args.reuse_cache / 'result.json'),
+                               'previousDriverSha256': previous['sourceHashes']['scripts/release_build.py'],
+                               'scope': 'Same compiled sources, flags and tool identities; Python driver repair only.'}
+    try:
+        def checked(command, name, timeout=20):
+            result = h.run(command, args.output / name, timeout=timeout, env=env, cwd=root)
+            require(result['passed'], 'command failed: ' + str(name))
+            return result
+        record['compiler'] = checked([env['RUSTC'], '--version', '--verbose'], 'compiler')
+        require(toolchain_matches(read_utf8(args.output / 'compiler/stdout.log'), target),
+                'pinned native Rust toolchain required')
+        record['nativeCompiler'] = checked([env['CC'], '-dumpmachine'], 'native-compiler')
+        machine = read_utf8(args.output / 'native-compiler/stdout.log').strip()
+        require(machine == ('x86_64-w64-mingw32' if windows else 'x86_64-linux-gnu'),
+                'native compiler target mismatch')
+        record['cargoSha256'] = h.digest(cargo)
+        if previous:
+            require(record['cargoSha256'] == previous['cargoSha256'] and
+                    record['compiler']['binarySha256'] == previous['compiler']['binarySha256'] and
+                    record['nativeCompiler']['binarySha256'] == previous['nativeCompiler']['binarySha256'],
+                    'cached compiler identity drift')
+        for bundle in ('minimal', 'standard'):
+            item = {'bundle': bundle}
+            record['builds'].append(item)
+            h.save(args.output / 'result.json', record)
+            command = [cargo, 'build', '--locked', '--offline', '-p', 'ariax-cli',
+                       '--no-default-features', '--features', bundle, '--profile', 'release-cli']
+            item['build'] = checked(command, bundle + '/build', timeout=600)
+            binary = args.output / bundle / ('ariax' + suffix)
+            shutil.copyfile(Path(roots['target']) / 'release-cli' / binary.name, binary)
+            binary.chmod(0o755)
+            item.update(binarySha256=h.digest(binary), bytes=binary.stat().st_size,
+                        pathAudit=rm.audit_binary_paths(binary))
+            require(item['pathAudit']['passed'], 'binary retains absolute source paths')
+            inspection = ['objdump', '-p', str(binary)] if windows else [
+                'readelf', '-l', '-d', '--version-info', str(binary)]
+            item['inspection'] = checked(inspection, bundle + '/imports')
+            item['runtime'] = runtime_inventory(read_utf8(args.output / bundle / 'imports/stdout.log'), windows)
+            item['help'] = checked([binary, '--help'], bundle + '/help')
+            require('Usage: ariax' in read_utf8(args.output / bundle / 'help/stdout.log'), 'missing help output')
+            item['rejection'] = h.run([binary, '--ariax-intentionally-invalid-option'],
+                                     args.output / bundle / 'rejection', timeout=20, env=env, cwd=root)
+            item['rejectionObserved'] = option_rejected(item['rejection'], read_utf8(
+                args.output / bundle / 'rejection/stderr.log'))
+            require(item['rejectionObserved'], 'missing unknown-option rejection')
+            h.save(args.output / 'result.json', record)
+            print(json.dumps({'bundle': bundle, 'target': target, 'pathAuditPassed': True}), flush=True)
+        require(record['sourceHashes'] == source_hashes(root), 'source changed during build')
+        record['passed'] = True
+        if args.prune_target:
+            directory = Path(roots['target'])
+            inventory = {p.relative_to(directory).as_posix(): p.stat().st_size
+                         for p in directory.rglob('*') if p.is_file()}
+            h.save(args.output / 'discarded-intermediates.json', inventory)
+            shutil.rmtree(directory)
+            record['cleanup'] = {'files': len(inventory), 'bytes': sum(inventory.values()),
+                                 'inventorySha256': h.digest(args.output / 'discarded-intermediates.json')}
+    except (Exception, KeyboardInterrupt) as error:
+        record.update(passed=False, error=str(error) or type(error).__name__)
+    finally:
+        h.save(args.output / 'result.json', record)
+    return record
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--toolchain', type=Path, required=True, help='pinned native Rust distribution bin directory')
+    parser.add_argument('--cargo-home', type=Path, required=True, help='existing offline Cargo cache')
+    parser.add_argument('--output', type=Path, required=True, help='fresh absolute directory on the temporary volume')
+    parser.add_argument('--prune-target', action='store_true')
+    parser.add_argument('--reuse-cache', type=Path, help='prior preparation directory with identical compiled inputs and flags')
+    args = parser.parse_args()
+    result = prepare(args)
+    print(json.dumps({key: result[key] for key in ('passed', 'target', 'releaseApproved')}))
+    return 0 if result['passed'] else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

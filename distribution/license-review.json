@@ -136,7 +136,7 @@
     "linuxMinimumObservedGlibc": "2.34",
     "windowsExtraDllsForRetainedMinimalStandard": [],
     "scope": "Retained local minimal/standard binaries only; full/compat and other platforms require their own actual import and runtime provenance review.",
-    "binaryPathAudits": {
+    "historicalBinaryPathAudits": {
       "x86_64-unknown-linux-gnu-minimal": {
         "passed": false,
         "counts": {
@@ -177,10 +177,53 @@
         },
         "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
       }
-    }
+    },
+    "binaryPathAudits": {
+      "x86_64-unknown-linux-gnu-minimal": {
+        "passed": true,
+        "counts": {
+          "wslMount": 0,
+          "windowsTemp": 0,
+          "windowsUser": 0,
+          "unixHome": 0
+        },
+        "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
+      },
+      "x86_64-unknown-linux-gnu-standard": {
+        "passed": true,
+        "counts": {
+          "wslMount": 0,
+          "windowsTemp": 0,
+          "windowsUser": 0,
+          "unixHome": 0
+        },
+        "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
+      },
+      "x86_64-pc-windows-gnu-minimal": {
+        "passed": true,
+        "counts": {
+          "wslMount": 0,
+          "windowsTemp": 0,
+          "windowsUser": 0,
+          "unixHome": 0
+        },
+        "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
+      },
+      "x86_64-pc-windows-gnu-standard": {
+        "passed": true,
+        "counts": {
+          "wslMount": 0,
+          "windowsTemp": 0,
+          "windowsUser": 0,
+          "unixHome": 0
+        },
+        "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
+      }
+    },
+    "pathRemapEvidence": "performance-evidence/phase7-release-paths-2026-10-05.json"
   },
   "remaining": [
-    "All four retained binaries fail the absolute Cargo-cache path scan; candidate builds must remap dependency sources and pass a new artifact inspection.",
+    "Independent reproducibility checks for the newly remapped binaries; one fresh build per bundle has passed path/import/startup inspection.",
     "Candidate source/build identity and final release matrix.",
     "Actual full/compat binary imports and native/platform notices.",
     "Clean-host packaging tests for intended supported OS versions."

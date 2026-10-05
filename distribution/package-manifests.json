@@ -22,14 +22,14 @@
     {
       "source": "distribution/package-readme.txt",
       "destination": "README.txt",
-      "bytes": 1639,
-      "sha256": "fe59f3e4b42ae9c14e568c61e2edb3794506be9ad3701205a33541112918bec0"
+      "bytes": 1719,
+      "sha256": "71ba0cee14893d51209c7c25bc6509763079e267cebcbef5ba60babfd926f435"
     },
     {
       "source": "distribution/license-review.json",
       "destination": "license-review.json",
-      "bytes": 7876,
-      "sha256": "9581f30c2340995a9beca5c2c779a3658db1d004cf24f3f7ae74fb10893eb38b"
+      "bytes": 9259,
+      "sha256": "464cfc8b604a3ae87179a46dfebccd676bfece1e58b0e8bd162d53923e116a73"
     },
     {
       "source": "performance-evidence/phase7-third-party-notices-2026-10-05.txt",
@@ -126,20 +126,23 @@
         }
       ],
       "binary": {
-        "artifactPath": "release-linux-first/minimal/ariax",
+        "artifactPath": "linux-complete/minimal/ariax",
         "destination": "ariax",
-        "sha256": "7aa971b7df006d7540a0687af0d943995400a391183bae0ade90cd910173058c",
-        "bytes": 10656456,
-        "buildRecordSha256": "e0abff27258e6278f5e0806562ebfe383194504ea6ddea9f894714ea255e26fd",
-        "repeatBuildRecordSha256": "cc502a02f6a8d5b9ab43e1139345a698c2ac39f4f0b50a3e97228f600b1093ed",
-        "independentBuildMatched": true,
-        "sourceDateEpoch": "1791158400",
-        "evidence": "performance-evidence/phase7-local-hardening-2026-10-05.json",
-        "sourceScope": "Historical local P7 build, not the newer packaging commit or an approved release candidate.",
+        "sha256": "ea3c4c586ee466d501c936baf2a5294b71140798161ea73c0448b01767cc7d73",
+        "bytes": 10640072,
+        "sourceCommit": "473045d78e9f4a35a058c6d3333665da393287c8",
+        "buildRecordSha256": "48301aa5c917da713c03efc6b7af9f7d71f889aaf505315a2bbfc23cd271882f",
+        "preparationRecordSha256": "ab68694bd9bad00391d3eb160ab6def719b808f19547a51fcce24dd9ba07e308",
+        "repeatBuildRecordSha256": null,
+        "independentBuildMatched": null,
+        "sourceDateEpoch": "1791193771",
+        "evidence": "performance-evidence/phase7-release-paths-2026-10-05.json",
+        "sourceScope": "Fresh local build of the recorded production sources with the recorded remap helper; one build only, not approved release acceptance.",
+        "supersedesBinarySha256": "7aa971b7df006d7540a0687af0d943995400a391183bae0ade90cd910173058c",
         "pathAudit": {
-          "passed": false,
+          "passed": true,
           "counts": {
-            "wslMount": 319,
+            "wslMount": 0,
             "windowsTemp": 0,
             "windowsUser": 0,
             "unixHome": 0
@@ -148,16 +151,16 @@
         }
       },
       "runtime": {
-        "scope": "Recorded imports of this exact retained binary; system libraries are not shipped.",
-        "inspectionSha256": "e644271af3830308d108f723de2843933a7be242b09664d042776d54327dabf9",
-        "additionalRuntimeFiles": [],
         "systemLibraries": [
           "libc.so.6",
           "libgcc_s.so.1",
           "libm.so.6"
         ],
+        "additionalRuntimeFiles": [],
         "minimumGlibc": "2.34",
-        "interpreter": "/lib64/ld-linux-x86-64.so.2"
+        "interpreter": "/lib64/ld-linux-x86-64.so.2",
+        "scope": "Inspected imports of this exact remapped binary; system libraries are not shipped.",
+        "inspectionSha256": "c73138d0ff7061730a838ab60e3316b3ebf9c5492f44393164cab9f3b194cf97"
       },
       "dependencyClosure": [
         "ariax-bt-metadata@0.1.0",
@@ -370,20 +373,23 @@
         }
       ],
       "binary": {
-        "artifactPath": "release-linux-first/standard/ariax",
+        "artifactPath": "linux-complete/standard/ariax",
         "destination": "ariax",
-        "sha256": "8cc2b1db535bec1639bcc2a7c114eb0b0dc245ea059e7c0eaf7e312292acbedf",
-        "bytes": 14754408,
-        "buildRecordSha256": "e0abff27258e6278f5e0806562ebfe383194504ea6ddea9f894714ea255e26fd",
-        "repeatBuildRecordSha256": "cc502a02f6a8d5b9ab43e1139345a698c2ac39f4f0b50a3e97228f600b1093ed",
-        "independentBuildMatched": true,
-        "sourceDateEpoch": "1791158400",
-        "evidence": "performance-evidence/phase7-local-hardening-2026-10-05.json",
-        "sourceScope": "Historical local P7 build, not the newer packaging commit or an approved release candidate.",
+        "sha256": "2b641cde2496b2f31eee711315ebfa5a325bd3af27c503f5c9d4be0b8dd9f6e6",
+        "bytes": 14733928,
+        "sourceCommit": "473045d78e9f4a35a058c6d3333665da393287c8",
+        "buildRecordSha256": "0965bfec7bfb48e2dd783558587a7d18b4b19c865e41bf8e768a711672d7df21",
+        "preparationRecordSha256": "ab68694bd9bad00391d3eb160ab6def719b808f19547a51fcce24dd9ba07e308",
+        "repeatBuildRecordSha256": null,
+        "independentBuildMatched": null,
+        "sourceDateEpoch": "1791193771",
+        "evidence": "performance-evidence/phase7-release-paths-2026-10-05.json",
+        "sourceScope": "Fresh local build of the recorded production sources with the recorded remap helper; one build only, not approved release acceptance.",
+        "supersedesBinarySha256": "8cc2b1db535bec1639bcc2a7c114eb0b0dc245ea059e7c0eaf7e312292acbedf",
         "pathAudit": {
-          "passed": false,
+          "passed": true,
           "counts": {
-            "wslMount": 507,
+            "wslMount": 0,
             "windowsTemp": 0,
             "windowsUser": 0,
             "unixHome": 0
@@ -392,16 +398,16 @@
         }
       },
       "runtime": {
-        "scope": "Recorded imports of this exact retained binary; system libraries are not shipped.",
-        "inspectionSha256": "f3ea1bb12e27d24ea55b3ba2dc79d518d5e02c341719e1d7faadbb51c47dc5e0",
-        "additionalRuntimeFiles": [],
         "systemLibraries": [
           "libc.so.6",
           "libgcc_s.so.1",
           "libm.so.6"
         ],
+        "additionalRuntimeFiles": [],
         "minimumGlibc": "2.34",
-        "interpreter": "/lib64/ld-linux-x86-64.so.2"
+        "interpreter": "/lib64/ld-linux-x86-64.so.2",
+        "scope": "Inspected imports of this exact remapped binary; system libraries are not shipped.",
+        "inspectionSha256": "168f2c1202db9031a5b574833464a8fb3d3940d46f1707cca0c5e8e1e8436030"
       },
       "dependencyClosure": [
         "adler2@2.0.1",
@@ -1409,21 +1415,24 @@
         }
       ],
       "binary": {
-        "artifactPath": "release-windows-first/minimal/ariax.exe",
+        "artifactPath": "windows-complete/minimal/ariax.exe",
         "destination": "ariax.exe",
-        "sha256": "a53b2b017c24d0ece2fc50271d18339fb381be17593f4315172f5fe0c02b6051",
-        "bytes": 10235904,
-        "buildRecordSha256": "52d0ac4b13434ccc82eec6eeea5ab617676b53e31f77e5407b4ee7597f0d09da",
-        "repeatBuildRecordSha256": "0bdd71837da7aabf2be126df9513880f8224ad1e9a6841c826af02da2c102946",
-        "independentBuildMatched": true,
-        "sourceDateEpoch": "1791158400",
-        "evidence": "performance-evidence/phase7-local-hardening-2026-10-05.json",
-        "sourceScope": "Historical local P7 build, not the newer packaging commit or an approved release candidate.",
+        "sha256": "3b72f64ee7a2fd6656fb96a2e597cc4c29839a72a6014ce1a1caba4f582de00c",
+        "bytes": 10223616,
+        "sourceCommit": "473045d78e9f4a35a058c6d3333665da393287c8",
+        "buildRecordSha256": "0a52a3a84730d54a27b16efee8d1f975f29de2b9373318ce4ef914f38f6708ef",
+        "preparationRecordSha256": "3c2e2dc50d5460c39934b085676877ae86959a6c241661b7506119c6ed3e11b4",
+        "repeatBuildRecordSha256": null,
+        "independentBuildMatched": null,
+        "sourceDateEpoch": "1791193771",
+        "evidence": "performance-evidence/phase7-release-paths-2026-10-05.json",
+        "sourceScope": "Fresh local build of the recorded production sources with the recorded remap helper; one build only, not approved release acceptance.",
+        "supersedesBinarySha256": "a53b2b017c24d0ece2fc50271d18339fb381be17593f4315172f5fe0c02b6051",
         "pathAudit": {
-          "passed": false,
+          "passed": true,
           "counts": {
             "wslMount": 0,
-            "windowsTemp": 323,
+            "windowsTemp": 0,
             "windowsUser": 0,
             "unixHome": 0
           },
@@ -1431,9 +1440,6 @@
         }
       },
       "runtime": {
-        "scope": "Recorded imports of this exact retained binary; system libraries are not shipped.",
-        "inspectionSha256": "a64cfc5dfc274cbcc31c24b913dc0be595f35c448eec2c48240208f7bd82b564",
-        "additionalRuntimeFiles": [],
         "systemLibraries": [
           "advapi32.dll",
           "api-ms-win-core-synch-l1-2-0.dll",
@@ -1446,7 +1452,10 @@
           "ntdll.dll",
           "oleaut32.dll",
           "ws2_32.dll"
-        ]
+        ],
+        "additionalRuntimeFiles": [],
+        "scope": "Inspected imports of this exact remapped binary; system libraries are not shipped.",
+        "inspectionSha256": "d8d25183808c4d4c5bf362e69de5dc96c74f76e9e59be83b763d7a3784a1af98"
       },
       "dependencyClosure": [
         "ariax-bt-metadata@0.1.0",
@@ -1701,21 +1710,24 @@
         }
       ],
       "binary": {
-        "artifactPath": "release-windows-first/standard/ariax.exe",
+        "artifactPath": "windows-complete/standard/ariax.exe",
         "destination": "ariax.exe",
-        "sha256": "a0526835471dddf2dae4e62df23782e11ba787a27feebd416c95e9e0b5f60cbf",
-        "bytes": 14108672,
-        "buildRecordSha256": "52d0ac4b13434ccc82eec6eeea5ab617676b53e31f77e5407b4ee7597f0d09da",
-        "repeatBuildRecordSha256": "0bdd71837da7aabf2be126df9513880f8224ad1e9a6841c826af02da2c102946",
-        "independentBuildMatched": true,
-        "sourceDateEpoch": "1791158400",
-        "evidence": "performance-evidence/phase7-local-hardening-2026-10-05.json",
-        "sourceScope": "Historical local P7 build, not the newer packaging commit or an approved release candidate.",
+        "sha256": "ed2d7860bd5867a6d9bb465bdd2c6d90fde46fc42f0e135bef9725195945b10c",
+        "bytes": 14087680,
+        "sourceCommit": "473045d78e9f4a35a058c6d3333665da393287c8",
+        "buildRecordSha256": "4a51fde449f7386a58f7ce60af5e1dd9da710babc7259d0fbdffdf9c58ff37a6",
+        "preparationRecordSha256": "3c2e2dc50d5460c39934b085676877ae86959a6c241661b7506119c6ed3e11b4",
+        "repeatBuildRecordSha256": null,
+        "independentBuildMatched": null,
+        "sourceDateEpoch": "1791193771",
+        "evidence": "performance-evidence/phase7-release-paths-2026-10-05.json",
+        "sourceScope": "Fresh local build of the recorded production sources with the recorded remap helper; one build only, not approved release acceptance.",
+        "supersedesBinarySha256": "a0526835471dddf2dae4e62df23782e11ba787a27feebd416c95e9e0b5f60cbf",
         "pathAudit": {
-          "passed": false,
+          "passed": true,
           "counts": {
             "wslMount": 0,
-            "windowsTemp": 513,
+            "windowsTemp": 0,
             "windowsUser": 0,
             "unixHome": 0
           },
@@ -1723,9 +1735,6 @@
         }
       },
       "runtime": {
-        "scope": "Recorded imports of this exact retained binary; system libraries are not shipped.",
-        "inspectionSha256": "3fbfa26463e56e0f33cdd5c5c4ccce416ece0c6025bf0d43619acacbcac0d64e",
-        "additionalRuntimeFiles": [],
         "systemLibraries": [
           "advapi32.dll",
           "api-ms-win-core-synch-l1-2-0.dll",
@@ -1738,7 +1747,10 @@
           "ntdll.dll",
           "oleaut32.dll",
           "ws2_32.dll"
-        ]
+        ],
+        "additionalRuntimeFiles": [],
+        "scope": "Inspected imports of this exact remapped binary; system libraries are not shipped.",
+        "inspectionSha256": "098b0b3b423a3aee813dd9c4038cfdfd167e14b138d29aa3b923f9677a75e9a8"
       },
       "dependencyClosure": [
         "adler2@2.0.1",
