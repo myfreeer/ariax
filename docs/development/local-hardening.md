@@ -150,6 +150,15 @@ retain `-C link-self-contained=no` when overriding `RUSTFLAGS`; keep the matchin
 MinGW runtime first on `PATH`. A reproducible local subset does not establish
 the remaining release-platform matrix or compatibility parity.
 
+Remap Cargo-home registry/git source paths as well as repository and target
+paths. Supply platform-native source prefixes to `--remap-path-prefix` and inspect
+the final binaries for absolute workstation/cache paths. The retained October 5
+minimal/standard artifacts match independent builds but retain dependency source
+paths; the [package review](release-packaging.md#package-manifests) records this
+release blocker. Preserve `-C link-self-contained=no` for Windows-GNU. Native
+C/C++ sources may also require file/debug-prefix mapping, with their normal
+provenance/cache checks retained. Do not patch the finished binary to hide paths.
+
 The generated inventory remains the parity authority. Keep Ariax parallel to
 aria2 while reviewed handler coverage is incomplete; do not publish an
 `aria2c` replacement or infer a persistence migration from build success.

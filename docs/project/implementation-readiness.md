@@ -648,7 +648,7 @@ do not approve a release or replace the remaining platform gates.
 | `P7-01` | 41 retained native Windows transport diagnostics, including ten quiet observations per transport. [Short artifact comparison](../../performance-evidence/phase7-short-followup-2026-10-05.md#mixed-burst-comparison) identifies mutation-tail candidates and the missing historical attribution data. | Attribute the retained native Linux 530.097 ms mixed-burst failure and establish repeated stability. |
 | `P7-02` | Four security/resource repairs with success and rejection regressions; ownership, policy, persistence and dependency review. | Retain strict Unix fixture and kernel/backend coverage on suitable native systems. |
 | `P7-03` | All 11 Rust-ASan fuzz targets pass short and extended campaigns; native ASan/UBSan and TSan probes pass. Direct TSan driver passes ten native test executions; [maintained tooling](../development/local-hardening.md#maintained-direct-tsan-driver) verifies four additional executions using the retained binary. | Fully instrumented Rust standard-library/harness race coverage; nine failed native-only harness invocations remain retained. |
-| `P7-04` | 500 WSL and 600 Windows repeated lifecycle/recovery invocations pass. Independent Linux/Windows-GNU minimal/standard release builds match byte for byte; generated contracts and runtime imports checked. MIT selected for Ariax-owned code; per-bundle dependency inventory and notice draft prepared. | macOS/MSVC and remaining release matrix, hardware power loss, final artifact/runtime notices and data obligations, and compatibility decisions; reviewed handler coverage remains 54/207. |
+| `P7-04` | 500 WSL and 600 Windows repeated lifecycle/recovery invocations pass. Independent Linux/Windows-GNU minimal/standard release builds match byte for byte; generated contracts and runtime imports checked. MIT selected; winapi provenance and IANA/aria2 terms reviewed. Eight package layouts and four retained drafts include notices and covered source; package integrity checks pass. | All four retained binaries fail the absolute dependency-path audit. Candidate remapping, full/compat import inventories, clean-host checks, macOS/MSVC and remaining release matrix, hardware power loss, and compatibility decisions remain open; reviewed handler coverage remains 54/207. |
 
 The [completed-burst diagnostic slice](../../performance-evidence/phase7-burst-diagnostics-2026-10-05.md)
 adds a longest-burst snapshot and separate primary/verification/untimed totals.
@@ -666,10 +666,17 @@ The [release packaging checklist](../development/release-packaging.md) records
 MIT inheritance for all 11 workspace packages, separate third-party licenses,
 305 external packages across eight Linux/Windows-GNU bundle closures, native
 library notices and the embedded MPL-2.0 public-suffix source obligation.
-Final archive/runtime inventories, data and platform-specific terms, and
-release-candidate acceptance remain open. License-only manifest changes also
-change source fingerprints; do not bypass retained-evidence checks to reuse
-older TSan or release build records.
+The [package review](../../performance-evidence/phase7-packaging-review-2026-10-05.md)
+resolves the winapi payload provenance and IANA/aria2 terms. Four retained
+minimal/standard drafts pass file, checksum, notice and covered-source checks;
+all 120 Python helper tests pass. Four full/compat layouts remain planned.
+Every retained binary contains absolute Cargo-cache dependency paths, despite
+matching independent builds. Candidate builds must remap dependency sources
+and pass fresh inspection; the drafts are not release candidates. Full/compat
+runtime inventories, platform-specific terms, clean-host checks and the final
+candidate matrix remain open. License-only manifest changes also change source
+fingerprints; do not bypass retained-evidence checks to reuse older TSan or
+release build records.
 
 Benchmarks remain manual-triggered. No push, CI dispatch, tag, migration or
 `aria2c` replacement is part of this local campaign.

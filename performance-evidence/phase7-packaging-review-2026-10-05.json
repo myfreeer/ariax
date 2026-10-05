@@ -1,0 +1,901 @@
+{
+  "schema": 1,
+  "date": "2026-10-05",
+  "baselineCommit": "ecd2123",
+  "branch": "local/phase7-hardening",
+  "status": "Requested local license/package preparation complete; release blocked on candidate artifact and acceptance gates.",
+  "scope": "Resolve winapi provenance and IANA/aria2 distribution scope; stage explicit retained drafts with notices, covered source and runtime inventories; prune obsolete staging and regenerable release caches.",
+  "sourceFileSha256": {
+    ".gitattributes": "b32aceefa245e7b8a13d7bad49755bc3a8b101fb5023b9d76c5f2e4b88580e1f",
+    "compat/README.md": "b918fc60a942dc4ee3f52ea67af0fe7d657592290aa7b5ad0ea542509a82ccac",
+    "compat/iana-special-purpose.pin": "4e34030ac3372cb133b4b14758789f55a101ca1e3f7fd440fd433f2195b609be",
+    "distribution/README.md": "6b3acaf8d17539e1637d1c9a6fdbf1a414b642941f4c70db7fa7b5c0bd7ae25a",
+    "distribution/aria2-source-notice.txt": "0434af9a63d03dcc059e8556e4d7f7dace7d9a3b3bdd259da02f2d9e6b6da164",
+    "distribution/data-notice.txt": "de0104aff9df6baa1e6a87737099f9f11c9f13609b2046248694650d44d8ece0",
+    "distribution/license-review.json": "9581f30c2340995a9beca5c2c779a3658db1d004cf24f3f7ae74fb10893eb38b",
+    "distribution/licenses/CC0-1.0.txt": "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499",
+    "distribution/licenses/MPL-2.0.txt": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
+    "distribution/licenses/aria2-GPL-2.0.txt": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643",
+    "distribution/licenses/gcc-GPL-3.0.txt": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+    "distribution/licenses/gcc-runtime-exception.txt": "9d6b43ce4d8de0c878bf16b54d8e7a10d9bd42b75178153e3af6a815bdc90f74",
+    "distribution/licenses/glibc-copyright.txt": "f5788886720a2605a946e81d571e6c8162b09f58d2e2ceb8d36e5768fccd850d",
+    "distribution/licenses/libgcc-copyright.txt": "20390f8a6f3b1e4d7cb45dd8652dabb259bbef688cbad839bcdb0b9ba7252f79",
+    "distribution/licenses/mingw-crt.txt": "99a69660981156c21336fdb5661f89341b013c94e4bf9e1c7467b4745718397f",
+    "distribution/licenses/mingw-runtime.txt": "1db8da07b436c68833c0673ffee3d9fcb2526047f3820b81661865dfedc79a1f",
+    "distribution/licenses/mingw-w64.txt": "f38e6194bd3bfa1b654f118e5acefe0aead437bbe669eee43957ccc65a7127f1",
+    "distribution/licenses/rust-Apache-2.0.txt": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+    "distribution/licenses/rust-MIT.txt": "b85dcd3e453d05982552c52b5fc9e0bdd6d23c6f8e844b984a88af32570b0cc0",
+    "distribution/licenses/rust-compiler-builtins.txt": "ab6eec6caf0fa5775e411c7a8bc6a45c4ef2956b0980b157ab74fc5cd62a928b",
+    "distribution/licenses/rust-stdlib-1.97.1.html": "0a65bb747c49c7bb816cbc7188319bd6e4e8d08091c1190b8a3c0971c47968ed",
+    "distribution/licenses/winapi-Apache-2.0.txt": "b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1",
+    "distribution/licenses/winapi-MIT.txt": "5b19674a1db628a475850a131956ed49521b744e3dda8f5a94141f9aba681219",
+    "distribution/licenses/winpthread.txt": "63263614cdd29f2f93cba85e992f041b31f9fc7b4033692f31269489a8a1b177",
+    "distribution/package-manifests.json": "d00e92f20ea8d9b637fa08657d4c105f11c92d845d2c8568f76e677e6ced7d97",
+    "distribution/package-readme.txt": "fe59f3e4b42ae9c14e568c61e2edb3794506be9ad3701205a33541112918bec0",
+    "docs/README.md": "cbad4e2360317c1d017780d4d52c0864b328fdd39445e459911ccd2a97552e0e",
+    "docs/development/local-hardening.md": "c317531e881cb04255a5fb962fd78833d9b4c92b7b9d9d833bc573e0fe370410",
+    "docs/development/release-packaging.md": "07015178d9cb47f62a1aedbe6ff38816cbe5c80257c4e16149f38d90d21fc9d8",
+    "docs/project/implementation-readiness.md": "51d6be9bcf230b174a942f49c5515ddf9cee25c2610c19917f7408e18c047b49",
+    "generated/README.md": "e72c7222cc8ee84e782a33570c7c7e7e0e9a7533211a15617314c14985428a56",
+    "generated/http_destination_policy.json": "f3707148593f1c641cdd83e957dcc26214b0ae47ba5c8f680fdb654b8477eec7",
+    "performance-evidence/phase7-packaging-review-2026-10-05.md": "c4383bf2088efbbd023e04512947d5b12b17775701b9dff74a3dab892ed9e269",
+    "scripts/release_manifest.py": "f5af9eaff29c08cddc6f7e3217dbb96f82ad3ccffb8ec7739978f1311e144e3c",
+    "scripts/test_release_manifest.py": "0f4a8ff1ea617b71c2208adf54440a2267b176204907f4032602271665bd2b75"
+  },
+  "checks": {
+    "catalog": {
+      "command": [
+        "python3",
+        "-B",
+        "scripts/release_manifest.py"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60.0,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "processSeconds": 0.45171949999348726,
+      "elapsedSeconds": 0.45204089999606367,
+      "stdout.logSha256": "a6f2682d9503ffc7ec5c07ddcf8876ff5a9b0393da3fe92bdb3d6c4c542adfc9",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "rawResultSha256": "6aeb4b3b2684c0b789b9d72b0b46ef0b48cc7fb0223a435b1ae2732f0dc32c72"
+    },
+    "contracts-after": {
+      "command": [
+        "{local-temp}/ariax-permission-policy-20261003/target-linux/debug/xtask",
+        "generate",
+        "--check",
+        "{aria2-source}"
+      ],
+      "passed": true,
+      "timeoutSeconds": 45.0,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "binarySha256": "20cf488f116d4dd775d7ba1edc4c68900741a9c7894cba6b1821e119d0a22684",
+      "processSeconds": 0.4326686999993399,
+      "elapsedSeconds": 0.43329699999594595,
+      "stdout.logSha256": "83484ab0cb335aefc61341f475598d236e133c69c903ffc37c9d6e2cf9768404",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "rawResultSha256": "bbd539884ace7b7b7afa1f21aabae1e0fd745b03675e5cc0e15249d030047d1d"
+    },
+    "contracts-before": {
+      "command": [
+        "{local-temp}/ariax-permission-policy-20261003/target-linux/debug/xtask",
+        "generate",
+        "--check",
+        "{aria2-source}"
+      ],
+      "passed": true,
+      "timeoutSeconds": 45.0,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "binarySha256": "20cf488f116d4dd775d7ba1edc4c68900741a9c7894cba6b1821e119d0a22684",
+      "processSeconds": 0.3210116999980528,
+      "elapsedSeconds": 0.3211944999929983,
+      "stdout.logSha256": "83484ab0cb335aefc61341f475598d236e133c69c903ffc37c9d6e2cf9768404",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "rawResultSha256": "6783659e12d5182f665adbe8798f524a5d92a6ebacb194309f4984e4bc77d591"
+    },
+    "contracts-regenerated": {
+      "command": [
+        "{local-temp}/ariax-permission-policy-20261003/target-linux/debug/xtask",
+        "generate",
+        "{aria2-source}"
+      ],
+      "passed": true,
+      "timeoutSeconds": 45.0,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "binarySha256": "20cf488f116d4dd775d7ba1edc4c68900741a9c7894cba6b1821e119d0a22684",
+      "processSeconds": 0.31868409999879077,
+      "elapsedSeconds": 0.3188040000095498,
+      "stdout.logSha256": "149c90602c1244c447d2a101c9fa83190f5c2a0cdea0f25b7a7e75d2dcfb3014",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "rawResultSha256": "01f91247c73b9f5941e7a962e42a48f19948ede1412f38aa4c58f81e734d5ffd"
+    },
+    "docs": {
+      "command": [
+        "python3",
+        "-B",
+        "scripts/check_docs.py"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60.0,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "processSeconds": 1.1474015000130748,
+      "elapsedSeconds": 1.1475967000005767,
+      "stdout.logSha256": "24525142d5c057920401380a2432bdfe7d7d2bbd5d0c88eae45c346f6107686d",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "rawResultSha256": "5308d07d3e2d4e9c786a2b8cfa61ec7a79911ac2981c0336d7e6c4e78d0033e0"
+    },
+    "imports-linux-minimal": {
+      "command": [
+        "/usr/bin/readelf",
+        "-h",
+        "-l",
+        "-d",
+        "--version-info",
+        "{local-temp}/ariax-phase7-local-20261005/release-linux-first/minimal/ariax"
+      ],
+      "passed": true,
+      "timeoutSeconds": 30,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "{evidence}"
+      },
+      "binarySha256": "4a387d80a70e6e97ef940a666fab59d5c38e7cf19ff907192fa983cb8505a7de",
+      "processSeconds": 0.01989720000710804,
+      "elapsedSeconds": 0.02012670000840444,
+      "stdout.logSha256": "e644271af3830308d108f723de2843933a7be242b09664d042776d54327dabf9",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "rawResultSha256": "ed73e8006e723905cfb86317ee59a619a7cf67102ea3038d648f4608aa51c66b"
+    },
+    "imports-linux-standard": {
+      "command": [
+        "/usr/bin/readelf",
+        "-h",
+        "-l",
+        "-d",
+        "--version-info",
+        "{local-temp}/ariax-phase7-local-20261005/release-linux-first/standard/ariax"
+      ],
+      "passed": true,
+      "timeoutSeconds": 30,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "{evidence}"
+      },
+      "binarySha256": "4a387d80a70e6e97ef940a666fab59d5c38e7cf19ff907192fa983cb8505a7de",
+      "processSeconds": 0.01030380000884179,
+      "elapsedSeconds": 0.010493000008864328,
+      "stdout.logSha256": "f3ea1bb12e27d24ea55b3ba2dc79d518d5e02c341719e1d7faadbb51c47dc5e0",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "rawResultSha256": "dc5d9fa390d3ce38cf818b67620fb9b3ea3fe71ad5bd403d4e82086a1b7d8f9d"
+    },
+    "imports-windows-minimal": {
+      "command": [
+        "/usr/bin/objdump",
+        "-p",
+        "{local-temp}/ariax-phase7-local-20261005/release-windows-first/minimal/ariax.exe"
+      ],
+      "passed": true,
+      "timeoutSeconds": 30,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "{evidence}"
+      },
+      "binarySha256": "96afb8521834982d0e711b5d6e9785252bf82129fb0106b93a6bd54d83fae11f",
+      "processSeconds": 0.06811530000413768,
+      "elapsedSeconds": 0.06825640000170097,
+      "stdout.logSha256": "a64cfc5dfc274cbcc31c24b913dc0be595f35c448eec2c48240208f7bd82b564",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "rawResultSha256": "fbeb5e4340d8c404a43d6705a747c715f6cf4305104635dab86e026051636298"
+    },
+    "imports-windows-standard": {
+      "command": [
+        "/usr/bin/objdump",
+        "-p",
+        "{local-temp}/ariax-phase7-local-20261005/release-windows-first/standard/ariax.exe"
+      ],
+      "passed": true,
+      "timeoutSeconds": 30,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "{evidence}"
+      },
+      "binarySha256": "96afb8521834982d0e711b5d6e9785252bf82129fb0106b93a6bd54d83fae11f",
+      "processSeconds": 0.07078310000360943,
+      "elapsedSeconds": 0.07107449999602977,
+      "stdout.logSha256": "3fbfa26463e56e0f33cdd5c5c4ccce416ece0c6025bf0d43619acacbcac0d64e",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "rawResultSha256": "d880cceb307d5ddf7a9f96e20c3be0c1cf65da0ee73910e9bad5353e2a5c9504"
+    },
+    "manifest-preparation": {
+      "command": [
+        "python3",
+        "-B",
+        "{evidence}/prepare-manifests.py"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60.0,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "{evidence}"
+      },
+      "processSeconds": 0.9602912999980617,
+      "elapsedSeconds": 0.9604564999899594,
+      "stdout.logSha256": "c1bb302238e108a0288e53b6beb8db7ff7451d2d2981169f2494827f40e623ae",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "rawResultSha256": "9292655c4310dd5e5f419c747f74d0e116b9260136e34c97019807d27c226c81"
+    },
+    "materials": {
+      "command": [
+        "python3",
+        "-B",
+        "{evidence}/prepare-materials.py"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60.0,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "{evidence}"
+      },
+      "processSeconds": 1.3419410000060452,
+      "elapsedSeconds": 1.3421368000126677,
+      "stdout.logSha256": "a451ad265e3a9c0272017e443b8f4d8f84b344def55f966156d2415ae382be61",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "rawResultSha256": "3038e5f7844caabd6169045eb37b434e56e86684dd4233d6838230208822b5ad"
+    },
+    "publication": {
+      "command": [
+        "python3",
+        "-B",
+        "scripts/publication.py"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60.0,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "processSeconds": 1.0109137000108603,
+      "elapsedSeconds": 1.0111172000033548,
+      "stdout.logSha256": "1f2ae031b96c44e26b09a19b752facedafbd38b12f0b64d1fb2b8939f6b6d1d6",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "rawResultSha256": "a8e343075c20eca9836f4d82371b98e6b9105b2c1013754ff604de67cd5292d0"
+    },
+    "python-tests": {
+      "command": [
+        "python3",
+        "-B",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts",
+        "-p",
+        "test_*.py"
+      ],
+      "passed": false,
+      "timeoutSeconds": 60.0,
+      "expectedTests": null,
+      "exitCode": 1,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "processSeconds": 3.8662976999912644,
+      "error": "command exited 1",
+      "elapsedSeconds": 3.866441999998642,
+      "stdout.logSha256": "0d6dc030df2ea10a86b30a60f75800da4517709b39a4da52e01b1350c5b7881c",
+      "stderr.logSha256": "aba77ed26682c065bb8a08f85a98309d2548f5f94b3509a01e6697a109cefe19",
+      "rawResultSha256": "c1d72f2cb3b5354365bc1c18ec46eebb1e67c186d5d09b515872807eb320f135"
+    },
+    "python-tests-final": {
+      "command": [
+        "python3",
+        "-B",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts",
+        "-p",
+        "test_*.py"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60.0,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "processSeconds": 3.110571599987452,
+      "elapsedSeconds": 3.1107559999945806,
+      "stdout.logSha256": "eabaffb862959dbfda347e298e70c61746181b649802a8021f30b80db7797457",
+      "stderr.logSha256": "0ac2b66e94c7b49daa019c0ca89550cdf2499eb4302ab931fa2e6d7eebc0c0e0",
+      "rawResultSha256": "06754d1c910b9dedc5359725ffa9d16a6850ac97cb6482bfd9294dadb64bf8e1"
+    },
+    "python-tests-path-audit": {
+      "command": [
+        "python3",
+        "-B",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts",
+        "-p",
+        "test_*.py"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60.0,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "processSeconds": 4.684986800013576,
+      "elapsedSeconds": 4.6852133000065805,
+      "stdout.logSha256": "9d48c934bfbfffa9b4e4bff695e2b5ff3ac53489fbf2400980be298f2b2f672c",
+      "stderr.logSha256": "3f264e5eb7615c550c80a5f1f62380310461f7393e140ccc7c06f9849a5e2181",
+      "rawResultSha256": "003b316ca46447de3581b8acede4468ac9285b2b47c5bf058018a99cf2ef1be7"
+    },
+    "source-scope": {
+      "command": [
+        "python3",
+        "-B",
+        "{evidence}/verify-source-scope.py"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60.0,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "processSeconds": 3.544742700003553,
+      "elapsedSeconds": 3.5448722000001,
+      "stdout.logSha256": "633b92670e162e7bffe702dfa1ef0144b76195a6df58051c0d089b35e44170ce",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "rawResultSha256": "8bcf00f95aacd1e7548559debe5aa8377ac98682ee370fe3039e231a3f03202f"
+    },
+    "stage-drafts": {
+      "command": [
+        "python3",
+        "-B",
+        "scripts/release_manifest.py",
+        "--artifacts",
+        "{local-temp}/ariax-phase7-local-20261005",
+        "--output",
+        "{evidence}/draft-packages"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60.0,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "processSeconds": 0.6737523000047076,
+      "elapsedSeconds": 0.6739696000004187,
+      "stdout.logSha256": "da9c958665c7349f5ceaf1dcc3ebefee5616b4958f3c074bbfb3b7c09c7e161a",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "rawResultSha256": "2ee6e80cc4e7a3dba531ef3475d76a7cf497267a1db8cad0c58c5b25615c7547"
+    },
+    "stage-drafts-complete": {
+      "command": [
+        "python3",
+        "-B",
+        "scripts/release_manifest.py",
+        "--artifacts",
+        "{local-temp}/ariax-phase7-local-20261005",
+        "--output",
+        "{evidence}/draft-packages-complete"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60.0,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "processSeconds": 2.814307299995562,
+      "elapsedSeconds": 2.8145090000034543,
+      "stdout.logSha256": "9fe85500b553785f269e8f7c6a88ac49e3109de09b6866ca7a166882f9518b52",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "rawResultSha256": "8e20633342954afa4c3a1ae2437bbaa9ef370145b0c04adde1a6f8d77a042e74"
+    },
+    "stage-drafts-final": {
+      "passed": false,
+      "status": "incomplete result after disk exhaustion; do not infer an exit code",
+      "resultBytes": 0,
+      "stderr.logSha256": "987103db795198fb62d22c76e1868ce92f82e0632a1d53b033f6e417b18aa8c4",
+      "rawResultSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "staged-verification": {
+      "command": [
+        "python3",
+        "-B",
+        "{evidence}/verify-staged.py"
+      ],
+      "passed": false,
+      "timeoutSeconds": 60.0,
+      "expectedTests": null,
+      "exitCode": 1,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "{evidence}"
+      },
+      "processSeconds": 0.9767300999956205,
+      "error": "command exited 1",
+      "elapsedSeconds": 0.9768779000005452,
+      "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr.logSha256": "487001931aa40508ed2a9fe9686b2dd455ab7e075ee2d1545541261dd18c4588",
+      "rawResultSha256": "d6b82b81db3c6492634d192af0d22bc90f6445e01c5f9865336d569b5f0c56ed"
+    },
+    "staged-verification-complete": {
+      "command": [
+        "python3",
+        "-B",
+        "{evidence}/verify-staged.py"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60.0,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "processSeconds": 1.7307950999966124,
+      "elapsedSeconds": 1.7309413000039058,
+      "stdout.logSha256": "d5a114d3164fa129d26f2a3adc764a5eaf1370bbdd21b9e368abe58a4e87d5dd",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "rawResultSha256": "d598057337f12c5d62909bc123beeab81ab2a7023df5d040c7ed4565d776e63b"
+    },
+    "staged-whitespace": {
+      "command": [
+        "git",
+        "diff",
+        "--cached",
+        "--check"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60.0,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "processSeconds": 0.08762120000028517,
+      "elapsedSeconds": 0.08780550000665244,
+      "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "rawResultSha256": "bf63a27fa008310d09fcf403ab8b90c6a10c8447543b906bc0e743aecbbc7af1"
+    },
+    "whitespace": {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60.0,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "processSeconds": 0.06845210000756197,
+      "elapsedSeconds": 0.06858269999793265,
+      "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "rawResultSha256": "8ffcc19fdd77eb6a1e8dbc39ee972653e446bc8de2cf5f6aec3adedcaafb03ea"
+    }
+  },
+  "pythonTests": {
+    "passed": 120,
+    "newPackageTests": 10,
+    "finalRun": "python-tests-path-audit"
+  },
+  "licenseReview": "distribution/license-review.json",
+  "catalog": "distribution/package-manifests.json",
+  "layoutCount": 8,
+  "stagedPackageCount": 4,
+  "plannedPackageCount": 4,
+  "packageVerification": {
+    "packages": [
+      {
+        "id": "x86_64-pc-windows-gnu-minimal",
+        "fileCount": 27,
+        "bytes": 11771856,
+        "manifestSha256": "55b6e956b2cd2b24c25aa260979d402b7843819d76ee8ec50c202548f9a574de",
+        "checksumFileSha256": "84c2a97e29a95cff50d67fd634fd363bf5b96a82cadbea45bf35bf9dada66e4f",
+        "binarySha256": "a53b2b017c24d0ece2fc50271d18339fb381be17593f4315172f5fe0c02b6051",
+        "runtime": {
+          "scope": "Recorded imports of this exact retained binary; system libraries are not shipped.",
+          "inspectionSha256": "a64cfc5dfc274cbcc31c24b913dc0be595f35c448eec2c48240208f7bd82b564",
+          "additionalRuntimeFiles": [],
+          "systemLibraries": [
+            "advapi32.dll",
+            "api-ms-win-core-synch-l1-2-0.dll",
+            "bcrypt.dll",
+            "bcryptprimitives.dll",
+            "crypt32.dll",
+            "iphlpapi.dll",
+            "kernel32.dll",
+            "msvcrt.dll",
+            "ntdll.dll",
+            "oleaut32.dll",
+            "ws2_32.dll"
+          ]
+        },
+        "binaryPathAudit": {
+          "passed": false,
+          "counts": {
+            "wslMount": 0,
+            "windowsTemp": 323,
+            "windowsUser": 0,
+            "unixHome": 0
+          },
+          "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
+        },
+        "integrityPassed": true,
+        "releaseApproved": false
+      },
+      {
+        "id": "x86_64-pc-windows-gnu-standard",
+        "fileCount": 27,
+        "bytes": 15647158,
+        "manifestSha256": "32e93ebc6dd30de24623233c38c50c59a7801d6de5c8e83be8dd909c7ca3c5c8",
+        "checksumFileSha256": "391a749fef244655ed73b12b9a27ddd22657cff5e35a1624523ccee8b0e0181a",
+        "binarySha256": "a0526835471dddf2dae4e62df23782e11ba787a27feebd416c95e9e0b5f60cbf",
+        "runtime": {
+          "scope": "Recorded imports of this exact retained binary; system libraries are not shipped.",
+          "inspectionSha256": "3fbfa26463e56e0f33cdd5c5c4ccce416ece0c6025bf0d43619acacbcac0d64e",
+          "additionalRuntimeFiles": [],
+          "systemLibraries": [
+            "advapi32.dll",
+            "api-ms-win-core-synch-l1-2-0.dll",
+            "bcrypt.dll",
+            "bcryptprimitives.dll",
+            "crypt32.dll",
+            "iphlpapi.dll",
+            "kernel32.dll",
+            "msvcrt.dll",
+            "ntdll.dll",
+            "oleaut32.dll",
+            "ws2_32.dll"
+          ]
+        },
+        "binaryPathAudit": {
+          "passed": false,
+          "counts": {
+            "wslMount": 0,
+            "windowsTemp": 513,
+            "windowsUser": 0,
+            "unixHome": 0
+          },
+          "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
+        },
+        "integrityPassed": true,
+        "releaseApproved": false
+      },
+      {
+        "id": "x86_64-unknown-linux-gnu-minimal",
+        "fileCount": 21,
+        "bytes": 12236588,
+        "manifestSha256": "e98a382d50f4e79ea47a1d419855f8609c0166cd4ef56ba651599544c23c85d4",
+        "checksumFileSha256": "c6b0ddbd375f8c094fc3748073e77d1a94c2f568c9c93251d28ae993fe7f4d05",
+        "binarySha256": "7aa971b7df006d7540a0687af0d943995400a391183bae0ade90cd910173058c",
+        "runtime": {
+          "scope": "Recorded imports of this exact retained binary; system libraries are not shipped.",
+          "inspectionSha256": "e644271af3830308d108f723de2843933a7be242b09664d042776d54327dabf9",
+          "additionalRuntimeFiles": [],
+          "systemLibraries": [
+            "libc.so.6",
+            "libgcc_s.so.1",
+            "libm.so.6"
+          ],
+          "minimumGlibc": "2.34",
+          "interpreter": "/lib64/ld-linux-x86-64.so.2"
+        },
+        "binaryPathAudit": {
+          "passed": false,
+          "counts": {
+            "wslMount": 319,
+            "windowsTemp": 0,
+            "windowsUser": 0,
+            "unixHome": 0
+          },
+          "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
+        },
+        "integrityPassed": true,
+        "releaseApproved": false
+      },
+      {
+        "id": "x86_64-unknown-linux-gnu-standard",
+        "fileCount": 21,
+        "bytes": 16336890,
+        "manifestSha256": "1b86f7d830249eaee9f819698318c8f3dd121b7721b78d6916291bf5993a29ae",
+        "checksumFileSha256": "e5216033c5b6d5328ef84c83df9508f89487aff7c650145c4b8ebd201f1a9582",
+        "binarySha256": "8cc2b1db535bec1639bcc2a7c114eb0b0dc245ea059e7c0eaf7e312292acbedf",
+        "runtime": {
+          "scope": "Recorded imports of this exact retained binary; system libraries are not shipped.",
+          "inspectionSha256": "f3ea1bb12e27d24ea55b3ba2dc79d518d5e02c341719e1d7faadbb51c47dc5e0",
+          "additionalRuntimeFiles": [],
+          "systemLibraries": [
+            "libc.so.6",
+            "libgcc_s.so.1",
+            "libm.so.6"
+          ],
+          "minimumGlibc": "2.34",
+          "interpreter": "/lib64/ld-linux-x86-64.so.2"
+        },
+        "binaryPathAudit": {
+          "passed": false,
+          "counts": {
+            "wslMount": 507,
+            "windowsTemp": 0,
+            "windowsUser": 0,
+            "unixHome": 0
+          },
+          "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
+        },
+        "integrityPassed": true,
+        "releaseApproved": false
+      }
+    ],
+    "integrityPassed": true,
+    "binaryPathAuditPassed": false,
+    "releaseApproved": false,
+    "binariesExecuted": false
+  },
+  "sourceScope": {
+    "passed": true,
+    "baselineCommit": "ecd2123",
+    "protectedFiles": 316,
+    "policyJsonChange": "source.license only",
+    "licenseMaterialsVerified": 17
+  },
+  "protectedFileHashesRecordSha256": "9d28708c33b787d0790d522539db340b6e1ea6b3564e6d37777b29905b11842f",
+  "upstreamFetches": {
+    "fetch-followup.json": [
+      {
+        "name": "winapi-tree-0.4.0",
+        "url": "https://api.github.com/repos/retep998/winapi-rs/git/trees/9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa?recursive=1",
+        "finalUrl": "https://api.github.com/repos/retep998/winapi-rs/git/trees/9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa?recursive=1",
+        "sha256": "fabd7a23b506487b2edcb51dab7183eed1dba6d541277dabec004e79e94e11dd",
+        "bytes": 1513846
+      },
+      {
+        "name": "winapi-license-mit",
+        "url": "https://raw.githubusercontent.com/retep998/winapi-rs/9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa/LICENSE-MIT",
+        "finalUrl": "https://raw.githubusercontent.com/retep998/winapi-rs/9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa/LICENSE-MIT",
+        "sha256": "5b19674a1db628a475850a131956ed49521b744e3dda8f5a94141f9aba681219",
+        "bytes": 1068
+      },
+      {
+        "name": "winapi-license-apache",
+        "url": "https://raw.githubusercontent.com/retep998/winapi-rs/9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa/LICENSE-APACHE",
+        "finalUrl": "https://raw.githubusercontent.com/retep998/winapi-rs/9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa/LICENSE-APACHE",
+        "sha256": "b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1",
+        "bytes": 11357
+      },
+      {
+        "name": "iana-protocols",
+        "url": "https://www.iana.org/protocols",
+        "finalUrl": "https://www.iana.org/protocols",
+        "sha256": "67c158c75bd9c3350db4ac8fe91d3011dbf5166436a512350f6932ce8dce2c44",
+        "bytes": 1960719
+      },
+      {
+        "name": "iana-help-protocols",
+        "url": "https://www.iana.org/help/protocol-registration",
+        "finalUrl": "https://www.iana.org/help/protocol-registration",
+        "sha256": "4a6e18d2c6f150d46abb3d7b9e72aed97df3a59a16f956eed9d3fb410504d320",
+        "bytes": 29015
+      },
+      {
+        "name": "iana-registry-page",
+        "url": "https://www.iana.org/assignments/iana-ipv4-special-registry/iana-ipv4-special-registry.xhtml",
+        "finalUrl": "https://www.iana.org/assignments/iana-ipv4-special-registry",
+        "sha256": "dbe9af7e043f4ddcfa1dc9789c96a6e31dbf4921fc70ac777d2246e631ca9ba9",
+        "bytes": 13922
+      }
+    ],
+    "fetch-iana.json": [
+      {
+        "name": "iana-licensing-terms",
+        "url": "https://www.iana.org/help/licensing-terms",
+        "finalUrl": "https://www.iana.org/help/licensing-terms",
+        "sha256": "43cfd90b1cb25ca86933032612a2c466fac94d7afc934ca8ef96a61e2b55e1b3",
+        "bytes": 8375
+      },
+      {
+        "name": "cc0-legalcode",
+        "url": "https://creativecommons.org/publicdomain/zero/1.0/legalcode.txt",
+        "finalUrl": "https://creativecommons.org/publicdomain/zero/1.0/legalcode.txt",
+        "sha256": "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499",
+        "bytes": 7048
+      }
+    ],
+    "fetch-rust.json": [
+      {
+        "name": "rust-builtins-license",
+        "url": "https://raw.githubusercontent.com/rust-lang/rust/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/compiler-builtins/LICENSE.txt",
+        "finalUrl": "https://raw.githubusercontent.com/rust-lang/rust/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/compiler-builtins/LICENSE.txt",
+        "sha256": "ab6eec6caf0fa5775e411c7a8bc6a45c4ef2956b0980b157ab74fc5cd62a928b",
+        "bytes": 15078
+      },
+      {
+        "name": "rust-submodules",
+        "url": "https://raw.githubusercontent.com/rust-lang/rust/8bab26f4f68e0e26f0bb7960be334d5b520ea452/.gitmodules",
+        "finalUrl": "https://raw.githubusercontent.com/rust-lang/rust/8bab26f4f68e0e26f0bb7960be334d5b520ea452/.gitmodules",
+        "sha256": "fbae3199e4330c38d6051f76c6db15772a60a3d296ea5cad4e2161f9471cc3f3",
+        "bytes": 1508
+      },
+      {
+        "name": "rust-library-lock",
+        "url": "https://raw.githubusercontent.com/rust-lang/rust/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/Cargo.lock",
+        "finalUrl": "https://raw.githubusercontent.com/rust-lang/rust/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/Cargo.lock",
+        "sha256": "02120dd57c4c5fd70c81fd92472681c8de5cc2dd78258276da37bb2253666061",
+        "bytes": 9834
+      }
+    ],
+    "fetch.json": [
+      {
+        "name": "iana-help-licensing",
+        "url": "https://www.iana.org/help/licensing",
+        "error": "HTTP Error 404: Not Found"
+      },
+      {
+        "name": "iana-about",
+        "url": "https://www.iana.org/about",
+        "finalUrl": "https://www.iana.org/about",
+        "sha256": "1809b0fc23e284f495b552a7fc73baac3cf0846be69c25ab7b12e783c879720a",
+        "bytes": 8767
+      },
+      {
+        "name": "icann-terms",
+        "url": "https://www.icann.org/privacy/tos",
+        "finalUrl": "https://www.icann.org/en/data-protection/terms-of-service",
+        "sha256": "e27b92d5554891b16c5f8f5a2a76db241e77679874e9a86cd6ea58362fa6acf8",
+        "bytes": 269356
+      },
+      {
+        "name": "winapi-root",
+        "url": "https://api.github.com/repos/retep998/winapi-rs/git/trees/0.3",
+        "finalUrl": "https://api.github.com/repos/retep998/winapi-rs/git/trees/0.3",
+        "sha256": "d50cd35fa1e12704218f31806b81278b86c7023e9b26b5c4643a95b6357ffe0d",
+        "bytes": 3636
+      },
+      {
+        "name": "winapi-archive-metadata",
+        "url": "https://crates.io/api/v1/crates/winapi-x86_64-pc-windows-gnu/0.4.0",
+        "finalUrl": "https://crates.io/api/v1/crates/winapi-x86_64-pc-windows-gnu/0.4.0",
+        "sha256": "c7b233a64adf20a6585c7b9b16892bb123d76120cc984b391b514575e5e3dfb0",
+        "bytes": 1243
+      },
+      {
+        "name": "winapi-target-history",
+        "url": "https://api.github.com/repos/retep998/winapi-rs/commits?path=x86_64/Cargo.toml&per_page=30",
+        "finalUrl": "https://api.github.com/repos/retep998/winapi-rs/commits?path=x86_64/Cargo.toml&per_page=30",
+        "sha256": "a78f67da58600f3999c42996c48c63d46862a7cf5a7b8e5d1dbe1673e9e2dbd5",
+        "bytes": 24447
+      }
+    ]
+  },
+  "temporaryPruning": {
+    "atUtc": "2026-10-05T09:44:30.115139+00:00",
+    "scope": "Regenerable Rust release compilation intermediates only; retained executables, DLLs, debug caches, source caches, logs and native installations preserved.",
+    "priorPruning": "Superseded draft-packages staging copies removed previously (approximately 54 MiB); original artifacts preserved.",
+    "freeBytesBefore": 728203264,
+    "selectedBytes": 1791183996,
+    "completed": true,
+    "removedFiles": 1602,
+    "removedBytes": 1791183996,
+    "freeBytesAfter": 2521833472,
+    "perFileRecordSha256": "8cdb2919ec8c52b9a17266f45886506a5fc1acab1321effdcbe116bd825695b5"
+  },
+  "localEvidence": {
+    "root": "{local-temp}/ariax-packaging-review-20261005",
+    "retainedArtifacts": "{local-temp}/ariax-phase7-local-20261005",
+    "fileSha256": {
+      "binary-path-observations.json": "df46042ffae5c923f0612581f5b876302039d64685c5e1f9a57397bfbe171a5d",
+      "fetch-followup.py": "ae118fefb294c07719cfedc28fad7cb67b6bfa690bc3981a285f926e53cc02a5",
+      "fetch-iana.py": "9986f96f16c7f6753cbffd96052a4dcde3a2289235d1c33d9ca61e6f2716722c",
+      "fetch-initial.py": "e1f5555b4e0d7b8eeebfee5bcb48892883a4839f259d06b30f43b75cfa61d736",
+      "fetch-rust.py": "98240674dcb8dafa97566fec10c58f10e712537654339f5b491d4203b9677d6f",
+      "prepare-evidence.py": "727756f2d162e207befb8649aeb3fefc2587d0c89e50672a35d6ea24fc17a0fa",
+      "prepare-manifests.py": "2409741084730c1371281d283818fb98193a21b07fa1fe9c7a6d2a13f1b976f5",
+      "prepare-materials.py": "c1bbcf039eb3043580d2b91636e3bca4e45f75a26e109dcb8862a5b8ef916d3d",
+      "source-scope.json": "9d28708c33b787d0790d522539db340b6e1ea6b3564e6d37777b29905b11842f",
+      "staged-verification-complete.json": "9f625e3f9d80542ec25c8e9e5ed111b0ea1b097ecca2da97909756ed2263ee63",
+      "temporary-pruning.json": "8cdb2919ec8c52b9a17266f45886506a5fc1acab1321effdcbe116bd825695b5",
+      "update-path-audit.py": "e53b78cfe425eecb80eab2aa1e0d15613769c0f9ea93b52e132525624a50430b",
+      "verify-source-scope.py": "baf6852e2e125782d4c7aaee4ce9c23490c014861bc9de9a20b67ec6656f3bb3",
+      "verify-staged-initial.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "verify-staged-original.py": "c4fff516a56a63fe4dfaec25e00eae706e27fa0cb754fed40db870e26a64d450",
+      "verify-staged.py": "a9e688a5de5c65eaa641c96321432d57d59f407a861869492dc6d4f0d79bb3a5",
+      "winapi-payload-files.json": "be1e77037d44344e297d4b25b7156d5e58356c656c8d43bd498af7e50a4ba0b2",
+      "winapi-tree-comparison-initial.json": "ee357782aa509a3f71863478ecda87dd7fdcd9abb40181d8693199cab4a40bfb"
+    }
+  },
+  "retainedFailures": [
+    "Initial upstream URL misses retained in fetch records; later exact statements and revision-specific texts retrieved.",
+    "Initial 119-test run failed relative-path rejection for dot; fixed before final 120-test pass.",
+    "Initial independent staged verification failed on an absolute dependency path; all four binaries retain failed path audits.",
+    "Final-stage attempt exhausted E: and left empty result JSON; stderr and failed staging retained. A new stage directory passes after authorized cleanup."
+  ],
+  "limits": [
+    "Historical retained binaries are not builds of the newer packaging tree or approved candidates.",
+    "Path scan counts known patterns, not distinct source paths; no complete reproducibility guarantee.",
+    "Notices include a conservative normal/build dependency union and unused source notices; exact final archives need review.",
+    "No Rust/application build or execution, benchmark, provisioning, CI dispatch, push, tag or release in this slice; retained xtask generator executed for contract checks."
+  ],
+  "remaining": [
+    "Candidate dependency-source path remapping and new binary inspection, retaining native provenance checks.",
+    "Actual full/compat import/runtime inventories and platform-specific native license review.",
+    "Clean-host checks, final candidate identity and applicable release matrix.",
+    "Existing mixed-burst stability/attribution, race/kernel, hardware recovery and compatibility acceptance gates."
+  ],
+  "releaseApproved": false
+}

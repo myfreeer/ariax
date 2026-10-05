@@ -90,6 +90,7 @@ They explain earlier decisions; current subsystem contracts take precedence.
 - [Continuous integration](development/continuous-integration.md)
 - [Local Phase 7 hardening](development/local-hardening.md)
 - [Release packaging and licenses](development/release-packaging.md)
+- [Distribution manifests and notices](../distribution/README.md)
 - [Retained performance evidence](../performance-evidence)
 - [Fuzz targets](../fuzz/README.md)
 - [Compatibility inputs](../compat/README.md),

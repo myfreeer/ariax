@@ -1,0 +1,146 @@
+"""Package drafts preserve covered source, reject drift, and never imply release approval."""
+import copy
+import hashlib
+import json
+from pathlib import Path
+import tempfile
+import unittest
+
+import release_manifest as rm
+
+
+class ReleaseManifestTests(unittest.TestCase):
+    def setUp(self):
+        self.catalog = json.loads((rm.ROOT / rm.CATALOG).read_text())
+
+    def test_all_eight_plans_validate_without_requiring_unbuilt_artifacts(self):
+        rm.validate(self.catalog)
+        self.assertEqual(sum(p['status'] == 'draft-retained' for p in self.catalog['packages']), 4)
+
+    def test_safe_paths_reject_traversal_windows_aliases_and_reserved_names(self):
+        self.assertEqual(rm.relative('source-data/public-suffix-list.dat').as_posix(),
+                         'source-data/public-suffix-list.dat')
+        for name in ('../escape', '/absolute', 'a/../escape', 'a//b', 'a\\b', 'C:foo',
+                     '.', 'a/./b', 'a.', 'NUL', 'licenses/con.txt'):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                rm.relative(name)
+
+    def test_missing_notice_covered_source_and_platform_notice_reject(self):
+        for missing in ('source-data/public-suffix-list.dat', 'LICENSE', 'licenses/rust-compiler-builtins.txt'):
+            catalog = copy.deepcopy(self.catalog)
+            catalog['commonFiles'] = [item for item in catalog['commonFiles'] if item['destination'] != missing]
+            with self.subTest(missing=missing), self.assertRaisesRegex(ValueError, 'missing required'):
+                rm.validate(catalog)
+        self.catalog['packages'][0]['files'].pop()
+        with self.assertRaisesRegex(ValueError, 'missing platform'):
+            rm.validate(self.catalog)
+
+    def test_case_collisions_reserved_outputs_and_gpl_source_artifacts_reject(self):
+        for destination in ('license', 'manifest.json', 'SHA256SUMS', 'ariax.exe'):
+            catalog = copy.deepcopy(self.catalog)
+            item = copy.deepcopy(catalog['commonFiles'][0])
+            item['destination'] = destination
+            catalog['commonFiles'].append(item)
+            with self.subTest(destination=destination), self.assertRaisesRegex(ValueError, 'duplicate or reserved'):
+                rm.validate(catalog)
+        self.catalog['commonFiles'][0]['source'] = 'generated/aria2_options.json'
+        with self.assertRaisesRegex(ValueError, 'source-only GPL'):
+            rm.validate(self.catalog)
+
+    def test_lock_inventory_and_file_digest_drift_reject(self):
+        for field in ('dependencyLockSha256', 'noticeInventorySha256'):
+            catalog = copy.deepcopy(self.catalog)
+            catalog[field] = '0' * 64
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'drift'):
+                rm.validate(catalog)
+        self.catalog['commonFiles'][0]['sha256'] = '0' * 64
+        with self.assertRaisesRegex(ValueError, 'hash or size mismatch'):
+            rm.validate(self.catalog)
+
+    def test_unreviewed_runtime_dependencies_and_approval_reject(self):
+        for target, field, value in (
+                ('windows-gnu', 'systemLibraries', sorted(rm.WINDOWS_SYSTEM | {'libstdc++-6.dll'})),
+                ('linux-gnu', 'minimumGlibc', '2.17'),
+                ('windows-gnu', 'additionalRuntimeFiles', ['libwinpthread-1.dll'])):
+            catalog = copy.deepcopy(self.catalog)
+            package = next(p for p in catalog['packages'] if p['target'].endswith(target) and p['binary'])
+            package['runtime'][field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                rm.validate(catalog)
+        self.catalog['releaseApproved'] = True
+        with self.assertRaises(ValueError):
+            rm.validate(self.catalog)
+
+    def test_duplicate_identity_and_fabricated_planned_binary_reject(self):
+        catalog = copy.deepcopy(self.catalog)
+        catalog['packages'][-1] = catalog['packages'][0]
+        with self.assertRaisesRegex(ValueError, 'package set'):
+            rm.validate(catalog)
+        planned = next(p for p in self.catalog['packages'] if p['status'] == 'planned')
+        planned['binary'] = {'artifactPath': 'invented'}
+        with self.assertRaisesRegex(ValueError, 'planned package'):
+            rm.validate(self.catalog)
+
+    def fixture_artifacts(self, root):
+        # Synthetic bytes test the copy/manifest contract; never execute them.
+        for package in self.catalog['packages']:
+            binary = package['binary']
+            if binary is None:
+                continue
+            data = ('fixture: ' + package['id']).encode()
+            binary.update(bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
+            path = root / binary['artifactPath']
+            path.parent.mkdir(parents=True)
+            path.write_bytes(data)
+            binary['pathAudit'] = rm.audit_binary_paths(path)
+
+    def test_staging_preserves_files_hashes_and_unapproved_historical_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.fixture_artifacts(root)
+            output = root / 'drafts'
+            result = rm.stage(self.catalog, root, output)
+            self.assertEqual(len(result['staged']), 4)
+            self.assertEqual(len(result['planned']), 4)
+            for package_id in result['staged']:
+                directory = output / package_id
+                manifest = json.loads((directory / 'manifest.json').read_text())
+                self.assertFalse(manifest['releaseApproved'])
+                self.assertEqual(manifest['status'], 'staged-retained-draft')
+                for line in (directory / 'SHA256SUMS').read_text().splitlines():
+                    expected, name = line.split('  ', 1)
+                    self.assertEqual(rm.digest(directory / name), expected)
+            with self.assertRaises(FileExistsError):
+                rm.stage(self.catalog, root, output)
+
+    def test_stale_artifacts_fail_before_creating_output(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.fixture_artifacts(root)
+            path = root / self.catalog['packages'][0]['binary']['artifactPath']
+            path.write_bytes(b'stale')
+            output = root / 'drafts'
+            with self.assertRaisesRegex(ValueError, 'hash or size mismatch'):
+                rm.stage(self.catalog, root, output)
+            self.assertFalse(output.exists())
+
+    def test_dependency_paths_are_reported_and_cannot_be_hidden_in_the_manifest(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.fixture_artifacts(root)
+            binary = self.catalog['packages'][0]['binary']
+            path = root / binary['artifactPath']
+            # Synthetic path, split to keep this source file publication-portable.
+            data = ('/mnt/' + 'e/temp/cache/registry/dependency.rs').encode()
+            path.write_bytes(data)
+            binary.update(bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
+            with self.assertRaisesRegex(ValueError, 'path audit mismatch'):
+                rm.validate(self.catalog, artifacts=root)
+            binary['pathAudit'] = rm.audit_binary_paths(path)
+            self.assertFalse(binary['pathAudit']['passed'])
+            self.assertEqual(binary['pathAudit']['counts']['wslMount'], 1)
+            rm.validate(self.catalog, artifacts=root)
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -1,0 +1,22 @@
+Ariax embedded data and source availability
+
+Mozilla Public Suffix List
+The exact MPL-2.0-covered data embedded by the retained binaries is included at
+source-data/public-suffix-list.dat, with its upstream revision, URL and checksum
+in source-data/public-suffix-list.toml. The license is licenses/MPL-2.0.txt.
+This covered source is supplied in the same package, at no additional charge.
+The data retains MPL-2.0 terms; Ariax-owned application code is licensed under MIT.
+Upstream: https://publicsuffix.org/list/public_suffix_list.dat
+
+IANA IPv4 and IPv6 Special-Purpose Address Registries
+The data used to derive the destination classifier is included at
+source-data/iana-ipv4-special-registry.csv and
+source-data/iana-ipv6-special-registry.csv. The source URLs, dates and hashes
+are in source-data/iana-special-purpose.pin. Applicable registry rights are
+dedicated under CC0-1.0; see licenses/CC0-1.0.txt and the IANA/IETF statement:
+https://www.iana.org/help/licensing-terms
+The data's CC0 dedication does not grant trademark or patent rights.
+Ariax derives a longest-prefix classifier and adds project policy overrides;
+it does not alter the supplied pinned CSV snapshots.
+
+Neither upstream organization endorses this application or its policy choices.

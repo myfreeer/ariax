@@ -1,0 +1,170 @@
+Ariax source distribution: extracted aria2 compatibility material
+
+Upstream: https://github.com/aria2/aria2
+Revision: 9e7273583f83e881e3ec067b523ba88724088d2f
+
+Scope: upstream material extracted into generated/aria2_options.json,
+generated/aria2_rpc.json and generated/aria2_compat.json retains
+GPL-2.0-or-later terms and the applicable original notices reproduced below.
+The full GPL version 2 text is distribution/licenses/aria2-GPL-2.0.txt.
+The project MIT license does not replace these upstream terms.
+
+Ariax modifications (2026): extract constructor expressions, interface names,
+conditions and manual option directives; normalize their presentation as JSON;
+add source positions, counts, comparisons and project compatibility status.
+The extraction source is tools/ariax-xtask/src/inventory.rs and
+ tools/ariax-xtask/src/config_contracts.rs; compat/aria2-reference.pin records
+ the input revision. All generated artifacts are distributed in source form.
+Ariax-owned additions may be used under MIT and are distributed compatibly
+with the upstream GPL material in these combined source artifacts.
+
+The CLI does not compile or embed these JSON inventories or link aria2.
+They are excluded from the binary package manifests. Binary compatibility
+with aria2 interfaces does not by itself make aria2 source part of the CLI.
+
+Original notices follow. The OpenSSL exception is reproduced as upstream
+wrote it; Ariax does not rely on that exception to link aria2 code.
+
+Source: src/OptionHandlerFactory.cc
+
+/* <!-- copyright */
+/*
+ * aria2 - The high speed download utility
+ *
+ * Copyright (C) 2006 Tatsuhiro Tsujikawa
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ *
+ * In addition, as a special exception, the copyright holders give
+ * permission to link the code of portions of this program with the
+ * OpenSSL library under certain conditions as described in each
+ * individual source file, and distribute linked combinations
+ * including the two.
+ * You must obey the GNU General Public License in all respects
+ * for all of the code used other than OpenSSL.  If you modify
+ * file(s) with this exception, you may extend this exception to your
+ * version of the file(s), but you are not obligated to do so.  If you
+ * do not wish to do so, delete this exception statement from your
+ * version.  If you delete this exception statement from all source
+ * files in the program, then also delete it here.
+ */
+/* copyright --> */
+
+Source: src/prefs.cc
+
+/* <!-- copyright */
+/*
+ * aria2 - The high speed download utility
+ *
+ * Copyright (C) 2006 Tatsuhiro Tsujikawa
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ *
+ * In addition, as a special exception, the copyright holders give
+ * permission to link the code of portions of this program with the
+ * OpenSSL library under certain conditions as described in each
+ * individual source file, and distribute linked combinations
+ * including the two.
+ * You must obey the GNU General Public License in all respects
+ * for all of the code used other than OpenSSL.  If you modify
+ * file(s) with this exception, you may extend this exception to your
+ * version of the file(s), but you are not obligated to do so.  If you
+ * do not wish to do so, delete this exception statement from your
+ * version.  If you delete this exception statement from all source
+ * files in the program, then also delete it here.
+ */
+/* copyright --> */
+
+Source: src/RpcMethodFactory.cc
+
+/* <!-- copyright */
+/*
+ * aria2 - The high speed download utility
+ *
+ * Copyright (C) 2009 Tatsuhiro Tsujikawa
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ *
+ * In addition, as a special exception, the copyright holders give
+ * permission to link the code of portions of this program with the
+ * OpenSSL library under certain conditions as described in each
+ * individual source file, and distribute linked combinations
+ * including the two.
+ * You must obey the GNU General Public License in all respects
+ * for all of the code used other than OpenSSL.  If you modify
+ * file(s) with this exception, you may extend this exception to your
+ * version of the file(s), but you are not obligated to do so.  If you
+ * do not wish to do so, delete this exception statement from your
+ * version.  If you delete this exception statement from all source
+ * files in the program, then also delete it here.
+ */
+/* copyright --> */
+
+Source: doc/manual-src/en/aria2c.rst
+
+COPYRIGHT
+---------
+Copyright (C) 2006, 2015 Tatsuhiro Tsujikawa
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
+
+In addition, as a special exception, the copyright holders give
+permission to link the code of portions of this program with the
+OpenSSL library under certain conditions as described in each
+individual source file, and distribute linked combinations
+including the two.
+You must obey the GNU General Public License in all respects
+for all of the code used other than OpenSSL.  If you modify
+file(s) with this exception, you may extend this exception to your
+version of the file(s), but you are not obligated to do so.  If you
+do not wish to do so, delete this exception statement from your
+version.  If you delete this exception statement from all source
+files in the program, then also delete it here.

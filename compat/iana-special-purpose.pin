@@ -6,4 +6,4 @@ ipv6_url=https://www.iana.org/assignments/iana-ipv6-special-registry/iana-ipv6-s
 ipv6_last_modified=2025-10-09
 ipv6_sha256=8b0e181a4ef0c71fcb25403c40702f2050c2f6dc198156b6ec1a5fb746c9a73e
 line_endings=lf
-license=IANA-registry-data; see https://www.icann.org/privacy/tos
+license=CC0-1.0; see https://www.iana.org/help/licensing-terms

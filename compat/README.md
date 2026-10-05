@@ -30,3 +30,13 @@ SHA-256, and terms reference. `cargo xtask generate` derives the HTTP
 destination classifier and its machine-readable contract from those checked-in
 snapshots plus reviewed metadata/multicast compatibility overrides; contract
 verification fails on input hash or generated-output drift.
+
+The [IANA/IETF licensing statement](https://www.iana.org/help/licensing-terms)
+places applicable rights in these protocol registry data under CC0-1.0.
+The license reference in the pin records this registry-specific dedication.
+Snapshot bytes, hashes and classification policy are unchanged by that update.
+
+Extracted aria2 material keeps its upstream GPL-2.0-or-later terms. See the
+[distribution notice](../distribution/aria2-source-notice.txt) and
+[release packaging guide](../docs/development/release-packaging.md). The option
+inventory contains source expressions; it must not be relabeled as MIT-only.

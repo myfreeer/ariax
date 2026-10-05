@@ -6,6 +6,12 @@ The compatibility artifacts expose unreviewed upstream coverage instead of
 silently implying parity. Executable journal and SQLite persistence contracts
 are included. Do not edit generated JSON by hand.
 
+The extracted aria2 material in `aria2_options.json`, `aria2_rpc.json` and
+`aria2_compat.json` retains upstream GPL-2.0-or-later terms; see the
+[source-distribution notice](../distribution/aria2-source-notice.txt).
+In particular, `aria2_options.json` contains extracted C++ expressions, not only
+interface names. These inventories are excluded from CLI binary packages.
+
 `options.json`, `aria2_compat.json`, `runtime_updates.json`, and
 `runtime_compatibility.json` come from `ariax-config`. The aria2 inventory files
 come only from immutable blobs at the pinned commit. `storage_layout.json`
