@@ -645,10 +645,10 @@ do not approve a release or replace the remaining platform gates.
 
 | Work Package | Completed Local Evidence | Remaining Acceptance |
 | --- | --- | --- |
-| `P7-01` | 41 retained native Windows transport diagnostics, including ten quiet observations per transport. [Short artifact comparison](../../performance-evidence/phase7-short-followup-2026-10-05.md#mixed-burst-comparison) identifies mutation-tail candidates and the missing historical attribution data. | Attribute the retained native Linux 530.097 ms mixed-burst failure and establish repeated stability. |
+| `P7-01` | Earlier 41 native Windows diagnostics and the [bounded campaign's 410 attempts](../../performance-evidence/phase7-local-campaign-2026-10-05.md#transport-diagnostics), preserving one 100.250 ms `changeUri` timing failure. Host observations do not attribute that delay. | Attribute the retained native Linux 530.097 ms mixed-burst failure and the Windows mutation delay; establish repeated native Linux stability. |
 | `P7-02` | Four security/resource repairs with success and rejection regressions; ownership, policy, persistence and dependency review. | Retain strict Unix fixture and kernel/backend coverage on suitable native systems. |
-| `P7-03` | All 11 Rust-ASan fuzz targets pass short and extended campaigns; native ASan/UBSan and TSan probes pass. Direct TSan driver passes ten native test executions; [maintained tooling](../development/local-hardening.md#maintained-direct-tsan-driver) verifies four additional executions using the retained binary. | Fully instrumented Rust standard-library/harness race coverage; nine failed native-only harness invocations remain retained. |
-| `P7-04` | 500 WSL and 600 Windows repeated lifecycle/recovery invocations pass. Earlier independent Linux/Windows-GNU minimal/standard builds match byte for byte. MIT selected; winapi provenance and IANA/aria2 terms reviewed. Eight package layouts and four drafts include notices and covered source. Four remapped binaries match independent local builds and pass path, import, package-integrity and reduced-environment RPC/reopen checks. | Full/compat import inventories, fresh-OS/minimum-OS checks, macOS/MSVC and remaining release matrix, hardware power loss, and compatibility decisions remain open; reviewed handler coverage remains 54/207. |
+| `P7-03` | All 11 Rust-ASan targets pass the additional three-round campaign: 506,880 accepted executions, including 440,792 mutations. Native ASan/UBSan and TSan probes pass; the maintained direct TSan driver adds ten passing native case executions. Earlier evidence remains retained. | Fully instrumented Rust standard-library/harness race coverage; nine failed native-only harness invocations remain retained. |
+| `P7-04` | Additional 2,000 WSL and 2,400 Windows lifecycle/recovery invocations pass, alongside focused BT/protocol/configuration/runtime checks. Four minimal/standard drafts retain independent reproducibility, notices, path/import checks and reduced-environment RPC/reopen evidence. Full/compat builds and runtime inventories now exist for WSL1 and Windows-GNU. | Full/compat native path remapping, runtime packaging and reproducibility; fresh/minimum OS, macOS/MSVC, remaining release matrix, hardware power loss and compatibility decisions. Reviewed handler coverage remains 54/207. |
 
 The [completed-burst diagnostic slice](../../performance-evidence/phase7-burst-diagnostics-2026-10-05.md)
 adds a longest-burst snapshot and separate primary/verification/untimed totals.
@@ -679,11 +679,25 @@ now records independent matches for all four remapped binaries with fresh
 target/temp directories and a shared source cache/toolchain. Reduced-environment
 RPC and database reopening checks pass on WSL1 and native Windows; Linux also
 loads its configured system preload. All 137 Python tests and 27 native Windows
-release-helper tests pass. Full/compat runtime inventories, platform-specific
-terms, fresh-OS/minimum-OS checks and the final candidate matrix remain open. The drafts
-are not release candidates. License-only manifest changes also change source
+release-helper tests pass. The [bounded campaign](../../performance-evidence/phase7-local-campaign-2026-10-05.md)
+now records full/compat runtime inventories, but all four binaries retain
+absolute native-dependency paths. Linux adds glibc 2.38 and `libstdc++`
+requirements; Windows adds a three-DLL MinGW runtime closure. Their packaging,
+platform-specific terms, fresh-OS/minimum-OS checks and final candidate matrix
+remain open. The drafts are not release candidates. License-only manifest
+changes also change source
 fingerprints; do not bypass retained-evidence checks to reuse older TSan or
 release build records.
+
+That campaign records 5,475 scheduled test/probe invocations, excluding one
+zero-work helper from the 5,474 behavioral invocations, plus ten direct native
+TSan cases. All 137 Python helper tests, formatting, generated contracts and
+dependency-feature checks pass. Raw failures, corpus inventories and verified
+duplicate-file cleanup remain bound to the portable evidence.
+A separate 30-minute Windows empty-session RPC process passes 18,000 queries
+and expected rejections, followed by EOF shutdown and database reopening.
+Its sampled memory, handles and threads show no sustained growth; active-transfer
+and multi-hour stability remain separate acceptance work.
 
 Benchmarks remain manual-triggered. No push, CI dispatch, tag, migration or
 `aria2c` replacement is part of this local campaign.

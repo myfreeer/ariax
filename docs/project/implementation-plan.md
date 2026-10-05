@@ -608,6 +608,9 @@ records review repairs, bounded local campaigns and their platform limits.
 The [short local follow-up](../../performance-evidence/phase7-short-followup-2026-10-05.md)
 compares the retained mixed-burst artifacts and maintains the direct native
 TSan driver without another benchmark or dependency build.
+The [bounded local campaign](../../performance-evidence/phase7-local-campaign-2026-10-05.md)
+extends lifecycle/recovery and parser coverage, preserves a Windows timing
+failure, and records full/compat native-path and runtime-packaging blockers.
 The work below retains its full acceptance requirements; Phase-6 completion
 and local hardening results are not release approval.
 

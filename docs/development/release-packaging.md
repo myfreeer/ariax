@@ -130,9 +130,19 @@ only the exercised module paths. Fresh-OS, minimum-OS and candidate-matrix
 acceptance remain separate gates.
 
 `full` and `compat` have planned layouts with BT/native notice requirements.
-They need a matching release binary and actual runtime import inspection before
-an artifact manifest can be completed. Never infer their runtime files from a
-minimal or standard binary. macOS and MSVC remain separate platform work.
+The [bounded local campaign](../../performance-evidence/phase7-local-campaign-2026-10-05.md#full-and-compat-artifact-inspection)
+builds and inspects both bundles on WSL1 and Windows-GNU. The Linux binaries
+require glibc 2.38 and GLIBCXX 3.4.30 with `libstdc++.so.6`; the Windows binaries
+directly import `libstdc++-6.dll`, whose inspected MinGW closure also includes
+`libgcc_s_seh-1.dll` and `libwinpthread-1.dll`. Existing GCC/runtime-exception
+and winpthread notices are retained, but the final runtime files and notices
+still require verification against each assembled archive.
+
+Both bundles fail the absolute-path audit: 20 native-dependency path matches
+per Linux binary and 37 per Windows binary. Their layouts remain planned until
+native path remapping, runtime packaging, reproducibility and package operation
+are verified. Never infer their runtime files from a minimal or standard binary.
+macOS and MSVC remain separate platform work.
 
 ## Release Checklist
 

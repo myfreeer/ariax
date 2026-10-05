@@ -89,6 +89,7 @@ They explain earlier decisions; current subsystem contracts take precedence.
 - [Development guide](development/README.md)
 - [Continuous integration](development/continuous-integration.md)
 - [Local Phase 7 hardening](development/local-hardening.md)
+- [Bounded Phase 7 local campaign](../performance-evidence/phase7-local-campaign-2026-10-05.md)
 - [Release packaging and licenses](development/release-packaging.md)
 - [Distribution manifests and notices](../distribution/README.md)
 - [Retained performance evidence](../performance-evidence)

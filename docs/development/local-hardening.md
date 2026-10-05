@@ -17,6 +17,26 @@ workload restrictions remain unchanged. Benchmarks remain manual-only.
 
 ## Execution And Evidence
 
+The October 5 bounded campaign has a four-to-six-hour total budget, including
+builds, analysis and cleanup, with a hard six-hour deadline and the final thirty minutes
+reserved for evidence and cleanup. Run only on the existing WSL1 and native
+Windows-GNU hosts. CI and pushes remain on hold. Native Linux mixed-BT
+acceptance is unavailable here; retain that gate separately from Windows
+transport diagnostics and BT integration/recovery tests.
+
+Prefer verified retained executables and native installations in place. Review
+source equivalence before reuse; license-only manifest edits may be recorded
+as such after comparing parsed manifests, but changed compiled inputs require
+a matching build. Do not weaken a helper's stricter provenance checks. Rebuild
+only the affected focused targets, once per required configuration.
+
+Use the selected temporary volume with sufficient headroom; the user's F:
+temporary root is the fallback when E: is full. Keep payloads, state, logs and
+corpora bounded. Remove disposable fixtures after preserving results and verify
+child-process cleanup. Preserve reusable binaries, libraries, source caches,
+unique failures and essential evidence. Record deleted file counts and bytes;
+do not delete useful compilation caches merely to rebuild them later.
+
 Select the pinned standalone Rust distribution and locked dependencies. Keep
 native ABIs and instrumentation in separate output directories, verify native
 provenance before reuse, and use at most two compiler workers. All campaign
@@ -54,6 +74,19 @@ timing-sensitive cases. The longer pass permits 50 repetitions and a 30-minute
 limit per family. Existing test deadlines and crash-parent fixtures remain in
 force. Stop a correctness failure for diagnosis and retain subsequent reruns
 as separate evidence.
+
+The [bounded campaign record](../../performance-evidence/phase7-local-campaign-2026-10-05.md)
+separately records its larger allocation: 200 repetitions per selected lifecycle
+case and three 30-batch rounds per fuzz target, under the same process, input,
+memory and overall time limits. It preserves the original nine diagnostic
+attempts when continuing after a runner accounting error. A retained timing
+failure is not retried or exempted because other host activity was observed.
+
+After verifying all corpus bytes, redundant earlier generations may be removed
+only when every member remains available in the final corpus. Keep each original
+generation's hash inventory, the retained location and deletion counts/bytes so
+its inputs remain reconstructible. Empty artifact directories may be removed
+after checking that they contain no failure input.
 
 ## Review Boundaries
 
