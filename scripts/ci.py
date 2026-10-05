@@ -16,6 +16,8 @@ import tempfile
 import time
 import urllib.request
 
+import host_telemetry
+
 ROOT = Path(__file__).resolve().parents[1]
 RUST_VERSION = "1.97.1"
 ACTIONLINT_VERSION = "1.7.12"
@@ -359,6 +361,8 @@ def validate_burst_timing(report, *, required=False):
     elapsed = integer(worst.get("elapsedUs"), "worst.elapsedUs", maximum=total)
     require(elapsed == elapsed_ns // 1_000 and report.get("maxBurstMs") == elapsed_ns // 1_000_000,
             "worst burst disagrees with maximum duration")
+    if required or "startedUnixNs" in worst:
+        integer(worst.get("startedUnixNs"), "worst.startedUnixNs", minimum=1)
     parts = components(worst, elapsed)
     require(all(part <= summed for part, summed in zip(parts, totals)), "worst timing exceeds aggregate")
     samples = integer(report.get("samples"), "samples", minimum=1)
@@ -527,19 +531,26 @@ def measure_scenario(runner, binary, scenario, metalink):
     record = {"scenario": scenario, "command": command, "passed": False,
               "binarySha256": sha256(binary), "compilerProcessesObserved": observed}
     process = None
+    telemetry = None
     try:
         require(not compiler_processes(), "compiler activity before benchmark")
+        telemetry = host_telemetry.Sampler(directory / "host-load.jsonl")
         with (directory / "stdout.jsonl").open("wb") as output, (directory / "stderr.log").open("wb") as errors:
             process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=output, stderr=errors,
                                        start_new_session=True)
+            telemetry.capture(process.pid)
+            next_compiler_check = time.monotonic() + 5
             while process.poll() is None:
                 try:
-                    process.wait(timeout=5)
+                    process.wait(timeout=host_telemetry.INTERVAL)
                 except subprocess.TimeoutExpired:
-                    found = compiler_processes()
-                    if found:
-                        observed.append({"elapsedSeconds": time.monotonic() - start, "processes": found})
-                    require(not found, "compiler activity during benchmark")
+                    telemetry.capture(process.pid)
+                    if time.monotonic() >= next_compiler_check:
+                        found = compiler_processes()
+                        if found:
+                            observed.append({"elapsedSeconds": time.monotonic() - start, "processes": found})
+                        require(not found, "compiler activity during benchmark")
+                        next_compiler_check = time.monotonic() + 5
                     require(time.monotonic() - start <= 110, "benchmark outer deadline expired")
             record["exitCode"] = process.returncode
         require(process.returncode == 0, "benchmark process failed")
@@ -552,6 +563,17 @@ def measure_scenario(runner, binary, scenario, metalink):
         record["error"] = str(error) or type(error).__name__
         raise
     finally:
+        if telemetry is not None:
+            try:
+                if process is not None:
+                    telemetry.capture(process.pid)
+            except Exception as error:
+                record["hostTelemetryError"] = type(error).__name__
+            finally:
+                try:
+                    record["hostTelemetry"] = telemetry.close()
+                except Exception as error:
+                    record["hostTelemetryError"] = type(error).__name__
         # The session/group is created solely for this scenario and its children.
         if process is not None:
             try:
@@ -560,7 +582,7 @@ def measure_scenario(runner, binary, scenario, metalink):
                 pass
             process.wait(timeout=10)
         record["elapsedWallSeconds"] = round(time.monotonic() - start, 3)
-        for name in ("stdout.jsonl", "stderr.log"):
+        for name in ("stdout.jsonl", "stderr.log", "host-load.jsonl"):
             path = directory / name
             if path.exists():
                 record[name + "Sha256"] = sha256(path)

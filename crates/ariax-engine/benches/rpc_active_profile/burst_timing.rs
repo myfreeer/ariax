@@ -141,6 +141,7 @@ impl BurstTiming {
 
 struct CompletedBurst {
     burst: usize,
+    started_unix_ns: u128,
     elapsed: Duration,
     timing: BurstTiming,
 }
@@ -158,10 +159,13 @@ impl CompletedBursts {
         &mut self,
         scenario: &str,
         burst: usize,
+        started_unix_ns: u128,
         elapsed: Duration,
         timing: BurstTiming,
     ) -> Result<(), String> {
-        timing.check_limit(scenario, burst, elapsed)?;
+        timing
+            .check_limit(scenario, burst, elapsed)
+            .map_err(|error| format!("{error} burstStartedUnixNs={started_unix_ns}"))?;
         let other = elapsed
             .checked_sub(timing.primary + timing.verification)
             .ok_or("timed steps exceed their burst duration")?;
@@ -175,6 +179,7 @@ impl CompletedBursts {
         {
             self.worst = Some(CompletedBurst {
                 burst,
+                started_unix_ns,
                 elapsed,
                 timing,
             });
@@ -186,6 +191,7 @@ impl CompletedBursts {
         let worst = self.worst.as_ref().map(|worst| {
             let timing = worst.timing;
             json!({"burst": worst.burst, "elapsedUs": worst.elapsed.as_micros(),
+                   "startedUnixNs": worst.started_unix_ns,
                    "elapsedNs": worst.elapsed.as_nanos(), "firstSampleIndex": timing.first_sample,
                    "primaryCalls": timing.primary_calls, "verificationCalls": timing.verification_calls,
                    "primaryUs": timing.primary.as_micros(), "verificationUs": timing.verification.as_micros(),

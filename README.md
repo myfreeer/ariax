@@ -125,3 +125,9 @@ Start with the [development guide](docs/development/README.md), then read the
 [architecture overview](docs/architecture/overview.md) and the contract for the
 subsystem you are changing. The [documentation index](docs/README.md) separates
 current contracts, implementation evidence and historical reviews.
+
+## License
+
+Ariax-owned code and documentation are licensed under [MIT](LICENSE).
+Third-party components and data retain their own licenses; see the
+[release packaging and license guide](docs/development/release-packaging.md).

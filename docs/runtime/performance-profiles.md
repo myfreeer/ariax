@@ -51,6 +51,27 @@ may sum to one or two microseconds less than their total. Fresh CI measurements
 require these diagnostics; historical reports without `burstTiming` remain
 readable, and any present diagnostics must validate. This does not change
 sample latency measurements or acceptance limits; partial runs remain failures.
+
+Fresh burst snapshots also carry `startedUnixNs`, sampled immediately before
+the monotonic burst timer starts. Failed-burst diagnostics retain that anchor.
+Historical snapshots may omit it. Native CI collects a separate bounded
+`host-load.jsonl` stream at a nominal 250 ms interval, capped at 512 samples
+and 4 MiB per scenario. Samples pair Unix and monotonic timestamps, record
+collection cost, and retain raw CPU counters, runnable/blocked counts, load
+averages, available pressure/cgroup-v2 CPU metrics and bounded process-group
+CPU/I/O counters. Process discovery runs at most once per second.
+CPU ticks use the recorded clock frequency; guest ticks are already included
+in user/nice counters and must not be added again when deriving utilization.
+Cgroup lookup uses unified membership under `/sys/fs/cgroup`; namespace/mount
+differences can make it unavailable. Discovery caps and PID identity checks
+bound process observations, but short-lived children can escape the samples.
+
+Missing, denied, malformed and truncated metrics are explicit; missing telemetry
+never establishes an idle host. Sampling ends with the scenario and remains
+available on benchmark failure. It does not filter timing samples or alter
+acceptance thresholds. Its CPU/collection costs are recorded for review.
+Clock adjustments, sampling gaps and delays shorter than the sampling interval
+limit correlation; a high load average alone does not prove the burst cause.
 Each scenario has a 90-second overall deadline; setup, barrier queries and
 shutdown also have deadlines so a failed fixture cannot run indefinitely.
 Origin metrics reads complete at the declared HTTP `Content-Length`, without

@@ -20,6 +20,7 @@ class BurstTimingTests(unittest.TestCase):
         report["burstTiming"] = {
             "version": 1, "primaryUs": 600_000, "verificationUs": 350_000, "otherUs": 50_000,
             "worstCompletedBurst": {"burst": 2, "elapsedNs": 486_000_000, "elapsedUs": 486_000,
+                                    "startedUnixNs": 1_791_187_200_000_000_000,
                                     "firstSampleIndex": 1, "primaryCalls": 1, "verificationCalls": 1,
                                     "primaryUs": 100_000, "verificationUs": 350_000, "otherUs": 36_000,
                                     "last": step, "slowest": copy.deepcopy(step)}}
@@ -45,6 +46,17 @@ class BurstTimingTests(unittest.TestCase):
         ci.validate_benchmark(report, "mixed-bt")
         with self.assertRaisesRegex(RuntimeError, "missing completed-burst"):
             ci.validate_benchmark(report, "mixed-bt", require_burst_timing=True)
+
+    def test_anchor_is_required_for_fresh_reports_and_validated_when_present(self):
+        report = self.report()
+        del report["burstTiming"]["worstCompletedBurst"]["startedUnixNs"]
+        ci.validate_benchmark(report, "mixed-bt")
+        with self.assertRaisesRegex(RuntimeError, "startedUnixNs"):
+            ci.validate_benchmark(report, "mixed-bt", require_burst_timing=True)
+        for value in (None, True, 0, -1, "1791187200000000000"):
+            report["burstTiming"]["worstCompletedBurst"]["startedUnixNs"] = value
+            with self.subTest(value=value), self.assertRaisesRegex(RuntimeError, "startedUnixNs"):
+                ci.validate_benchmark(report, "mixed-bt")
 
     def test_missing_malformed_and_unknown_versions_fail_closed(self):
         for value in (None, [], {}, {"version": 2}, {"version": True}):
@@ -132,7 +144,9 @@ class BurstTimingTests(unittest.TestCase):
 
             with mock.patch.object(ci, "compiler_processes", return_value=[]), \
                     mock.patch.object(ci.subprocess, "Popen", side_effect=launch), \
-                    mock.patch.object(ci.os, "killpg"):
+                    mock.patch.object(ci.os, "killpg"), \
+                    mock.patch.object(ci.host_telemetry, "Sampler") as sampler:
+                sampler.return_value.close.return_value = {"samples": 0}
                 with self.assertRaisesRegex(RuntimeError, "missing completed-burst"):
                     ci.measure_scenario(runner, binary, "mixed-bt", True)
             self.assertFalse(json.loads((root / 'mixed-bt/run.json').read_text())['passed'])

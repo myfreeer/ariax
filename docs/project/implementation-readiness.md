@@ -648,12 +648,28 @@ do not approve a release or replace the remaining platform gates.
 | `P7-01` | 41 retained native Windows transport diagnostics, including ten quiet observations per transport. [Short artifact comparison](../../performance-evidence/phase7-short-followup-2026-10-05.md#mixed-burst-comparison) identifies mutation-tail candidates and the missing historical attribution data. | Attribute the retained native Linux 530.097 ms mixed-burst failure and establish repeated stability. |
 | `P7-02` | Four security/resource repairs with success and rejection regressions; ownership, policy, persistence and dependency review. | Retain strict Unix fixture and kernel/backend coverage on suitable native systems. |
 | `P7-03` | All 11 Rust-ASan fuzz targets pass short and extended campaigns; native ASan/UBSan and TSan probes pass. Direct TSan driver passes ten native test executions; [maintained tooling](../development/local-hardening.md#maintained-direct-tsan-driver) verifies four additional executions using the retained binary. | Fully instrumented Rust standard-library/harness race coverage; nine failed native-only harness invocations remain retained. |
-| `P7-04` | 500 WSL and 600 Windows repeated lifecycle/recovery invocations pass. Independent Linux/Windows-GNU minimal/standard release builds match byte for byte; generated contracts and runtime imports checked. | macOS/MSVC and remaining release matrix, hardware power loss, license/notices and compatibility decisions; reviewed handler coverage remains 54/207. |
+| `P7-04` | 500 WSL and 600 Windows repeated lifecycle/recovery invocations pass. Independent Linux/Windows-GNU minimal/standard release builds match byte for byte; generated contracts and runtime imports checked. MIT selected for Ariax-owned code; per-bundle dependency inventory and notice draft prepared. | macOS/MSVC and remaining release matrix, hardware power loss, final artifact/runtime notices and data obligations, and compatibility decisions; reviewed handler coverage remains 54/207. |
 
 The [completed-burst diagnostic slice](../../performance-evidence/phase7-burst-diagnostics-2026-10-05.md)
 adds a longest-burst snapshot and separate primary/verification/untimed totals.
 Focused regressions and report validation pass locally; new native Linux
 measurements are still needed to use these fields for attribution.
+
+The [pre-release analysis](../../performance-evidence/phase7-prerelease-analysis-2026-10-05.md)
+adds burst wall-clock anchors and bounded host/process telemetry for future
+native Linux measurements. Eight Rust regressions, 110 Python helper tests,
+focused benchmark Clippy and historical-report validation pass locally. A short
+WSL sampler smoke reports unavailable counters explicitly; it establishes no
+native performance result or explanation of the old failure.
+
+The [release packaging checklist](../development/release-packaging.md) records
+MIT inheritance for all 11 workspace packages, separate third-party licenses,
+305 external packages across eight Linux/Windows-GNU bundle closures, native
+library notices and the embedded MPL-2.0 public-suffix source obligation.
+Final archive/runtime inventories, data and platform-specific terms, and
+release-candidate acceptance remain open. License-only manifest changes also
+change source fingerprints; do not bypass retained-evidence checks to reuse
+older TSan or release build records.
 
 Benchmarks remain manual-triggered. No push, CI dispatch, tag, migration or
 `aria2c` replacement is part of this local campaign.

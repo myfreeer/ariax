@@ -1,0 +1,954 @@
+{
+  "schema": 1,
+  "date": "2026-10-05",
+  "baselineCommit": "ba4a141",
+  "branch": "local/phase7-hardening",
+  "status": "local pre-release preparation complete; release acceptance open",
+  "scope": "Bounded host-load telemetry and burst anchors; MIT project licensing, dependency notice draft and release checklist.",
+  "sourceFileSha256": {
+    ".gitattributes": "0ec9c743e34b5e71fb138f172ace07335ba387d905b3d5d51582c7b34a194856",
+    "Cargo.toml": "d982c7e9982a12b85f16f108fc11eb41f0cc3bda801520113fa2e3de400c943f",
+    "LICENSE": "02d793ad223d8c3054cffc27da1601c73e507e0a78c38ac9e624e9c648fc6b1e",
+    "README.md": "5c166326f5c1e8aa8073007094d758ee08268dc65a71c5cffaf135684eaee12b",
+    "bin/ariax/Cargo.toml": "be14828ce9e27acab682f14d5cab4d827ad9df034c6142f231429932fe810230",
+    "crates/ariax-bt-libtorrent-sys/Cargo.toml": "8dd7d8b13d43272e92b07039708bc47501f1c281d6352dcaf662ced44f5471d6",
+    "crates/ariax-bt-metadata/Cargo.toml": "d77fe58825ec142f75c3f19a538e8891e93fea79e01e853456832682e2fec092",
+    "crates/ariax-bt/Cargo.toml": "c4de28a31f96c06bd370a9ceab65c8c592f13c9f6cbc2460bc39a2bbdf87cd73",
+    "crates/ariax-config/Cargo.toml": "c8965038c3aaa098a02846b53e37ea8ea5a7357539410d2ba6726b6f0b217769",
+    "crates/ariax-core/Cargo.toml": "97cd5c7866f21f5c2ba7a5ef8734d92f8b50689b96b7609ef9b1479eaf983b37",
+    "crates/ariax-engine/Cargo.toml": "02fe1a829511692ded146047a9366bca1958e32864d474ab18599777151c783b",
+    "crates/ariax-engine/benches/rpc_active_profile.rs": "5419802838552345caf03fbe9aab15e3d93fdd7ad2cc5d7d5ab81d23f019219f",
+    "crates/ariax-engine/benches/rpc_active_profile/burst_timing.rs": "abfe2cc444897292898fb631fb5c40bc2acc0954d43fef9ba4e550adad5d0e36",
+    "crates/ariax-engine/tests/rpc_burst_timing.rs": "37422b6b4c3f40bd0f2139e54de314854ed3a982cfc0169f927683fecfe00ff1",
+    "crates/ariax-runtime/Cargo.toml": "f5531a5e7df9e57259904545de36a28460fcfff094f8159958f9cbddae9d46ce",
+    "crates/ariax-storage/Cargo.toml": "806bf8e9794c46c5345a5d70c0255f1be0d120df950ca910ba55f8e5c1d6c027",
+    "crates/ariax-windows-security/Cargo.toml": "073a02bc1e26daad7f46cbf906a69552b0101562ad0f2f1e243ee3601152563a",
+    "docs/README.md": "249003019f47b3d2645bf54954afd61cb0f768bb683b3533de7ec838505e2142",
+    "docs/development/release-packaging.md": "53afe7f7a5824f52f81e56e5367a27f8e0490a4db02b23604ea1bd7a268a2d0b",
+    "docs/project/implementation-readiness.md": "646d499d0793303f5a54ba2cbed41e6ac24f15dceec16829454305dc8af6c2ee",
+    "docs/runtime/performance-profiles.md": "6ac2644e83ca121fb1427781351aff393c4d8f572b3644cc4c25410e22ed19f4",
+    "performance-evidence/phase7-prerelease-analysis-2026-10-05.md": "5e56ae6bacb1bb4616558d7dc6837cff4674170623800757ccee74f341c4656a",
+    "performance-evidence/phase7-release-license-inventory-2026-10-05.json": "29b7884b48d921a9f6dedea6272fd25da0e3d2b1484b61fa18021f7569b407f2",
+    "performance-evidence/phase7-third-party-notices-2026-10-05.txt": "b0dbb4edb437570d05f564f09cf25666c3cdc61edfc9472269144f3cbe78512e",
+    "scripts/ci.py": "e737c0e4a8b68c7a2d2a5d198cd739c8fbce26f8d39efc70d3efcbbf7b683e67",
+    "scripts/host_telemetry.py": "51f9970f3de422b15c8c91995a0fb925d11bcc6a2d972f135497daf0d80739b9",
+    "scripts/test_burst_timing.py": "07b8fcce9fdf25d2b66e9e39944de90af8db0d0dbc0f33121a9e138028e6df7f",
+    "scripts/test_host_telemetry.py": "b6d0d4304bda8e6e141188455491727b67a8ce2f085b6f5c603b18065fcf743f",
+    "tools/ariax-xtask/Cargo.toml": "6d4330c026bf5ea96e771d371793a9d10026941da2babd204f36b218a8f9e6f2"
+  },
+  "checks": {
+    "rust-test": {
+      "command": [
+        "{repo}/toolchains/installed/linux/bin/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "ariax-engine",
+        "--features",
+        "metalink,ftp,sftp",
+        "--test",
+        "rpc_burst_timing",
+        "--",
+        "--nocapture"
+      ],
+      "passed": true,
+      "timeoutSeconds": 180,
+      "expectedTests": 8,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "RUSTC": "{repo}/toolchains/installed/linux/bin/rustc",
+        "CARGO_TARGET_DIR": "{local-temp}/ariax-permission-policy-20261003/target-linux",
+        "CARGO_BUILD_JOBS": "2",
+        "RUST_TEST_THREADS": "1",
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "binarySha256": "828980723df339d62434390e9fb8ef8831036583343ae2316b7ab5646b5c1953",
+      "processSeconds": 1.3789432999910787,
+      "elapsedSeconds": 1.379976500000339,
+      "stdout.logSha256": "7c2545898ef67265e4a40350030604c49fa83624fc7d2cc2158399502f41826d",
+      "stderr.logSha256": "34d1665e44f59e822c410d19a62bcd00a98b6f57c8130a13537f5a1cf9601286"
+    },
+    "rust-clippy": {
+      "command": [
+        "{repo}/toolchains/installed/linux/bin/cargo-clippy",
+        "clippy",
+        "--locked",
+        "--offline",
+        "-p",
+        "ariax-engine",
+        "--features",
+        "metalink,ftp,sftp",
+        "--bench",
+        "rpc_active_profile",
+        "--test",
+        "rpc_burst_timing",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "passed": true,
+      "timeoutSeconds": 180,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "RUSTC": "{repo}/toolchains/installed/linux/bin/rustc",
+        "CARGO_TARGET_DIR": "{local-temp}/ariax-permission-policy-20261003/target-linux",
+        "CARGO_BUILD_JOBS": "2",
+        "RUST_TEST_THREADS": "1",
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "binarySha256": "a0a3808dddb32f525601e608740ee7c1c5df86db4a7183ea945449f60d29509d",
+      "processSeconds": 2.0393012999993516,
+      "elapsedSeconds": 2.0394419000076596,
+      "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr.logSha256": "6de9241d45159aa34591ca11cd7b94789a617762ff2ae92badb3c11c3b5008ac"
+    },
+    "rust-clippy-bt": {
+      "command": [
+        "{repo}/toolchains/installed/linux/bin/cargo-clippy",
+        "clippy",
+        "--locked",
+        "--offline",
+        "-p",
+        "ariax-engine",
+        "--all-features",
+        "--bench",
+        "rpc_active_profile",
+        "--test",
+        "rpc_burst_timing",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "passed": true,
+      "timeoutSeconds": 180,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "RUSTC": "{repo}/toolchains/installed/linux/bin/rustc",
+        "CARGO_TARGET_DIR": "{local-temp}/ariax-permission-policy-20261003/target-linux",
+        "CARGO_BUILD_JOBS": "2",
+        "RUST_TEST_THREADS": "1",
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "binarySha256": "a0a3808dddb32f525601e608740ee7c1c5df86db4a7183ea945449f60d29509d",
+      "processSeconds": 4.376776699995389,
+      "elapsedSeconds": 4.376939900001162,
+      "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr.logSha256": "15df62bc47d01ac8458927c34d8aa5a59f6651bf7add9f19a064e57cd58a7b1b"
+    },
+    "python-tests-final": {
+      "command": [
+        "python3",
+        "-B",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts",
+        "-p",
+        "test_*.py"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60.0,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "processSeconds": 1.950903399992967,
+      "elapsedSeconds": 1.951039599996875,
+      "stdout.logSha256": "c7be9e728d2eddb1478d1bb6573674b072df95c9a5d2e2e71e11717272d7e965",
+      "stderr.logSha256": "28c0a5ccc2bb8ed4263b273d03a3b872ab61650953c4100a61a7cde67d4960df"
+    },
+    "telemetry-smoke": {
+      "command": [
+        "python3",
+        "-B",
+        "{evidence}/telemetry-smoke.py"
+      ],
+      "passed": true,
+      "timeoutSeconds": 15.0,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "{evidence}"
+      },
+      "processSeconds": 2.0886780000000726,
+      "elapsedSeconds": 2.088801100006094,
+      "stdout.logSha256": "72cca94e6427f4ab1edf64fa21fc08f1f0b4c3a760774dceb240f4a4b90cbfce",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "report-validation": {
+      "command": [
+        "python3",
+        "-B",
+        "{evidence}/verify-reports.py"
+      ],
+      "passed": true,
+      "timeoutSeconds": 30.0,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "{evidence}"
+      },
+      "processSeconds": 0.27239759999793023,
+      "elapsedSeconds": 0.27273779999813996,
+      "stdout.logSha256": "d527c3a2e6204d2d9970c5740f063b2bfe91d36bdf73c838551e23ab072731be",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "notice-assembly-attempt3": {
+      "command": [
+        "python3",
+        "-B",
+        "{evidence}/assemble-notices.py"
+      ],
+      "passed": true,
+      "timeoutSeconds": 90.0,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "{evidence}"
+      },
+      "processSeconds": 19.240141300004325,
+      "elapsedSeconds": 19.24033300000883,
+      "stdout.logSha256": "79942cd6d3239745c21c8414522a427df1dce7a3bb2cf339ea7aef49dce8260d",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "notice-validation": {
+      "command": [
+        "python3",
+        "-B",
+        "{evidence}/verify-notices.py"
+      ],
+      "passed": true,
+      "timeoutSeconds": 30.0,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "{evidence}"
+      },
+      "processSeconds": 0.12036889999581035,
+      "elapsedSeconds": 0.12077300000237301,
+      "stdout.logSha256": "d3255e47f3700bddb1e476090abc23dca5a610b042e7ff7894fb64497806ec93",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "project-license-metadata": {
+      "command": [
+        "{repo}/toolchains/installed/linux/bin/cargo",
+        "metadata",
+        "--locked",
+        "--offline",
+        "--no-deps",
+        "--format-version",
+        "1"
+      ],
+      "passed": true,
+      "timeoutSeconds": 30,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "RUSTC": "{repo}/toolchains/installed/linux/bin/rustc",
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "binarySha256": "828980723df339d62434390e9fb8ef8831036583343ae2316b7ab5646b5c1953",
+      "processSeconds": 0.06837399999494664,
+      "elapsedSeconds": 0.06863209999573883,
+      "stdout.logSha256": "9e24a6eb358d042acc58879f30dd792f23eb0ff763d7cb6bcb647c2682020d88",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "staged-whitespace-final": {
+      "command": [
+        "git",
+        "diff",
+        "--cached",
+        "--check"
+      ],
+      "passed": true,
+      "timeoutSeconds": 30.0,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "{evidence}"
+      },
+      "processSeconds": 0.06821139999374282,
+      "elapsedSeconds": 0.06838919999427162,
+      "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "inventory-metadata": {
+      "command": [
+        "{repo}/toolchains/installed/linux/bin/cargo",
+        "metadata",
+        "--locked",
+        "--offline",
+        "--all-features",
+        "--format-version",
+        "1"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "RUSTC": "{repo}/toolchains/installed/linux/bin/rustc",
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "binarySha256": "828980723df339d62434390e9fb8ef8831036583343ae2316b7ab5646b5c1953",
+      "processSeconds": 0.7212593000003835,
+      "elapsedSeconds": 0.7214278000028571,
+      "stdout.logSha256": "f78e6e4a594021af21a08e26d8d72387dbb014971c7f13a7787854cc38634c39",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "inventory-x86_64-pc-windows-gnu-compat": {
+      "command": [
+        "{repo}/toolchains/installed/linux/bin/cargo",
+        "tree",
+        "--locked",
+        "--offline",
+        "-p",
+        "ariax-cli",
+        "--no-default-features",
+        "--features",
+        "compat",
+        "--target",
+        "x86_64-pc-windows-gnu",
+        "--edges",
+        "normal,build",
+        "--prefix",
+        "none",
+        "--format",
+        "{p}"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "RUSTC": "{repo}/toolchains/installed/linux/bin/rustc",
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "binarySha256": "828980723df339d62434390e9fb8ef8831036583343ae2316b7ab5646b5c1953",
+      "processSeconds": 0.6718105000036303,
+      "elapsedSeconds": 0.6720889999996871,
+      "stdout.logSha256": "1224207178498d1f18d0e9a825043a78fe592077a0de6003b19a86a4a9fc0a4d",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "inventory-x86_64-pc-windows-gnu-full": {
+      "command": [
+        "{repo}/toolchains/installed/linux/bin/cargo",
+        "tree",
+        "--locked",
+        "--offline",
+        "-p",
+        "ariax-cli",
+        "--no-default-features",
+        "--features",
+        "full",
+        "--target",
+        "x86_64-pc-windows-gnu",
+        "--edges",
+        "normal,build",
+        "--prefix",
+        "none",
+        "--format",
+        "{p}"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "RUSTC": "{repo}/toolchains/installed/linux/bin/rustc",
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "binarySha256": "828980723df339d62434390e9fb8ef8831036583343ae2316b7ab5646b5c1953",
+      "processSeconds": 0.7234843999904115,
+      "elapsedSeconds": 0.7236580000026152,
+      "stdout.logSha256": "1224207178498d1f18d0e9a825043a78fe592077a0de6003b19a86a4a9fc0a4d",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "inventory-x86_64-pc-windows-gnu-minimal": {
+      "command": [
+        "{repo}/toolchains/installed/linux/bin/cargo",
+        "tree",
+        "--locked",
+        "--offline",
+        "-p",
+        "ariax-cli",
+        "--no-default-features",
+        "--features",
+        "minimal",
+        "--target",
+        "x86_64-pc-windows-gnu",
+        "--edges",
+        "normal,build",
+        "--prefix",
+        "none",
+        "--format",
+        "{p}"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "RUSTC": "{repo}/toolchains/installed/linux/bin/rustc",
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "binarySha256": "828980723df339d62434390e9fb8ef8831036583343ae2316b7ab5646b5c1953",
+      "processSeconds": 0.5720546999946237,
+      "elapsedSeconds": 0.5723958000016864,
+      "stdout.logSha256": "f61ca583e57b70dc13b2ebf7c667973628c2a86f5ae551fad41ed2bc48948184",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "inventory-x86_64-pc-windows-gnu-standard": {
+      "command": [
+        "{repo}/toolchains/installed/linux/bin/cargo",
+        "tree",
+        "--locked",
+        "--offline",
+        "-p",
+        "ariax-cli",
+        "--no-default-features",
+        "--features",
+        "standard",
+        "--target",
+        "x86_64-pc-windows-gnu",
+        "--edges",
+        "normal,build",
+        "--prefix",
+        "none",
+        "--format",
+        "{p}"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "RUSTC": "{repo}/toolchains/installed/linux/bin/rustc",
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "binarySha256": "828980723df339d62434390e9fb8ef8831036583343ae2316b7ab5646b5c1953",
+      "processSeconds": 0.7284339000034379,
+      "elapsedSeconds": 0.7288082000013674,
+      "stdout.logSha256": "e1cb45f30ad9031c286c6746e70bfc051964c5d370b6857a9974bb739636c785",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "inventory-x86_64-unknown-linux-gnu-compat": {
+      "command": [
+        "{repo}/toolchains/installed/linux/bin/cargo",
+        "tree",
+        "--locked",
+        "--offline",
+        "-p",
+        "ariax-cli",
+        "--no-default-features",
+        "--features",
+        "compat",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "--edges",
+        "normal,build",
+        "--prefix",
+        "none",
+        "--format",
+        "{p}"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "RUSTC": "{repo}/toolchains/installed/linux/bin/rustc",
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "binarySha256": "828980723df339d62434390e9fb8ef8831036583343ae2316b7ab5646b5c1953",
+      "processSeconds": 0.6769953000039095,
+      "elapsedSeconds": 0.6771723999991082,
+      "stdout.logSha256": "d6a469bcc2db153af45d0687a0f3ef869f79b0cc435b3840a9584865010ad380",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "inventory-x86_64-unknown-linux-gnu-full": {
+      "command": [
+        "{repo}/toolchains/installed/linux/bin/cargo",
+        "tree",
+        "--locked",
+        "--offline",
+        "-p",
+        "ariax-cli",
+        "--no-default-features",
+        "--features",
+        "full",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "--edges",
+        "normal,build",
+        "--prefix",
+        "none",
+        "--format",
+        "{p}"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "RUSTC": "{repo}/toolchains/installed/linux/bin/rustc",
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "binarySha256": "828980723df339d62434390e9fb8ef8831036583343ae2316b7ab5646b5c1953",
+      "processSeconds": 0.7262156999931904,
+      "elapsedSeconds": 0.7264544000063324,
+      "stdout.logSha256": "d6a469bcc2db153af45d0687a0f3ef869f79b0cc435b3840a9584865010ad380",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "inventory-x86_64-unknown-linux-gnu-minimal": {
+      "command": [
+        "{repo}/toolchains/installed/linux/bin/cargo",
+        "tree",
+        "--locked",
+        "--offline",
+        "-p",
+        "ariax-cli",
+        "--no-default-features",
+        "--features",
+        "minimal",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "--edges",
+        "normal,build",
+        "--prefix",
+        "none",
+        "--format",
+        "{p}"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "RUSTC": "{repo}/toolchains/installed/linux/bin/rustc",
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "binarySha256": "828980723df339d62434390e9fb8ef8831036583343ae2316b7ab5646b5c1953",
+      "processSeconds": 0.6253737999941222,
+      "elapsedSeconds": 0.6255152999947313,
+      "stdout.logSha256": "52dc5dcc8e6319c3d2527e452bb3f24c19d97a90183fb8c0de78f0a55bf44c18",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "inventory-x86_64-unknown-linux-gnu-standard": {
+      "command": [
+        "{repo}/toolchains/installed/linux/bin/cargo",
+        "tree",
+        "--locked",
+        "--offline",
+        "-p",
+        "ariax-cli",
+        "--no-default-features",
+        "--features",
+        "standard",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "--edges",
+        "normal,build",
+        "--prefix",
+        "none",
+        "--format",
+        "{p}"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "RUSTC": "{repo}/toolchains/installed/linux/bin/rustc",
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "binarySha256": "828980723df339d62434390e9fb8ef8831036583343ae2316b7ab5646b5c1953",
+      "processSeconds": 0.6726166000007652,
+      "elapsedSeconds": 0.6727465000003576,
+      "stdout.logSha256": "0a5f3ed1d15bc370a9358a0cef9d717d54afbaa9fb3fa2e6296bd35b47f056ea",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "docs": {
+      "command": [
+        "/usr/bin/python3",
+        "-B",
+        "scripts/check_docs.py"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "RUSTC": "{repo}/toolchains/installed/linux/bin/rustc",
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "binarySha256": "17b78e0a93175e86f9ac03141924fd7a7f0c0c52e66b34bfa0de20ffef989df1",
+      "processSeconds": 0.6745240000018384,
+      "elapsedSeconds": 0.6747367000061786,
+      "stdout.logSha256": "27d7583389bbcb418d26cfa0a413875765aa0de0e0b0469a99f13cfdc84aacac",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "publication": {
+      "command": [
+        "/usr/bin/python3",
+        "-B",
+        "scripts/publication.py"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "RUSTC": "{repo}/toolchains/installed/linux/bin/rustc",
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "binarySha256": "17b78e0a93175e86f9ac03141924fd7a7f0c0c52e66b34bfa0de20ffef989df1",
+      "processSeconds": 0.6757054000045173,
+      "elapsedSeconds": 0.6758803999982774,
+      "stdout.logSha256": "1f2ae031b96c44e26b09a19b752facedafbd38b12f0b64d1fb2b8939f6b6d1d6",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "format": {
+      "command": [
+        "{repo}/toolchains/installed/linux/bin/cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "RUSTC": "{repo}/toolchains/installed/linux/bin/rustc",
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "binarySha256": "828980723df339d62434390e9fb8ef8831036583343ae2316b7ab5646b5c1953",
+      "processSeconds": 3.164944399992237,
+      "elapsedSeconds": 3.1650842999952147,
+      "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "whitespace": {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "passed": true,
+      "timeoutSeconds": 60,
+      "expectedTests": null,
+      "exitCode": 0,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "RUSTC": "{repo}/toolchains/installed/linux/bin/rustc",
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "processSeconds": 0.06867180000699591,
+      "elapsedSeconds": 0.06877690000692382,
+      "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "rustRegressions": 8,
+  "pythonTests": 110,
+  "historicalReportsValidated": 11,
+  "samplerSmoke": {
+    "version": 1,
+    "intervalMs": 250,
+    "maxSamples": 512,
+    "maxBytes": 4194304,
+    "samples": 8,
+    "bytes": 6275,
+    "droppedSamples": 0,
+    "metricErrors": 32,
+    "writeError": null,
+    "maxCollectionUs": 6108,
+    "samplerCpuNs": 15625000,
+    "clockTicksPerSecond": 100,
+    "processDiscoveryIntervalMs": 1000,
+    "maxProcesses": 16,
+    "scope": "Sampled host and benchmark process-group counters; not overload attribution",
+    "host": "Linux-4.4.0-17763-Microsoft-x86_64-with-glibc2.41",
+    "benchmarkExecuted": false
+  },
+  "reportValidation": {
+    "rustGeneratedSyntheticFixture": {
+      "samples": 3,
+      "verificationCalls": 1,
+      "bursts": 3,
+      "maxBurstCalls": 2,
+      "maxBurstMs": 486,
+      "measuredBurstUs": 531000,
+      "measuredRoundTripUs": 130000,
+      "operations": {
+        "pause": {},
+        "bt.changeOption": {}
+      },
+      "burstTiming": {
+        "otherUs": 51000,
+        "primaryUs": 130000,
+        "verificationUs": 350000,
+        "version": 1,
+        "worstCompletedBurst": {
+          "burst": 2,
+          "elapsedNs": 486000000,
+          "elapsedUs": 486000,
+          "firstSampleIndex": 1,
+          "last": {
+            "durationUs": 350000,
+            "operation": "bt.changeOption",
+            "phase": "verification",
+            "sampleIndex": 1,
+            "startUs": 110000
+          },
+          "otherUs": 36000,
+          "primaryCalls": 1,
+          "primaryUs": 100000,
+          "slowest": {
+            "durationUs": 350000,
+            "operation": "bt.changeOption",
+            "phase": "verification",
+            "sampleIndex": 1,
+            "startUs": 110000
+          },
+          "startedUnixNs": 1791187200000000000,
+          "verificationCalls": 1,
+          "verificationUs": 350000
+        }
+      }
+    },
+    "legacyReports": [
+      {
+        "record": "phase6-benchmarks-2026-10-05.json",
+        "recordSha256": "6486093a536d9ff822008938efa666b8b10dd4c2b7440def6d8c634ead3556ca",
+        "scenario": "http",
+        "passed": true
+      },
+      {
+        "record": "phase6-benchmarks-2026-10-05.json",
+        "recordSha256": "6486093a536d9ff822008938efa666b8b10dd4c2b7440def6d8c634ead3556ca",
+        "scenario": "websocket",
+        "passed": true
+      },
+      {
+        "record": "phase6-benchmarks-2026-10-05.json",
+        "recordSha256": "6486093a536d9ff822008938efa666b8b10dd4c2b7440def6d8c634ead3556ca",
+        "scenario": "content-length",
+        "passed": true
+      },
+      {
+        "record": "phase6-benchmarks-2026-10-05.json",
+        "recordSha256": "6486093a536d9ff822008938efa666b8b10dd4c2b7440def6d8c634ead3556ca",
+        "scenario": "ndjson",
+        "passed": true
+      },
+      {
+        "record": "phase6-benchmarks-2026-10-05.json",
+        "recordSha256": "6486093a536d9ff822008938efa666b8b10dd4c2b7440def6d8c634ead3556ca",
+        "scenario": "administrative",
+        "passed": true
+      },
+      {
+        "record": "phase6-benchmarks-rerun-2026-10-05.json",
+        "recordSha256": "68d1895d634b74aac6024946383b70c96bce98b55cf4ac699798713f4c824141",
+        "scenario": "http",
+        "passed": true
+      },
+      {
+        "record": "phase6-benchmarks-rerun-2026-10-05.json",
+        "recordSha256": "68d1895d634b74aac6024946383b70c96bce98b55cf4ac699798713f4c824141",
+        "scenario": "websocket",
+        "passed": true
+      },
+      {
+        "record": "phase6-benchmarks-rerun-2026-10-05.json",
+        "recordSha256": "68d1895d634b74aac6024946383b70c96bce98b55cf4ac699798713f4c824141",
+        "scenario": "content-length",
+        "passed": true
+      },
+      {
+        "record": "phase6-benchmarks-rerun-2026-10-05.json",
+        "recordSha256": "68d1895d634b74aac6024946383b70c96bce98b55cf4ac699798713f4c824141",
+        "scenario": "ndjson",
+        "passed": true
+      },
+      {
+        "record": "phase6-benchmarks-rerun-2026-10-05.json",
+        "recordSha256": "68d1895d634b74aac6024946383b70c96bce98b55cf4ac699798713f4c824141",
+        "scenario": "administrative",
+        "passed": true
+      },
+      {
+        "record": "phase6-benchmarks-rerun-2026-10-05.json",
+        "recordSha256": "68d1895d634b74aac6024946383b70c96bce98b55cf4ac699798713f4c824141",
+        "scenario": "mixed-bt",
+        "passed": true
+      }
+    ],
+    "passed": true,
+    "scope": "Serializer/validator interoperability and historical compatibility; no new performance measurement"
+  },
+  "licenseValidation": {
+    "passed": true,
+    "workspacePackageCount": 11,
+    "license": "MIT",
+    "publishEnabled": false,
+    "cargoLockSha256": "0a9174da9937800e0e077561527d2c9002dffe06e14e6d6534568bed1723d876",
+    "licenseSha256": "02d793ad223d8c3054cffc27da1601c73e507e0a78c38ac9e624e9c648fc6b1e",
+    "metadataSha256": "9e24a6eb358d042acc58879f30dd792f23eb0ff763d7cb6bcb647c2682020d88"
+  },
+  "noticeValidation": {
+    "passed": true,
+    "packages": 315,
+    "uniqueNoticeTexts": 237,
+    "noticeReferences": 605,
+    "bundleTargets": 8,
+    "noticeArtifactSha256": "b0dbb4edb437570d05f564f09cf25666c3cdc61edfc9472269144f3cbe78512e"
+  },
+  "retainedFailedToolingAttempts": {
+    "notice-assembly": {
+      "command": [
+        "python3",
+        "-B",
+        "{evidence}/assemble-notices.py"
+      ],
+      "passed": false,
+      "timeoutSeconds": 90.0,
+      "expectedTests": null,
+      "exitCode": 1,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "{evidence}"
+      },
+      "processSeconds": 4.361793000003672,
+      "error": "command exited 1",
+      "elapsedSeconds": 4.361946899996838,
+      "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr.logSha256": "6b01481accfb05028617b4108eb22edc7fddcc0007d138d21dd677103aa78f2f"
+    },
+    "notice-assembly-final": {
+      "command": [
+        "python3",
+        "-B",
+        "{evidence}/assemble-notices.py"
+      ],
+      "passed": false,
+      "timeoutSeconds": 90.0,
+      "expectedTests": null,
+      "exitCode": 1,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "TMPDIR": "{evidence}"
+      },
+      "processSeconds": 5.209262699994724,
+      "error": "command exited 1",
+      "elapsedSeconds": 5.210200100002112,
+      "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr.logSha256": "406f5826976688fef74c8f237339b5c0128432bd98d0843d0efdfd6d8741e75e"
+    },
+    "staged-whitespace": {
+      "command": [
+        "git",
+        "diff",
+        "--cached",
+        "--check"
+      ],
+      "passed": false,
+      "timeoutSeconds": 60,
+      "expectedTests": null,
+      "exitCode": 2,
+      "cleanup": "owned-process-group-terminated",
+      "environment": {
+        "RUSTC": "{repo}/toolchains/installed/linux/bin/rustc",
+        "TMPDIR": "{evidence}",
+        "TEMP": "{evidence}"
+      },
+      "processSeconds": 0.06639390000782441,
+      "error": "command exited 2",
+      "elapsedSeconds": 0.06651800000690855,
+      "stdout.logSha256": "dfa470a4cf0901c272f9d704539a2af56a2d006a244f9b4e2a7787185725fab4",
+      "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "toolingCorrections": [
+    "Exclude the binary libwinapi_oemlicense.a from filename-based text collection.",
+    "Record winapi target import crate license declaration, Apache-2.0 choice and unresolved provenance explicitly.",
+    "Preserve OpenSSL AUTHORS.md seven-equals heading exactly; configure 32-character merge markers only for the notice draft."
+  ],
+  "rawArtifactSha256": {
+    "assemble-notices-attempt1.py": "46264598e5cd6d5d94df9d302afc8341092886983890ddc45dd3775af541c346",
+    "assemble-notices-attempt2.py": "301e02d625a761132ad5f607cc5851ad84def845a727058fa95d4bf366f37b53",
+    "assemble-notices.py": "9baa993699d1144f8c73a3d7b57fee4efb3a1b9ba44ea8a12e98b38b44b5305e",
+    "collect-evidence.py": "332a6c4cd29e9b10d2376f6143a875a6350d290ef0312be5c26394ecbe2584ba",
+    "fetch-alternate.py": "1d2171a6b4390d792da2981e5f14a35bca035026f48d77f6301404fe1ebf01a6",
+    "fetch-licenses.py": "3a9a4ca18f4d65e296ad31969a05e555d816705b258044fe876ebdc29fd6730d",
+    "final-checks.py": "4d0b64f20bf213ac36a01891508f0578f308224b8b713c20a0277ee33829ce6c",
+    "inventory.py": "ee7fc2078dcdc478202cdc1284a75c73e706edf4592731377849c01e262a9014",
+    "rust-checks.py": "31c6af2efee1a13787fe84bd8b9cb6d95740ba447925e2c02b7a314a1a3dac7d",
+    "telemetry-smoke.py": "cd42e13a101552a8721037aa65e545f7850578e8a75efdbe0a1c2dd8b4717398",
+    "verify-notices.py": "b2f44c1792ea26464a48a64644d02754634524c5d873eb7a0e48373b27261b3a",
+    "verify-project-license.py": "57637d867a4928f3c6a6477be18866b076b72e8b7760a5418939ca519cc29b96",
+    "verify-reports.py": "3cfa1398768eec731b1a9c46d02a0bc948734fcc03fe8ce22615b167f576cab1"
+  },
+  "hostTelemetrySha256": "4138ffa0e4747087b8d3116879d27da6cd1258b0c3f7719acf22cd0c5d8ff130",
+  "nativeBuilderSha256": "311fd9d1cfc31d603cdfc107bbe233474899d02bda00445802cfa333c2d2a2ca",
+  "licenseInventory": "phase7-release-license-inventory-2026-10-05.json",
+  "remaining": [
+    "Native Linux mixed-burst stability and supported attribution, including observed telemetry overhead.",
+    "Applicable release-candidate CI/platform matrix, remaining Rust race/kernel/strict-Unix and hardware recovery evidence.",
+    "Final package/runtime and platform-specific notices, MPL covered source distribution, IANA/aria2 data scope and listed provenance items."
+  ],
+  "benchmarkExecuted": false,
+  "fullWorkspaceBuildExecuted": false,
+  "nativeDependenciesRebuilt": false,
+  "ciDispatched": false,
+  "pushed": false,
+  "releaseApproved": false
+}

@@ -3,6 +3,7 @@ name = "ariax-bt-libtorrent-sys"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish.workspace = true
 links = "ariax_libtorrent"
 

@@ -15,7 +15,7 @@ use std::sync::{
     Arc, Mutex, OnceLock,
     atomic::{AtomicUsize, Ordering},
 };
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{
     AsyncBufReadExt as _, AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, BufReader,
 };
@@ -1307,6 +1307,7 @@ async fn measure(scenario: &str) -> Result<()> {
             observe(&peers.barrier(&mut client, true).await?)?;
         }
         let mut timing = BurstTiming::new(samples.len());
+        let started_unix_ns = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let start = Instant::now();
         let mut count = 0;
         while samples.len() < workload().samples
@@ -1458,7 +1459,7 @@ async fn measure(scenario: &str) -> Result<()> {
             }
         }
         let elapsed = start.elapsed();
-        completed_bursts.record(scenario, bursts + 1, elapsed, timing)?;
+        completed_bursts.record(scenario, bursts + 1, started_unix_ns, elapsed, timing)?;
         max_burst_calls = max_burst_calls.max(count);
         max_burst = max_burst.max(elapsed);
         measured_bursts += elapsed;

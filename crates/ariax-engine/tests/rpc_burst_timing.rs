@@ -99,7 +99,13 @@ fn completed_bursts_keep_the_longest_snapshot_and_separate_all_totals() {
         Duration::from_millis(20),
     );
     completed
-        .record("mixed-bt", 1, Duration::from_millis(30), first)
+        .record(
+            "mixed-bt",
+            1,
+            1_791_187_200_000_000_000,
+            Duration::from_millis(30),
+            first,
+        )
         .unwrap();
     let mut longest = BurstTiming::new(1);
     longest.record(
@@ -117,7 +123,13 @@ fn completed_bursts_keep_the_longest_snapshot_and_separate_all_totals() {
         Duration::from_millis(350),
     );
     completed
-        .record("mixed-bt", 2, Duration::from_millis(486), longest)
+        .record(
+            "mixed-bt",
+            2,
+            1_791_187_200_000_000_000,
+            Duration::from_millis(486),
+            longest,
+        )
         .unwrap();
     let mut last = BurstTiming::new(2);
     last.record(
@@ -128,7 +140,13 @@ fn completed_bursts_keep_the_longest_snapshot_and_separate_all_totals() {
         Duration::from_millis(10),
     );
     completed
-        .record("mixed-bt", 3, Duration::from_millis(15), last)
+        .record(
+            "mixed-bt",
+            3,
+            1_791_187_200_000_000_000,
+            Duration::from_millis(15),
+            last,
+        )
         .unwrap();
     let report = completed.report();
     assert_eq!(report["primaryUs"], 130_000);
@@ -137,6 +155,7 @@ fn completed_bursts_keep_the_longest_snapshot_and_separate_all_totals() {
     assert_eq!(
         report["worstCompletedBurst"],
         json!({
+            "startedUnixNs": 1_791_187_200_000_000_000_u64,
             "burst": 2, "elapsedUs": 486_000, "elapsedNs": 486_000_000,
             "firstSampleIndex": 1, "primaryCalls": 1, "verificationCalls": 1,
             "primaryUs": 100_000, "verificationUs": 350_000, "otherUs": 36_000,
@@ -158,6 +177,7 @@ fn exact_ties_keep_the_first_burst_and_rejected_bursts_leave_totals_unchanged() 
             .record(
                 "http",
                 burst,
+                1_791_187_200_000_000_000,
                 Duration::from_millis(500),
                 BurstTiming::new(burst - 1),
             )
@@ -171,6 +191,7 @@ fn exact_ties_keep_the_first_burst_and_rejected_bursts_leave_totals_unchanged() 
             .record(
                 "http",
                 3,
+                1_791_187_200_000_000_000,
                 Duration::from_millis(500) + Duration::from_nanos(1),
                 BurstTiming::new(2)
             )
@@ -187,7 +208,13 @@ fn exact_ties_keep_the_first_burst_and_rejected_bursts_leave_totals_unchanged() 
     );
     assert!(
         completed
-            .record("http", 3, Duration::from_millis(1), invalid)
+            .record(
+                "http",
+                3,
+                1_791_187_200_000_000_000,
+                Duration::from_millis(1),
+                invalid
+            )
             .is_err()
     );
     assert_eq!(completed.report(), before);
@@ -213,7 +240,13 @@ fn completed_totals_preserve_submicrosecond_work_before_final_rounding() {
             Duration::from_nanos(900),
         );
         completed
-            .record("http", burst, Duration::from_nanos(2_700), timing)
+            .record(
+                "http",
+                burst,
+                1_791_187_200_000_000_000,
+                Duration::from_nanos(2_700),
+                timing,
+            )
             .unwrap();
     }
     let report = completed.report();
@@ -226,4 +259,19 @@ fn completed_totals_preserve_submicrosecond_work_before_final_rounding() {
     assert_eq!(worst["primaryUs"], 0);
     assert_eq!(worst["verificationUs"], 0);
     assert_eq!(worst["otherUs"], 0);
+}
+
+#[test]
+fn failed_burst_retains_the_wall_clock_correlation_anchor() {
+    let error = CompletedBursts::default()
+        .record(
+            "mixed-bt",
+            26,
+            1_791_187_200_000_000_000,
+            Duration::from_micros(530_097),
+            BurstTiming::new(9517),
+        )
+        .unwrap_err();
+    assert!(error.contains("burst=26 firstSampleIndex=9517"));
+    assert!(error.ends_with("burstStartedUnixNs=1791187200000000000"));
 }
