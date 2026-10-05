@@ -120,8 +120,14 @@ must not inherit a prior artifact's independent-reproducibility result.
 The [remapping follow-up](../../performance-evidence/phase7-release-paths-2026-10-05.md)
 rebuilds all four local drafts and verifies zero known absolute-path matches,
 the expected remapped dependency paths, unchanged imports and CLI startup.
-Their new manifests leave independent-repeat results unset. Clean-host and
-candidate-matrix acceptance remain separate gates.
+The [verification follow-up](../../performance-evidence/phase7-release-verification-2026-10-05.md)
+now establishes byte-for-byte matches for all four remapped binaries, using new
+target/temp directories on the same host with a shared source cache/toolchain.
+The manifests retain both build identities. Reduced-environment package checks
+also pass on WSL1 and native Windows, including live RPC and SQLite reopening.
+Linux processes load the configured system preload; Windows observations cover
+only the exercised module paths. Fresh-OS, minimum-OS and candidate-matrix
+acceptance remain separate gates.
 
 `full` and `compat` have planned layouts with BT/native notice requirements.
 They need a matching release binary and actual runtime import inspection before

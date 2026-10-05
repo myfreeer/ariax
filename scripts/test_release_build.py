@@ -101,6 +101,31 @@ class ReleaseBuildTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 rb.verify_cache_sources(previous, changed)
 
+    def test_comparison_holds_epoch_and_rejects_incomplete_or_changed_reference(self):
+        import copy
+        sources = {'Cargo.lock': 'lock', 'scripts/release_build.py': 'current'}
+        record = {'passed': True, 'target': rb.LINUX, 'sourceHashes': sources,
+                  'sourceDateEpoch': '123', 'builds': [{'bundle': 'minimal'}, {'bundle': 'standard'}]}
+        self.assertEqual(rb.comparison_reference(record, rb.LINUX, sources), '123')
+        for key, value in (('passed', False), ('target', rb.WINDOWS), ('sourceDateEpoch', 'invalid'),
+                           ('builds', [{'bundle': 'minimal'}])):
+            changed = copy.deepcopy(record); changed[key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                rb.comparison_reference(changed, rb.LINUX, sources)
+        with self.assertRaises(ValueError):
+            rb.comparison_reference(record, rb.LINUX, {'Cargo.lock': 'different'})
+
+    def test_comparison_flags_allow_changed_roots_but_not_changed_destinations_or_link_options(self):
+        first = rb.remap_flags(self.roots(True), True)
+        roots = {k:v.replace('build space', 'independent build') for k,v in self.roots(True).items()}
+        repeat = rb.remap_flags(roots, True)
+        self.assertEqual(rb.comparison_flags(first), rb.comparison_flags(repeat))
+        repeat['rust'][-1] = 'link-arg=-Wl,--insert-timestamp'
+        self.assertNotEqual(rb.comparison_flags(first), rb.comparison_flags(repeat))
+        repeat = rb.remap_flags(roots, True)
+        repeat['native'][0] = repeat['native'][0].replace('=/ariax', '=/different')
+        self.assertNotEqual(rb.comparison_flags(first), rb.comparison_flags(repeat))
+
     def test_windows_inventory_rejects_extra_or_missing_dlls(self):
         output = '\n'.join('DLL Name: ' + name.upper() for name in rb.rm.WINDOWS_SYSTEM)
         self.assertEqual(rb.runtime_inventory(output, True)['additionalRuntimeFiles'], [])

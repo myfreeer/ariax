@@ -126,6 +126,25 @@ def verify_cache_sources(previous, current):
             {k: v for k, v in current.items() if k not in excluded}, 'cached build source drift')
 
 
+def comparison_flags(flags):
+    result = {}
+    for key, prefix in (('rust', '--remap-path-prefix='), ('native', '-ffile-prefix-map=')):
+        values = flags[key]
+        result[key] = {'destinations': sorted(value.rsplit('=', 1)[1] for value in values if value.startswith(prefix)),
+                       'options': [value for value in values if not value.startswith(prefix)]}
+    return result
+
+
+def comparison_reference(record, target, sources):
+    require(record.get('passed') is True and record.get('target') == target, 'passing matching reference required')
+    verify_cache_sources(record['sourceHashes'], sources)
+    require(re.fullmatch(r'[0-9]+', record.get('sourceDateEpoch', '')) is not None, 'invalid reference epoch')
+    builds = record.get('builds', [])
+    require(len(builds) == 2 and {row['bundle'] for row in builds} == {'minimal', 'standard'},
+            'complete reference bundle set required')
+    return record['sourceDateEpoch']
+
+
 def prepare(args, root=ROOT):
     windows = os.name == 'nt'
     require(windows or sys.platform == 'linux', 'only native Linux and Windows-GNU are supported')
@@ -133,6 +152,8 @@ def prepare(args, root=ROOT):
     require(args.output.is_absolute() and args.toolchain.is_absolute() and args.cargo_home.is_absolute(),
             'absolute output, toolchain and Cargo-home paths required')
     require(args.cargo_home.is_dir() and args.toolchain.is_dir(), 'existing toolchain and cache required')
+    require(0 < args.build_timeout <= 1800, 'build timeout must be between 1 and 1800 seconds')
+    require(not (args.compare_record and args.reuse_cache), 'independent comparison cannot reuse a target cache')
     require(args.output.parent.is_dir() and not args.output.exists(), 'fresh output directory required')
     minimum_free = (768 if args.reuse_cache else 1536) * 1024 ** 2
     require(shutil.disk_usage(args.output.parent).free >= minimum_free, 'insufficient space for build intermediates')
@@ -150,8 +171,12 @@ def prepare(args, root=ROOT):
             require(path.resolve() == expected.resolve() and path.is_dir() and not path.is_symlink(),
                     'cache directory identity mismatch')
             roots[key] = str(path)
-    epoch = subprocess.check_output(['git', 'show', '-s', '--format=%ct', 'HEAD'], cwd=root).decode().strip()
+    reference = json.loads(read_utf8(args.compare_record)) if args.compare_record else None
+    epoch = comparison_reference(reference, target, source_hashes(root)) if reference else subprocess.check_output(
+        ['git', 'show', '-s', '--format=%ct', 'HEAD'], cwd=root).decode().strip()
     env, flags = build_environment(os.environ, roots, args.toolchain, windows, epoch)
+    if reference:
+        require(comparison_flags(flags) == comparison_flags(reference['flags']), 'reference build option drift')
     if previous:
         require(flags == previous['flags'] and epoch == previous['sourceDateEpoch'] and
                 all(env.get(k) == v for k, v in previous['environment'].items()), 'cached build environment drift')
@@ -170,6 +195,10 @@ def prepare(args, root=ROOT):
         record['cacheReuse'] = {'recordSha256': h.digest(args.reuse_cache / 'result.json'),
                                'previousDriverSha256': previous['sourceHashes']['scripts/release_build.py'],
                                'scope': 'Same compiled sources, flags and tool identities; Python driver repair only.'}
+    if reference:
+        record['independentComparison'] = {'referenceRecordSha256': h.digest(args.compare_record),
+            'referenceSourceCommit': reference['sourceCommit'], 'referenceDriverSha256': reference['sourceHashes']['scripts/release_build.py'],
+            'freshTarget': True, 'freshTemporaryDirectory': True, 'sharedSourceCacheAndToolchain': True}
     try:
         def checked(command, name, timeout=20):
             result = h.run(command, args.output / name, timeout=timeout, env=env, cwd=root)
@@ -183,23 +212,31 @@ def prepare(args, root=ROOT):
         require(machine == ('x86_64-w64-mingw32' if windows else 'x86_64-linux-gnu'),
                 'native compiler target mismatch')
         record['cargoSha256'] = h.digest(cargo)
-        if previous:
-            require(record['cargoSha256'] == previous['cargoSha256'] and
-                    record['compiler']['binarySha256'] == previous['compiler']['binarySha256'] and
-                    record['nativeCompiler']['binarySha256'] == previous['nativeCompiler']['binarySha256'],
-                    'cached compiler identity drift')
+        for prior in (previous, reference):
+            if prior:
+                require(record['cargoSha256'] == prior['cargoSha256'] and
+                        record['compiler']['binarySha256'] == prior['compiler']['binarySha256'] and
+                        record['nativeCompiler']['binarySha256'] == prior['nativeCompiler']['binarySha256'],
+                        'compiler identity drift')
         for bundle in ('minimal', 'standard'):
             item = {'bundle': bundle}
             record['builds'].append(item)
             h.save(args.output / 'result.json', record)
             command = [cargo, 'build', '--locked', '--offline', '-p', 'ariax-cli',
                        '--no-default-features', '--features', bundle, '--profile', 'release-cli']
-            item['build'] = checked(command, bundle + '/build', timeout=600)
+            item['build'] = checked(command, bundle + '/build', timeout=args.build_timeout)
             binary = args.output / bundle / ('ariax' + suffix)
             shutil.copyfile(Path(roots['target']) / 'release-cli' / binary.name, binary)
             binary.chmod(0o755)
             item.update(binarySha256=h.digest(binary), bytes=binary.stat().st_size,
                         pathAudit=rm.audit_binary_paths(binary))
+            if reference:
+                prior = next(row for row in reference['builds'] if row['bundle'] == bundle)
+                prior_binary = args.compare_record.parent / bundle / binary.name
+                require(h.digest(prior_binary) == prior['binarySha256'], 'reference binary drift')
+                item['referenceBinarySha256'] = prior['binarySha256']
+                item['matchesIndependentBuild'] = item['binarySha256'] == prior['binarySha256']
+                require(item['matchesIndependentBuild'], 'independent binary comparison failed')
             require(item['pathAudit']['passed'], 'binary retains absolute source paths')
             inspection = ['objdump', '-p', str(binary)] if windows else [
                 'readelf', '-l', '-d', '--version-info', str(binary)]
@@ -238,6 +275,8 @@ def main():
     parser.add_argument('--output', type=Path, required=True, help='fresh absolute directory on the temporary volume')
     parser.add_argument('--prune-target', action='store_true')
     parser.add_argument('--reuse-cache', type=Path, help='prior preparation directory with identical compiled inputs and flags')
+    parser.add_argument('--compare-record', type=Path, help='passing reference record for an independent fresh-target comparison')
+    parser.add_argument('--build-timeout', type=int, default=600, help='per-bundle seconds, up to 1800; not a performance threshold')
     args = parser.parse_args()
     result = prepare(args)
     print(json.dumps({key: result[key] for key in ('passed', 'target', 'releaseApproved')}))

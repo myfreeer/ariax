@@ -21,9 +21,13 @@ rejects unsafe or duplicate paths and unknown runtime dependencies, and writes
 per-package manifests and checksums. It never builds, executes the binaries,
 dispatches CI or publishes a package.
 
-The four rebuilt drafts pass their path and runtime inspections. Their manifest
-records do not claim an independent repeat build. Earlier binaries and failed
-path audits remain in the prior evidence and Git history.
+The four rebuilt drafts pass their path and runtime inspections and match
+[independent local rebuilds](../performance-evidence/phase7-release-verification-2026-10-05.md).
+Compilation uses separate target/temp directories with the same installed
+toolchain and source cache. Reduced-environment checks pass on both current
+hosts; Linux also loads its configured system preload. These checks do not
+establish fresh-OS or minimum-OS acceptance. Earlier binaries and failed path
+audits remain in the prior evidence and Git history.
 
 The conservative dependency notice collection includes normal/build dependency
 closures across all eight bundles. It can contain unused source notices and

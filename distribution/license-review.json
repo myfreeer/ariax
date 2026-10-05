@@ -220,10 +220,21 @@
         "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
       }
     },
-    "pathRemapEvidence": "performance-evidence/phase7-release-paths-2026-10-05.json"
+    "pathRemapEvidence": "performance-evidence/phase7-release-paths-2026-10-05.json",
+    "independentComparison": {
+      "evidence": "performance-evidence/phase7-release-verification-2026-10-05.json",
+      "matchedBinaries": 4,
+      "scope": "Same-host independent target/temp builds of remapped Linux/Windows-GNU minimal/standard; shared production sources, source cache and installed toolchain."
+    },
+    "hostSmoke": {
+      "evidence": "performance-evidence/phase7-release-verification-2026-10-05.json",
+      "functionalPassed": true,
+      "freshOsAcceptance": false,
+      "linuxHostExtra": "/usr/local/lib/libnanosleep.so",
+      "windowsObservedModules": "Application plus DLLs under Windows system directories; exercised paths only."
+    }
   },
   "remaining": [
-    "Independent reproducibility checks for the newly remapped binaries; one fresh build per bundle has passed path/import/startup inspection.",
     "Candidate source/build identity and final release matrix.",
     "Actual full/compat binary imports and native/platform notices.",
     "Clean-host packaging tests for intended supported OS versions."

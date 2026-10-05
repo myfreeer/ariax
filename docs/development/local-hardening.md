@@ -165,7 +165,7 @@ Linux and Windows-GNU `minimal`/`standard` bundles. Supply `--toolchain` pointin
 to the pinned distribution's `bin`, `--cargo-home` for the existing offline
 cache, and a fresh absolute `--output` directory on the temporary volume.
 Run Windows preparation through MSYS2 with MinGW64 first on `PATH`, as above.
-The helper uses two workers and a ten-minute timeout per bundle, checks the
+The helper uses two workers and a ten-minute default timeout per bundle, checks the
 toolchain host, and records source hashes, compiler identity and build flags.
 It replaces inherited Rust flags with encoded arguments and supplies quoted
 C/C++ prefix maps for repository, dependency-cache, target and temporary roots.
@@ -186,6 +186,33 @@ only this uncompiled Python driver's hash may differ. Both driver identities
 and the prior result hash remain recorded. This is cache reuse, not an
 independent reproducibility build. With `--prune-target`, successful completion
 can then prune those reused intermediates while preserving the failed record.
+
+For an independent comparison, supply `--compare-record PREVIOUS/result.json`
+with a fresh output directory and no cache reuse. The helper verifies the
+compiled sources and compiler identities, preserves the reference epoch,
+checks equivalent remap destinations/options, and compares both executable
+hashes. Compilation uses new target and temporary directories. The source cache
+and installed toolchain remain shared. `--build-timeout SECONDS` allows up to
+1,800 seconds per bundle on a busy host; build duration is not a performance
+acceptance threshold. A timeout or mismatched binary remains failed evidence.
+
+A reduced process environment and isolated package/state directories can expose
+accidental workstation dependencies without an idle host. Inspect loaded
+libraries as well as import tables: system-wide preloads and injected DLLs can
+survive environment filtering. These checks do not establish fresh-OS or
+minimum-supported-OS acceptance. Keep their host limitations explicit.
+
+After staging packages, run `python3 -B scripts/release_smoke.py --packages
+ABSOLUTE_PACKAGE_ROOT --output FRESH_ABSOLUTE_OUTPUT` on each native platform.
+Use MSYS2's native Python for Windows. The helper verifies the file/checksum
+inventory, clears inherited developer paths and environment overrides, and
+uses isolated working, temporary and state directories. It checks help, live
+NDJSON version/stat queries, unknown-method rejection, EOF shutdown and database
+reopening. While RPC runs, it records executable mappings on Linux or loaded
+modules on Windows, including host additions. These observations cover the
+exercised paths only; they do not establish every delayed library load or
+protocol operation. Results always leave fresh-OS acceptance and release approval
+false.
 
 The generated inventory remains the parity authority. Keep Ariax parallel to
 aria2 while reviewed handler coverage is incomplete; do not publish an

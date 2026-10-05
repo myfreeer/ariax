@@ -22,14 +22,14 @@
     {
       "source": "distribution/package-readme.txt",
       "destination": "README.txt",
-      "bytes": 1719,
-      "sha256": "71ba0cee14893d51209c7c25bc6509763079e267cebcbef5ba60babfd926f435"
+      "bytes": 1913,
+      "sha256": "8315741f2fc3cbcf7bceff1495dd3cfee5baa37c0070b0b155c08931bc07565c"
     },
     {
       "source": "distribution/license-review.json",
       "destination": "license-review.json",
-      "bytes": 9259,
-      "sha256": "464cfc8b604a3ae87179a46dfebccd676bfece1e58b0e8bd162d53923e116a73"
+      "bytes": 9785,
+      "sha256": "de97657cabfae273969d0e6e100c651cbf241dc8da789b86855fc5da3d65c5fb"
     },
     {
       "source": "performance-evidence/phase7-third-party-notices-2026-10-05.txt",
@@ -133,11 +133,11 @@
         "sourceCommit": "473045d78e9f4a35a058c6d3333665da393287c8",
         "buildRecordSha256": "48301aa5c917da713c03efc6b7af9f7d71f889aaf505315a2bbfc23cd271882f",
         "preparationRecordSha256": "ab68694bd9bad00391d3eb160ab6def719b808f19547a51fcce24dd9ba07e308",
-        "repeatBuildRecordSha256": null,
-        "independentBuildMatched": null,
+        "repeatBuildRecordSha256": "fcdd9f26feea314cd21a09bd82785efd0c2fcb22b0bd662b59d67dad5daed034",
+        "independentBuildMatched": true,
         "sourceDateEpoch": "1791193771",
         "evidence": "performance-evidence/phase7-release-paths-2026-10-05.json",
-        "sourceScope": "Fresh local build of the recorded production sources with the recorded remap helper; one build only, not approved release acceptance.",
+        "sourceScope": "Two builds with separate target/temp directories match byte for byte; production inputs, source cache and installed toolchain are shared. Not final candidate acceptance.",
         "supersedesBinarySha256": "7aa971b7df006d7540a0687af0d943995400a391183bae0ade90cd910173058c",
         "pathAudit": {
           "passed": true,
@@ -148,7 +148,9 @@
             "unixHome": 0
           },
           "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
-        }
+        },
+        "repeatPreparationRecordSha256": "bce0420644cb13b91cc35c5c75e3657d30b944743e0a35c5574d15edda211d14",
+        "comparisonEvidence": "performance-evidence/phase7-release-verification-2026-10-05.json"
       },
       "runtime": {
         "systemLibraries": [
@@ -348,9 +350,17 @@
       ],
       "nativeDependencies": [],
       "remaining": [
-        "Retained binary contains absolute Cargo-cache paths; remap dependency sources in a candidate build and repeat binary inspection.",
-        "Release-candidate build identity and applicable acceptance matrix; clean-host package smoke."
-      ]
+        "Release-candidate build identity and applicable acceptance matrix.",
+        "Fresh-OS package acceptance on intended supported versions; current-host checks cover only exercised operations."
+      ],
+      "hostSmoke": {
+        "evidence": "performance-evidence/phase7-release-verification-2026-10-05.json",
+        "recordSha256": "0d74225c59fd144ab92cd7b3dd6322ab8c4e16606ad7771a9284b48d0d103442",
+        "functionalPassed": true,
+        "onlySystemModulesObserved": false,
+        "freshOsAcceptance": false,
+        "scope": "Reduced environment on current development host; help, NDJSON RPC, EOF shutdown, SQLite reopening and observed loaded modules."
+      }
     },
     {
       "id": "x86_64-unknown-linux-gnu-standard",
@@ -380,11 +390,11 @@
         "sourceCommit": "473045d78e9f4a35a058c6d3333665da393287c8",
         "buildRecordSha256": "0965bfec7bfb48e2dd783558587a7d18b4b19c865e41bf8e768a711672d7df21",
         "preparationRecordSha256": "ab68694bd9bad00391d3eb160ab6def719b808f19547a51fcce24dd9ba07e308",
-        "repeatBuildRecordSha256": null,
-        "independentBuildMatched": null,
+        "repeatBuildRecordSha256": "2999fb18c0e201d546bd13b2a544985567a7f08cddd4c46f8dd39ca7af778221",
+        "independentBuildMatched": true,
         "sourceDateEpoch": "1791193771",
         "evidence": "performance-evidence/phase7-release-paths-2026-10-05.json",
-        "sourceScope": "Fresh local build of the recorded production sources with the recorded remap helper; one build only, not approved release acceptance.",
+        "sourceScope": "Two builds with separate target/temp directories match byte for byte; production inputs, source cache and installed toolchain are shared. Not final candidate acceptance.",
         "supersedesBinarySha256": "8cc2b1db535bec1639bcc2a7c114eb0b0dc245ea059e7c0eaf7e312292acbedf",
         "pathAudit": {
           "passed": true,
@@ -395,7 +405,9 @@
             "unixHome": 0
           },
           "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
-        }
+        },
+        "repeatPreparationRecordSha256": "bce0420644cb13b91cc35c5c75e3657d30b944743e0a35c5574d15edda211d14",
+        "comparisonEvidence": "performance-evidence/phase7-release-verification-2026-10-05.json"
       },
       "runtime": {
         "systemLibraries": [
@@ -696,9 +708,17 @@
       ],
       "nativeDependencies": [],
       "remaining": [
-        "Retained binary contains absolute Cargo-cache paths; remap dependency sources in a candidate build and repeat binary inspection.",
-        "Release-candidate build identity and applicable acceptance matrix; clean-host package smoke."
-      ]
+        "Release-candidate build identity and applicable acceptance matrix.",
+        "Fresh-OS package acceptance on intended supported versions; current-host checks cover only exercised operations."
+      ],
+      "hostSmoke": {
+        "evidence": "performance-evidence/phase7-release-verification-2026-10-05.json",
+        "recordSha256": "0d74225c59fd144ab92cd7b3dd6322ab8c4e16606ad7771a9284b48d0d103442",
+        "functionalPassed": true,
+        "onlySystemModulesObserved": false,
+        "freshOsAcceptance": false,
+        "scope": "Reduced environment on current development host; help, NDJSON RPC, EOF shutdown, SQLite reopening and observed loaded modules."
+      }
     },
     {
       "id": "x86_64-unknown-linux-gnu-full",
@@ -1422,11 +1442,11 @@
         "sourceCommit": "473045d78e9f4a35a058c6d3333665da393287c8",
         "buildRecordSha256": "0a52a3a84730d54a27b16efee8d1f975f29de2b9373318ce4ef914f38f6708ef",
         "preparationRecordSha256": "3c2e2dc50d5460c39934b085676877ae86959a6c241661b7506119c6ed3e11b4",
-        "repeatBuildRecordSha256": null,
-        "independentBuildMatched": null,
+        "repeatBuildRecordSha256": "8d1b8ab89cb0fe7198863a31b1892abae80cf7770d716661871d96031f6edcd1",
+        "independentBuildMatched": true,
         "sourceDateEpoch": "1791193771",
         "evidence": "performance-evidence/phase7-release-paths-2026-10-05.json",
-        "sourceScope": "Fresh local build of the recorded production sources with the recorded remap helper; one build only, not approved release acceptance.",
+        "sourceScope": "Two builds with separate target/temp directories match byte for byte; production inputs, source cache and installed toolchain are shared. Not final candidate acceptance.",
         "supersedesBinarySha256": "a53b2b017c24d0ece2fc50271d18339fb381be17593f4315172f5fe0c02b6051",
         "pathAudit": {
           "passed": true,
@@ -1437,7 +1457,9 @@
             "unixHome": 0
           },
           "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
-        }
+        },
+        "repeatPreparationRecordSha256": "184eb91893f77b1f66c8352f1348e3ab90d162567d58cd6e0f2ad55687ca2375",
+        "comparisonEvidence": "performance-evidence/phase7-release-verification-2026-10-05.json"
       },
       "runtime": {
         "systemLibraries": [
@@ -1649,9 +1671,17 @@
       ],
       "nativeDependencies": [],
       "remaining": [
-        "Retained binary contains absolute Cargo-cache paths; remap dependency sources in a candidate build and repeat binary inspection.",
-        "Release-candidate build identity and applicable acceptance matrix; clean-host package smoke."
-      ]
+        "Release-candidate build identity and applicable acceptance matrix.",
+        "Fresh-OS package acceptance on intended supported versions; current-host checks cover only exercised operations."
+      ],
+      "hostSmoke": {
+        "evidence": "performance-evidence/phase7-release-verification-2026-10-05.json",
+        "recordSha256": "fbb16cf506e2eb8f7932701b8766789de2a891b6cb2295f79cb3001452931e79",
+        "functionalPassed": true,
+        "onlySystemModulesObserved": true,
+        "freshOsAcceptance": false,
+        "scope": "Reduced environment on current development host; help, NDJSON RPC, EOF shutdown, SQLite reopening and observed loaded modules."
+      }
     },
     {
       "id": "x86_64-pc-windows-gnu-standard",
@@ -1717,11 +1747,11 @@
         "sourceCommit": "473045d78e9f4a35a058c6d3333665da393287c8",
         "buildRecordSha256": "4a51fde449f7386a58f7ce60af5e1dd9da710babc7259d0fbdffdf9c58ff37a6",
         "preparationRecordSha256": "3c2e2dc50d5460c39934b085676877ae86959a6c241661b7506119c6ed3e11b4",
-        "repeatBuildRecordSha256": null,
-        "independentBuildMatched": null,
+        "repeatBuildRecordSha256": "b941c32e2b1bc66edd406e5f6a61af0385e75483a1167548e0e2f585c8a7a308",
+        "independentBuildMatched": true,
         "sourceDateEpoch": "1791193771",
         "evidence": "performance-evidence/phase7-release-paths-2026-10-05.json",
-        "sourceScope": "Fresh local build of the recorded production sources with the recorded remap helper; one build only, not approved release acceptance.",
+        "sourceScope": "Two builds with separate target/temp directories match byte for byte; production inputs, source cache and installed toolchain are shared. Not final candidate acceptance.",
         "supersedesBinarySha256": "a0526835471dddf2dae4e62df23782e11ba787a27feebd416c95e9e0b5f60cbf",
         "pathAudit": {
           "passed": true,
@@ -1732,7 +1762,9 @@
             "unixHome": 0
           },
           "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
-        }
+        },
+        "repeatPreparationRecordSha256": "184eb91893f77b1f66c8352f1348e3ab90d162567d58cd6e0f2ad55687ca2375",
+        "comparisonEvidence": "performance-evidence/phase7-release-verification-2026-10-05.json"
       },
       "runtime": {
         "systemLibraries": [
@@ -2051,9 +2083,17 @@
       ],
       "nativeDependencies": [],
       "remaining": [
-        "Retained binary contains absolute Cargo-cache paths; remap dependency sources in a candidate build and repeat binary inspection.",
-        "Release-candidate build identity and applicable acceptance matrix; clean-host package smoke."
-      ]
+        "Release-candidate build identity and applicable acceptance matrix.",
+        "Fresh-OS package acceptance on intended supported versions; current-host checks cover only exercised operations."
+      ],
+      "hostSmoke": {
+        "evidence": "performance-evidence/phase7-release-verification-2026-10-05.json",
+        "recordSha256": "fbb16cf506e2eb8f7932701b8766789de2a891b6cb2295f79cb3001452931e79",
+        "functionalPassed": true,
+        "onlySystemModulesObserved": true,
+        "freshOsAcceptance": false,
+        "scope": "Reduced environment on current development host; help, NDJSON RPC, EOF shutdown, SQLite reopening and observed loaded modules."
+      }
     },
     {
       "id": "x86_64-pc-windows-gnu-full",

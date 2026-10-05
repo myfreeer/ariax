@@ -1,0 +1,2975 @@
+{
+  "schema": 1,
+  "date": "2026-10-05",
+  "baselineCommit": "bd40afc86e3f5d17f9a48ab0ab604cff7e9acd88",
+  "branch": "local/phase7-hardening",
+  "status": "Four remapped CLI binaries match independent local builds; reduced-environment package checks pass with explicit host limitations.",
+  "sourceFileSha256": {
+    "scripts/release_build.py": "a7421b775f292fb90b453863180bf590d9dc95d86d7c627a15beb1ed415ce274",
+    "scripts/test_release_build.py": "e14ae00bb27b67ecdb9fa03194c20782c7a15220d21646e231eb6ab7927a2e67",
+    "scripts/release_smoke.py": "834e3bfc7e8af7f942cab94be77f7025cbe5cc73c4793d49a863b6d7c8cdeb05",
+    "scripts/test_release_smoke.py": "6bc9225409d13b440e8b0252a2ebf23b6e1ed70033e7908bf673e0f67962de1c",
+    "docs/development/local-hardening.md": "80d9495271172115c14577d6d01fafe8b966da780cdbc38dffefc84c8e693c80",
+    "docs/development/release-packaging.md": "d634b9c88357992e11c8709f1c8c91a0cbecbf161b7217a93b0a2701c260887b",
+    "docs/project/implementation-readiness.md": "098436d516e15d8a74ab89893e6fa0ec81d95997a3799081986a9c91e4083ee8",
+    "distribution/package-manifests.json": "ee46b39a4e7a7cca1b9c065c0129318f96ae03a342fafd74f9b084c650ac3e20",
+    "distribution/license-review.json": "de97657cabfae273969d0e6e100c651cbf241dc8da789b86855fc5da3d65c5fb",
+    "distribution/package-readme.txt": "8315741f2fc3cbcf7bceff1495dd3cfee5baa37c0070b0b155c08931bc07565c",
+    "distribution/README.md": "2a2bf8ad4b2a5f0b06dda023fb435e7303cbb88cebb4a6fceb8b465421e524f1",
+    "performance-evidence/phase7-release-verification-2026-10-05.md": "6e43d34617b69a28a75ae6f6e8859c4062c133a50b80f6db797e85f02bbafed5"
+  },
+  "builds": {
+    "linux": {
+      "rawRecordSha256": "bce0420644cb13b91cc35c5c75e3657d30b944743e0a35c5574d15edda211d14",
+      "result": {
+        "schema": 1,
+        "passed": true,
+        "releaseApproved": false,
+        "target": "x86_64-unknown-linux-gnu",
+        "sourceCommit": "bd40afc86e3f5d17f9a48ab0ab604cff7e9acd88",
+        "sourceHashes": {
+          ".cargo/config.toml": "40f7eff51709953ad5e870a5e98187dba0661d820d6631ef6f8fd364b69c7f4d",
+          "Cargo.lock": "0a9174da9937800e0e077561527d2c9002dffe06e14e6d6534568bed1723d876",
+          "Cargo.toml": "d982c7e9982a12b85f16f108fc11eb41f0cc3bda801520113fa2e3de400c943f",
+          "assets/public-suffix-list.dat": "084a5674d77c1d14900b16da5fc8afee9765af2f00a638552a8c7aa18f44ae81",
+          "assets/public-suffix-list.toml": "7ae1577ed5b88814a14ba3e8c2938eebd35edf727339d45efeacac0dea2d5ccd",
+          "bin/ariax/Cargo.toml": "be14828ce9e27acab682f14d5cab4d827ad9df034c6142f231429932fe810230",
+          "bin/ariax/src/bittorrent.rs": "598c2a5320e08694a9e3f74790072cfa8fa672ae110d5ed5fe89f7079433ddea",
+          "bin/ariax/src/main.rs": "b51c144bad7a5bad7d53a286ee0dac183a0c7bc9c89078f93d5addc7d4ab5f66",
+          "bin/ariax/src/rpc_service.rs": "70a7b36d6cf01916eaa46e570f8651afc706a766d95c52a84c64f7a60addbd59",
+          "bin/ariax/src/startup.rs": "7d9899c1af5bf48784178563be494ca919d88ae2e09cdfbba22381b2446e3dbc",
+          "bin/ariax/tests/cli_smoke.rs": "13518afed31a8ac8a4e4f731c8fd148c99838e0f50d692697bf30c260170ade5",
+          "bin/ariax/tests/permission_policy.rs": "1cddd7544fffd422541f9c2b72dc2158bb3273e6b0a4d173eef892658422390e",
+          "bin/ariax/tests/removable_storage.rs": "4140cfb1b389140e87f1b69523821f6bb5c8671cea9e5176cc90dd787f091a9d",
+          "bin/ariax/tests/rpc_interfaces.rs": "4a466db8d02d3be2dc0cb30872ce20ba370841cfc1314c2b20be4debdcf108df",
+          "compat/README.md": "b918fc60a942dc4ee3f52ea67af0fe7d657592290aa7b5ad0ea542509a82ccac",
+          "compat/aria2-reference.pin": "a153470c588a17ad9f952a7a6968ca2e742b6f98bf51bffedd1d7c67789faaf9",
+          "compat/iana-ipv4-special-registry.csv": "e4a1c06ecf8e934ed5ae30977a1477a78957da1a5fb602fc855e3f74bf01c8ac",
+          "compat/iana-ipv6-special-registry.csv": "8b0e181a4ef0c71fcb25403c40702f2050c2f6dc198156b6ec1a5fb746c9a73e",
+          "compat/iana-special-purpose.pin": "4e34030ac3372cb133b4b14758789f55a101ca1e3f7fd440fd433f2195b609be",
+          "crates/ariax-bt-libtorrent-sys/Cargo.toml": "8dd7d8b13d43272e92b07039708bc47501f1c281d6352dcaf662ced44f5471d6",
+          "crates/ariax-bt-libtorrent-sys/build.rs": "f7f36c669ffa21609c7a7f54eb5c91322b4fd682f8c2c7403643657b814a524b",
+          "crates/ariax-bt-libtorrent-sys/include/bounded_output.h": "0f76c37104e2ce52501797447525a87846c83dd19f10fc98fee59f7de21192fe",
+          "crates/ariax-bt-libtorrent-sys/include/bridge.h": "9b2d84db9ad50bbbb0a08e23e13d789b1cb0c348996558915336292a7984226f",
+          "crates/ariax-bt-libtorrent-sys/src/bridge.cc": "5152245cef05d2d64f3511cbfe7aff924307b63cdbd910184fe8d98f3f6bbb00",
+          "crates/ariax-bt-libtorrent-sys/src/lib.rs": "bc5141f4159b4142806eb915a62648d17ad7a685a21dc66ff7f3d65c9e5deccc",
+          "crates/ariax-bt-libtorrent-sys/tests/fixtures/README.md": "fd209a42c9cd621967a397b740a8366f8b5d2a7183fb5bb290bca5a09bdd459c",
+          "crates/ariax-bt-libtorrent-sys/tests/fixtures/generate.py": "91edbac6bb6227d6b0b866f7c7764ad64d6a2115993638dee8cf994094204bf1",
+          "crates/ariax-bt-libtorrent-sys/tests/fixtures/hybrid.torrent": "6e2a2aa189e440fe18e3164dd2257243b3b322edb884733196d7940f81335123",
+          "crates/ariax-bt-libtorrent-sys/tests/fixtures/multi-piece-hybrid.torrent": "74ab389750f13917280714cfecfc0231da32a5a2985d4ace065d873d594c6f68",
+          "crates/ariax-bt-libtorrent-sys/tests/fixtures/multi-piece-v2.torrent": "f399e02131d78f18d578899deaa12bec650b04017dc10ad691e30cedd6325570",
+          "crates/ariax-bt-libtorrent-sys/tests/fixtures/payload.bin": "2e49cc8ac17cc60b8210ad5ccfcad4c7bcc3c160c8f84b8668fd0f2af37d1068",
+          "crates/ariax-bt-libtorrent-sys/tests/fixtures/selection-v1.torrent": "32d6c4f3a4e0b0a881bdda0168b577e87da965ca341b53314b24296e3539e662",
+          "crates/ariax-bt-libtorrent-sys/tests/fixtures/symlink-v1.torrent": "59aaf319f4e14e8af9abf476740be2909068d02b1ff54c2a4e4b60fb57d546e2",
+          "crates/ariax-bt-libtorrent-sys/tests/fixtures/unsafe-path-v1.torrent": "e8421030d201a1b33a19f7cccde66471cee2675762b022ff34b03ab034a3f97a",
+          "crates/ariax-bt-libtorrent-sys/tests/fixtures/v1.torrent": "e7842401f5ae269b57ab3bcc928d2333f49def0376eca679fdd61f7f64831525",
+          "crates/ariax-bt-libtorrent-sys/tests/fixtures/v2.torrent": "98e8cc057c8a5ecd35333df06d15480a4d7073700e67559533278cd4b80b7a08",
+          "crates/ariax-bt-libtorrent-sys/tests/native.rs": "90126f8b22f850fea649f11134d55a54760524714d54405c3ac76e1642b2b72e",
+          "crates/ariax-bt-metadata/Cargo.toml": "d77fe58825ec142f75c3f19a538e8891e93fea79e01e853456832682e2fec092",
+          "crates/ariax-bt-metadata/src/bencode.rs": "fd2e6b12a0c752b611039eff4ec717414303bb9c55896f6530f91a40765d35e4",
+          "crates/ariax-bt-metadata/src/lib.rs": "af7de525a1c88d95d194f2128901ce9e2bcb14b1624a02e133357713c9bea4f5",
+          "crates/ariax-bt-metadata/src/metadata.rs": "012c9ae58d354cd2c030a761cd37bd4d6d15d2a6ffe273fc4d92185e0053d426",
+          "crates/ariax-bt-metadata/tests/fixtures.rs": "fd2c598c70cfd84271bf5c84eea0ef5e125daaf662351c162f6a42a3f1d7a39e",
+          "crates/ariax-bt/Cargo.toml": "c4de28a31f96c06bd370a9ceab65c8c592f13c9f6cbc2460bc39a2bbdf87cd73",
+          "crates/ariax-bt/src/bridge_budget.rs": "0f57807187d87898c5d62a68e568814bfe9ea2bb3c81399d34874c77cf4778a5",
+          "crates/ariax-bt/src/lib.rs": "e9da35ca21b330d059cdbea9948d161ed673f734d709d1730f2fafbaf2d4da51",
+          "crates/ariax-bt/src/mapping.rs": "4ef690cba8e1914438d68074061320e069856141dfe4ab07d6503e4e84ae5ecb",
+          "crates/ariax-bt/src/native.rs": "94f01d2d408dca89b7dcdd5a99dfb95881b9433014daf385a4860185156a35ad",
+          "crates/ariax-bt/src/root.rs": "34d8634d6f79df14f67716a04f9d59cd94c63d813e964ba954ef705f078dc467",
+          "crates/ariax-bt/tests/adapter.rs": "d11467e95b6865a18b8a15b0bebe6a6ee43985a527827b7b8b3254f05615d8e6",
+          "crates/ariax-config/Cargo.toml": "c8965038c3aaa098a02846b53e37ea8ea5a7357539410d2ba6726b6f0b217769",
+          "crates/ariax-config/src/flat.rs": "8e68aed0869b4a86b474ba2aa8dbb405526d6658a4235712659ea7d131202cd6",
+          "crates/ariax-config/src/lib.rs": "6fa1a6c8c9764b564fea2233fa8008efe54f178aece4a6f114c5e99fe2d663f5",
+          "crates/ariax-config/src/registry.rs": "2033a8fc92327f0d2bf601b43b94ace0ce4a2235ca4603451137a8330596ac5a",
+          "crates/ariax-config/src/url_rules.rs": "01b9e6c28011303706c5b883fd89e0c92321ac3dd9cfcd772632b75fd43d6907",
+          "crates/ariax-config/src/value.rs": "27ef3090fbe5040738074c1b79e9445dece2b15ee1cfa3a9489e03ec9541c1e5",
+          "crates/ariax-core/Cargo.toml": "97cd5c7866f21f5c2ba7a5ef8734d92f8b50689b96b7609ef9b1479eaf983b37",
+          "crates/ariax-core/src/command.rs": "ba401ba8c759d2bfc2a2910c8be3572e348f560dc79d6eb802fbd293afaf66f9",
+          "crates/ariax-core/src/error.rs": "34fe6975502785f51bd4f50cd43332ba50e13d85f51c903866fff134b09b44e3",
+          "crates/ariax-core/src/ids.rs": "51c0d2f0d72d955601b8b4f10a672e0b839c53b487a50481f5a04956e7d97b7c",
+          "crates/ariax-core/src/lib.rs": "9c9c7ef193bcd99964bb17ae621f63304d1829e6a5258045546b9dfb5b562c07",
+          "crates/ariax-core/src/persisted_delay.rs": "aae19a9dba3789cbad78c1b142d35882d9338e2a633346f0438dbc33ed0f418f",
+          "crates/ariax-core/src/scheduler.rs": "cdf4f72411045e1f53d369c63ed06801e4bf6ba4116d4d5a6efa2f8dba33e882",
+          "crates/ariax-core/src/snapshot.rs": "0d2b47e724aea6ad37b46e70cea20cc9f0e2464ffa589bc0b9aa3ada364003ee",
+          "crates/ariax-core/src/state.rs": "34025aa371a8afd8e207c435b36ad449a5a874fda99bf6ab9f38797666f8acd5",
+          "crates/ariax-core/src/transition.rs": "776d5aa7138ce139acebdc8d6ac4775d68421867680d01db5b17d6e4fbe6b918",
+          "crates/ariax-core/tests/request_scheduler.rs": "4dd584349eda7a704c70a483f6651460d53e113967d6c97e79f644f2835607f8",
+          "crates/ariax-engine/Cargo.toml": "02fe1a829511692ded146047a9366bca1958e32864d474ab18599777151c783b",
+          "crates/ariax-engine/benches/http_capacity_profile.rs": "2eebbb99d9decb1cd08e77e57e78869faed53f87f84d7a0391a8634f1f6d7318",
+          "crates/ariax-engine/benches/rpc_active_profile.rs": "5419802838552345caf03fbe9aab15e3d93fdd7ad2cc5d7d5ab81d23f019219f",
+          "crates/ariax-engine/benches/rpc_active_profile/admin.rs": "4847ac8d7727420a34c72bf4789ce272081e6a9726093e4af3783014b1822cb3",
+          "crates/ariax-engine/benches/rpc_active_profile/bittorrent.rs": "290f39a7f96eb6d63af727c7ba504358331d74f23700a01f75d8fc4853c2d66a",
+          "crates/ariax-engine/benches/rpc_active_profile/burst_timing.rs": "abfe2cc444897292898fb631fb5c40bc2acc0954d43fef9ba4e550adad5d0e36",
+          "crates/ariax-engine/benches/rpc_active_profile/origin_metrics.rs": "2c868490823cace8bd4e09f252b8607864c27e2fc44ffc73fdb8a6dc7d496aca",
+          "crates/ariax-engine/benches/rpc_active_profile/peer_startup.rs": "d11e8827debb132fb6e3450b22563dce024d30171a0dcf89d8b358756164ed9b",
+          "crates/ariax-engine/benches/rpc_active_profile/peer_wire.rs": "522ecd63a251a2a92d536de7c775e745cdd21188a2c4d1df43b19325d98be0af",
+          "crates/ariax-engine/benches/rpc_active_profile/setup.rs": "eb54061718be7ee0a5cb6e99d5d56d6693489c304f7f3d94dbcd82846f004e5b",
+          "crates/ariax-engine/benches/rpc_active_profile/stalled_credit.rs": "385ed6b6a0cad7654ae263f0388a9e14cce75e630a10990cb53dba27060dc137",
+          "crates/ariax-engine/benches/rpc_active_profile/workload.rs": "751dfa2bc8c4142f47e6c4ab10ab900e2e572ea42404299fb9e4e50d96f73b4e",
+          "crates/ariax-engine/benches/rpc_dispatch_profile.rs": "ada805eb1b692767f6e3080ad068e2e600f6956cb7a9880f1385d03c286230ce",
+          "crates/ariax-engine/src/chunk_hash.rs": "135ca9f7fb7f2099d7a16b0a08da4d83c6be8725672677f1b1cd5460acf3d22b",
+          "crates/ariax-engine/src/content_checksum.rs": "47a3753e9d775166bde6ec4b81025a69d871b3a774689b29f107b74788715e72",
+          "crates/ariax-engine/src/effect_sink.rs": "eb0983baf09bb97393724e28d50b7bc62b1d1f626588ea8b8c708212366eb003",
+          "crates/ariax-engine/src/ftp.rs": "e27424158da6013465e5ef7dc77f8978033d20d2aa9473b6723a98704810ccad",
+          "crates/ariax-engine/src/http_auth.rs": "e89bdc71ed94f9b162bbda70492ed4316c7a517256f38584d89d4f964d358dc1",
+          "crates/ariax-engine/src/http_capacity.rs": "12e16e0de3d7ccdb188540a9a8ecdcfebc1a8aed45b470f1fb88e36837497e23",
+          "crates/ariax-engine/src/http_client.rs": "162232e09f7c99f3e39efabfb5c49e0a04c86a902030312368a7109b518cadb8",
+          "crates/ariax-engine/src/http_connector.rs": "a79a5dd26e9d65b51a585e28dfde21cd2e622c860939af6d7ac1635c24b8a289",
+          "crates/ariax-engine/src/http_control.rs": "9a9601010f26f462e7f9f4dcb70773c61b7e5d1b15e0dae643deccd2fef8c99b",
+          "crates/ariax-engine/src/http_control/admission.rs": "6a460462ecaf2bccfb5db798bc57b81b1014b293e83cd8e974bac09df147d36b",
+          "crates/ariax-engine/src/http_control/bittorrent.rs": "04fe4a256b22bc0e2bfda5881ecb6c937b56e5a46767fa015759ca15ec0ddfe0",
+          "crates/ariax-engine/src/http_control/configuration.rs": "bd3126347d55a72b6216cf3a44df91502e022d36f360fde9d3b9eb8b48fa1e71",
+          "crates/ariax-engine/src/http_control/control_io.rs": "7a7a38c6f7c9e10ade01e13d4315800ac7bae22bb09d539b1a785476c84a4aed",
+          "crates/ariax-engine/src/http_control/control_ops.rs": "46237544e7d6b661c0c8fecc2f631cceff383a48269cb141f59d94f0e7dc5fa1",
+          "crates/ariax-engine/src/http_control/control_runtime.rs": "600b0a20369958172a7146eff0923d7a46b7918eebf70d2b0e6d33ab358045de",
+          "crates/ariax-engine/src/http_control/metadata_follow.rs": "473b805584c0fd40fbaaf65bf5b161c6141ec271f11ca0a1758cc63f54dd3742",
+          "crates/ariax-engine/src/http_control/metalink_admission.rs": "bb64504c1f2b559359da4b9ec44b861ad62deb29de760181feb65008efe4a29c",
+          "crates/ariax-engine/src/http_control/phase5_tests.rs": "0b78f99d9eb40a403dab9c0be3daa4eeedd23d34670e7ba4d2093f07b9fc5f9a",
+          "crates/ariax-engine/src/http_control/phase6_native_tests.rs": "59960ed8562f31f3a9ff18228577979c6fc802cf95d3666eb3a4ee93b49756c4",
+          "crates/ariax-engine/src/http_control/phase6_tests.rs": "280b68d8a2dcbe06b7e65e168c56fabe5111c2163ea44edc3cbe32a1ba01a24f",
+          "crates/ariax-engine/src/http_control/query.rs": "53cfb926c934867c497dac3146d73eadef4af5f4aa202231e536ee8a1a36b175",
+          "crates/ariax-engine/src/http_control/scheduling.rs": "819cc98cd077dcfde2288e7b0a56e8d397e91043905d2e4fe1986dcd8f94a49c",
+          "crates/ariax-engine/src/http_cookie.rs": "5f9b631d13160a246cf2981176c462632af7622d88e97e02708bd89ed9a27fc6",
+          "crates/ariax-engine/src/http_discard.rs": "65e763ceff72cade261a39269500aba6acdb357d2b7f75176e9f5e6fbb7668f0",
+          "crates/ariax-engine/src/http_first_slice.rs": "2ca6888ff818abd53699f24479ca0afa94cebb2d7b5f8afe591826d2e37277c4",
+          "crates/ariax-engine/src/http_happy_eyeballs.rs": "cd918d791d8b859b6abe9ca3615b4af7a0646d0319bcb92b4de721fb6262677d",
+          "crates/ariax-engine/src/http_multi.rs": "20ee3b205da6b31b444ee064f7c0aed2b69377649a11f1e18f357f230f417570",
+          "crates/ariax-engine/src/http_multi/metadata_follow.rs": "62b43a85e9c31e2f4622d9de941c2a8bd03ee1d7dd6b71659589e1731ab63ce4",
+          "crates/ariax-engine/src/http_multi/protocol.rs": "f010d6e2755508bcc8d3fb7c983b3fedb373fa7e11f3f41b693f839f2f185b98",
+          "crates/ariax-engine/src/http_multi/protocol/ftp_transfer.rs": "dfc65b8d5287126e6bcbbbdbd1b837681f7d06ab44167c1037d94932638ca662",
+          "crates/ariax-engine/src/http_multi/protocol/ftp_transfer/security_tests.rs": "cec6f86ea0cefbaf214078a0126113f40e8e9ab397eac6eca974556244b68428",
+          "crates/ariax-engine/src/http_multi/protocol/retry.rs": "6e4851a3524910d474603df60ca364334011021393e9246320ddb2c5fd0fc9ea",
+          "crates/ariax-engine/src/http_multi/protocol/sftp_transfer.rs": "bf1f5323a9d26dfb208f3994376cf9df5e250964ae422e5b60abae978e8d2489",
+          "crates/ariax-engine/src/http_multi/protocol/sftp_transfer/tests.rs": "0f46d166dcfd4ae8574e487e2859af251cc4a3f6759fc71c26546aa3fe8f6e5d",
+          "crates/ariax-engine/src/http_proxy.rs": "68ca8a663866f43028864b4f4544d77a4057387de7460bcfed5c3a89d9e94992",
+          "crates/ariax-engine/src/http_proxy_client.rs": "190619b6a7b24caca72c83fac41af44e3a2ce61714e1731c0c97a16a42e70957",
+          "crates/ariax-engine/src/http_proxy_io.rs": "b313f3d84ade2ec83ba73251be6402c3f0a700bbe2706cadda4ebabe86473d3f",
+          "crates/ariax-engine/src/http_range.rs": "7ee41b90ccbc518a6181a922853bfca08bcb0a564397db5354a7cc2acf8fdc75",
+          "crates/ariax-engine/src/http_redirect.rs": "186e5ec7db51083567abfda811c316b69d3d0ab2182f976ba5addfbb1dfae029",
+          "crates/ariax-engine/src/http_request.rs": "942ea63839c410e3fe00d529d4c66548755273462e0dfa20137514a434f283b0",
+          "crates/ariax-engine/src/http_resolver.rs": "910360e9798cf5304df62aadd6bbf92396eb2c444a6f62158ce7ddfef1ffdd3f",
+          "crates/ariax-engine/src/http_response.rs": "3ca76d1f0a3d5387dee1c894b011a242664bb3dec7e1967a87d4914af5bebafc",
+          "crates/ariax-engine/src/http_retry.rs": "ac82d7e16fa49aa5a5ed18ba22ba278d83f5edcb5e69dab822cc6234ccbbb3a6",
+          "crates/ariax-engine/src/http_rpc.rs": "5da0db990746dfb1a8a090cd4cd3e253ba53edd233e172060ec34c1a0cd9448d",
+          "crates/ariax-engine/src/http_special_purpose_generated.rs": "382ec27164411d6cacd92d10eb7e09976f125530c6e2f4775a57988e4e46c739",
+          "crates/ariax-engine/src/http_supervisor.rs": "6f4414625109582fd2b47a94df58ef0cb90b85d05b8458c1ce2f9374e2ae3575",
+          "crates/ariax-engine/src/http_transport.rs": "86494906e6aa3a6ed3be6d4f0675d13375e29559cbdd1b05a74833882d199ea7",
+          "crates/ariax-engine/src/lib.rs": "9b2c2dc04694d53f9bd3595400b584c945f7be1e2c65046a94bf9d4a7f7fbbca",
+          "crates/ariax-engine/src/metadata_follow.rs": "b7204f98f727564e5f863adf5a8d2febee62e18a9684710a959a6e6340f7b955",
+          "crates/ariax-engine/src/metalink.rs": "76609ebc97f792df11a037d96c5a8d9373764d3955d598636811f919a458259c",
+          "crates/ariax-engine/src/native_api.rs": "1f0828fb510d64fdf9b79d2669d3e77a0f9184bd5f1d01afaf83975a3fca64e6",
+          "crates/ariax-engine/src/native_api/bittorrent.rs": "6d7d52c13ddd6bc727f495a47a7f0f68521e860ee6832564af8dccf6847efb0a",
+          "crates/ariax-engine/src/process_bootstrap.rs": "e9fe241b87f75e04eaa80a7bf103a07115a5a7976c8e2083248fae96b5fb69df",
+          "crates/ariax-engine/src/protocol_transport.rs": "37cd0bae736f3c4e163e0df7b2b219924045556db91009eb75f1a74c03d9dcf1",
+          "crates/ariax-engine/src/rpc_budget.rs": "a3526d2ad10f4cfea334690f154abe34dc3a7be5a21451d1dd76518805947af9",
+          "crates/ariax-engine/src/rpc_client.rs": "dfafdfb81c3b3d18e03bd8f38f29d318b9fd9b5973ac1db64bf88659e7a540ca",
+          "crates/ariax-engine/src/rpc_compat.rs": "51a2d5df8eae88725d468609324d3212f9234c05f65fecfca6495e7921f656bf",
+          "crates/ariax-engine/src/rpc_events.rs": "4422c449295b5b2fef39bc6e79bb6c57e62ee91f83613a3dd2a0660748fbd526",
+          "crates/ariax-engine/src/rpc_json.rs": "eefc06984ed0f39ec6f258370a481496ffb8c5b61eb877c7f170130b666116bb",
+          "crates/ariax-engine/src/rpc_result.rs": "10621bc799fd7a76d917bdc474e542c1d6588a72f1a59ab8de712599f7a143ad",
+          "crates/ariax-engine/src/runtime_effects.rs": "47d764e72f1633cc7f373e4940320cd080cd1a6b5bec498c0ed19f494be9d41b",
+          "crates/ariax-engine/src/server_stats.rs": "8393b556cff063a78b9b6c3005364b2ac6ba69b4aa58eb696baf57e93bd74061",
+          "crates/ariax-engine/src/session_file.rs": "1628889a3b53f7a5999af19c82214eb6ff3ba8fb89ac1132a58b498cf2eb2f0f",
+          "crates/ariax-engine/src/sftp.rs": "41967432166288f05e5d80bbcb1982fcec8eb8af82e415b2c0d8057b9bb038bd",
+          "crates/ariax-engine/src/sftp_trust.rs": "eb308aa686e365b37148a8b662c98c40cb8c824f87f2cd90f6d1adfc241abc64",
+          "crates/ariax-engine/src/slow_slots.rs": "4e913830587e1c5eee433d1db740d5055a6dedd1c9297dc6dd0d34a70368feb1",
+          "crates/ariax-engine/src/startup_executor.rs": "543f2fed6bec2a2056c8064017c6de5b1e9a3f8e5f1db9f945a40b743e1153b4",
+          "crates/ariax-engine/src/startup_filesystem.rs": "204b48d2b664302e3c55762bf0b559a6ef1c02ce4543603a50abe3bd3286f410",
+          "crates/ariax-engine/src/startup_native.rs": "821864fc226c9274bef71c8c855f69836c0bb6923bb203dd8ea439dcc8498e55",
+          "crates/ariax-engine/src/storage_engine.rs": "cb961a937b0a45d58dfdec8f41538ae25375708e54156b6ebc79e2570eb19378",
+          "crates/ariax-engine/src/storage_engine/verification.rs": "2986e13e2cfb21ec5233ed1745d1097f319bbacbc67d268bea18a47f438277e4",
+          "crates/ariax-engine/src/storage_journal.rs": "50c6b3eb3b292557a6e4b924acce3954c8e86ce23048a65b276c5e0f878bbdbd",
+          "crates/ariax-engine/src/transfer_spec.rs": "d57cbd6cd5123ec2d637ce624b00a03abca9c0a8199f1324aa7da6ff7cbc9568",
+          "crates/ariax-engine/src/transfer_task.rs": "75bc4f8b0b3d2032c68e3b9f63db4113706398e49de020bed6329f6ea3da2612",
+          "crates/ariax-engine/src/verification_document.rs": "01cfc5f9347dcaf79725408f0a68fb013cacdb1eb3f455ddba3cc9e38ab5a55f",
+          "crates/ariax-engine/tests/bt_peer_fixture.rs": "8ebde52099e196a0800e0c8d68e838ef0106842a96f66294eaa75dbe799c9bbd",
+          "crates/ariax-engine/tests/bt_peer_startup.rs": "e7e98ba7cf4797b59a64363aa788c2ae527aa6acc797bcf8b18efa5ed7c4eea9",
+          "crates/ariax-engine/tests/fixtures/README.md": "ecd0ccedaa2478e1862f5309219f35c328b8fb4f0194b166a5ae1576a7ebfe53",
+          "crates/ariax-engine/tests/fixtures/sftp-test-host": "7752bdd1f2c046187ababefbc73f9858a222c5de52791bfe83db23055629fe90",
+          "crates/ariax-engine/tests/fixtures/sftp-test-host.pub": "83ac4f8a05019036cb373c6f2c2cb9ecd6af6797ceb048639765640510a88a8a",
+          "crates/ariax-engine/tests/openssh_interop.rs": "2eda0aa82557eae25a512613d955675b517419d8f2bd0ea2d7848e201953091f",
+          "crates/ariax-engine/tests/permission_policy.rs": "2a329b251b02d30aaca81ae0466d6ec3b48d6b4295a7400d75a4c5b7633f14f5",
+          "crates/ariax-engine/tests/rpc_benchmark_setup.rs": "a5f1efe5d985596ba78c6e62d858023c1445ac3bfa21b15946fb3b0dc362d5c0",
+          "crates/ariax-engine/tests/rpc_benchmark_workload.rs": "a2fe97c9e9ae132b9cbc8e48b2be5b6af50c4a58c8e89042e53112b6c4e2b3d5",
+          "crates/ariax-engine/tests/rpc_burst_timing.rs": "37422b6b4c3f40bd0f2139e54de314854ed3a982cfc0169f927683fecfe00ff1",
+          "crates/ariax-engine/tests/rpc_origin_metrics.rs": "3cafca538c637428e3508a1ffd82720f9ff0b63303026bd5338bd7a860d081a8",
+          "crates/ariax-engine/tests/rpc_stalled_credit.rs": "a87f6503d1e709f2d45baf14c98b0282106fd36663da96bfeb6a5f225fb320c3",
+          "crates/ariax-engine/tests/vendor_contracts.rs": "0335bd0fe925c3fe519d85e7ff4033f4cc0a01f3bb395e9fd5e3ed6836448447",
+          "crates/ariax-runtime/Cargo.toml": "f5531a5e7df9e57259904545de36a28460fcfff094f8159958f9cbddae9d46ce",
+          "crates/ariax-runtime/src/blocking_disk.rs": "acd44959c23f1de416faec5a32bee09029d64c830ef948f5390f09ede8580469",
+          "crates/ariax-runtime/src/budget.rs": "868bf13048203910fe1eaa337d367882246ede7763840d7eff8b6cd9e4aa4083",
+          "crates/ariax-runtime/src/buffer.rs": "fb109bf733b804fe86e82079f23b7b0905d2afee84e5fcef4dce8381e69da8f4",
+          "crates/ariax-runtime/src/cpu.rs": "590ada85d28d92f39b0cb98b92eaffa6229222bab129ecd88fb7b681376926dc",
+          "crates/ariax-runtime/src/handle.rs": "a3def183ff7150bb85bf7eb0e75b4da3b17a13a6bf2ed866a5fc3e57fa8e006f",
+          "crates/ariax-runtime/src/lib.rs": "e75c854cecde1b8754b5e1c7b6658232e6a83288f9680e6205ab117540730b9e",
+          "crates/ariax-runtime/src/profile.rs": "d9ebe70fda44871ef5c1a59e8b41c3b8fe154b8f4f141434434ea854b204b697",
+          "crates/ariax-runtime/src/queue.rs": "d71c90325b58d8d06f1dd7df3d9e5ecb8e3fbdaa13133b39343c8a1618149d05",
+          "crates/ariax-runtime/src/rate.rs": "1e22eac5f241054a4ea684a04cfc7933c6f61779d892659950b73ab371ce2891",
+          "crates/ariax-runtime/src/scheduler_driver.rs": "66a232a0851668fda8bf0c57df72a2a4560feb06539a182d909d1e3f4a8d2732",
+          "crates/ariax-runtime/src/shutdown.rs": "040dc9e997128993dc8c0503d645c8d090d4cbff4b25d106b97e13d9371bb479",
+          "crates/ariax-runtime/src/stats.rs": "9c6d3763ecf8f431b7f7bdc04e86bebf50a515069421eb866dc3c6bd9e419c60",
+          "crates/ariax-runtime/src/status_snapshot.rs": "a0cab6cae5700d27a910c8fe9271ab00176690ad9b1ba6df268bae9e78f2e1ce",
+          "crates/ariax-runtime/tests/blocking_disk_lane.rs": "78b2e12645584cb075889058077f61a750e08e371710b43a674eb6bae704ba26",
+          "crates/ariax-runtime/tests/scheduler_driver.rs": "c04a6ffe1af81f5c593a0abd47f524cc54dd215bbbfd0b688d52b2238b2f515a",
+          "crates/ariax-storage/Cargo.toml": "806bf8e9794c46c5345a5d70c0255f1be0d120df950ca910ba55f8e5c1d6c027",
+          "crates/ariax-storage/src/journal.rs": "59880197287acfe4ae6be8008f5e4bd23adb37fbf96e9585df3b83697e9ff83b",
+          "crates/ariax-storage/src/journal_appender.rs": "4e8dbc3a30f18c7e248c2da92cf6a261f0b43d493f5d98ea16e5de32ad70de5f",
+          "crates/ariax-storage/src/journal_payload.rs": "7510fb1e942b7280153486222292d7c66b36f639aa810dc494cca000322f9202",
+          "crates/ariax-storage/src/journal_state.rs": "34e0564e370f224d77de3225cf34705f1455ffa13d06ba6cfb92f6546dfb4296",
+          "crates/ariax-storage/src/journal_state/verification_state.rs": "b41aee9d0f3e13035bd19b57513694fa2b804facda22e54cf7f1cea0cce83ae7",
+          "crates/ariax-storage/src/journal_tags.rs": "727a61fcd5c095ad99e9237b1e739b7aa9345534a403c635ae257308f685c68b",
+          "crates/ariax-storage/src/layout.rs": "32c72776bae8aa0d45e2f66d87c10eb6dc1190508071a540e6445527663f9dba",
+          "crates/ariax-storage/src/lib.rs": "c95c531f358f857d7ce091ab677387d8e6b196ccf446e44b0ed962390fe29d03",
+          "crates/ariax-storage/src/metadata_expansion.rs": "ef531d392f019fef0d136ac97899f124eee85eb187cd0dfa1f2716ec7afa61fa",
+          "crates/ariax-storage/src/native_capability.rs": "71bb54b502976f2be71667c02f51eeb7460be26e1310fbba3331752c3248831f",
+          "crates/ariax-storage/src/native_identity.rs": "bdae177a970142c5b579451ec48b19d245c42a2c31f427526570c9429ef7371a",
+          "crates/ariax-storage/src/path.rs": "d6aaf4db7969cf4c089811fd2aaa1ddeef9a3c18a51b188e92369f8e983da61d",
+          "crates/ariax-storage/src/root_binding.rs": "f505a1a3f370a5d766e1a841ab7ecf38366cfec410be54e4690a3d12ad507ecb",
+          "crates/ariax-storage/src/session_bt.rs": "82a03b2b3c9b5ea4a6f4e3e24135a9437f35cbd46bc18ee9f1aeeb1378274c10",
+          "crates/ariax-storage/src/session_export.rs": "0c771f6291c3632307ce13fba7cf2bd4f5a8c3155f4b62b4e743aeb3e4e3736a",
+          "crates/ariax-storage/src/session_owner.rs": "ae28609da817b17aecc85150ec128896a99e20c70650bcbe826dbb642fb79ead",
+          "crates/ariax-storage/src/session_store.rs": "995228aa1213cb3bb0b54be8a00842ba7b58032bc0247d02d00f68337d1700ce",
+          "crates/ariax-storage/src/verification.rs": "d0eb0b34e842ace75c3c0ae5211dcc3f1053ad84966d94cf431e918c938908de",
+          "crates/ariax-storage/tests/permission_policy.rs": "c4f64d967d9398abd0fbfc3f3dc5c03ab8fe7fdfaf6111a672d6f89c16cd91dd",
+          "crates/ariax-windows-security/Cargo.toml": "073a02bc1e26daad7f46cbf906a69552b0101562ad0f2f1e243ee3601152563a",
+          "crates/ariax-windows-security/src/directory_response.rs": "d99ff84d409b55f73a1ad3ca9e09733861f3905f85a8a3e124635e49973e404b",
+          "crates/ariax-windows-security/src/lib.rs": "e2d582f464a44d1425245d09464ff8b59e525ff74d4b331554ac08a580338d8d",
+          "crates/ariax-windows-security/src/windows.rs": "50ae32d8f2eb5207ef7f800c580dded5aade2049074e7b80c85396a24cc657f3",
+          "generated/README.md": "e72c7222cc8ee84e782a33570c7c7e7e0e9a7533211a15617314c14985428a56",
+          "generated/aria2_compat.json": "70bf45acee97b03b806d21242d7afd71922346e57fcd04289583610b33499bb4",
+          "generated/aria2_options.json": "401073dad68a0e885787d31f3b76e08f3176f3efdf917931a26126d3c9d46d15",
+          "generated/aria2_rpc.json": "67340c1604e873eee5f317d20b2653b4e1b4cdb28d718271175296ffc7b9a0e1",
+          "generated/error_codes.json": "e33c8311cc2e906f94cf74de4f4dddd82d0c0759664a8ae07a7f6c8c5510c0b1",
+          "generated/http_destination_policy.json": "f3707148593f1c641cdd83e957dcc26214b0ae47ba5c8f680fdb654b8477eec7",
+          "generated/http_transport_policy.json": "7dc1d346a0d0e4960f216a9e4cf3e769ffcaedadba3d07aecd2e0a23a2693042",
+          "generated/journal_v1.json": "a5710ac65925fc250d583c39b5a838147dca11df282b94703e5c97ac0d6c01be",
+          "generated/options.json": "cff5cdb5aa1afd9c3b74b1fc5027a6bc2601e010c02af0a9452f3350cbc407ce",
+          "generated/runtime_buffers.json": "7b198e6bd049cc84ced3cefd8e2c745152bd893041dd036eb92c6e705ade5dd1",
+          "generated/runtime_compatibility.json": "6ee3a8dd745b756ab3c966c589b1aa4f73b6c56759c10cd9b51381831acc75a7",
+          "generated/runtime_updates.json": "b3911d2cdff8c3e9bc1a0c44530dded018e01c9aea4059a4f7ebbd59534800f5",
+          "generated/session_v3.json": "abbd494948a9a51e359238667a1b3171b207ac824c07a45d0f6bee3dfe253a7c",
+          "generated/state_wire.json": "d9f9d9f3be74351973a49630adfb4aa47bea44c235c6ec1162468254fa8846af",
+          "generated/storage_layout.json": "1768ecc0d223f37e179239dec7e9e6cb6109e5909593bee49312673c62058c16",
+          "native/libtorrent/README.md": "9b9947ea20a03183150c12ee07963b7b2f3883f17d6f2d25c038ca0074047bd3",
+          "native/libtorrent/ariax.patch": "8d377c5622d0308bda2f7fc161913954f4a4cb3af19f6e1400d2cde84446a409",
+          "native/libtorrent/openssl-patch.md": "ed55701a855eb61f773ad43fe1799eea8aca39ba0f3682e1d955c75f58bc8612",
+          "native/libtorrent/openssl.patch": "e12670d73045bda8fb086f51f1080ccaffd60e54dd8902577aea3b3ad2a5a748",
+          "native/libtorrent/sources.json": "b55bc045afe126bad7e48d9ca6e9a5b40f762e2bdea6cbc54997dcee32991819",
+          "native/libtorrent/tests/CMakeLists.txt": "48a55d82a29281a3c753236d3dddb3b9232d93ecdc5bb7946c4bc2dddfd068f0",
+          "native/libtorrent/tests/bounded_output.cc": "0cfa74de079521b2fd2b68f279c71e899b15ffa18e708117fdeb33c91aa00908",
+          "native/libtorrent/tests/endpoints.cc": "68b80cc15e6e16b9644b5272dc281924b2650af93005074b3a9b2fa81bfa9fbd",
+          "native/libtorrent/tests/fixtures/root.pem": "6ce6dbbdfc1789dd4006f76e990430429e66c4d7439c4b810f48d519300339bc",
+          "native/libtorrent/tests/openssl_callbacks.cc": "ded2ecead361d726a023664fd4f5e868573caed6625cc47c49445c69030839d4",
+          "native/libtorrent/tests/progress.hpp": "d672bd47609491886462c55fdc4a61477c5b244b148bab0de198c478f969ff38",
+          "native/libtorrent/tests/security.cc": "ef3b40ae509f63074e92fce8d5e11c1299e0bc614ecdd7af96c90a0d9976aaab",
+          "native/libtorrent/tests/storage.cc": "dc6a8a3c525a03fb8c03752d46fb6d1f9d7117a15c7b6ea453886de594e0dadb",
+          "rust-toolchain.toml": "8e390d6a0838315f972690f46ef8bae8b7ecc9ee6c1ed70140ef852869c2482e",
+          "scripts/local_hardening.py": "a18400abe6252923947ad33537f016be752f28544d78d9108c5b216bc66c23b2",
+          "scripts/release_build.py": "a7421b775f292fb90b453863180bf590d9dc95d86d7c627a15beb1ed415ce274",
+          "scripts/release_manifest.py": "f5af9eaff29c08cddc6f7e3217dbb96f82ad3ccffb8ec7739978f1311e144e3c",
+          "vendor/README.md": "e5eb21be63a9f04e094ce90a7271bcfac8ed8dcdf4e005d96f5b156cc774c3f6",
+          "vendor/protocol-patches.json": "a01b1ee56c3590b6fd566109625f665c51880695ec36f3e0b502d9b315249ad0",
+          "vendor/russh-sftp-upstream.json": "794923e5a24f7620557ba9b27a5d19528871edd63d7484f8b0ba4dd803e48149",
+          "vendor/russh-sftp.patch": "02a9535ff58b303cba00ed5ce6f1984ee594a64778a2b0033b7ac49bc22a28e3",
+          "vendor/russh-sftp/.cargo_vcs_info.json": "1cd02e87817f1d1c64300df9d816bcb715279072ef7af712329686b3d21d809a",
+          "vendor/russh-sftp/.github/dependabot.yml": "f3f45a3c109f425de8030c7eb6e7069e5a26fea4c6bd3da82f39e70638b40e2b",
+          "vendor/russh-sftp/.github/workflows/audit.yml": "7bbfb2c2c7c0cc96e9ef738f1fffb87e3f71f8ea24c32fb21ead038bfdc5d950",
+          "vendor/russh-sftp/.github/workflows/ci.yml": "1a51de5fee4de0793c9b2d8da6b7b67a0edbeccf3345e51cff6b6f0a11e38536",
+          "vendor/russh-sftp/.gitignore": "f0b8996e12c8f4840d3ed53a889ed44825137e2f50009054369f7cc5973a1cd3",
+          "vendor/russh-sftp/Cargo.lock": "c0b74ff74d76d2da795f9d2bba5b43ee98287925a038c55792ebb072169891b1",
+          "vendor/russh-sftp/Cargo.toml": "0d3aee63954e7adc1a3201343a66fd7998fac6dbae32809c606507aefecec2b7",
+          "vendor/russh-sftp/Cargo.toml.orig": "c207fba96058d3a06c06a5b906ea1d1c96e02a41686b9dcd9bd3aee410c516f7",
+          "vendor/russh-sftp/LICENSE": "1eb85fc97224598dad1852b5d6483bbcf0aa8608790dcc657a5a2a761ae9c8c6",
+          "vendor/russh-sftp/README.md": "9e134282036de7a31c335383aeb56681985e1eb8c2a9e8dd7c1daf701631687e",
+          "vendor/russh-sftp/benches/upload_benchmark.rs": "70a4846a8cf2eeaee91954eb43c15f9156df47d4466204219449ecf953da1f74",
+          "vendor/russh-sftp/deny.toml": "f8dc134ee22441bf4b07256dd149a4a36c8365a027e862d3bb03bbb06c047820",
+          "vendor/russh-sftp/examples/client.rs": "91f811a3c9400ecfbb22899d02e548a41140712ec67e5d2b8a9e3920bb95bb6f",
+          "vendor/russh-sftp/examples/server.rs": "aacecd426de2af029aa9f45d7b75d6657ea8061f28dfcb9496b3ec33486d8dda",
+          "vendor/russh-sftp/src/buf.rs": "2c89c0921778956a912d74279109a65c8b6806895b33c0d4c716c2dce13b4f56",
+          "vendor/russh-sftp/src/client/bounded_tests.rs": "422da9742f1a8ef66c9be3dfdfe8814a558e7ff1eb1be803947060dc8b2cb036",
+          "vendor/russh-sftp/src/client/error.rs": "7a4d7dd328485df871065bd8d32e7461dbf1d004701e14b64fccbfd9e364ffa7",
+          "vendor/russh-sftp/src/client/fs/dir.rs": "c5a8f9096eb50a8cabef5d7f083046eb63027463f470df1c7c03f1e78579b322",
+          "vendor/russh-sftp/src/client/fs/file.rs": "91e92a5d61b1ed076d21b4f950fca7aaf66bb56adef61b0ab8f95d58fc543014",
+          "vendor/russh-sftp/src/client/fs/mod.rs": "805a162c7a3f127396ae8e7a846fa997bdb74b324cc7a9e8266864224bf02668",
+          "vendor/russh-sftp/src/client/handler.rs": "8eebc59be5999cebcccfacdb8a453989d4c7cb17f52d16ba8e6c5aa27be98899",
+          "vendor/russh-sftp/src/client/mod.rs": "2dc33f7b11c88883b715a55b1b9f032620efc0658b7e9b6866fd32e553af5fe8",
+          "vendor/russh-sftp/src/client/rawsession.rs": "03d4c243d64a56413b654fc90309c37a35ac33061f3572c78f3ae5c3d2b5c610",
+          "vendor/russh-sftp/src/client/runtime.rs": "d480e4372e2a6d1c7048e06ff95fbd8cef9c71dda5e6ac9c903fcc61fac347b5",
+          "vendor/russh-sftp/src/client/session.rs": "874d2e7565bbec33ee12ab935fa504c301241417d1b716b9357c9c741ab82e2a",
+          "vendor/russh-sftp/src/de.rs": "68adee19ffb669f39218df1cc84a972f01caf14088be175516586dbc42b2d350",
+          "vendor/russh-sftp/src/error.rs": "675201ff1620ea46771b4c2c150fa120e44f6f528a50e7aed5a4b18a9b90759c",
+          "vendor/russh-sftp/src/extensions.rs": "88bac263fb8f7ec3ddf6309a59a305423e5db928846ee2c1196f0718923a9c0f",
+          "vendor/russh-sftp/src/lib.rs": "90ab73aed45ecaac7f77a32dd67a351152a716771c074ab56274eeb266ab57d1",
+          "vendor/russh-sftp/src/protocol/attrs.rs": "ddaf8a605faf970bf3a67074c81b0de4a04490e4da4aae21e693c9ae3e619f9c",
+          "vendor/russh-sftp/src/protocol/close.rs": "d837bfb3babcdfa8283703f75892d62e86d1fecfddb62d67cb6980d91b72c8a8",
+          "vendor/russh-sftp/src/protocol/data.rs": "ed7a66b15715400c6f8950fb7219326d0b0fc04b060ce673f714e472325bcc39",
+          "vendor/russh-sftp/src/protocol/extended.rs": "4622b727a15388ba5fc8236ad44eabae1227bf4749a379b340ecd297c647a3d4",
+          "vendor/russh-sftp/src/protocol/file.rs": "76bc5d41321a330ce002cc5b0f6ab95bed4cc7e2ca73261a42cff3a0b1a8c92f",
+          "vendor/russh-sftp/src/protocol/file_attrs.rs": "61104d06bc8e2db77e7fcebdd55877c873266048f0ac9442d6b1fd25e190144a",
+          "vendor/russh-sftp/src/protocol/fsetstat.rs": "d706c8fd8d7e6c25570c72cd69b5e47ecae6561b3a6de8baba9858fcee5ff46a",
+          "vendor/russh-sftp/src/protocol/fstat.rs": "9026445c268e01d3b90331724ae9a8d97fe63df90aa203a3c1f7250b0816fb91",
+          "vendor/russh-sftp/src/protocol/handle.rs": "2e2e0c579e4fbac32ba315c5456e671faaae91f1b4bcd39b9b6a95723294669e",
+          "vendor/russh-sftp/src/protocol/init.rs": "21e5a526ca747b151980619d886a44824617498730930565116450c46f3592bf",
+          "vendor/russh-sftp/src/protocol/lstat.rs": "767cfd55eeb47924c55612f77bfed9e0486daa911159e01c5dd62be3e227c05f",
+          "vendor/russh-sftp/src/protocol/mkdir.rs": "9a7ab9e07fb1bd447c2f4ded1fa92f533f19cccfd2e666574932b34e5590f1ee",
+          "vendor/russh-sftp/src/protocol/mod.rs": "656894159c2bcd20fb1ae2806d5b9c366e6bbe580b9b3765d062edb96ca6b20d",
+          "vendor/russh-sftp/src/protocol/name.rs": "cb343f3ef56d0ae32000886bac2e4f2dbc489024a37e292b89ae4699de5d8c1e",
+          "vendor/russh-sftp/src/protocol/open.rs": "9ecbd8a201a2828b2a9a253032ce565466386bd2de161a874e6dacda9ed0d9c7",
+          "vendor/russh-sftp/src/protocol/opendir.rs": "fad601932b01ac9bffd37e6df41b3f6722826c7aee24c34b7e5be593fd2068be",
+          "vendor/russh-sftp/src/protocol/read.rs": "087ba1416ffc4d2889c683f99cbefdef9b84c61b26d0302cc6b55d38b2048aed",
+          "vendor/russh-sftp/src/protocol/readdir.rs": "dd6be1bc3e348bb972ecbf379bd0e32970ed2115dc50e843a63c6a174526a91b",
+          "vendor/russh-sftp/src/protocol/readlink.rs": "7d7f0dd9ea3f81da757d1a66ade8c9ea0339382a36766576db76120ed66dd54d",
+          "vendor/russh-sftp/src/protocol/realpath.rs": "74a6ec87dc3e2b9a0140956543648b7734177c591521d7fbffcc6e9d72164bd8",
+          "vendor/russh-sftp/src/protocol/remove.rs": "277351576448709b886c96bc73a7840f6b08ff0a274b3dcbb51275b415f0e062",
+          "vendor/russh-sftp/src/protocol/rename.rs": "b40ab496ac79abcfa502b344b299e56d509d67323b6272a39fb272f2729e4e76",
+          "vendor/russh-sftp/src/protocol/rmdir.rs": "700809d494cacee04123705ed989d4f528a8267d13df4a7ee225e825f7a73a3f",
+          "vendor/russh-sftp/src/protocol/setstat.rs": "261aab0483c6fb780591782baf445e3471e99f5de3c15ee73b285d5ef55341dd",
+          "vendor/russh-sftp/src/protocol/stat.rs": "ee86f9139f546ff5b68b7f917f1db0eb777475e416ef96d818ea672a53d7415b",
+          "vendor/russh-sftp/src/protocol/status.rs": "ef7058584d8333bb523cd5a1665b628a31f8a5a7d24f673f0ef15cc81d827a17",
+          "vendor/russh-sftp/src/protocol/symlink.rs": "41a340d02f4aa8702acc2969ecfc915180a98cf18db4c36cf4ba490d9c3edcf2",
+          "vendor/russh-sftp/src/protocol/version.rs": "c1e582cbbf71655b1ce929dbfb25b9ecd86629fd71f31b549692a1e69d074e79",
+          "vendor/russh-sftp/src/protocol/write.rs": "65bef8d19756188ff99caa58ea33ba6cba8b357597d4695722c077d1f8fb79b8",
+          "vendor/russh-sftp/src/ser.rs": "712e6044e65b737183474c82f61a5809f7db04cc7173c3b0b52ee98a850e1791",
+          "vendor/russh-sftp/src/server/handler.rs": "6687f537798a129fb51b00095fefe20cbad2b2818cd753d19ef5878166d4464c",
+          "vendor/russh-sftp/src/server/mod.rs": "000c7d64556604d0d1c13da64d84dd3d46fc946974fbf8bf2440ddf0a6b21313",
+          "vendor/russh-sftp/src/server/reply.rs": "0cb5ba46c02ce73dfa0f9ba07168a6e05c95e53fc0d1d07da6928a621d2112d0",
+          "vendor/russh-sftp/src/utils.rs": "c460b00a6ce11e97af8517d155e8ec264352388d53317766633c2236b7065632",
+          "vendor/suppaftp-licenses.json": "9127e5ffa6b85ae17d0be148f937936d0066178e67e4c7696c46689c20675c03",
+          "vendor/suppaftp-upstream.json": "b74f160b8c84685bd27aed0edeeb67fcf2fd72f5566f12f19d3c2a178eadb658",
+          "vendor/suppaftp.patch": "8a1dbfd3818da9fec9ae0ba9b9993f855ad7ba0c928abc183334e3a67f31a949",
+          "vendor/suppaftp/.cargo_vcs_info.json": "a6efd2d6f693ce3425436a5000642c686358b76a364e1f1180f9308a85920ed4",
+          "vendor/suppaftp/Cargo.lock": "bd8ae6a9a0a946c6c69911621332846f3dac3178fa951ebb374c5d2368315eb7",
+          "vendor/suppaftp/Cargo.toml": "d548ee0da1d078cb18db8fe35d10c1a69a64d51e0614ad2b17e31111624031b5",
+          "vendor/suppaftp/Cargo.toml.orig": "28dc5e506d1cbc30c7989842af9aea4e011860a903376ff27f923ba202b33071",
+          "vendor/suppaftp/LICENSE-APACHE": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
+          "vendor/suppaftp/LICENSE-MIT": "4e883a0c89656afe3aaa559b3d4096a8aaa7534f00937f1c0054e231b2928078",
+          "vendor/suppaftp/README.md": "fc8cf92a875f3a34f7dd1fdb8ea5993a5d8f76809a674f7b2bd9cbd048f2eb1d",
+          "vendor/suppaftp/examples/rustls.rs": "4a004cab66277e1d5549fdd83a09937592884b1ce6319f8215583e04f3cb2df3",
+          "vendor/suppaftp/src/async_ftp.rs": "e5626dee62438e6bdc3f751e7dc1c2e4ac2e9f9694b85d6b41372be7e71ae8a2",
+          "vendor/suppaftp/src/async_ftp/smol_ftp.rs": "9914deed2409b208bda99032ac4df6cba724469ea7c249607b0a78fc95b0ae11",
+          "vendor/suppaftp/src/async_ftp/smol_ftp/data_stream.rs": "6a97a28e8dfab186c744a70abdcfdb5be0a2da63cce3c1c093ace5dd0ae175c7",
+          "vendor/suppaftp/src/async_ftp/smol_ftp/tls.rs": "6d036669a354a30a4f46f6bc86ee0e961a1fbea6fb493d291adf3028d3077382",
+          "vendor/suppaftp/src/async_ftp/smol_ftp/tls/native_tls.rs": "3f4f47539172cccde15a84c53c26f81089198452c63727f02cdd4930bd247306",
+          "vendor/suppaftp/src/async_ftp/smol_ftp/tls/rustls.rs": "d557d2e1d368aa18c0bc0e0f1ed50da5f1c725b78332404d584eee481c290e6a",
+          "vendor/suppaftp/src/async_ftp/tokio_ftp.rs": "510b7007b6bb633d4826610afd8575794017b8c86e3223a3711dae71f58e92fc",
+          "vendor/suppaftp/src/async_ftp/tokio_ftp/data_stream.rs": "15f18360923769f517df9fa396074e2c56928ea6120018da08829f8391df403b",
+          "vendor/suppaftp/src/async_ftp/tokio_ftp/tls.rs": "84342f60c0f8c89d7578859a6964682bea76f45b9c865166fb69a2490edb016b",
+          "vendor/suppaftp/src/async_ftp/tokio_ftp/tls/native_tls.rs": "deb327e2b1cdae5708dd182ba8a99e323c01e06d7b01ed7b610ce15ff7881685",
+          "vendor/suppaftp/src/async_ftp/tokio_ftp/tls/rustls.rs": "12234317db6be51add2033224e2cfab21522410e0c2f3fe531d8e6b400a00226",
+          "vendor/suppaftp/src/command.rs": "3a02931cc1a3984359dc293a4da4cf01bda10ed9bb84158057f20eb8cd096759",
+          "vendor/suppaftp/src/command/feat.rs": "8a01f91aeb836993dd55c1cc716077196e0df136e3e150cacf3766b3148f9c90",
+          "vendor/suppaftp/src/lib.rs": "6bc51ed8772ce92fe14bc529a935a29a7a357c6ae50ef28d9035ff625ea5f8c1",
+          "vendor/suppaftp/src/list.rs": "03d5055e9ef368374240ccf1dca0167af159ea00157e3fb4ce76fa89fe5a27a4",
+          "vendor/suppaftp/src/list/file.rs": "ab3ba06bbf8a5fdd08ebb2816b913494f6cf7abfd70c32511be1958670f1f58a",
+          "vendor/suppaftp/src/list/file_type.rs": "7f1eb1f146000cb7dc199b34902f5d24650e04342496cd69a97e5145ecb657cd",
+          "vendor/suppaftp/src/list/pex.rs": "1547663226623c66babb2ad4fe407346e46f0cb5a65a560b784c782b30d76a4e",
+          "vendor/suppaftp/src/regex.rs": "d5e3648327a523cfbb884071159d95f220339c0d734e12f139dccf6dadef2eca",
+          "vendor/suppaftp/src/reply_bounds.rs": "195bb849174daca2fddb394d09c81c25de4aadd080f1f27249c62af451c9fdaf",
+          "vendor/suppaftp/src/status.rs": "bc4c0461ea9d87dd11444e0bf0e9659ed7e2005e71ff2d6517323c2c6d62126d",
+          "vendor/suppaftp/src/sync_ftp.rs": "785f1655a373f655e6dc2492764b688dccd1d14ea34777474506245511b0b55c",
+          "vendor/suppaftp/src/sync_ftp/data_stream.rs": "46be1c3592b08209e2f5d649891ebb504a00a0ef5f040ac27f6c22eb60552e73",
+          "vendor/suppaftp/src/sync_ftp/tls.rs": "34b0fa71a6172cf84c65b1e24a6496869bd4a245eda3caf952eb65226bff301e",
+          "vendor/suppaftp/src/sync_ftp/tls/native_tls.rs": "602909dd74d8fac3bb31a33ddb9fe2ac96130e21376d16dbc918c49a19553145",
+          "vendor/suppaftp/src/sync_ftp/tls/rustls.rs": "08026dcb322630fe18399844b308debcb1e346880f7e9efe6d959fd028149f0b",
+          "vendor/suppaftp/src/test_container.rs": "2e5e722d0d2d857720040954ea6e74d0c3478ed0f950ef7bdda05e72171f03e9",
+          "vendor/suppaftp/src/types.rs": "82de4fdca5826c1f84ab7bc7365184fa5d82194c517cf3df76e520473a98fef0"
+        },
+        "flags": {
+          "rust": [
+            "--remap-path-prefix=<repo>=/ariax",
+            "--remap-path-prefix=<temp>/ariax-local-validation-20261001/cargo-home=/ariax-cargo",
+            "--remap-path-prefix=<temp>/ariax-release-verification-20261005/linux/tmp=/ariax-temp",
+            "--remap-path-prefix=<temp>/ariax-release-verification-20261005/linux/target=/ariax-target"
+          ],
+          "native": [
+            "-ffile-prefix-map=<repo>=/ariax",
+            "-ffile-prefix-map=<temp>/ariax-local-validation-20261001/cargo-home=/ariax-cargo",
+            "-ffile-prefix-map=<temp>/ariax-release-verification-20261005/linux/tmp=/ariax-temp",
+            "-ffile-prefix-map=<temp>/ariax-release-verification-20261005/linux/target=/ariax-target"
+          ]
+        },
+        "sourceDateEpoch": "1791193771",
+        "environment": {
+          "RUSTC": "<repo>/toolchains/installed/linux/bin/rustc",
+          "RUSTDOC": "<repo>/toolchains/installed/linux/bin/rustdoc",
+          "CARGO_HOME": "<temp>/ariax-local-validation-20261001/cargo-home",
+          "CARGO_TARGET_DIR": "<temp>/ariax-release-verification-20261005/linux/target",
+          "CARGO_ENCODED_RUSTFLAGS": "--remap-path-prefix=<repo>=/ariax\u001f--remap-path-prefix=<temp>/ariax-local-validation-20261001/cargo-home=/ariax-cargo\u001f--remap-path-prefix=<temp>/ariax-release-verification-20261005/linux/tmp=/ariax-temp\u001f--remap-path-prefix=<temp>/ariax-release-verification-20261005/linux/target=/ariax-target",
+          "CFLAGS": "-ffile-prefix-map=<repo>=/ariax -ffile-prefix-map=<temp>/ariax-local-validation-20261001/cargo-home=/ariax-cargo -ffile-prefix-map=<temp>/ariax-release-verification-20261005/linux/tmp=/ariax-temp -ffile-prefix-map=<temp>/ariax-release-verification-20261005/linux/target=/ariax-target",
+          "CXXFLAGS": "-ffile-prefix-map=<repo>=/ariax -ffile-prefix-map=<temp>/ariax-local-validation-20261001/cargo-home=/ariax-cargo -ffile-prefix-map=<temp>/ariax-release-verification-20261005/linux/tmp=/ariax-temp -ffile-prefix-map=<temp>/ariax-release-verification-20261005/linux/target=/ariax-target",
+          "CC_SHELL_ESCAPED_FLAGS": "1",
+          "CC": "/usr/bin/gcc",
+          "CXX": "/usr/bin/g++",
+          "AR": "/usr/bin/ar",
+          "CARGO_BUILD_JOBS": "2",
+          "CARGO_INCREMENTAL": "0",
+          "TMPDIR": "<temp>/ariax-release-verification-20261005/linux/tmp"
+        },
+        "builds": [
+          {
+            "bundle": "minimal",
+            "build": {
+              "command": [
+                "<repo>/toolchains/installed/linux/bin/cargo",
+                "build",
+                "--locked",
+                "--offline",
+                "-p",
+                "ariax-cli",
+                "--no-default-features",
+                "--features",
+                "minimal",
+                "--profile",
+                "release-cli"
+              ],
+              "passed": true,
+              "timeoutSeconds": 1200,
+              "expectedTests": null,
+              "exitCode": 0,
+              "cleanup": "owned-process-group-terminated",
+              "environment": {
+                "RUSTC": "<repo>/toolchains/installed/linux/bin/rustc",
+                "CARGO_TARGET_DIR": "<temp>/ariax-release-verification-20261005/linux/target",
+                "CARGO_BUILD_JOBS": "2",
+                "TMPDIR": "<temp>/ariax-release-verification-20261005/linux/tmp",
+                "TEMP": "<temp>/ariax-release-verification-20261005/linux/tmp"
+              },
+              "binarySha256": "828980723df339d62434390e9fb8ef8831036583343ae2316b7ab5646b5c1953",
+              "processSeconds": 438.832138400001,
+              "elapsedSeconds": 438.8324033999961,
+              "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stderr.logSha256": "dcf35a334f7594e07538edda1c5ecea6925ebffbef25133873ecf0581f7bedc8"
+            },
+            "binarySha256": "ea3c4c586ee466d501c936baf2a5294b71140798161ea73c0448b01767cc7d73",
+            "bytes": 10640072,
+            "pathAudit": {
+              "passed": true,
+              "counts": {
+                "wslMount": 0,
+                "windowsTemp": 0,
+                "windowsUser": 0,
+                "unixHome": 0
+              },
+              "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
+            },
+            "referenceBinarySha256": "ea3c4c586ee466d501c936baf2a5294b71140798161ea73c0448b01767cc7d73",
+            "matchesIndependentBuild": true,
+            "inspection": {
+              "command": [
+                "readelf",
+                "-l",
+                "-d",
+                "--version-info",
+                "<temp>/ariax-release-verification-20261005/linux/minimal/ariax"
+              ],
+              "passed": true,
+              "timeoutSeconds": 20,
+              "expectedTests": null,
+              "exitCode": 0,
+              "cleanup": "owned-process-group-terminated",
+              "environment": {
+                "RUSTC": "<repo>/toolchains/installed/linux/bin/rustc",
+                "CARGO_TARGET_DIR": "<temp>/ariax-release-verification-20261005/linux/target",
+                "CARGO_BUILD_JOBS": "2",
+                "TMPDIR": "<temp>/ariax-release-verification-20261005/linux/tmp",
+                "TEMP": "<temp>/ariax-release-verification-20261005/linux/tmp"
+              },
+              "processSeconds": 0.01087119999283459,
+              "elapsedSeconds": 0.01112079998711124,
+              "stdout.logSha256": "c73138d0ff7061730a838ab60e3316b3ebf9c5492f44393164cab9f3b194cf97",
+              "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "runtime": {
+              "systemLibraries": [
+                "libc.so.6",
+                "libgcc_s.so.1",
+                "libm.so.6"
+              ],
+              "additionalRuntimeFiles": [],
+              "minimumGlibc": "2.34",
+              "interpreter": "/lib64/ld-linux-x86-64.so.2"
+            },
+            "help": {
+              "command": [
+                "<temp>/ariax-release-verification-20261005/linux/minimal/ariax",
+                "--help"
+              ],
+              "passed": true,
+              "timeoutSeconds": 20,
+              "expectedTests": null,
+              "exitCode": 0,
+              "cleanup": "owned-process-group-terminated",
+              "environment": {
+                "RUSTC": "<repo>/toolchains/installed/linux/bin/rustc",
+                "CARGO_TARGET_DIR": "<temp>/ariax-release-verification-20261005/linux/target",
+                "CARGO_BUILD_JOBS": "2",
+                "TMPDIR": "<temp>/ariax-release-verification-20261005/linux/tmp",
+                "TEMP": "<temp>/ariax-release-verification-20261005/linux/tmp"
+              },
+              "binarySha256": "ea3c4c586ee466d501c936baf2a5294b71140798161ea73c0448b01767cc7d73",
+              "processSeconds": 0.007631500004208647,
+              "elapsedSeconds": 0.007773000004817732,
+              "stdout.logSha256": "8d33aa3cb758f48103225150dbb768178c5cb3661ad9471ce2efd852848ab4e2",
+              "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "rejection": {
+              "command": [
+                "<temp>/ariax-release-verification-20261005/linux/minimal/ariax",
+                "--ariax-intentionally-invalid-option"
+              ],
+              "passed": false,
+              "timeoutSeconds": 20,
+              "expectedTests": null,
+              "exitCode": 2,
+              "cleanup": "owned-process-group-terminated",
+              "environment": {
+                "RUSTC": "<repo>/toolchains/installed/linux/bin/rustc",
+                "CARGO_TARGET_DIR": "<temp>/ariax-release-verification-20261005/linux/target",
+                "CARGO_BUILD_JOBS": "2",
+                "TMPDIR": "<temp>/ariax-release-verification-20261005/linux/tmp",
+                "TEMP": "<temp>/ariax-release-verification-20261005/linux/tmp"
+              },
+              "binarySha256": "ea3c4c586ee466d501c936baf2a5294b71140798161ea73c0448b01767cc7d73",
+              "processSeconds": 0.01090610001119785,
+              "error": "command exited 2",
+              "elapsedSeconds": 0.011083300007157959,
+              "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stderr.logSha256": "88ef18bcd8f9366075c7761d586a8c18e6ecfd9010a14a9cdaa33d3147947893"
+            },
+            "rejectionObserved": true
+          },
+          {
+            "bundle": "standard",
+            "build": {
+              "command": [
+                "<repo>/toolchains/installed/linux/bin/cargo",
+                "build",
+                "--locked",
+                "--offline",
+                "-p",
+                "ariax-cli",
+                "--no-default-features",
+                "--features",
+                "standard",
+                "--profile",
+                "release-cli"
+              ],
+              "passed": true,
+              "timeoutSeconds": 1200,
+              "expectedTests": null,
+              "exitCode": 0,
+              "cleanup": "owned-process-group-terminated",
+              "environment": {
+                "RUSTC": "<repo>/toolchains/installed/linux/bin/rustc",
+                "CARGO_TARGET_DIR": "<temp>/ariax-release-verification-20261005/linux/target",
+                "CARGO_BUILD_JOBS": "2",
+                "TMPDIR": "<temp>/ariax-release-verification-20261005/linux/tmp",
+                "TEMP": "<temp>/ariax-release-verification-20261005/linux/tmp"
+              },
+              "binarySha256": "828980723df339d62434390e9fb8ef8831036583343ae2316b7ab5646b5c1953",
+              "processSeconds": 418.7610505000048,
+              "elapsedSeconds": 418.7612618999992,
+              "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stderr.logSha256": "0e676298a4f6677917e49b057d1f9693dd3ff06e31de80a0238d909362485705"
+            },
+            "binarySha256": "2b641cde2496b2f31eee711315ebfa5a325bd3af27c503f5c9d4be0b8dd9f6e6",
+            "bytes": 14733928,
+            "pathAudit": {
+              "passed": true,
+              "counts": {
+                "wslMount": 0,
+                "windowsTemp": 0,
+                "windowsUser": 0,
+                "unixHome": 0
+              },
+              "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
+            },
+            "referenceBinarySha256": "2b641cde2496b2f31eee711315ebfa5a325bd3af27c503f5c9d4be0b8dd9f6e6",
+            "matchesIndependentBuild": true,
+            "inspection": {
+              "command": [
+                "readelf",
+                "-l",
+                "-d",
+                "--version-info",
+                "<temp>/ariax-release-verification-20261005/linux/standard/ariax"
+              ],
+              "passed": true,
+              "timeoutSeconds": 20,
+              "expectedTests": null,
+              "exitCode": 0,
+              "cleanup": "owned-process-group-terminated",
+              "environment": {
+                "RUSTC": "<repo>/toolchains/installed/linux/bin/rustc",
+                "CARGO_TARGET_DIR": "<temp>/ariax-release-verification-20261005/linux/target",
+                "CARGO_BUILD_JOBS": "2",
+                "TMPDIR": "<temp>/ariax-release-verification-20261005/linux/tmp",
+                "TEMP": "<temp>/ariax-release-verification-20261005/linux/tmp"
+              },
+              "processSeconds": 0.011410500010242686,
+              "elapsedSeconds": 0.011546900001121685,
+              "stdout.logSha256": "168f2c1202db9031a5b574833464a8fb3d3940d46f1707cca0c5e8e1e8436030",
+              "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "runtime": {
+              "systemLibraries": [
+                "libc.so.6",
+                "libgcc_s.so.1",
+                "libm.so.6"
+              ],
+              "additionalRuntimeFiles": [],
+              "minimumGlibc": "2.34",
+              "interpreter": "/lib64/ld-linux-x86-64.so.2"
+            },
+            "help": {
+              "command": [
+                "<temp>/ariax-release-verification-20261005/linux/standard/ariax",
+                "--help"
+              ],
+              "passed": true,
+              "timeoutSeconds": 20,
+              "expectedTests": null,
+              "exitCode": 0,
+              "cleanup": "owned-process-group-terminated",
+              "environment": {
+                "RUSTC": "<repo>/toolchains/installed/linux/bin/rustc",
+                "CARGO_TARGET_DIR": "<temp>/ariax-release-verification-20261005/linux/target",
+                "CARGO_BUILD_JOBS": "2",
+                "TMPDIR": "<temp>/ariax-release-verification-20261005/linux/tmp",
+                "TEMP": "<temp>/ariax-release-verification-20261005/linux/tmp"
+              },
+              "binarySha256": "2b641cde2496b2f31eee711315ebfa5a325bd3af27c503f5c9d4be0b8dd9f6e6",
+              "processSeconds": 0.007915599999250844,
+              "elapsedSeconds": 0.008302200003527105,
+              "stdout.logSha256": "8d33aa3cb758f48103225150dbb768178c5cb3661ad9471ce2efd852848ab4e2",
+              "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "rejection": {
+              "command": [
+                "<temp>/ariax-release-verification-20261005/linux/standard/ariax",
+                "--ariax-intentionally-invalid-option"
+              ],
+              "passed": false,
+              "timeoutSeconds": 20,
+              "expectedTests": null,
+              "exitCode": 2,
+              "cleanup": "owned-process-group-terminated",
+              "environment": {
+                "RUSTC": "<repo>/toolchains/installed/linux/bin/rustc",
+                "CARGO_TARGET_DIR": "<temp>/ariax-release-verification-20261005/linux/target",
+                "CARGO_BUILD_JOBS": "2",
+                "TMPDIR": "<temp>/ariax-release-verification-20261005/linux/tmp",
+                "TEMP": "<temp>/ariax-release-verification-20261005/linux/tmp"
+              },
+              "binarySha256": "2b641cde2496b2f31eee711315ebfa5a325bd3af27c503f5c9d4be0b8dd9f6e6",
+              "processSeconds": 0.007002500002272427,
+              "error": "command exited 2",
+              "elapsedSeconds": 0.007175100006861612,
+              "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stderr.logSha256": "88ef18bcd8f9366075c7761d586a8c18e6ecfd9010a14a9cdaa33d3147947893"
+            },
+            "rejectionObserved": true
+          }
+        ],
+        "independentComparison": {
+          "referenceRecordSha256": "ab68694bd9bad00391d3eb160ab6def719b808f19547a51fcce24dd9ba07e308",
+          "referenceSourceCommit": "473045d78e9f4a35a058c6d3333665da393287c8",
+          "referenceDriverSha256": "1886851699d6b6e00579347b2e1f392ac8f99450737ab176017b71305994f50b",
+          "freshTarget": true,
+          "freshTemporaryDirectory": true,
+          "sharedSourceCacheAndToolchain": true
+        },
+        "compiler": {
+          "command": [
+            "<repo>/toolchains/installed/linux/bin/rustc",
+            "--version",
+            "--verbose"
+          ],
+          "passed": true,
+          "timeoutSeconds": 20,
+          "expectedTests": null,
+          "exitCode": 0,
+          "cleanup": "owned-process-group-terminated",
+          "environment": {
+            "RUSTC": "<repo>/toolchains/installed/linux/bin/rustc",
+            "CARGO_TARGET_DIR": "<temp>/ariax-release-verification-20261005/linux/target",
+            "CARGO_BUILD_JOBS": "2",
+            "TMPDIR": "<temp>/ariax-release-verification-20261005/linux/tmp",
+            "TEMP": "<temp>/ariax-release-verification-20261005/linux/tmp"
+          },
+          "binarySha256": "d3a664c970a9fd8361b64194861bebc1ae37b9054e5ee3400dc1c9e691797eea",
+          "processSeconds": 0.038533700004336424,
+          "elapsedSeconds": 0.038692700007231906,
+          "stdout.logSha256": "b2bdf493bcf6d1dc55181a0efc2774b6d9cf7bf5c8dcc5bed592c994b2ad38c4",
+          "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "nativeCompiler": {
+          "command": [
+            "/usr/bin/gcc",
+            "-dumpmachine"
+          ],
+          "passed": true,
+          "timeoutSeconds": 20,
+          "expectedTests": null,
+          "exitCode": 0,
+          "cleanup": "owned-process-group-terminated",
+          "environment": {
+            "RUSTC": "<repo>/toolchains/installed/linux/bin/rustc",
+            "CARGO_TARGET_DIR": "<temp>/ariax-release-verification-20261005/linux/target",
+            "CARGO_BUILD_JOBS": "2",
+            "TMPDIR": "<temp>/ariax-release-verification-20261005/linux/tmp",
+            "TEMP": "<temp>/ariax-release-verification-20261005/linux/tmp"
+          },
+          "binarySha256": "a23ecab8ff08f09ad8c80602c2c5df7f49e09c25905cb8975902e101bf72635f",
+          "processSeconds": 0.007710499994573183,
+          "elapsedSeconds": 0.00792350000119768,
+          "stdout.logSha256": "08cababdf891ccbf96eb376f1e84f279f70302fb13d84e5f98637becdfc6d989",
+          "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "cargoSha256": "828980723df339d62434390e9fb8ef8831036583343ae2316b7ab5646b5c1953",
+        "cleanup": {
+          "files": 2997,
+          "bytes": 948168939,
+          "inventorySha256": "63e54df922a956e0b548cf4a45b774e24c8b76150b78602ae954507ad57a2f5e"
+        }
+      }
+    },
+    "windows": {
+      "rawRecordSha256": "184eb91893f77b1f66c8352f1348e3ab90d162567d58cd6e0f2ad55687ca2375",
+      "result": {
+        "schema": 1,
+        "passed": true,
+        "releaseApproved": false,
+        "target": "x86_64-pc-windows-gnu",
+        "sourceCommit": "bd40afc86e3f5d17f9a48ab0ab604cff7e9acd88",
+        "sourceHashes": {
+          ".cargo/config.toml": "40f7eff51709953ad5e870a5e98187dba0661d820d6631ef6f8fd364b69c7f4d",
+          "Cargo.lock": "0a9174da9937800e0e077561527d2c9002dffe06e14e6d6534568bed1723d876",
+          "Cargo.toml": "d982c7e9982a12b85f16f108fc11eb41f0cc3bda801520113fa2e3de400c943f",
+          "assets/public-suffix-list.dat": "084a5674d77c1d14900b16da5fc8afee9765af2f00a638552a8c7aa18f44ae81",
+          "assets/public-suffix-list.toml": "7ae1577ed5b88814a14ba3e8c2938eebd35edf727339d45efeacac0dea2d5ccd",
+          "bin/ariax/Cargo.toml": "be14828ce9e27acab682f14d5cab4d827ad9df034c6142f231429932fe810230",
+          "bin/ariax/src/bittorrent.rs": "598c2a5320e08694a9e3f74790072cfa8fa672ae110d5ed5fe89f7079433ddea",
+          "bin/ariax/src/main.rs": "b51c144bad7a5bad7d53a286ee0dac183a0c7bc9c89078f93d5addc7d4ab5f66",
+          "bin/ariax/src/rpc_service.rs": "70a7b36d6cf01916eaa46e570f8651afc706a766d95c52a84c64f7a60addbd59",
+          "bin/ariax/src/startup.rs": "7d9899c1af5bf48784178563be494ca919d88ae2e09cdfbba22381b2446e3dbc",
+          "bin/ariax/tests/cli_smoke.rs": "13518afed31a8ac8a4e4f731c8fd148c99838e0f50d692697bf30c260170ade5",
+          "bin/ariax/tests/permission_policy.rs": "1cddd7544fffd422541f9c2b72dc2158bb3273e6b0a4d173eef892658422390e",
+          "bin/ariax/tests/removable_storage.rs": "4140cfb1b389140e87f1b69523821f6bb5c8671cea9e5176cc90dd787f091a9d",
+          "bin/ariax/tests/rpc_interfaces.rs": "4a466db8d02d3be2dc0cb30872ce20ba370841cfc1314c2b20be4debdcf108df",
+          "compat/README.md": "b918fc60a942dc4ee3f52ea67af0fe7d657592290aa7b5ad0ea542509a82ccac",
+          "compat/aria2-reference.pin": "a153470c588a17ad9f952a7a6968ca2e742b6f98bf51bffedd1d7c67789faaf9",
+          "compat/iana-ipv4-special-registry.csv": "e4a1c06ecf8e934ed5ae30977a1477a78957da1a5fb602fc855e3f74bf01c8ac",
+          "compat/iana-ipv6-special-registry.csv": "8b0e181a4ef0c71fcb25403c40702f2050c2f6dc198156b6ec1a5fb746c9a73e",
+          "compat/iana-special-purpose.pin": "4e34030ac3372cb133b4b14758789f55a101ca1e3f7fd440fd433f2195b609be",
+          "crates/ariax-bt-libtorrent-sys/Cargo.toml": "8dd7d8b13d43272e92b07039708bc47501f1c281d6352dcaf662ced44f5471d6",
+          "crates/ariax-bt-libtorrent-sys/build.rs": "f7f36c669ffa21609c7a7f54eb5c91322b4fd682f8c2c7403643657b814a524b",
+          "crates/ariax-bt-libtorrent-sys/include/bounded_output.h": "0f76c37104e2ce52501797447525a87846c83dd19f10fc98fee59f7de21192fe",
+          "crates/ariax-bt-libtorrent-sys/include/bridge.h": "9b2d84db9ad50bbbb0a08e23e13d789b1cb0c348996558915336292a7984226f",
+          "crates/ariax-bt-libtorrent-sys/src/bridge.cc": "5152245cef05d2d64f3511cbfe7aff924307b63cdbd910184fe8d98f3f6bbb00",
+          "crates/ariax-bt-libtorrent-sys/src/lib.rs": "bc5141f4159b4142806eb915a62648d17ad7a685a21dc66ff7f3d65c9e5deccc",
+          "crates/ariax-bt-libtorrent-sys/tests/fixtures/README.md": "fd209a42c9cd621967a397b740a8366f8b5d2a7183fb5bb290bca5a09bdd459c",
+          "crates/ariax-bt-libtorrent-sys/tests/fixtures/generate.py": "91edbac6bb6227d6b0b866f7c7764ad64d6a2115993638dee8cf994094204bf1",
+          "crates/ariax-bt-libtorrent-sys/tests/fixtures/hybrid.torrent": "6e2a2aa189e440fe18e3164dd2257243b3b322edb884733196d7940f81335123",
+          "crates/ariax-bt-libtorrent-sys/tests/fixtures/multi-piece-hybrid.torrent": "74ab389750f13917280714cfecfc0231da32a5a2985d4ace065d873d594c6f68",
+          "crates/ariax-bt-libtorrent-sys/tests/fixtures/multi-piece-v2.torrent": "f399e02131d78f18d578899deaa12bec650b04017dc10ad691e30cedd6325570",
+          "crates/ariax-bt-libtorrent-sys/tests/fixtures/payload.bin": "2e49cc8ac17cc60b8210ad5ccfcad4c7bcc3c160c8f84b8668fd0f2af37d1068",
+          "crates/ariax-bt-libtorrent-sys/tests/fixtures/selection-v1.torrent": "32d6c4f3a4e0b0a881bdda0168b577e87da965ca341b53314b24296e3539e662",
+          "crates/ariax-bt-libtorrent-sys/tests/fixtures/symlink-v1.torrent": "59aaf319f4e14e8af9abf476740be2909068d02b1ff54c2a4e4b60fb57d546e2",
+          "crates/ariax-bt-libtorrent-sys/tests/fixtures/unsafe-path-v1.torrent": "e8421030d201a1b33a19f7cccde66471cee2675762b022ff34b03ab034a3f97a",
+          "crates/ariax-bt-libtorrent-sys/tests/fixtures/v1.torrent": "e7842401f5ae269b57ab3bcc928d2333f49def0376eca679fdd61f7f64831525",
+          "crates/ariax-bt-libtorrent-sys/tests/fixtures/v2.torrent": "98e8cc057c8a5ecd35333df06d15480a4d7073700e67559533278cd4b80b7a08",
+          "crates/ariax-bt-libtorrent-sys/tests/native.rs": "90126f8b22f850fea649f11134d55a54760524714d54405c3ac76e1642b2b72e",
+          "crates/ariax-bt-metadata/Cargo.toml": "d77fe58825ec142f75c3f19a538e8891e93fea79e01e853456832682e2fec092",
+          "crates/ariax-bt-metadata/src/bencode.rs": "fd2e6b12a0c752b611039eff4ec717414303bb9c55896f6530f91a40765d35e4",
+          "crates/ariax-bt-metadata/src/lib.rs": "af7de525a1c88d95d194f2128901ce9e2bcb14b1624a02e133357713c9bea4f5",
+          "crates/ariax-bt-metadata/src/metadata.rs": "012c9ae58d354cd2c030a761cd37bd4d6d15d2a6ffe273fc4d92185e0053d426",
+          "crates/ariax-bt-metadata/tests/fixtures.rs": "fd2c598c70cfd84271bf5c84eea0ef5e125daaf662351c162f6a42a3f1d7a39e",
+          "crates/ariax-bt/Cargo.toml": "c4de28a31f96c06bd370a9ceab65c8c592f13c9f6cbc2460bc39a2bbdf87cd73",
+          "crates/ariax-bt/src/bridge_budget.rs": "0f57807187d87898c5d62a68e568814bfe9ea2bb3c81399d34874c77cf4778a5",
+          "crates/ariax-bt/src/lib.rs": "e9da35ca21b330d059cdbea9948d161ed673f734d709d1730f2fafbaf2d4da51",
+          "crates/ariax-bt/src/mapping.rs": "4ef690cba8e1914438d68074061320e069856141dfe4ab07d6503e4e84ae5ecb",
+          "crates/ariax-bt/src/native.rs": "94f01d2d408dca89b7dcdd5a99dfb95881b9433014daf385a4860185156a35ad",
+          "crates/ariax-bt/src/root.rs": "34d8634d6f79df14f67716a04f9d59cd94c63d813e964ba954ef705f078dc467",
+          "crates/ariax-bt/tests/adapter.rs": "d11467e95b6865a18b8a15b0bebe6a6ee43985a527827b7b8b3254f05615d8e6",
+          "crates/ariax-config/Cargo.toml": "c8965038c3aaa098a02846b53e37ea8ea5a7357539410d2ba6726b6f0b217769",
+          "crates/ariax-config/src/flat.rs": "8e68aed0869b4a86b474ba2aa8dbb405526d6658a4235712659ea7d131202cd6",
+          "crates/ariax-config/src/lib.rs": "6fa1a6c8c9764b564fea2233fa8008efe54f178aece4a6f114c5e99fe2d663f5",
+          "crates/ariax-config/src/registry.rs": "2033a8fc92327f0d2bf601b43b94ace0ce4a2235ca4603451137a8330596ac5a",
+          "crates/ariax-config/src/url_rules.rs": "01b9e6c28011303706c5b883fd89e0c92321ac3dd9cfcd772632b75fd43d6907",
+          "crates/ariax-config/src/value.rs": "27ef3090fbe5040738074c1b79e9445dece2b15ee1cfa3a9489e03ec9541c1e5",
+          "crates/ariax-core/Cargo.toml": "97cd5c7866f21f5c2ba7a5ef8734d92f8b50689b96b7609ef9b1479eaf983b37",
+          "crates/ariax-core/src/command.rs": "ba401ba8c759d2bfc2a2910c8be3572e348f560dc79d6eb802fbd293afaf66f9",
+          "crates/ariax-core/src/error.rs": "34fe6975502785f51bd4f50cd43332ba50e13d85f51c903866fff134b09b44e3",
+          "crates/ariax-core/src/ids.rs": "51c0d2f0d72d955601b8b4f10a672e0b839c53b487a50481f5a04956e7d97b7c",
+          "crates/ariax-core/src/lib.rs": "9c9c7ef193bcd99964bb17ae621f63304d1829e6a5258045546b9dfb5b562c07",
+          "crates/ariax-core/src/persisted_delay.rs": "aae19a9dba3789cbad78c1b142d35882d9338e2a633346f0438dbc33ed0f418f",
+          "crates/ariax-core/src/scheduler.rs": "cdf4f72411045e1f53d369c63ed06801e4bf6ba4116d4d5a6efa2f8dba33e882",
+          "crates/ariax-core/src/snapshot.rs": "0d2b47e724aea6ad37b46e70cea20cc9f0e2464ffa589bc0b9aa3ada364003ee",
+          "crates/ariax-core/src/state.rs": "34025aa371a8afd8e207c435b36ad449a5a874fda99bf6ab9f38797666f8acd5",
+          "crates/ariax-core/src/transition.rs": "776d5aa7138ce139acebdc8d6ac4775d68421867680d01db5b17d6e4fbe6b918",
+          "crates/ariax-core/tests/request_scheduler.rs": "4dd584349eda7a704c70a483f6651460d53e113967d6c97e79f644f2835607f8",
+          "crates/ariax-engine/Cargo.toml": "02fe1a829511692ded146047a9366bca1958e32864d474ab18599777151c783b",
+          "crates/ariax-engine/benches/http_capacity_profile.rs": "2eebbb99d9decb1cd08e77e57e78869faed53f87f84d7a0391a8634f1f6d7318",
+          "crates/ariax-engine/benches/rpc_active_profile.rs": "5419802838552345caf03fbe9aab15e3d93fdd7ad2cc5d7d5ab81d23f019219f",
+          "crates/ariax-engine/benches/rpc_active_profile/admin.rs": "4847ac8d7727420a34c72bf4789ce272081e6a9726093e4af3783014b1822cb3",
+          "crates/ariax-engine/benches/rpc_active_profile/bittorrent.rs": "290f39a7f96eb6d63af727c7ba504358331d74f23700a01f75d8fc4853c2d66a",
+          "crates/ariax-engine/benches/rpc_active_profile/burst_timing.rs": "abfe2cc444897292898fb631fb5c40bc2acc0954d43fef9ba4e550adad5d0e36",
+          "crates/ariax-engine/benches/rpc_active_profile/origin_metrics.rs": "2c868490823cace8bd4e09f252b8607864c27e2fc44ffc73fdb8a6dc7d496aca",
+          "crates/ariax-engine/benches/rpc_active_profile/peer_startup.rs": "d11e8827debb132fb6e3450b22563dce024d30171a0dcf89d8b358756164ed9b",
+          "crates/ariax-engine/benches/rpc_active_profile/peer_wire.rs": "522ecd63a251a2a92d536de7c775e745cdd21188a2c4d1df43b19325d98be0af",
+          "crates/ariax-engine/benches/rpc_active_profile/setup.rs": "eb54061718be7ee0a5cb6e99d5d56d6693489c304f7f3d94dbcd82846f004e5b",
+          "crates/ariax-engine/benches/rpc_active_profile/stalled_credit.rs": "385ed6b6a0cad7654ae263f0388a9e14cce75e630a10990cb53dba27060dc137",
+          "crates/ariax-engine/benches/rpc_active_profile/workload.rs": "751dfa2bc8c4142f47e6c4ab10ab900e2e572ea42404299fb9e4e50d96f73b4e",
+          "crates/ariax-engine/benches/rpc_dispatch_profile.rs": "ada805eb1b692767f6e3080ad068e2e600f6956cb7a9880f1385d03c286230ce",
+          "crates/ariax-engine/src/chunk_hash.rs": "135ca9f7fb7f2099d7a16b0a08da4d83c6be8725672677f1b1cd5460acf3d22b",
+          "crates/ariax-engine/src/content_checksum.rs": "47a3753e9d775166bde6ec4b81025a69d871b3a774689b29f107b74788715e72",
+          "crates/ariax-engine/src/effect_sink.rs": "eb0983baf09bb97393724e28d50b7bc62b1d1f626588ea8b8c708212366eb003",
+          "crates/ariax-engine/src/ftp.rs": "e27424158da6013465e5ef7dc77f8978033d20d2aa9473b6723a98704810ccad",
+          "crates/ariax-engine/src/http_auth.rs": "e89bdc71ed94f9b162bbda70492ed4316c7a517256f38584d89d4f964d358dc1",
+          "crates/ariax-engine/src/http_capacity.rs": "12e16e0de3d7ccdb188540a9a8ecdcfebc1a8aed45b470f1fb88e36837497e23",
+          "crates/ariax-engine/src/http_client.rs": "162232e09f7c99f3e39efabfb5c49e0a04c86a902030312368a7109b518cadb8",
+          "crates/ariax-engine/src/http_connector.rs": "a79a5dd26e9d65b51a585e28dfde21cd2e622c860939af6d7ac1635c24b8a289",
+          "crates/ariax-engine/src/http_control.rs": "9a9601010f26f462e7f9f4dcb70773c61b7e5d1b15e0dae643deccd2fef8c99b",
+          "crates/ariax-engine/src/http_control/admission.rs": "6a460462ecaf2bccfb5db798bc57b81b1014b293e83cd8e974bac09df147d36b",
+          "crates/ariax-engine/src/http_control/bittorrent.rs": "04fe4a256b22bc0e2bfda5881ecb6c937b56e5a46767fa015759ca15ec0ddfe0",
+          "crates/ariax-engine/src/http_control/configuration.rs": "bd3126347d55a72b6216cf3a44df91502e022d36f360fde9d3b9eb8b48fa1e71",
+          "crates/ariax-engine/src/http_control/control_io.rs": "7a7a38c6f7c9e10ade01e13d4315800ac7bae22bb09d539b1a785476c84a4aed",
+          "crates/ariax-engine/src/http_control/control_ops.rs": "46237544e7d6b661c0c8fecc2f631cceff383a48269cb141f59d94f0e7dc5fa1",
+          "crates/ariax-engine/src/http_control/control_runtime.rs": "600b0a20369958172a7146eff0923d7a46b7918eebf70d2b0e6d33ab358045de",
+          "crates/ariax-engine/src/http_control/metadata_follow.rs": "473b805584c0fd40fbaaf65bf5b161c6141ec271f11ca0a1758cc63f54dd3742",
+          "crates/ariax-engine/src/http_control/metalink_admission.rs": "bb64504c1f2b559359da4b9ec44b861ad62deb29de760181feb65008efe4a29c",
+          "crates/ariax-engine/src/http_control/phase5_tests.rs": "0b78f99d9eb40a403dab9c0be3daa4eeedd23d34670e7ba4d2093f07b9fc5f9a",
+          "crates/ariax-engine/src/http_control/phase6_native_tests.rs": "59960ed8562f31f3a9ff18228577979c6fc802cf95d3666eb3a4ee93b49756c4",
+          "crates/ariax-engine/src/http_control/phase6_tests.rs": "280b68d8a2dcbe06b7e65e168c56fabe5111c2163ea44edc3cbe32a1ba01a24f",
+          "crates/ariax-engine/src/http_control/query.rs": "53cfb926c934867c497dac3146d73eadef4af5f4aa202231e536ee8a1a36b175",
+          "crates/ariax-engine/src/http_control/scheduling.rs": "819cc98cd077dcfde2288e7b0a56e8d397e91043905d2e4fe1986dcd8f94a49c",
+          "crates/ariax-engine/src/http_cookie.rs": "5f9b631d13160a246cf2981176c462632af7622d88e97e02708bd89ed9a27fc6",
+          "crates/ariax-engine/src/http_discard.rs": "65e763ceff72cade261a39269500aba6acdb357d2b7f75176e9f5e6fbb7668f0",
+          "crates/ariax-engine/src/http_first_slice.rs": "2ca6888ff818abd53699f24479ca0afa94cebb2d7b5f8afe591826d2e37277c4",
+          "crates/ariax-engine/src/http_happy_eyeballs.rs": "cd918d791d8b859b6abe9ca3615b4af7a0646d0319bcb92b4de721fb6262677d",
+          "crates/ariax-engine/src/http_multi.rs": "20ee3b205da6b31b444ee064f7c0aed2b69377649a11f1e18f357f230f417570",
+          "crates/ariax-engine/src/http_multi/metadata_follow.rs": "62b43a85e9c31e2f4622d9de941c2a8bd03ee1d7dd6b71659589e1731ab63ce4",
+          "crates/ariax-engine/src/http_multi/protocol.rs": "f010d6e2755508bcc8d3fb7c983b3fedb373fa7e11f3f41b693f839f2f185b98",
+          "crates/ariax-engine/src/http_multi/protocol/ftp_transfer.rs": "dfc65b8d5287126e6bcbbbdbd1b837681f7d06ab44167c1037d94932638ca662",
+          "crates/ariax-engine/src/http_multi/protocol/ftp_transfer/security_tests.rs": "cec6f86ea0cefbaf214078a0126113f40e8e9ab397eac6eca974556244b68428",
+          "crates/ariax-engine/src/http_multi/protocol/retry.rs": "6e4851a3524910d474603df60ca364334011021393e9246320ddb2c5fd0fc9ea",
+          "crates/ariax-engine/src/http_multi/protocol/sftp_transfer.rs": "bf1f5323a9d26dfb208f3994376cf9df5e250964ae422e5b60abae978e8d2489",
+          "crates/ariax-engine/src/http_multi/protocol/sftp_transfer/tests.rs": "0f46d166dcfd4ae8574e487e2859af251cc4a3f6759fc71c26546aa3fe8f6e5d",
+          "crates/ariax-engine/src/http_proxy.rs": "68ca8a663866f43028864b4f4544d77a4057387de7460bcfed5c3a89d9e94992",
+          "crates/ariax-engine/src/http_proxy_client.rs": "190619b6a7b24caca72c83fac41af44e3a2ce61714e1731c0c97a16a42e70957",
+          "crates/ariax-engine/src/http_proxy_io.rs": "b313f3d84ade2ec83ba73251be6402c3f0a700bbe2706cadda4ebabe86473d3f",
+          "crates/ariax-engine/src/http_range.rs": "7ee41b90ccbc518a6181a922853bfca08bcb0a564397db5354a7cc2acf8fdc75",
+          "crates/ariax-engine/src/http_redirect.rs": "186e5ec7db51083567abfda811c316b69d3d0ab2182f976ba5addfbb1dfae029",
+          "crates/ariax-engine/src/http_request.rs": "942ea63839c410e3fe00d529d4c66548755273462e0dfa20137514a434f283b0",
+          "crates/ariax-engine/src/http_resolver.rs": "910360e9798cf5304df62aadd6bbf92396eb2c444a6f62158ce7ddfef1ffdd3f",
+          "crates/ariax-engine/src/http_response.rs": "3ca76d1f0a3d5387dee1c894b011a242664bb3dec7e1967a87d4914af5bebafc",
+          "crates/ariax-engine/src/http_retry.rs": "ac82d7e16fa49aa5a5ed18ba22ba278d83f5edcb5e69dab822cc6234ccbbb3a6",
+          "crates/ariax-engine/src/http_rpc.rs": "5da0db990746dfb1a8a090cd4cd3e253ba53edd233e172060ec34c1a0cd9448d",
+          "crates/ariax-engine/src/http_special_purpose_generated.rs": "382ec27164411d6cacd92d10eb7e09976f125530c6e2f4775a57988e4e46c739",
+          "crates/ariax-engine/src/http_supervisor.rs": "6f4414625109582fd2b47a94df58ef0cb90b85d05b8458c1ce2f9374e2ae3575",
+          "crates/ariax-engine/src/http_transport.rs": "86494906e6aa3a6ed3be6d4f0675d13375e29559cbdd1b05a74833882d199ea7",
+          "crates/ariax-engine/src/lib.rs": "9b2c2dc04694d53f9bd3595400b584c945f7be1e2c65046a94bf9d4a7f7fbbca",
+          "crates/ariax-engine/src/metadata_follow.rs": "b7204f98f727564e5f863adf5a8d2febee62e18a9684710a959a6e6340f7b955",
+          "crates/ariax-engine/src/metalink.rs": "76609ebc97f792df11a037d96c5a8d9373764d3955d598636811f919a458259c",
+          "crates/ariax-engine/src/native_api.rs": "1f0828fb510d64fdf9b79d2669d3e77a0f9184bd5f1d01afaf83975a3fca64e6",
+          "crates/ariax-engine/src/native_api/bittorrent.rs": "6d7d52c13ddd6bc727f495a47a7f0f68521e860ee6832564af8dccf6847efb0a",
+          "crates/ariax-engine/src/process_bootstrap.rs": "e9fe241b87f75e04eaa80a7bf103a07115a5a7976c8e2083248fae96b5fb69df",
+          "crates/ariax-engine/src/protocol_transport.rs": "37cd0bae736f3c4e163e0df7b2b219924045556db91009eb75f1a74c03d9dcf1",
+          "crates/ariax-engine/src/rpc_budget.rs": "a3526d2ad10f4cfea334690f154abe34dc3a7be5a21451d1dd76518805947af9",
+          "crates/ariax-engine/src/rpc_client.rs": "dfafdfb81c3b3d18e03bd8f38f29d318b9fd9b5973ac1db64bf88659e7a540ca",
+          "crates/ariax-engine/src/rpc_compat.rs": "51a2d5df8eae88725d468609324d3212f9234c05f65fecfca6495e7921f656bf",
+          "crates/ariax-engine/src/rpc_events.rs": "4422c449295b5b2fef39bc6e79bb6c57e62ee91f83613a3dd2a0660748fbd526",
+          "crates/ariax-engine/src/rpc_json.rs": "eefc06984ed0f39ec6f258370a481496ffb8c5b61eb877c7f170130b666116bb",
+          "crates/ariax-engine/src/rpc_result.rs": "10621bc799fd7a76d917bdc474e542c1d6588a72f1a59ab8de712599f7a143ad",
+          "crates/ariax-engine/src/runtime_effects.rs": "47d764e72f1633cc7f373e4940320cd080cd1a6b5bec498c0ed19f494be9d41b",
+          "crates/ariax-engine/src/server_stats.rs": "8393b556cff063a78b9b6c3005364b2ac6ba69b4aa58eb696baf57e93bd74061",
+          "crates/ariax-engine/src/session_file.rs": "1628889a3b53f7a5999af19c82214eb6ff3ba8fb89ac1132a58b498cf2eb2f0f",
+          "crates/ariax-engine/src/sftp.rs": "41967432166288f05e5d80bbcb1982fcec8eb8af82e415b2c0d8057b9bb038bd",
+          "crates/ariax-engine/src/sftp_trust.rs": "eb308aa686e365b37148a8b662c98c40cb8c824f87f2cd90f6d1adfc241abc64",
+          "crates/ariax-engine/src/slow_slots.rs": "4e913830587e1c5eee433d1db740d5055a6dedd1c9297dc6dd0d34a70368feb1",
+          "crates/ariax-engine/src/startup_executor.rs": "543f2fed6bec2a2056c8064017c6de5b1e9a3f8e5f1db9f945a40b743e1153b4",
+          "crates/ariax-engine/src/startup_filesystem.rs": "204b48d2b664302e3c55762bf0b559a6ef1c02ce4543603a50abe3bd3286f410",
+          "crates/ariax-engine/src/startup_native.rs": "821864fc226c9274bef71c8c855f69836c0bb6923bb203dd8ea439dcc8498e55",
+          "crates/ariax-engine/src/storage_engine.rs": "cb961a937b0a45d58dfdec8f41538ae25375708e54156b6ebc79e2570eb19378",
+          "crates/ariax-engine/src/storage_engine/verification.rs": "2986e13e2cfb21ec5233ed1745d1097f319bbacbc67d268bea18a47f438277e4",
+          "crates/ariax-engine/src/storage_journal.rs": "50c6b3eb3b292557a6e4b924acce3954c8e86ce23048a65b276c5e0f878bbdbd",
+          "crates/ariax-engine/src/transfer_spec.rs": "d57cbd6cd5123ec2d637ce624b00a03abca9c0a8199f1324aa7da6ff7cbc9568",
+          "crates/ariax-engine/src/transfer_task.rs": "75bc4f8b0b3d2032c68e3b9f63db4113706398e49de020bed6329f6ea3da2612",
+          "crates/ariax-engine/src/verification_document.rs": "01cfc5f9347dcaf79725408f0a68fb013cacdb1eb3f455ddba3cc9e38ab5a55f",
+          "crates/ariax-engine/tests/bt_peer_fixture.rs": "8ebde52099e196a0800e0c8d68e838ef0106842a96f66294eaa75dbe799c9bbd",
+          "crates/ariax-engine/tests/bt_peer_startup.rs": "e7e98ba7cf4797b59a64363aa788c2ae527aa6acc797bcf8b18efa5ed7c4eea9",
+          "crates/ariax-engine/tests/fixtures/README.md": "ecd0ccedaa2478e1862f5309219f35c328b8fb4f0194b166a5ae1576a7ebfe53",
+          "crates/ariax-engine/tests/fixtures/sftp-test-host": "7752bdd1f2c046187ababefbc73f9858a222c5de52791bfe83db23055629fe90",
+          "crates/ariax-engine/tests/fixtures/sftp-test-host.pub": "83ac4f8a05019036cb373c6f2c2cb9ecd6af6797ceb048639765640510a88a8a",
+          "crates/ariax-engine/tests/openssh_interop.rs": "2eda0aa82557eae25a512613d955675b517419d8f2bd0ea2d7848e201953091f",
+          "crates/ariax-engine/tests/permission_policy.rs": "2a329b251b02d30aaca81ae0466d6ec3b48d6b4295a7400d75a4c5b7633f14f5",
+          "crates/ariax-engine/tests/rpc_benchmark_setup.rs": "a5f1efe5d985596ba78c6e62d858023c1445ac3bfa21b15946fb3b0dc362d5c0",
+          "crates/ariax-engine/tests/rpc_benchmark_workload.rs": "a2fe97c9e9ae132b9cbc8e48b2be5b6af50c4a58c8e89042e53112b6c4e2b3d5",
+          "crates/ariax-engine/tests/rpc_burst_timing.rs": "37422b6b4c3f40bd0f2139e54de314854ed3a982cfc0169f927683fecfe00ff1",
+          "crates/ariax-engine/tests/rpc_origin_metrics.rs": "3cafca538c637428e3508a1ffd82720f9ff0b63303026bd5338bd7a860d081a8",
+          "crates/ariax-engine/tests/rpc_stalled_credit.rs": "a87f6503d1e709f2d45baf14c98b0282106fd36663da96bfeb6a5f225fb320c3",
+          "crates/ariax-engine/tests/vendor_contracts.rs": "0335bd0fe925c3fe519d85e7ff4033f4cc0a01f3bb395e9fd5e3ed6836448447",
+          "crates/ariax-runtime/Cargo.toml": "f5531a5e7df9e57259904545de36a28460fcfff094f8159958f9cbddae9d46ce",
+          "crates/ariax-runtime/src/blocking_disk.rs": "acd44959c23f1de416faec5a32bee09029d64c830ef948f5390f09ede8580469",
+          "crates/ariax-runtime/src/budget.rs": "868bf13048203910fe1eaa337d367882246ede7763840d7eff8b6cd9e4aa4083",
+          "crates/ariax-runtime/src/buffer.rs": "fb109bf733b804fe86e82079f23b7b0905d2afee84e5fcef4dce8381e69da8f4",
+          "crates/ariax-runtime/src/cpu.rs": "590ada85d28d92f39b0cb98b92eaffa6229222bab129ecd88fb7b681376926dc",
+          "crates/ariax-runtime/src/handle.rs": "a3def183ff7150bb85bf7eb0e75b4da3b17a13a6bf2ed866a5fc3e57fa8e006f",
+          "crates/ariax-runtime/src/lib.rs": "e75c854cecde1b8754b5e1c7b6658232e6a83288f9680e6205ab117540730b9e",
+          "crates/ariax-runtime/src/profile.rs": "d9ebe70fda44871ef5c1a59e8b41c3b8fe154b8f4f141434434ea854b204b697",
+          "crates/ariax-runtime/src/queue.rs": "d71c90325b58d8d06f1dd7df3d9e5ecb8e3fbdaa13133b39343c8a1618149d05",
+          "crates/ariax-runtime/src/rate.rs": "1e22eac5f241054a4ea684a04cfc7933c6f61779d892659950b73ab371ce2891",
+          "crates/ariax-runtime/src/scheduler_driver.rs": "66a232a0851668fda8bf0c57df72a2a4560feb06539a182d909d1e3f4a8d2732",
+          "crates/ariax-runtime/src/shutdown.rs": "040dc9e997128993dc8c0503d645c8d090d4cbff4b25d106b97e13d9371bb479",
+          "crates/ariax-runtime/src/stats.rs": "9c6d3763ecf8f431b7f7bdc04e86bebf50a515069421eb866dc3c6bd9e419c60",
+          "crates/ariax-runtime/src/status_snapshot.rs": "a0cab6cae5700d27a910c8fe9271ab00176690ad9b1ba6df268bae9e78f2e1ce",
+          "crates/ariax-runtime/tests/blocking_disk_lane.rs": "78b2e12645584cb075889058077f61a750e08e371710b43a674eb6bae704ba26",
+          "crates/ariax-runtime/tests/scheduler_driver.rs": "c04a6ffe1af81f5c593a0abd47f524cc54dd215bbbfd0b688d52b2238b2f515a",
+          "crates/ariax-storage/Cargo.toml": "806bf8e9794c46c5345a5d70c0255f1be0d120df950ca910ba55f8e5c1d6c027",
+          "crates/ariax-storage/src/journal.rs": "59880197287acfe4ae6be8008f5e4bd23adb37fbf96e9585df3b83697e9ff83b",
+          "crates/ariax-storage/src/journal_appender.rs": "4e8dbc3a30f18c7e248c2da92cf6a261f0b43d493f5d98ea16e5de32ad70de5f",
+          "crates/ariax-storage/src/journal_payload.rs": "7510fb1e942b7280153486222292d7c66b36f639aa810dc494cca000322f9202",
+          "crates/ariax-storage/src/journal_state.rs": "34e0564e370f224d77de3225cf34705f1455ffa13d06ba6cfb92f6546dfb4296",
+          "crates/ariax-storage/src/journal_state/verification_state.rs": "b41aee9d0f3e13035bd19b57513694fa2b804facda22e54cf7f1cea0cce83ae7",
+          "crates/ariax-storage/src/journal_tags.rs": "727a61fcd5c095ad99e9237b1e739b7aa9345534a403c635ae257308f685c68b",
+          "crates/ariax-storage/src/layout.rs": "32c72776bae8aa0d45e2f66d87c10eb6dc1190508071a540e6445527663f9dba",
+          "crates/ariax-storage/src/lib.rs": "c95c531f358f857d7ce091ab677387d8e6b196ccf446e44b0ed962390fe29d03",
+          "crates/ariax-storage/src/metadata_expansion.rs": "ef531d392f019fef0d136ac97899f124eee85eb187cd0dfa1f2716ec7afa61fa",
+          "crates/ariax-storage/src/native_capability.rs": "71bb54b502976f2be71667c02f51eeb7460be26e1310fbba3331752c3248831f",
+          "crates/ariax-storage/src/native_identity.rs": "bdae177a970142c5b579451ec48b19d245c42a2c31f427526570c9429ef7371a",
+          "crates/ariax-storage/src/path.rs": "d6aaf4db7969cf4c089811fd2aaa1ddeef9a3c18a51b188e92369f8e983da61d",
+          "crates/ariax-storage/src/root_binding.rs": "f505a1a3f370a5d766e1a841ab7ecf38366cfec410be54e4690a3d12ad507ecb",
+          "crates/ariax-storage/src/session_bt.rs": "82a03b2b3c9b5ea4a6f4e3e24135a9437f35cbd46bc18ee9f1aeeb1378274c10",
+          "crates/ariax-storage/src/session_export.rs": "0c771f6291c3632307ce13fba7cf2bd4f5a8c3155f4b62b4e743aeb3e4e3736a",
+          "crates/ariax-storage/src/session_owner.rs": "ae28609da817b17aecc85150ec128896a99e20c70650bcbe826dbb642fb79ead",
+          "crates/ariax-storage/src/session_store.rs": "995228aa1213cb3bb0b54be8a00842ba7b58032bc0247d02d00f68337d1700ce",
+          "crates/ariax-storage/src/verification.rs": "d0eb0b34e842ace75c3c0ae5211dcc3f1053ad84966d94cf431e918c938908de",
+          "crates/ariax-storage/tests/permission_policy.rs": "c4f64d967d9398abd0fbfc3f3dc5c03ab8fe7fdfaf6111a672d6f89c16cd91dd",
+          "crates/ariax-windows-security/Cargo.toml": "073a02bc1e26daad7f46cbf906a69552b0101562ad0f2f1e243ee3601152563a",
+          "crates/ariax-windows-security/src/directory_response.rs": "d99ff84d409b55f73a1ad3ca9e09733861f3905f85a8a3e124635e49973e404b",
+          "crates/ariax-windows-security/src/lib.rs": "e2d582f464a44d1425245d09464ff8b59e525ff74d4b331554ac08a580338d8d",
+          "crates/ariax-windows-security/src/windows.rs": "50ae32d8f2eb5207ef7f800c580dded5aade2049074e7b80c85396a24cc657f3",
+          "generated/README.md": "e72c7222cc8ee84e782a33570c7c7e7e0e9a7533211a15617314c14985428a56",
+          "generated/aria2_compat.json": "70bf45acee97b03b806d21242d7afd71922346e57fcd04289583610b33499bb4",
+          "generated/aria2_options.json": "401073dad68a0e885787d31f3b76e08f3176f3efdf917931a26126d3c9d46d15",
+          "generated/aria2_rpc.json": "67340c1604e873eee5f317d20b2653b4e1b4cdb28d718271175296ffc7b9a0e1",
+          "generated/error_codes.json": "e33c8311cc2e906f94cf74de4f4dddd82d0c0759664a8ae07a7f6c8c5510c0b1",
+          "generated/http_destination_policy.json": "f3707148593f1c641cdd83e957dcc26214b0ae47ba5c8f680fdb654b8477eec7",
+          "generated/http_transport_policy.json": "7dc1d346a0d0e4960f216a9e4cf3e769ffcaedadba3d07aecd2e0a23a2693042",
+          "generated/journal_v1.json": "a5710ac65925fc250d583c39b5a838147dca11df282b94703e5c97ac0d6c01be",
+          "generated/options.json": "cff5cdb5aa1afd9c3b74b1fc5027a6bc2601e010c02af0a9452f3350cbc407ce",
+          "generated/runtime_buffers.json": "7b198e6bd049cc84ced3cefd8e2c745152bd893041dd036eb92c6e705ade5dd1",
+          "generated/runtime_compatibility.json": "6ee3a8dd745b756ab3c966c589b1aa4f73b6c56759c10cd9b51381831acc75a7",
+          "generated/runtime_updates.json": "b3911d2cdff8c3e9bc1a0c44530dded018e01c9aea4059a4f7ebbd59534800f5",
+          "generated/session_v3.json": "abbd494948a9a51e359238667a1b3171b207ac824c07a45d0f6bee3dfe253a7c",
+          "generated/state_wire.json": "d9f9d9f3be74351973a49630adfb4aa47bea44c235c6ec1162468254fa8846af",
+          "generated/storage_layout.json": "1768ecc0d223f37e179239dec7e9e6cb6109e5909593bee49312673c62058c16",
+          "native/libtorrent/README.md": "9b9947ea20a03183150c12ee07963b7b2f3883f17d6f2d25c038ca0074047bd3",
+          "native/libtorrent/ariax.patch": "8d377c5622d0308bda2f7fc161913954f4a4cb3af19f6e1400d2cde84446a409",
+          "native/libtorrent/openssl-patch.md": "ed55701a855eb61f773ad43fe1799eea8aca39ba0f3682e1d955c75f58bc8612",
+          "native/libtorrent/openssl.patch": "e12670d73045bda8fb086f51f1080ccaffd60e54dd8902577aea3b3ad2a5a748",
+          "native/libtorrent/sources.json": "b55bc045afe126bad7e48d9ca6e9a5b40f762e2bdea6cbc54997dcee32991819",
+          "native/libtorrent/tests/CMakeLists.txt": "48a55d82a29281a3c753236d3dddb3b9232d93ecdc5bb7946c4bc2dddfd068f0",
+          "native/libtorrent/tests/bounded_output.cc": "0cfa74de079521b2fd2b68f279c71e899b15ffa18e708117fdeb33c91aa00908",
+          "native/libtorrent/tests/endpoints.cc": "68b80cc15e6e16b9644b5272dc281924b2650af93005074b3a9b2fa81bfa9fbd",
+          "native/libtorrent/tests/fixtures/root.pem": "6ce6dbbdfc1789dd4006f76e990430429e66c4d7439c4b810f48d519300339bc",
+          "native/libtorrent/tests/openssl_callbacks.cc": "ded2ecead361d726a023664fd4f5e868573caed6625cc47c49445c69030839d4",
+          "native/libtorrent/tests/progress.hpp": "d672bd47609491886462c55fdc4a61477c5b244b148bab0de198c478f969ff38",
+          "native/libtorrent/tests/security.cc": "ef3b40ae509f63074e92fce8d5e11c1299e0bc614ecdd7af96c90a0d9976aaab",
+          "native/libtorrent/tests/storage.cc": "dc6a8a3c525a03fb8c03752d46fb6d1f9d7117a15c7b6ea453886de594e0dadb",
+          "rust-toolchain.toml": "8e390d6a0838315f972690f46ef8bae8b7ecc9ee6c1ed70140ef852869c2482e",
+          "scripts/local_hardening.py": "a18400abe6252923947ad33537f016be752f28544d78d9108c5b216bc66c23b2",
+          "scripts/release_build.py": "a7421b775f292fb90b453863180bf590d9dc95d86d7c627a15beb1ed415ce274",
+          "scripts/release_manifest.py": "f5af9eaff29c08cddc6f7e3217dbb96f82ad3ccffb8ec7739978f1311e144e3c",
+          "vendor/README.md": "e5eb21be63a9f04e094ce90a7271bcfac8ed8dcdf4e005d96f5b156cc774c3f6",
+          "vendor/protocol-patches.json": "a01b1ee56c3590b6fd566109625f665c51880695ec36f3e0b502d9b315249ad0",
+          "vendor/russh-sftp-upstream.json": "794923e5a24f7620557ba9b27a5d19528871edd63d7484f8b0ba4dd803e48149",
+          "vendor/russh-sftp.patch": "02a9535ff58b303cba00ed5ce6f1984ee594a64778a2b0033b7ac49bc22a28e3",
+          "vendor/russh-sftp/.cargo_vcs_info.json": "1cd02e87817f1d1c64300df9d816bcb715279072ef7af712329686b3d21d809a",
+          "vendor/russh-sftp/.github/dependabot.yml": "f3f45a3c109f425de8030c7eb6e7069e5a26fea4c6bd3da82f39e70638b40e2b",
+          "vendor/russh-sftp/.github/workflows/audit.yml": "7bbfb2c2c7c0cc96e9ef738f1fffb87e3f71f8ea24c32fb21ead038bfdc5d950",
+          "vendor/russh-sftp/.github/workflows/ci.yml": "1a51de5fee4de0793c9b2d8da6b7b67a0edbeccf3345e51cff6b6f0a11e38536",
+          "vendor/russh-sftp/.gitignore": "f0b8996e12c8f4840d3ed53a889ed44825137e2f50009054369f7cc5973a1cd3",
+          "vendor/russh-sftp/Cargo.lock": "c0b74ff74d76d2da795f9d2bba5b43ee98287925a038c55792ebb072169891b1",
+          "vendor/russh-sftp/Cargo.toml": "0d3aee63954e7adc1a3201343a66fd7998fac6dbae32809c606507aefecec2b7",
+          "vendor/russh-sftp/Cargo.toml.orig": "c207fba96058d3a06c06a5b906ea1d1c96e02a41686b9dcd9bd3aee410c516f7",
+          "vendor/russh-sftp/LICENSE": "1eb85fc97224598dad1852b5d6483bbcf0aa8608790dcc657a5a2a761ae9c8c6",
+          "vendor/russh-sftp/README.md": "9e134282036de7a31c335383aeb56681985e1eb8c2a9e8dd7c1daf701631687e",
+          "vendor/russh-sftp/benches/upload_benchmark.rs": "70a4846a8cf2eeaee91954eb43c15f9156df47d4466204219449ecf953da1f74",
+          "vendor/russh-sftp/deny.toml": "f8dc134ee22441bf4b07256dd149a4a36c8365a027e862d3bb03bbb06c047820",
+          "vendor/russh-sftp/examples/client.rs": "91f811a3c9400ecfbb22899d02e548a41140712ec67e5d2b8a9e3920bb95bb6f",
+          "vendor/russh-sftp/examples/server.rs": "aacecd426de2af029aa9f45d7b75d6657ea8061f28dfcb9496b3ec33486d8dda",
+          "vendor/russh-sftp/src/buf.rs": "2c89c0921778956a912d74279109a65c8b6806895b33c0d4c716c2dce13b4f56",
+          "vendor/russh-sftp/src/client/bounded_tests.rs": "422da9742f1a8ef66c9be3dfdfe8814a558e7ff1eb1be803947060dc8b2cb036",
+          "vendor/russh-sftp/src/client/error.rs": "7a4d7dd328485df871065bd8d32e7461dbf1d004701e14b64fccbfd9e364ffa7",
+          "vendor/russh-sftp/src/client/fs/dir.rs": "c5a8f9096eb50a8cabef5d7f083046eb63027463f470df1c7c03f1e78579b322",
+          "vendor/russh-sftp/src/client/fs/file.rs": "91e92a5d61b1ed076d21b4f950fca7aaf66bb56adef61b0ab8f95d58fc543014",
+          "vendor/russh-sftp/src/client/fs/mod.rs": "805a162c7a3f127396ae8e7a846fa997bdb74b324cc7a9e8266864224bf02668",
+          "vendor/russh-sftp/src/client/handler.rs": "8eebc59be5999cebcccfacdb8a453989d4c7cb17f52d16ba8e6c5aa27be98899",
+          "vendor/russh-sftp/src/client/mod.rs": "2dc33f7b11c88883b715a55b1b9f032620efc0658b7e9b6866fd32e553af5fe8",
+          "vendor/russh-sftp/src/client/rawsession.rs": "03d4c243d64a56413b654fc90309c37a35ac33061f3572c78f3ae5c3d2b5c610",
+          "vendor/russh-sftp/src/client/runtime.rs": "d480e4372e2a6d1c7048e06ff95fbd8cef9c71dda5e6ac9c903fcc61fac347b5",
+          "vendor/russh-sftp/src/client/session.rs": "874d2e7565bbec33ee12ab935fa504c301241417d1b716b9357c9c741ab82e2a",
+          "vendor/russh-sftp/src/de.rs": "68adee19ffb669f39218df1cc84a972f01caf14088be175516586dbc42b2d350",
+          "vendor/russh-sftp/src/error.rs": "675201ff1620ea46771b4c2c150fa120e44f6f528a50e7aed5a4b18a9b90759c",
+          "vendor/russh-sftp/src/extensions.rs": "88bac263fb8f7ec3ddf6309a59a305423e5db928846ee2c1196f0718923a9c0f",
+          "vendor/russh-sftp/src/lib.rs": "90ab73aed45ecaac7f77a32dd67a351152a716771c074ab56274eeb266ab57d1",
+          "vendor/russh-sftp/src/protocol/attrs.rs": "ddaf8a605faf970bf3a67074c81b0de4a04490e4da4aae21e693c9ae3e619f9c",
+          "vendor/russh-sftp/src/protocol/close.rs": "d837bfb3babcdfa8283703f75892d62e86d1fecfddb62d67cb6980d91b72c8a8",
+          "vendor/russh-sftp/src/protocol/data.rs": "ed7a66b15715400c6f8950fb7219326d0b0fc04b060ce673f714e472325bcc39",
+          "vendor/russh-sftp/src/protocol/extended.rs": "4622b727a15388ba5fc8236ad44eabae1227bf4749a379b340ecd297c647a3d4",
+          "vendor/russh-sftp/src/protocol/file.rs": "76bc5d41321a330ce002cc5b0f6ab95bed4cc7e2ca73261a42cff3a0b1a8c92f",
+          "vendor/russh-sftp/src/protocol/file_attrs.rs": "61104d06bc8e2db77e7fcebdd55877c873266048f0ac9442d6b1fd25e190144a",
+          "vendor/russh-sftp/src/protocol/fsetstat.rs": "d706c8fd8d7e6c25570c72cd69b5e47ecae6561b3a6de8baba9858fcee5ff46a",
+          "vendor/russh-sftp/src/protocol/fstat.rs": "9026445c268e01d3b90331724ae9a8d97fe63df90aa203a3c1f7250b0816fb91",
+          "vendor/russh-sftp/src/protocol/handle.rs": "2e2e0c579e4fbac32ba315c5456e671faaae91f1b4bcd39b9b6a95723294669e",
+          "vendor/russh-sftp/src/protocol/init.rs": "21e5a526ca747b151980619d886a44824617498730930565116450c46f3592bf",
+          "vendor/russh-sftp/src/protocol/lstat.rs": "767cfd55eeb47924c55612f77bfed9e0486daa911159e01c5dd62be3e227c05f",
+          "vendor/russh-sftp/src/protocol/mkdir.rs": "9a7ab9e07fb1bd447c2f4ded1fa92f533f19cccfd2e666574932b34e5590f1ee",
+          "vendor/russh-sftp/src/protocol/mod.rs": "656894159c2bcd20fb1ae2806d5b9c366e6bbe580b9b3765d062edb96ca6b20d",
+          "vendor/russh-sftp/src/protocol/name.rs": "cb343f3ef56d0ae32000886bac2e4f2dbc489024a37e292b89ae4699de5d8c1e",
+          "vendor/russh-sftp/src/protocol/open.rs": "9ecbd8a201a2828b2a9a253032ce565466386bd2de161a874e6dacda9ed0d9c7",
+          "vendor/russh-sftp/src/protocol/opendir.rs": "fad601932b01ac9bffd37e6df41b3f6722826c7aee24c34b7e5be593fd2068be",
+          "vendor/russh-sftp/src/protocol/read.rs": "087ba1416ffc4d2889c683f99cbefdef9b84c61b26d0302cc6b55d38b2048aed",
+          "vendor/russh-sftp/src/protocol/readdir.rs": "dd6be1bc3e348bb972ecbf379bd0e32970ed2115dc50e843a63c6a174526a91b",
+          "vendor/russh-sftp/src/protocol/readlink.rs": "7d7f0dd9ea3f81da757d1a66ade8c9ea0339382a36766576db76120ed66dd54d",
+          "vendor/russh-sftp/src/protocol/realpath.rs": "74a6ec87dc3e2b9a0140956543648b7734177c591521d7fbffcc6e9d72164bd8",
+          "vendor/russh-sftp/src/protocol/remove.rs": "277351576448709b886c96bc73a7840f6b08ff0a274b3dcbb51275b415f0e062",
+          "vendor/russh-sftp/src/protocol/rename.rs": "b40ab496ac79abcfa502b344b299e56d509d67323b6272a39fb272f2729e4e76",
+          "vendor/russh-sftp/src/protocol/rmdir.rs": "700809d494cacee04123705ed989d4f528a8267d13df4a7ee225e825f7a73a3f",
+          "vendor/russh-sftp/src/protocol/setstat.rs": "261aab0483c6fb780591782baf445e3471e99f5de3c15ee73b285d5ef55341dd",
+          "vendor/russh-sftp/src/protocol/stat.rs": "ee86f9139f546ff5b68b7f917f1db0eb777475e416ef96d818ea672a53d7415b",
+          "vendor/russh-sftp/src/protocol/status.rs": "ef7058584d8333bb523cd5a1665b628a31f8a5a7d24f673f0ef15cc81d827a17",
+          "vendor/russh-sftp/src/protocol/symlink.rs": "41a340d02f4aa8702acc2969ecfc915180a98cf18db4c36cf4ba490d9c3edcf2",
+          "vendor/russh-sftp/src/protocol/version.rs": "c1e582cbbf71655b1ce929dbfb25b9ecd86629fd71f31b549692a1e69d074e79",
+          "vendor/russh-sftp/src/protocol/write.rs": "65bef8d19756188ff99caa58ea33ba6cba8b357597d4695722c077d1f8fb79b8",
+          "vendor/russh-sftp/src/ser.rs": "712e6044e65b737183474c82f61a5809f7db04cc7173c3b0b52ee98a850e1791",
+          "vendor/russh-sftp/src/server/handler.rs": "6687f537798a129fb51b00095fefe20cbad2b2818cd753d19ef5878166d4464c",
+          "vendor/russh-sftp/src/server/mod.rs": "000c7d64556604d0d1c13da64d84dd3d46fc946974fbf8bf2440ddf0a6b21313",
+          "vendor/russh-sftp/src/server/reply.rs": "0cb5ba46c02ce73dfa0f9ba07168a6e05c95e53fc0d1d07da6928a621d2112d0",
+          "vendor/russh-sftp/src/utils.rs": "c460b00a6ce11e97af8517d155e8ec264352388d53317766633c2236b7065632",
+          "vendor/suppaftp-licenses.json": "9127e5ffa6b85ae17d0be148f937936d0066178e67e4c7696c46689c20675c03",
+          "vendor/suppaftp-upstream.json": "b74f160b8c84685bd27aed0edeeb67fcf2fd72f5566f12f19d3c2a178eadb658",
+          "vendor/suppaftp.patch": "8a1dbfd3818da9fec9ae0ba9b9993f855ad7ba0c928abc183334e3a67f31a949",
+          "vendor/suppaftp/.cargo_vcs_info.json": "a6efd2d6f693ce3425436a5000642c686358b76a364e1f1180f9308a85920ed4",
+          "vendor/suppaftp/Cargo.lock": "bd8ae6a9a0a946c6c69911621332846f3dac3178fa951ebb374c5d2368315eb7",
+          "vendor/suppaftp/Cargo.toml": "d548ee0da1d078cb18db8fe35d10c1a69a64d51e0614ad2b17e31111624031b5",
+          "vendor/suppaftp/Cargo.toml.orig": "28dc5e506d1cbc30c7989842af9aea4e011860a903376ff27f923ba202b33071",
+          "vendor/suppaftp/LICENSE-APACHE": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
+          "vendor/suppaftp/LICENSE-MIT": "4e883a0c89656afe3aaa559b3d4096a8aaa7534f00937f1c0054e231b2928078",
+          "vendor/suppaftp/README.md": "fc8cf92a875f3a34f7dd1fdb8ea5993a5d8f76809a674f7b2bd9cbd048f2eb1d",
+          "vendor/suppaftp/examples/rustls.rs": "4a004cab66277e1d5549fdd83a09937592884b1ce6319f8215583e04f3cb2df3",
+          "vendor/suppaftp/src/async_ftp.rs": "e5626dee62438e6bdc3f751e7dc1c2e4ac2e9f9694b85d6b41372be7e71ae8a2",
+          "vendor/suppaftp/src/async_ftp/smol_ftp.rs": "9914deed2409b208bda99032ac4df6cba724469ea7c249607b0a78fc95b0ae11",
+          "vendor/suppaftp/src/async_ftp/smol_ftp/data_stream.rs": "6a97a28e8dfab186c744a70abdcfdb5be0a2da63cce3c1c093ace5dd0ae175c7",
+          "vendor/suppaftp/src/async_ftp/smol_ftp/tls.rs": "6d036669a354a30a4f46f6bc86ee0e961a1fbea6fb493d291adf3028d3077382",
+          "vendor/suppaftp/src/async_ftp/smol_ftp/tls/native_tls.rs": "3f4f47539172cccde15a84c53c26f81089198452c63727f02cdd4930bd247306",
+          "vendor/suppaftp/src/async_ftp/smol_ftp/tls/rustls.rs": "d557d2e1d368aa18c0bc0e0f1ed50da5f1c725b78332404d584eee481c290e6a",
+          "vendor/suppaftp/src/async_ftp/tokio_ftp.rs": "510b7007b6bb633d4826610afd8575794017b8c86e3223a3711dae71f58e92fc",
+          "vendor/suppaftp/src/async_ftp/tokio_ftp/data_stream.rs": "15f18360923769f517df9fa396074e2c56928ea6120018da08829f8391df403b",
+          "vendor/suppaftp/src/async_ftp/tokio_ftp/tls.rs": "84342f60c0f8c89d7578859a6964682bea76f45b9c865166fb69a2490edb016b",
+          "vendor/suppaftp/src/async_ftp/tokio_ftp/tls/native_tls.rs": "deb327e2b1cdae5708dd182ba8a99e323c01e06d7b01ed7b610ce15ff7881685",
+          "vendor/suppaftp/src/async_ftp/tokio_ftp/tls/rustls.rs": "12234317db6be51add2033224e2cfab21522410e0c2f3fe531d8e6b400a00226",
+          "vendor/suppaftp/src/command.rs": "3a02931cc1a3984359dc293a4da4cf01bda10ed9bb84158057f20eb8cd096759",
+          "vendor/suppaftp/src/command/feat.rs": "8a01f91aeb836993dd55c1cc716077196e0df136e3e150cacf3766b3148f9c90",
+          "vendor/suppaftp/src/lib.rs": "6bc51ed8772ce92fe14bc529a935a29a7a357c6ae50ef28d9035ff625ea5f8c1",
+          "vendor/suppaftp/src/list.rs": "03d5055e9ef368374240ccf1dca0167af159ea00157e3fb4ce76fa89fe5a27a4",
+          "vendor/suppaftp/src/list/file.rs": "ab3ba06bbf8a5fdd08ebb2816b913494f6cf7abfd70c32511be1958670f1f58a",
+          "vendor/suppaftp/src/list/file_type.rs": "7f1eb1f146000cb7dc199b34902f5d24650e04342496cd69a97e5145ecb657cd",
+          "vendor/suppaftp/src/list/pex.rs": "1547663226623c66babb2ad4fe407346e46f0cb5a65a560b784c782b30d76a4e",
+          "vendor/suppaftp/src/regex.rs": "d5e3648327a523cfbb884071159d95f220339c0d734e12f139dccf6dadef2eca",
+          "vendor/suppaftp/src/reply_bounds.rs": "195bb849174daca2fddb394d09c81c25de4aadd080f1f27249c62af451c9fdaf",
+          "vendor/suppaftp/src/status.rs": "bc4c0461ea9d87dd11444e0bf0e9659ed7e2005e71ff2d6517323c2c6d62126d",
+          "vendor/suppaftp/src/sync_ftp.rs": "785f1655a373f655e6dc2492764b688dccd1d14ea34777474506245511b0b55c",
+          "vendor/suppaftp/src/sync_ftp/data_stream.rs": "46be1c3592b08209e2f5d649891ebb504a00a0ef5f040ac27f6c22eb60552e73",
+          "vendor/suppaftp/src/sync_ftp/tls.rs": "34b0fa71a6172cf84c65b1e24a6496869bd4a245eda3caf952eb65226bff301e",
+          "vendor/suppaftp/src/sync_ftp/tls/native_tls.rs": "602909dd74d8fac3bb31a33ddb9fe2ac96130e21376d16dbc918c49a19553145",
+          "vendor/suppaftp/src/sync_ftp/tls/rustls.rs": "08026dcb322630fe18399844b308debcb1e346880f7e9efe6d959fd028149f0b",
+          "vendor/suppaftp/src/test_container.rs": "2e5e722d0d2d857720040954ea6e74d0c3478ed0f950ef7bdda05e72171f03e9",
+          "vendor/suppaftp/src/types.rs": "82de4fdca5826c1f84ab7bc7365184fa5d82194c517cf3df76e520473a98fef0"
+        },
+        "flags": {
+          "rust": [
+            "--remap-path-prefix=<repo>=/ariax",
+            "--remap-path-prefix=<repo>=/ariax",
+            "--remap-path-prefix=<temp>/ariax-local-validation-20261001/cargo-home=/ariax-cargo",
+            "--remap-path-prefix=<temp>/ariax-local-validation-20261001/cargo-home=/ariax-cargo",
+            "--remap-path-prefix=<temp>/ariax-release-verification-20261005/windows/tmp=/ariax-temp",
+            "--remap-path-prefix=<temp>/ariax-release-verification-20261005/windows/tmp=/ariax-temp",
+            "--remap-path-prefix=<temp>/ariax-release-verification-20261005/windows/target=/ariax-target",
+            "--remap-path-prefix=<temp>/ariax-release-verification-20261005/windows/target=/ariax-target",
+            "-C",
+            "link-self-contained=no",
+            "-C",
+            "link-arg=-Wl,--no-insert-timestamp"
+          ],
+          "native": [
+            "-ffile-prefix-map=<repo>=/ariax",
+            "-ffile-prefix-map=<repo>=/ariax",
+            "-ffile-prefix-map=<temp>/ariax-local-validation-20261001/cargo-home=/ariax-cargo",
+            "-ffile-prefix-map=<temp>/ariax-local-validation-20261001/cargo-home=/ariax-cargo",
+            "-ffile-prefix-map=<temp>/ariax-release-verification-20261005/windows/tmp=/ariax-temp",
+            "-ffile-prefix-map=<temp>/ariax-release-verification-20261005/windows/tmp=/ariax-temp",
+            "-ffile-prefix-map=<temp>/ariax-release-verification-20261005/windows/target=/ariax-target",
+            "-ffile-prefix-map=<temp>/ariax-release-verification-20261005/windows/target=/ariax-target"
+          ]
+        },
+        "sourceDateEpoch": "1791193771",
+        "environment": {
+          "RUSTC": "<repo>/toolchains/installed/windows-gnu/bin/rustc.exe",
+          "RUSTDOC": "<repo>/toolchains/installed/windows-gnu/bin/rustdoc.exe",
+          "CARGO_HOME": "<temp>/ariax-local-validation-20261001/cargo-home",
+          "CARGO_TARGET_DIR": "<temp>/ariax-release-verification-20261005/windows/target",
+          "CARGO_ENCODED_RUSTFLAGS": "--remap-path-prefix=<repo>=/ariax\u001f--remap-path-prefix=<repo>=/ariax\u001f--remap-path-prefix=<temp>/ariax-local-validation-20261001/cargo-home=/ariax-cargo\u001f--remap-path-prefix=<temp>/ariax-local-validation-20261001/cargo-home=/ariax-cargo\u001f--remap-path-prefix=<temp>/ariax-release-verification-20261005/windows/tmp=/ariax-temp\u001f--remap-path-prefix=<temp>/ariax-release-verification-20261005/windows/tmp=/ariax-temp\u001f--remap-path-prefix=<temp>/ariax-release-verification-20261005/windows/target=/ariax-target\u001f--remap-path-prefix=<temp>/ariax-release-verification-20261005/windows/target=/ariax-target\u001f-C\u001flink-self-contained=no\u001f-C\u001flink-arg=-Wl,--no-insert-timestamp",
+          "CFLAGS": "-ffile-prefix-map=<repo>=/ariax -ffile-prefix-map=<repo>=/ariax -ffile-prefix-map=<temp>/ariax-local-validation-20261001/cargo-home=/ariax-cargo -ffile-prefix-map=<temp>/ariax-local-validation-20261001/cargo-home=/ariax-cargo -ffile-prefix-map=<temp>/ariax-release-verification-20261005/windows/tmp=/ariax-temp -ffile-prefix-map=<temp>/ariax-release-verification-20261005/windows/tmp=/ariax-temp -ffile-prefix-map=<temp>/ariax-release-verification-20261005/windows/target=/ariax-target -ffile-prefix-map=<temp>/ariax-release-verification-20261005/windows/target=/ariax-target",
+          "CXXFLAGS": "-ffile-prefix-map=<repo>=/ariax -ffile-prefix-map=<repo>=/ariax -ffile-prefix-map=<temp>/ariax-local-validation-20261001/cargo-home=/ariax-cargo -ffile-prefix-map=<temp>/ariax-local-validation-20261001/cargo-home=/ariax-cargo -ffile-prefix-map=<temp>/ariax-release-verification-20261005/windows/tmp=/ariax-temp -ffile-prefix-map=<temp>/ariax-release-verification-20261005/windows/tmp=/ariax-temp -ffile-prefix-map=<temp>/ariax-release-verification-20261005/windows/target=/ariax-target -ffile-prefix-map=<temp>/ariax-release-verification-20261005/windows/target=/ariax-target",
+          "CC_SHELL_ESCAPED_FLAGS": "1",
+          "CC": "<msys2>/mingw64/bin/gcc.exe",
+          "CXX": "<msys2>/mingw64/bin/g++.exe",
+          "AR": "<msys2>/mingw64/bin/ar.exe",
+          "CARGO_BUILD_JOBS": "2",
+          "CARGO_INCREMENTAL": "0",
+          "TMPDIR": "<temp>/ariax-release-verification-20261005/windows/tmp"
+        },
+        "builds": [
+          {
+            "bundle": "minimal",
+            "build": {
+              "command": [
+                "<repo>/toolchains/installed/windows-gnu/bin/cargo.exe",
+                "build",
+                "--locked",
+                "--offline",
+                "-p",
+                "ariax-cli",
+                "--no-default-features",
+                "--features",
+                "minimal",
+                "--profile",
+                "release-cli"
+              ],
+              "passed": true,
+              "timeoutSeconds": 1200,
+              "expectedTests": null,
+              "exitCode": 0,
+              "cleanup": "parent-exited; fixture-child-cleanup-requires-verification",
+              "environment": {
+                "RUSTC": "<repo>/toolchains/installed/windows-gnu/bin/rustc.exe",
+                "CARGO_TARGET_DIR": "<temp>/ariax-release-verification-20261005/windows/target",
+                "CARGO_BUILD_JOBS": "2",
+                "TMPDIR": "<temp>/ariax-release-verification-20261005/windows/tmp",
+                "TEMP": "<temp>/ariax-release-verification-20261005/windows/tmp"
+              },
+              "binarySha256": "f6575d41d6d94c5917f4ee3a16a559a58e34cb196bb8d4917176ec5687ca8ef5",
+              "processSeconds": 591.4630233999924,
+              "elapsedSeconds": 591.4631405999971,
+              "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stderr.logSha256": "7d6877f7842d67d94f09ff6093491d6e3224221ed79aa01aab67d0b7be603cbc"
+            },
+            "binarySha256": "3b72f64ee7a2fd6656fb96a2e597cc4c29839a72a6014ce1a1caba4f582de00c",
+            "bytes": 10223616,
+            "pathAudit": {
+              "passed": true,
+              "counts": {
+                "wslMount": 0,
+                "windowsTemp": 0,
+                "windowsUser": 0,
+                "unixHome": 0
+              },
+              "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
+            },
+            "referenceBinarySha256": "3b72f64ee7a2fd6656fb96a2e597cc4c29839a72a6014ce1a1caba4f582de00c",
+            "matchesIndependentBuild": true,
+            "inspection": {
+              "command": [
+                "objdump",
+                "-p",
+                "<temp>/ariax-release-verification-20261005/windows/minimal/ariax.exe"
+              ],
+              "passed": true,
+              "timeoutSeconds": 20,
+              "expectedTests": null,
+              "exitCode": 0,
+              "cleanup": "parent-exited; fixture-child-cleanup-requires-verification",
+              "environment": {
+                "RUSTC": "<repo>/toolchains/installed/windows-gnu/bin/rustc.exe",
+                "CARGO_TARGET_DIR": "<temp>/ariax-release-verification-20261005/windows/target",
+                "CARGO_BUILD_JOBS": "2",
+                "TMPDIR": "<temp>/ariax-release-verification-20261005/windows/tmp",
+                "TEMP": "<temp>/ariax-release-verification-20261005/windows/tmp"
+              },
+              "processSeconds": 0.284360799996648,
+              "elapsedSeconds": 0.2844705999887083,
+              "stdout.logSha256": "a163c121ea574bcb23ab259227a3da6823343f60878ce70d046344a793e9e630",
+              "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "runtime": {
+              "systemLibraries": [
+                "advapi32.dll",
+                "api-ms-win-core-synch-l1-2-0.dll",
+                "bcrypt.dll",
+                "bcryptprimitives.dll",
+                "crypt32.dll",
+                "iphlpapi.dll",
+                "kernel32.dll",
+                "msvcrt.dll",
+                "ntdll.dll",
+                "oleaut32.dll",
+                "ws2_32.dll"
+              ],
+              "additionalRuntimeFiles": []
+            },
+            "help": {
+              "command": [
+                "<temp>/ariax-release-verification-20261005/windows/minimal/ariax.exe",
+                "--help"
+              ],
+              "passed": true,
+              "timeoutSeconds": 20,
+              "expectedTests": null,
+              "exitCode": 0,
+              "cleanup": "parent-exited; fixture-child-cleanup-requires-verification",
+              "environment": {
+                "RUSTC": "<repo>/toolchains/installed/windows-gnu/bin/rustc.exe",
+                "CARGO_TARGET_DIR": "<temp>/ariax-release-verification-20261005/windows/target",
+                "CARGO_BUILD_JOBS": "2",
+                "TMPDIR": "<temp>/ariax-release-verification-20261005/windows/tmp",
+                "TEMP": "<temp>/ariax-release-verification-20261005/windows/tmp"
+              },
+              "binarySha256": "3b72f64ee7a2fd6656fb96a2e597cc4c29839a72a6014ce1a1caba4f582de00c",
+              "processSeconds": 0.01463089999742806,
+              "elapsedSeconds": 0.014716799996676855,
+              "stdout.logSha256": "8d33aa3cb758f48103225150dbb768178c5cb3661ad9471ce2efd852848ab4e2",
+              "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "rejection": {
+              "command": [
+                "<temp>/ariax-release-verification-20261005/windows/minimal/ariax.exe",
+                "--ariax-intentionally-invalid-option"
+              ],
+              "passed": false,
+              "timeoutSeconds": 20,
+              "expectedTests": null,
+              "exitCode": 2,
+              "cleanup": "parent-exited; fixture-child-cleanup-requires-verification",
+              "environment": {
+                "RUSTC": "<repo>/toolchains/installed/windows-gnu/bin/rustc.exe",
+                "CARGO_TARGET_DIR": "<temp>/ariax-release-verification-20261005/windows/target",
+                "CARGO_BUILD_JOBS": "2",
+                "TMPDIR": "<temp>/ariax-release-verification-20261005/windows/tmp",
+                "TEMP": "<temp>/ariax-release-verification-20261005/windows/tmp"
+              },
+              "binarySha256": "3b72f64ee7a2fd6656fb96a2e597cc4c29839a72a6014ce1a1caba4f582de00c",
+              "processSeconds": 0.007114300009561703,
+              "error": "command exited 2",
+              "elapsedSeconds": 0.0072140000120271,
+              "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stderr.logSha256": "88ef18bcd8f9366075c7761d586a8c18e6ecfd9010a14a9cdaa33d3147947893"
+            },
+            "rejectionObserved": true
+          },
+          {
+            "bundle": "standard",
+            "build": {
+              "command": [
+                "<repo>/toolchains/installed/windows-gnu/bin/cargo.exe",
+                "build",
+                "--locked",
+                "--offline",
+                "-p",
+                "ariax-cli",
+                "--no-default-features",
+                "--features",
+                "standard",
+                "--profile",
+                "release-cli"
+              ],
+              "passed": true,
+              "timeoutSeconds": 1200,
+              "expectedTests": null,
+              "exitCode": 0,
+              "cleanup": "parent-exited; fixture-child-cleanup-requires-verification",
+              "environment": {
+                "RUSTC": "<repo>/toolchains/installed/windows-gnu/bin/rustc.exe",
+                "CARGO_TARGET_DIR": "<temp>/ariax-release-verification-20261005/windows/target",
+                "CARGO_BUILD_JOBS": "2",
+                "TMPDIR": "<temp>/ariax-release-verification-20261005/windows/tmp",
+                "TEMP": "<temp>/ariax-release-verification-20261005/windows/tmp"
+              },
+              "binarySha256": "f6575d41d6d94c5917f4ee3a16a559a58e34cb196bb8d4917176ec5687ca8ef5",
+              "processSeconds": 592.6802893999993,
+              "elapsedSeconds": 592.6804266000108,
+              "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stderr.logSha256": "c623c221cb5b328875030ab7245e10f45eb90e23003eac39f6c0d606d2bfd63d"
+            },
+            "binarySha256": "ed2d7860bd5867a6d9bb465bdd2c6d90fde46fc42f0e135bef9725195945b10c",
+            "bytes": 14087680,
+            "pathAudit": {
+              "passed": true,
+              "counts": {
+                "wslMount": 0,
+                "windowsTemp": 0,
+                "windowsUser": 0,
+                "unixHome": 0
+              },
+              "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
+            },
+            "referenceBinarySha256": "ed2d7860bd5867a6d9bb465bdd2c6d90fde46fc42f0e135bef9725195945b10c",
+            "matchesIndependentBuild": true,
+            "inspection": {
+              "command": [
+                "objdump",
+                "-p",
+                "<temp>/ariax-release-verification-20261005/windows/standard/ariax.exe"
+              ],
+              "passed": true,
+              "timeoutSeconds": 20,
+              "expectedTests": null,
+              "exitCode": 0,
+              "cleanup": "parent-exited; fixture-child-cleanup-requires-verification",
+              "environment": {
+                "RUSTC": "<repo>/toolchains/installed/windows-gnu/bin/rustc.exe",
+                "CARGO_TARGET_DIR": "<temp>/ariax-release-verification-20261005/windows/target",
+                "CARGO_BUILD_JOBS": "2",
+                "TMPDIR": "<temp>/ariax-release-verification-20261005/windows/tmp",
+                "TEMP": "<temp>/ariax-release-verification-20261005/windows/tmp"
+              },
+              "processSeconds": 0.5356872999982443,
+              "elapsedSeconds": 0.5358034999953816,
+              "stdout.logSha256": "1aa420e998970c280be7591ebd33d33428337ec976d539bd0eb582f0dc6d13df",
+              "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "runtime": {
+              "systemLibraries": [
+                "advapi32.dll",
+                "api-ms-win-core-synch-l1-2-0.dll",
+                "bcrypt.dll",
+                "bcryptprimitives.dll",
+                "crypt32.dll",
+                "iphlpapi.dll",
+                "kernel32.dll",
+                "msvcrt.dll",
+                "ntdll.dll",
+                "oleaut32.dll",
+                "ws2_32.dll"
+              ],
+              "additionalRuntimeFiles": []
+            },
+            "help": {
+              "command": [
+                "<temp>/ariax-release-verification-20261005/windows/standard/ariax.exe",
+                "--help"
+              ],
+              "passed": true,
+              "timeoutSeconds": 20,
+              "expectedTests": null,
+              "exitCode": 0,
+              "cleanup": "parent-exited; fixture-child-cleanup-requires-verification",
+              "environment": {
+                "RUSTC": "<repo>/toolchains/installed/windows-gnu/bin/rustc.exe",
+                "CARGO_TARGET_DIR": "<temp>/ariax-release-verification-20261005/windows/target",
+                "CARGO_BUILD_JOBS": "2",
+                "TMPDIR": "<temp>/ariax-release-verification-20261005/windows/tmp",
+                "TEMP": "<temp>/ariax-release-verification-20261005/windows/tmp"
+              },
+              "binarySha256": "ed2d7860bd5867a6d9bb465bdd2c6d90fde46fc42f0e135bef9725195945b10c",
+              "processSeconds": 0.017013599994243123,
+              "elapsedSeconds": 0.0171081000007689,
+              "stdout.logSha256": "8d33aa3cb758f48103225150dbb768178c5cb3661ad9471ce2efd852848ab4e2",
+              "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "rejection": {
+              "command": [
+                "<temp>/ariax-release-verification-20261005/windows/standard/ariax.exe",
+                "--ariax-intentionally-invalid-option"
+              ],
+              "passed": false,
+              "timeoutSeconds": 20,
+              "expectedTests": null,
+              "exitCode": 2,
+              "cleanup": "parent-exited; fixture-child-cleanup-requires-verification",
+              "environment": {
+                "RUSTC": "<repo>/toolchains/installed/windows-gnu/bin/rustc.exe",
+                "CARGO_TARGET_DIR": "<temp>/ariax-release-verification-20261005/windows/target",
+                "CARGO_BUILD_JOBS": "2",
+                "TMPDIR": "<temp>/ariax-release-verification-20261005/windows/tmp",
+                "TEMP": "<temp>/ariax-release-verification-20261005/windows/tmp"
+              },
+              "binarySha256": "ed2d7860bd5867a6d9bb465bdd2c6d90fde46fc42f0e135bef9725195945b10c",
+              "processSeconds": 0.00642790000711102,
+              "error": "command exited 2",
+              "elapsedSeconds": 0.006532800005516037,
+              "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stderr.logSha256": "88ef18bcd8f9366075c7761d586a8c18e6ecfd9010a14a9cdaa33d3147947893"
+            },
+            "rejectionObserved": true
+          }
+        ],
+        "independentComparison": {
+          "referenceRecordSha256": "3c2e2dc50d5460c39934b085676877ae86959a6c241661b7506119c6ed3e11b4",
+          "referenceSourceCommit": "473045d78e9f4a35a058c6d3333665da393287c8",
+          "referenceDriverSha256": "bd841545e24052b14b7242acd391b3ed0a18e755655ed00c064b7e568e6b2e47",
+          "freshTarget": true,
+          "freshTemporaryDirectory": true,
+          "sharedSourceCacheAndToolchain": true
+        },
+        "compiler": {
+          "command": [
+            "<repo>/toolchains/installed/windows-gnu/bin/rustc.exe",
+            "--version",
+            "--verbose"
+          ],
+          "passed": true,
+          "timeoutSeconds": 20,
+          "expectedTests": null,
+          "exitCode": 0,
+          "cleanup": "parent-exited; fixture-child-cleanup-requires-verification",
+          "environment": {
+            "RUSTC": "<repo>/toolchains/installed/windows-gnu/bin/rustc.exe",
+            "CARGO_TARGET_DIR": "<temp>/ariax-release-verification-20261005/windows/target",
+            "CARGO_BUILD_JOBS": "2",
+            "TMPDIR": "<temp>/ariax-release-verification-20261005/windows/tmp",
+            "TEMP": "<temp>/ariax-release-verification-20261005/windows/tmp"
+          },
+          "binarySha256": "9933f6035589064c39e524082d8d664764e3a64fbbd55b16f4ecc24ab5d53235",
+          "processSeconds": 0.0232220000034431,
+          "elapsedSeconds": 0.023367399990092963,
+          "stdout.logSha256": "072856ccafb9f8d13313934b4d7c34e3ec63c825c98ae61fcd521b01b9652306",
+          "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "nativeCompiler": {
+          "command": [
+            "<msys2>/mingw64/bin/gcc.exe",
+            "-dumpmachine"
+          ],
+          "passed": true,
+          "timeoutSeconds": 20,
+          "expectedTests": null,
+          "exitCode": 0,
+          "cleanup": "parent-exited; fixture-child-cleanup-requires-verification",
+          "environment": {
+            "RUSTC": "<repo>/toolchains/installed/windows-gnu/bin/rustc.exe",
+            "CARGO_TARGET_DIR": "<temp>/ariax-release-verification-20261005/windows/target",
+            "CARGO_BUILD_JOBS": "2",
+            "TMPDIR": "<temp>/ariax-release-verification-20261005/windows/tmp",
+            "TEMP": "<temp>/ariax-release-verification-20261005/windows/tmp"
+          },
+          "binarySha256": "ab37c11763fdcb3bf6f809b5d033a31ebeb77f10ba5934c72fa37287ee56144f",
+          "processSeconds": 0.008019299988518469,
+          "elapsedSeconds": 0.008286599986604415,
+          "stdout.logSha256": "5a93bd82f1f12e8b275a5cb5df82e8bac02d52c05d53b534913d0bc49ac46b9b",
+          "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "cargoSha256": "f6575d41d6d94c5917f4ee3a16a559a58e34cb196bb8d4917176ec5687ca8ef5",
+        "cleanup": {
+          "files": 3017,
+          "bytes": 1032363551,
+          "inventorySha256": "1d15f0fa148772292e006456a603304abb0b5ba85944b4f7678b7381c5573ce6"
+        }
+      }
+    }
+  },
+  "hostChecks": {
+    "linux": {
+      "rawRecordSha256": "0d74225c59fd144ab92cd7b3dd6322ab8c4e16606ad7771a9284b48d0d103442",
+      "result": {
+        "schema": 1,
+        "host": "Linux-4.4.0-17763-Microsoft-x86_64-with-glibc2.41",
+        "target": "x86_64-unknown-linux-gnu",
+        "functionalPassed": true,
+        "freshOsAcceptance": false,
+        "releaseApproved": false,
+        "packages": [
+          {
+            "bundle": "minimal",
+            "binarySha256": "ea3c4c586ee466d501c936baf2a5294b71140798161ea73c0448b01767cc7d73",
+            "environment": {
+              "TMPDIR": "<temp>/ariax-release-verification-20261005/host-linux/minimal/tmp",
+              "TMP": "<temp>/ariax-release-verification-20261005/host-linux/minimal/tmp",
+              "TEMP": "<temp>/ariax-release-verification-20261005/host-linux/minimal/tmp",
+              "PATH": "/usr/bin:/bin",
+              "LANG": "C.UTF-8",
+              "LC_ALL": "C.UTF-8",
+              "TZ": "UTC"
+            },
+            "help": {
+              "command": [
+                "<temp>/ariax-release-paths-20261005/draft-packages/x86_64-unknown-linux-gnu-minimal/ariax",
+                "--help"
+              ],
+              "passed": true,
+              "timeoutSeconds": 30,
+              "expectedTests": null,
+              "exitCode": 0,
+              "cleanup": "owned-process-group-terminated",
+              "environment": {
+                "TMPDIR": "<temp>/ariax-release-verification-20261005/host-linux/minimal/tmp",
+                "TEMP": "<temp>/ariax-release-verification-20261005/host-linux/minimal/tmp"
+              },
+              "binarySha256": "ea3c4c586ee466d501c936baf2a5294b71140798161ea73c0448b01767cc7d73",
+              "processSeconds": 0.011610299989115447,
+              "elapsedSeconds": 0.011820799991255626,
+              "stdout.logSha256": "8d33aa3cb758f48103225150dbb768178c5cb3661ad9471ce2efd852848ab4e2",
+              "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "rpc": {
+              "command": [
+                "<temp>/ariax-release-paths-20261005/draft-packages/x86_64-unknown-linux-gnu-minimal/ariax",
+                "--profile=compact",
+                "--rpc-stdio-framing=ndjson",
+                "--rpc-stdio-events=false",
+                "--rpc-stdio-eof=shutdown",
+                "--rpc-stdio",
+                "<temp>/ariax-release-verification-20261005/host-linux/minimal/state/session.db",
+                "<temp>/ariax-release-verification-20261005/host-linux/minimal/control",
+                "<temp>/ariax-release-verification-20261005/host-linux/minimal/output"
+              ],
+              "passed": true,
+              "responses": [
+                {
+                  "id": 1,
+                  "jsonrpc": "2.0",
+                  "result": {
+                    "enabledFeatures": [
+                      "HTTP",
+                      "HTTPS",
+                      "JSON-RPC",
+                      "Session",
+                      "Async DNS",
+                      "Metalink"
+                    ],
+                    "version": "0.1.0"
+                  }
+                },
+                {
+                  "id": 2,
+                  "jsonrpc": "2.0",
+                  "result": {
+                    "completedLength": "0",
+                    "downloadSpeed": "0",
+                    "numActive": "0",
+                    "numStopped": "0",
+                    "numWaiting": "0",
+                    "uploadSpeed": "0"
+                  }
+                },
+                {
+                  "error": {
+                    "code": -32601,
+                    "message": "method not found"
+                  },
+                  "id": 3,
+                  "jsonrpc": "2.0"
+                }
+              ],
+              "loadedModules": [
+                {
+                  "path": "<temp>/ariax-release-paths-20261005/draft-packages/x86_64-unknown-linux-gnu-minimal/ariax",
+                  "kind": "application"
+                },
+                {
+                  "path": "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+                  "kind": "system"
+                },
+                {
+                  "path": "/usr/lib/x86_64-linux-gnu/libc.so.6",
+                  "kind": "system"
+                },
+                {
+                  "path": "/usr/lib/x86_64-linux-gnu/libgcc_s.so.1",
+                  "kind": "system"
+                },
+                {
+                  "path": "/usr/lib/x86_64-linux-gnu/libm.so.6",
+                  "kind": "system"
+                },
+                {
+                  "path": "/usr/local/lib/libnanosleep.so",
+                  "kind": "host-extra"
+                }
+              ],
+              "exitCode": 0,
+              "cleanup": "owned CLI process exited; no fixture child processes launched",
+              "rpc-stdout.logSha256": "9329479c094aff9af83873ffab403895b2155fd6a6fd601eb7579027012534de",
+              "rpc-stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "reopen": {
+              "command": [
+                "<temp>/ariax-release-paths-20261005/draft-packages/x86_64-unknown-linux-gnu-minimal/ariax",
+                "--check-bootstrap",
+                "<temp>/ariax-release-verification-20261005/host-linux/minimal/state/session.db",
+                "<temp>/ariax-release-verification-20261005/host-linux/minimal/control",
+                "<temp>/ariax-release-verification-20261005/host-linux/minimal/output"
+              ],
+              "passed": true,
+              "timeoutSeconds": 30,
+              "expectedTests": null,
+              "exitCode": 0,
+              "cleanup": "owned-process-group-terminated",
+              "environment": {
+                "TMPDIR": "<temp>/ariax-release-verification-20261005/host-linux/minimal/tmp",
+                "TEMP": "<temp>/ariax-release-verification-20261005/host-linux/minimal/tmp"
+              },
+              "binarySha256": "ea3c4c586ee466d501c936baf2a5294b71140798161ea73c0448b01767cc7d73",
+              "processSeconds": 0.06954300000506919,
+              "elapsedSeconds": 0.06971280000288971,
+              "stdout.logSha256": "a00aa8186c71c3c3842aabf3e7f6e2f77871bfcdd91d1f2661072d189a399091",
+              "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "onlySystemModulesObserved": false
+          },
+          {
+            "bundle": "standard",
+            "binarySha256": "2b641cde2496b2f31eee711315ebfa5a325bd3af27c503f5c9d4be0b8dd9f6e6",
+            "environment": {
+              "TMPDIR": "<temp>/ariax-release-verification-20261005/host-linux/standard/tmp",
+              "TMP": "<temp>/ariax-release-verification-20261005/host-linux/standard/tmp",
+              "TEMP": "<temp>/ariax-release-verification-20261005/host-linux/standard/tmp",
+              "PATH": "/usr/bin:/bin",
+              "LANG": "C.UTF-8",
+              "LC_ALL": "C.UTF-8",
+              "TZ": "UTC"
+            },
+            "help": {
+              "command": [
+                "<temp>/ariax-release-paths-20261005/draft-packages/x86_64-unknown-linux-gnu-standard/ariax",
+                "--help"
+              ],
+              "passed": true,
+              "timeoutSeconds": 30,
+              "expectedTests": null,
+              "exitCode": 0,
+              "cleanup": "owned-process-group-terminated",
+              "environment": {
+                "TMPDIR": "<temp>/ariax-release-verification-20261005/host-linux/standard/tmp",
+                "TEMP": "<temp>/ariax-release-verification-20261005/host-linux/standard/tmp"
+              },
+              "binarySha256": "2b641cde2496b2f31eee711315ebfa5a325bd3af27c503f5c9d4be0b8dd9f6e6",
+              "processSeconds": 0.01557160000083968,
+              "elapsedSeconds": 0.015855899997404777,
+              "stdout.logSha256": "8d33aa3cb758f48103225150dbb768178c5cb3661ad9471ce2efd852848ab4e2",
+              "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "rpc": {
+              "command": [
+                "<temp>/ariax-release-paths-20261005/draft-packages/x86_64-unknown-linux-gnu-standard/ariax",
+                "--profile=compact",
+                "--rpc-stdio-framing=ndjson",
+                "--rpc-stdio-events=false",
+                "--rpc-stdio-eof=shutdown",
+                "--rpc-stdio",
+                "<temp>/ariax-release-verification-20261005/host-linux/standard/state/session.db",
+                "<temp>/ariax-release-verification-20261005/host-linux/standard/control",
+                "<temp>/ariax-release-verification-20261005/host-linux/standard/output"
+              ],
+              "passed": true,
+              "responses": [
+                {
+                  "id": 1,
+                  "jsonrpc": "2.0",
+                  "result": {
+                    "enabledFeatures": [
+                      "HTTP",
+                      "HTTPS",
+                      "JSON-RPC",
+                      "Session",
+                      "Async DNS",
+                      "Metalink",
+                      "FTP",
+                      "SFTP"
+                    ],
+                    "version": "0.1.0"
+                  }
+                },
+                {
+                  "id": 2,
+                  "jsonrpc": "2.0",
+                  "result": {
+                    "completedLength": "0",
+                    "downloadSpeed": "0",
+                    "numActive": "0",
+                    "numStopped": "0",
+                    "numWaiting": "0",
+                    "uploadSpeed": "0"
+                  }
+                },
+                {
+                  "error": {
+                    "code": -32601,
+                    "message": "method not found"
+                  },
+                  "id": 3,
+                  "jsonrpc": "2.0"
+                }
+              ],
+              "loadedModules": [
+                {
+                  "path": "<temp>/ariax-release-paths-20261005/draft-packages/x86_64-unknown-linux-gnu-standard/ariax",
+                  "kind": "application"
+                },
+                {
+                  "path": "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+                  "kind": "system"
+                },
+                {
+                  "path": "/usr/lib/x86_64-linux-gnu/libc.so.6",
+                  "kind": "system"
+                },
+                {
+                  "path": "/usr/lib/x86_64-linux-gnu/libgcc_s.so.1",
+                  "kind": "system"
+                },
+                {
+                  "path": "/usr/lib/x86_64-linux-gnu/libm.so.6",
+                  "kind": "system"
+                },
+                {
+                  "path": "/usr/local/lib/libnanosleep.so",
+                  "kind": "host-extra"
+                }
+              ],
+              "exitCode": 0,
+              "cleanup": "owned CLI process exited; no fixture child processes launched",
+              "rpc-stdout.logSha256": "2736ea2fb07b547da6711605da6b7bd7c026780efd8ace3bc4e12b6cc76059e8",
+              "rpc-stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "reopen": {
+              "command": [
+                "<temp>/ariax-release-paths-20261005/draft-packages/x86_64-unknown-linux-gnu-standard/ariax",
+                "--check-bootstrap",
+                "<temp>/ariax-release-verification-20261005/host-linux/standard/state/session.db",
+                "<temp>/ariax-release-verification-20261005/host-linux/standard/control",
+                "<temp>/ariax-release-verification-20261005/host-linux/standard/output"
+              ],
+              "passed": true,
+              "timeoutSeconds": 30,
+              "expectedTests": null,
+              "exitCode": 0,
+              "cleanup": "owned-process-group-terminated",
+              "environment": {
+                "TMPDIR": "<temp>/ariax-release-verification-20261005/host-linux/standard/tmp",
+                "TEMP": "<temp>/ariax-release-verification-20261005/host-linux/standard/tmp"
+              },
+              "binarySha256": "2b641cde2496b2f31eee711315ebfa5a325bd3af27c503f5c9d4be0b8dd9f6e6",
+              "processSeconds": 0.09117879999394063,
+              "elapsedSeconds": 0.09135289999539964,
+              "stdout.logSha256": "a00aa8186c71c3c3842aabf3e7f6e2f77871bfcdd91d1f2661072d189a399091",
+              "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "onlySystemModulesObserved": false
+          }
+        ],
+        "systemPreload": "/usr/local/lib/libnanosleep.so\n"
+      }
+    },
+    "windows": {
+      "rawRecordSha256": "fbb16cf506e2eb8f7932701b8766789de2a891b6cb2295f79cb3001452931e79",
+      "result": {
+        "schema": 1,
+        "host": "Windows-10-10.0.17763-SP0",
+        "target": "x86_64-pc-windows-gnu",
+        "functionalPassed": true,
+        "freshOsAcceptance": false,
+        "releaseApproved": false,
+        "packages": [
+          {
+            "bundle": "minimal",
+            "binarySha256": "3b72f64ee7a2fd6656fb96a2e597cc4c29839a72a6014ce1a1caba4f582de00c",
+            "environment": {
+              "TMPDIR": "<temp>/ariax-release-verification-20261005/host-windows/minimal/tmp",
+              "TMP": "<temp>/ariax-release-verification-20261005/host-windows/minimal/tmp",
+              "TEMP": "<temp>/ariax-release-verification-20261005/host-windows/minimal/tmp",
+              "SystemRoot": "<windows>",
+              "WINDIR": "<windows>",
+              "PATH": "<windows>/System32"
+            },
+            "help": {
+              "command": [
+                "<temp>/ariax-release-paths-20261005/draft-packages/x86_64-pc-windows-gnu-minimal/ariax.exe",
+                "--help"
+              ],
+              "passed": true,
+              "timeoutSeconds": 30,
+              "expectedTests": null,
+              "exitCode": 0,
+              "cleanup": "parent-exited; fixture-child-cleanup-requires-verification",
+              "environment": {
+                "TMPDIR": "<temp>/ariax-release-verification-20261005/host-windows/minimal/tmp",
+                "TEMP": "<temp>/ariax-release-verification-20261005/host-windows/minimal/tmp"
+              },
+              "binarySha256": "3b72f64ee7a2fd6656fb96a2e597cc4c29839a72a6014ce1a1caba4f582de00c",
+              "processSeconds": 0.014539199997670949,
+              "elapsedSeconds": 0.014830499989329837,
+              "stdout.logSha256": "8d33aa3cb758f48103225150dbb768178c5cb3661ad9471ce2efd852848ab4e2",
+              "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "rpc": {
+              "command": [
+                "<temp>/ariax-release-paths-20261005/draft-packages/x86_64-pc-windows-gnu-minimal/ariax.exe",
+                "--profile=compact",
+                "--rpc-stdio-framing=ndjson",
+                "--rpc-stdio-events=false",
+                "--rpc-stdio-eof=shutdown",
+                "--rpc-stdio",
+                "<temp>/ariax-release-verification-20261005/host-windows/minimal/state/session.db",
+                "<temp>/ariax-release-verification-20261005/host-windows/minimal/control",
+                "<temp>/ariax-release-verification-20261005/host-windows/minimal/output"
+              ],
+              "passed": true,
+              "responses": [
+                {
+                  "id": 1,
+                  "jsonrpc": "2.0",
+                  "result": {
+                    "enabledFeatures": [
+                      "HTTP",
+                      "HTTPS",
+                      "JSON-RPC",
+                      "Session",
+                      "Async DNS",
+                      "Metalink"
+                    ],
+                    "version": "0.1.0"
+                  }
+                },
+                {
+                  "id": 2,
+                  "jsonrpc": "2.0",
+                  "result": {
+                    "completedLength": "0",
+                    "downloadSpeed": "0",
+                    "numActive": "0",
+                    "numStopped": "0",
+                    "numWaiting": "0",
+                    "uploadSpeed": "0"
+                  }
+                },
+                {
+                  "error": {
+                    "code": -32601,
+                    "message": "method not found"
+                  },
+                  "id": 3,
+                  "jsonrpc": "2.0"
+                }
+              ],
+              "loadedModules": [
+                {
+                  "path": "<windows>/SYSTEM32/CRYPTBASE.DLL",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/SYSTEM32/DNSAPI.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/SYSTEM32/IPHLPAPI.DLL",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/SYSTEM32/dhcpcsvc.DLL",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/SYSTEM32/dhcpcsvc6.DLL",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/SYSTEM32/ntdll.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/KERNEL32.DLL",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/KERNELBASE.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/MSASN1.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/NSI.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/RPCRT4.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/advapi32.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/bcrypt.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/bcryptprimitives.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/combase.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/crypt32.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/msvcp_win.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/msvcrt.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/oleaut32.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/sechost.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/ucrtbase.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/ws2_32.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<temp>/ariax-release-paths-20261005/draft-packages/x86_64-pc-windows-gnu-minimal/ariax.exe",
+                  "kind": "application"
+                }
+              ],
+              "exitCode": 0,
+              "cleanup": "owned CLI process exited; no fixture child processes launched",
+              "rpc-stdout.logSha256": "9329479c094aff9af83873ffab403895b2155fd6a6fd601eb7579027012534de",
+              "rpc-stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "reopen": {
+              "command": [
+                "<temp>/ariax-release-paths-20261005/draft-packages/x86_64-pc-windows-gnu-minimal/ariax.exe",
+                "--check-bootstrap",
+                "<temp>/ariax-release-verification-20261005/host-windows/minimal/state/session.db",
+                "<temp>/ariax-release-verification-20261005/host-windows/minimal/control",
+                "<temp>/ariax-release-verification-20261005/host-windows/minimal/output"
+              ],
+              "passed": true,
+              "timeoutSeconds": 30,
+              "expectedTests": null,
+              "exitCode": 0,
+              "cleanup": "parent-exited; fixture-child-cleanup-requires-verification",
+              "environment": {
+                "TMPDIR": "<temp>/ariax-release-verification-20261005/host-windows/minimal/tmp",
+                "TEMP": "<temp>/ariax-release-verification-20261005/host-windows/minimal/tmp"
+              },
+              "binarySha256": "3b72f64ee7a2fd6656fb96a2e597cc4c29839a72a6014ce1a1caba4f582de00c",
+              "processSeconds": 0.03593460000411142,
+              "elapsedSeconds": 0.036031700001331046,
+              "stdout.logSha256": "a00aa8186c71c3c3842aabf3e7f6e2f77871bfcdd91d1f2661072d189a399091",
+              "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "onlySystemModulesObserved": true
+          },
+          {
+            "bundle": "standard",
+            "binarySha256": "ed2d7860bd5867a6d9bb465bdd2c6d90fde46fc42f0e135bef9725195945b10c",
+            "environment": {
+              "TMPDIR": "<temp>/ariax-release-verification-20261005/host-windows/standard/tmp",
+              "TMP": "<temp>/ariax-release-verification-20261005/host-windows/standard/tmp",
+              "TEMP": "<temp>/ariax-release-verification-20261005/host-windows/standard/tmp",
+              "SystemRoot": "<windows>",
+              "WINDIR": "<windows>",
+              "PATH": "<windows>/System32"
+            },
+            "help": {
+              "command": [
+                "<temp>/ariax-release-paths-20261005/draft-packages/x86_64-pc-windows-gnu-standard/ariax.exe",
+                "--help"
+              ],
+              "passed": true,
+              "timeoutSeconds": 30,
+              "expectedTests": null,
+              "exitCode": 0,
+              "cleanup": "parent-exited; fixture-child-cleanup-requires-verification",
+              "environment": {
+                "TMPDIR": "<temp>/ariax-release-verification-20261005/host-windows/standard/tmp",
+                "TEMP": "<temp>/ariax-release-verification-20261005/host-windows/standard/tmp"
+              },
+              "binarySha256": "ed2d7860bd5867a6d9bb465bdd2c6d90fde46fc42f0e135bef9725195945b10c",
+              "processSeconds": 0.011789199998020194,
+              "elapsedSeconds": 0.011915600000065751,
+              "stdout.logSha256": "8d33aa3cb758f48103225150dbb768178c5cb3661ad9471ce2efd852848ab4e2",
+              "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "rpc": {
+              "command": [
+                "<temp>/ariax-release-paths-20261005/draft-packages/x86_64-pc-windows-gnu-standard/ariax.exe",
+                "--profile=compact",
+                "--rpc-stdio-framing=ndjson",
+                "--rpc-stdio-events=false",
+                "--rpc-stdio-eof=shutdown",
+                "--rpc-stdio",
+                "<temp>/ariax-release-verification-20261005/host-windows/standard/state/session.db",
+                "<temp>/ariax-release-verification-20261005/host-windows/standard/control",
+                "<temp>/ariax-release-verification-20261005/host-windows/standard/output"
+              ],
+              "passed": true,
+              "responses": [
+                {
+                  "id": 1,
+                  "jsonrpc": "2.0",
+                  "result": {
+                    "enabledFeatures": [
+                      "HTTP",
+                      "HTTPS",
+                      "JSON-RPC",
+                      "Session",
+                      "Async DNS",
+                      "Metalink",
+                      "FTP",
+                      "SFTP"
+                    ],
+                    "version": "0.1.0"
+                  }
+                },
+                {
+                  "id": 2,
+                  "jsonrpc": "2.0",
+                  "result": {
+                    "completedLength": "0",
+                    "downloadSpeed": "0",
+                    "numActive": "0",
+                    "numStopped": "0",
+                    "numWaiting": "0",
+                    "uploadSpeed": "0"
+                  }
+                },
+                {
+                  "error": {
+                    "code": -32601,
+                    "message": "method not found"
+                  },
+                  "id": 3,
+                  "jsonrpc": "2.0"
+                }
+              ],
+              "loadedModules": [
+                {
+                  "path": "<windows>/SYSTEM32/CRYPTBASE.DLL",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/SYSTEM32/DNSAPI.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/SYSTEM32/IPHLPAPI.DLL",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/SYSTEM32/dhcpcsvc.DLL",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/SYSTEM32/dhcpcsvc6.DLL",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/SYSTEM32/ntdll.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/KERNEL32.DLL",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/KERNELBASE.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/MSASN1.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/NSI.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/RPCRT4.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/advapi32.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/bcrypt.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/bcryptprimitives.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/combase.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/crypt32.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/msvcp_win.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/msvcrt.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/oleaut32.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/sechost.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/ucrtbase.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<windows>/System32/ws2_32.dll",
+                  "kind": "system"
+                },
+                {
+                  "path": "<temp>/ariax-release-paths-20261005/draft-packages/x86_64-pc-windows-gnu-standard/ariax.exe",
+                  "kind": "application"
+                }
+              ],
+              "exitCode": 0,
+              "cleanup": "owned CLI process exited; no fixture child processes launched",
+              "rpc-stdout.logSha256": "2736ea2fb07b547da6711605da6b7bd7c026780efd8ace3bc4e12b6cc76059e8",
+              "rpc-stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "reopen": {
+              "command": [
+                "<temp>/ariax-release-paths-20261005/draft-packages/x86_64-pc-windows-gnu-standard/ariax.exe",
+                "--check-bootstrap",
+                "<temp>/ariax-release-verification-20261005/host-windows/standard/state/session.db",
+                "<temp>/ariax-release-verification-20261005/host-windows/standard/control",
+                "<temp>/ariax-release-verification-20261005/host-windows/standard/output"
+              ],
+              "passed": true,
+              "timeoutSeconds": 30,
+              "expectedTests": null,
+              "exitCode": 0,
+              "cleanup": "parent-exited; fixture-child-cleanup-requires-verification",
+              "environment": {
+                "TMPDIR": "<temp>/ariax-release-verification-20261005/host-windows/standard/tmp",
+                "TEMP": "<temp>/ariax-release-verification-20261005/host-windows/standard/tmp"
+              },
+              "binarySha256": "ed2d7860bd5867a6d9bb465bdd2c6d90fde46fc42f0e135bef9725195945b10c",
+              "processSeconds": 0.038004599991836585,
+              "elapsedSeconds": 0.03811459999997169,
+              "stdout.logSha256": "a00aa8186c71c3c3842aabf3e7f6e2f77871bfcdd91d1f2661072d189a399091",
+              "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "onlySystemModulesObserved": true
+          }
+        ]
+      }
+    }
+  },
+  "hostStart": {
+    "rawRecordSha256": "8110cc4652bcca62aa1b094e51789eaccba8f87cf255b114b33946cd765885ba",
+    "result": {
+      "platform": "Linux-4.4.0-17763-Microsoft-x86_64-with-glibc2.41",
+      "cpus": 8,
+      "loadAverage": [
+        0.5185546875,
+        0.57763671875,
+        0.5859375
+      ],
+      "freeBytes": 1487675392,
+      "epochSeconds": 1791199418.6604848,
+      "systemPreload": "/usr/local/lib/libnanosleep.so\n"
+    }
+  },
+  "hostPreload": {
+    "rawRecordSha256": "2590c277d53a950e74e4cf73689929f1e2cd75d1c5574ab78ebb4144c7bdfe74",
+    "result": {
+      "files": [
+        {
+          "path": "/etc/ld.so.preload",
+          "bytes": 31,
+          "sha256": "2c2611dfe6c168d64d2aa0e68873191ded34c868b5581709bbe24367992713aa"
+        },
+        {
+          "path": "/usr/local/lib/libnanosleep.so",
+          "bytes": 7920,
+          "sha256": "35e0e6efe7ce8c99821ab5dd1bec58e063ce323df3e3fd515896620dc67a751b"
+        }
+      ],
+      "readOnlyInspection": true,
+      "configurationChanged": false,
+      "scope": "Observed current host only; no attribution of historical performance results."
+    }
+  },
+  "metadataProbe": {
+    "rawRecordSha256": "7cd40ab66de794fc2e7b57ff3f9a5ed21db80d887d664f8c4f621b3f2c426394",
+    "result": {
+      "artifacts": [
+        {
+          "run": "first",
+          "binarySha256": "6d9a8d1edbd2342b031775643b55a1e59232cf907d90f0df813c1eda532b945a"
+        },
+        {
+          "run": "repeat",
+          "binarySha256": "6d9a8d1edbd2342b031775643b55a1e59232cf907d90f0df813c1eda532b945a"
+        }
+      ],
+      "differentTargetFlagsMatched": true
+    }
+  },
+  "initialBuildPreflight": {
+    "rawRecordSha256": "dac817a806e1fa0864a740e7c21729ecb0f5977089b7873be85dc6359d6c7bca",
+    "result": {
+      "passed": false,
+      "buildStarted": false,
+      "error": "insufficient space for build intermediates",
+      "requiredFreeBytes": 1610612736,
+      "freeBytesObservedAfterFailure": 1487675392
+    }
+  },
+  "metadataCachePruning": {
+    "rawRecordSha256": "98afaabd9c9a9e30b7f66bf5c06d45faa8ae3a0a2101614446dd4475823db4b6",
+    "result": {
+      "atUtc": "2026-10-05T11:25:53.342302+00:00",
+      "scope": "Regenerable Rust metadata only; .rlib objects, executables, source caches, logs and native installations preserved.",
+      "freeBytesBefore": 1336352768,
+      "completed": true,
+      "removedFiles": 1234,
+      "removedBytes": 1133322329,
+      "freeBytesAfter": 2471956480
+    }
+  },
+  "sourceScope": {
+    "rawRecordSha256": "2134c7de06164f89d37717647e983079b1f75bd23bc184b57dfdd418c07874bb",
+    "result": {
+      "baselineCommit": "bd40afc",
+      "protectedPaths": [
+        "crates",
+        "bin",
+        "tools",
+        "vendor",
+        "native",
+        "assets",
+        "compat",
+        "generated",
+        ".cargo",
+        ".github",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml"
+      ],
+      "unchanged": true
+    }
+  },
+  "pythonTests": 137,
+  "nativeWindowsHelperTests": 27,
+  "whitespaceChecks": [
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "passed": true
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--cached",
+        "--check"
+      ],
+      "passed": true
+    }
+  ],
+  "checks": {
+    "python-tests": {
+      "rawRecordSha256": "ed426c8e528b3e581bf2add98a88eb129f2417e5327e021f217be263de0ee72d",
+      "result": {
+        "command": [
+          "python3",
+          "-B",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "scripts",
+          "-p",
+          "test_*.py"
+        ],
+        "passed": true,
+        "timeoutSeconds": 60.0,
+        "expectedTests": null,
+        "exitCode": 0,
+        "cleanup": "owned-process-group-terminated",
+        "environment": {
+          "TMPDIR": "<temp>/ariax-release-verification-20261005",
+          "TEMP": "<temp>/ariax-release-verification-20261005"
+        },
+        "processSeconds": 11.698393900005613,
+        "elapsedSeconds": 11.698824799997965,
+        "stdout.logSha256": "7cd7b6ee28c1737744cdadf86e4b012df9b91e0dce7bebec021371167df111e5",
+        "stderr.logSha256": "953c40daec27582f949afc6cbb433d10775e04f73ca3ae6a24066cf8772f9932"
+      }
+    },
+    "smoke-tests": {
+      "rawRecordSha256": "afba3e0598dc465058fd98efb06fcd3069fc74be3fddaad59a5b3a3bb165bc7a",
+      "result": {
+        "command": [
+          "python3",
+          "-B",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "scripts",
+          "-p",
+          "test_release_smoke.py"
+        ],
+        "passed": true,
+        "timeoutSeconds": 60.0,
+        "expectedTests": null,
+        "exitCode": 0,
+        "cleanup": "owned-process-group-terminated",
+        "environment": {
+          "TMPDIR": "<temp>/ariax-release-verification-20261005",
+          "TEMP": "<temp>/ariax-release-verification-20261005"
+        },
+        "processSeconds": 0.17066109999723267,
+        "elapsedSeconds": 0.17100960000243504,
+        "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr.logSha256": "d52cbb1058abf83e3acb402d1c2b8ee089749613d6075f5d973dd66c8ef09200"
+      }
+    },
+    "python-tests-final": {
+      "rawRecordSha256": "61ff14e6183acff200e734c53746e502efea6d8e64660fe0b6035791fe70c4d1",
+      "result": {
+        "command": [
+          "python3",
+          "-B",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "scripts",
+          "-p",
+          "test_*.py"
+        ],
+        "passed": true,
+        "timeoutSeconds": 120.0,
+        "expectedTests": null,
+        "exitCode": 0,
+        "cleanup": "owned-process-group-terminated",
+        "environment": {
+          "TMPDIR": "<temp>/ariax-release-verification-20261005",
+          "TEMP": "<temp>/ariax-release-verification-20261005"
+        },
+        "processSeconds": 9.365464300004533,
+        "elapsedSeconds": 9.366285099997185,
+        "stdout.logSha256": "b06412252c97648dc732dd84c886ef955195bd366b95fa1c6cc7385b037e6a94",
+        "stderr.logSha256": "adeaeb2f2dae822d86797709f332d0b458e60dfdde279635aac62581d2b84045"
+      }
+    },
+    "windows-helper-tests": {
+      "rawRecordSha256": "0ee588a5a51dfe7cba8b24f279433a42cd69e80bb18318ee9d320a131e191ba6",
+      "result": {
+        "command": [
+          "<msys2>/usr/bin/bash.exe",
+          "-lc",
+          "exec bash /e/temp/ariax-release-verification-20261005/windows-tests.sh"
+        ],
+        "passed": true,
+        "timeoutSeconds": 60.0,
+        "expectedTests": null,
+        "exitCode": 0,
+        "cleanup": "owned-process-group-terminated",
+        "environment": {
+          "TMPDIR": "<temp>/ariax-release-verification-20261005",
+          "TEMP": "<temp>/ariax-release-verification-20261005"
+        },
+        "binarySha256": "41b09f0a9c1c68fd65253a7e8087b3775f0af245b729ade74ca4425d14392c2d",
+        "processSeconds": 3.2739864999894053,
+        "elapsedSeconds": 3.2743192999914754,
+        "stdout.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr.logSha256": "57f00457b99e08d619e707aa9f1baeac75eab73b98966c17c50630ae2595bb00"
+      }
+    },
+    "catalog": {
+      "rawRecordSha256": "768c33eba0c91de3d673013be5da6cae16fe166378034faabe7aecf518c11848",
+      "result": {
+        "command": [
+          "python3",
+          "-B",
+          "scripts/release_manifest.py"
+        ],
+        "passed": true,
+        "timeoutSeconds": 60.0,
+        "expectedTests": null,
+        "exitCode": 0,
+        "cleanup": "owned-process-group-terminated",
+        "environment": {
+          "TMPDIR": "<temp>/ariax-release-verification-20261005",
+          "TEMP": "<temp>/ariax-release-verification-20261005"
+        },
+        "processSeconds": 0.32462390000000596,
+        "elapsedSeconds": 0.3248105999955442,
+        "stdout.logSha256": "a6f2682d9503ffc7ec5c07ddcf8876ff5a9b0393da3fe92bdb3d6c4c542adfc9",
+        "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    "docs": {
+      "rawRecordSha256": "e00a8ad7fa1aa13b064b7a4b800cf8cc15ec70b5d3160e13346a200b567f742e",
+      "result": {
+        "command": [
+          "python3",
+          "-B",
+          "scripts/check_docs.py"
+        ],
+        "passed": true,
+        "timeoutSeconds": 60.0,
+        "expectedTests": null,
+        "exitCode": 0,
+        "cleanup": "owned-process-group-terminated",
+        "environment": {
+          "TMPDIR": "<temp>/ariax-release-verification-20261005",
+          "TEMP": "<temp>/ariax-release-verification-20261005"
+        },
+        "processSeconds": 0.9146086999971885,
+        "elapsedSeconds": 0.9148602000059327,
+        "stdout.logSha256": "ff127f6a76ffd76f7edcc5e18d0651de25a96370564b1abe7d12d4732b06239a",
+        "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    "publication": {
+      "rawRecordSha256": "5395390a14a3b6dd84e7a530f810f4c1fc71f9341368171904e4ca6c89e58d7d",
+      "result": {
+        "command": [
+          "python3",
+          "-B",
+          "scripts/publication.py"
+        ],
+        "passed": true,
+        "timeoutSeconds": 60.0,
+        "expectedTests": null,
+        "exitCode": 0,
+        "cleanup": "owned-process-group-terminated",
+        "environment": {
+          "TMPDIR": "<temp>/ariax-release-verification-20261005",
+          "TEMP": "<temp>/ariax-release-verification-20261005"
+        },
+        "processSeconds": 0.8380342999880668,
+        "elapsedSeconds": 0.8382521999883465,
+        "stdout.logSha256": "1f2ae031b96c44e26b09a19b752facedafbd38b12f0b64d1fb2b8939f6b6d1d6",
+        "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    "staging": {
+      "rawRecordSha256": "c02d3f13d0df41a91128e7efbb35f57ece2d0d31d9d44a84b1b497129df0eedc",
+      "result": {
+        "command": [
+          "python3",
+          "-B",
+          "scripts/release_manifest.py",
+          "--artifacts",
+          "<temp>/ariax-release-paths-20261005",
+          "--output",
+          "<temp>/ariax-release-verification-20261005/draft-packages"
+        ],
+        "passed": true,
+        "timeoutSeconds": 60.0,
+        "expectedTests": null,
+        "exitCode": 0,
+        "cleanup": "owned-process-group-terminated",
+        "environment": {
+          "TMPDIR": "<temp>/ariax-release-verification-20261005",
+          "TEMP": "<temp>/ariax-release-verification-20261005"
+        },
+        "processSeconds": 2.7689433000050485,
+        "elapsedSeconds": 2.7690980000043055,
+        "stdout.logSha256": "9afbc085222022a3e7756d299cf142a5d3b58446dd8d95e5d9eecc000ec2f162",
+        "stderr.logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    }
+  },
+  "packages": {
+    "packages": [
+      {
+        "id": "x86_64-pc-windows-gnu-minimal",
+        "files": 27,
+        "binarySha256": "3b72f64ee7a2fd6656fb96a2e597cc4c29839a72a6014ce1a1caba4f582de00c",
+        "manifestSha256": "28e76d65037e7dcf247f6f7ad2dbbc232cb83720dd1393f08e9c0db10866e809",
+        "checksumsSha256": "0e986b9162ef2df438e4bb21240e7dbb4576d86319a41b559228e583c4b804ac"
+      },
+      {
+        "id": "x86_64-pc-windows-gnu-standard",
+        "files": 27,
+        "binarySha256": "ed2d7860bd5867a6d9bb465bdd2c6d90fde46fc42f0e135bef9725195945b10c",
+        "manifestSha256": "76e4c1d4822d5198cc7d27c5782a4e93232458632f843f4f591f78567d7ae370",
+        "checksumsSha256": "b5a152301f74efff7615036c0459c63ba75f1636086890a01260e8a7ea5a37eb"
+      },
+      {
+        "id": "x86_64-unknown-linux-gnu-minimal",
+        "files": 21,
+        "binarySha256": "ea3c4c586ee466d501c936baf2a5294b71140798161ea73c0448b01767cc7d73",
+        "manifestSha256": "ea4af52ea04d9a028d48cbef9c6f63d899c31e7aad2f47ddecfc951ea8ff0574",
+        "checksumsSha256": "5d2025dc5d3b812e53e2b094291298dd0ad31b10d8d809e03454e29814082766"
+      },
+      {
+        "id": "x86_64-unknown-linux-gnu-standard",
+        "files": 21,
+        "binarySha256": "2b641cde2496b2f31eee711315ebfa5a325bd3af27c503f5c9d4be0b8dd9f6e6",
+        "manifestSha256": "d6f6e92490ec90133138996ca8f66b8ec3d50fda9697dff305445cda7c3c2a0a",
+        "checksumsSha256": "22fa26ea6d05fc8c0ce248320045d8be271308d7f4a0126a90dd5893b31700ad"
+      }
+    ],
+    "integrityPassed": true,
+    "files": 96,
+    "releaseApproved": false
+  },
+  "rawFiles": {
+    "linux/compiler/result.json": {
+      "sha256": "6a7030c8a32b8df47fcd2c491ffc392fb056a3508f7b026ce08c8b30b4cdcd8e",
+      "bytes": 984
+    },
+    "linux/compiler/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "linux/compiler/stdout.log": {
+      "sha256": "b2bdf493bcf6d1dc55181a0efc2774b6d9cf7bf5c8dcc5bed592c994b2ad38c4",
+      "bytes": 196
+    },
+    "linux/discarded-intermediates.json": {
+      "sha256": "63e54df922a956e0b548cf4a45b774e24c8b76150b78602ae954507ad57a2f5e",
+      "bytes": 222880
+    },
+    "linux/minimal/build/result.json": {
+      "sha256": "fcdd9f26feea314cd21a09bd82785efd0c2fcb22b0bd662b59d67dad5daed034",
+      "bytes": 1116
+    },
+    "linux/minimal/build/stderr.log": {
+      "sha256": "dcf35a334f7594e07538edda1c5ecea6925ebffbef25133873ecf0581f7bedc8",
+      "bytes": 6204
+    },
+    "linux/minimal/build/stdout.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "linux/minimal/help/result.json": {
+      "sha256": "d97aa35843637434945da33a423b4b22ae1c2a02d81d50b7b24332666205e60f",
+      "bytes": 964
+    },
+    "linux/minimal/help/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "linux/minimal/help/stdout.log": {
+      "sha256": "8d33aa3cb758f48103225150dbb768178c5cb3661ad9471ce2efd852848ab4e2",
+      "bytes": 4081
+    },
+    "linux/minimal/imports/result.json": {
+      "sha256": "5b5432686f5a50776412e93b49722ccf10ff007cd1e70c9a940e45e0a8db746e",
+      "bytes": 919
+    },
+    "linux/minimal/imports/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "linux/minimal/imports/stdout.log": {
+      "sha256": "c73138d0ff7061730a838ab60e3316b3ebf9c5492f44393164cab9f3b194cf97",
+      "bytes": 8904
+    },
+    "linux/minimal/rejection/result.json": {
+      "sha256": "ebece58d365a393bc03847e563fdd6e4b83947c8be7cff736e846f7363d13ea9",
+      "bytes": 1025
+    },
+    "linux/minimal/rejection/stderr.log": {
+      "sha256": "88ef18bcd8f9366075c7761d586a8c18e6ecfd9010a14a9cdaa33d3147947893",
+      "bytes": 62
+    },
+    "linux/minimal/rejection/stdout.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "linux/native-compiler/result.json": {
+      "sha256": "859c049dc5f6675d3e302fb07648e28d614291d855846f3648a3c07847a79515",
+      "bytes": 914
+    },
+    "linux/native-compiler/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "linux/native-compiler/stdout.log": {
+      "sha256": "08cababdf891ccbf96eb376f1e84f279f70302fb13d84e5f98637becdfc6d989",
+      "bytes": 17
+    },
+    "linux/result.json": {
+      "sha256": "bce0420644cb13b91cc35c5c75e3657d30b944743e0a35c5574d15edda211d14",
+      "bytes": 56208
+    },
+    "linux/standard/build/result.json": {
+      "sha256": "2999fb18c0e201d546bd13b2a544985567a7f08cddd4c46f8dd39ca7af778221",
+      "bytes": 1118
+    },
+    "linux/standard/build/stderr.log": {
+      "sha256": "0e676298a4f6677917e49b057d1f9693dd3ff06e31de80a0238d909362485705",
+      "bytes": 5903
+    },
+    "linux/standard/build/stdout.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "linux/standard/help/result.json": {
+      "sha256": "dd6db38a70908906fea69f03de03ac3fb36f42654779df477ab9672e06fd0f38",
+      "bytes": 965
+    },
+    "linux/standard/help/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "linux/standard/help/stdout.log": {
+      "sha256": "8d33aa3cb758f48103225150dbb768178c5cb3661ad9471ce2efd852848ab4e2",
+      "bytes": 4081
+    },
+    "linux/standard/imports/result.json": {
+      "sha256": "e62cb41200e148460b27667d3092fac24a55ed8950714b780a09f9ba810e97de",
+      "bytes": 922
+    },
+    "linux/standard/imports/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "linux/standard/imports/stdout.log": {
+      "sha256": "168f2c1202db9031a5b574833464a8fb3d3940d46f1707cca0c5e8e1e8436030",
+      "bytes": 8966
+    },
+    "linux/standard/rejection/result.json": {
+      "sha256": "88b32ed402eec80adabb90752a52e83636572fb1ca155dd2d320fe3f57ff5e09",
+      "bytes": 1027
+    },
+    "linux/standard/rejection/stderr.log": {
+      "sha256": "88ef18bcd8f9366075c7761d586a8c18e6ecfd9010a14a9cdaa33d3147947893",
+      "bytes": 62
+    },
+    "linux/standard/rejection/stdout.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "windows/compiler/result.json": {
+      "sha256": "a7430b40f2233b0db1de562f573baf61437312a32aedbf0aff7f56e597ee02ec",
+      "bytes": 1040
+    },
+    "windows/compiler/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "windows/compiler/stdout.log": {
+      "sha256": "072856ccafb9f8d13313934b4d7c34e3ec63c825c98ae61fcd521b01b9652306",
+      "bytes": 193
+    },
+    "windows/discarded-intermediates.json": {
+      "sha256": "1d15f0fa148772292e006456a603304abb0b5ba85944b4f7678b7381c5573ce6",
+      "bytes": 228920
+    },
+    "windows/minimal/build/result.json": {
+      "sha256": "8d1b8ab89cb0fe7198863a31b1892abae80cf7770d716661871d96031f6edcd1",
+      "bytes": 1183
+    },
+    "windows/minimal/build/stderr.log": {
+      "sha256": "7d6877f7842d67d94f09ff6093491d6e3224221ed79aa01aab67d0b7be603cbc",
+      "bytes": 6454
+    },
+    "windows/minimal/build/stdout.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "windows/minimal/help/result.json": {
+      "sha256": "9a5ad5a126957d639569a6083bb4efbee184790e7e75fa43cfb20c26c367b46c",
+      "bytes": 1016
+    },
+    "windows/minimal/help/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "windows/minimal/help/stdout.log": {
+      "sha256": "8d33aa3cb758f48103225150dbb768178c5cb3661ad9471ce2efd852848ab4e2",
+      "bytes": 4081
+    },
+    "windows/minimal/imports/result.json": {
+      "sha256": "f8b4424c8fb751d6e3f4f2f3e61ee1c480251ddd145735aab9bfe6017efa10c5",
+      "bytes": 937
+    },
+    "windows/minimal/imports/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "windows/minimal/imports/stdout.log": {
+      "sha256": "a163c121ea574bcb23ab259227a3da6823343f60878ce70d046344a793e9e630",
+      "bytes": 3655517
+    },
+    "windows/minimal/rejection/result.json": {
+      "sha256": "e2e2e9ce0eb6e9b6f2731d9d2fdeda1af77c35db94b6e181a1f880e24228f04b",
+      "bytes": 1078
+    },
+    "windows/minimal/rejection/stderr.log": {
+      "sha256": "88ef18bcd8f9366075c7761d586a8c18e6ecfd9010a14a9cdaa33d3147947893",
+      "bytes": 62
+    },
+    "windows/minimal/rejection/stdout.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "windows/native-compiler/result.json": {
+      "sha256": "1d6e202e81d7584a98036cae50bf7219ce2a761573135c682ee1b64885c722f1",
+      "bytes": 986
+    },
+    "windows/native-compiler/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "windows/native-compiler/stdout.log": {
+      "sha256": "5a93bd82f1f12e8b275a5cb5df82e8bac02d52c05d53b534913d0bc49ac46b9b",
+      "bytes": 20
+    },
+    "windows/result.json": {
+      "sha256": "184eb91893f77b1f66c8352f1348e3ab90d162567d58cd6e0f2ad55687ca2375",
+      "bytes": 59309
+    },
+    "windows/standard/build/result.json": {
+      "sha256": "b941c32e2b1bc66edd406e5f6a61af0385e75483a1167548e0e2f585c8a7a308",
+      "bytes": 1184
+    },
+    "windows/standard/build/stderr.log": {
+      "sha256": "c623c221cb5b328875030ab7245e10f45eb90e23003eac39f6c0d606d2bfd63d",
+      "bytes": 5804
+    },
+    "windows/standard/build/stdout.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "windows/standard/help/result.json": {
+      "sha256": "905f49422a688ec9699bf2b5354eec07bfc849e51c001980a136f854e0ac5879",
+      "bytes": 1016
+    },
+    "windows/standard/help/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "windows/standard/help/stdout.log": {
+      "sha256": "8d33aa3cb758f48103225150dbb768178c5cb3661ad9471ce2efd852848ab4e2",
+      "bytes": 4081
+    },
+    "windows/standard/imports/result.json": {
+      "sha256": "aa8c4b995471f3090b31d8f36512d800ed5d4bf9e69dc892de7e3b5da252270d",
+      "bytes": 939
+    },
+    "windows/standard/imports/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "windows/standard/imports/stdout.log": {
+      "sha256": "1aa420e998970c280be7591ebd33d33428337ec976d539bd0eb582f0dc6d13df",
+      "bytes": 5012087
+    },
+    "windows/standard/rejection/result.json": {
+      "sha256": "0c4a0eae5906d22fb691d524568dd836cd6d21e815da066e5dc3e9884e3a8ced",
+      "bytes": 1080
+    },
+    "windows/standard/rejection/stderr.log": {
+      "sha256": "88ef18bcd8f9366075c7761d586a8c18e6ecfd9010a14a9cdaa33d3147947893",
+      "bytes": 62
+    },
+    "windows/standard/rejection/stdout.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "host-linux/minimal/help/result.json": {
+      "sha256": "4d2fb5b7f51b9f6a9619c0c95db888205fefe9f8d61e82711abaffc95029677c",
+      "bytes": 816
+    },
+    "host-linux/minimal/help/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "host-linux/minimal/help/stdout.log": {
+      "sha256": "8d33aa3cb758f48103225150dbb768178c5cb3661ad9471ce2efd852848ab4e2",
+      "bytes": 4081
+    },
+    "host-linux/minimal/reopen/result.json": {
+      "sha256": "ece71f688e74d2b5e385ab7578924b87d323e68e07e7d4e74ff572201a4c99aa",
+      "bytes": 1079
+    },
+    "host-linux/minimal/reopen/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "host-linux/minimal/reopen/stdout.log": {
+      "sha256": "a00aa8186c71c3c3842aabf3e7f6e2f77871bfcdd91d1f2661072d189a399091",
+      "bytes": 65
+    },
+    "host-linux/minimal/rpc-result.json": {
+      "sha256": "b371e8a75e9353dfad2e17fe831f1fe19b28257902aa7c7cdf501b7f855bcc23",
+      "bytes": 2134
+    },
+    "host-linux/minimal/rpc-stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "host-linux/minimal/rpc-stdout.log": {
+      "sha256": "9329479c094aff9af83873ffab403895b2155fd6a6fd601eb7579027012534de",
+      "bytes": 357
+    },
+    "host-linux/result.json": {
+      "sha256": "0d74225c59fd144ab92cd7b3dd6322ab8c4e16606ad7771a9284b48d0d103442",
+      "bytes": 11114
+    },
+    "host-linux/standard/help/result.json": {
+      "sha256": "374ca4712cf8170d85edbeb1106670e94771e94dbcd084e9b7968c23e6e4dc7d",
+      "bytes": 818
+    },
+    "host-linux/standard/help/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "host-linux/standard/help/stdout.log": {
+      "sha256": "8d33aa3cb758f48103225150dbb768178c5cb3661ad9471ce2efd852848ab4e2",
+      "bytes": 4081
+    },
+    "host-linux/standard/reopen/result.json": {
+      "sha256": "3431a88981c01f9cf7ea042f62c492ba4677eb45a6fcc3b1f7ca5292da1144ee",
+      "bytes": 1085
+    },
+    "host-linux/standard/reopen/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "host-linux/standard/reopen/stdout.log": {
+      "sha256": "a00aa8186c71c3c3842aabf3e7f6e2f77871bfcdd91d1f2661072d189a399091",
+      "bytes": 65
+    },
+    "host-linux/standard/rpc-result.json": {
+      "sha256": "a91fbf5edc9beba9bf744a48b010b8bd88a077e8eabbc1e794d5f4c784a94e69",
+      "bytes": 2174
+    },
+    "host-linux/standard/rpc-stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "host-linux/standard/rpc-stdout.log": {
+      "sha256": "2736ea2fb07b547da6711605da6b7bd7c026780efd8ace3bc4e12b6cc76059e8",
+      "bytes": 370
+    },
+    "host-windows/minimal/help/result.json": {
+      "sha256": "23361a37244f868e10e2d4c48757e6ae91fadec800ee650d81688c2b584f8127",
+      "bytes": 857
+    },
+    "host-windows/minimal/help/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "host-windows/minimal/help/stdout.log": {
+      "sha256": "8d33aa3cb758f48103225150dbb768178c5cb3661ad9471ce2efd852848ab4e2",
+      "bytes": 4081
+    },
+    "host-windows/minimal/reopen/result.json": {
+      "sha256": "9afb01696c5f6f46a8eb002b28061c22711f5dbff551988afa3355d7661dcf6c",
+      "bytes": 1118
+    },
+    "host-windows/minimal/reopen/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "host-windows/minimal/reopen/stdout.log": {
+      "sha256": "a00aa8186c71c3c3842aabf3e7f6e2f77871bfcdd91d1f2661072d189a399091",
+      "bytes": 65
+    },
+    "host-windows/minimal/rpc-result.json": {
+      "sha256": "eaf76d6d9dedc0289db65e6fffb4b173edfb39f909bab5f2e565d4d62882b616",
+      "bytes": 3765
+    },
+    "host-windows/minimal/rpc-stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "host-windows/minimal/rpc-stdout.log": {
+      "sha256": "9329479c094aff9af83873ffab403895b2155fd6a6fd601eb7579027012534de",
+      "bytes": 357
+    },
+    "host-windows/result.json": {
+      "sha256": "fbb16cf506e2eb8f7932701b8766789de2a891b6cb2295f79cb3001452931e79",
+      "bytes": 15293
+    },
+    "host-windows/standard/help/result.json": {
+      "sha256": "af397dd2aa593690daccd16cb1554d953d1c4108e092f3da9b1570e1976381a3",
+      "bytes": 860
+    },
+    "host-windows/standard/help/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "host-windows/standard/help/stdout.log": {
+      "sha256": "8d33aa3cb758f48103225150dbb768178c5cb3661ad9471ce2efd852848ab4e2",
+      "bytes": 4081
+    },
+    "host-windows/standard/reopen/result.json": {
+      "sha256": "6556f277c6f4ea83fafe008301ff787efd73f818a1452066701114d5d93d26a5",
+      "bytes": 1124
+    },
+    "host-windows/standard/reopen/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "host-windows/standard/reopen/stdout.log": {
+      "sha256": "a00aa8186c71c3c3842aabf3e7f6e2f77871bfcdd91d1f2661072d189a399091",
+      "bytes": 65
+    },
+    "host-windows/standard/rpc-result.json": {
+      "sha256": "4f97bc5d9c6acfb0092de17c6bc390b7d8c2a3f5b0ab9bdc29bb20b4337cea8d",
+      "bytes": 3807
+    },
+    "host-windows/standard/rpc-stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "host-windows/standard/rpc-stdout.log": {
+      "sha256": "2736ea2fb07b547da6711605da6b7bd7c026780efd8ace3bc4e12b6cc76059e8",
+      "bytes": 370
+    }
+  },
+  "localEvidence": {
+    "root": "<temp>/ariax-release-verification-20261005",
+    "assemblerSha256": "71d4108a25886168272b7bbac8bd16943a088c2bd6a82e039a04d24a7988f817"
+  },
+  "limits": [
+    "Independent means separate target/temp compilation on the same development host; installed tools and Cargo source cache are shared. Source commit is historical, not a frozen release candidate.",
+    "Build times are observations under a 1200-second per-bundle budget, not performance acceptance or evidence about historical mixed-burst causation.",
+    "Linux WSL1 processes load the configured /usr/local/lib/libnanosleep.so system preload. Windows modules observed under Windows directories do not prove an unmodified OS.",
+    "Help, empty-session RPC, shutdown and database reopening do not cover every protocol, delayed library load or supported OS version.",
+    "Full/compat inventories, other platforms, final candidate matrix, mixed-burst stability, race/kernel and hardware-recovery gates remain open."
+  ],
+  "freshOsAcceptance": false,
+  "releaseApproved": false
+}
