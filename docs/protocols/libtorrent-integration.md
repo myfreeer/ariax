@@ -5,7 +5,7 @@
 Status: Phase 6 implementation and acceptance are complete for the scoped
 BitTorrent milestone. The [acceptance record](../../performance-evidence/phase6-acceptance-2026-10-05.md)
 maps all six gates to passing functional, sanitizer/fuzz, measurement and
-interoperability evidence. Phase 7 hardening is next; release and deferred
+interoperability evidence. Phase 7 hardening is active; release and deferred
 backend requirements remain separate.
 
 Decision: libtorrent runs outside the main control and HTTP network event loops.
@@ -89,6 +89,18 @@ A standalone native regression exercises random generation, digest/cipher
 operations, certificate decoding and typed-stack success and cleanup paths
 before the libtorrent integration tests.
 
+Native sanitizer provisioning supports separate x86-64 Linux `address` (ASan/UBSan)
+and `thread` (TSan) installations. Instrumentation modes never share a build or
+installation directory. TSan requires a verified working host runtime and uses
+`-fsanitize=thread` throughout native dependency, bridge and probe compilation;
+it is never combined with ASan. Ordinary Rust harnesses linking this runtime
+do not establish Rust TSan instrumentation. Unsupported platforms reject these
+native sanitizer modes before provisioning.
+Prebuilt Rust test-harness synchronization also requires its own capability
+check when linked with native-only TSan. A failing harness remains failed
+evidence until isolated; use a compatible instrumented Rust harness or an
+explicitly documented direct FFI driver with unchanged application assertions.
+
 The magnet gate must expose held metadata through tracked state even when its
 notification is dropped. Approval supplies the complete validated mapping and
 selection only after their session-store transaction succeeds. Pausing in
@@ -116,6 +128,11 @@ single-file torrent therefore does not acquire a synthetic trailing file.
 
 Metainfo reconstructed from a magnet preserves its validated tracker and web-seed
 URLs outside the unchanged info dictionary. Recovery uses those same endpoints.
+Tracker overlays retain at most 64 distinct endpoints. Admission checks the
+cap before retaining each new endpoint, including torrent and magnet overlays;
+duplicates do not consume another slot. Rejection must not build an oversized
+intermediate tracker vector before checking the final count.
+
 Libtorrent 2.1.1 accepts v2 info dictionaries without piece layers and retrieves
 missing hashes from peers; native regression fixtures cover multi-piece v2 and
 hybrid recovery with that representation and a tracked resume checkpoint.

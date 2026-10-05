@@ -22,7 +22,9 @@ covers the full platform/MSRV/feature matrix, native transfer/security/recovery
 tests, ASan/UBSan and bounded parser fuzzing, all six native Linux benchmark
 scenarios, and local OpenSSH interoperability. A source audit establishes the
 unchanged production/build inputs across those runs and separately validates
-the benchmark diagnostic changes. Phase 7 hardening is next.
+the benchmark diagnostic changes. Phase 7 hardening is active; its
+[local campaign](performance-evidence/phase7-local-hardening-2026-10-05.md)
+records repairs, validation and remaining platform requirements.
 Ariax remains unreleased;
 the [implementation plan](docs/project/implementation-plan.md) tracks remaining
 protocol, native backend and hardening gates. HTTP/2, growing/chunked HTTP

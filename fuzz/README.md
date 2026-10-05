@@ -48,6 +48,11 @@ cargo fuzz run --manifest-path fuzz/Cargo.toml url_rules
 CI should use a fixed corpus/time budget and retain only minimized inputs. The
 targets cap input-derived collections before constructing headers, scopes, or
 replay segments; they do not authorize network or filesystem access.
+Phase 7 local campaigns additionally exercise malformed metadata authority,
+duplicate RPC envelopes and strict session-field rejection. The
+[local hardening runner](../scripts/local_hardening.py) retains each attempt and
+separates corpus initialization from mutation counts. Its rotating input corpus
+keeps initialization bounded while retaining every generated corpus entry.
 The Phase 6 `bt-safety` job runs the BT target for 20 seconds with ASan and
 coverage instrumentation, a 1 MiB input cap, a two-second per-input timeout and
 a 512 MiB RSS cap. CI retains failure inputs and the resulting corpus.

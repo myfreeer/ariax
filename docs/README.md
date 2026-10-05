@@ -88,6 +88,7 @@ They explain earlier decisions; current subsystem contracts take precedence.
   narrative preserved from the former root README.
 - [Development guide](development/README.md)
 - [Continuous integration](development/continuous-integration.md)
+- [Local Phase 7 hardening](development/local-hardening.md)
 - [Retained performance evidence](../performance-evidence)
 - [Fuzz targets](../fuzz/README.md)
 - [Compatibility inputs](../compat/README.md),
@@ -95,6 +96,8 @@ They explain earlier decisions; current subsystem contracts take precedence.
   [protocol fork provenance](../vendor/README.md)
 
 ## Historical Reviews
+
+- [Phase 7 local security review](reviews/phase7-local-security-review.md)
 
 - [Prototype review response](reviews/review-findings-response.md)
 - [Design review round 2](reviews/review-findings-round2.md)

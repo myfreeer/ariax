@@ -312,6 +312,12 @@ fallback without hard failure unless the user requires ECH.
 
 ## DNS
 
+Resolver adapters cap their project-owned answer collections at 32 distinct
+addresses before appending. Duplicate addresses retain their original order
+without consuming additional slots. Configured smaller limits are enforced
+before normalization grows its address sets; overflowing answers are rejected,
+never silently truncated. This does not bound operating-system resolver internals.
+
 Executable Phase-3B gate: the default Hickory resolver and selectable system
 adapter feed one project-owned cache/singleflight layer. Positive and negative
 cache cardinality, TTL clamps, in-flight work, per-name/total waiters, host

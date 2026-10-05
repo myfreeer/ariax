@@ -33,7 +33,7 @@ fn native() {
     println!("cargo:rerun-if-env-changed=ARIAX_BT_NATIVE_DIR");
     println!("cargo:rerun-if-env-changed=ARIAX_BT_SANITIZER");
     let sanitizer = env::var("ARIAX_BT_SANITIZER").unwrap_or_else(|_| "none".into());
-    assert!(matches!(sanitizer.as_str(), "none" | "address"));
+    assert!(matches!(sanitizer.as_str(), "none" | "address" | "thread"));
     assert!(sanitizer == "none" || target == "x86_64-unknown-linux-gnu");
     for path in [
         "native/libtorrent/sources.json",
@@ -128,6 +128,11 @@ fn native() {
     if sanitizer == "address" {
         bridge
             .flag("-fsanitize=address,undefined")
+            .flag("-fno-omit-frame-pointer");
+    }
+    if sanitizer == "thread" {
+        bridge
+            .flag("-fsanitize=thread")
             .flag("-fno-omit-frame-pointer");
     }
     bridge.compile("ariax_bt_bridge");

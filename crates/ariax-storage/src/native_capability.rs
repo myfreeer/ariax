@@ -625,6 +625,7 @@ mod platform {
     use rustix::fs::{ResolveFlags, openat2};
     use std::ffi::{OsStr, OsString};
     use std::fs::File;
+    use std::io;
     use std::os::unix::ffi::OsStringExt as _;
     use std::os::unix::fs::FileExt as _;
     use std::path::{Component, Path};
@@ -876,13 +877,35 @@ mod platform {
     pub(super) fn directory_entries(
         handle: &DirectoryHandle,
     ) -> Result<Vec<OsString>, NativeCapabilityError> {
+        directory_entries_limited(handle, 65_536, 16 * 1024 * 1024)
+    }
+
+    pub(super) fn directory_entries_limited(
+        handle: &DirectoryHandle,
+        max_names: usize,
+        max_bytes: usize,
+    ) -> Result<Vec<OsString>, NativeCapabilityError> {
         let directory = Dir::read_from(handle).map_err(std::io::Error::from)?;
         let mut names = Vec::new();
+        let mut name_bytes = 0_usize;
         for entry in directory {
             let entry = entry.map_err(std::io::Error::from)?;
             let bytes = entry.file_name().to_bytes();
             if bytes == b"." || bytes == b".." {
                 continue;
+            }
+            name_bytes = name_bytes.checked_add(bytes.len()).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "directory name budget overflows",
+                )
+            })?;
+            if names.len() >= max_names || name_bytes > max_bytes {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "directory enumeration exceeds its resource limit",
+                )
+                .into());
             }
             names.push(OsString::from_vec(bytes.to_vec()));
         }
@@ -1180,6 +1203,26 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_ID: AtomicU64 = AtomicU64::new(1);
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_enumeration_enforces_both_limits_without_mutating_files() {
+        let root = TestDirectory::new();
+        fs::write(root.0.join("a"), b"first").unwrap();
+        fs::write(root.0.join("b"), b"second").unwrap();
+        let directory = super::platform::open_absolute_directory(&root.0).unwrap();
+        assert_eq!(
+            super::platform::directory_entries_limited(&directory, 2, 2)
+                .unwrap()
+                .len(),
+            2
+        );
+        for (items, bytes) in [(1, 2), (2, 1)] {
+            assert!(super::platform::directory_entries_limited(&directory, items, bytes).is_err());
+            assert_eq!(fs::read(root.0.join("a")).unwrap(), b"first");
+            assert_eq!(fs::read(root.0.join("b")).unwrap(), b"second");
+        }
+    }
 
     struct TestDirectory(PathBuf);
 

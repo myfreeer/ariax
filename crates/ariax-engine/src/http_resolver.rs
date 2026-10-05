@@ -180,11 +180,12 @@ struct SystemLookup;
 impl LookupBackend for SystemLookup {
     fn lookup<'a>(&'a self, host: &'a str) -> BackendFuture<'a> {
         Box::pin(async move {
-            let addresses = lookup_host((host, 0))
-                .await
-                .map_err(|_| HttpResolverError::ResolutionFailed)?
-                .map(|address| address.ip())
-                .collect();
+            let addresses = collect_backend_addresses(
+                lookup_host((host, 0))
+                    .await
+                    .map_err(|_| HttpResolverError::ResolutionFailed)?
+                    .map(|address| address.ip()),
+            )?;
             Ok(BackendLookup {
                 addresses,
                 ttl: Duration::ZERO,
@@ -219,7 +220,7 @@ impl LookupBackend for HickoryLookup {
                 .valid_until()
                 .saturating_duration_since(Instant::now());
             Ok(BackendLookup {
-                addresses: lookup.iter().collect(),
+                addresses: collect_backend_addresses(lookup.iter())?,
                 ttl,
             })
         })
@@ -448,6 +449,22 @@ fn normalize_host(host: &str) -> Result<String, HttpResolverError> {
     Ok(host.to_ascii_lowercase())
 }
 
+fn collect_backend_addresses(
+    addresses: impl IntoIterator<Item = IpAddr>,
+) -> Result<Vec<IpAddr>, HttpResolverError> {
+    let mut bounded = Vec::new();
+    for address in addresses {
+        if bounded.contains(&address) {
+            continue;
+        }
+        if bounded.len() == DEFAULT_HTTP_DNS_MAX_ADDRESSES {
+            return Err(HttpResolverError::TooManyAddresses);
+        }
+        bounded.push(address);
+    }
+    Ok(bounded)
+}
+
 fn normalize_addresses(
     addresses: Vec<IpAddr>,
     max_addresses: usize,
@@ -457,9 +474,13 @@ fn normalize_addresses(
     let mut ipv6 = Vec::new();
     let mut first_is_ipv6 = false;
     for address in addresses {
-        if !seen.insert(address) {
+        if seen.contains(&address) {
             continue;
         }
+        if seen.len() == max_addresses {
+            return Err(HttpResolverError::TooManyAddresses);
+        }
+        seen.insert(address);
         if seen.len() == 1 {
             first_is_ipv6 = address.is_ipv6();
         }
@@ -548,6 +569,42 @@ fn enforce_cache_kind(state: &mut ResolverState, capacity: usize, positive: bool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backend_answers_preserve_order_deduplicate_and_stop_at_the_bound() {
+        let addresses = (1..=32)
+            .map(|last| IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, last)))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            collect_backend_addresses(addresses.iter().copied().chain(addresses.iter().copied()))
+                .unwrap(),
+            addresses
+        );
+        let mut visited = 0;
+        let overflow = (1..=100).map(|last| {
+            visited += 1;
+            assert!(
+                visited <= 33,
+                "must stop at the first excess unique address"
+            );
+            IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, last))
+        });
+        assert_eq!(
+            collect_backend_addresses(overflow),
+            Err(HttpResolverError::TooManyAddresses)
+        );
+        assert_eq!(visited, 33);
+        assert_eq!(
+            normalize_addresses(addresses[..2].to_vec(), 1),
+            Err(HttpResolverError::TooManyAddresses)
+        );
+        assert_eq!(
+            normalize_addresses(vec![addresses[0], addresses[0]], 1)
+                .unwrap()
+                .as_ref(),
+            &addresses[..1]
+        );
+    }
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Debug)]

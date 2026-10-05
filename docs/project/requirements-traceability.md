@@ -23,7 +23,11 @@ and the complete passing platform/feature/MSRV matrix retained and verified.
 Phase 6 work packages `P6-01` through `P6-06` are accepted in the
 [closure record](../../performance-evidence/phase6-acceptance-2026-10-05.md),
 with their behavior mapped in the [implementation plan](implementation-plan.md#phase-6-bittorrent-full-build).
-Phase 7 hardening is the active next phase.
+Phase 7 hardening is active. Its
+[local campaign](../../performance-evidence/phase7-local-hardening-2026-10-05.md)
+maps `P7-S01` through `P7-S04` to boundary regressions and retains separate
+fuzz, sanitizer, lifecycle/recovery and release-preparation evidence. Local
+results do not close the remaining native-platform acceptance requirements.
 The [focused native Linux BT evidence](../../performance-evidence/phase6-focused-bt-linux-2026-10-04.md)
 at `38d07e4` verifies the selected bridge/adapter, transfer/security/recovery and
 checkpoint-crash fixtures. The [interface and feature slice](../../performance-evidence/phase6-focused-interfaces-linux-2026-10-04.md)

@@ -11,13 +11,10 @@ security boundaries and the supported aria2-facing behavior.
 
 ## Validation Workflow
 
-The temporary `local/removable-storage-mixed-bt-20261003` branch runs one focused
-native Linux [CI job](continuous-integration.md#temporary-focused-validation) on
-push or manual dispatch. It checks the affected permissions, recovery and
-benchmark fixtures, then runs the five full-size transfer scenarios, starting
-with mixed-BT. It stops on failure and retains diagnostics and verified caches.
-This temporary workflow does not run the platform matrix or replace full
-validation. Restore the complete workflow before integration into `main`.
+The full functional CI workflow is restored, and benchmarks run only through
+manual dispatch. The earlier [temporary focused campaign](continuous-integration.md#temporary-focused-validation)
+is historical. [Local Phase 7 hardening](local-hardening.md) starts with review,
+fixes and focused checks, followed by separately bounded longer local runs.
 
 Keep local validation focused. Documentation changes need no Rust build:
 

@@ -256,7 +256,8 @@ class NativeBuildTests(unittest.TestCase):
         target = "x86_64-unknown-linux-gnu"
         self.assertNotEqual(bt_native.work_directory(target, "none"),
                             bt_native.work_directory(target, "address"))
-        for target, mode in ((target, "unknown"), ("x86_64-pc-windows-gnu", "address")):
+        self.assertEqual(len({bt_native.work_directory(target, mode) for mode in ("none", "address", "thread")}), 3)
+        for target, mode in ((target, "unknown"), ("x86_64-pc-windows-gnu", "address"), ("x86_64-pc-windows-gnu", "thread")):
             with self.assertRaises(ValueError):
                 bt_native.work_directory(target, mode)
         with tempfile.TemporaryDirectory() as temporary:
@@ -265,11 +266,13 @@ class NativeBuildTests(unittest.TestCase):
                 "target": "x86_64-unknown-linux-gnu", "inputs": {"sanitizer": "address"}, "files": {}}))
             with self.assertRaisesRegex(ValueError, "stale or wrong-ABI"):
                 bt_native.verify_manifest(root, "x86_64-unknown-linux-gnu", {"sanitizer": "none"})
+            with self.assertRaisesRegex(ValueError, "stale or wrong-ABI"):
+                bt_native.verify_manifest(root, "x86_64-unknown-linux-gnu", {"sanitizer": "thread"})
 
     def test_instrumented_build_installs_the_same_configuration_it_compiles(self):
         # Run the real orchestration against fake tool outputs, without fetching
         # sources or compiling native dependencies in the Python regression.
-        for sanitizer, configuration in (("none", "Release"), ("address", "RelWithDebInfo")):
+        for sanitizer, configuration in (("none", "Release"), ("address", "RelWithDebInfo"), ("thread", "RelWithDebInfo")):
             with self.subTest(sanitizer=sanitizer), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 spec = root / "sources.json"
@@ -331,6 +334,9 @@ class NativeBuildTests(unittest.TestCase):
                 configure = next(command for command in commands if command[:2] == ["cmake", "-S"])
                 self.assertIn("-DCMAKE_BUILD_TYPE=" + configuration, configure)
                 self.assertEqual(any("fsanitize=address,undefined" in arg for arg in configure), sanitizer == "address")
+                self.assertEqual(any("fsanitize=thread" in arg for arg in configure), sanitizer == "thread")
+                openssl = next(command for command in commands if command[:2] == ["perl", "Configure"])
+                self.assertEqual("-fsanitize=thread" in openssl, sanitizer == "thread")
 
 
 if __name__ == "__main__":

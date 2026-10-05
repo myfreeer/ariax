@@ -252,10 +252,10 @@ def verify_manifest(prefix, target, expected):
 
 
 def work_directory(target, sanitizer):
-    require(sanitizer in {"none", "address"}, "unknown native instrumentation")
+    require(sanitizer in {"none", "address", "thread"}, "unknown native instrumentation")
     require(sanitizer == "none" or target == "x86_64-unknown-linux-gnu",
-            "native sanitizer validation requires the Linux CI target")
-    return ROOT / "toolchains/bt-native" / (target + ("-sanitized" if sanitizer == "address" else ""))
+            "native sanitizer validation requires the Linux target")
+    return ROOT / "toolchains/bt-native" / (target + {"none": "", "address": "-sanitized", "thread": "-tsan"}[sanitizer])
 
 
 def build(args):
@@ -265,7 +265,8 @@ def build(args):
                 "opensslPatchSha256": digest(OPENSSL_PATCH),
                 "builderSha256": digest(Path(__file__)), "sanitizer": args.sanitizer}
     work = work_directory(args.target, args.sanitizer)
-    flags = ["-fsanitize=address,undefined", "-fno-omit-frame-pointer"] if args.sanitizer == "address" else []
+    flags = (["-fsanitize=" + {"address": "address,undefined", "thread": "thread"}[args.sanitizer],
+              "-fno-omit-frame-pointer"] if args.sanitizer != "none" else [])
     cache = work / "cache"
     prefix = work / "install"
     if (prefix / "ariax-native.json").is_file():
@@ -368,7 +369,7 @@ def main():
     parser.add_argument("--jobs", type=int, default=min(4, os.cpu_count() or 1))
     parser.add_argument("--verify", action="store_true")
     parser.add_argument("--dependencies-only", action="store_true")
-    parser.add_argument("--sanitizer", choices=("none", "address"), default="none")
+    parser.add_argument("--sanitizer", choices=("none", "address", "thread"), default="none")
     args = parser.parse_args()
     require(1 <= args.jobs <= 64, "invalid native build parallelism")
     with target_lock(work_directory(args.target, args.sanitizer)):

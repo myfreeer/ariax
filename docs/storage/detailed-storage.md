@@ -1304,6 +1304,13 @@ section owns the byte-trust rule.
 
 ## Recovery
 
+Native recovery-directory enumeration is bounded before retaining each name:
+at most 65,536 names and 16 MiB of encoded name bytes, excluding `.` and `..`.
+Exceeding either limit fails inspection without deleting or publishing files.
+These are adapter hard ceilings; journal and backup callers retain their
+smaller segment/candidate limits. Windows directory responses validate fixed
+headers, UTF-16 lengths and advancing aligned offsets before decoding names.
+
 Startup:
 
 1. read SQLite queue membership and locate the task's segment set,

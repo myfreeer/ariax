@@ -7,6 +7,9 @@
 
 #![cfg_attr(not(windows), forbid(unsafe_code))]
 
+#[cfg(any(windows, test))]
+mod directory_response;
+
 #[cfg(windows)]
 mod windows;
 

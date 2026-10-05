@@ -601,9 +601,12 @@ Exit criteria:
 
 ## Phase 7: Hardening
 
-Status: the active next phase after the accepted Phase-6 milestone. Existing
+Status: active after the accepted Phase-6 milestone. Existing
 passing CI, sanitizer/fuzz, benchmark and OpenSSH evidence supplies its baseline.
-The work below remains open; Phase-6 completion is not release approval.
+The [local hardening campaign](../../performance-evidence/phase7-local-hardening-2026-10-05.md)
+records review repairs, bounded local campaigns and their platform limits.
+The work below retains its full acceptance requirements; Phase-6 completion
+and local hardening results are not release approval.
 
 | Priority | Work | Required Evidence |
 | --- | --- | --- |

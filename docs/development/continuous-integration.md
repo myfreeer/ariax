@@ -379,7 +379,7 @@ kernel/backend and release-platform requirements are separate gates; this
 workflow does not authorize a release tag.
 
 Phase 6 is accepted in the [closure record](../../performance-evidence/phase6-acceptance-2026-10-05.md),
-and Phase 7 hardening is next. Phase 6 changed unreleased internal APIs and
+and [Phase 7 local hardening](local-hardening.md) is active. Phase 6 changed unreleased internal APIs and
 persistence formats without compatibility shims. Schema/JSON v3 uses fresh
 stores and rejects older development formats unchanged. Existing aria2-facing behavior, torrent
 protocol support, feature bundles and MSRV remain product requirements.

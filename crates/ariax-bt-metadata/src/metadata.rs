@@ -520,6 +520,9 @@ pub fn with_trackers(
     for url in add {
         let url = endpoint(url, true)?;
         if !trackers.contains(&url) {
+            if trackers.len() == 64 {
+                return Err(BtError::MetadataLimit);
+            }
             trackers.push(url);
         }
     }
@@ -577,6 +580,9 @@ pub fn magnet_with_trackers(
     for url in add {
         let url = endpoint(url, true)?;
         if !magnet.trackers.contains(&url) {
+            if magnet.trackers.len() == 64 {
+                return Err(BtError::MetadataLimit);
+            }
             magnet.trackers.push(url);
         }
     }
@@ -823,6 +829,34 @@ pub fn parse_magnet(value: &str) -> Result<Magnet, BtError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tracker_overlays_bound_growth_before_processing_later_inputs() {
+        let torrent = include_bytes!("../../ariax-bt-libtorrent-sys/tests/fixtures/v1.torrent");
+        let magnet = format!("magnet:?xt=urn:btih:{}", "1".repeat(40));
+        let mut trackers = (0..64)
+            .map(|index| format!("https://tracker{index}.example/announce"))
+            .collect::<Vec<_>>();
+        let limits = MetadataLimits::default();
+        let excluded = vec!["*".to_owned()];
+        // Duplicate additions at the exact cap remain accepted.
+        trackers.push(trackers[0].clone());
+        let overlaid = with_trackers(torrent, &trackers, &excluded, limits).unwrap();
+        assert_eq!(parse_torrent(&overlaid, limits).unwrap().trackers.len(), 64);
+        let overlaid = magnet_with_trackers(&magnet, &trackers, &excluded).unwrap();
+        assert_eq!(parse_magnet(&overlaid).unwrap().trackers.len(), 64);
+        trackers.push("https://overflow.example/announce".to_owned());
+        // This invalid suffix must never be visited after growth was rejected.
+        trackers.push("https://secret:password@tracker.example/announce".to_owned());
+        assert_eq!(
+            with_trackers(torrent, &trackers, &excluded, limits),
+            Err(BtError::MetadataLimit)
+        );
+        assert_eq!(
+            magnet_with_trackers(&magnet, &trackers, &excluded),
+            Err(BtError::MetadataLimit)
+        );
+    }
 
     const V1: &[u8] = include_bytes!("../../ariax-bt-libtorrent-sys/tests/fixtures/v1.torrent");
     const V2: &[u8] = include_bytes!("../../ariax-bt-libtorrent-sys/tests/fixtures/v2.torrent");

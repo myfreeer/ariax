@@ -33,6 +33,12 @@ fuzz_target!(|data: &[u8]| {
             assert!(without.trackers.is_empty());
             assert_eq!(info_section(&bytes, limits).unwrap(), info);
         }
+        if let Ok(bytes) = with_web_seeds(data, &["https://seed.example/payload".into()], limits) {
+            let overlaid = parse_torrent(&bytes, limits).unwrap();
+            assert_eq!(overlaid.identity, metadata.identity);
+            assert_eq!(info_section(&bytes, limits).unwrap(), info);
+            assert!(overlaid.web_seeds.len() <= 64);
+        }
     }
     let _ = parse_info(data, limits);
     let identity = BtIdentity {

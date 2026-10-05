@@ -11,10 +11,10 @@ use std::ptr::{self, NonNull};
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
     FILE_CREATE, FILE_DIRECTORY_FILE, FILE_DISPOSITION_INFORMATION, FILE_LINK_INFORMATION,
-    FILE_NAMES_INFORMATION, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
-    FILE_RENAME_INFORMATION, FILE_SYNCHRONOUS_IO_NONALERT, FileDispositionInformation,
-    FileLinkInformation, FileNamesInformation, FileRenameInformation, NtCreateFile,
-    NtQueryDirectoryFile, NtSetInformationFile,
+    FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION,
+    FILE_SYNCHRONOUS_IO_NONALERT, FileDispositionInformation, FileLinkInformation,
+    FileNamesInformation, FileRenameInformation, NtCreateFile, NtQueryDirectoryFile,
+    NtSetInformationFile,
 };
 use windows_sys::Win32::Foundation::{
     ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED, GENERIC_READ,
@@ -277,9 +277,18 @@ pub fn query_native_file_information(file: &File) -> io::Result<NativeFileInform
 }
 
 pub fn directory_names(directory: &File) -> io::Result<Vec<OsString>> {
+    directory_names_limited(directory, 65_536, 16 * 1024 * 1024)
+}
+
+fn directory_names_limited(
+    directory: &File,
+    max_names: usize,
+    max_bytes: usize,
+) -> io::Result<Vec<OsString>> {
     let word_count = DIRECTORY_QUERY_BUFFER_BYTES.div_ceil(size_of::<usize>());
     let mut storage = vec![0_usize; word_count];
     let mut names = Vec::new();
+    let mut name_bytes = 0_usize;
     let mut restart = true;
     loop {
         let mut status_block = IO_STATUS_BLOCK::default();
@@ -306,52 +315,33 @@ pub fn directory_names(directory: &File) -> io::Result<Vec<OsString>> {
             break;
         }
         nt_success(status)?;
-        let returned = status_block.Information.min(DIRECTORY_QUERY_BUFFER_BYTES);
-        let buffer = storage.as_ptr().cast::<u8>();
-        let mut offset = 0_usize;
-        loop {
-            if offset
-                .checked_add(offset_of!(FILE_NAMES_INFORMATION, FileName))
-                .is_none_or(|end| end > returned)
-            {
-                return Err(invalid_data("directory response header is truncated"));
-            }
-            // SAFETY: the bounds check above covers the fixed header, and
-            // unaligned reads avoid imposing alignment on variable entries.
-            let entry =
-                unsafe { ptr::read_unaligned(buffer.add(offset).cast::<FILE_NAMES_INFORMATION>()) };
-            let name_bytes = usize::try_from(entry.FileNameLength)
-                .map_err(|_| invalid_data("directory name length overflows"))?;
-            if !name_bytes.is_multiple_of(2) {
-                return Err(invalid_data("directory name length is not UTF-16 aligned"));
-            }
-            let name_offset = offset + offset_of!(FILE_NAMES_INFORMATION, FileName);
-            let name_end = name_offset
-                .checked_add(name_bytes)
-                .ok_or_else(|| invalid_data("directory name length overflows"))?;
-            if name_end > returned {
-                return Err(invalid_data("directory name extends past response"));
-            }
-            // SAFETY: the validated range contains `name_bytes / 2` UTF-16 units.
-            let units = unsafe {
-                std::slice::from_raw_parts(buffer.add(name_offset).cast::<u16>(), name_bytes / 2)
-            };
-            if units != [b'.' as u16] && units != [b'.' as u16, b'.' as u16] {
-                use std::os::windows::ffi::OsStringExt as _;
-                names.push(OsString::from_wide(units));
-            }
-            if entry.NextEntryOffset == 0 {
-                break;
-            }
-            let next = usize::try_from(entry.NextEntryOffset)
-                .map_err(|_| invalid_data("directory entry offset overflows"))?;
-            offset = offset
-                .checked_add(next)
-                .ok_or_else(|| invalid_data("directory entry offset overflows"))?;
-            if offset >= returned {
-                return Err(invalid_data("directory entry offset escapes response"));
-            }
+        let returned = status_block.Information;
+        if returned > DIRECTORY_QUERY_BUFFER_BYTES {
+            return Err(invalid_data("directory response exceeds its buffer"));
         }
+        // SAFETY: storage is initialized and owns the entire checked byte range.
+        // The decoder reads bytes, imposing no alignment or padded-header reads.
+        let bytes = unsafe { std::slice::from_raw_parts(storage.as_ptr().cast::<u8>(), returned) };
+        crate::directory_response::visit_names(bytes, |name| {
+            if name == [b'.', 0] || name == [b'.', 0, b'.', 0] {
+                return Ok(());
+            }
+            name_bytes = name_bytes
+                .checked_add(name.len())
+                .ok_or_else(|| invalid_data("directory name budget overflows"))?;
+            if names.len() >= max_names || name_bytes > max_bytes {
+                return Err(invalid_data(
+                    "directory enumeration exceeds its resource limit",
+                ));
+            }
+            use std::os::windows::ffi::OsStringExt as _;
+            let units = name
+                .chunks_exact(2)
+                .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+                .collect::<Vec<_>>();
+            names.push(OsString::from_wide(&units));
+            Ok(())
+        })?;
     }
     Ok(names)
 }
@@ -1401,6 +1391,25 @@ mod tests {
                 &io::Error::from_raw_os_error(code),
                 true
             ));
+        }
+    }
+
+    #[test]
+    fn directory_enumeration_enforces_both_limits_without_mutating_files() {
+        let root = TestDirectory::new();
+        fs::write(root.path().join("a"), b"first").unwrap();
+        fs::write(root.path().join("b"), b"second").unwrap();
+        let directory = open_absolute_directory_no_reparse(root.path()).unwrap();
+        assert_eq!(directory_names_limited(&directory, 2, 4).unwrap().len(), 2);
+        for (items, bytes) in [(1, 4), (2, 3)] {
+            assert_eq!(
+                directory_names_limited(&directory, items, bytes)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::InvalidData
+            );
+            assert_eq!(fs::read(root.path().join("a")).unwrap(), b"first");
+            assert_eq!(fs::read(root.path().join("b")).unwrap(), b"second");
         }
     }
 
