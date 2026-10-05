@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build and inspect two native CLI drafts with explicit source-path remapping."""
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -12,6 +13,7 @@ import sys
 
 import local_hardening as h
 import release_manifest as rm
+import bt_native
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = '1.97.1'
@@ -31,7 +33,7 @@ def read_utf8(path):
 def remap_flags(roots, windows):
     """Use native spellings; more specific roots take precedence in rustc."""
     expected = {'repo', 'cargo', 'target', 'temp'}
-    require(set(roots) == expected, 'all four remap roots are required')
+    require(expected <= set(roots) <= expected | {'native'}, 'all four remap roots and optional native root required')
     path_type = PureWindowsPath if windows else PurePosixPath
     mappings = []
     identities = set()
@@ -92,21 +94,30 @@ def option_rejected(result, stderr):
     return result['exitCode'] == 2 and 'unknown argument' in stderr
 
 
-def runtime_inventory(output, windows):
+def runtime_inventory(output, windows, bundle='minimal'):
+    require(bundle in rm.BUNDLES, 'unknown bundle')
+    bt = bundle in {'full', 'compat'}
     if windows:
         libraries = sorted({value.lower() for value in re.findall(r'DLL Name:\s*(\S+)', output)})
-        require(set(libraries) == rm.WINDOWS_SYSTEM, 'unexpected Windows runtime imports')
-        return {'systemLibraries': libraries, 'additionalRuntimeFiles': []}
+        system = rm.WINDOWS_BT_SYSTEM if bt else rm.WINDOWS_SYSTEM
+        require(set(libraries) == system | ({'libstdc++-6.dll'} if bt else set()), 'unexpected Windows runtime imports')
+        return {'systemLibraries': sorted(system), 'additionalRuntimeFiles': rm.reviewed_runtime_files() if bt else []}
     libraries = sorted(set(re.findall(r'Shared library: \[([^\]]+)\]', output)))
-    require(set(libraries) == rm.LINUX_SYSTEM, 'unexpected Linux runtime imports')
+    require(set(libraries) == (rm.LINUX_BT_SYSTEM if bt else rm.LINUX_SYSTEM), 'unexpected Linux runtime imports')
     versions = re.findall(r'GLIBC_([0-9.]+)', output)
     require(bool(versions), 'missing glibc version requirements')
     minimum = max(versions, key=lambda value: tuple(map(int, value.split('.'))))
     match = re.search(r'Requesting program interpreter: ([^\]]+)\]', output)
-    require(match is not None and match[1] == '/lib64/ld-linux-x86-64.so.2' and minimum == '2.34',
+    require(match is not None and match[1] == '/lib64/ld-linux-x86-64.so.2' and minimum == ('2.38' if bt else '2.34'),
             'unexpected Linux loader or glibc requirement')
-    return {'systemLibraries': libraries, 'additionalRuntimeFiles': [],
-            'minimumGlibc': minimum, 'interpreter': match[1]}
+    result = {'systemLibraries': libraries, 'additionalRuntimeFiles': [],
+              'minimumGlibc': minimum, 'interpreter': match[1]}
+    if bt:
+        versions = re.findall(r'GLIBCXX_([0-9.]+)', output)
+        require(bool(versions), 'missing C++ runtime requirement')
+        result['minimumGlibcxx'] = max(versions, key=lambda value: tuple(map(int, value.split('.'))))
+        require(result['minimumGlibcxx'] == '3.4.30', 'unexpected C++ runtime requirement')
+    return result
 
 
 def source_hashes(root):
@@ -114,7 +125,7 @@ def source_hashes(root):
     selected = [name for name in names if name and (name.startswith((
         'crates/', 'bin/', 'vendor/', 'native/', 'assets/', 'compat/', 'generated/', '.cargo/'))
         or name in {'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml'})]
-    selected += ['scripts/release_build.py', 'scripts/release_manifest.py', 'scripts/local_hardening.py']
+    selected += ['scripts/release_build.py', 'scripts/release_manifest.py', 'scripts/local_hardening.py', 'scripts/bt_native.py']
     return {name: h.digest(root / name) for name in sorted(set(selected))}
 
 
@@ -135,12 +146,27 @@ def comparison_flags(flags):
     return result
 
 
-def comparison_reference(record, target, sources):
+def native_comparison(manifest):
+    inputs = dict(manifest['inputs'])
+    release = dict(inputs['releasePaths'])
+    release['flags'] = sorted(value.rsplit('=', 1)[-1] for value in release['flags'])
+    inputs['releasePaths'] = release
+    files = {name: value for name, value in manifest['files'].items()
+             if name.startswith('include/') or name in {
+                 'lib/libcrypto.a', 'lib/libssl.a', 'lib/libtorrent-rasterbar.a'}}
+    require(all('lib/' + name in files for name in ('libcrypto.a', 'libssl.a', 'libtorrent-rasterbar.a')),
+            'incomplete native link inputs')
+    return {'inputs': inputs, 'compiler': manifest['compiler'], 'consumedFiles': len(files),
+            'filesSha256': hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest(),
+            'archives': {name: value for name, value in files.items() if name.startswith('lib/')}}
+
+
+def comparison_reference(record, target, sources, bundles=('minimal', 'standard')):
     require(record.get('passed') is True and record.get('target') == target, 'passing matching reference required')
     verify_cache_sources(record['sourceHashes'], sources)
     require(re.fullmatch(r'[0-9]+', record.get('sourceDateEpoch', '')) is not None, 'invalid reference epoch')
     builds = record.get('builds', [])
-    require(len(builds) == 2 and {row['bundle'] for row in builds} == {'minimal', 'standard'},
+    require(len(builds) == len(bundles) and {row['bundle'] for row in builds} == set(bundles),
             'complete reference bundle set required')
     return record['sourceDateEpoch']
 
@@ -149,6 +175,10 @@ def prepare(args, root=ROOT):
     windows = os.name == 'nt'
     require(windows or sys.platform == 'linux', 'only native Linux and Windows-GNU are supported')
     target = WINDOWS if windows else LINUX
+    bundles = getattr(args, 'bundles', ['minimal', 'standard'])
+    require(bundles and len(bundles) == len(set(bundles)) and set(bundles) <= rm.BUNDLES, 'invalid bundle set')
+    native = getattr(args, 'native_dir', None)
+    require(bool(native) == bool(set(bundles) & {'full', 'compat'}), 'full/compat require an explicit native installation')
     require(args.output.is_absolute() and args.toolchain.is_absolute() and args.cargo_home.is_absolute(),
             'absolute output, toolchain and Cargo-home paths required')
     require(args.cargo_home.is_dir() and args.toolchain.is_dir(), 'existing toolchain and cache required')
@@ -159,6 +189,18 @@ def prepare(args, root=ROOT):
     require(shutil.disk_usage(args.output.parent).free >= minimum_free, 'insufficient space for build intermediates')
     roots = {'repo': str(root.resolve()), 'cargo': str(args.cargo_home.resolve()),
              'target': str(args.output / 'target'), 'temp': str(args.output / 'tmp')}
+    native_manifest = None
+    if native:
+        require(native.is_absolute() and native.is_dir(), 'absolute existing native installation required')
+        native_manifest = json.loads(read_utf8(native / 'ariax-native.json'))
+        expected = {key: h.digest(root / path) for key, path in (
+            ('sourcesSha256', 'native/libtorrent/sources.json'), ('patchSha256', 'native/libtorrent/ariax.patch'),
+            ('opensslPatchSha256', 'native/libtorrent/openssl.patch'), ('builderSha256', 'scripts/bt_native.py'))}
+        release = native_manifest['inputs'].get('releasePaths')
+        require(release and release.get('flags'), 'native release path configuration required')
+        expected.update(sanitizer='none', releasePaths=release)
+        bt_native.verify_manifest(native, target, expected)
+        roots['native'] = str(native.resolve())
     previous = None
     if args.reuse_cache:
         require(args.reuse_cache.is_absolute(), 'absolute cache record directory required')
@@ -172,9 +214,12 @@ def prepare(args, root=ROOT):
                     'cache directory identity mismatch')
             roots[key] = str(path)
     reference = json.loads(read_utf8(args.compare_record)) if args.compare_record else None
-    epoch = comparison_reference(reference, target, source_hashes(root)) if reference else subprocess.check_output(
+    epoch = comparison_reference(reference, target, source_hashes(root), bundles) if reference else subprocess.check_output(
         ['git', 'show', '-s', '--format=%ct', 'HEAD'], cwd=root).decode().strip()
     env, flags = build_environment(os.environ, roots, args.toolchain, windows, epoch)
+    if native:
+        require(native_manifest['inputs']['releasePaths']['sourceDateEpoch'] == epoch, 'native release epoch drift')
+        env.update(ARIAX_BT_NATIVE_DIR=str(native), ARIAX_BT_SANITIZER='none')
     if reference:
         require(comparison_flags(flags) == comparison_flags(reference['flags']), 'reference build option drift')
     if previous:
@@ -189,6 +234,12 @@ def prepare(args, root=ROOT):
               'environment': {key: env[key] for key in ('RUSTC', 'RUSTDOC', 'CARGO_HOME', 'CARGO_TARGET_DIR',
                   'CARGO_ENCODED_RUSTFLAGS', 'CFLAGS', 'CXXFLAGS', 'CC_SHELL_ESCAPED_FLAGS',
                   'CC', 'CXX', 'AR', 'CARGO_BUILD_JOBS', 'CARGO_INCREMENTAL', 'TMPDIR')}, 'builds': []}
+    if native:
+        record['nativeManifestSha256'] = h.digest(native / 'ariax-native.json')
+        record['nativeComparison'] = native_comparison(native_manifest)
+        record['environment'].update(ARIAX_BT_NATIVE_DIR=str(native), ARIAX_BT_SANITIZER='none')
+        if reference:
+            require(record['nativeComparison'] == reference.get('nativeComparison'), 'native reference drift')
     suffix = '.exe' if windows else ''
     cargo = args.toolchain / ('cargo' + suffix)
     if previous:
@@ -198,7 +249,8 @@ def prepare(args, root=ROOT):
     if reference:
         record['independentComparison'] = {'referenceRecordSha256': h.digest(args.compare_record),
             'referenceSourceCommit': reference['sourceCommit'], 'referenceDriverSha256': reference['sourceHashes']['scripts/release_build.py'],
-            'freshTarget': True, 'freshTemporaryDirectory': True, 'sharedSourceCacheAndToolchain': True}
+            'freshTarget': True, 'freshTemporaryDirectory': True, 'sharedSourceCacheAndToolchain': True,
+            'sharedVerifiedNativeInstallation': bool(native) and str(native) == reference['environment'].get('ARIAX_BT_NATIVE_DIR')}
     try:
         def checked(command, name, timeout=20):
             result = h.run(command, args.output / name, timeout=timeout, env=env, cwd=root)
@@ -218,7 +270,7 @@ def prepare(args, root=ROOT):
                         record['compiler']['binarySha256'] == prior['compiler']['binarySha256'] and
                         record['nativeCompiler']['binarySha256'] == prior['nativeCompiler']['binarySha256'],
                         'compiler identity drift')
-        for bundle in ('minimal', 'standard'):
+        for bundle in bundles:
             item = {'bundle': bundle}
             record['builds'].append(item)
             h.save(args.output / 'result.json', record)
@@ -241,7 +293,7 @@ def prepare(args, root=ROOT):
             inspection = ['objdump', '-p', str(binary)] if windows else [
                 'readelf', '-l', '-d', '--version-info', str(binary)]
             item['inspection'] = checked(inspection, bundle + '/imports')
-            item['runtime'] = runtime_inventory(read_utf8(args.output / bundle / 'imports/stdout.log'), windows)
+            item['runtime'] = runtime_inventory(read_utf8(args.output / bundle / 'imports/stdout.log'), windows, bundle)
             item['help'] = checked([binary, '--help'], bundle + '/help')
             require('Usage: ariax' in read_utf8(args.output / bundle / 'help/stdout.log'), 'missing help output')
             item['rejection'] = h.run([binary, '--ariax-intentionally-invalid-option'],
@@ -273,6 +325,8 @@ def main():
     parser.add_argument('--toolchain', type=Path, required=True, help='pinned native Rust distribution bin directory')
     parser.add_argument('--cargo-home', type=Path, required=True, help='existing offline Cargo cache')
     parser.add_argument('--output', type=Path, required=True, help='fresh absolute directory on the temporary volume')
+    parser.add_argument('--bundles', nargs='+', choices=sorted(rm.BUNDLES), default=['minimal', 'standard'])
+    parser.add_argument('--native-dir', type=Path, help='verified release-path native installation for full/compat')
     parser.add_argument('--prune-target', action='store_true')
     parser.add_argument('--reuse-cache', type=Path, help='prior preparation directory with identical compiled inputs and flags')
     parser.add_argument('--compare-record', type=Path, help='passing reference record for an independent fresh-target comparison')

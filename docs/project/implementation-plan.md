@@ -611,6 +611,10 @@ TSan driver without another benchmark or dependency build.
 The [bounded local campaign](../../performance-evidence/phase7-local-campaign-2026-10-05.md)
 extends lifecycle/recovery and parser coverage, preserves a Windows timing
 failure, and records full/compat native-path and runtime-packaging blockers.
+The [release-blocker follow-up](../../performance-evidence/phase7-release-blockers-2026-10-06.md)
+closes those local packaging blockers with independent native/CLI build matches,
+verified runtime notices and four extracted-package checks. The Windows timing
+failure and external platform acceptance requirements remain open.
 The work below retains its full acceptance requirements; Phase-6 completion
 and local hardening results are not release approval.
 

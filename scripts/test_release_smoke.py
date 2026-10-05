@@ -4,11 +4,24 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import release_smoke as rs
 
 
 class ReleaseSmokeTests(unittest.TestCase):
+    def test_live_version_must_report_the_packaged_feature_bundle(self):
+        result = {'version': '0.1.0', 'enabledFeatures': ['HTTP', 'HTTPS', 'JSON-RPC', 'Session', 'Async DNS',
+                                                       'Metalink', 'FTP', 'SFTP', 'BitTorrent']}
+        rs.verify_version(result, 'full')
+        rs.verify_version(result, 'compat')
+        with self.assertRaisesRegex(ValueError, 'bundle mismatch'):
+            rs.verify_version(result, 'minimal')
+        with self.assertRaisesRegex(ValueError, 'bundle mismatch'):
+            rs.verify_version(dict(result, enabledFeatures=result['enabledFeatures'][:-1]), 'full')
+        with self.assertRaisesRegex(ValueError, 'version'):
+            rs.verify_version(dict(result, version='different'), 'full')
+
     def test_reduced_environment_drops_credentials_injection_and_developer_paths(self):
         base = {'PATH': '/developer/bin', 'LD_PRELOAD': '/injected.so', 'ARIAX_RPC_SECRET': 'secret',
                 'SSL_CERT_FILE': '/custom-certs', 'SystemRoot': 'C:/Windows'}
@@ -48,6 +61,31 @@ class ReleaseSmokeTests(unittest.TestCase):
             (root / 'unexpected.dll').unlink(); binary.write_bytes(b'changed')
             with self.assertRaisesRegex(ValueError, 'checksum'):
                 rs.verify_package(root)
+
+    def test_runtime_modules_must_load_matching_bytes_from_the_package(self):
+        binary = Path('E:/packages/ariax.exe')
+        runtime = {'systemLibraries': [], 'additionalRuntimeFiles': [{'destination': 'libstdc++-6.dll'}]}
+        paths = ['E:/packages/ariax.exe', 'E:/packages/libstdc++-6.dll']
+        with patch.object(rs.rm, 'verify_file') as verify:
+            rows = rs.module_inventory(paths, binary, True, 'C:/Windows', runtime)
+            self.assertEqual(rows[1]['kind'], 'packaged-runtime')
+            verify.assert_called_once()
+            for bad in (paths[:1], [paths[0], 'D:/tools/libstdc++-6.dll']):
+                with self.assertRaises(ValueError):
+                    rs.module_inventory(bad, binary, True, 'C:/Windows', runtime)
+        with patch.object(rs.rm, 'verify_file', side_effect=ValueError('changed bytes')):
+            with self.assertRaisesRegex(ValueError, 'changed bytes'):
+                rs.module_inventory(paths, binary, True, 'C:/Windows', runtime)
+
+    def test_linux_system_sonames_resolve_versioned_files_without_accepting_arbitrary_modules(self):
+        resolved = Path('/usr/lib/libstdc++.so.6.0.30')
+        def resolve(path):
+            return resolved if path == Path('/usr/lib/libstdc++.so.6') else path
+        runtime = {'systemLibraries': ['libstdc++.so.6'], 'additionalRuntimeFiles': []}
+        with patch.object(Path, 'resolve', resolve):
+            rows = rs.module_inventory(['/package/ariax', str(resolved), '/usr/lib/unreviewed.so'],
+                                       Path('/package/ariax'), False, runtime=runtime)
+        self.assertEqual([r['kind'] for r in rows], ['application', 'system', 'host-extra'])
 
 
 if __name__ == '__main__':

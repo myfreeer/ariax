@@ -648,7 +648,7 @@ do not approve a release or replace the remaining platform gates.
 | `P7-01` | Earlier 41 native Windows diagnostics and the [bounded campaign's 410 attempts](../../performance-evidence/phase7-local-campaign-2026-10-05.md#transport-diagnostics), preserving one 100.250 ms `changeUri` timing failure. Host observations do not attribute that delay. | Attribute the retained native Linux 530.097 ms mixed-burst failure and the Windows mutation delay; establish repeated native Linux stability. |
 | `P7-02` | Four security/resource repairs with success and rejection regressions; ownership, policy, persistence and dependency review. | Retain strict Unix fixture and kernel/backend coverage on suitable native systems. |
 | `P7-03` | All 11 Rust-ASan targets pass the additional three-round campaign: 506,880 accepted executions, including 440,792 mutations. Native ASan/UBSan and TSan probes pass; the maintained direct TSan driver adds ten passing native case executions. Earlier evidence remains retained. | Fully instrumented Rust standard-library/harness race coverage; nine failed native-only harness invocations remain retained. |
-| `P7-04` | Additional 2,000 WSL and 2,400 Windows lifecycle/recovery invocations pass, alongside focused BT/protocol/configuration/runtime checks. Four minimal/standard drafts retain independent reproducibility, notices, path/import checks and reduced-environment RPC/reopen evidence. Full/compat builds and runtime inventories now exist for WSL1 and Windows-GNU. | Full/compat native path remapping, runtime packaging and reproducibility; fresh/minimum OS, macOS/MSVC, remaining release matrix, hardware power loss and compatibility decisions. Reviewed handler coverage remains 54/207. |
+| `P7-04` | Additional 2,000 WSL and 2,400 Windows lifecycle/recovery invocations pass, alongside focused BT/protocol/configuration/runtime checks. All eight Linux/Windows-GNU drafts have independent binary matches, notices, path/import checks and reduced-environment RPC/reopen evidence. The [full/compat follow-up](../../performance-evidence/phase7-release-blockers-2026-10-06.md) also verifies independent native builds and four extracted archives with the reviewed Windows runtime closure. | Fresh/minimum OS, macOS/MSVC, remaining release matrix, hardware power loss and compatibility decisions. Reviewed handler coverage remains 54/207. |
 
 The [completed-burst diagnostic slice](../../performance-evidence/phase7-burst-diagnostics-2026-10-05.md)
 adds a longest-burst snapshot and separate primary/verification/untimed totals.
@@ -669,7 +669,7 @@ library notices and the embedded MPL-2.0 public-suffix source obligation.
 The [package review](../../performance-evidence/phase7-packaging-review-2026-10-05.md)
 resolves the winapi payload provenance and IANA/aria2 terms. Four retained
 minimal/standard drafts pass file, checksum, notice and covered-source checks;
-all 120 Python helper tests pass. Four full/compat layouts remain planned.
+all 120 Python helper tests pass. Four full/compat layouts were still planned.
 Those earlier binaries contain absolute Cargo-cache paths despite matching
 independent builds. The [remapping follow-up](../../performance-evidence/phase7-release-paths-2026-10-05.md)
 resolves that finding in all four rebuilt local drafts. Known path matches drop
@@ -680,12 +680,20 @@ target/temp directories and a shared source cache/toolchain. Reduced-environment
 RPC and database reopening checks pass on WSL1 and native Windows; Linux also
 loads its configured system preload. All 137 Python tests and 27 native Windows
 release-helper tests pass. The [bounded campaign](../../performance-evidence/phase7-local-campaign-2026-10-05.md)
-now records full/compat runtime inventories, but all four binaries retain
-absolute native-dependency paths. Linux adds glibc 2.38 and `libstdc++`
-requirements; Windows adds a three-DLL MinGW runtime closure. Their packaging,
-platform-specific terms, fresh-OS/minimum-OS checks and final candidate matrix
-remain open. The drafts are not release candidates. License-only manifest
-changes also change source
+records full/compat runtime inventories and four binaries with absolute
+native-dependency paths. The [October 6 follow-up](../../performance-evidence/phase7-release-blockers-2026-10-06.md)
+resolves those path and packaging findings: 16,772 consumed native files match
+between two independent installations per platform, and all four CLI binaries
+match independent builds with zero known absolute workstation-path matches.
+Linux requirements remain glibc 2.38 and GLIBCXX 3.4.30. Windows archives contain
+exactly the reviewed three-DLL closure with verified notices and live loading
+from the package directory. All four extracted packages pass feature, RPC,
+rejection, EOF and SQLite reopening checks. Fifty-three focused Python helper
+tests, two Rust native integration tests and three/four native probes pass on
+Linux/Windows respectively. The original Windows CTest report-parser failure is
+retained; its successful raw test output was reassessed without rerunning tests.
+Fresh/minimum-OS checks and the final candidate matrix remain open. The drafts
+are not release candidates. License-only manifest changes also change source
 fingerprints; do not bypass retained-evidence checks to reuse older TSan or
 release build records.
 

@@ -32,6 +32,21 @@ compiler, source and patch digests, required settings and installed file hashes,
 including every consumed Boost header,
 in each target's `install/ariax-native.json`. Cross-target reuse is rejected.
 
+For local Linux/Windows-GNU release preparation, `--work-dir` selects an
+absolute, separate output directory and `--source-cache` reuses an existing
+verified cache read-only. The retained cache must not overlap the output;
+missing or modified source trees fail instead of being repaired or downloaded.
+`--release-paths` requires uninstrumented libraries and `SOURCE_DATE_EPOCH`.
+It records file-prefix maps for the native work and source-cache directories.
+OpenSSL reads the maps from a relative response file, preserving a portable
+embedded compiler description. Its configuration/certificate and disabled
+engine/module defaults use fixed platform locations documented in the
+[packaging contract](../../docs/development/release-packaging.md#package-manifests).
+The native manifest retains the complete maps and epoch. The CLI release
+helper separately remaps installed headers when compiling the bridge.
+Changing builder inputs invalidates older installation provenance; do not
+rewrite an old manifest to claim a new recipe built its libraries.
+
 `ariax.patch` adds a storage admission hold checked by every torrent
 initialization path. Held metadata is queryable independently of alerts.
 Approval installs every file mapping and priority together before initialization;

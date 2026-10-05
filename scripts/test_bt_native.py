@@ -19,6 +19,51 @@ import bt_native
 
 
 class NativeDownloadTests(unittest.TestCase):
+    def test_release_paths_require_reviewed_target_epoch_and_map_both_roots(self):
+        work = Path(tempfile.gettempdir()).resolve() / 'native'
+        cache = work.parent / 'cache'
+        config = bt_native.release_configuration("x86_64-unknown-linux-gnu", work, cache, "123")
+        self.assertEqual(config["opensslDirectories"]["OPENSSLDIR"], "/etc/ssl")
+        self.assertEqual(len(config["flags"]), 2)
+        for target, epoch in (("x86_64-pc-windows-msvc", "123"),
+                              ("x86_64-unknown-linux-gnu", None), ("x86_64-unknown-linux-gnu", "now")):
+            with self.assertRaises(ValueError):
+                bt_native.release_configuration(target, work, cache, epoch)
+
+    def test_retained_source_cache_is_read_only_and_rejects_changed_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = Path(temporary)
+            directory = cache / "sources/boost-0123456789abcdef"
+            source = directory / "boost"
+            source.mkdir(parents=True)
+            header = source / "header.h"; header.write_text("original")
+            spec = {"sha256": "0123456789abcdef" * 4}
+            marker = directory / ".complete.json"
+            marker.write_text(json.dumps({"root": "boost", "sha256": spec["sha256"],
+                                          "files": bt_native.inventory(source)}))
+            self.assertEqual(bt_native.retained_source_tree("boost", spec, cache), source)
+            header.write_text("changed")
+            with self.assertRaisesRegex(ValueError, "source drift"):
+                bt_native.retained_source_tree("boost", spec, cache)
+            self.assertEqual(header.read_text(), "changed")
+            record = json.loads(marker.read_text()); record["root"] = "../escape"
+            marker.write_text(json.dumps(record))
+            with self.assertRaisesRegex(ValueError, "unsafe"):
+                bt_native.retained_source_tree("boost", spec, cache)
+
+    def test_custom_output_cannot_bypass_sanitizer_target_validation_or_modify_source_cache(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary).resolve()
+            args = SimpleNamespace(target="x86_64-pc-windows-gnu", sanitizer="address", work_dir=work)
+            with mock.patch.object(bt_native, "native_target", return_value="mingw64"):
+                with self.assertRaisesRegex(ValueError, "Linux target"):
+                    bt_native.build(args)
+            args = SimpleNamespace(target="x86_64-unknown-linux-gnu", sanitizer="none", work_dir=work,
+                                   source_cache=work / 'cache')
+            with mock.patch.object(bt_native, "native_target", return_value="linux-x86_64"):
+                with self.assertRaisesRegex(ValueError, "overlaps"):
+                    bt_native.build(args)
+
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -272,8 +317,9 @@ class NativeBuildTests(unittest.TestCase):
     def test_instrumented_build_installs_the_same_configuration_it_compiles(self):
         # Run the real orchestration against fake tool outputs, without fetching
         # sources or compiling native dependencies in the Python regression.
-        for sanitizer, configuration in (("none", "Release"), ("address", "RelWithDebInfo"), ("thread", "RelWithDebInfo")):
-            with self.subTest(sanitizer=sanitizer), tempfile.TemporaryDirectory() as temporary:
+        for sanitizer, configuration, release in (("none", "Release", False), ("address", "RelWithDebInfo", False),
+                                                   ("thread", "RelWithDebInfo", False), ("none", "Release", True)):
+            with self.subTest(sanitizer=sanitizer, release=release), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 spec = root / "sources.json"
                 spec.write_text(json.dumps({
@@ -308,11 +354,13 @@ class NativeBuildTests(unittest.TestCase):
 
                 with mock.patch.multiple(bt_native, ROOT=root, SPEC=spec, PATCH=patch,
                                          OPENSSL_PATCH=openssl_patch), \
+                        mock.patch.dict(bt_native.os.environ, SOURCE_DATE_EPOCH="123"), \
                         mock.patch.object(bt_native, "native_target", return_value="linux-x86_64"), \
                         mock.patch.object(bt_native, "source_tree", side_effect=lambda name, *_: sources[name]), \
                         mock.patch.object(bt_native.subprocess, "run", side_effect=run):
                     args = SimpleNamespace(target="x86_64-unknown-linux-gnu", sanitizer=sanitizer,
-                                           verify=False, dependencies_only=False, archive_dir=None, jobs=2)
+                                           verify=False, dependencies_only=False, archive_dir=None, jobs=2,
+                                           release_paths=release)
                     bt_native.build(args)
                     work = bt_native.work_directory(args.target, sanitizer)
                     self.assertEqual((work / "openssl-source/callback.c").read_text(), "adapter\n")
@@ -337,6 +385,12 @@ class NativeBuildTests(unittest.TestCase):
                 self.assertEqual(any("fsanitize=thread" in arg for arg in configure), sanitizer == "thread")
                 openssl = next(command for command in commands if command[:2] == ["perl", "Configure"])
                 self.assertEqual("-fsanitize=thread" in openssl, sanitizer == "thread")
+                if release:
+                    self.assertTrue(any("@ariax-remap.rsp" in arg for arg in openssl))
+                    build = next(command for command in commands if "build_libs" in command)
+                    self.assertIn("OPENSSLDIR=/etc/ssl", build)
+                    self.assertTrue(any("-ffile-prefix-map=" in arg for arg in configure))
+                    self.assertIn("/ariax-native-work", (work / "openssl-source/ariax-remap.rsp").read_text())
 
 
 if __name__ == "__main__":

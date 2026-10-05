@@ -11,6 +11,7 @@ import os
 from pathlib import Path, PurePosixPath
 import platform
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -240,6 +241,36 @@ def source_tree(name, spec, cache, supplied):
     return root
 
 
+def retained_source_tree(name, spec, cache):
+    """Read-only cache reuse: never download, delete or repair retained inputs."""
+    directory = cache / "sources" / (name + "-" + spec["sha256"][:16])
+    marker = json.loads((directory / ".complete.json").read_text(encoding="utf-8"))
+    root = directory / marker["root"]
+    require(root.resolve().is_relative_to(directory.resolve()) and root != directory,
+            "unsafe cached source root")
+    require(marker.get("sha256") == spec["sha256"] and root.is_dir()
+            and marker.get("files") == inventory(root), "retained native source drift")
+    return root
+
+
+def release_configuration(target, work, cache, epoch):
+    require(target in {"x86_64-unknown-linux-gnu", "x86_64-pc-windows-gnu"},
+            "release path mapping requires a reviewed GNU target")
+    require(re.fullmatch(r"[0-9]+", epoch or "") is not None, "release build requires SOURCE_DATE_EPOCH")
+    roots = {"work": work, "sources": cache}
+    flags = []
+    for name, path in roots.items():
+        value = path.as_posix()
+        require(path.is_absolute() and not any(c in value for c in '\x00\r\n="'),
+                "invalid native remap root")
+        flags.append("-ffile-prefix-map=" + value + "=/ariax-native-" + name)
+    windows = target.endswith("windows-gnu")
+    prefix = "C:/Program Files/Ariax" if windows else "/usr/lib/ariax"
+    return {"flags": flags, "sourceDateEpoch": epoch,
+            "opensslDirectories": {"OPENSSLDIR": "C:/Program Files/Common Files/SSL" if windows else "/etc/ssl",
+                                   "ENGINESDIR": prefix + "/engines-3", "MODULESDIR": prefix + "/ossl-modules"}}
+
+
 def verify_manifest(prefix, target, expected):
     manifest = json.loads((prefix / "ariax-native.json").read_text())
     require(manifest["target"] == target and manifest["inputs"] == expected, "stale or wrong-ABI native installation")
@@ -264,10 +295,25 @@ def build(args):
     expected = {"sourcesSha256": digest(SPEC), "patchSha256": digest(PATCH),
                 "opensslPatchSha256": digest(OPENSSL_PATCH),
                 "builderSha256": digest(Path(__file__)), "sanitizer": args.sanitizer}
-    work = work_directory(args.target, args.sanitizer)
+    default_work = work_directory(args.target, args.sanitizer)
+    work = getattr(args, "work_dir", None) or default_work
     flags = (["-fsanitize=" + {"address": "address,undefined", "thread": "thread"}[args.sanitizer],
               "-fno-omit-frame-pointer"] if args.sanitizer != "none" else [])
-    cache = work / "cache"
+    retained_cache = getattr(args, "source_cache", None)
+    cache = retained_cache or work / "cache"
+    require(work.is_absolute() and cache.is_absolute(), "absolute native directory required")
+    if retained_cache:
+        require(not work.resolve().is_relative_to(cache.resolve()) and
+                not cache.resolve().is_relative_to(work.resolve()), "retained source cache overlaps build output")
+    release = None
+    if getattr(args, "release_paths", False):
+        require(args.sanitizer == "none", "release paths require uninstrumented dependencies")
+        release = release_configuration(args.target, work, cache, os.environ.get("SOURCE_DATE_EPOCH"))
+        expected["releasePaths"] = release
+    def sources(name):
+        if retained_cache:
+            return retained_source_tree(name, spec[name], cache)
+        return source_tree(name, spec[name], cache, args.archive_dir)
     prefix = work / "install"
     if (prefix / "ariax-native.json").is_file():
         try:
@@ -291,32 +337,41 @@ def build(args):
             result = subprocess.run(list(map(str, command)), cwd=cwd, stdout=output, stderr=subprocess.STDOUT)
         require(result.returncode == 0, "native command failed; see " + str(logs / f"{count:02}.log"))
 
-    boost = source_tree("boost", spec["boost"], cache, args.archive_dir)
-    upstream = source_tree("openssl", spec["openssl"], cache, args.archive_dir)
+    boost = sources("boost")
+    upstream = sources("openssl")
     ssl = work / "openssl-source"
     ssl_prefix = work / "openssl-install"
     ssl_marker = work / "openssl-inputs.json"
     ssl_inputs = {"source": spec["openssl"]["sha256"], "builder": expected["builderSha256"],
                   "patch": expected["opensslPatchSha256"], "target": args.target,
-                  "sanitizer": args.sanitizer}
+                  "sanitizer": args.sanitizer, "releasePaths": release}
     ssl_cached = json.loads(ssl_marker.read_text()) if ssl_marker.is_file() else {}
     if ssl_cached.get("inputs") != ssl_inputs or ssl_cached.get("files") != inventory(ssl_prefix):
         if ssl.exists():
             shutil.rmtree(ssl)
         shutil.copytree(upstream, ssl)
         apply_patch(ssl, OPENSSL_PATCH)
+        ssl_flags = ([] if os.name == "nt" else ["-fPIC"]) + flags
+        if release:
+            # GCC reads the actual maps; OpenSSL records only this relative name
+            # in its compiler description. Preserve all arguments in the manifest.
+            (ssl / "ariax-remap.rsp").write_text(
+                "\n".join('"' + flag.replace('\\', '\\\\') + '"' for flag in release["flags"]) + "\n",
+                encoding="utf-8")
+            ssl_flags = ["CFLAGS=" + " ".join(["-O3", *ssl_flags, "@ariax-remap.rsp"])]
         run(["perl", "Configure", openssl_target, "no-shared", "no-tests", "no-apps", "no-docs",
              "no-module", "no-legacy", "no-engine", "no-zlib", "no-asm", "--libdir=lib",
-             "--prefix=" + str(ssl_prefix), *([] if os.name == "nt" else ["-fPIC"]), *flags], cwd=ssl)
+             "--prefix=" + str(ssl_prefix), *ssl_flags], cwd=ssl)
         make = "nmake" if args.target.endswith("msvc") else "make"
         parallel = [] if make == "nmake" else ["-j" + str(args.jobs)]
-        run([make, *parallel, "build_libs"], cwd=ssl)
-        run([make, "install_dev"], cwd=ssl)
+        directories = [key + "=" + value for key, value in release["opensslDirectories"].items()] if release else []
+        run([make, *parallel, *directories, "build_libs"], cwd=ssl)
+        run([make, *directories, "install_dev"], cwd=ssl)
         ssl_marker.write_text(json.dumps({"inputs": ssl_inputs, "files": inventory(ssl_prefix)}) + "\n")
     if args.dependencies_only:
         print("Built pinned Boost headers and OpenSSL for " + args.target, flush=True)
         return
-    upstream = source_tree("libtorrent", spec["libtorrent"], cache, args.archive_dir)
+    upstream = sources("libtorrent")
     source = work / "libtorrent-source"
     patch_marker = source / ".ariax-patch.sha256"
     if not patch_marker.is_file() or patch_marker.read_text().strip() != expected["patchSha256"]:
@@ -333,6 +388,9 @@ def build(args):
                "-DBoost_INCLUDE_DIR=" + str(boost), "-DBOOST_ROOT=" + str(boost),
                "-DOPENSSL_ROOT_DIR=" + str(ssl_prefix)]
     settings = spec["settings"].copy()
+    if release:
+        command_flags = subprocess.list2cmdline(release["flags"]) if os.name == "nt" else shlex.join(release["flags"])
+        settings.update(CMAKE_CXX_FLAGS=command_flags, CMAKE_C_FLAGS=command_flags)
     if flags:
         settings.update(CMAKE_BUILD_TYPE="RelWithDebInfo", CMAKE_CXX_FLAGS=" ".join(flags),
                         CMAKE_C_FLAGS=" ".join(flags), CMAKE_CXX_FLAGS_RELWITHDEBINFO="-O1 -g")
@@ -369,10 +427,15 @@ def main():
     parser.add_argument("--jobs", type=int, default=min(4, os.cpu_count() or 1))
     parser.add_argument("--verify", action="store_true")
     parser.add_argument("--dependencies-only", action="store_true")
+    parser.add_argument("--work-dir", type=Path, help="separate absolute native build/install directory")
+    parser.add_argument("--source-cache", type=Path, help="existing verified source cache, reused read-only")
+    parser.add_argument("--release-paths", action="store_true", help="remap paths and use fixed OpenSSL runtime directories")
     parser.add_argument("--sanitizer", choices=("none", "address", "thread"), default="none")
     args = parser.parse_args()
     require(1 <= args.jobs <= 64, "invalid native build parallelism")
-    with target_lock(work_directory(args.target, args.sanitizer)):
+    for path in (args.work_dir, args.source_cache):
+        require(path is None or path.is_absolute(), "absolute native directory required")
+    with target_lock(args.work_dir or work_directory(args.target, args.sanitizer)):
         build(args)
 
 

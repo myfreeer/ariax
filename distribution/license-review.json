@@ -135,7 +135,7 @@
     ],
     "linuxMinimumObservedGlibc": "2.34",
     "windowsExtraDllsForRetainedMinimalStandard": [],
-    "scope": "Retained local minimal/standard binaries only; full/compat and other platforms require their own actual import and runtime provenance review.",
+    "scope": "Base fields describe the retained minimal/standard binaries; fullCompatReview records the separate Linux/Windows-GNU full/compat review. Other platforms require their own artifact and runtime review.",
     "historicalBinaryPathAudits": {
       "x86_64-unknown-linux-gnu-minimal": {
         "passed": false,
@@ -232,11 +232,35 @@
       "freshOsAcceptance": false,
       "linuxHostExtra": "/usr/local/lib/libnanosleep.so",
       "windowsObservedModules": "Application plus DLLs under Windows system directories; exercised paths only."
+    },
+    "fullCompatReview": {
+      "reviewDate": "2026-10-06",
+      "scope": "Local Linux/Windows-GNU full/compat runtime closure; final package operation evidence is recorded separately.",
+      "linuxSystemLibraries": [
+        "ld-linux-x86-64.so.2",
+        "libc.so.6",
+        "libgcc_s.so.1",
+        "libm.so.6",
+        "libstdc++.so.6"
+      ],
+      "linuxMinimumGlibc": "2.38",
+      "linuxMinimumGlibcxx": "3.4.30",
+      "linuxRuntimeBundled": false,
+      "windowsRuntimeCatalog": "distribution/runtime-files.json",
+      "windowsRuntimeCatalogSha256": "00b8516e9c1d8cd768b4626235ad2a2c61f302e08971197f18461734aa1f470e",
+      "windowsRuntimeLicenses": "GCC runtime DLLs use GPL-3.0-or-later WITH GCC-exception-3.1; winpthread uses MIT AND BSD-3-Clause-Clear. Exact existing notice texts accompany the three-DLL closure. No LGPL libquadmath or libgomp is distributed.",
+      "nativeNotices": "The common notice collection includes libtorrent LICENSE and COPYING, Boost LICENSE_1_0.txt, OpenSSL LICENSE.txt and AUTHORS.md. Apple-only route headers are outside these two native builds; conservative source notices remain present.",
+      "limitation": "Does not establish macOS/MSVC terms, a fresh/minimum OS, or final release acceptance.",
+      "linuxRuntimeNoticeVerification": {
+        "package": "libstdc++6@14.2.0-19",
+        "notice": "distribution/licenses/libgcc-copyright.txt",
+        "sha256": "20390f8a6f3b1e4d7cb45dd8652dabb259bbef688cbad839bcdb0b9ba7252f79",
+        "result": "Installed libstdc++6 copyright bytes exactly match the already packaged GCC copyright text, including libstdc++-v3 and the runtime exception."
+      }
     }
   },
   "remaining": [
     "Candidate source/build identity and final release matrix.",
-    "Actual full/compat binary imports and native/platform notices.",
     "Clean-host packaging tests for intended supported OS versions."
   ]
 }

@@ -1,0 +1,63 @@
+{
+  "schema": 1,
+  "releaseApproved": false,
+  "scope": "Exact Windows-GNU full/compat runtime DLL closure. GCC runtime exception applies to these runtime libraries and eligible GCC compilation; no LGPL libquadmath or libgomp is distributed. System DLLs are supplied by Windows.",
+  "files": [
+    {
+      "destination": "libstdc++-6.dll",
+      "artifactPath": "runtime/libstdc++-6.dll",
+      "sha256": "887c21dbe2a211ac4d1a790e4f608b7dee27fae12352856963004e7a715d2e6c",
+      "bytes": 2661299,
+      "imports": [
+        "kernel32.dll",
+        "libgcc_s_seh-1.dll",
+        "libwinpthread-1.dll",
+        "msvcrt.dll"
+      ],
+      "package": "mingw-w64-x86_64-gcc-libs",
+      "version": "16.2.0-3",
+      "source": "https://github.com/msys2/MINGW-packages/tree/master/mingw-w64-gcc",
+      "license": "GPL-3.0-or-later WITH GCC-exception-3.1",
+      "notices": [
+        "licenses/gcc-GPL-3.0.txt",
+        "licenses/gcc-runtime-exception.txt"
+      ]
+    },
+    {
+      "destination": "libgcc_s_seh-1.dll",
+      "artifactPath": "runtime/libgcc_s_seh-1.dll",
+      "sha256": "b37c1770c8ca092700875845b34918803ee6311573eba1c32ff4b1166e4a0e1e",
+      "bytes": 150998,
+      "imports": [
+        "kernel32.dll",
+        "libwinpthread-1.dll",
+        "msvcrt.dll"
+      ],
+      "package": "mingw-w64-x86_64-gcc-libs",
+      "version": "16.2.0-3",
+      "source": "https://github.com/msys2/MINGW-packages/tree/master/mingw-w64-gcc",
+      "license": "GPL-3.0-or-later WITH GCC-exception-3.1",
+      "notices": [
+        "licenses/gcc-GPL-3.0.txt",
+        "licenses/gcc-runtime-exception.txt"
+      ]
+    },
+    {
+      "destination": "libwinpthread-1.dll",
+      "artifactPath": "runtime/libwinpthread-1.dll",
+      "sha256": "8d7a192a8fbbccb0cebeac272701f66a580f493eff2336739a96144119260723",
+      "bytes": 63875,
+      "imports": [
+        "kernel32.dll",
+        "msvcrt.dll"
+      ],
+      "package": "mingw-w64-x86_64-libwinpthread",
+      "version": "14.0.0.r283.ga7cb47123-1",
+      "source": "https://github.com/msys2/MINGW-packages/tree/master/mingw-w64-winpthreads",
+      "license": "MIT AND BSD-3-Clause-Clear",
+      "notices": [
+        "licenses/winpthread.txt"
+      ]
+    }
+  ]
+}

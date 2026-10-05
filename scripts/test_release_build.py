@@ -50,6 +50,42 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertLess(flags.index('--remap-path-prefix=/work/cargo=/ariax-cargo'),
                         flags.index('--remap-path-prefix=/work/cargo/target=/ariax-target'))
 
+    def test_native_header_root_is_remapped_and_unknown_roots_reject(self):
+        roots = dict(self.roots(), native='/native/install')
+        self.assertIn('-ffile-prefix-map=/native/install=/ariax-native', rb.remap_flags(roots, False)['native'])
+        with self.assertRaises(ValueError):
+            rb.remap_flags(dict(roots, arbitrary='/arbitrary'), False)
+
+    def test_native_comparison_preserves_link_bytes_and_allows_remapped_build_locations(self):
+        import copy
+        first = {'inputs': {'builderSha256': 'builder', 'releasePaths': {
+            'flags': ['-ffile-prefix-map=/first=/ariax-native-work'], 'sourceDateEpoch': '123'}},
+                 'compiler': 'gcc', 'files': {'lib/' + name: name for name in
+                                             ('libcrypto.a', 'libssl.a', 'libtorrent-rasterbar.a')}}
+        first['files']['include/openssl/header.h'] = 'header'
+        second = copy.deepcopy(first)
+        second['inputs']['releasePaths']['flags'][0] = '-ffile-prefix-map=/second=/ariax-native-work'
+        self.assertEqual(rb.native_comparison(first), rb.native_comparison(second))
+        second['files']['include/openssl/header.h'] = 'changed'
+        self.assertNotEqual(rb.native_comparison(first), rb.native_comparison(second))
+        del second['files']['lib/libcrypto.a']
+        with self.assertRaisesRegex(ValueError, 'incomplete native'):
+            rb.native_comparison(second)
+
+    def test_full_runtime_inventory_requires_exact_platform_imports_and_versions(self):
+        output = '\n'.join('DLL Name: ' + name for name in rb.rm.WINDOWS_BT_SYSTEM | {'libstdc++-6.dll'})
+        self.assertEqual({r['destination'] for r in rb.runtime_inventory(output, True, 'full')['additionalRuntimeFiles']},
+                         rb.rm.WINDOWS_BT_RUNTIME)
+        with self.assertRaises(ValueError):
+            rb.runtime_inventory(output + '\nDLL Name: unexpected.dll', True, 'full')
+        output = '\n'.join('Shared library: [' + name + ']' for name in rb.rm.LINUX_BT_SYSTEM)
+        output += '\n[Requesting program interpreter: /lib64/ld-linux-x86-64.so.2]\nGLIBC_2.38 GLIBCXX_3.4.30'
+        self.assertEqual(rb.runtime_inventory(output, False, 'compat')['minimumGlibcxx'], '3.4.30')
+        for changed in (output.replace('3.4.30', '3.4.31'), output.replace('2.38', '2.39'),
+                        output.replace('libstdc++.so.6', 'libunknown.so')):
+            with self.assertRaises(ValueError):
+                rb.runtime_inventory(changed, False, 'full')
+
     def test_missing_relative_ambiguous_and_duplicate_roots_reject(self):
         for value in ('relative', '/', '/a=b', '/a\nb', '/a\x1fb', '/a\x00b'):
             roots = self.roots(); roots['cargo'] = value

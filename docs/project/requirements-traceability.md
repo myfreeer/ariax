@@ -32,8 +32,11 @@ The [bounded local campaign](../../performance-evidence/phase7-local-campaign-20
 adds 5,474 behavioral test/probe invocations, ten direct TSan cases and 506,880
 accepted fuzz executions. Its 410 Windows diagnostic attempts retain one
 100.250 ms mutation delay without attributing it to host load. Full/compat
-runtime inventories are now recorded, while native-dependency path and runtime
-packaging blockers keep those layouts unapproved.
+runtime inventories were recorded with native-dependency path and runtime
+packaging blockers. The [October 6 follow-up](../../performance-evidence/phase7-release-blockers-2026-10-06.md)
+resolves those local blockers: full/compat native and CLI builds match independent
+builds, path/import audits pass, and four extracted archives pass package checks.
+All eight layouts remain retained drafts pending external release acceptance.
 The [focused native Linux BT evidence](../../performance-evidence/phase6-focused-bt-linux-2026-10-04.md)
 at `38d07e4` verifies the selected bridge/adapter, transfer/security/recovery and
 checkpoint-crash fixtures. The [interface and feature slice](../../performance-evidence/phase6-focused-interfaces-linux-2026-10-04.md)

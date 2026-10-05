@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "date": "2026-10-05",
+  "date": "2026-10-06",
   "status": "draft package catalog",
   "releaseApproved": false,
   "dependencyLockSha256": "0a9174da9937800e0e077561527d2c9002dffe06e14e6d6534568bed1723d876",
@@ -22,14 +22,14 @@
     {
       "source": "distribution/package-readme.txt",
       "destination": "README.txt",
-      "bytes": 1913,
-      "sha256": "8315741f2fc3cbcf7bceff1495dd3cfee5baa37c0070b0b155c08931bc07565c"
+      "bytes": 1800,
+      "sha256": "2ddd0084605e79b974b705f3c0e84e8c55318046db1fb91024e98a5dcd160331"
     },
     {
       "source": "distribution/license-review.json",
       "destination": "license-review.json",
-      "bytes": 9785,
-      "sha256": "de97657cabfae273969d0e6e100c651cbf241dc8da789b86855fc5da3d65c5fb"
+      "bytes": 11438,
+      "sha256": "5ca74aad39321e86f61067992e8c74f54a7a336fee64eb27db86c3e7a9aace47"
     },
     {
       "source": "performance-evidence/phase7-third-party-notices-2026-10-05.txt",
@@ -724,7 +724,7 @@
       "id": "x86_64-unknown-linux-gnu-full",
       "target": "x86_64-unknown-linux-gnu",
       "bundle": "full",
-      "status": "planned",
+      "status": "draft-retained",
       "releaseApproved": false,
       "files": [
         {
@@ -740,8 +740,73 @@
           "sha256": "20390f8a6f3b1e4d7cb45dd8652dabb259bbef688cbad839bcdb0b9ba7252f79"
         }
       ],
-      "binary": null,
-      "runtime": null,
+      "binary": {
+        "artifactPath": "cli-linux-a/full/ariax",
+        "destination": "ariax",
+        "sha256": "aeefb1627c9f2c78db852c15d14506974b93905fe4f38337b40a3d3324cc30b8",
+        "bytes": 25330208,
+        "sourceCommit": "d6a8afccdc7e804b6213afa5998115629376c482",
+        "sourceDateEpoch": "1791224426",
+        "preparationRecordSha256": "47da787b17f186b5a6217ab16d93ca482e7901a6ff2bb4288e179fc4be7a6609",
+        "repeatPreparationRecordSha256": "0ee5671115b6078e1a93410735b9a14fca755b9fc5aab51f08473b4a4dcd7eb1",
+        "independentBuildMatched": true,
+        "independentNativeBuildMatched": true,
+        "nativeComparison": {
+          "inputs": {
+            "sourcesSha256": "b55bc045afe126bad7e48d9ca6e9a5b40f762e2bdea6cbc54997dcee32991819",
+            "patchSha256": "8d377c5622d0308bda2f7fc161913954f4a4cb3af19f6e1400d2cde84446a409",
+            "opensslPatchSha256": "e12670d73045bda8fb086f51f1080ccaffd60e54dd8902577aea3b3ad2a5a748",
+            "builderSha256": "00ea493529c145e7f4d4ade28638fa510506192ad83ed36721c8317435ea7add",
+            "sanitizer": "none",
+            "releasePaths": {
+              "flags": [
+                "/ariax-native-sources",
+                "/ariax-native-work"
+              ],
+              "sourceDateEpoch": "1791224426",
+              "opensslDirectories": {
+                "OPENSSLDIR": "/etc/ssl",
+                "ENGINESDIR": "/usr/lib/ariax/engines-3",
+                "MODULESDIR": "/usr/lib/ariax/ossl-modules"
+              }
+            }
+          },
+          "compiler": "c++ (Debian 14.2.0-19) 14.2.0\nCopyright (C) 2024 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.",
+          "consumedFiles": 16772,
+          "filesSha256": "04998739ffff1557b2bacddb04ee99dc3d4264849d8bfacb9e951c0ba535108a",
+          "archives": {
+            "lib/libcrypto.a": "66bb5adbbcae1ec54df5ee9fd2ca8eaa02731a380bf769b058cb1a2a7816251b",
+            "lib/libssl.a": "b1b3c9680bfe44d200f29f8edd2611b157b957b8c815a8c5fd92dfdaa297be64",
+            "lib/libtorrent-rasterbar.a": "89796a74fba0e5c122f964853ca541ff45c44ef1316afca10bf2208f548e411e"
+          }
+        },
+        "evidence": "performance-evidence/phase7-release-blockers-2026-10-06.json",
+        "comparisonEvidence": "performance-evidence/phase7-release-blockers-2026-10-06.json",
+        "sourceScope": "Base commit plus recorded source hashes, including local release-helper changes. Separate native/build/target/temp directories match byte for byte; verified source cache and installed toolchain are shared. Not final candidate acceptance.",
+        "pathAudit": {
+          "passed": true,
+          "counts": {
+            "wslMount": 0,
+            "windowsTemp": 0,
+            "windowsUser": 0,
+            "unixHome": 0
+          },
+          "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
+        }
+      },
+      "runtime": {
+        "systemLibraries": [
+          "ld-linux-x86-64.so.2",
+          "libc.so.6",
+          "libgcc_s.so.1",
+          "libm.so.6",
+          "libstdc++.so.6"
+        ],
+        "additionalRuntimeFiles": [],
+        "minimumGlibc": "2.38",
+        "interpreter": "/lib64/ld-linux-x86-64.so.2",
+        "minimumGlibcxx": "3.4.30"
+      },
       "dependencyClosure": [
         "adler2@2.0.1",
         "aead@0.6.1",
@@ -1045,15 +1110,14 @@
         "openssl@3.6.3"
       ],
       "remaining": [
-        "Matching release-cli artifact and complete native runtime/DLL inspection; do not infer imports from another bundle.",
-        "Release-candidate build identity and applicable acceptance matrix; clean-host package smoke."
+        "Final candidate matrix and fresh/minimum OS acceptance."
       ]
     },
     {
       "id": "x86_64-unknown-linux-gnu-compat",
       "target": "x86_64-unknown-linux-gnu",
       "bundle": "compat",
-      "status": "planned",
+      "status": "draft-retained",
       "releaseApproved": false,
       "files": [
         {
@@ -1069,8 +1133,73 @@
           "sha256": "20390f8a6f3b1e4d7cb45dd8652dabb259bbef688cbad839bcdb0b9ba7252f79"
         }
       ],
-      "binary": null,
-      "runtime": null,
+      "binary": {
+        "artifactPath": "cli-linux-a/compat/ariax",
+        "destination": "ariax",
+        "sha256": "55ce1ea917a0a4bcd071803331211ee78583453b7ec66218b416a9a85e678d37",
+        "bytes": 25330208,
+        "sourceCommit": "d6a8afccdc7e804b6213afa5998115629376c482",
+        "sourceDateEpoch": "1791224426",
+        "preparationRecordSha256": "47da787b17f186b5a6217ab16d93ca482e7901a6ff2bb4288e179fc4be7a6609",
+        "repeatPreparationRecordSha256": "0ee5671115b6078e1a93410735b9a14fca755b9fc5aab51f08473b4a4dcd7eb1",
+        "independentBuildMatched": true,
+        "independentNativeBuildMatched": true,
+        "nativeComparison": {
+          "inputs": {
+            "sourcesSha256": "b55bc045afe126bad7e48d9ca6e9a5b40f762e2bdea6cbc54997dcee32991819",
+            "patchSha256": "8d377c5622d0308bda2f7fc161913954f4a4cb3af19f6e1400d2cde84446a409",
+            "opensslPatchSha256": "e12670d73045bda8fb086f51f1080ccaffd60e54dd8902577aea3b3ad2a5a748",
+            "builderSha256": "00ea493529c145e7f4d4ade28638fa510506192ad83ed36721c8317435ea7add",
+            "sanitizer": "none",
+            "releasePaths": {
+              "flags": [
+                "/ariax-native-sources",
+                "/ariax-native-work"
+              ],
+              "sourceDateEpoch": "1791224426",
+              "opensslDirectories": {
+                "OPENSSLDIR": "/etc/ssl",
+                "ENGINESDIR": "/usr/lib/ariax/engines-3",
+                "MODULESDIR": "/usr/lib/ariax/ossl-modules"
+              }
+            }
+          },
+          "compiler": "c++ (Debian 14.2.0-19) 14.2.0\nCopyright (C) 2024 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.",
+          "consumedFiles": 16772,
+          "filesSha256": "04998739ffff1557b2bacddb04ee99dc3d4264849d8bfacb9e951c0ba535108a",
+          "archives": {
+            "lib/libcrypto.a": "66bb5adbbcae1ec54df5ee9fd2ca8eaa02731a380bf769b058cb1a2a7816251b",
+            "lib/libssl.a": "b1b3c9680bfe44d200f29f8edd2611b157b957b8c815a8c5fd92dfdaa297be64",
+            "lib/libtorrent-rasterbar.a": "89796a74fba0e5c122f964853ca541ff45c44ef1316afca10bf2208f548e411e"
+          }
+        },
+        "evidence": "performance-evidence/phase7-release-blockers-2026-10-06.json",
+        "comparisonEvidence": "performance-evidence/phase7-release-blockers-2026-10-06.json",
+        "sourceScope": "Base commit plus recorded source hashes, including local release-helper changes. Separate native/build/target/temp directories match byte for byte; verified source cache and installed toolchain are shared. Not final candidate acceptance.",
+        "pathAudit": {
+          "passed": true,
+          "counts": {
+            "wslMount": 0,
+            "windowsTemp": 0,
+            "windowsUser": 0,
+            "unixHome": 0
+          },
+          "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
+        }
+      },
+      "runtime": {
+        "systemLibraries": [
+          "ld-linux-x86-64.so.2",
+          "libc.so.6",
+          "libgcc_s.so.1",
+          "libm.so.6",
+          "libstdc++.so.6"
+        ],
+        "additionalRuntimeFiles": [],
+        "minimumGlibc": "2.38",
+        "interpreter": "/lib64/ld-linux-x86-64.so.2",
+        "minimumGlibcxx": "3.4.30"
+      },
       "dependencyClosure": [
         "adler2@2.0.1",
         "aead@0.6.1",
@@ -1374,8 +1503,7 @@
         "openssl@3.6.3"
       ],
       "remaining": [
-        "Matching release-cli artifact and complete native runtime/DLL inspection; do not infer imports from another bundle.",
-        "Release-candidate build identity and applicable acceptance matrix; clean-host package smoke."
+        "Final candidate matrix and fresh/minimum OS acceptance."
       ]
     },
     {
@@ -2099,7 +2227,7 @@
       "id": "x86_64-pc-windows-gnu-full",
       "target": "x86_64-pc-windows-gnu",
       "bundle": "full",
-      "status": "planned",
+      "status": "draft-retained",
       "releaseApproved": false,
       "files": [
         {
@@ -2151,8 +2279,135 @@
           "sha256": "9d6b43ce4d8de0c878bf16b54d8e7a10d9bd42b75178153e3af6a815bdc90f74"
         }
       ],
-      "binary": null,
-      "runtime": null,
+      "binary": {
+        "artifactPath": "cli-windows-a/full/ariax.exe",
+        "destination": "ariax.exe",
+        "sha256": "c8f4eda1effea435db0d7377e2a4f0b446a0867ee4050adcf7d4fb59bb197ca8",
+        "bytes": 24616960,
+        "sourceCommit": "d6a8afccdc7e804b6213afa5998115629376c482",
+        "sourceDateEpoch": "1791224426",
+        "preparationRecordSha256": "7a141e3d5bfe884d2baf98a5803955adf416dd0f6b4251c559d1550e93bb7560",
+        "repeatPreparationRecordSha256": "604a6406fcc80544f59b92f49b0b378930e7b10cfe4d38981def241073dade49",
+        "independentBuildMatched": true,
+        "independentNativeBuildMatched": true,
+        "nativeComparison": {
+          "inputs": {
+            "sourcesSha256": "b55bc045afe126bad7e48d9ca6e9a5b40f762e2bdea6cbc54997dcee32991819",
+            "patchSha256": "8d377c5622d0308bda2f7fc161913954f4a4cb3af19f6e1400d2cde84446a409",
+            "opensslPatchSha256": "e12670d73045bda8fb086f51f1080ccaffd60e54dd8902577aea3b3ad2a5a748",
+            "builderSha256": "00ea493529c145e7f4d4ade28638fa510506192ad83ed36721c8317435ea7add",
+            "sanitizer": "none",
+            "releasePaths": {
+              "flags": [
+                "/ariax-native-sources",
+                "/ariax-native-work"
+              ],
+              "sourceDateEpoch": "1791224426",
+              "opensslDirectories": {
+                "OPENSSLDIR": "C:/Program Files/Common Files/SSL",
+                "ENGINESDIR": "C:/Program Files/Ariax/engines-3",
+                "MODULESDIR": "C:/Program Files/Ariax/ossl-modules"
+              }
+            }
+          },
+          "compiler": "g++.exe (Rev3, Built by MSYS2 project) 16.2.0\nCopyright (C) 2026 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.",
+          "consumedFiles": 16772,
+          "filesSha256": "338701b5389b961cd384c37685972652d1fd6f6f85d8a157fb63e15878a2db0c",
+          "archives": {
+            "lib/libcrypto.a": "0e6d93067189b774a4b798177d1d91db258f9e6fc6a15bf7e6bb56817d592079",
+            "lib/libssl.a": "8e57730a427322e3cb12e552fec67127b1accaff7a73f9cacb217c1deb2fd49c",
+            "lib/libtorrent-rasterbar.a": "a1b45cad7712d6416dc1e639ef28f38e904e10d0d7dee92a7de38a3781a12c32"
+          }
+        },
+        "evidence": "performance-evidence/phase7-release-blockers-2026-10-06.json",
+        "comparisonEvidence": "performance-evidence/phase7-release-blockers-2026-10-06.json",
+        "sourceScope": "Base commit plus recorded source hashes, including local release-helper changes. Separate native/build/target/temp directories match byte for byte; verified source cache and installed toolchain are shared. Not final candidate acceptance.",
+        "pathAudit": {
+          "passed": true,
+          "counts": {
+            "wslMount": 0,
+            "windowsTemp": 0,
+            "windowsUser": 0,
+            "unixHome": 0
+          },
+          "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
+        }
+      },
+      "runtime": {
+        "systemLibraries": [
+          "advapi32.dll",
+          "api-ms-win-core-synch-l1-2-0.dll",
+          "bcrypt.dll",
+          "bcryptprimitives.dll",
+          "crypt32.dll",
+          "iphlpapi.dll",
+          "kernel32.dll",
+          "msvcrt.dll",
+          "mswsock.dll",
+          "ntdll.dll",
+          "oleaut32.dll",
+          "user32.dll",
+          "ws2_32.dll"
+        ],
+        "additionalRuntimeFiles": [
+          {
+            "destination": "libstdc++-6.dll",
+            "artifactPath": "runtime/libstdc++-6.dll",
+            "sha256": "887c21dbe2a211ac4d1a790e4f608b7dee27fae12352856963004e7a715d2e6c",
+            "bytes": 2661299,
+            "imports": [
+              "kernel32.dll",
+              "libgcc_s_seh-1.dll",
+              "libwinpthread-1.dll",
+              "msvcrt.dll"
+            ],
+            "package": "mingw-w64-x86_64-gcc-libs",
+            "version": "16.2.0-3",
+            "source": "https://github.com/msys2/MINGW-packages/tree/master/mingw-w64-gcc",
+            "license": "GPL-3.0-or-later WITH GCC-exception-3.1",
+            "notices": [
+              "licenses/gcc-GPL-3.0.txt",
+              "licenses/gcc-runtime-exception.txt"
+            ]
+          },
+          {
+            "destination": "libgcc_s_seh-1.dll",
+            "artifactPath": "runtime/libgcc_s_seh-1.dll",
+            "sha256": "b37c1770c8ca092700875845b34918803ee6311573eba1c32ff4b1166e4a0e1e",
+            "bytes": 150998,
+            "imports": [
+              "kernel32.dll",
+              "libwinpthread-1.dll",
+              "msvcrt.dll"
+            ],
+            "package": "mingw-w64-x86_64-gcc-libs",
+            "version": "16.2.0-3",
+            "source": "https://github.com/msys2/MINGW-packages/tree/master/mingw-w64-gcc",
+            "license": "GPL-3.0-or-later WITH GCC-exception-3.1",
+            "notices": [
+              "licenses/gcc-GPL-3.0.txt",
+              "licenses/gcc-runtime-exception.txt"
+            ]
+          },
+          {
+            "destination": "libwinpthread-1.dll",
+            "artifactPath": "runtime/libwinpthread-1.dll",
+            "sha256": "8d7a192a8fbbccb0cebeac272701f66a580f493eff2336739a96144119260723",
+            "bytes": 63875,
+            "imports": [
+              "kernel32.dll",
+              "msvcrt.dll"
+            ],
+            "package": "mingw-w64-x86_64-libwinpthread",
+            "version": "14.0.0.r283.ga7cb47123-1",
+            "source": "https://github.com/msys2/MINGW-packages/tree/master/mingw-w64-winpthreads",
+            "license": "MIT AND BSD-3-Clause-Clear",
+            "notices": [
+              "licenses/winpthread.txt"
+            ]
+          }
+        ]
+      },
       "dependencyClosure": [
         "adler2@2.0.1",
         "aead@0.6.1",
@@ -2468,15 +2723,14 @@
         "openssl@3.6.3"
       ],
       "remaining": [
-        "Matching release-cli artifact and complete native runtime/DLL inspection; do not infer imports from another bundle.",
-        "Release-candidate build identity and applicable acceptance matrix; clean-host package smoke."
+        "Final candidate matrix and fresh/minimum OS acceptance."
       ]
     },
     {
       "id": "x86_64-pc-windows-gnu-compat",
       "target": "x86_64-pc-windows-gnu",
       "bundle": "compat",
-      "status": "planned",
+      "status": "draft-retained",
       "releaseApproved": false,
       "files": [
         {
@@ -2528,8 +2782,135 @@
           "sha256": "9d6b43ce4d8de0c878bf16b54d8e7a10d9bd42b75178153e3af6a815bdc90f74"
         }
       ],
-      "binary": null,
-      "runtime": null,
+      "binary": {
+        "artifactPath": "cli-windows-a/compat/ariax.exe",
+        "destination": "ariax.exe",
+        "sha256": "48c7b7c66c65e1aa5752347392743829471ec9fa976212b5d2c71d925e42e578",
+        "bytes": 24616960,
+        "sourceCommit": "d6a8afccdc7e804b6213afa5998115629376c482",
+        "sourceDateEpoch": "1791224426",
+        "preparationRecordSha256": "7a141e3d5bfe884d2baf98a5803955adf416dd0f6b4251c559d1550e93bb7560",
+        "repeatPreparationRecordSha256": "604a6406fcc80544f59b92f49b0b378930e7b10cfe4d38981def241073dade49",
+        "independentBuildMatched": true,
+        "independentNativeBuildMatched": true,
+        "nativeComparison": {
+          "inputs": {
+            "sourcesSha256": "b55bc045afe126bad7e48d9ca6e9a5b40f762e2bdea6cbc54997dcee32991819",
+            "patchSha256": "8d377c5622d0308bda2f7fc161913954f4a4cb3af19f6e1400d2cde84446a409",
+            "opensslPatchSha256": "e12670d73045bda8fb086f51f1080ccaffd60e54dd8902577aea3b3ad2a5a748",
+            "builderSha256": "00ea493529c145e7f4d4ade28638fa510506192ad83ed36721c8317435ea7add",
+            "sanitizer": "none",
+            "releasePaths": {
+              "flags": [
+                "/ariax-native-sources",
+                "/ariax-native-work"
+              ],
+              "sourceDateEpoch": "1791224426",
+              "opensslDirectories": {
+                "OPENSSLDIR": "C:/Program Files/Common Files/SSL",
+                "ENGINESDIR": "C:/Program Files/Ariax/engines-3",
+                "MODULESDIR": "C:/Program Files/Ariax/ossl-modules"
+              }
+            }
+          },
+          "compiler": "g++.exe (Rev3, Built by MSYS2 project) 16.2.0\nCopyright (C) 2026 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.",
+          "consumedFiles": 16772,
+          "filesSha256": "338701b5389b961cd384c37685972652d1fd6f6f85d8a157fb63e15878a2db0c",
+          "archives": {
+            "lib/libcrypto.a": "0e6d93067189b774a4b798177d1d91db258f9e6fc6a15bf7e6bb56817d592079",
+            "lib/libssl.a": "8e57730a427322e3cb12e552fec67127b1accaff7a73f9cacb217c1deb2fd49c",
+            "lib/libtorrent-rasterbar.a": "a1b45cad7712d6416dc1e639ef28f38e904e10d0d7dee92a7de38a3781a12c32"
+          }
+        },
+        "evidence": "performance-evidence/phase7-release-blockers-2026-10-06.json",
+        "comparisonEvidence": "performance-evidence/phase7-release-blockers-2026-10-06.json",
+        "sourceScope": "Base commit plus recorded source hashes, including local release-helper changes. Separate native/build/target/temp directories match byte for byte; verified source cache and installed toolchain are shared. Not final candidate acceptance.",
+        "pathAudit": {
+          "passed": true,
+          "counts": {
+            "wslMount": 0,
+            "windowsTemp": 0,
+            "windowsUser": 0,
+            "unixHome": 0
+          },
+          "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
+        }
+      },
+      "runtime": {
+        "systemLibraries": [
+          "advapi32.dll",
+          "api-ms-win-core-synch-l1-2-0.dll",
+          "bcrypt.dll",
+          "bcryptprimitives.dll",
+          "crypt32.dll",
+          "iphlpapi.dll",
+          "kernel32.dll",
+          "msvcrt.dll",
+          "mswsock.dll",
+          "ntdll.dll",
+          "oleaut32.dll",
+          "user32.dll",
+          "ws2_32.dll"
+        ],
+        "additionalRuntimeFiles": [
+          {
+            "destination": "libstdc++-6.dll",
+            "artifactPath": "runtime/libstdc++-6.dll",
+            "sha256": "887c21dbe2a211ac4d1a790e4f608b7dee27fae12352856963004e7a715d2e6c",
+            "bytes": 2661299,
+            "imports": [
+              "kernel32.dll",
+              "libgcc_s_seh-1.dll",
+              "libwinpthread-1.dll",
+              "msvcrt.dll"
+            ],
+            "package": "mingw-w64-x86_64-gcc-libs",
+            "version": "16.2.0-3",
+            "source": "https://github.com/msys2/MINGW-packages/tree/master/mingw-w64-gcc",
+            "license": "GPL-3.0-or-later WITH GCC-exception-3.1",
+            "notices": [
+              "licenses/gcc-GPL-3.0.txt",
+              "licenses/gcc-runtime-exception.txt"
+            ]
+          },
+          {
+            "destination": "libgcc_s_seh-1.dll",
+            "artifactPath": "runtime/libgcc_s_seh-1.dll",
+            "sha256": "b37c1770c8ca092700875845b34918803ee6311573eba1c32ff4b1166e4a0e1e",
+            "bytes": 150998,
+            "imports": [
+              "kernel32.dll",
+              "libwinpthread-1.dll",
+              "msvcrt.dll"
+            ],
+            "package": "mingw-w64-x86_64-gcc-libs",
+            "version": "16.2.0-3",
+            "source": "https://github.com/msys2/MINGW-packages/tree/master/mingw-w64-gcc",
+            "license": "GPL-3.0-or-later WITH GCC-exception-3.1",
+            "notices": [
+              "licenses/gcc-GPL-3.0.txt",
+              "licenses/gcc-runtime-exception.txt"
+            ]
+          },
+          {
+            "destination": "libwinpthread-1.dll",
+            "artifactPath": "runtime/libwinpthread-1.dll",
+            "sha256": "8d7a192a8fbbccb0cebeac272701f66a580f493eff2336739a96144119260723",
+            "bytes": 63875,
+            "imports": [
+              "kernel32.dll",
+              "msvcrt.dll"
+            ],
+            "package": "mingw-w64-x86_64-libwinpthread",
+            "version": "14.0.0.r283.ga7cb47123-1",
+            "source": "https://github.com/msys2/MINGW-packages/tree/master/mingw-w64-winpthreads",
+            "license": "MIT AND BSD-3-Clause-Clear",
+            "notices": [
+              "licenses/winpthread.txt"
+            ]
+          }
+        ]
+      },
       "dependencyClosure": [
         "adler2@2.0.1",
         "aead@0.6.1",
@@ -2845,8 +3226,7 @@
         "openssl@3.6.3"
       ],
       "remaining": [
-        "Matching release-cli artifact and complete native runtime/DLL inspection; do not infer imports from another bundle.",
-        "Release-candidate build identity and applicable acceptance matrix; clean-host package smoke."
+        "Final candidate matrix and fresh/minimum OS acceptance."
       ]
     }
   ],

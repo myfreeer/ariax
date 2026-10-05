@@ -16,6 +16,9 @@ WINDOWS_SYSTEM = {'iphlpapi.dll', 'kernel32.dll', 'advapi32.dll',
                   'bcryptprimitives.dll', 'crypt32.dll', 'msvcrt.dll',
                   'ntdll.dll', 'oleaut32.dll', 'ws2_32.dll'}
 LINUX_SYSTEM = {'libc.so.6', 'libgcc_s.so.1', 'libm.so.6'}
+LINUX_BT_SYSTEM = LINUX_SYSTEM | {'libstdc++.so.6', 'ld-linux-x86-64.so.2'}
+WINDOWS_BT_SYSTEM = WINDOWS_SYSTEM | {'user32.dll', 'mswsock.dll'}
+WINDOWS_BT_RUNTIME = {'libstdc++-6.dll', 'libgcc_s_seh-1.dll', 'libwinpthread-1.dll'}
 WINDOWS_NOTICES = {'winapi-MIT.txt', 'winapi-Apache-2.0.txt', 'mingw-crt.txt', 'mingw-w64.txt',
                    'mingw-runtime.txt', 'winpthread.txt', 'gcc-GPL-3.0.txt', 'gcc-runtime-exception.txt'}
 LINUX_NOTICES = {'glibc-copyright.txt', 'libgcc-copyright.txt'}
@@ -50,11 +53,41 @@ def audit_binary_paths(path):
             'scope': 'Known absolute workstation/cache path patterns; not a complete reproducibility proof.'}
 
 
+def reviewed_runtime_files(root=ROOT):
+    return json.loads((root / 'distribution/runtime-files.json').read_text(encoding='utf-8'))['files']
+
+
+def validate_runtime(runtime, windows, bundle, names, root=ROOT):
+    bt = bundle in {'full', 'compat'}
+    expected = (WINDOWS_BT_SYSTEM if bt else WINDOWS_SYSTEM) if windows else (LINUX_BT_SYSTEM if bt else LINUX_SYSTEM)
+    libraries = runtime['systemLibraries']
+    require(len(libraries) == len(set(libraries)) and set(libraries) == expected,
+            'unknown or missing runtime dependency')
+    files = runtime['additionalRuntimeFiles']
+    require(files == (reviewed_runtime_files(root) if windows and bt else []),
+            'additional runtime files require a matching review')
+    if windows and bt:
+        destinations = {item['destination'] for item in files}
+        require(len(files) == len(destinations) and destinations == WINDOWS_BT_RUNTIME, 'incomplete runtime closure')
+        for item in files:
+            name = relative(item['destination']).as_posix().casefold()
+            require(name not in names and '/' not in name, 'runtime destination collision')
+            names.add(name)
+            relative(item['artifactPath'])
+            require(set(item['imports']) <= expected | destinations, 'unreviewed transitive runtime import')
+            require({name.casefold() for name in item['notices']} <= names, 'missing redistributed runtime notice')
+    if not windows:
+        require(runtime['minimumGlibc'] == ('2.38' if bt else '2.34') and
+                runtime['interpreter'] == '/lib64/ld-linux-x86-64.so.2', 'unreviewed Linux runtime requirement')
+        if bt:
+            require(runtime.get('minimumGlibcxx') == '3.4.30', 'unreviewed C++ runtime requirement')
+
+
 def relative(value):
     require(isinstance(value, str) and 0 < len(value) <= 240, 'invalid path')
     path = PurePosixPath(value)
     require(bool(path.parts) and not path.is_absolute() and path.as_posix() == value
-            and all(re.fullmatch(r'[A-Za-z0-9_-][A-Za-z0-9_.-]*', part)
+            and all(re.fullmatch(r'[A-Za-z0-9_-][A-Za-z0-9_.+-]*', part)
                     and not part.endswith('.') and not re.fullmatch(
                         r'(?i)(con|prn|aux|nul|com[1-9]|lpt[1-9])', part.split('.')[0])
                     for part in path.parts), 'unsafe path')
@@ -106,23 +139,19 @@ def validate(catalog, root=ROOT, artifacts=None):
             require(package['bundle'] in {'full', 'compat'} and package['binary'] is None
                     and package['runtime'] is None and package.get('remaining'), 'invalid planned package')
             continue
-        require(package['status'] == 'draft-retained' and package['bundle'] in {'minimal', 'standard'},
+        require(package['status'] == 'draft-retained',
                 'unreviewed retained bundle')
         windows = package['target'].endswith('windows-gnu')
         binary, runtime = package['binary'], package['runtime']
         require(binary['destination'] == ('ariax.exe' if windows else 'ariax'), 'wrong binary destination')
         relative(binary['artifactPath'])
-        libraries = runtime['systemLibraries']
-        require(len(libraries) == len(set(libraries)) and set(libraries) == (
-                WINDOWS_SYSTEM if windows else LINUX_SYSTEM), 'unknown or missing runtime dependency')
-        require(runtime['additionalRuntimeFiles'] == [], 'additional runtime files require a new review')
-        if not windows:
-            require(runtime['minimumGlibc'] == '2.34' and runtime['interpreter'] == '/lib64/ld-linux-x86-64.so.2',
-                    'unreviewed Linux runtime requirement')
+        validate_runtime(runtime, windows, package['bundle'], names, root)
         if artifacts is not None:
             path = contained(artifacts, binary['artifactPath'])
             verify_file(path, binary)
             require(audit_binary_paths(path) == binary['pathAudit'], 'binary path audit mismatch')
+            for item in runtime['additionalRuntimeFiles']:
+                verify_file(contained(artifacts, item['artifactPath']), item)
     return catalog
 
 
@@ -139,6 +168,8 @@ def stage(catalog, artifacts, output, root=ROOT):
         entries = [(contained(root, item['source']), item) for item in catalog['commonFiles'] + package['files']]
         binary = package['binary']
         entries.append((contained(artifacts, binary['artifactPath']), binary))
+        entries += [(contained(artifacts, item['artifactPath']), item)
+                    for item in package['runtime']['additionalRuntimeFiles']]
         for source, item in entries:
             destination = directory / item['destination']
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -170,7 +201,7 @@ def main():
     catalog = json.loads((ROOT / CATALOG).read_text(encoding='utf-8'))
     if args.output is None:
         validate(catalog)
-        print('Eight package manifests validated; four retained drafts and four planned layouts. No release approval.')
+        print('Eight package manifests validated. No release approval.')
     else:
         print(json.dumps(stage(catalog, args.artifacts, args.output)))
 

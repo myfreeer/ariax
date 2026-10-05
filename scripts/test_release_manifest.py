@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import release_manifest as rm
 
@@ -12,12 +13,19 @@ import release_manifest as rm
 class ReleaseManifestTests(unittest.TestCase):
     def setUp(self):
         self.catalog = json.loads((rm.ROOT / rm.CATALOG).read_text())
+        # Keep synthetic staging fixtures small; real full/compat identities are
+        # checked by the catalog test and their runtime contract below.
+        for package in self.catalog['packages']:
+            if package['bundle'] in {'full', 'compat'}:
+                package.update(status='planned', binary=None, runtime=None, remaining=['fixture'])
 
     def test_all_eight_plans_validate_without_requiring_unbuilt_artifacts(self):
-        rm.validate(self.catalog)
-        self.assertEqual(sum(p['status'] == 'draft-retained' for p in self.catalog['packages']), 4)
+        catalog = json.loads((rm.ROOT / rm.CATALOG).read_text())
+        rm.validate(catalog)
+        self.assertEqual(len(catalog['packages']), 8)
 
     def test_safe_paths_reject_traversal_windows_aliases_and_reserved_names(self):
+        self.assertEqual(rm.relative('runtime/libstdc++-6.dll').name, 'libstdc++-6.dll')
         self.assertEqual(rm.relative('source-data/public-suffix-list.dat').as_posix(),
                          'source-data/public-suffix-list.dat')
         for name in ('../escape', '/absolute', 'a/../escape', 'a//b', 'a\\b', 'C:foo',
@@ -81,6 +89,19 @@ class ReleaseManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'planned package'):
             rm.validate(self.catalog)
 
+    def test_full_runtime_review_rejects_missing_closure_collisions_and_changes(self):
+        files = rm.reviewed_runtime_files()
+        runtime = {'systemLibraries': sorted(rm.WINDOWS_BT_SYSTEM), 'additionalRuntimeFiles': files}
+        names = {'licenses/' + name.casefold() for name in rm.WINDOWS_NOTICES}
+        rm.validate_runtime(runtime, True, 'full', set(names))
+        for modified in (files[:-1], [dict(files[0], sha256='0' * 64), *files[1:]]):
+            with self.assertRaisesRegex(ValueError, 'matching review'):
+                rm.validate_runtime(dict(runtime, additionalRuntimeFiles=modified), True, 'full', set(names))
+        with self.assertRaisesRegex(ValueError, 'collision'):
+            rm.validate_runtime(runtime, True, 'compat', names | {'libstdc++-6.dll'})
+        with self.assertRaisesRegex(ValueError, 'missing redistributed'):
+            rm.validate_runtime(runtime, True, 'full', set())
+
     def fixture_artifacts(self, root):
         # Synthetic bytes test the copy/manifest contract; never execute them.
         for package in self.catalog['packages']:
@@ -123,6 +144,33 @@ class ReleaseManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'hash or size mismatch'):
                 rm.stage(self.catalog, root, output)
             self.assertFalse(output.exists())
+
+    def test_staging_copies_the_reviewed_runtime_and_rejects_missing_or_modified_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.fixture_artifacts(root)
+            template = next(p for p in self.catalog['packages'] if p['target'].endswith('windows-gnu') and p['binary'])
+            full = next(p for p in self.catalog['packages'] if p['target'].endswith('windows-gnu') and p['bundle'] == 'full')
+            full.update(status='draft-retained', binary=copy.deepcopy(template['binary']))
+            files = rm.reviewed_runtime_files()
+            for item in files:
+                path = root / item['artifactPath']; path.parent.mkdir(exist_ok=True)
+                path.write_bytes(item['destination'].encode())
+                item.update(bytes=path.stat().st_size, sha256=rm.digest(path))
+            full['runtime'] = {'systemLibraries': sorted(rm.WINDOWS_BT_SYSTEM), 'additionalRuntimeFiles': files}
+            with patch.object(rm, 'reviewed_runtime_files', return_value=files):
+                output = root / 'staged'
+                rm.stage(self.catalog, root, output)
+                for item in files:
+                    self.assertEqual(rm.digest(output / full['id'] / item['destination']), item['sha256'])
+                path = root / files[0]['artifactPath']; path.write_bytes(b'changed')
+                with self.assertRaisesRegex(ValueError, 'hash or size'):
+                    rm.stage(self.catalog, root, root / 'modified')
+                self.assertFalse((root / 'modified').exists())
+                path.unlink()
+                with self.assertRaisesRegex(ValueError, 'missing'):
+                    rm.stage(self.catalog, root, root / 'missing')
+                self.assertFalse((root / 'missing').exists())
 
     def test_dependency_paths_are_reported_and_cannot_be_hidden_in_the_manifest(self):
         with tempfile.TemporaryDirectory() as temporary:

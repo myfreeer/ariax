@@ -72,20 +72,32 @@ def loaded_modules(pid, windows):
         kernel.CloseHandle(snapshot)
 
 
-def module_inventory(paths, binary, windows, system_root=None):
+def module_inventory(paths, binary, windows, system_root=None, runtime=None):
     rows = []
+    runtime = runtime or {'additionalRuntimeFiles': [], 'systemLibraries': sorted(rm.LINUX_SYSTEM)}
+    packaged = {item['destination'].casefold(): item for item in runtime['additionalRuntimeFiles']}
+    observed = set()
     for value in paths:
         if windows:
             path = PureWindowsPath(value)
             application = path == PureWindowsPath(str(binary))
-            system = path.is_relative_to(PureWindowsPath(system_root))
+            system = path.is_relative_to(PureWindowsPath(system_root) / 'System32')
         else:
             path = Path(value)
             application = path.resolve() == binary.resolve()
-            system = path.name in rm.LINUX_SYSTEM | {'ld-linux-x86-64.so.2'} and any(
-                path.resolve().is_relative_to(Path(prefix).resolve()) for prefix in ('/lib', '/usr/lib'))
-        rows.append({'path': value, 'kind': 'application' if application else 'system' if system else 'host-extra'})
+            sonames = set(runtime['systemLibraries']) | {'ld-linux-x86-64.so.2'}
+            system = any(path.resolve().is_relative_to(Path(prefix).resolve()) for prefix in ('/lib', '/usr/lib')) and (
+                path.name in sonames or any((path.parent / name).resolve() == path.resolve() for name in sonames))
+        kind = 'application' if application else 'system' if system else 'host-extra'
+        if windows and path.name.casefold() in packaged:
+            item = packaged[path.name.casefold()]
+            require(path == PureWindowsPath(str(binary)).parent / item['destination'], 'runtime loaded outside package')
+            rm.verify_file(Path(value), item)
+            observed.add(path.name.casefold())
+            kind = 'packaged-runtime'
+        rows.append({'path': value, 'kind': kind})
     require(any(row['kind'] == 'application' for row in rows), 'application module missing')
+    require(observed == set(packaged), 'packaged runtime module missing')
     return rows
 
 
@@ -106,7 +118,18 @@ def verify_package(directory):
     return manifest, binary
 
 
-def rpc_check(binary, work, env, windows):
+def verify_version(result, bundle):
+    require(result.get('version') == '0.1.0', 'version query failed')
+    require(bundle in rm.BUNDLES, 'unknown package bundle')
+    expected = {'HTTP', 'HTTPS', 'JSON-RPC', 'Session', 'Async DNS', 'Metalink'}
+    if bundle != 'minimal':
+        expected |= {'FTP', 'SFTP'}
+    if bundle in {'full', 'compat'}:
+        expected.add('BitTorrent')
+    require(set(result.get('enabledFeatures', [])) == expected, 'packaged feature bundle mismatch')
+
+
+def rpc_check(binary, work, env, windows, runtime=None, bundle='minimal'):
     for name in ('state', 'control', 'output'):
         (work / name).mkdir()
     args = [str(binary), '--profile=compact', '--rpc-stdio-framing=ndjson',
@@ -143,14 +166,14 @@ def rpc_check(binary, work, env, windows):
                 response = json.loads(line)
                 require(response.get('id') == number and response.get('jsonrpc') == '2.0', 'wrong RPC response')
                 if number == 1:
-                    require(response.get('result', {}).get('version') == '0.1.0', 'version query failed')
+                    verify_version(response.get('result', {}), bundle)
                 elif number == 2:
                     require(response.get('result', {}).get('numActive') == '0', 'empty-session query failed')
                 else:
                     require(response.get('error', {}).get('code') == -32601, 'unknown RPC method not rejected')
                 result['responses'].append(response)
             paths = loaded_modules(process.pid, windows)
-            result['loadedModules'] = module_inventory(paths, binary, windows, env.get('SystemRoot'))
+            result['loadedModules'] = module_inventory(paths, binary, windows, env.get('SystemRoot'), runtime)
             process.stdin.close()
             result['exitCode'] = process.wait(timeout=30)
             require(result['exitCode'] == 0, 'RPC EOF shutdown failed')
@@ -175,6 +198,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--packages', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--bundles', nargs='+', choices=sorted(rm.BUNDLES), default=['minimal', 'standard'])
     args = parser.parse_args()
     require(args.packages.is_absolute() and args.output.is_absolute(), 'absolute paths required')
     args.output.mkdir(parents=True, exist_ok=False)
@@ -186,7 +210,8 @@ def main():
         preload = Path('/etc/ld.so.preload')
         report['systemPreload'] = preload.read_text(encoding='utf-8') if preload.exists() else None
     try:
-        for bundle in ('minimal', 'standard'):
+        require(len(args.bundles) == len(set(args.bundles)), 'duplicate bundle')
+        for bundle in args.bundles:
             package = args.packages / (target + '-' + bundle)
             manifest, binary = verify_package(package)
             work = args.output / bundle; work.mkdir()
@@ -196,7 +221,7 @@ def main():
             report['packages'].append(row)
             row['help'] = h.run([binary, '--help'], work / 'help', timeout=30, env=env, cwd=work / 'cwd')
             require(row['help']['passed'], 'packaged help failed')
-            row['rpc'] = rpc_check(binary, work, env, windows)
+            row['rpc'] = rpc_check(binary, work, env, windows, manifest['runtime'], bundle)
             require(row['rpc']['passed'], 'packaged RPC check failed')
             row['reopen'] = h.run([binary, '--check-bootstrap', work / 'state/session.db',
                                   work / 'control', work / 'output'], work / 'reopen', timeout=30,
@@ -204,9 +229,9 @@ def main():
             require(row['reopen']['passed'] and 'bootstrap ok: 0 tasks' in (
                 work / 'reopen/stdout.log').read_text(encoding='utf-8'), 'packaged database reopen failed')
             require(h.digest(binary) == row['binarySha256'], 'package binary changed')
-            row['onlySystemModulesObserved'] = all(m['kind'] != 'host-extra' for m in row['rpc']['loadedModules'])
+            row['onlySystemOrPackagedModulesObserved'] = all(m['kind'] != 'host-extra' for m in row['rpc']['loadedModules'])
             print(json.dumps({'bundle': bundle, 'functionalPassed': True,
-                              'onlySystemModulesObserved': row['onlySystemModulesObserved']}), flush=True)
+                              'onlySystemOrPackagedModulesObserved': row['onlySystemOrPackagedModulesObserved']}), flush=True)
         report['functionalPassed'] = True
     except Exception as error:
         report['error'] = str(error) or type(error).__name__

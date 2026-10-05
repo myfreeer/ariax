@@ -38,7 +38,7 @@ including conservative source-only notices. Their explicit open items must be
 resolved against actual release archives before using them as final notices.
 The subsequent [license review](../../distribution/license-review.json) resolves
 the winapi import-library payload, IANA terms, aria2 source-artifact scope and
-retained minimal/standard runtime inventory. The earlier inventory remains
+retained bundle runtime inventories. The earlier inventory remains
 historical; the follow-up records the current scope and remaining work.
 
 ## Embedded And Native Materials
@@ -112,9 +112,34 @@ remaps, and inspect the resulting binary. Native C/C++ objects need equivalent
 file/debug-prefix mapping when their paths are present. Reuse of native builds
 must still satisfy the existing provenance checks.
 
+For full/compat, `bt_native.py --release-paths --work-dir ABSOLUTE_DIRECTORY`
+builds a separate installation. `--source-cache` reuses an existing verified
+source cache in place and rejects missing or modified trees without repairing
+them. Remap the native work and source-cache roots and the installed headers
+consumed by the bridge. Keep compiler arguments and the fixed source-date epoch
+in the native manifest. OpenSSL receives remaps through a relative response
+file so its embedded compiler description does not expose build paths.
+Its compiled defaults use `/etc/ssl` on Linux and
+`C:/Program Files/Common Files/SSL` on Windows. Disabled engine/module paths
+use fixed system installation locations, independent of the build directory.
+Do not rewrite compiled binaries to remove paths.
+
+Full/compat Linux drafts require glibc 2.38 and GLIBCXX 3.4.30; libstdc++ is a
+system prerequisite, not a bundled copy of the host runtime. Windows drafts
+carry exactly the reviewed `libstdc++-6.dll`, `libgcc_s_seh-1.dll` and
+`libwinpthread-1.dll` closure beside the executable. Record each file's digest,
+size, direct imports, package version, source and notices. Unknown dependencies,
+missing closure members, collisions and changed bytes reject staging. Reduced
+environment checks must observe the packaged DLLs loading from that directory.
+Independent CLI comparisons use fresh target/temp directories. Record whether
+the native installation is shared or rebuilt independently. A second native
+installation must match the compiler, normalized build inputs and every consumed
+header/archive hash. An independently rebuilt native installation strengthens
+the comparison; sharing one does not establish native-library reproducibility.
+
 The maintained [local build helper](local-hardening.md#local-release-preparation)
-selects the pinned native toolchain and prepares these remaps for minimal and
-standard. Its records include source hashes, encoded Rust arguments, quoted
+selects the pinned native toolchain and prepares these remaps for all four
+bundles. Its records include source hashes, encoded Rust arguments, quoted
 C/C++ flags, actual imports and CLI startup checks. A single rebuilt artifact
 must not inherit a prior artifact's independent-reproducibility result.
 The [remapping follow-up](../../performance-evidence/phase7-release-paths-2026-10-05.md)
@@ -129,20 +154,19 @@ Linux processes load the configured system preload; Windows observations cover
 only the exercised module paths. Fresh-OS, minimum-OS and candidate-matrix
 acceptance remain separate gates.
 
-`full` and `compat` have planned layouts with BT/native notice requirements.
 The [bounded local campaign](../../performance-evidence/phase7-local-campaign-2026-10-05.md#full-and-compat-artifact-inspection)
-builds and inspects both bundles on WSL1 and Windows-GNU. The Linux binaries
-require glibc 2.38 and GLIBCXX 3.4.30 with `libstdc++.so.6`; the Windows binaries
-directly import `libstdc++-6.dll`, whose inspected MinGW closure also includes
-`libgcc_s_seh-1.dll` and `libwinpthread-1.dll`. Existing GCC/runtime-exception
-and winpthread notices are retained, but the final runtime files and notices
-still require verification against each assembled archive.
+originally found 20 native-dependency path matches per Linux full/compat binary
+and 37 per Windows binary. Those failed artifacts remain historical evidence.
+The [October 6 follow-up](../../performance-evidence/phase7-release-blockers-2026-10-06.md)
+resolves the path and runtime-packaging blockers. Every rebuilt binary has zero
+known absolute workstation-path matches and matches an independent native/CLI
+build. The reviewed runtime closure and notices are verified in four assembled
+and extracted full/compat archives. Live feature queries, RPC rejection, EOF
+shutdown, SQLite reopening and packaged Windows DLL loading pass.
 
-Both bundles fail the absolute-path audit: 20 native-dependency path matches
-per Linux binary and 37 per Windows binary. Their layouts remain planned until
-native path remapping, runtime packaging, reproducibility and package operation
-are verified. Never infer their runtime files from a minimal or standard binary.
-macOS and MSVC remain separate platform work.
+All eight catalog entries are retained drafts. Same-host independent builds and
+current-host package operation do not close fresh/minimum-OS acceptance or the
+final candidate matrix. macOS and MSVC remain separate platform work.
 
 ## Release Checklist
 

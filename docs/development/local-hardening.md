@@ -194,7 +194,9 @@ C/C++ sources may also require file/debug-prefix mapping, with their normal
 provenance/cache checks retained. Do not patch the finished binary to hide paths.
 
 `scripts/release_build.py` maintains this local preparation for the native
-Linux and Windows-GNU `minimal`/`standard` bundles. Supply `--toolchain` pointing
+Linux and Windows-GNU bundles. It defaults to `minimal`/`standard`; use
+`--bundles full compat --native-dir ABSOLUTE_INSTALL` with a separately verified
+`bt_native.py --release-paths` installation for the BT bundles. Supply `--toolchain` pointing
 to the pinned distribution's `bin`, `--cargo-home` for the existing offline
 cache, and a fresh absolute `--output` directory on the temporary volume.
 Run Windows preparation through MSYS2 with MinGW64 first on `PATH`, as above.
@@ -210,7 +212,12 @@ path finding. `--prune-target` removes only its own compilation directory after
 both bundles pass, retaining a file-size inventory, binaries and logs. A failed
 attempt retains its intermediates. Rebuilding these bundles once does not
 establish independent reproducibility, clean-host acceptance or the full matrix.
-Full/compat require their separate native provenance and packaging review.
+Full/compat additionally remap installed native headers and verify the native
+manifest, release epoch and complete runtime requirements. Build their native
+libraries explicitly in a separate `--work-dir`, optionally reusing verified
+source trees read-only through `--source-cache`. Existing normal and sanitizer
+installations remain historical evidence for their recorded builder digest;
+they cannot silently inherit the changed builder's provenance.
 
 After a helper assertion repair, `--reuse-cache PREVIOUS_OUTPUT` permits a new
 immutable attempt using the previous target and temporary directories. It
@@ -225,7 +232,11 @@ with a fresh output directory and no cache reuse. The helper verifies the
 compiled sources and compiler identities, preserves the reference epoch,
 checks equivalent remap destinations/options, and compares both executable
 hashes. Compilation uses new target and temporary directories. The source cache
-and installed toolchain remain shared. `--build-timeout SECONDS` allows up to
+and installed toolchain remain shared. Full/compat may share the verified native
+installation or use an independent native build with matching compiler, normalized
+inputs, headers and archives. The report distinguishes those cases; sharing an
+installation does not establish native-library reproducibility.
+`--build-timeout SECONDS` allows up to
 1,800 seconds per bundle on a busy host; build duration is not a performance
 acceptance threshold. A timeout or mismatched binary remains failed evidence.
 
@@ -237,10 +248,14 @@ minimum-supported-OS acceptance. Keep their host limitations explicit.
 
 After staging packages, run `python3 -B scripts/release_smoke.py --packages
 ABSOLUTE_PACKAGE_ROOT --output FRESH_ABSOLUTE_OUTPUT` on each native platform.
-Use MSYS2's native Python for Windows. The helper verifies the file/checksum
+Use MSYS2's native Python for Windows. Select `--bundles` (default
+`minimal standard`). For BT
+bundles it verifies that every reviewed Windows runtime DLL actually loads from
+the package directory with the recorded bytes. It verifies the file/checksum
 inventory, clears inherited developer paths and environment overrides, and
 uses isolated working, temporary and state directories. It checks help, live
-NDJSON version/stat queries, unknown-method rejection, EOF shutdown and database
+NDJSON version/stat queries with the exact expected feature set, unknown-method
+rejection, EOF shutdown and database
 reopening. While RPC runs, it records executable mappings on Linux or loaded
 modules on Windows, including host additions. These observations cover the
 exercised paths only; they do not establish every delayed library load or
