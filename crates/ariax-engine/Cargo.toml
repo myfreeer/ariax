@@ -8,6 +8,7 @@ publish.workspace = true
 
 [features]
 default = []
+control-diagnostics = []
 bt = ["dep:ariax-bt", "ariax-bt/libtorrent"]
 metalink = ["dep:quick-xml"]
 ftp = ["dep:suppaftp"]

@@ -69,6 +69,17 @@ comparison. This opt-in mode adds observation overhead, does not alter the
 workload or timing limits, and cannot retrospectively attribute earlier failures.
 Production binaries and public RPC methods gain no diagnostic interface.
 
+The optional engine feature `control-diagnostics`, together with that environment
+switch, adds six per-request monotonic offsets: admission to the mailbox,
+owner dispatch, prepared source plan, commit start after the drain barrier,
+catalog/query publication, and reply delivery. A fixed six-slot trace follows
+the request; duplicate, missing or out-of-order stages reject the report.
+The offsets must lie within the backend interval. Adjacent differences measure
+stage intervals, including scheduling and asynchronous completion polling; they
+are not measurements of disk service time alone. Normal bundles do not enable
+this feature, and it adds no RPC method, logging of parameters, or timing limit
+changes. Retained historical failures remain failures without stage evidence.
+
 Fresh burst snapshots also carry `startedUnixNs`, sampled immediately before
 the monotonic burst timer starts. Failed-burst diagnostics retain that anchor.
 Historical snapshots may omit it. Native CI collects a separate bounded

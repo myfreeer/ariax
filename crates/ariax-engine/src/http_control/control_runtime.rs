@@ -100,6 +100,8 @@ impl Drop for Credit {
 }
 
 struct Caller {
+    #[cfg(feature = "control-diagnostics")]
+    source_trace: Option<crate::SourceMutationTrace>,
     reply: oneshot::Sender<Result<Value, HttpControlError>>,
     _request: crate::rpc_budget::RpcRequestLease,
     _credit: Credit,
@@ -144,6 +146,10 @@ impl PendingReplies {
             }
         }
         if let Some(caller) = self.callers.pop_front() {
+            #[cfg(feature = "control-diagnostics")]
+            if let Some(trace) = &caller.source_trace {
+                trace.mark(crate::source_trace::Stage::Delivered);
+            }
             let _ = caller
                 .reply
                 .send(self.result.as_ref().expect("completed result").clone());
@@ -294,6 +300,8 @@ impl ControlRuntime {
         )?;
         let (send, receiver) = oneshot::channel();
         let caller = Caller {
+            #[cfg(feature = "control-diagnostics")]
+            source_trace: context.source_trace.clone(),
             reply: send,
             _request: request.clone(),
             _credit: reply_credit,
@@ -375,6 +383,10 @@ impl ControlRuntime {
                 slot,
                 plane: self.shared.plane.upgrade().ok_or(HttpControlError::Busy)?,
             };
+            #[cfg(feature = "control-diagnostics")]
+            if let Some(trace) = &envelope.context.source_trace {
+                trace.mark(crate::source_trace::Stage::Admitted);
+            }
             if urgent {
                 mailbox.urgent.push_back(envelope);
             } else {
@@ -647,6 +659,10 @@ fn progress(
         plane,
         ..
     } = command;
+    #[cfg(feature = "control-diagnostics")]
+    if let Some(trace) = &context.source_trace {
+        trace.mark(crate::source_trace::Stage::Dispatched);
+    }
     owner.turn.mark_progress();
     owner.dispatch_sequence = Some(sequence);
     owner.dispatch_bulk = captured;
@@ -666,7 +682,13 @@ fn progress(
                 owner.reserve_command_memory(&method, &params, context.request_lease().as_ref())?;
             let work = owner.reserve_scheduler_work(command.as_ref(), 0)?;
             let result = owner
-                .begin_source_call(&method, params, command)
+                .begin_source_call(
+                    &method,
+                    params,
+                    command,
+                    #[cfg(feature = "control-diagnostics")]
+                    context.source_trace.clone(),
+                )
                 .map(ControlReply::Deferred);
             owner.retain_pending_work(Some(work))?;
             result

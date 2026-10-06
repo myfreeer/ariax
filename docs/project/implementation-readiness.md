@@ -639,6 +639,14 @@ native suites that were uncompiled at that checkpoint.
 
 ## Phase 7 Local Validation
 
+The [current four-item local follow-up](../../performance-evidence/phase7-local-four-2026-10-06.md)
+is in progress. Its short active-transfer fixture found a restart/shutdown/restart
+journal failure (`GenerationNotDrained`) after a process crash; the original
+fixture is retained and the longer soak has not started. Its live dependency
+advisory review also has unresolved matches requiring applicability review and
+MSRV-compatible remediation. These findings are additional open local work,
+not closed by the earlier packaging or empty-session checks.
+
 The approved [local hardening campaign](../../performance-evidence/phase7-local-hardening-2026-10-05.md)
 is complete on `local/phase7-hardening`. Phase 7 remains active; these results
 do not approve a release or replace the remaining platform gates.

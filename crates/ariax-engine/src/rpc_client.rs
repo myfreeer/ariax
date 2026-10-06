@@ -9,6 +9,8 @@ pub struct RpcClientContext {
     request: Option<crate::rpc_budget::RpcRequestLease>,
     retained_results: Option<Arc<Mutex<crate::rpc_budget::RpcAllocation>>>,
     local_admin: bool,
+    #[cfg(feature = "control-diagnostics")]
+    pub(crate) source_trace: Option<crate::SourceMutationTrace>,
 }
 
 #[derive(Default)]
@@ -20,6 +22,14 @@ struct ClientState {
 }
 
 impl RpcClientContext {
+    /// Attaches bounded local timing to this request, without changing authorization.
+    #[cfg(feature = "control-diagnostics")]
+    #[must_use]
+    pub fn with_source_trace(mut self, trace: crate::SourceMutationTrace) -> Self {
+        self.source_trace = Some(trace);
+        self
+    }
+
     pub(crate) fn local() -> Self {
         Self {
             local_admin: true,
@@ -54,6 +64,8 @@ impl RpcClientContext {
             request: None,
             retained_results: None,
             local_admin: false,
+            #[cfg(feature = "control-diagnostics")]
+            source_trace: None,
         };
         if !authentication_required {
             context.authorize()?;
@@ -70,6 +82,8 @@ impl RpcClientContext {
             )))),
             request: Some(request),
             local_admin: self.local_admin,
+            #[cfg(feature = "control-diagnostics")]
+            source_trace: self.source_trace.clone(),
         }
     }
 

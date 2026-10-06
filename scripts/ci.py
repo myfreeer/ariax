@@ -429,7 +429,15 @@ def validate_source_timing(report):
         backend = integer(row.get("backendNs"), "source.backendNs", maximum=elapsed)
         outside = integer(row.get("outsideBackendNs"), "source.outsideBackendNs", maximum=elapsed)
         require(backend + outside == elapsed, "inconsistent source timing composition")
+        if "stageOffsetsNs" in row:
+            stages = row["stageOffsetsNs"]
+            require(isinstance(stages, list) and len(stages) == 6, "invalid source stage count")
+            previous = 0
+            for offset in stages:
+                previous = integer(offset, "source.stageOffsetNs", minimum=previous, maximum=backend)
         durations.append(elapsed)
+    staged = sum("stageOffsetsNs" in row for row in rows)
+    require(staged in (0, calls), "missing source stages")
     durations.sort()
     for key, value in (("p50Us", durations[calls // 2] // 1000),
                        ("p99Us", durations[(calls * 99 + 99) // 100 - 1] // 1000),

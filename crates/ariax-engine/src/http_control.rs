@@ -251,6 +251,8 @@ struct PendingMutation {
 }
 
 struct PendingSourceReplacement {
+    #[cfg(feature = "control-diagnostics")]
+    source_trace: Option<crate::SourceMutationTrace>,
     replacement: TransferTaskSpec,
     response: Value,
     reply: oneshot::Sender<Result<Value, HttpControlError>>,
@@ -2046,7 +2048,13 @@ impl HttpControlPlane {
         {
             return Err(HttpControlError::Busy);
         }
-        let mut reply = self.begin_source_plan(replacement, response, None)?;
+        let mut reply = self.begin_source_plan(
+            replacement,
+            response,
+            None,
+            #[cfg(feature = "control-diagnostics")]
+            None,
+        )?;
         loop {
             match reply.try_recv() {
                 Ok(result) => return result,
@@ -2070,9 +2078,16 @@ impl HttpControlPlane {
         method: &str,
         params: Value,
         request: Option<crate::rpc_budget::RpcRequestLease>,
+        #[cfg(feature = "control-diagnostics")] source_trace: Option<crate::SourceMutationTrace>,
     ) -> Result<oneshot::Receiver<Result<Value, HttpControlError>>, HttpControlError> {
         let (replacement, response) = self.prepare_source_call(method, params)?;
-        self.begin_source_plan(replacement, response, request)
+        self.begin_source_plan(
+            replacement,
+            response,
+            request,
+            #[cfg(feature = "control-diagnostics")]
+            source_trace,
+        )
     }
 
     fn begin_source_plan(
@@ -2080,17 +2095,24 @@ impl HttpControlPlane {
         replacement: TransferTaskSpec,
         response: Value,
         request: Option<crate::rpc_budget::RpcRequestLease>,
+        #[cfg(feature = "control-diagnostics")] source_trace: Option<crate::SourceMutationTrace>,
     ) -> Result<oneshot::Receiver<Result<Value, HttpControlError>>, HttpControlError> {
         let replacement = self
             .tasks
             .snapshot()
             .reserve_spec(replacement)
             .map_err(|_| HttpControlError::Busy)?;
+        #[cfg(feature = "control-diagnostics")]
+        if let Some(trace) = &source_trace {
+            trace.mark(crate::source_trace::Stage::Prepared);
+        }
         let gid = replacement.gid();
         let (reply, receiver) = oneshot::channel();
         self.pending_source_replacements.insert(
             gid,
             PendingSourceReplacement {
+                #[cfg(feature = "control-diagnostics")]
+                source_trace,
                 replacement,
                 response,
                 reply,
@@ -2145,6 +2167,10 @@ impl HttpControlPlane {
                 .get_mut(&gid)
                 .expect("pending source replacement")
                 .committing = true;
+            #[cfg(feature = "control-diagnostics")]
+            if let Some(trace) = &self.pending_source_replacements[&gid].source_trace {
+                trace.mark(crate::source_trace::Stage::CommitStarted);
+            }
             let satisfies_credentials = self
                 .engine
                 .scheduler()
@@ -2191,6 +2217,10 @@ impl HttpControlPlane {
             let failed = result.is_err();
             if !failed {
                 self.publish_query();
+            }
+            #[cfg(feature = "control-diagnostics")]
+            if let Some(trace) = &pending.source_trace {
+                trace.mark(crate::source_trace::Stage::Published);
             }
             let _ = pending.reply.send(result);
             if failed {
@@ -6311,6 +6341,47 @@ mod tests {
         recovered.shutdown().expect("recovery shutdown");
     }
 
+    #[cfg(feature = "control-diagnostics")]
+    #[tokio::test]
+    async fn source_trace_follows_publication_and_rejects_incomplete_requests() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let gid = add_paused(&mut plane);
+        let shared = Arc::new(Mutex::new(plane));
+        let trace = crate::SourceMutationTrace::new(Instant::now());
+        HttpControlPlane::call_shared_with_context(
+            &shared,
+            "ariax.replaceSources",
+            json!([gid.to_string(), ["http://new.test/file.bin"]]),
+            crate::RpcClientContext::default().with_source_trace(trace.clone()),
+        )
+        .await
+        .expect("published sources");
+        let stages = trace.offsets_ns().expect("all source stages");
+        assert!(stages.windows(2).all(|pair| pair[0] <= pair[1]));
+        let rejected = crate::SourceMutationTrace::new(Instant::now());
+        assert!(
+            HttpControlPlane::call_shared_with_context(
+                &shared,
+                "ariax.replaceSources",
+                json!([]),
+                crate::RpcClientContext::default().with_source_trace(rejected.clone()),
+            )
+            .await
+            .is_err()
+        );
+        assert!(rejected.offsets_ns().is_err());
+        let backend = HttpControlBackend::from_shared(shared.clone()).await;
+        backend.drain_control_runtime().await.expect("drain");
+        drop(backend);
+        Arc::try_unwrap(shared)
+            .expect("sole owner")
+            .into_inner()
+            .shutdown_async()
+            .await
+            .expect("shutdown");
+    }
+
     #[test]
     fn source_commit_remains_pending_until_publication_and_never_dispatches_twice() {
         let directory = TestDirectory::new();
@@ -6326,7 +6397,13 @@ mod tests {
             .reserve_scheduler_work(command.as_ref(), 0)
             .expect("work");
         let mut reply = plane
-            .begin_source_call("ariax.replaceSources", params, command)
+            .begin_source_call(
+                "ariax.replaceSources",
+                params,
+                command,
+                #[cfg(feature = "control-diagnostics")]
+                None,
+            )
             .expect("source begin");
         plane.retain_pending_work(Some(work)).expect("retain begin");
         drop(request);
@@ -7715,6 +7792,8 @@ mod tests {
             .begin_source_call(
                 "ariax.replaceSources",
                 json!([gid.to_string(), ["http://new.test/file.bin"]]),
+                None,
+                #[cfg(feature = "control-diagnostics")]
                 None,
             )
             .expect("begin quiescence");

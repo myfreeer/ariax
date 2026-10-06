@@ -1,0 +1,87 @@
+{
+  "status": "in-progress",
+  "baseCommit": "7f1255c",
+  "rawRoot": "/mnt/f/temp/ariax/phase7-local-four-20261006",
+  "timing": {
+    "completed": true,
+    "passed": true,
+    "attempts": 20,
+    "elapsedSeconds": 121.86407685279846,
+    "originalFailureResolved": false
+  },
+  "soak": {
+    "completedLongRun": false,
+    "smokePassed": false,
+    "failure": "Second bootstrap rejects generation_started sequence 90, generation 2: GenerationNotDrained; 16 generation-1 leases have no abort records after process crash.",
+    "retainedFixture": "F:/temp/ariax/phase7-local-four-20261006/active-soak-smoke/tmp/ariax-rpc-active-15196"
+  },
+  "advisories": {
+    "queriedRegistryPackages": 357,
+    "completed": true,
+    "matchingPackages": [
+      {
+        "package": {
+          "name": "hickory-resolver",
+          "ecosystem": "crates.io"
+        },
+        "version": "0.26.1"
+      },
+      {
+        "package": {
+          "name": "pageant",
+          "ecosystem": "crates.io"
+        },
+        "version": "0.2.2"
+      },
+      {
+        "package": {
+          "name": "rsa",
+          "ecosystem": "crates.io"
+        },
+        "version": "0.10.0-rc.18"
+      },
+      {
+        "package": {
+          "name": "russh",
+          "ecosystem": "crates.io"
+        },
+        "version": "0.62.4"
+      },
+      {
+        "package": {
+          "name": "rustls",
+          "ecosystem": "crates.io"
+        },
+        "version": "0.23.42"
+      },
+      {
+        "package": {
+          "name": "rustls-pemfile",
+          "ecosystem": "crates.io"
+        },
+        "version": "2.2.0"
+      }
+    ],
+    "reviewComplete": false
+  },
+  "compatibility": {
+    "reviewedRegistryEntries": 108,
+    "reviewedUpstreamOptionHandlers": 54,
+    "pinnedUpstreamOptionHandlers": 207,
+    "reviewComplete": false
+  },
+  "releaseApproved": false,
+  "evidenceHashes": {
+    "build.json": "177b079ab4f042bd189ce61a99ebd5fb45e81e454f38247a95d825b497774c4b",
+    "focused-linux.json": "45856a018522691161ca9444a61ed4cd5e81497ae8e1130881f640d62795a3eb",
+    "focused-windows.json": "ffee07f2c9a881bcf01f2bbb802324ee64adc8129a4e1060616ae9863493a7e3",
+    "native-trace-tests/result.json": "3fecb7421eb21cbdce800bcc9de5b92d3aa6ab1a2ac645d594e0197ea671a420",
+    "native-trace-tests-fixed/result.json": "7ea3379e35372c6460d31276cfb99ebe41727f47447d224a8ff9c5cfadee4697",
+    "measurements/result.json": "0c2b78080207b8c9ee5f497c94a4c3cdfb7196db6841dfbf50a45f609595e188",
+    "active-soak-smoke/result.json": "8aca508ca39d5e9f152cd236523b144672c4495f80f985f4612ec67a390cc31b",
+    "active-soak-smoke/active-journal-decoded.json": "208d627bbf3985d3b183bcc95933d56d8f543d64690e192d88062f369b07d8dd",
+    "advisories/result.json": "53a142aa966b7b1e2979ac41625a2e96e8a6171830fb30cfb0a44f6bea30e800",
+    "advisories/details.json": "1f450ddcad0b1ee357f7141b833979df4096b05893d08c4370510aca91633683",
+    "plan.json": "3754b808666eb37ab86092c3d3096a0dd4367edb40f0563c5fd929569f60d529"
+  }
+}

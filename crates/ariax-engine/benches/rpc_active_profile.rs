@@ -440,6 +440,10 @@ impl HttpRpcBackend for BenchBackend {
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |duration| duration.as_nanos());
             let started = Instant::now();
+            #[cfg(feature = "control-diagnostics")]
+            let trace = ariax_engine::SourceMutationTrace::new(started);
+            #[cfg(feature = "control-diagnostics")]
+            let context = context.with_source_trace(trace.clone());
             let future = self.inner.call_with_context(method, params, context);
             return Box::pin(async move {
                 let result = future.await;
@@ -451,6 +455,11 @@ impl HttpRpcBackend for BenchBackend {
                         elapsed,
                         result.is_ok(),
                     );
+                    #[cfg(feature = "control-diagnostics")]
+                    timing
+                        .lock()
+                        .expect("source timing")
+                        .attach_stages(ordinal, trace.offsets_ns());
                 }
                 result
             });

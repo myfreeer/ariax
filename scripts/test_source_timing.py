@@ -39,6 +39,26 @@ class SourceTimingTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(RuntimeError):
                 ci.validate_source_timing(report)
 
+    def test_source_stages_are_complete_monotonic_and_bounded(self):
+        report = self.report()
+        report['sourceMutationTiming']['samples'][0]['stageOffsetsNs'] = [1, 2, 3, 4, 5, 90000001]
+        ci.validate_source_timing(report)
+        for stages in (None, [], [1, 2, 3, 4, 5], [2, 1, 3, 4, 5, 6],
+                       [1, 2, 3, 4, 5, 90000002], [True, 2, 3, 4, 5, 6]):
+            bad = copy.deepcopy(report)
+            bad['sourceMutationTiming']['samples'][0]['stageOffsetsNs'] = stages
+            with self.subTest(stages=stages), self.assertRaises(RuntimeError):
+                ci.validate_source_timing(bad)
+        report['samples'] = 320
+        report['sourceMutationTiming']['calls'] = 2
+        second = copy.deepcopy(report['sourceMutationTiming']['samples'][0])
+        second.update(ordinal=1, sampleIndex=259)
+        del second['stageOffsetsNs']
+        report['sourceMutationTiming']['samples'].append(second)
+        report['operations']['changeUri']['calls'] = 2
+        with self.assertRaisesRegex(RuntimeError, 'missing source stages'):
+            ci.validate_source_timing(report)
+
     def test_cross_language_fixture_and_rounding(self):
         report = self.report()
         report['samples'] = 320

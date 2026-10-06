@@ -103,3 +103,39 @@ fn invalid_client_positions_geometry_and_anchors_reject() {
     bad.burst = 0;
     assert!(correlate(&[bad], &backend, 160).is_err());
 }
+
+#[test]
+fn stages_require_complete_monotonic_offsets_within_backend_interval() {
+    let mut log = BackendLog::default();
+    completed(&mut log);
+    log.attach_stages(0, Ok([1, 2, 3, 4, 5, 90_000_001]));
+    let report = correlate(&[client(0)], &log.report().unwrap(), 160).unwrap();
+    assert_eq!(report["samples"][0]["stageOffsetsNs"][5], 90_000_001);
+    for stages in [
+        json!([]),
+        json!([1, 2, 3, 4, 5, 90_000_002]),
+        json!([2, 1, 3, 4, 5, 6]),
+        json!([1, 2, 3, 4, 5, true]),
+    ] {
+        let mut bad = log.report().unwrap();
+        bad[0]["stageOffsetsNs"] = stages;
+        assert!(correlate(&[client(0)], &bad, 160).is_err());
+    }
+    log.attach_stages(0, Ok([1, 2, 3, 4, 5, 6]));
+    assert!(log.report().is_err());
+    for stages in [
+        Err("incomplete"),
+        Ok([2, 1, 3, 4, 5, 6]),
+        Ok([1, 2, 3, 4, 5, 90_000_002]),
+    ] {
+        let mut log = BackendLog::default();
+        completed(&mut log);
+        log.attach_stages(0, stages);
+        assert!(log.report().is_err());
+    }
+    let mut log = BackendLog::default();
+    completed(&mut log);
+    completed(&mut log);
+    log.attach_stages(0, Ok([1, 2, 3, 4, 5, 6]));
+    assert!(correlate(&[client(0), client(1)], &log.report().unwrap(), 320).is_err());
+}

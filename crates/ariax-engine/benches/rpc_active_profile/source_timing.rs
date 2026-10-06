@@ -10,6 +10,7 @@ struct BackendSample {
     started_unix_ns: u128,
     elapsed: Duration,
     succeeded: bool,
+    stages: Option<[u64; 6]>,
 }
 
 pub struct BackendLog {
@@ -50,7 +51,22 @@ impl BackendLog {
                     started_unix_ns,
                     elapsed,
                     succeeded,
+                    stages: None,
                 });
+            }
+            _ => self.invalid = true,
+        }
+    }
+
+    #[cfg(any(feature = "control-diagnostics", test))]
+    pub fn attach_stages(&mut self, ordinal: usize, stages: Result<[u64; 6], &'static str>) {
+        match (self.samples.get_mut(ordinal), stages) {
+            (Some(Some(sample)), Ok(stages))
+                if sample.stages.is_none()
+                    && stages.windows(2).all(|pair| pair[0] <= pair[1])
+                    && u128::from(stages[5]) <= sample.elapsed.as_nanos() =>
+            {
+                sample.stages = Some(stages);
             }
             _ => self.invalid = true,
         }
@@ -65,10 +81,12 @@ impl BackendLog {
             .enumerate()
             .map(|(ordinal, sample)| {
                 let sample = sample.ok_or("incomplete source timing")?;
-                Ok(
-                    json!({"ordinal": ordinal, "startedUnixNs": sample.started_unix_ns,
-                          "elapsedNs": sample.elapsed.as_nanos(), "succeeded": sample.succeeded}),
-                )
+                let mut row = json!({"ordinal": ordinal, "startedUnixNs": sample.started_unix_ns,
+                    "elapsedNs": sample.elapsed.as_nanos(), "succeeded": sample.succeeded});
+                if let Some(stages) = sample.stages {
+                    row["stageOffsetsNs"] = json!(stages);
+                }
+                Ok(row)
             })
             .collect::<Result<Vec<_>, _>>()
             .map(Value::from)
@@ -118,12 +136,33 @@ pub fn correlate(
             .elapsed
             .checked_sub(Duration::from_nanos(elapsed))
             .ok_or("backend source timing exceeds round trip")?;
-        samples.push(
-            json!({"ordinal": ordinal, "sampleIndex": client.sample_index,
+        let mut row = json!({"ordinal": ordinal, "sampleIndex": client.sample_index,
             "burst": client.burst, "clientStartedUnixNs": client.started_unix_ns,
             "backendStartedUnixNs": backend_started, "roundTripNs": client.elapsed.as_nanos(),
-            "backendNs": elapsed, "outsideBackendNs": outside.as_nanos()}),
-        );
+            "backendNs": elapsed, "outsideBackendNs": outside.as_nanos()});
+        if let Some(stages) = backend.get("stageOffsetsNs") {
+            let offsets = stages.as_array().ok_or("invalid source stages")?;
+            if offsets.len() != 6 {
+                return Err("invalid source stage count");
+            }
+            let mut previous = 0;
+            for offset in offsets {
+                let value = offset.as_u64().ok_or("invalid source stage offset")?;
+                if value < previous || value > elapsed {
+                    return Err("invalid source stage order");
+                }
+                previous = value;
+            }
+            row["stageOffsetsNs"] = stages.clone();
+        }
+        samples.push(row);
+    }
+    let staged = samples
+        .iter()
+        .filter(|row| row.get("stageOffsetsNs").is_some())
+        .count();
+    if staged != 0 && staged != expected {
+        return Err("missing source stages");
     }
     Ok(json!({"version": 1, "capacity": CAPACITY, "calls": expected, "samples": samples}))
 }

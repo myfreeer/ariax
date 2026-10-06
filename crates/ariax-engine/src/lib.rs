@@ -213,6 +213,10 @@ pub use rpc_budget::{
     RpcClientBudgetSnapshot,
 };
 mod rpc_client;
+#[cfg(feature = "control-diagnostics")]
+mod source_trace;
+#[cfg(feature = "control-diagnostics")]
+pub use source_trace::SourceMutationTrace;
 mod rpc_compat;
 mod slow_slots;
 pub use http_supervisor::{
