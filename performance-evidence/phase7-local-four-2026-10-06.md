@@ -132,6 +132,14 @@ Ten HTTP/TLS tests and seven resolver tests pass on both hosts, including
 certificate selection and malformed PEM rejection. All updated crates declare
 MSRVs at or below 1.88; that declaration is not a fresh full MSRV build.
 
+The [advisory disposition inventory](phase7-advisory-dispositions-2026-10-06.json)
+maps all eight remaining OSV findings to current package versions and hashed
+source/test evidence. It distinguishes the client backport, excluded negotiated
+configurations, unused server/Pageant paths, and unresolved RSA assurance. It
+preserves all six russh findings after vendoring reduces the registry package
+count to 355. These are scoped review dispositions, not blanket dependency
+clearance or advisory ignores.
+
 Remaining registry matches require these distinctions:
 
 | Dependency/Advisory | Local Applicability Review | Remaining Work |

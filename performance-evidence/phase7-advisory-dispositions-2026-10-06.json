@@ -1,0 +1,215 @@
+{
+  "schema": 1,
+  "reviewDate": "2026-10-06",
+  "sourceCommit": "f30f5fb",
+  "scope": "Disposition of all eight remaining findings in the retained OSV snapshot, mapped to unchanged current package versions and explicit local russh provenance. This is not release approval or blanket vulnerability clearance.",
+  "queryEvidence": {
+    "path": "advisories/final-query/result.json",
+    "sha256": "5e8678fe1263a504be4732c9d05a9a3f1e9f4341c3cfec50902d46fd1f0b847c"
+  },
+  "currentLock": {
+    "path": "Cargo.lock",
+    "sha256": "88354f509ecd03283a5f7121b3f700cbdd820785dfd9413900cd91a3debadd6f"
+  },
+  "registryQueryCountThen": 356,
+  "registryPackageCountNow": 355,
+  "reasonForRegistryCountChange": "russh 0.62.4 now resolves to the vendored client backport; its six upstream findings remain listed here.",
+  "vendorManifest": {
+    "path": "vendor/protocol-patches.json",
+    "sha256": "4c40267ca30849b4f21dea500d9eda89340fe4b4f5c97b614fe665505da43923"
+  },
+  "entries": [
+    {
+      "id": "GHSA-g4mp-vgx3-xrvm",
+      "package": "pageant",
+      "upstreamVersion": "0.2.2",
+      "upstreamFindingPreserved": true,
+      "advisoryEvidence": {
+        "path": "advisories/GHSA-g4mp-vgx3-xrvm.json",
+        "sha256": "372444ba84c155907e994da37972c5a730cd9b42af2d9d7dc21d0f72ed624ee7"
+      },
+      "disposition": "pageant-path-outside-production",
+      "scope": "Production Windows authentication uses Tokio OpenSSH named-pipe transport, not Pageant shared memory. The affected dependency remains pinned.",
+      "evidence": [
+        {
+          "path": "crates/ariax-engine/src/sftp.rs",
+          "sha256": "017ef91b45493327c3ba95969a0d89990240e74cf8d61594b16a51f199b8b032"
+        },
+        {
+          "path": "vendor/russh/src/keys/agent/client.rs",
+          "sha256": "c3ec1417037e0b5b03110e6bc2b187db2bbf3f37a79007a6d1436110d64e682b"
+        }
+      ]
+    },
+    {
+      "id": "RUSTSEC-2023-0071",
+      "package": "rsa",
+      "upstreamVersion": "0.10.0-rc.18",
+      "upstreamFindingPreserved": true,
+      "advisoryEvidence": {
+        "path": "advisories/RUSTSEC-2023-0071.json",
+        "sha256": "776689d13437f351e877f25efec4978f89be1a0837dc2ba13ca9b4fe4c29adb7"
+      },
+      "disposition": "unresolved-crypto-assurance",
+      "scope": "RSA signing reaches a shared private primitive, but no RSA decryption API was found in the production SSH path. This does not establish a Marvin decryption oracle or prove all signing timing safe. No published patched version; no advisory ignore or unreviewed crypto change.",
+      "evidence": [
+        {
+          "path": "advisories/remaining-research/rsa-pr-702.json",
+          "sha256": "506e3feb1a50cb9b52df910b2e5313c553799a0881f272f7953c8cd3fa28c061"
+        },
+        {
+          "path": "advisories/remaining-research/rsa-pr-680.json",
+          "sha256": "c51af4fb683d939427f78847770e23bd82c5698d04a7a04443f356fa1f5e95e2"
+        },
+        {
+          "path": "advisories/remaining-research/rsa-issue-626.json",
+          "sha256": "a3696d4c1559dbda75c4d5437917f3e5accf02238c8ec531c84a7e6cd3b4292d"
+        },
+        {
+          "path": "advisories/deny-result-ssh-backport.json",
+          "sha256": "547c634d87a8128877629977500832ceb2a77c634c07171afa8f5772f64ea320"
+        }
+      ]
+    },
+    {
+      "id": "GHSA-35g8-35p8-c8fw",
+      "package": "russh",
+      "upstreamVersion": "0.62.4",
+      "upstreamFindingPreserved": true,
+      "advisoryEvidence": {
+        "path": "advisories/GHSA-35g8-35p8-c8fw.json",
+        "sha256": "63dcec000a778309916bc408b0dde2311b9fdc82bb136a0c28f66183af817e22"
+      },
+      "disposition": "server-path-outside-production",
+      "scope": "Ariax production SFTP uses the SSH client. Server code remains in the dependency and local test fixtures; this is a reachability disposition, not a library fix.",
+      "evidence": [
+        {
+          "path": "crates/ariax-engine/src/sftp.rs",
+          "sha256": "017ef91b45493327c3ba95969a0d89990240e74cf8d61594b16a51f199b8b032"
+        }
+      ]
+    },
+    {
+      "id": "GHSA-47hw-gvq5-r2gm",
+      "package": "russh",
+      "upstreamVersion": "0.62.4",
+      "upstreamFindingPreserved": true,
+      "advisoryEvidence": {
+        "path": "advisories/GHSA-47hw-gvq5-r2gm.json",
+        "sha256": "d3e2a33c672cd46a494e63a17c78ae7f5d0aa1c303e7d16307f79df81f54cf28"
+      },
+      "disposition": "client-path-backported",
+      "scope": "Upstream client channel-state checks only; server hunks excluded.",
+      "evidence": [
+        {
+          "path": "vendor/russh.patch",
+          "sha256": "907c8ccbf3016b25919b8f817ee52d2f78aae7ab9ed38bba9eac22571041c97e"
+        },
+        {
+          "path": "advisories/russh-patch-roundtrip.json",
+          "sha256": "85c246a12f4f2eb0852f92a5b1573ec28e96d5c8b56ed327702dcc6462a64ac9"
+        },
+        {
+          "path": "recovery/checks-ssh-channel-fixed-linux.json",
+          "sha256": "68671d7e5137df93d8be341bd6d17ef365af35edbe63fc622e38fc6d74d88583"
+        },
+        {
+          "path": "recovery/checks-ssh-channel-fixed-windows.json",
+          "sha256": "23f5faf7868659528ed6b003dbb88777e9eae330b26eb2b218306cc43078a4a3"
+        }
+      ]
+    },
+    {
+      "id": "GHSA-g6xm-f9xp-qq35",
+      "package": "russh",
+      "upstreamVersion": "0.62.4",
+      "upstreamFindingPreserved": true,
+      "advisoryEvidence": {
+        "path": "advisories/GHSA-g6xm-f9xp-qq35.json",
+        "sha256": "5b39f20101f5205cacbdf5a17a4660e952527336c477e836c81593cb4aea071d"
+      },
+      "disposition": "server-path-outside-production",
+      "scope": "Ariax production SFTP uses the SSH client. Server code remains in the dependency and local test fixtures; this is a reachability disposition, not a library fix.",
+      "evidence": [
+        {
+          "path": "crates/ariax-engine/src/sftp.rs",
+          "sha256": "017ef91b45493327c3ba95969a0d89990240e74cf8d61594b16a51f199b8b032"
+        }
+      ]
+    },
+    {
+      "id": "GHSA-m65r-rprj-r5rg",
+      "package": "russh",
+      "upstreamVersion": "0.62.4",
+      "upstreamFindingPreserved": true,
+      "advisoryEvidence": {
+        "path": "advisories/GHSA-m65r-rprj-r5rg.json",
+        "sha256": "dbd68291f19bd45d074e5aa82b6b35b23a57cb16de18e1c0919261768062bc4b"
+      },
+      "disposition": "server-path-outside-production",
+      "scope": "Ariax production SFTP uses the SSH client. Server code remains in the dependency and local test fixtures; this is a reachability disposition, not a library fix.",
+      "evidence": [
+        {
+          "path": "crates/ariax-engine/src/sftp.rs",
+          "sha256": "017ef91b45493327c3ba95969a0d89990240e74cf8d61594b16a51f199b8b032"
+        }
+      ]
+    },
+    {
+      "id": "GHSA-p8qx-h547-fjw9",
+      "package": "russh",
+      "upstreamVersion": "0.62.4",
+      "upstreamFindingPreserved": true,
+      "advisoryEvidence": {
+        "path": "advisories/GHSA-p8qx-h547-fjw9.json",
+        "sha256": "24aebc06e4704e7050f99e0f9ec5b768cd4dd78155debd50118652b0d0aba4a0"
+      },
+      "disposition": "affected-negotiation-excluded",
+      "scope": "Production allowlists reject the affected MAC-none or hybrid-MLKEM-only offer before authentication/read; the upstream implementation is not patched.",
+      "evidence": [
+        {
+          "path": "crates/ariax-engine/src/sftp.rs",
+          "sha256": "017ef91b45493327c3ba95969a0d89990240e74cf8d61594b16a51f199b8b032"
+        },
+        {
+          "path": "recovery/checks-ssh-channel-fixed-linux.json",
+          "sha256": "68671d7e5137df93d8be341bd6d17ef365af35edbe63fc622e38fc6d74d88583"
+        },
+        {
+          "path": "recovery/checks-ssh-channel-fixed-windows.json",
+          "sha256": "23f5faf7868659528ed6b003dbb88777e9eae330b26eb2b218306cc43078a4a3"
+        }
+      ]
+    },
+    {
+      "id": "GHSA-w3jg-pjxf-73p4",
+      "package": "russh",
+      "upstreamVersion": "0.62.4",
+      "upstreamFindingPreserved": true,
+      "advisoryEvidence": {
+        "path": "advisories/GHSA-w3jg-pjxf-73p4.json",
+        "sha256": "7791359c5d56696f8f6969f86a920f30e2587f5104bd196ae0e3ccf0b26a1969"
+      },
+      "disposition": "affected-negotiation-excluded",
+      "scope": "Production allowlists reject the affected MAC-none or hybrid-MLKEM-only offer before authentication/read; the upstream implementation is not patched.",
+      "evidence": [
+        {
+          "path": "crates/ariax-engine/src/sftp.rs",
+          "sha256": "017ef91b45493327c3ba95969a0d89990240e74cf8d61594b16a51f199b8b032"
+        },
+        {
+          "path": "recovery/checks-ssh-channel-fixed-linux.json",
+          "sha256": "68671d7e5137df93d8be341bd6d17ef365af35edbe63fc622e38fc6d74d88583"
+        },
+        {
+          "path": "recovery/checks-ssh-channel-fixed-windows.json",
+          "sha256": "23f5faf7868659528ed6b003dbb88777e9eae330b26eb2b218306cc43078a4a3"
+        }
+      ]
+    }
+  ],
+  "allFindingsPatched": false,
+  "policyAdvisoryCheckPassed": false,
+  "ignoredAdvisories": [],
+  "releaseApproved": false
+}
