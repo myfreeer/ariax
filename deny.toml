@@ -1,0 +1,34 @@
+# Dependency policy for the complete workspace feature graph. Per-bundle
+# release inventories additionally run with their explicit target/features.
+[graph]
+all-features = true
+
+[advisories]
+# No advisory is silently waived. Applicability notes do not suppress findings.
+ignore = []
+
+[licenses]
+allow = ["Apache-2.0", "BSD-3-Clause", "ISC", "MIT", "Unicode-3.0", "Zlib"]
+confidence-threshold = 0.8
+
+[licenses.private]
+ignore = false
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Unpublished workspace path dependencies are local source, not registry ranges.
+allow-wildcard-paths = true
+# OpenSSL for BT is reviewed through native/libtorrent/sources.json;
+# an implicit Cargo TLS backend must not replace the ring/rustls policy.
+deny = ["native-tls", "openssl", "openssl-sys", "des", "dsa"]
+
+[[bans.features]]
+crate = "rustls"
+deny = ["aws_lc_rs"]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

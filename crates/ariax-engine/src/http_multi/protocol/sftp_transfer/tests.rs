@@ -192,7 +192,17 @@ async fn server(
     let pin = ariax_storage::session_host_key_pin_value(
         ariax_core::HostKeyFingerprint::for_presented_key(&blob),
     );
+    let mut preferred = russh::Preferred::default();
+    if scenario == 14 {
+        preferred.cipher = std::borrow::Cow::Owned(vec![russh::cipher::AES_256_CTR]);
+        preferred.mac = std::borrow::Cow::Owned(vec![russh::mac::NONE]);
+    } else if scenario == 16 {
+        preferred.cipher = std::borrow::Cow::Owned(vec![russh::cipher::CHACHA20_POLY1305]);
+    } else if scenario == 15 {
+        preferred.kex = std::borrow::Cow::Owned(vec![russh::kex::MLKEM768X25519_SHA256]);
+    }
     let config = Arc::new(russh::server::Config {
+        preferred,
         keys: vec![key],
         methods: if (9..=12).contains(&scenario) {
             [russh::MethodKind::KeyboardInteractive].as_slice().into()
@@ -247,7 +257,7 @@ async fn server(
 
 #[tokio::test]
 async fn sftp_trust_precedes_authentication_and_bounded_reads_share_http_ranges() {
-    for scenario in 0..14 {
+    for scenario in 0..17 {
         let known_hosts = crate::sftp_trust::TestKnownHosts::new();
         let directory = Directory::new();
         let (uri, pin, auth, reads, server) = server(scenario).await;
@@ -343,6 +353,18 @@ async fn sftp_trust_precedes_authentication_and_bounded_reads_share_http_ranges(
         assert_eq!(metadata.used(), 0);
         assert_eq!(ingress.used(), 0);
         match scenario {
+            14 | 15 => {
+                assert!(
+                    matches!(
+                        result,
+                        Err(HttpMultiRangeError::Transfer(ProtocolFailure::Connect))
+                    ),
+                    "scenario {scenario}: {result:?}"
+                );
+                assert_eq!(auth.load(Ordering::SeqCst), 0);
+                assert_eq!(reads.load(Ordering::SeqCst), 0);
+                assert!(!directory.0.join("result").exists());
+            }
             0 => {
                 assert!(
                     matches!(result, Err(HttpMultiRangeError::HostKeyChallenge(_))),

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(ariax_bt_security LANGUAGES CXX)
 find_package(LibtorrentRasterbar 2.1.1 EXACT CONFIG REQUIRED)
-find_package(OpenSSL 3.6.3 EXACT REQUIRED COMPONENTS Crypto)
+find_package(OpenSSL 3.6.5 EXACT REQUIRED COMPONENTS Crypto)
 add_executable(ariax_openssl_callbacks openssl_callbacks.cc)
 target_compile_features(ariax_openssl_callbacks PRIVATE cxx_std_17)
 target_compile_definitions(ariax_openssl_callbacks PRIVATE

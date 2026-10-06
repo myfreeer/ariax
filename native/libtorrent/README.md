@@ -1,7 +1,7 @@
 # Pinned Libtorrent Build
 
 `sources.json` pins the upstream source archives and build settings for
-libtorrent 2.1.1, Boost 1.91.0 headers and OpenSSL 3.6.3. Their published
+libtorrent 2.1.1, Boost 1.91.0 headers and OpenSSL 3.6.5. Their published
 SHA-256 values were independently verified before use. Downloads, source trees,
 native libraries and build logs live under ignored `toolchains/bt-native`.
 No installed system libtorrent or OpenSSL is substituted.
@@ -15,7 +15,7 @@ SHA-256 is published to the cache; checksum, size-limit, certificate and local
 filesystem failures are not retried. Exhausted downloads fail provisioning.
 Compilation and test failures are not retried.
 
-`openssl.patch` backports callback adapters onto OpenSSL 3.6.3. Its exact
+`openssl.patch` backports callback adapters onto OpenSSL 3.6.5. Its exact
 upstream commits and version-specific adjustments are documented in
 [`openssl-patch.md`](openssl-patch.md). Both the OpenSSL intermediate cache and
 the complete installation record its digest; Cargo rejects an installation

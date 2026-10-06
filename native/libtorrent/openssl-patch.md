@@ -1,6 +1,6 @@
 # OpenSSL Callback Backport
 
-`openssl.patch` applies exactly to the pinned OpenSSL 3.6.3 archive. It repairs
+`openssl.patch` applies exactly to the pinned OpenSSL 3.6.5 archive. It repairs
 the incompatible callback invocations found by Clang UBSan during standalone
 random generation and native BitTorrent validation. Function-type checking,
 AddressSanitizer and fail-fast behavior remain enabled.
@@ -23,6 +23,15 @@ downloads a moving development branch.
 | SHA update adapter approach | `85f6102785af5b9382e5a449e5a2bc183c32e0f6`, `8dfa6cdc26a75589b129f453b5a5fa4807e4906f`, `1f2ae01f5ba4b5711f814942e23450e0d7e4dcb9`, `11e1a4841acecb3c30b835f0d16dfd3adf870637`, `18ca04616f69d7b1b173014ce3eb178b073a22cd` |
 
 ## Version Adjustments
+
+The October 6 maintenance update moves the archive from 3.6.3 to 3.6.5 for the
+upstream security fixes. The callback changes are unchanged: the port adjusts
+one EVP source line offset and sparse-array header whitespace in the exact
+patch context. All 29 patched files match the reviewed output hashes; altered
+source is rejected atomically by the existing strict patcher. This source-level
+check does not replace the callback, endpoint and native platform regressions
+against freshly built 3.6.5 libraries. Retained 3.6.3 installations remain
+historical and fail the new input-provenance check.
 
 The patch preserves the 3.6 binary-search overflow fix, mutable stack-lookup
 signatures and insertion behavior. Null-stack copies zero-initialize the new

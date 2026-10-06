@@ -102,7 +102,21 @@
     "recovery/active-churn-fixed-180/result.json": "465e7118a47e7840a8749b64c6e907bac8c12b2b9ea79879f118e32656832a6b",
     "recovery/active-churn-fixed.py": "3f0c2b396d794e011d3ac8fe2282e3a72c9e063d4fb8144165804cecb40d69d1",
     "recovery/compat-linux.json": "38e8a4de6df5ab6df8685055906d6eed140bbe3527ce6f48f139f1d685085986",
-    "recovery/compat-windows.json": "b9fec6054ca93a533737e4a7ffcc58b697c42ab5fcfd64edd4405401dbc7e130"
+    "recovery/compat-windows.json": "b9fec6054ca93a533737e4a7ffcc58b697c42ab5fcfd64edd4405401dbc7e130",
+    "advisories/policy-provenance.json": "b037d0aacdd5512c30753d3a58fd63ab0c67b21fe8711d09a755b940ece13514",
+    "advisories/deny-result-final.json": "2c34d12ea2240a5ebef9e0cffaf05bb82b596f3e3160c2d08bd6f566aca8d5bf",
+    "advisories/native-remediation/download.json": "2efd1c9ccf7ed83a2504deeaff02d75a718bb1dd164e3f2a9f5c822d6bf4f1b4",
+    "advisories/native-remediation/port.json": "aeaeb916cba5cce6e641beda7e8a67ee955a5408d270f9dcbcd00ed0d2f5d863",
+    "advisories/native-remediation/exact-port-result.json": "2d2889c9f03992eca296b7657bbb0d7667c3bf0eb5b76d2d026646e18366bb16",
+    "advisories/native-remediation/syntax-result.json": "9d52f03f637ab0019cfb947fa7b593485f7394c37492da80387ea40b7446e139",
+    "advisories/native-remediation/callback-cpp-syntax/result.json": "add70f6f9b4c5882d6e381859c86e42ca093bc173f531446b26e1f3fad72fb1f",
+    "advisories/native-remediation/callback-cpp-syntax-fixed/result.json": "e0c6808a59312266d19a1c55a50678f2cfa4de76818a884e7873e335f900597e",
+    "recovery/checks-ssh-advisory-windows.json": "5257a06eac2a2e04b0245fdb89116a0c0cda87c315a1907dca78ba7d527e8b1a",
+    "recovery/checks-ssh-final-windows.json": "29673ddc870024e823d0e563f2ee5b86e7a9a27e8ee00bae4360292d35612978",
+    "recovery/checks-ssh-final-linux.json": "4b9a40f8076c303ca2b534d11eb8612fbd2c404186d404ffbe53579340f2c464",
+    "recovery/ssh-linux-native-fs.json": "d1239f1a89c479bf80d085e39041257400cf9c383e1903e5d31ccb1e86ab7d0c",
+    "candidate-inventory-updated/inventory.json": "41c88e2e9c09db6855e0e3a43aceb040b3007032ba550d6f312e991fb3dbbb30",
+    "advisories/final-query/result.json": "5e8678fe1263a504be4732c9d05a9a3f1e9f4341c3cfec50902d46fd1f0b847c"
   },
   "recoveryRepair": {
     "status": "short-and-30-minute-recovery-checks-passed",
@@ -161,7 +175,7 @@
     }
   },
   "advisoryUpdate": {
-    "lockSha256": "c5ff4ec73ea2c4b3ee5358e8d636713d5539f2454db181c02246e8192ec58944",
+    "lockSha256": "99384e55484c034fd605fa9b2e87b0de9c8376cd62908ddb0c74133edcefc005",
     "registryQueries": 356,
     "remainingMatchedPackages": [
       "pageant",
@@ -175,19 +189,49 @@
       "hickory-net": "0.26.2",
       "hickory-proto": "0.26.2",
       "rustls": "0.23.45",
-      "rustls-webpki": "0.103.15"
+      "rustls-webpki": "0.103.15",
+      "chacha20": "0.10.2"
     },
     "removed": [
       "rustls-pemfile"
     ],
     "httpTlsTestsPerHost": 10,
-    "resolverTestsPerHost": 7
+    "resolverTestsPerHost": 7,
+    "latestOsvResult": "advisories/final-query/result.json"
   },
   "candidateInventory": {
-    "file": "candidate-inventory/inventory.json",
+    "file": "candidate-inventory-updated/inventory.json",
     "packages": 314,
     "targetBundleGraphs": 8,
-    "sourceFiles": 416,
+    "sourceFiles": 417,
     "releaseClosureRebuilt": false
+  },
+  "nativeAdvisoryPreparation": {
+    "selectedOpenSsl": "3.6.5",
+    "previousOpenSsl": "3.6.3",
+    "archiveSha256": "a2157c2830efdec3788939b00c9b0638306d3f0bbb76dc4832ee503bb397df98",
+    "patchSha256": "9ca3d04c61c1bd582a338bf4fb19737f25cdf68c52c247cc31a5a83de133c80a",
+    "exactPatchedFiles": 29,
+    "changedSourceRejectedAtomically": true,
+    "cSyntaxUnitsPassed": 22,
+    "cppCallbackFixtureSyntaxPassed": true,
+    "nativeBuilderMockTestsPassed": 18,
+    "linkedRuntimeValidated": false
+  },
+  "dependencyPolicy": {
+    "file": "deny.toml",
+    "policyChecksPassed": true,
+    "advisoriesPassed": false,
+    "ignoredAdvisories": [],
+    "remainingRustSecErrors": [
+      "RUSTSEC-2023-0071"
+    ],
+    "remainingYankedWarnings": 0
+  },
+  "sshAdvisoryChecks": {
+    "scenariosPerHost": 17,
+    "windowsPassed": true,
+    "linuxPassedOnNativeFilesystem": true,
+    "initialLinuxHostTrustFailure": "F: returned 0777 for a requested 0600 fixture; unchanged binary passes using Linux /tmp"
   }
 }

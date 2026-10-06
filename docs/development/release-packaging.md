@@ -188,3 +188,27 @@ final candidate matrix. macOS and MSVC remain separate platform work.
 
 Preparing a notice draft or choosing MIT does not approve a release. Benchmarks
 remain manually triggered; this local review does not dispatch them.
+
+## Dependency Policy
+
+The repository-root `deny.toml` defines the workspace license, advisory, source
+and banned-backend policy. Validate it with pinned `cargo-deny` 0.19.0 using the
+repository Cargo/Rustc, a fresh advisory database, and `--locked`; this command
+resolves metadata but does not build native libraries. The policy checks all
+workspace features and does not exempt unpublished crates or silently ignore
+advisories. Duplicate versions warn; registry wildcard requirements, unreviewed registry
+or Git sources, and the forbidden Cargo TLS/legacy-crypto backends fail.
+Unpublished local path dependencies are exempt from the wildcard check.
+
+`python3 scripts/verify-protocol-features.py` additionally checks each public
+bundle's precise feature/provider contract. Native OpenSSL/Boost/libtorrent
+sources and data licenses require their separate pinned-source review; Cargo
+metadata cannot establish their advisory status. Supplement RustSec results
+with the retained OSV/GitHub advisory matches, including identifiers absent
+from RustSec. The dated exact-source inventory records target/bundle graphs
+and hashes; it does not substitute for audited rebuilt release artifacts.
+
+Keep unresolved findings visible in release evidence. An applicability note is
+not an advisory suppression or approval to release. Any future exception must
+identify the advisory, exact package/version, affected call path, justification
+and revalidation trigger in both the policy and its review record.

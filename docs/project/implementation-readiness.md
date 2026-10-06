@@ -647,9 +647,11 @@ original failure remains retained. The completed 30-minute soak exposes resident
 memory growth under pause/resume; an ingress-release repair passes focused
 regressions and a 178-cycle dense native probe with essentially flat accounted
 resident memory. Longer-term resource acceptance remains open. DNS/TLS advisory updates and
-PEM migration pass focused Linux/Windows tests. SSH/RSA and native OpenSSL
-advisory applicability/remediation remain open, with an exact-source draft
-inventory recorded. These findings are additional open local work,
+PEM migration pass focused Linux/Windows tests. SSH/RSA advisory review remains open. The OpenSSL 3.6.5 source/patch update
+passes exact-application and syntax checks but still needs linked native
+validation. The new dependency policy passes license/source/backend checks and
+retains the unresolved RSA error; yanked chacha20 is replaced and SFTP
+regressions pass on both hosts. The exact-source draft inventory is refreshed. These findings are additional open local work,
 not closed by the earlier packaging or empty-session checks.
 
 The approved [local hardening campaign](../../performance-evidence/phase7-local-hardening-2026-10-05.md)

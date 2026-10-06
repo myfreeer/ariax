@@ -137,10 +137,10 @@ Remaining registry matches require these distinctions:
 | Dependency/Advisory | Local Applicability Review | Remaining Work |
 | --- | --- | --- |
 | russh client channel callbacks (`GHSA-47hw-gvq5-r2gm`) | Ariax overrides only host-key checking and KEX diagnostics, not the channel callbacks identified by the advisory. | Confirm transport-level effects and choose a compatible fix/backport; not a blanket clearance. |
-| russh MAC `none` / hybrid KEX (`GHSA-p8qx-h547-fjw9`, `GHSA-w3jg-pjxf-73p4`) | Negotiation allowlists exclude MAC `none` and hybrid ML-KEM. Diagnostic `none` denotes AEAD and is not the negotiation allowlist. | Preserve these restrictions and review the security backports. |
+| russh MAC `none` / hybrid KEX (`GHSA-p8qx-h547-fjw9`, `GHSA-w3jg-pjxf-73p4`) | Negotiation allowlists exclude MAC `none` and hybrid ML-KEM. Real offers restricted to either combination reject before authentication/read on Linux and Windows. Diagnostic `none` denotes AEAD and is not the negotiation allowlist. | The upstream crate remains affected; these negotiated configurations are excluded in Ariax. |
 | russh server advisories (`GHSA-35g8-35p8-c8fw`, `GHSA-g6xm-f9xp-qq35`, `GHSA-m65r-rprj-r5rg`) | Production uses the SSH client; server implementations are test fixtures. | Track the vulnerable dependency separately from production reachability. |
 | Pageant (`GHSA-g4mp-vgx3-xrvm`) | Windows authentication connects to the OpenSSH named pipe; it does not invoke Pageant. | Keep the dependency match visible until upgrade/backport review closes it. |
-| RSA Marvin (`RUSTSEC-2023-0071`) | SSH authentication uses signatures; the advisory concerns private-key decryption. No fixed version is published. | Finish private-decryption reachability review. |
+| RSA Marvin (`RUSTSEC-2023-0071`) | The SSH signing path reaches `rsa_decrypt_and_check` through PKCS#1 signing without a blinding RNG. Signing-only use is insufficient evidence for clearance. | No published fixed version; retain the RustSec failure and finish vetted mitigation/applicability review. |
 
 Russh 0.63.2 and Pageant 0.2.3 require Rust 1.89. Upstream patches and archive
 checksums are retained, but none is silently substituted for the current
@@ -151,16 +151,45 @@ pinned 3.6.3, fixed in 3.6.4/3.6.5. These include relative-CRLDP certificate
 memory amplification (`CVE-2026-35189`); the QUIC, DTLS, CMP, CMS, signing and
 other entries need individual applicability review. The empty GitHub repository
 advisory response is not clearance. An OpenSSL upgrade must also reconcile the
-existing callback backport and pass its strict/native regressions. No native
-source pin or retained installation is relabeled as repaired. The attempted
+existing callback backport and pass its strict/native regressions. The source pin is now
+3.6.5 with independently verified archive SHA-256. The callback port changes
+only one hunk offset and sparse-array whitespace context; its changes to the
+29 files remain semantically the same. Exact patch application succeeds and
+changed source rejects atomically. After generating fresh 3.6.5 headers, 22 C
+translation units and the C++ callback fixture pass syntax checks. The first
+C++ command omitted the fixture macro; the corrected command matches the CMake
+definition and succeeds. Eighteen native-builder Python tests pass with mocked
+builds, not native compilation. Linked callback/endpoint/native runtime tests
+against new libraries remain required. Retained 3.6.3 installations and package
+manifests are preserved and are not relabeled as repaired. The attempted
 Boost/libtorrent security-page URLs returned 404; their review remains open.
 
 The exact-source draft inventory records eight normal/build dependency graphs
 (minimal/standard/full/compat on Linux and Windows-GNU), 314 distinct packages,
 declared licenses/MSRVs, cached archive verification, native source/patch hashes,
-and 416 implementation/packaging source hashes. All eight graphs pass the
+and 417 implementation/packaging/policy source hashes in the refreshed snapshot. All eight graphs pass the
 protocol/provider policy checker. It is a source inventory, not rebuilt release
 packages. The historical packages still contain their original dependencies.
+
+The previously missing `deny.toml` now defines an executable workspace policy.
+Checksum-verified cargo-deny 0.19.0 runs directly from F: without toolchain or
+global installation changes. Its fresh RustSec snapshot is commit
+`ef6173cbc5c50ec8166f9a5b28f07834144373ee`. License, banned-dependency and source
+checks pass. Duplicate versions warn; unpublished path dependencies have an
+explicit wildcard exemption. No advisory is ignored. The first built-in Git
+fetch failed; CLI Git fetched the same database successfully. The local config
+diff is limited to the database location and fetch implementation, verified
+against the committed policy.
+
+The check exposed yanked chacha20 0.10.1, now locked at non-yanked 0.10.2
+(MSRV 1.85). The final advisory check has only the RSA error and no yanked
+warning. The SFTP fixture passes 17 scenarios on both hosts, including actual
+ChaCha20-Poly1305 transfer and the two forbidden-negotiation cases. The initial
+Linux run used F:, where an explicit 0600 file creation reported 0777 and host
+trust correctly rejected it; the unchanged executable passes with Linux `/tmp`
+fixtures, where 0600 is preserved. Both observations and the first failure are
+retained. RustSec lacks the additional GitHub-only matches recorded by OSV;
+passing one database would not erase the other review obligations.
 
 Raw evidence is under `/mnt/f/temp/ariax/phase7-local-four-20261006`.
 Unique artifacts and failures remain retained. Native Linux timing/kernel

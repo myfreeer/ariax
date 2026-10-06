@@ -308,6 +308,13 @@ KEX/host-key/cipher/MAC per connection) so a russh default change cannot
 silently widen it. An `unsafe_compat` build flag may re-enable legacy
 algorithms explicitly; there is no runtime silent fallback.
 
+The current SSH negotiation policy excludes a separate MAC of `none` and
+hybrid ML-KEM key exchange. A server offering only AES-CTR with MAC `none`, or
+only `mlkem768x25519-sha256`, must fail before authentication and before any
+SFTP read. AEAD diagnostics may report `none`; that does not add it to the MAC
+negotiation allowlist. These restrictions are covered by the native SFTP
+integration fixture and are relevant to the pinned russh advisory review.
+
 Session behavior:
 
 - `connect-timeout`/`timeout` apply to TCP+handshake and per-request

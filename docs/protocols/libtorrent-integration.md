@@ -75,7 +75,7 @@ that a later commit executed the earlier matrix or permit an untested runtime
 change. The Phase-6 audit allows only the three recorded benchmark diagnostic
 and regression-test files in addition to documentation/evidence changes.
 
-The native dependency graph uses Boost 1.91.0 headers and OpenSSL 3.6.3,
+The native dependency graph uses Boost 1.91.0 headers and OpenSSL 3.6.5,
 verified from upstream source archives. Native libraries and their build
 settings are specific to the target ABI; an installed system libtorrent is
 not a substitute for the pinned patched source. Disable WebTorrent, I2P,
