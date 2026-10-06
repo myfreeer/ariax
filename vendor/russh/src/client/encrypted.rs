@@ -13,7 +13,6 @@
 // limitations under the License.
 //
 use std::convert::TryInto;
-use std::ops::Deref;
 use std::str::FromStr;
 
 use bytes::Bytes;
@@ -25,7 +24,7 @@ use super::IncomingSshPacket;
 use crate::auth::AuthRequest;
 use crate::cert::PublicKeyOrCertificate;
 use crate::client::{ChannelOpenHandle, Handler, Msg, Prompt, Reply, Session};
-use crate::helpers::{AlgorithmExt, EncodedExt, NameList, sign_with_hash_alg};
+use crate::helpers::{AlgorithmExt, NameList, sign_with_hash_alg};
 use crate::keys::key::parse_public_key;
 use crate::parsing::{ChannelOpenConfirmation, ChannelType, OpenChannelMessage, ensure_end};
 use crate::session::{Encrypted, EncryptedState, GlobalRequestResponse};
@@ -1112,9 +1111,14 @@ impl Encrypted {
                 )?;
 
                 // Extend with self-signature.
-                signature::Signer::try_sign(key.deref(), buffer)?
-                    .encoded()?
-                    .encode(&mut *buffer)?;
+                sign_with_hash_alg(
+                    &crate::keys::PrivateKeyWithHashAlg::new(
+                        key.clone(),
+                        Some(ssh_key::HashAlg::Sha512),
+                    ),
+                    buffer,
+                )?
+                .encode(&mut *buffer)?;
 
                 push_packet!(self.write, {
                     #[allow(clippy::indexing_slicing)] // length checked

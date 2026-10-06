@@ -300,6 +300,26 @@ password-equivalent keyboard-interactive path accepts exactly one non-echoing
 Agent framing has a pinned 256 KiB cap; its frame, decoded identities, and
 request workspace are included in the live SSH reservation.
 
+The optional Cargo feature `sftp-openssl-rsa` on `ariax-cli` and
+`ariax-engine` selects OpenSSL for RSA authentication signatures and SSH
+exchange-signature verification. Build with, for example,
+`--no-default-features --features full,sftp-openssl-rsa`. Without this feature
+the existing RustCrypto backend remains selected. Feature unification gives
+OpenSSL precedence; an OpenSSL failure is terminal, with no RustCrypto
+fallback. Only RSA SHA-256 and SHA-512 signatures are supported by this
+backend. Agent signatures still run in the external agent; non-RSA algorithms
+and the ring/rustls TLS provider are unchanged.
+Backend selection alone does not enable SFTP; select `standard`, `full` or
+`compat` on the CLI, or `sftp` on the engine.
+
+OpenSSL builds use the reviewed native OpenSSL installation with
+`OPENSSL_DIR` and `OPENSSL_STATIC=1`; they must not introduce OpenSSL runtime
+DLLs. The RustCrypto `rsa` dependency remains for key format handling, existing
+public-key modulus/exponent admission checks, and
+`ssh-key` certificate validation. This switches the production private-key
+authentication operation away from RustCrypto; it does not remove or waive
+`RUSTSEC-2023-0071` for the retained dependency or establish a timing proof.
+
 Algorithm policy follows russh defaults minus legacy algorithms: no SHA-1 KEX
 (`diffie-hellman-group14-sha1` and older), no `ssh-rsa` (SHA-1 signature) host
 keys or client keys, no CBC ciphers, no `hmac-md5`/`hmac-sha1-96`. The

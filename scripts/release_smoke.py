@@ -101,8 +101,12 @@ def module_inventory(paths, binary, windows, system_root=None, runtime=None):
     return rows
 
 
-def verify_package(directory):
+def verify_package(directory, crypto_backend=None):
     manifest = json.loads((directory / 'manifest.json').read_text(encoding='utf-8'))
+    if crypto_backend is not None:
+        require(crypto_backend in {'default', 'openssl'}
+                and manifest.get('cryptoBackend', 'default') == crypto_backend,
+                'package crypto backend mismatch')
     checked = set()
     for line in (directory / 'SHA256SUMS').read_text(encoding='utf-8').splitlines():
         digest, name = line.split('  ', 1)
@@ -199,6 +203,7 @@ def main():
     parser.add_argument('--packages', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--bundles', nargs='+', choices=sorted(rm.BUNDLES), default=['minimal', 'standard'])
+    parser.add_argument('--crypto-backend', choices=('default', 'openssl'), default='default')
     args = parser.parse_args()
     require(args.packages.is_absolute() and args.output.is_absolute(), 'absolute paths required')
     args.output.mkdir(parents=True, exist_ok=False)
@@ -212,12 +217,14 @@ def main():
     try:
         require(len(args.bundles) == len(set(args.bundles)), 'duplicate bundle')
         for bundle in args.bundles:
-            package = args.packages / (target + '-' + bundle)
-            manifest, binary = verify_package(package)
+            package = args.packages / (target + '-' + bundle
+                                      + ('-openssl' if args.crypto_backend == 'openssl' else ''))
+            manifest, binary = verify_package(package, args.crypto_backend)
             work = args.output / bundle; work.mkdir()
             for name in ('tmp', 'cwd'):(work / name).mkdir()
             env = reduced_environment(os.environ, work / 'tmp', windows)
-            row = {'bundle': bundle, 'binarySha256': h.digest(binary), 'environment': env}
+            row = {'bundle': bundle, 'cryptoBackend': args.crypto_backend,
+                   'binarySha256': h.digest(binary), 'environment': env}
             report['packages'].append(row)
             row['help'] = h.run([binary, '--help'], work / 'help', timeout=30, env=env, cwd=work / 'cwd')
             require(row['help']['passed'], 'packaged help failed')

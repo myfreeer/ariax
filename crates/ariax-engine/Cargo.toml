@@ -13,6 +13,9 @@ bt = ["dep:ariax-bt", "ariax-bt/libtorrent"]
 metalink = ["dep:quick-xml"]
 ftp = ["dep:suppaftp"]
 sftp = ["dep:russh", "dep:russh-sftp", "dep:hmac", "dep:zeroize"]
+sftp-openssl-rsa = ["russh?/openssl-rsa"]
+tls-openssl = ["dep:rustls-openssl"]
+crypto-openssl = ["tls-openssl", "sftp-openssl-rsa"]
 
 [dependencies]
 ariax-bt = { workspace = true, optional = true }
@@ -41,6 +44,7 @@ russh-sftp = { workspace = true, optional = true }
 suppaftp = { workspace = true, optional = true }
 rustls.workspace = true
 rustls-native-certs.workspace = true
+rustls-openssl = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

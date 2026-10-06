@@ -137,6 +137,46 @@ locked dependencies and coverage boundary. It still supplies no Rust race
 coverage. Fully instrumented Rust validation requires a compatible instrumented
 standard library and harness. Do not suppress reports to obtain a pass.
 
+### Fully Instrumented Local Rust TSan
+
+The [October 7 follow-up](../../performance-evidence/phase7-openssl-static-tsan-2026-10-07.md)
+uses the official 2026-10-06 nightly binaries and matching `rust-src` in an
+isolated installation. Verify component hashes against the dated official
+manifest. Keep normal Rust 1.97.1/MSRV 1.88 toolchains unchanged. Building
+std/libtest is local validation work; it is not a CI requirement and does not
+require building the compiler from source.
+
+Select that installation's Cargo, Rustc and Rustdoc, a local Cargo cache and a
+target subdirectory under the final Linux build root. The checked configuration
+uses Clang 19.1.7's external TSan runtime with Rust LLVM 23.1.3 instrumentation:
+
+```bash
+export CC=clang CXX=clang++
+export CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0
+export CFLAGS='-fsanitize=thread -fno-omit-frame-pointer'
+export CXXFLAGS='-fsanitize=thread -fno-omit-frame-pointer'
+export RUSTFLAGS='-Zsanitizer=thread -Zexternal-clangrt -Cforce-frame-pointers=yes -Clinker=clang++ -Clink-arg=-fsanitize=thread -Clink-arg=-lstdc++'
+export TSAN_OPTIONS='halt_on_error=1:exitcode=66'
+cargo test -Zbuild-std=std,panic_unwind,test --locked --offline \
+  --target x86_64-unknown-linux-gnu -p ariax-runtime --lib -- --test-threads=2
+```
+
+Before project tests, require clean Rust and C++ controls, deliberate races in
+each language, and an empty instrumented libtest harness. The clean cases must
+exit zero without reports; the races must emit data-race reports and exit 66.
+Inspect std/libtest instrumentation and the final binary's runtime identity.
+Do not mix the bundled Rust TSan runtime with Clang's runtime or suppress
+reports to obtain a pass. Compatibility of other compiler/runtime pairs needs
+its own controls.
+
+For native FFI tests, build `scripts/bt_native.py --sanitizer thread` with Clang
+and a separate `--work-dir` beneath that Linux build root, then select its
+installation with `ARIAX_BT_NATIVE_DIR` and `ARIAX_BT_SANITIZER=thread`.
+Run the original `ariax-bt-libtorrent-sys --features native --test native`
+test target with the same Rust std/libtest instrumentation. Share the two-worker
+limit across any concurrent Cargo and native builds. Keep system preload
+configuration unchanged and report its presence as a host limitation.
+
 ### Maintained Direct TSan Driver
 
 [`scripts/bt_tsan.py`](../../scripts/bt_tsan.py) derives its two direct entry

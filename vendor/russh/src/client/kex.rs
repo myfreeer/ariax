@@ -295,7 +295,7 @@ impl ClientKex {
                 ensure_end(r)?;
 
                 if let Err(e) =
-                    signature::Verifier::verify(&server_host_key, hash.as_ref(), &signature)
+                    crate::helpers::verify_signature(&server_host_key, hash.as_ref(), &signature)
                 {
                     debug!("wrong server sig: {e:?}");
                     return Err(Error::WrongServerSig);

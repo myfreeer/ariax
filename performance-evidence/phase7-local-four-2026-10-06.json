@@ -1,7 +1,7 @@
 {
   "status": "blocked-on-historical-attribution",
   "baseCommit": "7f1255c",
-  "rawRoot": "/mnt/f/temp/ariax/phase7-local-four-20261006",
+  "rawRoot": "${LOCAL_TMP}/phase7-local-four-20261006",
   "timing": {
     "completed": true,
     "passed": true,
@@ -695,5 +695,6 @@
     "releaseApproved": false,
     "file": "resumed-goal-audit.json",
     "sha256": "e622e8ba9cfb63a44d5cb970a7af6008b3f62aa473a26543637af2ea78cabe2b"
-  }
+  },
+  "retentionUpdate": "The historical run root was removed during user-directed cleanup. Only final useful reports and selected unresolved failures remain under ${LOCAL_TMP}/results."
 }

@@ -19,9 +19,9 @@ multiple-versions = "warn"
 wildcards = "deny"
 # Unpublished workspace path dependencies are local source, not registry ranges.
 allow-wildcard-paths = true
-# OpenSSL for BT is reviewed through native/libtorrent/sources.json;
-# an implicit Cargo TLS backend must not replace the ring/rustls policy.
-deny = ["native-tls", "openssl", "openssl-sys", "des", "dsa"]
+# OpenSSL is permitted only through the explicit TLS/RSA backend features;
+# verify-protocol-features.py checks the per-bundle provider graph.
+deny = ["native-tls", "des", "dsa"]
 
 [[bans.features]]
 crate = "rustls"

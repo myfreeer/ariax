@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "reviewDate": "2026-10-05",
+  "reviewDate": "2026-10-07",
   "baselineCommit": "ecd2123",
   "projectLicense": "MIT",
   "materials": {
@@ -135,7 +135,7 @@
     ],
     "linuxMinimumObservedGlibc": "2.34",
     "windowsExtraDllsForRetainedMinimalStandard": [],
-    "scope": "Base fields describe the retained minimal/standard binaries; fullCompatReview records the separate Linux/Windows-GNU full/compat review. Other platforms require their own artifact and runtime review.",
+    "scope": "The recorded binary comparisons below are historical evidence for earlier source. The currentFollowUp defines the current backend and static-runtime policy; current build and package evidence is recorded separately.",
     "historicalBinaryPathAudits": {
       "x86_64-unknown-linux-gnu-minimal": {
         "passed": false,
@@ -263,7 +263,7 @@
     "Final release candidate freeze and full candidate matrix.",
     "Fresh/minimum-OS and other-platform redistribution/runtime acceptance."
   ],
-  "currentFollowUp": {
+  "previousFollowUp": {
     "date": "2026-10-06",
     "scope": "Current Linux/Windows-GNU draft archive preparation; historical review and failed binary identities remain retained. Full release and fresh/minimum-OS acceptance remain separate.",
     "evidence": "performance-evidence/phase7-local-remaining-2026-10-06.json",
@@ -634,5 +634,24 @@
         "nativeLibrariesConsumed": true
       }
     }
+  },
+  "currentFollowUp": {
+    "scope": "Optional OpenSSL Rust bindings and static Windows runtime policy; final binary evidence recorded separately.",
+    "noticeInventory": "performance-evidence/phase7-release-license-inventory-2026-10-07.json",
+    "cryptoSelection": {
+      "default": "ring rustls provider and RustCrypto RSA operations",
+      "openssl": "rustls-openssl 0.4.2 and russh OpenSSL RSA operations, statically linked to the reviewed OpenSSL 3.6.5 installation",
+      "retainedOtherCrypto": "russh ring AEAD; RustCrypto key formats, certificate verification and non-RSA SSH algorithms",
+      "advisory": "RUSTSEC-2023-0071 remains visible for retained rsa dependency; no ignore or timing assurance claim."
+    },
+    "newCargoLicenses": {
+      "openssl@0.10.81": "Apache-2.0",
+      "openssl-sys@0.9.117": "MIT",
+      "openssl-macros@0.1.1": "MIT OR Apache-2.0",
+      "foreign-types@0.3.2": "MIT OR Apache-2.0",
+      "foreign-types-shared@0.1.1": "MIT OR Apache-2.0",
+      "rustls-openssl@0.4.2": "MIT"
+    },
+    "windowsRuntimePolicy": "Only Windows-provided DLL imports; MinGW C++, GCC exception and winpthread runtimes statically linked. Existing GCC GPL-3.0 with runtime exception and winpthread notices still apply; no runtime DLLs redistributed."
   }
 }

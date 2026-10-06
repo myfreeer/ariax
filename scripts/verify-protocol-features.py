@@ -14,7 +14,7 @@ EXPECTED = {
 }
 
 
-def verify(graph, bundle):
+def verify(graph, bundle, *, openssl_rsa=False, tls_openssl=False):
     assert "quick-xml" in graph, "Metalink missing from bundle"
     native = {"ariax-bt", "ariax-bt-libtorrent-sys", "cxx", "cxx-build"}
     if bundle in {"full", "compat"}:
@@ -25,7 +25,18 @@ def verify(graph, bundle):
     else:
         assert not native & graph.keys(), "BitTorrent dependency outside full/compat"
     for name in graph:
-        assert name not in {"aws-lc-rs", "aws-lc-sys", "openssl", "openssl-sys", "native-tls", "des", "dsa"}, f"unapproved dependency: {name}"
+        assert name not in {"aws-lc-rs", "aws-lc-sys", "native-tls", "des", "dsa"}, f"unapproved dependency: {name}"
+    if openssl_rsa or tls_openssl:
+        assert set(graph.get("openssl", {})) == {"0.10.81"}, "unexpected OpenSSL binding"
+        assert set(graph.get("openssl-sys", {})) == {"0.9.117"}, "unexpected OpenSSL sys binding"
+        assert "openssl-src" not in graph, "use the reviewed native OpenSSL installation"
+        assert not (graph["openssl"]["0.10.81"] & {"vendored"}), "unreviewed OpenSSL build"
+    else:
+        assert not ({"openssl", "openssl-sys"} & graph.keys()), "unselected OpenSSL backend"
+    if tls_openssl:
+        assert graph.get("rustls-openssl") == {"0.4.2": {"tls12"}}, "unexpected TLS provider features"
+    else:
+        assert "rustls-openssl" not in graph, "unselected OpenSSL TLS provider"
     assert len(graph.get("rustls", {})) == 1
     tls = next(iter(graph["rustls"].values()))
     assert "ring" in tls and tls <= {"log", "logging", "ring", "std", "tls12"}, "unexpected TLS provider/features"
@@ -33,7 +44,8 @@ def verify(graph, bundle):
         assert not ({"russh", "russh-sftp", "suppaftp", "ssh-key"} & graph.keys()), "protocol dependency in minimal"
     else:
         for name, (version, features) in EXPECTED.items():
-            assert graph.get(name) == {version: features}, f"unexpected {name} graph: {graph.get(name)}"
+            selected = features | ({"openssl-rsa"} if name == "russh" and openssl_rsa else set())
+            assert graph.get(name) == {version: selected}, f"unexpected {name} graph: {graph.get(name)}"
         assert set(graph.get("ssh-key", {})) == {"0.7.0-rc.11"}, "ssh-key must match russh's exact re-export"
         assert not (graph["ssh-key"]["0.7.0-rc.11"] & {"dsa", "des", "3des"}), "legacy SSH feature"
 
@@ -45,6 +57,19 @@ def self_test():
     standard.update({n: {v: f.copy()} for n, (v, f) in EXPECTED.items()})
     standard["ssh-key"] = {"0.7.0-rc.11": {"ed25519"}}
     verify(standard, "standard")
+    selected = copy.deepcopy(standard)
+    selected["russh"]["0.62.4"].add("openssl-rsa")
+    selected.update({"openssl": {"0.10.81": {"default"}}, "openssl-sys": {"0.9.117": set()},
+                     "rustls-openssl": {"0.4.2": {"tls12"}}})
+    verify(selected, "standard", openssl_rsa=True, tls_openssl=True)
+    for bad in (selected, dict(selected, **{"openssl-src": {"3": set()}})):
+        try:
+            verify(bad, "standard")
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("accepted an unselected OpenSSL backend")
+
     full = copy.deepcopy(standard)
     full.update({"ariax-bt": {"0.1.0": {"libtorrent"}},
                  "ariax-bt-libtorrent-sys": {"0.1.0": {"native"}},
@@ -82,14 +107,18 @@ if __name__ == "__main__":
     if not args.self_test:
         cargo = ([str(args.cargo)] if args.cargo else ["cargo", f"+{args.rustup}"] if args.rustup
                  else [str(ROOT / "scripts/cargo-local.sh"), "linux"])
-        for bundle in ("minimal", "standard", "full", "compat"):
-            output = subprocess.check_output(cargo + ["tree", "--color", "never", "--locked", "-p", "ariax-cli", "--no-default-features", "--features", bundle,
+        variants = [(bundle, extra) for bundle in ("minimal", "standard", "full", "compat")
+                    for extra in ("", "sftp-openssl-rsa", "tls-openssl", "crypto-openssl")]
+        for bundle, extra in variants:
+            features = bundle + ("," + extra if extra else "")
+            output = subprocess.check_output(cargo + ["tree", "--color", "never", "--locked", "-p", "ariax-cli", "--no-default-features", "--features", features,
                 "--target", "all", "-e", "normal,build", "--prefix", "none", "--format", "{p}|{f}"], cwd=ROOT, text=True)
             graph = {}
             for line in output.splitlines():
                 match = re.fullmatch(r"(\S+) v(\S+)(?: \([^|]+\))?\|([^ ]*)(?: \(\*\))?", line)
                 assert match, f"unrecognized Cargo graph row: {line}"
-                name, version, features = match.groups()
-                graph.setdefault(name, {}).setdefault(version, set()).update(filter(None, features.split(",")))
-            verify(graph, bundle)
-            print(f"Verified {bundle}: bounded protocol forks and one ring TLS provider.")
+                name, version, resolved_features = match.groups()
+                graph.setdefault(name, {}).setdefault(version, set()).update(filter(None, resolved_features.split(",")))
+            verify(graph, bundle, openssl_rsa=bundle != "minimal" and extra in {"sftp-openssl-rsa", "crypto-openssl"},
+                   tls_openssl=extra in {"tls-openssl", "crypto-openssl"})
+            print(f"Verified {features}: bounded protocol forks and explicit crypto providers.")

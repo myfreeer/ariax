@@ -22,7 +22,6 @@ use bytes::Bytes;
 use cert::PublicKeyOrCertificate;
 use log::{debug, error, info, trace, warn};
 use msg;
-use signature::Verifier;
 use ssh_encoding::{Decode, Encode, Reader};
 use ssh_key::{PublicKey, Signature};
 use tokio::time::Instant;
@@ -771,7 +770,7 @@ impl Encrypted {
                             map_err!(session_id.encode(&mut *buf))?;
                             buf.extend_from_slice(sig_init_buffer);
 
-                            Ok(Verifier::verify(&pubkey, &buf, &sig).is_ok())
+                            Ok(crate::helpers::verify_signature(&pubkey, &buf, &sig).is_ok())
                         })? {
                             debug!("signature verified");
                             let auth = match pk_or_cert {

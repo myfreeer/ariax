@@ -91,6 +91,12 @@ fn native() {
     println!("cargo:rerun-if-changed=src/bridge.cc");
     println!("cargo:rerun-if-changed=include/bridge.h");
     println!("cargo:rerun-if-changed=include/bounded_output.h");
+    // The reviewed archives must precede compiler runtime search paths: MSYS2
+    // can also contain an unrelated, unpatched libtorrent/OpenSSL installation.
+    println!(
+        "cargo:rustc-link-search=native={}",
+        prefix.join("lib").display()
+    );
     let mut bridge = cxx_build::bridge("src/lib.rs");
     bridge
         .file("src/bridge.cc")
@@ -125,6 +131,35 @@ fn native() {
             .flag("/EHsc")
             .flag("/bigobj");
     }
+    if target.ends_with("windows-gnu") {
+        // Use the active MinGW compiler's archives, never Rust's bundled
+        // runtime. No redistributable runtime DLLs belong in CLI packages.
+        bridge
+            .cpp_link_stdlib("stdc++")
+            .cpp_link_stdlib_static(true);
+        // rustc bundles static dependencies into the rlib itself, before the
+        // final GCC link. It needs explicit paths to GCC's matching archives.
+        let compiler = bridge.get_compiler();
+        for archive in ["libstdc++.a", "libgcc_eh.a", "libwinpthread.a"] {
+            let output = compiler
+                .to_command()
+                .arg(format!("-print-file-name={archive}"))
+                .output()
+                .expect("query MinGW runtime archive");
+            assert!(output.status.success(), "cannot locate {archive}");
+            let path = String::from_utf8(output.stdout).expect("MinGW archive path is UTF-8");
+            let path = std::path::Path::new(path.trim());
+            assert!(
+                path.is_absolute() && path.is_file(),
+                "missing MinGW {archive}"
+            );
+            println!(
+                "cargo:rustc-link-search=native={}",
+                path.parent().unwrap().display()
+            );
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
     if sanitizer == "address" {
         bridge
             .flag("-fsanitize=address,undefined")
@@ -136,11 +171,11 @@ fn native() {
             .flag("-fno-omit-frame-pointer");
     }
     bridge.compile("ariax_bt_bridge");
-    println!(
-        "cargo:rustc-link-search=native={}",
-        prefix.join("lib").display()
-    );
     println!("cargo:rustc-link-lib=static=torrent-rasterbar");
+    if target.ends_with("windows-gnu") {
+        println!("cargo:rustc-link-lib=static=gcc_eh");
+        println!("cargo:rustc-link-lib=static=winpthread");
+    }
     if target.ends_with("msvc") {
         println!("cargo:rustc-link-lib=static=libssl");
         println!("cargo:rustc-link-lib=static=libcrypto");

@@ -55,7 +55,8 @@ def remap_flags(roots, windows):
     mappings.sort(key=lambda item: (len(item[0]), item[0]))
     rust = ['--remap-path-prefix=' + source + '=' + destination for source, destination in mappings]
     if windows:
-        rust += ['-C', 'link-self-contained=no', '-C', 'link-arg=-Wl,--no-insert-timestamp']
+        rust += ['-C', 'link-self-contained=no', '-C', 'link-arg=-static-libgcc',
+                 '-C', 'link-arg=-static-libstdc++', '-C', 'link-arg=-Wl,--no-insert-timestamp']
     native = ['-ffile-prefix-map=' + source + '=' + destination for source, destination in mappings]
     return {'rust': rust, 'native': native}
 
@@ -94,23 +95,34 @@ def option_rejected(result, stderr):
     return result['exitCode'] == 2 and 'unknown argument' in stderr
 
 
-def runtime_inventory(output, windows, bundle='minimal'):
+def bundle_features(bundle, crypto_backend):
+    require(bundle in rm.BUNDLES and crypto_backend in {'default', 'openssl'}, 'unknown build selection')
+    if crypto_backend == 'default':
+        return bundle
+    return bundle + (',tls-openssl' if bundle == 'minimal' else ',crypto-openssl')
+
+
+def runtime_inventory(output, windows, bundle='minimal', crypto_backend='default'):
     require(bundle in rm.BUNDLES, 'unknown bundle')
+    require(crypto_backend in {'default', 'openssl'}, 'unknown crypto backend')
     bt = bundle in {'full', 'compat'}
+    openssl = crypto_backend == 'openssl'
     if windows:
         libraries = sorted({value.lower() for value in re.findall(r'DLL Name:\s*(\S+)', output)})
         system = rm.WINDOWS_BT_SYSTEM if bt else rm.WINDOWS_SYSTEM
-        require(set(libraries) == system | ({'libstdc++-6.dll'} if bt else set()), 'unexpected Windows runtime imports')
-        return {'systemLibraries': sorted(system), 'additionalRuntimeFiles': rm.reviewed_runtime_files() if bt else []}
+        if openssl:
+            system = (system - {'bcrypt.dll'}) | {'user32.dll'}
+        require(set(libraries) == system, 'unexpected Windows runtime imports')
+        return {'systemLibraries': sorted(system), 'additionalRuntimeFiles': [], 'cryptoBackend': crypto_backend}
     libraries = sorted(set(re.findall(r'Shared library: \[([^\]]+)\]', output)))
     require(set(libraries) == (rm.LINUX_BT_SYSTEM if bt else rm.LINUX_SYSTEM), 'unexpected Linux runtime imports')
     versions = re.findall(r'GLIBC_([0-9.]+)', output)
     require(bool(versions), 'missing glibc version requirements')
     minimum = max(versions, key=lambda value: tuple(map(int, value.split('.'))))
     match = re.search(r'Requesting program interpreter: ([^\]]+)\]', output)
-    require(match is not None and match[1] == '/lib64/ld-linux-x86-64.so.2' and minimum == ('2.38' if bt else '2.34'),
+    require(match is not None and match[1] == '/lib64/ld-linux-x86-64.so.2' and minimum == ('2.38' if bt or openssl else '2.34'),
             'unexpected Linux loader or glibc requirement')
-    result = {'systemLibraries': libraries, 'additionalRuntimeFiles': [],
+    result = {'systemLibraries': libraries, 'additionalRuntimeFiles': [], 'cryptoBackend': crypto_backend,
               'minimumGlibc': minimum, 'interpreter': match[1]}
     if bt:
         versions = re.findall(r'GLIBCXX_([0-9.]+)', output)
@@ -121,7 +133,9 @@ def runtime_inventory(output, windows, bundle='minimal'):
 
 
 def source_hashes(root):
-    names = subprocess.check_output(['git', 'ls-files', '-z'], cwd=root).decode().split('\0')
+    names = subprocess.check_output(
+        ['git', 'ls-files', '--cached', '--others', '--exclude-standard', '-z'], cwd=root
+    ).decode().split('\0')
     selected = [name for name in names if name and (name.startswith((
         'crates/', 'bin/', 'vendor/', 'native/', 'assets/', 'compat/', 'generated/', '.cargo/'))
         or name in {'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml'})]
@@ -176,9 +190,12 @@ def prepare(args, root=ROOT):
     require(windows or sys.platform == 'linux', 'only native Linux and Windows-GNU are supported')
     target = WINDOWS if windows else LINUX
     bundles = getattr(args, 'bundles', ['minimal', 'standard'])
+    crypto_backend = getattr(args, 'crypto_backend', 'default')
+    require(crypto_backend in {'default', 'openssl'}, 'unknown crypto backend')
     require(bundles and len(bundles) == len(set(bundles)) and set(bundles) <= rm.BUNDLES, 'invalid bundle set')
     native = getattr(args, 'native_dir', None)
-    require(bool(native) == bool(set(bundles) & {'full', 'compat'}), 'full/compat require an explicit native installation')
+    require(bool(native) == (bool(set(bundles) & {'full', 'compat'}) or crypto_backend == 'openssl'),
+            'full/compat and OpenSSL builds require an explicit native installation')
     require(args.output.is_absolute() and args.toolchain.is_absolute() and args.cargo_home.is_absolute(),
             'absolute output, toolchain and Cargo-home paths required')
     require(args.cargo_home.is_dir() and args.toolchain.is_dir(), 'existing toolchain and cache required')
@@ -214,12 +231,16 @@ def prepare(args, root=ROOT):
                     'cache directory identity mismatch')
             roots[key] = str(path)
     reference = json.loads(read_utf8(args.compare_record)) if args.compare_record else None
+    for prior in (reference, previous):
+        if prior:
+            require(prior.get('cryptoBackend', 'default') == crypto_backend, 'crypto backend comparison drift')
     epoch = comparison_reference(reference, target, source_hashes(root), bundles) if reference else subprocess.check_output(
         ['git', 'show', '-s', '--format=%ct', 'HEAD'], cwd=root).decode().strip()
     env, flags = build_environment(os.environ, roots, args.toolchain, windows, epoch)
     if native:
-        require(native_manifest['inputs']['releasePaths']['sourceDateEpoch'] == epoch, 'native release epoch drift')
         env.update(ARIAX_BT_NATIVE_DIR=str(native), ARIAX_BT_SANITIZER='none')
+        if crypto_backend == 'openssl':
+            env.update(OPENSSL_DIR=str(native), OPENSSL_STATIC='1')
     if reference:
         require(comparison_flags(flags) == comparison_flags(reference['flags']), 'reference build option drift')
     if previous:
@@ -229,6 +250,7 @@ def prepare(args, root=ROOT):
     if not previous:
         (args.output / 'tmp').mkdir()
     record = {'schema': 1, 'passed': False, 'releaseApproved': False, 'target': target,
+              'cryptoBackend': crypto_backend,
               'sourceCommit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root).decode().strip(),
               'sourceHashes': source_hashes(root), 'flags': flags, 'sourceDateEpoch': epoch,
               'environment': {key: env[key] for key in ('RUSTC', 'RUSTDOC', 'CARGO_HOME', 'CARGO_TARGET_DIR',
@@ -238,6 +260,8 @@ def prepare(args, root=ROOT):
         record['nativeManifestSha256'] = h.digest(native / 'ariax-native.json')
         record['nativeComparison'] = native_comparison(native_manifest)
         record['environment'].update(ARIAX_BT_NATIVE_DIR=str(native), ARIAX_BT_SANITIZER='none')
+        if crypto_backend == 'openssl':
+            record['environment'].update(OPENSSL_DIR=str(native), OPENSSL_STATIC='1')
         if reference:
             require(record['nativeComparison'] == reference.get('nativeComparison'), 'native reference drift')
     suffix = '.exe' if windows else ''
@@ -271,11 +295,11 @@ def prepare(args, root=ROOT):
                         record['nativeCompiler']['binarySha256'] == prior['nativeCompiler']['binarySha256'],
                         'compiler identity drift')
         for bundle in bundles:
-            item = {'bundle': bundle}
+            item = {'bundle': bundle, 'features': bundle_features(bundle, crypto_backend)}
             record['builds'].append(item)
             h.save(args.output / 'result.json', record)
             command = [cargo, 'build', '--locked', '--offline', '-p', 'ariax-cli',
-                       '--no-default-features', '--features', bundle, '--profile', 'release-cli']
+                       '--no-default-features', '--features', item['features'], '--profile', 'release-cli']
             item['build'] = checked(command, bundle + '/build', timeout=args.build_timeout)
             binary = args.output / bundle / ('ariax' + suffix)
             shutil.copyfile(Path(roots['target']) / 'release-cli' / binary.name, binary)
@@ -293,7 +317,8 @@ def prepare(args, root=ROOT):
             inspection = ['objdump', '-p', str(binary)] if windows else [
                 'readelf', '-l', '-d', '--version-info', str(binary)]
             item['inspection'] = checked(inspection, bundle + '/imports')
-            item['runtime'] = runtime_inventory(read_utf8(args.output / bundle / 'imports/stdout.log'), windows, bundle)
+            item['runtime'] = runtime_inventory(
+                read_utf8(args.output / bundle / 'imports/stdout.log'), windows, bundle, crypto_backend)
             item['help'] = checked([binary, '--help'], bundle + '/help')
             require('Usage: ariax' in read_utf8(args.output / bundle / 'help/stdout.log'), 'missing help output')
             item['rejection'] = h.run([binary, '--ariax-intentionally-invalid-option'],
@@ -326,6 +351,7 @@ def main():
     parser.add_argument('--cargo-home', type=Path, required=True, help='existing offline Cargo cache')
     parser.add_argument('--output', type=Path, required=True, help='fresh absolute directory on the temporary volume')
     parser.add_argument('--bundles', nargs='+', choices=sorted(rm.BUNDLES), default=['minimal', 'standard'])
+    parser.add_argument('--crypto-backend', choices=('default', 'openssl'), default='default')
     parser.add_argument('--native-dir', type=Path, help='verified release-path native installation for full/compat')
     parser.add_argument('--prune-target', action='store_true')
     parser.add_argument('--reuse-cache', type=Path, help='prior preparation directory with identical compiled inputs and flags')

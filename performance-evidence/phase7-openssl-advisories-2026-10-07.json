@@ -1,0 +1,126 @@
+{
+  "schema": 1,
+  "scope": "Delta review of the six added Rust packages; not a replacement for a full release advisory scan. Native OpenSSL 3.6.5 retains the prior source review.",
+  "databaseCommit": "ef6173cbc5c50ec8166f9a5b28f07834144373ee",
+  "databaseCommitTime": "2026-10-03T10:14:03+02:00",
+  "packages": [
+    {
+      "package": "openssl",
+      "version": "0.10.81",
+      "advisories": [
+        {
+          "id": "RUSTSEC-2016-0001",
+          "patched": [
+            ">= 0.9.0"
+          ],
+          "status": "selected version is in patched range",
+          "sourceSha256": "29b4ce151f119045242cf9b55fe567b883db48e61c2d02d623dd0c82961f34d5"
+        },
+        {
+          "id": "RUSTSEC-2018-0010",
+          "patched": [
+            ">= 0.10.9"
+          ],
+          "status": "selected version is in patched range",
+          "sourceSha256": "5475a06d2ab0590a60aa72ef49c112e44b48dc9a0f78606b804bce95be0f76f9"
+        },
+        {
+          "id": "RUSTSEC-2023-0022",
+          "patched": [
+            ">= 0.10.48"
+          ],
+          "status": "selected version is in patched range",
+          "sourceSha256": "efc9ac3046838dfc5027e2a896f4364746c7d326ba76b5aa7bedfd287bf3892e"
+        },
+        {
+          "id": "RUSTSEC-2023-0023",
+          "patched": [
+            ">= 0.10.48"
+          ],
+          "status": "selected version is in patched range",
+          "sourceSha256": "54e71224e4fcd4bb1436dc225ef7ac07f0897c789bd068c7bd8b32e1528f0509"
+        },
+        {
+          "id": "RUSTSEC-2023-0024",
+          "patched": [
+            ">= 0.10.48"
+          ],
+          "status": "selected version is in patched range",
+          "sourceSha256": "ccb87123c00772736129ec8d6cec0a10d7ca60e405d5e586d0daba9de6d4d54c"
+        },
+        {
+          "id": "RUSTSEC-2023-0044",
+          "patched": [
+            ">= 0.10.55"
+          ],
+          "status": "selected version is in patched range",
+          "sourceSha256": "f1efabc56862d52fbdb330c1786070b757b53fdb49de5cbeb193e6c6351d2de0"
+        },
+        {
+          "id": "RUSTSEC-2023-0072",
+          "patched": [
+            ">= 0.10.60"
+          ],
+          "status": "selected version is in patched range",
+          "sourceSha256": "83cf116cd6418f520bdc2530432a4db5a315b71b9864c5d1de84386620df3597"
+        },
+        {
+          "id": "RUSTSEC-2024-0357",
+          "patched": [
+            ">= 0.10.66"
+          ],
+          "status": "selected version is in patched range",
+          "sourceSha256": "0115736b47f39bbab1238cef3b1d5cb96dd203810bf946e5303a6cd3b7de9e88"
+        },
+        {
+          "id": "RUSTSEC-2025-0004",
+          "patched": [
+            ">= 0.10.70"
+          ],
+          "status": "selected version is in patched range",
+          "sourceSha256": "a2f06b904d63fe87c42f576f5c4e7da761b8598c4ece1990217ffd5d79c93296"
+        },
+        {
+          "id": "RUSTSEC-2025-0022",
+          "patched": [
+            ">= 0.10.72"
+          ],
+          "status": "selected version is in patched range",
+          "sourceSha256": "1cc11e4d1d3d006afe0820ecd1e31adf76144e440f1f68198e5a0e109b3396ac"
+        }
+      ],
+      "result": "no matching affected range in this database"
+    },
+    {
+      "package": "openssl-sys",
+      "version": "0.9.117",
+      "advisories": [],
+      "result": "no matching affected range in this database"
+    },
+    {
+      "package": "openssl-macros",
+      "version": "0.1.1",
+      "advisories": [],
+      "result": "no matching affected range in this database"
+    },
+    {
+      "package": "rustls-openssl",
+      "version": "0.4.2",
+      "advisories": [],
+      "result": "no matching affected range in this database"
+    },
+    {
+      "package": "foreign-types",
+      "version": "0.3.2",
+      "advisories": [],
+      "result": "no matching affected range in this database"
+    },
+    {
+      "package": "foreign-types-shared",
+      "version": "0.1.1",
+      "advisories": [],
+      "result": "no matching affected range in this database"
+    }
+  ],
+  "rsa": "RUSTSEC-2023-0071 remains visible. OpenSSL-selected SSH private-key authentication avoids RustCrypto signing; retained RustCrypto key-format and certificate verification dependencies prevent advisory removal. No timing proof is claimed."
+}

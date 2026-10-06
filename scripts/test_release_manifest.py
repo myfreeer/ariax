@@ -13,16 +13,36 @@ import release_manifest as rm
 class ReleaseManifestTests(unittest.TestCase):
     def setUp(self):
         self.catalog = json.loads((rm.ROOT / rm.CATALOG).read_text())
+        self.catalog['packages'] = [p for p in self.catalog['packages']
+                                    if p.get('cryptoBackend', 'default') == 'default']
         # Keep synthetic staging fixtures small; real full/compat identities are
         # checked by the catalog test and their runtime contract below.
         for package in self.catalog['packages']:
             if package['bundle'] in {'full', 'compat'}:
                 package.update(status='planned', binary=None, runtime=None, remaining=['fixture'])
+            else:
+                package['status'] = 'draft-retained'
 
     def test_all_eight_plans_validate_without_requiring_unbuilt_artifacts(self):
         catalog = json.loads((rm.ROOT / rm.CATALOG).read_text())
         rm.validate(catalog)
-        self.assertEqual(len(catalog['packages']), 8)
+        self.assertEqual(sum(p.get('cryptoBackend', 'default') == 'default'
+                             for p in catalog['packages']), 8)
+
+    def test_removed_validation_records_never_stage_or_require_deleted_binaries(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.fixture_artifacts(root)
+            package = self.catalog['packages'][0]
+            package.update(status='validated-removed', retention={
+                'binaryPresent': False, 'validationEvidence': 'reviewed result'})
+            (root / package['binary']['artifactPath']).unlink()
+            result = rm.stage(self.catalog, root, root / 'staged')
+            self.assertNotIn(package['id'], result['staged'])
+            self.assertFalse((root / 'staged' / package['id']).exists())
+            package['retention'] = {}
+            with self.assertRaisesRegex(ValueError, 'removed-artifact evidence'):
+                rm.validate(self.catalog)
 
     def test_safe_paths_reject_traversal_windows_aliases_and_reserved_names(self):
         self.assertEqual(rm.relative('runtime/libstdc++-6.dll').name, 'libstdc++-6.dll')
@@ -67,7 +87,7 @@ class ReleaseManifestTests(unittest.TestCase):
 
     def test_explicit_inventory_binds_lock_and_packaged_notice_collection(self):
         catalog = copy.deepcopy(self.catalog)
-        source = 'performance-evidence/phase7-release-license-inventory-2026-10-06.json'
+        source = self.catalog['noticeInventorySource']
         inventory = json.loads((rm.ROOT / source).read_text())
         catalog.update(noticeInventorySource=source,
                        noticeInventorySha256=rm.digest(rm.ROOT / source),
@@ -127,18 +147,17 @@ class ReleaseManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'planned package'):
             rm.validate(self.catalog)
 
-    def test_full_runtime_review_rejects_missing_closure_collisions_and_changes(self):
-        files = rm.reviewed_runtime_files()
-        runtime = {'systemLibraries': sorted(rm.WINDOWS_BT_SYSTEM), 'additionalRuntimeFiles': files}
-        names = {'licenses/' + name.casefold() for name in rm.WINDOWS_NOTICES}
-        rm.validate_runtime(runtime, True, 'full', set(names))
-        for modified in (files[:-1], [dict(files[0], sha256='0' * 64), *files[1:]]):
-            with self.assertRaisesRegex(ValueError, 'matching review'):
-                rm.validate_runtime(dict(runtime, additionalRuntimeFiles=modified), True, 'full', set(names))
-        with self.assertRaisesRegex(ValueError, 'collision'):
-            rm.validate_runtime(runtime, True, 'compat', names | {'libstdc++-6.dll'})
-        with self.assertRaisesRegex(ValueError, 'missing redistributed'):
-            rm.validate_runtime(runtime, True, 'full', set())
+    def test_windows_runtime_review_rejects_all_non_system_dlls(self):
+        runtime = {'systemLibraries': sorted(rm.WINDOWS_BT_SYSTEM), 'additionalRuntimeFiles': []}
+        rm.validate_runtime(runtime, True, 'full', set())
+        self.assertEqual(rm.reviewed_runtime_files(), [])
+        for name in ('libstdc++-6.dll', 'libgcc_s_seh-1.dll', 'libwinpthread-1.dll', 'libcrypto-3-x64.dll'):
+            with self.assertRaisesRegex(ValueError, 'forbidden'):
+                rm.validate_runtime(dict(runtime, additionalRuntimeFiles=[{'destination': name}]),
+                                    True, 'full', set())
+            with self.assertRaisesRegex(ValueError, 'runtime dependency'):
+                rm.validate_runtime(dict(runtime, systemLibraries=runtime['systemLibraries'] + [name]),
+                                    True, 'full', set())
 
     def fixture_artifacts(self, root):
         # Synthetic bytes test the copy/manifest contract; never execute them.
@@ -183,32 +202,15 @@ class ReleaseManifestTests(unittest.TestCase):
                 rm.stage(self.catalog, root, output)
             self.assertFalse(output.exists())
 
-    def test_staging_copies_the_reviewed_runtime_and_rejects_missing_or_modified_bytes(self):
+    def test_staging_rejects_runtime_dlls_before_writing_packages(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             self.fixture_artifacts(root)
-            template = next(p for p in self.catalog['packages'] if p['target'].endswith('windows-gnu') and p['binary'])
-            full = next(p for p in self.catalog['packages'] if p['target'].endswith('windows-gnu') and p['bundle'] == 'full')
-            full.update(status='draft-retained', binary=copy.deepcopy(template['binary']))
-            files = rm.reviewed_runtime_files()
-            for item in files:
-                path = root / item['artifactPath']; path.parent.mkdir(exist_ok=True)
-                path.write_bytes(item['destination'].encode())
-                item.update(bytes=path.stat().st_size, sha256=rm.digest(path))
-            full['runtime'] = {'systemLibraries': sorted(rm.WINDOWS_BT_SYSTEM), 'additionalRuntimeFiles': files}
-            with patch.object(rm, 'reviewed_runtime_files', return_value=files):
-                output = root / 'staged'
-                rm.stage(self.catalog, root, output)
-                for item in files:
-                    self.assertEqual(rm.digest(output / full['id'] / item['destination']), item['sha256'])
-                path = root / files[0]['artifactPath']; path.write_bytes(b'changed')
-                with self.assertRaisesRegex(ValueError, 'hash or size'):
-                    rm.stage(self.catalog, root, root / 'modified')
-                self.assertFalse((root / 'modified').exists())
-                path.unlink()
-                with self.assertRaisesRegex(ValueError, 'missing'):
-                    rm.stage(self.catalog, root, root / 'missing')
-                self.assertFalse((root / 'missing').exists())
+            package = next(p for p in self.catalog['packages'] if p['target'].endswith('windows-gnu') and p['binary'])
+            package['runtime']['additionalRuntimeFiles'] = [{'destination': 'libstdc++-6.dll'}]
+            with self.assertRaisesRegex(ValueError, 'forbidden'):
+                rm.stage(self.catalog, root, root / 'staged')
+            self.assertFalse((root / 'staged').exists())
 
     def test_dependency_paths_are_reported_and_cannot_be_hidden_in_the_manifest(self):
         with tempfile.TemporaryDirectory() as temporary:

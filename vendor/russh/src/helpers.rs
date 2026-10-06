@@ -179,10 +179,26 @@ pub fn sign_with_hash_alg(key: &PrivateKeyWithHashAlg, data: &[u8]) -> ssh_key::
             let ssh_key::Algorithm::Rsa { hash } = key.algorithm() else {
                 unreachable!();
             };
-            signature::Signer::try_sign(&(rsa_keypair, hash), data)?.encoded()?
+            #[cfg(feature = "openssl-rsa")]
+            let signature = crate::openssl_rsa::sign(rsa_keypair, hash, data)?;
+            #[cfg(not(feature = "openssl-rsa"))]
+            let signature = signature::Signer::try_sign(&(rsa_keypair, hash), data)?;
+            signature.encoded()?
         }
         keypair => signature::Signer::try_sign(keypair, data)?.encoded()?,
     })
+}
+
+pub(crate) fn verify_signature(
+    key: &ssh_key::PublicKey,
+    data: &[u8],
+    signature: &ssh_key::Signature,
+) -> ssh_key::Result<()> {
+    #[cfg(feature = "openssl-rsa")]
+    if let ssh_key::public::KeyData::Rsa(rsa) = key.key_data() {
+        return crate::openssl_rsa::verify(rsa, data, signature);
+    }
+    signature::Verifier::verify(key, data, signature).map_err(Into::into)
 }
 
 mod algorithm {

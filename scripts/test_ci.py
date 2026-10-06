@@ -143,6 +143,7 @@ class NativeCacheTests(unittest.TestCase):
             with self.subTest(fail=fail), tempfile.TemporaryDirectory() as temporary:
                 environment = Path(temporary) / "github-env"
                 runner = mock.Mock()
+                runner.env = {}
                 runner.tool.return_value = Path("rustc")
                 runner.run.side_effect = ["host: x86_64-unknown-linux-gnu\n", "",
                     RuntimeError("verification failed") if fail else ""]
@@ -151,9 +152,11 @@ class NativeCacheTests(unittest.TestCase):
                         with self.assertRaisesRegex(RuntimeError, "verification failed"):
                             ci.provision_bt(runner)
                         self.assertFalse(environment.exists())
+                        self.assertEqual(runner.env, {})
                     else:
-                        ci.provision_bt(runner)
+                        prefix = ci.provision_bt(runner)
                         self.assertEqual(environment.read_text(), "ARIAX_BT_NATIVE_VERIFIED=1\n")
+                        self.assertEqual(runner.env, {"OPENSSL_DIR": str(prefix), "OPENSSL_STATIC": "1"})
 
     def test_cached_only_verifies_once_and_never_falls_back_to_building(self):
         for fail, sanitizer in ((False, "none"), (True, "none"), (False, "address"), (True, "address")):

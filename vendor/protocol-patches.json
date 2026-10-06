@@ -440,12 +440,12 @@
           "sha256": "fe01989c50dacb815d8d4885ba77da5998c9a9d172247b269ec0f21477311183"
         },
         "Cargo.toml": {
-          "bytes": 7622,
-          "sha256": "83a5ecbecc44142f90011549e4ead8cb6bc683f8982600760f599c885548af4f"
+          "bytes": 7745,
+          "sha256": "da6760e95a1b3f5bb0c569eb3e7b10c53ded4a52b0c91bdc4bebacea4174a482"
         },
         "Cargo.toml.orig": {
-          "bytes": 4736,
-          "sha256": "301682c53440b53b65b1d904b6443f52c4cc65072a145ca21beece34ccf6c612"
+          "bytes": 4904,
+          "sha256": "e73e364ea3628188e7c69e6c9b6bae489648526504ace33f7b75659872599ebf"
         },
         "LICENSE.txt": {
           "bytes": 11358,
@@ -556,12 +556,12 @@
           "sha256": "5793fb7f08d3494517c74264179adf78872ae8bdc5c7cedc8ed69f4a6cce52ec"
         },
         "src/client/encrypted.rs": {
-          "bytes": 53634,
-          "sha256": "e33dce41ff235c406663dddca93dbd7c4f850e07d7279d3e440adbcaafbc9fa4"
+          "bytes": 53760,
+          "sha256": "ebea7eb678fb45a707b626cf30dc450d34a1026bd03db050ec58a94369288d3e"
         },
         "src/client/kex.rs": {
-          "bytes": 13469,
-          "sha256": "4f540d935df565b1a1994784cee88186ae7b9b7fe4cd8ff68b771599d8d8b460"
+          "bytes": 13474,
+          "sha256": "c3e20a65b2ed340e822f0212a58069c8d0fc2ea3fd4c4661e03828607cd6db4d"
         },
         "src/client/mod.rs": {
           "bytes": 91112,
@@ -580,8 +580,8 @@
           "sha256": "774b59e33ff0746e2898d896074bcf800ab167f7174750c20ddfca69ada03c2c"
         },
         "src/helpers.rs": {
-          "bytes": 6776,
-          "sha256": "e92055a34871f714c284f85c9d38491c87e74ee18a047db263488032f1d19821"
+          "bytes": 7379,
+          "sha256": "1d9fea9558a7c3074ac0df56f580c09ca2e9ab675041f011c3e6d67479f08fd0"
         },
         "src/kex/curve25519.rs": {
           "bytes": 5708,
@@ -668,8 +668,8 @@
           "sha256": "8398c8b25509efa7d56b8577ec9c46e27f8ab9b20ac0f2068e7390ddfad883a9"
         },
         "src/lib_inner.rs": {
-          "bytes": 16628,
-          "sha256": "fc87e04485e357e249340fe08c5362356da32dac59b82344865a955ba4b18d14"
+          "bytes": 16678,
+          "sha256": "0ae8784001156791974ad620d1721c39a33013f8f88f4ec308ee1b1b0e658889"
         },
         "src/mac/crypto.rs": {
           "bytes": 2011,
@@ -695,6 +695,10 @@
           "bytes": 18864,
           "sha256": "fbafc312dda74641c1cde8efff22c536ccfcb1130033af5b9ace4dfbb7b2bc36"
         },
+        "src/openssl_rsa.rs": {
+          "bytes": 6875,
+          "sha256": "407b8910589afb8b6b6d4382337697218da5d3ae42ba1ad6615007b5b249d620"
+        },
         "src/parsing.rs": {
           "bytes": 8069,
           "sha256": "8d1fada82c271ff3165b4ce3328440e9f4cd02e28e1074ef60cf66d803e5fb5b"
@@ -704,8 +708,8 @@
           "sha256": "db018a9139923b907999fb9870aad0e9bc93fe03d11b65752f3f08fe63c4eb3b"
         },
         "src/server/encrypted.rs": {
-          "bytes": 69162,
-          "sha256": "5beab9bc7b1ed51f31ecc1e6c5f0c51c493a47ae58eed0543cb567ed4a536605"
+          "bytes": 69153,
+          "sha256": "5d4b90ede2ad4b4e566dc50435d3ac6e4f9777c06d8f21ae59f22c4637295946"
         },
         "src/server/kex.rs": {
           "bytes": 13266,
@@ -765,8 +769,8 @@
         }
       },
       "name": "russh",
-      "patch_sha256": "907c8ccbf3016b25919b8f817ee52d2f78aae7ab9ed38bba9eac22571041c97e",
-      "patched_tree_sha256": "791793f22c53e8a43f4a5264891cfe5d5450fb14d0323f52ae8e28ae634d7074",
+      "patch_sha256": "78ae988fb6b22e3b05bb58333df02c758c6695c6ed2b770063a5237cf47d5cb8",
+      "patched_tree_sha256": "b5252b1f2b1fbb956d7e08aae0bd89505bebe1850841581314e8b15fe3ad6a06",
       "upstream_manifest_sha256": "f9b761195da4146ad74d88158f8d1838fc03969f50ad202054dd0551c93eac1b",
       "upstream_vcs": {
         "git": {

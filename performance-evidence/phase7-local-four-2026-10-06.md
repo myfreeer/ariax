@@ -383,7 +383,8 @@ stays visible with no ignore entry pending a supported disposition. Pageant's
 Windows named-pipe client and does not invoke that shared-memory path.
 Research responses are retained under `advisories/remaining-research`.
 
-Raw evidence is under `/mnt/f/temp/ariax/phase7-local-four-20261006`.
-Unique artifacts and failures remain retained. Native Linux timing/kernel
+The historical raw root was `${LOCAL_TMP}/phase7-local-four-20261006`.
+It was removed during the requested cleanup; final useful reports and selected
+unresolved failures remain under `${LOCAL_TMP}/results`. Native Linux timing/kernel
 coverage, fully instrumented Rust TSan, other platforms, fresh/minimum OS and
 physical power-loss acceptance remain separate gates.

@@ -9,6 +9,29 @@ import release_build as rb
 
 
 class ReleaseBuildTests(unittest.TestCase):
+    def test_explicit_crypto_selection_preserves_bundle_boundaries(self):
+        self.assertEqual(rb.bundle_features('minimal', 'openssl'), 'minimal,tls-openssl')
+        for bundle in ('standard', 'full', 'compat'):
+            self.assertEqual(rb.bundle_features(bundle, 'openssl'), bundle + ',crypto-openssl')
+            self.assertEqual(rb.bundle_features(bundle, 'default'), bundle)
+        for bundle, backend in (('unknown', 'default'), ('full', 'native-tls')):
+            with self.assertRaises(ValueError):
+                rb.bundle_features(bundle, backend)
+
+    def test_openssl_windows_imports_exclude_the_unused_ring_random_provider(self):
+        libraries = rb.rm.WINDOWS_BT_SYSTEM - {'bcrypt.dll'}
+        output = '\n'.join('DLL Name: ' + name for name in libraries)
+        runtime = rb.runtime_inventory(output, True, 'full', 'openssl')
+        self.assertEqual(runtime['cryptoBackend'], 'openssl')
+        rb.rm.validate_runtime(runtime, True, 'full', set())
+        minimal = (rb.rm.WINDOWS_SYSTEM - {'bcrypt.dll'}) | {'user32.dll'}
+        minimal_output = '\n'.join('DLL Name: ' + name for name in minimal)
+        minimal_runtime = rb.runtime_inventory(minimal_output, True, 'minimal', 'openssl')
+        rb.rm.validate_runtime(minimal_runtime, True, 'minimal', set())
+        for extra in ('bcrypt.dll', 'libcrypto-3-x64.dll', 'libstdc++-6.dll'):
+            with self.assertRaises(ValueError):
+                rb.runtime_inventory(output + '\nDLL Name: ' + extra, True, 'full', 'openssl')
+
     def roots(self, windows=False):
         base = 'E:/build space/' if windows else '/build space/'
         return {name: base + name for name in ('repo', 'cargo', 'target', 'temp')}
@@ -38,7 +61,9 @@ class ReleaseBuildTests(unittest.TestCase):
         backslash_roots = {key: value.replace('/', '\\') for key, value in self.roots(True).items()}
         self.assertEqual(rb.remap_flags(backslash_roots, True), flags)
         self.assertEqual(shlex.split(shlex.join(flags['native'])), flags['native'])
-        self.assertEqual(flags['rust'][-4:], ['-C', 'link-self-contained=no',
+        self.assertEqual(flags['rust'][-8:], ['-C', 'link-self-contained=no',
+                                        '-C', 'link-arg=-static-libgcc',
+                                        '-C', 'link-arg=-static-libstdc++',
                                             '-C', 'link-arg=-Wl,--no-insert-timestamp'])
 
     def test_more_specific_roots_follow_broad_roots(self):
@@ -73,9 +98,11 @@ class ReleaseBuildTests(unittest.TestCase):
             rb.native_comparison(second)
 
     def test_full_runtime_inventory_requires_exact_platform_imports_and_versions(self):
-        output = '\n'.join('DLL Name: ' + name for name in rb.rm.WINDOWS_BT_SYSTEM | {'libstdc++-6.dll'})
-        self.assertEqual({r['destination'] for r in rb.runtime_inventory(output, True, 'full')['additionalRuntimeFiles']},
-                         rb.rm.WINDOWS_BT_RUNTIME)
+        output = '\n'.join('DLL Name: ' + name for name in rb.rm.WINDOWS_BT_SYSTEM)
+        self.assertEqual(rb.runtime_inventory(output, True, 'full')['additionalRuntimeFiles'], [])
+        for name in ('libstdc++-6.dll', 'libgcc_s_seh-1.dll', 'libwinpthread-1.dll'):
+            with self.assertRaises(ValueError):
+                rb.runtime_inventory(output + '\nDLL Name: ' + name, True, 'full')
         with self.assertRaises(ValueError):
             rb.runtime_inventory(output + '\nDLL Name: unexpected.dll', True, 'full')
         output = '\n'.join('Shared library: [' + name + ']' for name in rb.rm.LINUX_BT_SYSTEM)

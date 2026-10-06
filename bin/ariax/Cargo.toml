@@ -16,6 +16,9 @@ minimal = ["ariax-engine/metalink"]
 standard = ["minimal", "ariax-engine/ftp", "ariax-engine/sftp"]
 full = ["standard", "ariax-engine/bt"]
 compat = ["full"]
+sftp-openssl-rsa = ["ariax-engine/sftp-openssl-rsa"]
+tls-openssl = ["ariax-engine/tls-openssl"]
+crypto-openssl = ["tls-openssl", "sftp-openssl-rsa"]
 
 [dependencies]
 ariax-config.workspace = true

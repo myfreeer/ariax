@@ -1,3 +1,43 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -46,6 +46,7 @@
+ dsa = ["ssh-key/dsa"]
+ legacy-ed25519-pkcs8-parser = ["yasna"]
+ ring = ["dep:ring"]
++openssl-rsa = ["rsa", "dep:openssl"]
+ rsa = [
+     "dep:rsa",
+     "dep:pkcs1",
+@@ -301,6 +302,11 @@
+ [dependencies.rsa]
+ version = "=0.10.0-rc.18"
+ optional = true
++
++[dependencies.openssl]
++version = "=0.10.81"
++optional = true
++default-features = false
+ 
+ [dependencies.russh-cryptovec]
+ version = "0.62.0"
+--- a/Cargo.toml.orig
++++ b/Cargo.toml.orig
+@@ -23,6 +23,7 @@
+ # Danger: DSA algorithm is insecure.
+ dsa = ["ssh-key/dsa"]
+ ring = ["dep:ring"] # Alternative crypto backend.
++openssl-rsa = ["rsa", "dep:openssl"] # RSA operations only; ring still supplies SSH AEAD.
+ rsa = ["dep:rsa", "dep:pkcs1", "ssh-key/rsa"]
+ serde = ["ssh-key/serde"]
+ _bench = ["dep:criterion"]
+@@ -80,6 +81,7 @@
+ rand.workspace = true
+ ring = { version = "0.17.14", optional = true }
+ rsa = { version = "=0.10.0-rc.18", optional = true }
++openssl = { version = "=0.10.81", optional = true, default-features = false }
+ russh-cryptovec = { version = "0.62.0", path = "../cryptovec", features = [
+   "ssh-encoding",
+ ] }
 --- /dev/null
 +++ b/LICENSE.txt
 @@ -0,0 +1,202 @@
@@ -205,7 +245,24 @@
 +   limitations under the License.
 --- a/src/client/encrypted.rs
 +++ b/src/client/encrypted.rs
-@@ -405,6 +405,9 @@
+@@ -13,7 +13,6 @@
+ // limitations under the License.
+ //
+ use std::convert::TryInto;
+-use std::ops::Deref;
+ use std::str::FromStr;
+ 
+ use bytes::Bytes;
+@@ -25,7 +24,7 @@
+ use crate::auth::AuthRequest;
+ use crate::cert::PublicKeyOrCertificate;
+ use crate::client::{ChannelOpenHandle, Handler, Msg, Prompt, Reply, Session};
+-use crate::helpers::{AlgorithmExt, EncodedExt, NameList, sign_with_hash_alg};
++use crate::helpers::{AlgorithmExt, NameList, sign_with_hash_alg};
+ use crate::keys::key::parse_public_key;
+ use crate::parsing::{ChannelOpenConfirmation, ChannelType, OpenChannelMessage, ensure_end};
+ use crate::session::{Encrypted, EncryptedState, GlobalRequestResponse};
+@@ -405,6 +404,9 @@
                  debug!("channel_close");
                  let channel_num = map_err!(ChannelId::decode(&mut r))?;
                  map_err!(ensure_end(&r))?;
@@ -215,7 +272,7 @@
                  if let Some(ref mut enc) = self.common.encrypted {
                      // The CHANNEL_CLOSE message must be sent to the server at this point or the session
                      // will not be released.
-@@ -423,6 +426,9 @@
+@@ -423,6 +425,9 @@
                  debug!("channel_eof");
                  let channel_num = map_err!(ChannelId::decode(&mut r))?;
                  map_err!(ensure_end(&r))?;
@@ -225,7 +282,7 @@
                  if let Some(chan) = self.channels.get(&channel_num) {
                      let _ = chan.send(ChannelMsg::Eof).await;
                  }
-@@ -436,8 +442,16 @@
+@@ -436,8 +441,16 @@
                  let descr = map_err!(String::decode(&mut r))?;
                  let language = map_err!(String::decode(&mut r))?;
                  map_err!(ensure_end(&r))?;
@@ -244,7 +301,7 @@
                  }
  
                  if let Some(sender) = self.channels.remove(&channel_num) {
-@@ -455,6 +469,9 @@
+@@ -455,6 +468,9 @@
                  let channel_num = map_err!(ChannelId::decode(&mut r))?;
                  let data = map_err!(Bytes::decode(&mut r))?;
                  map_err!(ensure_end(&r))?;
@@ -254,7 +311,7 @@
                  let target = self.common.config.window_size;
                  if let Some(ref mut enc) = self.common.encrypted {
                      if enc.adjust_window_size(channel_num, &data, target)? {
-@@ -478,6 +495,9 @@
+@@ -478,6 +494,9 @@
                  let extended_code = map_err!(u32::decode(&mut r))?;
                  let data = map_err!(Bytes::decode(&mut r))?;
                  map_err!(ensure_end(&r))?;
@@ -264,7 +321,7 @@
                  let target = self.common.config.window_size;
                  if let Some(ref mut enc) = self.common.encrypted {
                      if enc.adjust_window_size(channel_num, &data, target)? {
-@@ -506,6 +526,9 @@
+@@ -506,6 +525,9 @@
                  let channel_num = map_err!(ChannelId::decode(&mut r))?;
                  let req = map_err!(String::decode(&mut r))?;
                  debug!("channel_request: {channel_num:?} {req:?}",);
@@ -274,7 +331,7 @@
                  match req.as_str() {
                      "xon-xoff" => {
                          map_err!(u8::decode(&mut r))?; // should be 0.
-@@ -595,6 +618,9 @@
+@@ -595,6 +617,9 @@
                  let channel_num = map_err!(ChannelId::decode(&mut r))?;
                  let amount = map_err!(u32::decode(&mut r))?;
                  map_err!(ensure_end(&r))?;
@@ -284,7 +341,7 @@
                  let mut new_size = 0;
                  debug!("channel_window_adjust amount: {amount:?}");
                  if let Some(ref mut enc) = self.common.encrypted {
-@@ -661,6 +687,9 @@
+@@ -661,6 +686,9 @@
              Some((&msg::CHANNEL_SUCCESS, mut r)) => {
                  let channel_num = map_err!(ChannelId::decode(&mut r))?;
                  map_err!(ensure_end(&r))?;
@@ -294,7 +351,7 @@
                  if let Some(chan) = self.channels.get(&channel_num) {
                      let _ = chan.send(ChannelMsg::Success).await;
                  }
-@@ -669,6 +698,9 @@
+@@ -669,6 +697,9 @@
              Some((&msg::CHANNEL_FAILURE, mut r)) => {
                  let channel_num = map_err!(ChannelId::decode(&mut r))?;
                  map_err!(ensure_end(&r))?;
@@ -304,6 +361,274 @@
                  if let Some(chan) = self.channels.get(&channel_num) {
                      let _ = chan.send(ChannelMsg::Failure).await;
                  }
+@@ -1080,9 +1111,14 @@
+                 )?;
+ 
+                 // Extend with self-signature.
+-                signature::Signer::try_sign(key.deref(), buffer)?
+-                    .encoded()?
+-                    .encode(&mut *buffer)?;
++                sign_with_hash_alg(
++                    &crate::keys::PrivateKeyWithHashAlg::new(
++                        key.clone(),
++                        Some(ssh_key::HashAlg::Sha512),
++                    ),
++                    buffer,
++                )?
++                .encode(&mut *buffer)?;
+ 
+                 push_packet!(self.write, {
+                     #[allow(clippy::indexing_slicing)] // length checked
+--- a/src/client/kex.rs
++++ b/src/client/kex.rs
+@@ -295,7 +295,7 @@
+                 ensure_end(r)?;
+ 
+                 if let Err(e) =
+-                    signature::Verifier::verify(&server_host_key, hash.as_ref(), &signature)
++                    crate::helpers::verify_signature(&server_host_key, hash.as_ref(), &signature)
+                 {
+                     debug!("wrong server sig: {e:?}");
+                     return Err(Error::WrongServerSig);
+--- a/src/helpers.rs
++++ b/src/helpers.rs
+@@ -179,10 +179,26 @@
+             let ssh_key::Algorithm::Rsa { hash } = key.algorithm() else {
+                 unreachable!();
+             };
+-            signature::Signer::try_sign(&(rsa_keypair, hash), data)?.encoded()?
++            #[cfg(feature = "openssl-rsa")]
++            let signature = crate::openssl_rsa::sign(rsa_keypair, hash, data)?;
++            #[cfg(not(feature = "openssl-rsa"))]
++            let signature = signature::Signer::try_sign(&(rsa_keypair, hash), data)?;
++            signature.encoded()?
+         }
+         keypair => signature::Signer::try_sign(keypair, data)?.encoded()?,
+     })
++}
++
++pub(crate) fn verify_signature(
++    key: &ssh_key::PublicKey,
++    data: &[u8],
++    signature: &ssh_key::Signature,
++) -> ssh_key::Result<()> {
++    #[cfg(feature = "openssl-rsa")]
++    if let ssh_key::public::KeyData::Rsa(rsa) = key.key_data() {
++        return crate::openssl_rsa::verify(rsa, data, signature);
++    }
++    signature::Verifier::verify(key, data, signature).map_err(Into::into)
+ }
+ 
+ mod algorithm {
+--- a/src/lib_inner.rs
++++ b/src/lib_inner.rs
+@@ -39,6 +39,9 @@
+ pub use sshbuffer::SshId;
+ 
+ mod helpers;
++
++#[cfg(feature = "openssl-rsa")]
++mod openssl_rsa;
+ 
+ pub(crate) use helpers::map_err;
+ 
+--- /dev/null
++++ b/src/openssl_rsa.rs
+@@ -0,0 +1,175 @@
++//! Optional RSA backend for SSH authentication and exchange signatures.
++//! Key serialization remains owned by ssh-key. Never retry with RustCrypto.
++
++use openssl::bn::BigNum;
++use openssl::hash::MessageDigest;
++use openssl::pkey::PKey;
++use openssl::rsa::{Padding, Rsa, RsaPrivateKeyBuilder};
++use openssl::sign::{Signer, Verifier};
++use ssh_key::{Algorithm, Error, HashAlg, Mpint, Signature};
++
++fn digest(hash: Option<HashAlg>) -> ssh_key::Result<MessageDigest> {
++    match hash {
++        Some(HashAlg::Sha256) => Ok(MessageDigest::sha256()),
++        Some(HashAlg::Sha512) => Ok(MessageDigest::sha512()),
++        _ => Err(Error::Crypto),
++    }
++}
++
++fn number(value: &Mpint) -> ssh_key::Result<BigNum> {
++    // Secure BIGNUM storage is cleared on release, including conversion errors.
++    let mut number = BigNum::new_secure().map_err(|_| Error::Crypto)?;
++    number
++        .copy_from_slice(value.as_positive_bytes().ok_or(Error::Crypto)?)
++        .map_err(|_| Error::Crypto)?;
++    Ok(number)
++}
++
++fn check_public(key: &ssh_key::public::RsaPublicKey) -> ssh_key::Result<()> {
++    // Preserve ssh-key's existing modulus/exponent admission limits before
++    // entering OpenSSL. This performs public validation, not an RSA operation.
++    rsa::RsaPublicKey::try_from(key).map(|_| ())
++}
++
++pub(crate) fn sign(
++    key: &ssh_key::private::RsaKeypair,
++    hash: Option<HashAlg>,
++    data: &[u8],
++) -> ssh_key::Result<Signature> {
++    let digest = digest(hash)?;
++    let public = key.public();
++    check_public(public)?;
++    let private = key.private();
++    // Import components directly. In particular, do not construct a RustCrypto
++    // SigningKey or compute secret CRT values in Rust. OpenSSL supports d/p/q
++    // without cached CRT exponents and retains its default RSA blinding.
++    let rsa = RsaPrivateKeyBuilder::new(
++        number(public.n())?,
++        number(public.e())?,
++        number(private.d())?,
++    )
++    .map_err(|_| Error::Crypto)?
++    .set_factors(number(private.p())?, number(private.q())?)
++    .map_err(|_| Error::Crypto)?
++    .build();
++    if !rsa.check_key().map_err(|_| Error::Crypto)? {
++        return Err(Error::Crypto);
++    }
++    let key = PKey::from_rsa(rsa).map_err(|_| Error::Crypto)?;
++    let mut signer = Signer::new(digest, &key).map_err(|_| Error::Crypto)?;
++    signer
++        .set_rsa_padding(Padding::PKCS1)
++        .map_err(|_| Error::Crypto)?;
++    let signature = signer
++        .sign_oneshot_to_vec(data)
++        .map_err(|_| Error::Crypto)?;
++    Signature::new(Algorithm::Rsa { hash }, signature)
++}
++
++pub(crate) fn verify(
++    key: &ssh_key::public::RsaPublicKey,
++    data: &[u8],
++    signature: &Signature,
++) -> ssh_key::Result<()> {
++    let Algorithm::Rsa { hash } = signature.algorithm() else {
++        return Err(Error::Crypto);
++    };
++    let digest = digest(hash)?;
++    check_public(key)?;
++    let rsa = Rsa::from_public_components(number(key.n())?, number(key.e())?)
++        .map_err(|_| Error::Crypto)?;
++    if signature.as_bytes().len() != rsa.size() as usize {
++        return Err(Error::Crypto);
++    }
++    let key = PKey::from_rsa(rsa).map_err(|_| Error::Crypto)?;
++    let mut verifier = Verifier::new(digest, &key).map_err(|_| Error::Crypto)?;
++    verifier
++        .set_rsa_padding(Padding::PKCS1)
++        .map_err(|_| Error::Crypto)?;
++    if verifier
++        .verify_oneshot(signature.as_bytes(), data)
++        .map_err(|_| Error::Crypto)?
++    {
++        Ok(())
++    } else {
++        Err(Error::Crypto)
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::helpers::{sign_with_hash_alg, verify_signature};
++    use crate::keys::PrivateKeyWithHashAlg;
++    use ssh_encoding::Decode;
++    use std::sync::Arc;
++
++    fn key() -> ssh_key::PrivateKey {
++        let pem = Rsa::generate(2048).unwrap().private_key_to_pem().unwrap();
++        crate::keys::decode_secret_key(std::str::from_utf8(&pem).unwrap(), None).unwrap()
++    }
++
++    #[test]
++    fn openssl_rsa_authentication_interoperates_with_rustcrypto_and_rejects_tampering() {
++        let key = Arc::new(key());
++        let pair = key.key_data().rsa().unwrap();
++        for hash in [HashAlg::Sha256, HashAlg::Sha512] {
++            let selected = PrivateKeyWithHashAlg::new(key.clone(), Some(hash));
++            let bytes = sign_with_hash_alg(&selected, b"authentication exchange").unwrap();
++            let signature = Signature::decode(&mut bytes.as_slice()).unwrap();
++            signature::Verifier::verify(key.public_key(), b"authentication exchange", &signature)
++                .unwrap();
++            verify_signature(key.public_key(), b"authentication exchange", &signature).unwrap();
++            assert!(verify_signature(key.public_key(), b"tampered", &signature).is_err());
++            let other =
++                signature::Signer::try_sign(&(pair, Some(hash)), b"authentication exchange")
++                    .unwrap();
++            verify(pair.public(), b"authentication exchange", &other).unwrap();
++            assert_eq!(signature, other);
++            let bad =
++                Signature::new(signature.algorithm(), vec![0; signature.as_bytes().len()]).unwrap();
++            assert!(verify(pair.public(), b"authentication exchange", &bad).is_err());
++            let short = Signature::new(signature.algorithm(), vec![1]).unwrap();
++            assert!(verify(pair.public(), b"authentication exchange", &short).is_err());
++        }
++        assert!(sign(pair, None, b"no sha1").is_err());
++        let sha1 = Signature::new(Algorithm::Rsa { hash: None }, vec![0; 256]).unwrap();
++        assert!(verify(pair.public(), b"no sha1", &sha1).is_err());
++        let non_rsa = Signature::new(Algorithm::Ed25519, vec![0; 64]).unwrap();
++        assert!(verify(pair.public(), b"wrong algorithm", &non_rsa).is_err());
++    }
++
++    #[test]
++    fn openssl_rsa_rejects_mismatched_private_and_public_components() {
++        let first = key();
++        let second = key();
++        let broken = ssh_key::private::RsaKeypair::new(
++            second.key_data().rsa().unwrap().public().clone(),
++            first.key_data().rsa().unwrap().private().clone(),
++        )
++        .unwrap();
++        assert!(sign(&broken, Some(HashAlg::Sha256), b"reject").is_err());
++    }
++
++    #[test]
++    fn openssl_rsa_preserves_public_key_admission_limits() {
++        let public = |e: &[u8], n: &[u8]| {
++            ssh_key::public::RsaPublicKey::new(
++                Mpint::from_positive_bytes(e),
++                Mpint::from_positive_bytes(n),
++            )
++            .unwrap()
++        };
++        let maximum = [0xff; 1024];
++        assert!(check_public(&public(&[1, 0, 1], &maximum)).is_ok());
++        for rejected in [
++            public(&[1, 0, 1], &[0xff; 1025]),
++            public(&[2, 0, 0, 0, 1], &maximum),
++            public(&[1], &maximum),
++            public(&[4], &maximum),
++            public(&[1, 0, 1], &[2]),
++        ] {
++            assert!(check_public(&rejected).is_err());
++        }
++    }
++}
+--- a/src/server/encrypted.rs
++++ b/src/server/encrypted.rs
+@@ -22,7 +22,6 @@
+ use cert::PublicKeyOrCertificate;
+ use log::{debug, error, info, trace, warn};
+ use msg;
+-use signature::Verifier;
+ use ssh_encoding::{Decode, Encode, Reader};
+ use ssh_key::{PublicKey, Signature};
+ use tokio::time::Instant;
+@@ -771,7 +770,7 @@
+                             map_err!(session_id.encode(&mut *buf))?;
+                             buf.extend_from_slice(sig_init_buffer);
+ 
+-                            Ok(Verifier::verify(&pubkey, &buf, &sig).is_ok())
++                            Ok(crate::helpers::verify_signature(&pubkey, &buf, &sig).is_ok())
+                         })? {
+                             debug!("signature verified");
+                             let auth = match pk_or_cert {
 --- a/src/session.rs
 +++ b/src/session.rs
 @@ -128,6 +128,20 @@

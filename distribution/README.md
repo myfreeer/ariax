@@ -7,21 +7,25 @@ These materials prepare CLI package manifests. They do not authorize a release.
 The project [MIT license](../LICENSE) applies to Ariax-owned code; files under
 `licenses/` preserve original third-party terms and bytes.
 
-`package-manifests.json` describes all four bundles for Linux and Windows-GNU.
-All eight entries now have concrete retained draft inventories. Full/compat
-include verified native build identities and runtime imports; Windows packages
-carry the exact three-DLL closure in [runtime-files.json](runtime-files.json).
-macOS and MSVC need separate manifests.
+`package-manifests.json` records the four default bundles for Linux and
+Windows-GNU and optional OpenSSL package selections. `draft-retained` entries
+identify available binaries; `validated-removed` entries preserve validation
+records after cleanup and cannot be staged. Keep only the final selected binary
+in each platform's build directory. macOS and MSVC need separate manifests.
+
+Windows packages import only Windows-provided DLLs. The C++, GCC exception,
+thread and optional OpenSSL runtimes are linked statically; the runtime file
+catalog is empty and their license notices remain required.
 
 Run `python3 -B scripts/release_manifest.py` to validate the catalog. To stage
-the eight retained drafts, supply `--artifacts ARTIFACT_ROOT --output NEW_DIR`.
-The input root must provide each catalog `artifactPath`: retained
-`linux-complete`/`windows-complete` minimal/standard binaries, full/compat
-`cli-linux-a`/`cli-windows-a` binaries and the reviewed `runtime` files.
-Preparation verifies hashes before copying,
+available drafts, supply `--artifacts ARTIFACT_ROOT --output NEW_DIR` with the
+catalog's retained binary paths. Preparation verifies hashes before copying,
 rejects unsafe or duplicate paths and unknown runtime dependencies, and writes
-per-package manifests and checksums. It never builds, executes the binaries,
-dispatches CI or publishes a package.
+per-package manifests and checksums. It never builds, dispatches CI or publishes.
+Temporary staged packages can be deleted after their smoke checks.
+
+The following results describe the earlier source and artifacts; superseded
+binaries and archive copies were removed during the requested cleanup.
 
 The four minimal/standard drafts pass their path and runtime inspections and match
 [independent local rebuilds](../performance-evidence/phase7-release-verification-2026-10-05.md).

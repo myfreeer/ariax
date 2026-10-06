@@ -53,6 +53,14 @@ pass notice, path, import, runtime-loading, RPC and database-reopening checks.
 Historical packages retain their original build and notice identities in the
 earlier evidence; the catalog now points to the rebuilt drafts.
 
+The [October 7 follow-up](../../performance-evidence/phase7-openssl-static-tsan-2026-10-07.md)
+supersedes retained binaries with one full OpenSSL build per host. It records
+14 successful default/OpenSSL CLI variants and both final package smokes.
+The [current inventory](../../performance-evidence/phase7-release-license-inventory-2026-10-07.json)
+and [notices](../../performance-evidence/phase7-third-party-notices-2026-10-07.txt)
+cover 16 selections and 320 packages. Validated variants whose binaries were
+removed remain historical records; the catalog cannot stage those entries.
+
 ## Embedded And Native Materials
 
 Every current bundle embeds the [public-suffix snapshot](../../assets/public-suffix-list.dat)
@@ -142,17 +150,31 @@ use fixed system installation locations, independent of the build directory.
 Do not rewrite compiled binaries to remove paths.
 
 Full/compat Linux drafts require glibc 2.38 and GLIBCXX 3.4.30; libstdc++ is a
-system prerequisite, not a bundled copy of the host runtime. Windows drafts
-carry exactly the reviewed `libstdc++-6.dll`, `libgcc_s_seh-1.dll` and
-`libwinpthread-1.dll` closure beside the executable. Record each file's digest,
-size, direct imports, package version, source and notices. Unknown dependencies,
-missing closure members, collisions and changed bytes reject staging. Reduced
-environment checks must observe the packaged DLLs loading from that directory.
+system prerequisite, not a bundled copy of the host runtime. Current Windows
+builds must statically link the MinGW C++, GCC exception and pthread runtimes
+and import only Windows-provided DLLs. Historical Windows drafts carried
+`libstdc++-6.dll`, `libgcc_s_seh-1.dll` and
+`libwinpthread-1.dll` beside the executable. Current package validation rejects
+all additional runtime DLLs. Keep the GCC runtime exception and winpthread
+notices for their statically linked code. Reduced-environment checks must
+observe only the executable and Windows system modules.
 Independent CLI comparisons use fresh target/temp directories. Record whether
 the native installation is shared or rebuilt independently. A second native
 installation must match the compiler, normalized build inputs and every consumed
 header/archive hash. An independently rebuilt native installation strengthens
 the comparison; sharing one does not establish native-library reproducibility.
+
+The CLI and retained native installation have separately recorded source-date
+epochs. Reusing a verified dependency does not require rebuilding it after each
+CLI commit; independent comparisons must match both recorded build identities.
+`scripts/release_build.py --crypto-backend openssl` selects the OpenSSL TLS/RSA
+features and requires `--native-dir` even for minimal/standard. Minimal enables
+only the TLS provider. The default selection remains ring TLS/RustCrypto RSA.
+
+Package records marked `validated-removed` preserve completed validation after
+cleanup and are excluded from staging. Only `draft-retained` entries identify
+available binaries. Optional OpenSSL entries use the `-openssl` package suffix;
+their manifests record the selected crypto backend and measured imports.
 
 The maintained [local build helper](local-hardening.md#local-release-preparation)
 selects the pinned native toolchain and prepares these remaps for all four
@@ -181,9 +203,12 @@ build. The reviewed runtime closure and notices are verified in four assembled
 and extracted full/compat archives. Live feature queries, RPC rejection, EOF
 shutdown, SQLite reopening and packaged Windows DLL loading pass.
 
-All eight catalog entries are retained drafts. Same-host independent builds and
-current-host package operation do not close fresh/minimum-OS acceptance or the
-final candidate matrix. macOS and MSVC remain separate platform work.
+Those eight default variants were subsequently validated with static Windows
+runtimes and removed during the October 7 cleanup. The current catalog retains
+two full OpenSSL drafts and preserves the default variants as `validated-removed`
+records. Same-host independent builds and current-host package operation do not
+close fresh/minimum-OS acceptance or the final candidate matrix. macOS and MSVC
+remain separate platform work.
 
 ## Release Checklist
 

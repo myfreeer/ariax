@@ -46,6 +46,7 @@ des = ["dep:des"]
 dsa = ["ssh-key/dsa"]
 legacy-ed25519-pkcs8-parser = ["yasna"]
 ring = ["dep:ring"]
+openssl-rsa = ["rsa", "dep:openssl"]
 rsa = [
     "dep:rsa",
     "dep:pkcs1",
@@ -301,6 +302,11 @@ optional = true
 [dependencies.rsa]
 version = "=0.10.0-rc.18"
 optional = true
+
+[dependencies.openssl]
+version = "=0.10.81"
+optional = true
+default-features = false
 
 [dependencies.russh-cryptovec]
 version = "0.62.0"

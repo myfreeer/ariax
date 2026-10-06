@@ -23,6 +23,7 @@ des = ["dep:des"]
 # Danger: DSA algorithm is insecure.
 dsa = ["ssh-key/dsa"]
 ring = ["dep:ring"] # Alternative crypto backend.
+openssl-rsa = ["rsa", "dep:openssl"] # RSA operations only; ring still supplies SSH AEAD.
 rsa = ["dep:rsa", "dep:pkcs1", "ssh-key/rsa"]
 serde = ["ssh-key/serde"]
 _bench = ["dep:criterion"]
@@ -80,6 +81,7 @@ rand_core = { version = "0.10.0" }
 rand.workspace = true
 ring = { version = "0.17.14", optional = true }
 rsa = { version = "=0.10.0-rc.18", optional = true }
+openssl = { version = "=0.10.81", optional = true, default-features = false }
 russh-cryptovec = { version = "0.62.0", path = "../cryptovec", features = [
   "ssh-encoding",
 ] }

@@ -40,6 +40,9 @@ pub use sshbuffer::SshId;
 
 mod helpers;
 
+#[cfg(feature = "openssl-rsa")]
+mod openssl_rsa;
+
 pub(crate) use helpers::map_err;
 
 macro_rules! push_packet {

@@ -194,6 +194,18 @@ used for SNI and certificate verification; an IP-literal URI is verified as an
 IP subject alternative name. `Host` continues to use the original authority.
 
 Custom PEM loading happens once while constructing the immutable TLS policy.
+
+The optional Cargo feature `tls-openssl` selects the `rustls-openssl`
+CryptoProvider for this shared HTTPS/FTPS configuration path. The combined
+`crypto-openssl` feature on `ariax-cli` selects both `tls-openssl` and
+`sftp-openssl-rsa` (for example, `--features full,crypto-openssl`). OpenSSL
+takes precedence when features are unified; configuration and handshake
+failures never fall back to ring. TLS still runs through rustls with the same
+trust roots, hostname verification and minimum-version rules. The provider
+offers only the existing classical X25519/P-256/P-384 key exchange groups.
+Use the reviewed static OpenSSL installation through `OPENSSL_DIR` and
+`OPENSSL_STATIC=1`. SSH AEAD still requires ring in SFTP builds; this option
+does not claim to eliminate every other cryptographic implementation.
 The file and certificate counts are hard bounded, an empty bundle is rejected,
 and any malformed certificate rejects the entire bundle. CA bytes, private
 keys, raw URLs, and credentials are not persisted or exposed in diagnostics.

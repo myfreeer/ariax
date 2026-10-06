@@ -17,13 +17,15 @@ BitTorrent adapter. The package directory name identifies your selected bundle.
 
 Linux minimal/standard require an x86_64 GNU/Linux loader, libc.so.6, libm.so.6,
 libgcc_s.so.1 and glibc 2.34 or newer. Full/compat additionally require
-libstdc++.so.6, glibc 2.38 or newer and GLIBCXX 3.4.30 or newer. These system
-libraries are supplied by the host distribution and are not bundled here.
+libstdc++.so.6, glibc 2.38 or newer and GLIBCXX 3.4.30 or newer. OpenSSL
+minimal/standard builds also require glibc 2.38 or newer. These system libraries
+are supplied by the host distribution and are not bundled here.
 
-Windows-GNU minimal/standard require only Windows system DLLs. Full/compat
-also carry libstdc++-6.dll, libgcc_s_seh-1.dll and libwinpthread-1.dll beside
-ariax.exe. Keep those files together; a developer toolchain on PATH is not
-required. The manifest records the exact reviewed runtime files and licenses.
+Windows-GNU builds import only Windows-provided DLLs. The C++, GCC exception,
+thread and optional OpenSSL runtimes are linked statically. No separate runtime
+DLLs or developer toolchain are required. Their applicable notices remain in
+this package. The manifest identifies the selected default or OpenSSL crypto
+backend; both retain rustls for TLS protocol and certificate policy.
 
 Read LICENSE, THIRD-PARTY-NOTICES.txt, DATA-NOTICE.txt, license-inventory.json,
 license-review.json and the applicable licenses/ files. The inventory identifies

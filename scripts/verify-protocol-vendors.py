@@ -32,6 +32,13 @@ def sources(name):
 
 def source_contracts():
     ssh = (VENDOR / "russh/src/client/encrypted.rs").read_text()
+    # Both ordinary and certificate authentication must pass through the
+    # selected RSA backend, including when Cargo unifies both RSA features.
+    assert "signature::Signer::try_sign" not in ssh
+    assert ssh.count("sign_with_hash_alg(") == 2
+    helpers = (VENDOR / "russh/src/helpers.rs").read_text()
+    assert 'cfg(not(feature = "openssl-rsa"))' in helpers
+    assert "crate::openssl_rsa::sign(rsa_keypair, hash, data)?" in helpers
     failure = ssh.split("Some((&msg::CHANNEL_OPEN_FAILURE, mut r)) => {")[1].split("Some((&msg::CHANNEL_DATA")[0]
     assert failure.index("if !known") < failure.index("self.sender.send(Reply::ChannelOpenFailure")
     assert "enc.channels.remove(&channel_num).is_some()" in failure

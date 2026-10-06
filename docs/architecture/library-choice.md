@@ -241,12 +241,17 @@ CA modes remain downloader-owned policy.
 
 Use the ring crypto provider in `minimal`/`standard` by explicitly disabling
 dependency defaults and selecting ring consistently in rustls, hyper-rustls,
-SuppaFTP, and russh. This keeps one provider and the simpler cross-platform
-native build path. An `aws-lc` provider feature is mutually exclusive and
-optional for measured performance, post-quantum preference, or a separately
-validated FIPS build. CI fails if Cargo feature unification enables both
-providers or silently restores a dependency's default provider. The active
-provider is visible in diagnostics.
+SuppaFTP, and russh in the default build. The explicit `tls-openssl` feature
+selects `rustls-openssl` instead for HTTPS/FTPS; `crypto-openssl` additionally
+selects the OpenSSL SSH RSA backend. These use the same reviewed static
+OpenSSL installation as BitTorrent when enabled together. Feature unification
+gives OpenSSL precedence in the selected operations, without fallback.
+Ring remains required for russh's SSH AEAD ciphers, and RustCrypto remains
+for SSH key formats and other SSH algorithms. This is not an OpenSSL-only
+cryptographic dependency graph. AWS-LC and implicit native TLS remain rejected
+by the feature-policy check. See the
+[TLS contract](../protocols/detailed-http-first-slice.md#direct-https-transport-gate)
+and [RSA contract](../protocols/detailed-ftp-sftp.md#sftp-authentication-algorithms-and-session-policy).
 
 ## DNS
 
@@ -305,9 +310,10 @@ stable ssh-key line is a deliberate russh/workspace upgrade with compatibility
 tests, not a second direct 0.6.x dependency.
 
 Select russh with `default-features = false` and exactly
-`["ring", "flate2", "rsa"]`. Its defaults select aws-lc-rs; the explicit ring
-feature aligns the one-provider rule used by rustls and SuppaFTP, while RSA key
-support remains available under the adapter's modern-signature algorithm policy.
+`["ring", "flate2", "rsa"]` in the default build, adding `openssl-rsa` when
+selected through `sftp-openssl-rsa`. Its defaults select aws-lc-rs; the explicit
+ring feature supplies the SSH AEAD ciphers. RSA key support remains available
+under the adapter's modern-signature algorithm policy.
 CI rejects simultaneous ring/aws-lc providers and any accidental DSA/DES legacy
 feature.
 

@@ -979,6 +979,33 @@ fn validate_origin(uri: &Uri) -> Result<(), HttpTransportError> {
     Ok(())
 }
 
+fn tls_provider() -> rustls::crypto::CryptoProvider {
+    #[cfg(feature = "tls-openssl")]
+    {
+        let mut provider = rustls_openssl::default_provider();
+        // Keep the reviewed classical group set even when the native OpenSSL
+        // installation also offers post-quantum groups.
+        provider.kx_groups.retain(|group| {
+            matches!(
+                group.name(),
+                rustls::NamedGroup::X25519
+                    | rustls::NamedGroup::secp256r1
+                    | rustls::NamedGroup::secp384r1
+            )
+        });
+        provider.kx_groups.sort_by_key(|group| match group.name() {
+            rustls::NamedGroup::X25519 => 0,
+            rustls::NamedGroup::secp256r1 => 1,
+            _ => 2,
+        });
+        provider
+    }
+    #[cfg(not(feature = "tls-openssl"))]
+    {
+        rustls::crypto::ring::default_provider()
+    }
+}
+
 pub(crate) fn build_tls_config(policy: &HttpTlsPolicy) -> Result<ClientConfig, HttpTransportError> {
     let mut roots = RootCertStore::empty();
     match &policy.trust {
@@ -1037,12 +1064,12 @@ pub(crate) fn build_tls_config(policy: &HttpTlsPolicy) -> Result<ClientConfig, H
     }
     let builder = match policy.minimum_version {
         HttpMinimumTlsVersion::Tls12 => {
-            ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            ClientConfig::builder_with_provider(Arc::new(tls_provider()))
                 .with_safe_default_protocol_versions()
                 .map_err(|error| HttpTransportError::TlsConfiguration(error.to_string()))?
         }
         HttpMinimumTlsVersion::Tls13 => {
-            ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            ClientConfig::builder_with_provider(Arc::new(tls_provider()))
                 .with_protocol_versions(&[&rustls::version::TLS13])
                 .map_err(|error| HttpTransportError::TlsConfiguration(error.to_string()))?
         }
@@ -1055,12 +1082,12 @@ fn build_plaintext_tls_config(
 ) -> Result<ClientConfig, HttpTransportError> {
     let builder = match minimum_version {
         HttpMinimumTlsVersion::Tls12 => {
-            ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            ClientConfig::builder_with_provider(Arc::new(tls_provider()))
                 .with_safe_default_protocol_versions()
                 .map_err(|error| HttpTransportError::TlsConfiguration(error.to_string()))?
         }
         HttpMinimumTlsVersion::Tls13 => {
-            ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            ClientConfig::builder_with_provider(Arc::new(tls_provider()))
                 .with_protocol_versions(&[&rustls::version::TLS13])
                 .map_err(|error| HttpTransportError::TlsConfiguration(error.to_string()))?
         }
@@ -1198,6 +1225,41 @@ e31pxMIvRBTw+dGS6spzZo+W4ft31it0tEUmShjy5iE5lqwPpp9GaF3UadN+fWJy
         let error = super::HttpDirectTransport::resolved("http://example.com/", config)
             .expect_err("oversized connection cap");
         assert!(matches!(error, HttpTransportError::InvalidPolicy));
+    }
+
+    #[test]
+    fn tls_provider_preserves_classical_groups_and_explicit_version_policy() {
+        let provider = super::tls_provider();
+        assert_eq!(
+            provider
+                .kx_groups
+                .iter()
+                .map(|group| group.name())
+                .collect::<Vec<_>>(),
+            [
+                rustls::NamedGroup::X25519,
+                rustls::NamedGroup::secp256r1,
+                rustls::NamedGroup::secp384r1
+            ]
+        );
+        for minimum in [HttpMinimumTlsVersion::Tls12, HttpMinimumTlsVersion::Tls13] {
+            let config = super::build_plaintext_tls_config(minimum).unwrap();
+            assert!(
+                config
+                    .crypto_provider()
+                    .cipher_suites
+                    .iter()
+                    .all(|suite| matches!(
+                        suite.version().version,
+                        rustls::ProtocolVersion::TLSv1_2 | rustls::ProtocolVersion::TLSv1_3
+                    ))
+            );
+        }
+        assert!(
+            rustls::ClientConfig::builder_with_provider(Arc::new(provider))
+                .with_protocol_versions(&[])
+                .is_err()
+        );
     }
 
     #[test]

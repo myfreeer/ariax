@@ -18,7 +18,6 @@ WINDOWS_SYSTEM = {'iphlpapi.dll', 'kernel32.dll', 'advapi32.dll',
 LINUX_SYSTEM = {'libc.so.6', 'libgcc_s.so.1', 'libm.so.6'}
 LINUX_BT_SYSTEM = LINUX_SYSTEM | {'libstdc++.so.6', 'ld-linux-x86-64.so.2'}
 WINDOWS_BT_SYSTEM = WINDOWS_SYSTEM | {'user32.dll', 'mswsock.dll'}
-WINDOWS_BT_RUNTIME = {'libstdc++-6.dll', 'libgcc_s_seh-1.dll', 'libwinpthread-1.dll'}
 WINDOWS_NOTICES = {'winapi-MIT.txt', 'winapi-Apache-2.0.txt', 'mingw-crt.txt', 'mingw-w64.txt',
                    'mingw-runtime.txt', 'winpthread.txt', 'gcc-GPL-3.0.txt', 'gcc-runtime-exception.txt'}
 LINUX_NOTICES = {'glibc-copyright.txt', 'libgcc-copyright.txt'}
@@ -59,25 +58,18 @@ def reviewed_runtime_files(root=ROOT):
 
 def validate_runtime(runtime, windows, bundle, names, root=ROOT):
     bt = bundle in {'full', 'compat'}
+    openssl = runtime.get('cryptoBackend', 'default') == 'openssl'
+    require(runtime.get('cryptoBackend', 'default') in {'default', 'openssl'}, 'unknown crypto backend')
     expected = (WINDOWS_BT_SYSTEM if bt else WINDOWS_SYSTEM) if windows else (LINUX_BT_SYSTEM if bt else LINUX_SYSTEM)
+    if windows and openssl:
+        expected = (expected - {'bcrypt.dll'}) | {'user32.dll'}
     libraries = runtime['systemLibraries']
     require(len(libraries) == len(set(libraries)) and set(libraries) == expected,
             'unknown or missing runtime dependency')
     files = runtime['additionalRuntimeFiles']
-    require(files == (reviewed_runtime_files(root) if windows and bt else []),
-            'additional runtime files require a matching review')
-    if windows and bt:
-        destinations = {item['destination'] for item in files}
-        require(len(files) == len(destinations) and destinations == WINDOWS_BT_RUNTIME, 'incomplete runtime closure')
-        for item in files:
-            name = relative(item['destination']).as_posix().casefold()
-            require(name not in names and '/' not in name, 'runtime destination collision')
-            names.add(name)
-            relative(item['artifactPath'])
-            require(set(item['imports']) <= expected | destinations, 'unreviewed transitive runtime import')
-            require({name.casefold() for name in item['notices']} <= names, 'missing redistributed runtime notice')
+    require(files == [], 'additional runtime files are forbidden; link runtimes statically')
     if not windows:
-        require(runtime['minimumGlibc'] == ('2.38' if bt else '2.34') and
+        require(runtime['minimumGlibc'] == ('2.38' if bt or openssl else '2.34') and
                 runtime['interpreter'] == '/lib64/ld-linux-x86-64.so.2', 'unreviewed Linux runtime requirement')
         if bt:
             require(runtime.get('minimumGlibcxx') == '3.4.30', 'unreviewed C++ runtime requirement')
@@ -131,11 +123,16 @@ def validate(catalog, root=ROOT, artifacts=None):
                 'notice collection drift')
     require(set(catalog.get('excludedSourceArtifacts', [])) == SOURCE_ONLY, 'source exclusion drift')
     expected = {target + '-' + bundle for target in TARGETS for bundle in BUNDLES}
+    optional = {identity + '-openssl' for identity in expected}
     ids = [package.get('id') for package in catalog['packages']]
-    require(len(ids) == len(expected) and set(ids) == expected, 'incomplete or duplicate package set')
+    require(len(ids) == len(set(ids)) and expected <= set(ids) <= expected | optional,
+            'incomplete or duplicate package set')
     for package in catalog['packages']:
+        backend = package.get('cryptoBackend', 'default')
+        require(backend in {'default', 'openssl'}, 'unknown crypto backend')
         require(package['target'] in TARGETS and package['bundle'] in BUNDLES
-                and package['id'] == package['target'] + '-' + package['bundle'], 'package identity mismatch')
+                and package['id'] == package['target'] + '-' + package['bundle']
+                    + ('-openssl' if backend == 'openssl' else ''), 'package identity mismatch')
         require(package.get('releaseApproved') is False, 'release approval is not a manifest operation')
         names = set()
         records = catalog['commonFiles'] + package['files']
@@ -154,14 +151,19 @@ def validate(catalog, root=ROOT, artifacts=None):
             require(package['bundle'] in {'full', 'compat'} and package['binary'] is None
                     and package['runtime'] is None and package.get('remaining'), 'invalid planned package')
             continue
-        require(package['status'] == 'draft-retained',
+        require(package['status'] in {'draft-retained', 'validated-removed'},
                 'unreviewed retained bundle')
+        removed = package['status'] == 'validated-removed'
+        if removed:
+            require(package.get('retention', {}).get('binaryPresent') is False
+                    and package['retention'].get('validationEvidence'), 'missing removed-artifact evidence')
         windows = package['target'].endswith('windows-gnu')
         binary, runtime = package['binary'], package['runtime']
         require(binary['destination'] == ('ariax.exe' if windows else 'ariax'), 'wrong binary destination')
         relative(binary['artifactPath'])
+        require(runtime.get('cryptoBackend', 'default') == backend, 'runtime backend mismatch')
         validate_runtime(runtime, windows, package['bundle'], names, root)
-        if artifacts is not None:
+        if artifacts is not None and not removed:
             path = contained(artifacts, binary['artifactPath'])
             verify_file(path, binary)
             require(audit_binary_paths(path) == binary['pathAudit'], 'binary path audit mismatch')
@@ -172,10 +174,12 @@ def validate(catalog, root=ROOT, artifacts=None):
 
 def stage(catalog, artifacts, output, root=ROOT):
     validate(catalog, root, artifacts)
+    require(any(p['status'] == 'draft-retained' for p in catalog['packages']),
+            'no retained binaries are available to stage')
     output.mkdir(parents=True, exist_ok=False)
     staged = []
     for package in catalog['packages']:
-        if package['status'] == 'planned':
+        if package['status'] != 'draft-retained':
             continue
         directory = output / package['id']
         directory.mkdir()
@@ -203,6 +207,7 @@ def stage(catalog, artifacts, output, root=ROOT):
                                              encoding='utf-8')
         staged.append(package['id'])
     return {'staged': staged, 'planned': [p['id'] for p in catalog['packages'] if p['status'] == 'planned'],
+            'removed': [p['id'] for p in catalog['packages'] if p['status'] == 'validated-removed'],
             'binaryPathAuditPassed': all(p['binary']['pathAudit']['passed'] for p in catalog['packages'] if p['binary']),
             'releaseApproved': False}
 
@@ -216,7 +221,7 @@ def main():
     catalog = json.loads((ROOT / CATALOG).read_text(encoding='utf-8'))
     if args.output is None:
         validate(catalog)
-        print('Eight package manifests validated. No release approval.')
+        print(f"{len(catalog['packages'])} package manifests validated. No release approval.")
     else:
         print(json.dumps(stage(catalog, args.artifacts, args.output)))
 

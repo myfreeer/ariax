@@ -235,7 +235,11 @@ def provision_bt(runner, sanitizer="none", *, cached_only=False):
         with Path(github_env).open("a", encoding="utf-8") as environment:
             environment.write("ARIAX_BT_NATIVE_VERIFIED=1\n")
     import bt_native
-    return bt_native.work_directory(target[1], sanitizer) / "install"
+    prefix = bt_native.work_directory(target[1], sanitizer) / "install"
+    # Reuse the verified OpenSSL archives when all-features enables the
+    # optional rustls/RSA bindings. Do not discover a second system copy.
+    runner.env.update(OPENSSL_DIR=str(prefix), OPENSSL_STATIC="1")
+    return prefix
 
 
 def native_security(runner, prefix, sanitizer=False):

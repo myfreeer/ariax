@@ -55,6 +55,10 @@ class ReleaseSmokeTests(unittest.TestCase):
             (root / 'SHA256SUMS').write_text(digest + '  ariax\n' + rs.h.digest(root / 'manifest.json') +
                                            '  manifest.json\n', encoding='utf-8')
             self.assertEqual(rs.verify_package(root)[1], binary)
+            self.assertEqual(rs.verify_package(root, 'default')[1], binary)
+            for backend in ('openssl', 'unknown'):
+                with self.assertRaisesRegex(ValueError, 'backend mismatch'):
+                    rs.verify_package(root, backend)
             (root / 'unexpected.dll').write_bytes(b'not in manifest')
             with self.assertRaisesRegex(ValueError, 'unexpected'):
                 rs.verify_package(root)
