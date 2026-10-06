@@ -44,10 +44,31 @@ returns `OK`, but the next bootstrap fails semantic journal replay with
 The retained active journal contains 16 begun generation-1 leases without abort
 records after the process crash, followed by a staged snapshot and a generation-2
 `GenerationStarted` for retry readmission. The replay guard correctly rejects
-that sequence. This is an actionable recovery finding; no storage repair or
-long-soak pass is claimed yet. The original fixture, executable identities,
+that sequence. The original fixture, executable identities,
 decoded record inventory, command outputs and failed assessment are preserved.
-The planned 30-minute run waits for a repaired, passing fixture check.
+
+The recovery repair now retains abandoned lease IDs for nonterminal tasks,
+appends their aborts through the bounded owner queue, and flushes before scheduler
+publication. The recovered projection advances only after the exact flush
+acknowledgement, so its sequence and clean-shutdown state match fresh replay.
+Terminal journals gain no records, and the original invalid journal is not
+rewritten or accepted by a weakened replay guard.
+
+Linux and native Windows each pass 19 semantic-journal tests, four native-startup
+tests, and one option-scope regression. The new checks cover each abort prefix,
+unknown/committed lease rejection, owner failure before the flush, early flush
+rejection, and equality between published recovery state and journal replay.
+An initial test compile with an incorrect scope enum name is retained separately.
+Focused builds use copied caches on F:; the original E: caches remain available.
+The first standard CLI build resolved its additional FTP/SFTP dependency graph;
+subsequent corrected CLI and benchmark builds rebuilt only affected workspace
+targets. No complete workspace or native-library build was run.
+
+The corrected 60-second active fixture passes crash recovery, clean RPC shutdown
+and a second recovery. Both bootstraps retain all 132 tasks, and the interrupted
+task retains its GID with zero completed bytes: provisional payload was not
+promoted to trusted progress. The planned 30-minute run is now in progress;
+its completion and resource assessment are still pending.
 
 ## Compatibility And Advisory Review
 
@@ -55,7 +76,13 @@ The compatibility inventory has 108 reviewed registry entries, including 54
 of the pinned aria2 reference's 207 option handlers. These are option-handler
 counts, not RPC-method coverage. An upstream option missing from this registry
 is not automatically unsupported: direct CLI/RPC handling must also be reviewed.
-The experimental scope and support/rejection review remain open.
+The per-download boundary now has an inventory-derived regression: all 152
+unreviewed upstream names other than the explicit `pause` flag reject without
+task metadata; boolean/string pause and a reviewed split option succeed, while
+invalid pause/split values reject. The configuration document distinguishes
+current executable support from target category ownership. This does not claim
+full parity or that startup flags are unsupported in their separate CLI scope.
+The broader experimental support/rejection review remains open.
 
 A live OSV query covers all 357 registry packages in the current workspace lock
 and retains request/response hashes. Matches require applicability review for

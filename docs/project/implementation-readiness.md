@@ -641,8 +641,9 @@ native suites that were uncompiled at that checkpoint.
 
 The [current four-item local follow-up](../../performance-evidence/phase7-local-four-2026-10-06.md)
 is in progress. Its short active-transfer fixture found a restart/shutdown/restart
-journal failure (`GenerationNotDrained`) after a process crash; the original
-fixture is retained and the longer soak has not started. Its live dependency
+journal failure (`GenerationNotDrained`) after a process crash. The startup drain
+repair passes Linux/Windows regressions and a corrected active fixture; the
+original failure remains retained and the longer soak is running. Its live dependency
 advisory review also has unresolved matches requiring applicability review and
 MSRV-compatible remediation. These findings are additional open local work,
 not closed by the earlier packaging or empty-session checks.

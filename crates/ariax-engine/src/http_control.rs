@@ -8958,6 +8958,69 @@ mod tests {
     }
 
     #[test]
+    fn unreviewed_upstream_options_reject_before_admission_with_explicit_pause_exception() {
+        let inventory: Value =
+            serde_json::from_str(include_str!("../../../generated/aria2_compat.json")).unwrap();
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        for name in inventory["coverage"]["upstream_without_registry"]
+            .as_array()
+            .unwrap()
+        {
+            let name = name.as_str().unwrap();
+            if name == "pause" {
+                continue;
+            }
+            let mut options = json!({"pause":true, "split":"2"});
+            options[name] = json!("compatibility-probe");
+            assert!(
+                matches!(
+                    plane.call(
+                        "aria2.addUri",
+                        json!([["http://example.test/file"], options])
+                    ),
+                    Err(HttpControlError::InvalidParams("unsupported addUri option"))
+                ),
+                "{name}"
+            );
+            assert_eq!(plane.tasks.len(), 0, "rejected {name} left a task");
+        }
+        for pause in [json!(true), json!("true")] {
+            let gid = plane
+                .call(
+                    "aria2.addUri",
+                    json!([["http://example.test/file"], {"pause":pause, "split":"2"}]),
+                )
+                .unwrap();
+            assert_eq!(
+                plane
+                    .call("aria2.tellStatus", json!([gid, ["status"]]))
+                    .unwrap()["status"],
+                "paused"
+            );
+            assert_eq!(
+                plane.call("aria2.getOption", json!([gid])).unwrap()["split"],
+                "2"
+            );
+        }
+        for options in [
+            json!({"pause":"sometimes"}),
+            json!({"pause":true,"split":"0"}),
+        ] {
+            assert!(
+                plane
+                    .call(
+                        "aria2.addUri",
+                        json!([["http://example.test/file"], options])
+                    )
+                    .is_err()
+            );
+            assert_eq!(plane.tasks.len(), 2);
+        }
+        plane.shutdown().unwrap();
+    }
+
+    #[test]
     fn rejected_output_paths_and_options_leave_no_task_metadata() {
         let directory = TestDirectory::new();
         let mut plane = directory.control_plane();

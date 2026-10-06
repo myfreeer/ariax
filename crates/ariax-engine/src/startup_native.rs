@@ -189,6 +189,8 @@ enum OwnerAction {
     CompleteInstall(Gid),
     ClearInstall(Gid),
     InstallJournal(Gid),
+    AbortLease(Gid, usize),
+    FlushLeaseAborts(Gid, u64),
 }
 
 struct OfferedCommand {
@@ -297,15 +299,10 @@ where
                     self.completion = Some(pending);
                     NativeStartupPoll::WaitingForCompletion
                 }
-                Ok(Some(SessionCommandResult::Unit)) => {
-                    match self.complete_owner_action(pending.action) {
-                        Ok(()) => NativeStartupPoll::Progressed,
-                        Err(error) => self.fail(error),
-                    }
-                }
-                Ok(Some(result)) => self.fail(NativeStartupError::UnexpectedOwnerResult(
-                    command_result_code(&result),
-                )),
+                Ok(Some(result)) => match self.complete_owner_result(pending.action, result) {
+                    Ok(()) => NativeStartupPoll::Progressed,
+                    Err(error) => self.fail(error),
+                },
                 Err(error) => self.fail(NativeStartupError::Owner(error)),
             };
         }
@@ -525,6 +522,84 @@ where
         NativeStartupPoll::Progressed
     }
 
+    fn complete_owner_result(
+        &mut self,
+        action: OwnerAction,
+        result: SessionCommandResult,
+    ) -> Result<(), NativeStartupError<B::Error>> {
+        match (action, result) {
+            (
+                OwnerAction::AbortLease(gid, index),
+                SessionCommandResult::JournalAppended(appended),
+            ) => self.offer_lease_abort(gid, index + 1, Some(appended.sequence())),
+            (
+                OwnerAction::FlushLeaseAborts(gid, expected),
+                SessionCommandResult::JournalFlushed(flushed),
+            ) if flushed.through_sequence() == expected => {
+                self.reconciliation
+                    .as_mut()
+                    .and_then(|state| state.tasks.iter_mut().find(|task| task.gid == gid))
+                    .ok_or(NativeStartupError::MissingTask(gid))?
+                    .journal
+                    .acknowledge_recovery_lease_aborts(flushed)
+                    .map_err(|_| NativeStartupError::InternalInvariant)?;
+                self.mark_journal_installed(gid)
+            }
+            (
+                OwnerAction::AbortInstall(_)
+                | OwnerAction::CompleteInstall(_)
+                | OwnerAction::ClearInstall(_)
+                | OwnerAction::InstallJournal(_),
+                SessionCommandResult::Unit,
+            ) => self.complete_owner_action(action),
+            (_, result) => Err(NativeStartupError::UnexpectedOwnerResult(
+                command_result_code(&result),
+            )),
+        }
+    }
+
+    /// One bounded owner command per abandoned lease. The scheduler remains
+    /// unpublished until the final abort's durability acknowledgement arrives.
+    fn offer_lease_abort(
+        &mut self,
+        gid: Gid,
+        index: usize,
+        through_sequence: Option<u64>,
+    ) -> Result<(), NativeStartupError<B::Error>> {
+        let task = self.task(gid).ok_or(NativeStartupError::MissingTask(gid))?;
+        if let Some(&lease_id) = task.journal.abandoned_leases().get(index) {
+            self.offered = Some(OfferedCommand {
+                command: SessionCommand::AppendJournal {
+                    gid,
+                    generation: task.journal.generation(),
+                    payload: ariax_storage::JournalPayload::LeaseAborted {
+                        lease_id,
+                        reason: ariax_storage::LeaseAbortReason::GenerationDrain,
+                    },
+                },
+                action: OwnerAction::AbortLease(gid, index),
+            });
+        } else if let Some(through_sequence) = through_sequence {
+            self.offered = Some(OfferedCommand {
+                command: SessionCommand::FlushJournal {
+                    gid,
+                    through_sequence,
+                },
+                action: OwnerAction::FlushLeaseAborts(gid, through_sequence),
+            });
+        } else {
+            self.mark_journal_installed(gid)?;
+        }
+        Ok(())
+    }
+
+    fn mark_journal_installed(&mut self, gid: Gid) -> Result<(), NativeStartupError<B::Error>> {
+        if !self.installed_journals.insert(gid) {
+            return Err(NativeStartupError::DuplicateJournal(gid));
+        }
+        Ok(())
+    }
+
     fn complete_owner_action(
         &mut self,
         action: OwnerAction,
@@ -549,10 +624,9 @@ where
             OwnerAction::ClearInstall(gid) => {
                 self.finish_pending_install(gid)?;
             }
-            OwnerAction::InstallJournal(gid) => {
-                if !self.installed_journals.insert(gid) {
-                    return Err(NativeStartupError::DuplicateJournal(gid));
-                }
+            OwnerAction::InstallJournal(gid) => self.offer_lease_abort(gid, 0, None)?,
+            OwnerAction::AbortLease(..) | OwnerAction::FlushLeaseAborts(..) => {
+                return Err(NativeStartupError::InternalInvariant);
             }
         }
         Ok(())
@@ -946,6 +1020,208 @@ mod tests {
             }
         }
         panic!("native executor did not finish within its bounded poll budget");
+    }
+
+    fn abandoned_fixture(directory: &TestDirectory) -> (PreparedJournalSet, StartupReconciliation) {
+        use ariax_core::{FileId, LeaseId, TransferAttemptId};
+        use ariax_storage::{
+            FileEntry, FileIdentity, FileLayout, JournalFileLayoutEntry, JournalRelativePath,
+            OptionsSnapshotScope, PathPlatform, PersistedSpan, RootBinding, RootIdentity,
+            SafePathBuilder, SanitizedOptionMap,
+        };
+        let root = PlatformPath::from_native_bytes(PathPlatform::Unix, b"/fixture").unwrap();
+        let root_id = RootIdentity::new(b"root".to_vec()).unwrap();
+        let file_id = FileIdentity::new(b"file".to_vec()).unwrap();
+        let binding = RootBinding::new(
+            root.clone(),
+            root_id.clone(),
+            vec![(FileId::new(0), file_id.clone())],
+        )
+        .unwrap();
+        let layout = FileLayout::new(
+            task_id(1),
+            Generation::INITIAL,
+            binding,
+            vec![FileEntry::new(
+                FileId::new(0),
+                SafePathBuilder::from_user_path("file.bin", PathPlatform::Unix).unwrap(),
+                Some(file_id.clone()),
+                2048,
+                0,
+                2048,
+                true,
+            )],
+            Some(2048),
+            1024,
+        )
+        .unwrap();
+        let options =
+            SanitizedOptionMap::new(vec![("piece-length".to_owned(), "1M".to_owned())]).unwrap();
+        let mut payloads = vec![
+            JournalPayload::TaskCreated {
+                durability: DurabilityMode::Balanced,
+                creator_version: 1,
+            },
+            JournalPayload::OptionsSnapshot {
+                scope: OptionsSnapshotScope::CurrentGeneration,
+                patch_id: None,
+                snapshot_hash: options.snapshot_hash(),
+                options,
+            },
+            JournalPayload::LayoutCommitted {
+                layout_hash: JournalHash::new(*layout.layout_hash().as_bytes()).unwrap(),
+                root_binding_hash: JournalHash::new(*layout.root_binding().hash().as_bytes())
+                    .unwrap(),
+                root_display: root,
+                root_identity: root_id.bytes().to_vec().into_boxed_slice(),
+                total_length: Some(2048),
+                piece_length: 1024,
+                total_file_count: 1,
+                chunk_count: 1,
+                inline_files: vec![
+                    JournalFileLayoutEntry::new(
+                        FileId::new(0),
+                        0,
+                        2048,
+                        2048,
+                        true,
+                        JournalRelativePath::new("file.bin").unwrap(),
+                        file_id.bytes().to_vec(),
+                    )
+                    .unwrap(),
+                ]
+                .into_boxed_slice(),
+            },
+        ];
+        for id in [1, 2] {
+            payloads.push(JournalPayload::LeaseStarted {
+                transfer_attempt_id: TransferAttemptId::new(id).unwrap(),
+                lease_id: LeaseId::new(id).unwrap(),
+                span: PersistedSpan::new(0, 1024).unwrap(),
+                validator_fingerprint: JournalHash::new([42; 32]).unwrap(),
+            });
+        }
+        let dir = directory.0.join("journal");
+        let mut appender =
+            ControlJournalAppender::create(&dir, gid(1), journal(1), Generation::INITIAL, 1)
+                .unwrap();
+        for payload in payloads {
+            appender
+                .append_payload(Generation::INITIAL, &payload)
+                .unwrap();
+        }
+        let early_flush = appender.flush(appender.appended_sequence()).unwrap();
+        appender.close_flushed().unwrap();
+        drop(appender);
+        let prepared = ControlJournalAppender::prepare_recovered(
+            &dir,
+            &[journal_segment_path(&dir, 0)],
+            gid(1),
+            journal(1),
+            ReplayLimits::default(),
+        )
+        .unwrap();
+        let replay = recover_journal_state(
+            &prepared.replay().records,
+            task_id(1),
+            &accept_all_options,
+            JournalStateLimits::default(),
+        );
+        assert_eq!(replay.stop, JournalStateStop::CleanEnd);
+        let mut reconciliation = ordinary_reconciliation(directory);
+        let mut state = replay.state.unwrap();
+        let unchanged = state.clone();
+        assert!(matches!(
+            state.acknowledge_recovery_lease_aborts(early_flush),
+            Err(ariax_storage::JournalStateError::SequenceMismatch {
+                expected: 7,
+                actual: 5
+            })
+        ));
+        assert_eq!(state, unchanged);
+        reconciliation.tasks[0].journal = state;
+        reconciliation.appender_recoveries[0].expected_last_sequence =
+            prepared.replay().last_sequence;
+        (prepared, reconciliation)
+    }
+
+    #[test]
+    fn abandoned_leases_flush_before_publication_and_owner_failure_prevents_startup() {
+        for fail_flush in [false, true] {
+            let directory = TestDirectory::new("abandoned-leases");
+            let (session, _) = SessionOwner::spawn(
+                SessionOwnerConfig::new(directory.0.join("session.db")),
+                accept_all_options,
+            )
+            .unwrap();
+            let (prepared, reconciliation) = abandoned_fixture(&directory);
+            let backend = Backend {
+                prepared: Some(prepared),
+                calls: Vec::new(),
+                fail_prepare: false,
+            };
+            let mut executor = NativeStartupExecutor::new(
+                session.clone(),
+                backend,
+                reconciliation,
+                config(),
+                10,
+                10,
+            );
+            let mut reached_flush = false;
+            for _ in 0..1000 {
+                if executor.offered.as_ref().is_some_and(|offered| {
+                    matches!(offered.action, super::OwnerAction::FlushLeaseAborts(_, 7))
+                }) {
+                    reached_flush = true;
+                    break;
+                }
+                assert!(!matches!(
+                    executor.poll(),
+                    NativeStartupPoll::Complete | NativeStartupPoll::Faulted
+                ));
+                std::thread::park_timeout(std::time::Duration::from_millis(1));
+            }
+            assert!(
+                reached_flush,
+                "both abandoned leases must be followed by a flush"
+            );
+            assert!(!executor.is_complete());
+            assert!(executor.installed_journals.is_empty());
+            if fail_flush {
+                session.shutdown().unwrap();
+            }
+            drive(&mut executor);
+            if fail_flush {
+                assert!(matches!(
+                    executor.fault(),
+                    Some(NativeStartupError::Owner(_))
+                ));
+                assert!(!executor.is_complete());
+                assert!(executor.finish().is_err());
+            } else {
+                let startup = executor.finish().unwrap();
+                assert_eq!(startup.installed_journals, BTreeSet::from([gid(1)]));
+                let SessionCommandResult::JournalSnapshot(snapshot) = session
+                    .execute(SessionCommand::SnapshotJournal { gid: gid(1) })
+                    .unwrap()
+                else {
+                    panic!("snapshot")
+                };
+                assert_eq!(snapshot.last_sequence, 7);
+                let replay = recover_journal_state(
+                    &snapshot.records,
+                    task_id(1),
+                    &accept_all_options,
+                    JournalStateLimits::default(),
+                );
+                assert_eq!(replay.stop, JournalStateStop::CleanEnd);
+                let state = replay.state.unwrap();
+                assert!(state.abandoned_leases().is_empty());
+                assert_eq!(startup.startup.tasks[0].journal, state);
+                session.shutdown().unwrap();
+            }
+        }
     }
 
     #[test]

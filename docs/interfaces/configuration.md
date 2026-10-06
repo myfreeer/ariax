@@ -516,8 +516,20 @@ other restart-required settings change. The authoritative adapter behavior is in
 
 ## Compatibility Matrix Categories
 
-The full matrix should be generated into a machine-readable file during
-implementation. This draft lists the intended category-level ownership.
+The [generated compatibility inventory](../../generated/aria2_compat.json)
+records the current reviewed registry: 108 entries, covering 54 of the pinned
+aria2 reference's 207 option handlers. These counts do not measure RPC-method
+coverage. The category lists below describe target ownership; they do not
+override the generated status, executable option allowlists or feature gates.
+Full aria2 parity remains an open acceptance decision for the experimental CLI.
+
+At the `addUri` per-download boundary, options absent from the reviewed registry
+are rejected before task creation. The explicit `pause` admission flag is the
+exception and accepts only a boolean or its `true`/`false` string form. A startup
+flag such as `conf-path` having its own CLI handler does not authorize it inside
+an `addUri` option map. Invalid mixed option maps must not leave task metadata.
+Supported registry entries still require the appropriate scope, security class,
+feature and executable handler; parsing alone never establishes support.
 
 Basic:
 

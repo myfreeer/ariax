@@ -82,6 +82,16 @@
     "active-soak-smoke/active-journal-decoded.json": "208d627bbf3985d3b183bcc95933d56d8f543d64690e192d88062f369b07d8dd",
     "advisories/result.json": "53a142aa966b7b1e2979ac41625a2e96e8a6171830fb30cfb0a44f6bea30e800",
     "advisories/details.json": "1f450ddcad0b1ee357f7141b833979df4096b05893d08c4370510aca91633683",
-    "plan.json": "3754b808666eb37ab86092c3d3096a0dd4367edb40f0563c5fd929569f60d529"
+    "plan.json": "3754b808666eb37ab86092c3d3096a0dd4367edb40f0563c5fd929569f60d529",
+    "recovery/checks-final.json": "ee89627c69971004fde1272251b98def58b32cd08704abaedce670e867d15e4a",
+    "recovery/checks-linux.json": "085ee7922ea5cf0834040b373e8b2118960b2ff9407115d1f55373bd0cd7cd30",
+    "recovery/build-final.json": "6efe0a05cc7b70552ffd22b965ce1d2d48b4e310a88e4af32fc7d1a2539f7945",
+    "recovery/active-soak-fixed-smoke/result.json": "8f7c437273c2baed68ade9ce88bc5707e5e60ee00593556b2e403ad6cfb75250"
+  },
+  "recoveryRepair": {
+    "status": "short-fixture-and-regressions-passed",
+    "remaining": "30-minute soak running; retained original failed fixture remains unchanged",
+    "longSoakSession": 36095,
+    "description": "Durably abort abandoned nonterminal leases before scheduler publication; advance recovered projection only after exact flush acknowledgement."
   }
 }

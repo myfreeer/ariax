@@ -473,6 +473,15 @@ written may remain physically present, but they do not enter trusted progress,
 are not replayed as downloaded, and may be overwritten in the same generation.
 A crash has the same effect on every begun but uncommitted lease.
 
+For nonterminal tasks, semantic recovery retains those abandoned lease IDs as startup work,
+never as trusted progress or live worker leases. Before publishing the recovered
+scheduler, native startup appends a `LeaseAborted` with `generation_drain` for
+each ID in the recovered generation and flushes the final abort. These writes
+use the bounded session-owner queue. A restart between aborts replays the
+remaining IDs and completes the same drain before admission. A failed append
+or flush prevents startup publication. Ordinary generation transitions still
+reject journals with active leases; recovery does not weaken that guard.
+
 An endgame overlap group uses conservative metadata rollback rather than
 physical byte rollback:
 

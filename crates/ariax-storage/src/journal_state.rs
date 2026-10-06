@@ -354,6 +354,7 @@ pub struct RecoveredJournalState {
     protocol_validators: BTreeMap<JournalHash, crate::ProtocolValidator>,
     whole_file_verified: bool,
     committed_spans: BTreeMap<LeaseId, JournalContributor>,
+    abandoned_leases: Vec<LeaseId>,
     durable_pieces: BTreeMap<PieceId, RecoveredDurablePiece>,
     retry_states: BTreeMap<(u8, u64), RecoveredRetryState>,
     paused: Option<TaskPauseReason>,
@@ -367,6 +368,38 @@ pub struct RecoveredJournalState {
 }
 
 impl RecoveredJournalState {
+    /// Begun but uncommitted leases that must be durably aborted before readmission.
+    /// These IDs confer no live lease authority or trusted progress.
+    #[must_use]
+    pub fn abandoned_leases(&self) -> &[LeaseId] {
+        &self.abandoned_leases
+    }
+
+    /// Advances the recovered projection only after all startup lease aborts
+    /// have crossed the owner's journal flush barrier.
+    pub fn acknowledge_recovery_lease_aborts(
+        &mut self,
+        flushed: crate::Flushed,
+    ) -> Result<(), JournalStateError> {
+        let actual = flushed.through_sequence();
+        let expected = self
+            .last_sequence
+            .checked_add(self.abandoned_leases.len() as u64)
+            .ok_or(JournalStateError::SequenceMismatch {
+                expected: u64::MAX,
+                actual,
+            })?;
+        if actual != expected {
+            return Err(JournalStateError::SequenceMismatch { expected, actual });
+        }
+        self.last_sequence = actual;
+        if !self.abandoned_leases.is_empty() {
+            self.abandoned_leases.clear();
+            self.clean_shutdown = None;
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub const fn task(&self) -> TaskId {
         self.task
@@ -1179,7 +1212,7 @@ where
     Ok(())
 }
 
-fn finish_replay<P>(machine: SemanticMachine<'_, P>, accepted: usize) -> JournalStateReplay
+fn finish_replay<P>(mut machine: SemanticMachine<'_, P>, accepted: usize) -> JournalStateReplay
 where
     P: PersistedOptionPolicy + ?Sized,
 {
@@ -1187,6 +1220,27 @@ where
         .state
         .as_ref()
         .map_or(0, RecoveredJournalState::last_sequence);
+    if let Some(state) = &mut machine.state
+        && state.terminal.is_none()
+    {
+        if state
+            .abandoned_leases
+            .try_reserve_exact(machine.active_leases.len())
+            .is_err()
+        {
+            return invalid_replay(
+                machine.state,
+                accepted,
+                last_sequence,
+                accepted,
+                last_sequence,
+                JournalStateError::AllocationFailed,
+            );
+        }
+        state
+            .abandoned_leases
+            .extend(machine.active_leases.keys().copied());
+    }
     let stop = if let Some(pending) = machine.pending_manifest {
         JournalStateStop::IncompleteVerificationManifest {
             expected_chunk: pending.next,
@@ -1738,6 +1792,7 @@ where
             protocol_validators: BTreeMap::new(),
             whole_file_verified: false,
             committed_spans: BTreeMap::new(),
+            abandoned_leases: Vec::new(),
             durable_pieces: BTreeMap::new(),
             retry_states: BTreeMap::new(),
             paused: None,
@@ -3302,6 +3357,116 @@ mod tests {
             record(2, 0, current_options(&[("piece-length", "1M")])),
             record(3, 0, layout.committed),
         ]
+    }
+
+    #[test]
+    fn abandoned_lease_recovery_is_restartable_and_keeps_generation_guard() {
+        let mut prefix = base_records(layout_fixture(Generation::INITIAL, false));
+        for id in [11, 12, 13] {
+            prefix.push(record(
+                prefix.len() as u64 + 1,
+                0,
+                JournalPayload::LeaseStarted {
+                    transfer_attempt_id: TransferAttemptId::new(id).unwrap(),
+                    lease_id: LeaseId::new(id).unwrap(),
+                    span: span(0, 1024),
+                    validator_fingerprint: hash(42),
+                },
+            ));
+        }
+        prefix.push(record(
+            prefix.len() as u64 + 1,
+            0,
+            JournalPayload::LeaseCommitted {
+                lease_id: LeaseId::new(11).unwrap(),
+                span: span(0, 1024),
+                validator_fingerprint: hash(42),
+                response_digest: None,
+            },
+        ));
+        for cut in 0..=2 {
+            let mut records = prefix.clone();
+            for id in 12..12 + cut {
+                records.push(record(
+                    records.len() as u64 + 1,
+                    0,
+                    JournalPayload::LeaseAborted {
+                        lease_id: LeaseId::new(id).unwrap(),
+                        reason: crate::LeaseAbortReason::GenerationDrain,
+                    },
+                ));
+            }
+            let replay = recover_journal_state(&records, task(), &allow_all, Default::default());
+            assert_eq!(replay.stop, JournalStateStop::CleanEnd);
+            let state = replay.state.unwrap();
+            assert_eq!(
+                state.abandoned_leases(),
+                &(12 + cut..14)
+                    .map(|id| LeaseId::new(id).unwrap())
+                    .collect::<Vec<_>>()
+            );
+            assert!(state.durable_pieces().is_empty());
+            let options = state.current_options().unwrap().options().clone();
+            records.push(record(
+                records.len() as u64 + 1,
+                0,
+                JournalPayload::OptionsSnapshot {
+                    scope: OptionsSnapshotScope::NextAdmission,
+                    patch_id: None,
+                    snapshot_hash: options.snapshot_hash(),
+                    options: options.clone(),
+                },
+            ));
+            records.push(record(
+                records.len() as u64 + 1,
+                1,
+                JournalPayload::GenerationStarted {
+                    previous_generation: Generation::INITIAL,
+                    reason: GenerationStartReason::RetryReadmission,
+                    next_snapshot_hash: options.snapshot_hash(),
+                    patch_id: None,
+                },
+            ));
+            let replay = recover_journal_state(&records, task(), &allow_all, Default::default());
+            if cut == 2 {
+                assert_eq!(replay.stop, JournalStateStop::CleanEnd);
+                assert!(replay.state.unwrap().abandoned_leases().is_empty());
+            } else {
+                assert!(matches!(
+                    replay.stop,
+                    JournalStateStop::InvalidRecord {
+                        error: JournalStateError::GenerationNotDrained,
+                        ..
+                    }
+                ));
+            }
+        }
+        let mut terminal = prefix.clone();
+        terminal.push(record(
+            terminal.len() as u64 + 1,
+            0,
+            JournalPayload::TaskRemoved {
+                reason: crate::TaskRemoveReason::User,
+            },
+        ));
+        let replay = recover_journal_state(&terminal, task(), &allow_all, Default::default());
+        assert_eq!(replay.stop, JournalStateStop::CleanEnd);
+        assert!(replay.state.unwrap().abandoned_leases().is_empty());
+        prefix.push(record(
+            prefix.len() as u64 + 1,
+            0,
+            JournalPayload::LeaseAborted {
+                lease_id: LeaseId::new(11).unwrap(),
+                reason: crate::LeaseAbortReason::GenerationDrain,
+            },
+        ));
+        assert!(matches!(
+            recover_journal_state(&prefix, task(), &allow_all, Default::default()).stop,
+            JournalStateStop::InvalidRecord {
+                error: JournalStateError::UnknownLease,
+                ..
+            }
+        ));
     }
 
     #[test]
