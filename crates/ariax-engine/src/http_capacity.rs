@@ -25,6 +25,7 @@ pub struct HttpProcessResources {
     transport: HttpTransportBudgets,
     ingress: HttpIngressBudgets,
     protocol_metadata: HttpIngressBudgets,
+    journal_replay: HttpIngressBudgets,
     sftp_ingress: HttpIngressBudgets,
     discard: HttpDiscardBudget,
     rpc: RpcBudgets,
@@ -97,6 +98,10 @@ impl HttpProcessResources {
             ),
             protocol_metadata: HttpIngressBudgets::with_shared_resident(
                 limits.task_metadata_budget_bytes,
+                resident.clone(),
+            ),
+            journal_replay: HttpIngressBudgets::with_shared_resident(
+                (128 * 1024 * 1024).min(limits.accounted_resident_limit_bytes),
                 resident.clone(),
             ),
             sftp_ingress: HttpIngressBudgets::with_shared_resident(
@@ -217,6 +222,7 @@ impl HttpProcessResources {
             storage,
             ingress_budget: self.ingress.clone(),
             protocol_metadata: self.protocol_metadata.clone(),
+            journal_replay: self.journal_replay.clone(),
             server_stats: self.server_stats.clone(),
             sftp_ingress: self.sftp_ingress.clone(),
             discard_budget: self.discard.clone(),
@@ -357,6 +363,29 @@ mod tests {
         );
         drop((active, sockets));
         assert_eq!(resources.resident_budget().used(), 0);
+    }
+
+    #[test]
+    fn journal_replay_reservations_contend_with_the_shared_resident_budget() {
+        use ariax_storage::JournalReplayBudget;
+        let resources = HttpProcessResources::with_native_handle_limit(
+            RuntimeProfile::Concurrency,
+            Some(16_384 + PROFILE_CONTROL_HANDLE_RESERVE),
+        )
+        .unwrap();
+        let resident = resources.resident_budget();
+        let baseline = resident.used();
+        let replay = resources.journal_replay.reserve(1024).unwrap();
+        assert_eq!(resident.used(), baseline + 1024);
+        assert_eq!(resources.journal_replay.used(), 1024);
+        let other = resident.try_acquire(resident.available()).unwrap();
+        assert!(resources.journal_replay.reserve(1).is_none());
+        assert_eq!(resources.journal_replay.used(), 1024);
+        drop(replay);
+        assert_eq!(resources.journal_replay.used(), 0);
+        let admitted = resources.journal_replay.reserve(1024).unwrap();
+        drop((admitted, other));
+        assert_eq!(resident.used(), baseline);
     }
 
     #[test]

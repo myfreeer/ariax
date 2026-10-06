@@ -260,7 +260,379 @@
     }
   },
   "remaining": [
-    "Candidate source/build identity and final release matrix.",
-    "Clean-host packaging tests for intended supported OS versions."
-  ]
+    "Final release candidate freeze and full candidate matrix.",
+    "Fresh/minimum-OS and other-platform redistribution/runtime acceptance."
+  ],
+  "currentFollowUp": {
+    "date": "2026-10-06",
+    "scope": "Current Linux/Windows-GNU draft archive preparation; historical review and failed binary identities remain retained. Full release and fresh/minimum-OS acceptance remain separate.",
+    "evidence": "performance-evidence/phase7-local-remaining-2026-10-06.json",
+    "dependencyLockSha256": "88354f509ecd03283a5f7121b3f700cbdd820785dfd9413900cd91a3debadd6f",
+    "inventory": "performance-evidence/phase7-release-license-inventory-2026-10-06.json",
+    "inventorySha256": "302c4cc76dc7aedc747543b3e71c90cf158ff33945382d4c14728a63a2811288",
+    "noticeArtifact": {
+      "path": "performance-evidence/phase7-third-party-notices-2026-10-06.txt",
+      "sha256": "e487b30cfac2030c8a9cd63a9d3dcace6ac22c64dbc33447e66e98977bcdb856",
+      "bytes": 767927,
+      "uniqueTexts": 236
+    },
+    "selectedPackages": 314,
+    "externalPackages": 304,
+    "nativeVersions": [
+      "libtorrent@2.1.1",
+      "boost@1.91.0",
+      "openssl@3.6.5"
+    ],
+    "runtimeReviewSha256": "81d5e18d547fa763660f1c8633dddbb520b1d5a9cf526473d64bdb457bb0f8b3",
+    "packages": {
+      "x86_64-unknown-linux-gnu-minimal": {
+        "binarySha256": "cb87b4d9bd83cc0c30609cdc2e0d03dc930a42fb31e42747be17f0be23337859",
+        "runtime": {
+          "systemLibraries": [
+            "libc.so.6",
+            "libgcc_s.so.1",
+            "libm.so.6"
+          ],
+          "additionalRuntimeFiles": [],
+          "minimumGlibc": "2.34",
+          "interpreter": "/lib64/ld-linux-x86-64.so.2"
+        },
+        "pathAudit": {
+          "passed": true,
+          "counts": {
+            "wslMount": 0,
+            "windowsTemp": 0,
+            "windowsUser": 0,
+            "unixHome": 0
+          },
+          "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
+        },
+        "independentBinaryMatched": true,
+        "nativeLibrariesConsumed": false
+      },
+      "x86_64-unknown-linux-gnu-standard": {
+        "binarySha256": "3c1f485a40949300dd7bed57d2284b1813af0ecdf1fd06244efa0a96b8e45b79",
+        "runtime": {
+          "systemLibraries": [
+            "libc.so.6",
+            "libgcc_s.so.1",
+            "libm.so.6"
+          ],
+          "additionalRuntimeFiles": [],
+          "minimumGlibc": "2.34",
+          "interpreter": "/lib64/ld-linux-x86-64.so.2"
+        },
+        "pathAudit": {
+          "passed": true,
+          "counts": {
+            "wslMount": 0,
+            "windowsTemp": 0,
+            "windowsUser": 0,
+            "unixHome": 0
+          },
+          "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
+        },
+        "independentBinaryMatched": true,
+        "nativeLibrariesConsumed": false
+      },
+      "x86_64-unknown-linux-gnu-full": {
+        "binarySha256": "934b7dcd95a31f508b2822c17366fe9355e6b2bde4170ee8336fe0ea391baee8",
+        "runtime": {
+          "systemLibraries": [
+            "ld-linux-x86-64.so.2",
+            "libc.so.6",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libstdc++.so.6"
+          ],
+          "additionalRuntimeFiles": [],
+          "minimumGlibc": "2.38",
+          "interpreter": "/lib64/ld-linux-x86-64.so.2",
+          "minimumGlibcxx": "3.4.30"
+        },
+        "pathAudit": {
+          "passed": true,
+          "counts": {
+            "wslMount": 0,
+            "windowsTemp": 0,
+            "windowsUser": 0,
+            "unixHome": 0
+          },
+          "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
+        },
+        "independentBinaryMatched": true,
+        "nativeLibrariesConsumed": true
+      },
+      "x86_64-unknown-linux-gnu-compat": {
+        "binarySha256": "e0146e274e6c880af633d5ef80009f515ae3adda61fd9141252a9236392ef5f9",
+        "runtime": {
+          "systemLibraries": [
+            "ld-linux-x86-64.so.2",
+            "libc.so.6",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libstdc++.so.6"
+          ],
+          "additionalRuntimeFiles": [],
+          "minimumGlibc": "2.38",
+          "interpreter": "/lib64/ld-linux-x86-64.so.2",
+          "minimumGlibcxx": "3.4.30"
+        },
+        "pathAudit": {
+          "passed": true,
+          "counts": {
+            "wslMount": 0,
+            "windowsTemp": 0,
+            "windowsUser": 0,
+            "unixHome": 0
+          },
+          "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
+        },
+        "independentBinaryMatched": true,
+        "nativeLibrariesConsumed": true
+      },
+      "x86_64-pc-windows-gnu-minimal": {
+        "binarySha256": "cfefb3f5a4e0daf96629029200df8646356ea03c14206e0d964a8b2316042f5e",
+        "runtime": {
+          "systemLibraries": [
+            "advapi32.dll",
+            "api-ms-win-core-synch-l1-2-0.dll",
+            "bcrypt.dll",
+            "bcryptprimitives.dll",
+            "crypt32.dll",
+            "iphlpapi.dll",
+            "kernel32.dll",
+            "msvcrt.dll",
+            "ntdll.dll",
+            "oleaut32.dll",
+            "ws2_32.dll"
+          ],
+          "additionalRuntimeFiles": []
+        },
+        "pathAudit": {
+          "passed": true,
+          "counts": {
+            "wslMount": 0,
+            "windowsTemp": 0,
+            "windowsUser": 0,
+            "unixHome": 0
+          },
+          "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
+        },
+        "independentBinaryMatched": true,
+        "nativeLibrariesConsumed": false
+      },
+      "x86_64-pc-windows-gnu-standard": {
+        "binarySha256": "28b7d0acc34dacf8b4246d77db6ee7f2e9bd173bf75a6275be91d85577300fb5",
+        "runtime": {
+          "systemLibraries": [
+            "advapi32.dll",
+            "api-ms-win-core-synch-l1-2-0.dll",
+            "bcrypt.dll",
+            "bcryptprimitives.dll",
+            "crypt32.dll",
+            "iphlpapi.dll",
+            "kernel32.dll",
+            "msvcrt.dll",
+            "ntdll.dll",
+            "oleaut32.dll",
+            "ws2_32.dll"
+          ],
+          "additionalRuntimeFiles": []
+        },
+        "pathAudit": {
+          "passed": true,
+          "counts": {
+            "wslMount": 0,
+            "windowsTemp": 0,
+            "windowsUser": 0,
+            "unixHome": 0
+          },
+          "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
+        },
+        "independentBinaryMatched": true,
+        "nativeLibrariesConsumed": false
+      },
+      "x86_64-pc-windows-gnu-full": {
+        "binarySha256": "77c19dfa55a49fc9a0557940160c4149f0b690ecc01910f9247a8bec97090a30",
+        "runtime": {
+          "systemLibraries": [
+            "advapi32.dll",
+            "api-ms-win-core-synch-l1-2-0.dll",
+            "bcrypt.dll",
+            "bcryptprimitives.dll",
+            "crypt32.dll",
+            "iphlpapi.dll",
+            "kernel32.dll",
+            "msvcrt.dll",
+            "mswsock.dll",
+            "ntdll.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "ws2_32.dll"
+          ],
+          "additionalRuntimeFiles": [
+            {
+              "destination": "libstdc++-6.dll",
+              "artifactPath": "runtime/libstdc++-6.dll",
+              "sha256": "887c21dbe2a211ac4d1a790e4f608b7dee27fae12352856963004e7a715d2e6c",
+              "bytes": 2661299,
+              "imports": [
+                "kernel32.dll",
+                "libgcc_s_seh-1.dll",
+                "libwinpthread-1.dll",
+                "msvcrt.dll"
+              ],
+              "package": "mingw-w64-x86_64-gcc-libs",
+              "version": "16.2.0-3",
+              "source": "https://github.com/msys2/MINGW-packages/tree/master/mingw-w64-gcc",
+              "license": "GPL-3.0-or-later WITH GCC-exception-3.1",
+              "notices": [
+                "licenses/gcc-GPL-3.0.txt",
+                "licenses/gcc-runtime-exception.txt"
+              ]
+            },
+            {
+              "destination": "libgcc_s_seh-1.dll",
+              "artifactPath": "runtime/libgcc_s_seh-1.dll",
+              "sha256": "b37c1770c8ca092700875845b34918803ee6311573eba1c32ff4b1166e4a0e1e",
+              "bytes": 150998,
+              "imports": [
+                "kernel32.dll",
+                "libwinpthread-1.dll",
+                "msvcrt.dll"
+              ],
+              "package": "mingw-w64-x86_64-gcc-libs",
+              "version": "16.2.0-3",
+              "source": "https://github.com/msys2/MINGW-packages/tree/master/mingw-w64-gcc",
+              "license": "GPL-3.0-or-later WITH GCC-exception-3.1",
+              "notices": [
+                "licenses/gcc-GPL-3.0.txt",
+                "licenses/gcc-runtime-exception.txt"
+              ]
+            },
+            {
+              "destination": "libwinpthread-1.dll",
+              "artifactPath": "runtime/libwinpthread-1.dll",
+              "sha256": "8d7a192a8fbbccb0cebeac272701f66a580f493eff2336739a96144119260723",
+              "bytes": 63875,
+              "imports": [
+                "kernel32.dll",
+                "msvcrt.dll"
+              ],
+              "package": "mingw-w64-x86_64-libwinpthread",
+              "version": "14.0.0.r283.ga7cb47123-1",
+              "source": "https://github.com/msys2/MINGW-packages/tree/master/mingw-w64-winpthreads",
+              "license": "MIT AND BSD-3-Clause-Clear",
+              "notices": [
+                "licenses/winpthread.txt"
+              ]
+            }
+          ]
+        },
+        "pathAudit": {
+          "passed": true,
+          "counts": {
+            "wslMount": 0,
+            "windowsTemp": 0,
+            "windowsUser": 0,
+            "unixHome": 0
+          },
+          "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
+        },
+        "independentBinaryMatched": true,
+        "nativeLibrariesConsumed": true
+      },
+      "x86_64-pc-windows-gnu-compat": {
+        "binarySha256": "499019a8b4d9b97b7b3eef1f081c42c7220374481dbc8eaf7fb7ca7c10381f89",
+        "runtime": {
+          "systemLibraries": [
+            "advapi32.dll",
+            "api-ms-win-core-synch-l1-2-0.dll",
+            "bcrypt.dll",
+            "bcryptprimitives.dll",
+            "crypt32.dll",
+            "iphlpapi.dll",
+            "kernel32.dll",
+            "msvcrt.dll",
+            "mswsock.dll",
+            "ntdll.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "ws2_32.dll"
+          ],
+          "additionalRuntimeFiles": [
+            {
+              "destination": "libstdc++-6.dll",
+              "artifactPath": "runtime/libstdc++-6.dll",
+              "sha256": "887c21dbe2a211ac4d1a790e4f608b7dee27fae12352856963004e7a715d2e6c",
+              "bytes": 2661299,
+              "imports": [
+                "kernel32.dll",
+                "libgcc_s_seh-1.dll",
+                "libwinpthread-1.dll",
+                "msvcrt.dll"
+              ],
+              "package": "mingw-w64-x86_64-gcc-libs",
+              "version": "16.2.0-3",
+              "source": "https://github.com/msys2/MINGW-packages/tree/master/mingw-w64-gcc",
+              "license": "GPL-3.0-or-later WITH GCC-exception-3.1",
+              "notices": [
+                "licenses/gcc-GPL-3.0.txt",
+                "licenses/gcc-runtime-exception.txt"
+              ]
+            },
+            {
+              "destination": "libgcc_s_seh-1.dll",
+              "artifactPath": "runtime/libgcc_s_seh-1.dll",
+              "sha256": "b37c1770c8ca092700875845b34918803ee6311573eba1c32ff4b1166e4a0e1e",
+              "bytes": 150998,
+              "imports": [
+                "kernel32.dll",
+                "libwinpthread-1.dll",
+                "msvcrt.dll"
+              ],
+              "package": "mingw-w64-x86_64-gcc-libs",
+              "version": "16.2.0-3",
+              "source": "https://github.com/msys2/MINGW-packages/tree/master/mingw-w64-gcc",
+              "license": "GPL-3.0-or-later WITH GCC-exception-3.1",
+              "notices": [
+                "licenses/gcc-GPL-3.0.txt",
+                "licenses/gcc-runtime-exception.txt"
+              ]
+            },
+            {
+              "destination": "libwinpthread-1.dll",
+              "artifactPath": "runtime/libwinpthread-1.dll",
+              "sha256": "8d7a192a8fbbccb0cebeac272701f66a580f493eff2336739a96144119260723",
+              "bytes": 63875,
+              "imports": [
+                "kernel32.dll",
+                "msvcrt.dll"
+              ],
+              "package": "mingw-w64-x86_64-libwinpthread",
+              "version": "14.0.0.r283.ga7cb47123-1",
+              "source": "https://github.com/msys2/MINGW-packages/tree/master/mingw-w64-winpthreads",
+              "license": "MIT AND BSD-3-Clause-Clear",
+              "notices": [
+                "licenses/winpthread.txt"
+              ]
+            }
+          ]
+        },
+        "pathAudit": {
+          "passed": true,
+          "counts": {
+            "wslMount": 0,
+            "windowsTemp": 0,
+            "windowsUser": 0,
+            "unixHome": 0
+          },
+          "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
+        },
+        "independentBinaryMatched": true,
+        "nativeLibrariesConsumed": true
+      }
+    }
+  }
 }

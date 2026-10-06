@@ -15,6 +15,9 @@ use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
+mod replay_budget;
+pub use replay_budget::{JournalReplayBudget, JournalReplayReservation, ReservedJournalReplay};
+
 pub const JOURNAL_SEGMENT_FILE_PREFIX: &str = "segment-";
 pub const JOURNAL_SEGMENT_FILE_SUFFIX: &str = ".arxj";
 pub const JOURNAL_TEMP_FILE_SUFFIX: &str = ".tmp";
@@ -225,6 +228,9 @@ pub enum JournalAppenderError {
     RecoveryInputBytesExceeded {
         limit: usize,
     },
+    RecoveryMemoryLimit {
+        requested: usize,
+    },
     RecoveryTaskMismatch {
         expected: Gid,
         actual: Gid,
@@ -250,6 +256,7 @@ impl JournalAppenderError {
             Self::TailMismatch(_) => "tail_mismatch",
             Self::RecoverySegmentPath { .. } => "recovery_segment_path",
             Self::RecoveryInputBytesExceeded { .. } => "recovery_input_bytes_exceeded",
+            Self::RecoveryMemoryLimit { .. } => "recovery_memory_limit",
             Self::RecoveryTaskMismatch { .. } => "recovery_task_mismatch",
             Self::RecoveryJournalMismatch { .. } => "recovery_journal_mismatch",
             Self::RecoveryStopped(_) => "recovery_stopped",
@@ -257,7 +264,7 @@ impl JournalAppenderError {
     }
 }
 
-pub const ALL_JOURNAL_APPENDER_ERROR_CODES: [&str; 13] = [
+pub const ALL_JOURNAL_APPENDER_ERROR_CODES: [&str; 14] = [
     "payload",
     "journal",
     "io",
@@ -268,6 +275,7 @@ pub const ALL_JOURNAL_APPENDER_ERROR_CODES: [&str; 13] = [
     "tail_mismatch",
     "recovery_segment_path",
     "recovery_input_bytes_exceeded",
+    "recovery_memory_limit",
     "recovery_task_mismatch",
     "recovery_journal_mismatch",
     "recovery_stopped",
@@ -318,6 +326,10 @@ impl fmt::Display for JournalAppenderError {
             Self::RecoveryInputBytesExceeded { limit } => write!(
                 formatter,
                 "journal recovery input exceeds the encoded-byte budget of {limit}"
+            ),
+            Self::RecoveryMemoryLimit { requested } => write!(
+                formatter,
+                "journal replay memory reservation of {requested} bytes was rejected"
             ),
             Self::RecoveryTaskMismatch { .. } => {
                 formatter.write_str("journal recovery task identity does not match")
@@ -618,9 +630,8 @@ impl ControlJournalAppender {
             }
             segment_names.push(name);
         }
-        let recovery_entries = directory_capability
-            .entries()
-            .map_err(|error| capability_error(JournalIoOperation::InspectRecoverySegment, error))?;
+        let recovery_entries =
+            replay_directory_entries(&directory_capability, segment_names.len())?;
         let publication_candidates = validate_published_candidates(
             &directory_capability,
             &segment_names,
@@ -1143,9 +1154,7 @@ fn validate_recovery_directory(
     installed_segment_names: &[OsString],
     publication_candidates: &[PublishedCandidate],
 ) -> Result<(), JournalAppenderError> {
-    let entries = directory
-        .entries()
-        .map_err(|error| capability_error(JournalIoOperation::InspectRecoverySegment, error))?;
+    let entries = replay_directory_entries(directory, installed_segment_names.len())?;
     for installed_name in installed_segment_names {
         if !entries.contains(installed_name) {
             return Err(JournalAppenderError::RecoverySegmentPath {
@@ -1447,10 +1456,18 @@ fn open_repaired_recovered_appender(
             .map_err(JournalAppenderError::Journal)?;
         let final_name = OsString::from(journal_segment_file_name(next_header.segment_index()));
         let temporary_name = journal_temporary_segment_file_name(next_header.segment_index());
-        if capability_name_exists(&prepared.directory_capability, &final_name)? {
+        if capability_name_exists(
+            &prepared.directory_capability,
+            &final_name,
+            prepared.segment_paths.len(),
+        )? {
             return Err(JournalAppenderError::SegmentPathExists { temporary: false });
         }
-        if capability_name_exists(&prepared.directory_capability, &temporary_name)? {
+        if capability_name_exists(
+            &prepared.directory_capability,
+            &temporary_name,
+            prepared.segment_paths.len(),
+        )? {
             return Err(JournalAppenderError::SegmentPathExists { temporary: true });
         }
         Some(next_header)
@@ -1649,10 +1666,14 @@ fn install_segment(
     let final_name = OsString::from(journal_segment_file_name(header.segment_index()));
     let temporary_name = journal_temporary_segment_file_name(header.segment_index());
     let final_path = directory.display().join(&final_name);
-    if capability_name_exists(directory, &final_name)? {
+    if capability_name_exists(directory, &final_name, header.segment_index() as usize + 1)? {
         return Err(JournalAppenderError::SegmentPathExists { temporary: false });
     }
-    if capability_name_exists(directory, &temporary_name)? {
+    if capability_name_exists(
+        directory,
+        &temporary_name,
+        header.segment_index() as usize + 1,
+    )? {
         return Err(JournalAppenderError::SegmentPathExists { temporary: true });
     }
     let mut temporary = directory
@@ -1719,11 +1740,28 @@ fn journal_temporary_segment_file_name(segment_index: u32) -> OsString {
 fn capability_name_exists(
     directory: &JournalDirectoryCapability,
     name: &OsStr,
+    segments: usize,
 ) -> Result<bool, JournalAppenderError> {
-    directory
-        .entries()
+    replay_directory_entries(directory, segments)
         .map(|entries| entries.iter().any(|entry| entry == name))
-        .map_err(|error| capability_error(JournalIoOperation::InspectSegmentPath, error))
+}
+
+fn replay_directory_entries(
+    directory: &JournalDirectoryCapability,
+    segments: usize,
+) -> Result<Vec<OsString>, JournalAppenderError> {
+    // At most one publication alias per segment plus a successor pair. Names
+    // are fixed ASCII; 128 bytes each also covers native UTF-16 enumeration.
+    let names = segments.checked_mul(2).and_then(|n| n.checked_add(2));
+    let (names, bytes) =
+        names
+            .and_then(|n| Some((n, n.checked_mul(128)?)))
+            .ok_or(JournalAppenderError::Journal(
+                JournalEncodeError::AllocationFailed,
+            ))?;
+    directory
+        .entries_limited(names, bytes)
+        .map_err(|error| capability_error(JournalIoOperation::InspectRecoverySegment, error))
 }
 
 #[cfg(test)]
@@ -1973,6 +2011,215 @@ mod tests {
         JournalPayload::TaskPaused {
             reason: TaskPauseReason::User,
         }
+    }
+
+    #[derive(Debug)]
+    struct ReplayBudget {
+        used: Arc<std::sync::atomic::AtomicUsize>,
+        limit: usize,
+    }
+
+    #[derive(Debug)]
+    struct ReplayCharge {
+        used: Arc<std::sync::atomic::AtomicUsize>,
+        bytes: usize,
+    }
+
+    impl Drop for ReplayCharge {
+        fn drop(&mut self) {
+            self.used.fetch_sub(self.bytes, Ordering::SeqCst);
+        }
+    }
+
+    impl super::JournalReplayBudget for ReplayBudget {
+        fn reserve(&self, bytes: usize) -> Option<super::JournalReplayReservation> {
+            (bytes <= self.limit
+                && self
+                    .used
+                    .compare_exchange(0, bytes, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok())
+            .then(|| {
+                super::JournalReplayReservation::new(ReplayCharge {
+                    used: self.used.clone(),
+                    bytes,
+                })
+            })
+        }
+    }
+
+    #[test]
+    fn budgeted_replay_clones_share_data_and_hold_credit_until_final_drop() {
+        let directory = TestDirectory::new();
+        let mut appender = ControlJournalAppender::create(
+            directory.path(),
+            gid(),
+            journal_id(),
+            Generation::INITIAL,
+            100,
+        )
+        .unwrap();
+        let used = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let budget = ReplayBudget {
+            used: used.clone(),
+            limit: 16 * 1024 * 1024,
+        };
+        for count in 1..=65 {
+            appender
+                .append_payload(Generation::INITIAL, &task_created())
+                .unwrap();
+            let snapshot = appender
+                .snapshot_with_budget(ReplayLimits::default(), &budget)
+                .unwrap();
+            assert_eq!(snapshot.records.len(), count);
+            let reserved = used.load(Ordering::SeqCst);
+            let copied_bytes = snapshot.payload_bytes
+                + snapshot.records.capacity() * std::mem::size_of::<crate::JournalRecord>();
+            assert!(reserved >= copied_bytes + appender.valid_length as usize);
+            let clone = snapshot.clone();
+            assert_eq!(snapshot.records.as_ptr(), clone.records.as_ptr());
+            drop(snapshot);
+            assert_eq!(used.load(Ordering::SeqCst), reserved);
+            assert_eq!(clone.last_sequence, count as u64);
+            drop(clone);
+            assert_eq!(used.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[test]
+    fn budgeted_replay_rejection_and_validation_failure_release_credit_without_losing_owner() {
+        let directory = TestDirectory::new();
+        let mut appender = ControlJournalAppender::create(
+            directory.path(),
+            gid(),
+            journal_id(),
+            Generation::INITIAL,
+            100,
+        )
+        .unwrap();
+        appender
+            .append_payload(Generation::INITIAL, &task_created())
+            .unwrap();
+        let used = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut budget = ReplayBudget {
+            used: used.clone(),
+            limit: 1,
+        };
+        let before = fs::read(appender.active_path()).unwrap();
+        assert!(matches!(
+            appender.snapshot_with_budget(ReplayLimits::default(), &budget),
+            Err(JournalAppenderError::RecoveryMemoryLimit { .. })
+        ));
+        assert_eq!(used.load(Ordering::SeqCst), 0);
+        assert_eq!(fs::read(appender.active_path()).unwrap(), before);
+        appender
+            .append_payload(Generation::INITIAL, &task_paused())
+            .unwrap();
+        budget.limit = 16 * 1024 * 1024;
+        for index in 0..8 {
+            fs::write(directory.path().join(format!("unrelated-{index}")), []).unwrap();
+        }
+        assert!(
+            appender
+                .snapshot_with_budget(ReplayLimits::default(), &budget)
+                .is_err()
+        );
+        assert_eq!(used.load(Ordering::SeqCst), 0);
+        for index in 0..8 {
+            fs::remove_file(directory.path().join(format!("unrelated-{index}"))).unwrap();
+        }
+        let paths = appender.segment_paths().to_vec();
+        appender.flush(2).unwrap();
+        drop(appender);
+        assert!(matches!(
+            ControlJournalAppender::open_recovered_with_budget(
+                directory.path(),
+                &paths,
+                other_gid(),
+                journal_id(),
+                ReplayLimits::default(),
+                Generation::INITIAL,
+                100,
+                &budget,
+            ),
+            Err(JournalAppenderError::RecoveryTaskMismatch { .. })
+        ));
+        assert_eq!(used.load(Ordering::SeqCst), 0);
+        let (mut recovered, replay) = ControlJournalAppender::open_recovered_with_budget(
+            directory.path(),
+            &paths,
+            gid(),
+            journal_id(),
+            ReplayLimits::default(),
+            Generation::INITIAL,
+            100,
+            &budget,
+        )
+        .unwrap();
+        assert_eq!(replay.records.len(), 2);
+        assert!(used.load(Ordering::SeqCst) > 0);
+        drop(replay);
+        assert_eq!(used.load(Ordering::SeqCst), 0);
+        recovered
+            .append_payload(Generation::INITIAL, &task_paused())
+            .unwrap();
+    }
+
+    #[test]
+    fn budgeted_recovery_rechecks_input_size_after_reservation() {
+        #[derive(Debug)]
+        struct GrowingInput {
+            budget: ReplayBudget,
+            path: PathBuf,
+        }
+        impl super::JournalReplayBudget for GrowingInput {
+            fn reserve(&self, bytes: usize) -> Option<super::JournalReplayReservation> {
+                let permit = self.budget.reserve(bytes)?;
+                OpenOptions::new()
+                    .write(true)
+                    .open(&self.path)
+                    .unwrap()
+                    .set_len(8 * 1024 * 1024)
+                    .unwrap();
+                Some(permit)
+            }
+        }
+        let directory = TestDirectory::new();
+        let mut appender = ControlJournalAppender::create(
+            directory.path(),
+            gid(),
+            journal_id(),
+            Generation::INITIAL,
+            100,
+        )
+        .unwrap();
+        appender
+            .append_payload(Generation::INITIAL, &task_created())
+            .unwrap();
+        appender.flush(1).unwrap();
+        let paths = appender.segment_paths().to_vec();
+        drop(appender);
+        let used = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let budget = GrowingInput {
+            budget: ReplayBudget {
+                used: used.clone(),
+                limit: 1024 * 1024,
+            },
+            path: paths[0].clone(),
+        };
+        assert!(matches!(
+            ControlJournalAppender::open_recovered_with_budget(
+                directory.path(),
+                &paths,
+                gid(),
+                journal_id(),
+                ReplayLimits::default(),
+                Generation::INITIAL,
+                100,
+                &budget,
+            ),
+            Err(JournalAppenderError::RecoveryInputBytesExceeded { .. })
+        ));
+        assert_eq!(used.load(Ordering::SeqCst), 0);
     }
 
     #[test]

@@ -112,8 +112,23 @@ def validate(catalog, root=ROOT, artifacts=None):
     require(type(catalog.get('schema')) is int and catalog['schema'] == 1 and catalog.get('releaseApproved') is False,
             'only unapproved version-1 drafts are supported')
     require(catalog.get('dependencyLockSha256') == digest(root / 'Cargo.lock'), 'dependency lock drift')
-    inventory = root / 'performance-evidence/phase7-release-license-inventory-2026-10-05.json'
+    inventory_source = catalog.get('noticeInventorySource',
+                                   'performance-evidence/phase7-release-license-inventory-2026-10-05.json')
+    inventory = contained(root, inventory_source)
     require(catalog.get('noticeInventorySha256') == digest(inventory), 'notice inventory drift')
+    if 'noticeInventorySource' in catalog:
+        notices = json.loads(inventory.read_text(encoding='utf-8'))
+        require(notices.get('cargoLockSha256') == catalog['dependencyLockSha256'], 'inventory lock drift')
+        packaged_inventory = [item for item in catalog['commonFiles']
+                              if item['destination'] == 'license-inventory.json']
+        require(len(packaged_inventory) == 1 and packaged_inventory[0]['source'] == inventory_source
+                and packaged_inventory[0]['sha256'] == catalog['noticeInventorySha256'],
+                'missing or mismatched packaged inventory')
+        packaged_notices = [item for item in catalog['commonFiles']
+                            if item['destination'] == 'THIRD-PARTY-NOTICES.txt']
+        require(len(packaged_notices) == 1
+                and packaged_notices[0]['sha256'] == notices['noticeArtifact']['sha256'],
+                'notice collection drift')
     require(set(catalog.get('excludedSourceArtifacts', [])) == SOURCE_ONLY, 'source exclusion drift')
     expected = {target + '-' + bundle for target in TARGETS for bundle in BUNDLES}
     ids = [package.get('id') for package in catalog['packages']]

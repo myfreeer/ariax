@@ -3,8 +3,8 @@
   "date": "2026-10-06",
   "status": "draft package catalog",
   "releaseApproved": false,
-  "dependencyLockSha256": "0a9174da9937800e0e077561527d2c9002dffe06e14e6d6534568bed1723d876",
-  "noticeInventorySha256": "29b7884b48d921a9f6dedea6272fd25da0e3d2b1484b61fa18021f7569b407f2",
+  "dependencyLockSha256": "88354f509ecd03283a5f7121b3f700cbdd820785dfd9413900cd91a3debadd6f",
+  "noticeInventorySha256": "302c4cc76dc7aedc747543b3e71c90cf158ff33945382d4c14728a63a2811288",
   "noticeScope": "Conservative union of all target/bundle normal and build dependency notices; includes unused/source-only notices. Supplemented by current license-review.json.",
   "commonFiles": [
     {
@@ -22,20 +22,20 @@
     {
       "source": "distribution/package-readme.txt",
       "destination": "README.txt",
-      "bytes": 1800,
-      "sha256": "2ddd0084605e79b974b705f3c0e84e8c55318046db1fb91024e98a5dcd160331"
+      "bytes": 1891,
+      "sha256": "b2308409cbed79af4d81dd8bf2aeaa1e74cdc349a31a7adb28d5c4fe180b69cc"
     },
     {
       "source": "distribution/license-review.json",
       "destination": "license-review.json",
-      "bytes": 11438,
-      "sha256": "5ca74aad39321e86f61067992e8c74f54a7a336fee64eb27db86c3e7a9aace47"
+      "bytes": 24825,
+      "sha256": "518e035f6e5f87532275fec6dae396f1f33ffaeb3ca775b50f84cacd8196017a"
     },
     {
-      "source": "performance-evidence/phase7-third-party-notices-2026-10-05.txt",
+      "source": "performance-evidence/phase7-third-party-notices-2026-10-06.txt",
       "destination": "THIRD-PARTY-NOTICES.txt",
-      "bytes": 768499,
-      "sha256": "b0dbb4edb437570d05f564f09cf25666c3cdc61edfc9472269144f3cbe78512e"
+      "bytes": 767927,
+      "sha256": "e487b30cfac2030c8a9cd63a9d3dcace6ac22c64dbc33447e66e98977bcdb856"
     },
     {
       "source": "assets/public-suffix-list.dat",
@@ -102,6 +102,12 @@
       "destination": "licenses/rust-Apache-2.0.txt",
       "bytes": 10280,
       "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
+    },
+    {
+      "source": "performance-evidence/phase7-release-license-inventory-2026-10-06.json",
+      "destination": "license-inventory.json",
+      "bytes": 314755,
+      "sha256": "302c4cc76dc7aedc747543b3e71c90cf158ff33945382d4c14728a63a2811288"
     }
   ],
   "packages": [
@@ -126,19 +132,19 @@
         }
       ],
       "binary": {
-        "artifactPath": "linux-complete/minimal/ariax",
+        "artifactPath": "cli-linux-a/minimal/ariax",
         "destination": "ariax",
-        "sha256": "ea3c4c586ee466d501c936baf2a5294b71140798161ea73c0448b01767cc7d73",
-        "bytes": 10640072,
-        "sourceCommit": "473045d78e9f4a35a058c6d3333665da393287c8",
-        "buildRecordSha256": "48301aa5c917da713c03efc6b7af9f7d71f889aaf505315a2bbfc23cd271882f",
-        "preparationRecordSha256": "ab68694bd9bad00391d3eb160ab6def719b808f19547a51fcce24dd9ba07e308",
-        "repeatBuildRecordSha256": "fcdd9f26feea314cd21a09bd82785efd0c2fcb22b0bd662b59d67dad5daed034",
+        "sha256": "cb87b4d9bd83cc0c30609cdc2e0d03dc930a42fb31e42747be17f0be23337859",
+        "bytes": 10704264,
+        "sourceCommit": "23da28b7cee2e9b5710c0a9aaa9dfa0ab37af048",
+        "sourceDateEpoch": "1791286491",
+        "preparationRecordSha256": "0c44f8383803c92c2bcf5da841c270001410f37065d1ef4b9114e0fb475eec55",
+        "repeatPreparationRecordSha256": "4863c2e6fdc4409b8175cb93d46e660ffe6275abe1d5aeb628dc20ee74cd40ca",
         "independentBuildMatched": true,
-        "sourceDateEpoch": "1791193771",
-        "evidence": "performance-evidence/phase7-release-paths-2026-10-05.json",
-        "sourceScope": "Two builds with separate target/temp directories match byte for byte; production inputs, source cache and installed toolchain are shared. Not final candidate acceptance.",
-        "supersedesBinarySha256": "7aa971b7df006d7540a0687af0d943995400a391183bae0ade90cd910173058c",
+        "supersedesBinarySha256": "ea3c4c586ee466d501c936baf2a5294b71140798161ea73c0448b01767cc7d73",
+        "evidence": "performance-evidence/phase7-local-remaining-2026-10-06.json",
+        "comparisonEvidence": "performance-evidence/phase7-local-remaining-2026-10-06.json",
+        "sourceScope": "Base commit plus recorded source hashes, including replay-memory admission and rate-scope lifecycle repairs. Separate build/target/temp directories match byte for byte; verified source cache and installed toolchain are shared. No native BT libraries in this bundle. Not final candidate acceptance.",
         "pathAudit": {
           "passed": true,
           "counts": {
@@ -148,9 +154,7 @@
             "unixHome": 0
           },
           "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
-        },
-        "repeatPreparationRecordSha256": "bce0420644cb13b91cc35c5c75e3657d30b944743e0a35c5574d15edda211d14",
-        "comparisonEvidence": "performance-evidence/phase7-release-verification-2026-10-05.json"
+        }
       },
       "runtime": {
         "systemLibraries": [
@@ -160,9 +164,7 @@
         ],
         "additionalRuntimeFiles": [],
         "minimumGlibc": "2.34",
-        "interpreter": "/lib64/ld-linux-x86-64.so.2",
-        "scope": "Inspected imports of this exact remapped binary; system libraries are not shipped.",
-        "inspectionSha256": "c73138d0ff7061730a838ab60e3316b3ebf9c5492f44393164cab9f3b194cf97"
+        "interpreter": "/lib64/ld-linux-x86-64.so.2"
       },
       "dependencyClosure": [
         "ariax-bt-metadata@0.1.0",
@@ -181,7 +183,7 @@
         "bytes@1.12.1",
         "cc@1.4.0",
         "cfg-if@1.0.4",
-        "chacha20@0.10.1",
+        "chacha20@0.10.2",
         "const-oid@0.10.2",
         "cookie@0.18.1",
         "cookie_store@0.22.1",
@@ -218,9 +220,9 @@
         "getrandom@0.4.3",
         "hashbrown@0.17.1",
         "hashlink@0.12.1",
-        "hickory-net@0.26.1",
-        "hickory-proto@0.26.1",
-        "hickory-resolver@0.26.1",
+        "hickory-net@0.26.2",
+        "hickory-proto@0.26.2",
+        "hickory-resolver@0.26.2",
         "http@1.5.0",
         "http-body@1.1.0",
         "http-body-util@0.1.4",
@@ -279,11 +281,10 @@
         "rusqlite@0.40.2",
         "rustc_version@0.4.1",
         "rustix@1.1.4",
-        "rustls@0.23.42",
+        "rustls@0.23.45",
         "rustls-native-certs@0.8.2",
-        "rustls-pemfile@2.2.0",
         "rustls-pki-types@1.15.1",
-        "rustls-webpki@0.103.13",
+        "rustls-webpki@0.103.15",
         "ryu@1.0.23",
         "scopeguard@1.2.0",
         "semver@1.0.28",
@@ -350,16 +351,15 @@
       ],
       "nativeDependencies": [],
       "remaining": [
-        "Release-candidate build identity and applicable acceptance matrix.",
-        "Fresh-OS package acceptance on intended supported versions; current-host checks cover only exercised operations."
+        "Final candidate matrix and fresh/minimum OS acceptance."
       ],
       "hostSmoke": {
-        "evidence": "performance-evidence/phase7-release-verification-2026-10-05.json",
-        "recordSha256": "0d74225c59fd144ab92cd7b3dd6322ab8c4e16606ad7771a9284b48d0d103442",
+        "evidence": "performance-evidence/phase7-local-remaining-2026-10-06.json",
+        "recordSha256": "d2a185536234e39fc7035565514802c1ff425d14e5664024c98a46deaecd5e27",
         "functionalPassed": true,
-        "onlySystemModulesObserved": false,
+        "onlySystemOrPackagedModulesObserved": false,
         "freshOsAcceptance": false,
-        "scope": "Reduced environment on current development host; help, NDJSON RPC, EOF shutdown, SQLite reopening and observed loaded modules."
+        "scope": "Reduced environment on current development host; extracted package help, feature query, RPC rejection, EOF shutdown, SQLite reopen and observed loaded modules. Linux retains its configured system preload."
       }
     },
     {
@@ -383,19 +383,19 @@
         }
       ],
       "binary": {
-        "artifactPath": "linux-complete/standard/ariax",
+        "artifactPath": "cli-linux-a/standard/ariax",
         "destination": "ariax",
-        "sha256": "2b641cde2496b2f31eee711315ebfa5a325bd3af27c503f5c9d4be0b8dd9f6e6",
-        "bytes": 14733928,
-        "sourceCommit": "473045d78e9f4a35a058c6d3333665da393287c8",
-        "buildRecordSha256": "0965bfec7bfb48e2dd783558587a7d18b4b19c865e41bf8e768a711672d7df21",
-        "preparationRecordSha256": "ab68694bd9bad00391d3eb160ab6def719b808f19547a51fcce24dd9ba07e308",
-        "repeatBuildRecordSha256": "2999fb18c0e201d546bd13b2a544985567a7f08cddd4c46f8dd39ca7af778221",
+        "sha256": "3c1f485a40949300dd7bed57d2284b1813af0ecdf1fd06244efa0a96b8e45b79",
+        "bytes": 14791528,
+        "sourceCommit": "23da28b7cee2e9b5710c0a9aaa9dfa0ab37af048",
+        "sourceDateEpoch": "1791286491",
+        "preparationRecordSha256": "0c44f8383803c92c2bcf5da841c270001410f37065d1ef4b9114e0fb475eec55",
+        "repeatPreparationRecordSha256": "4863c2e6fdc4409b8175cb93d46e660ffe6275abe1d5aeb628dc20ee74cd40ca",
         "independentBuildMatched": true,
-        "sourceDateEpoch": "1791193771",
-        "evidence": "performance-evidence/phase7-release-paths-2026-10-05.json",
-        "sourceScope": "Two builds with separate target/temp directories match byte for byte; production inputs, source cache and installed toolchain are shared. Not final candidate acceptance.",
-        "supersedesBinarySha256": "8cc2b1db535bec1639bcc2a7c114eb0b0dc245ea059e7c0eaf7e312292acbedf",
+        "supersedesBinarySha256": "2b641cde2496b2f31eee711315ebfa5a325bd3af27c503f5c9d4be0b8dd9f6e6",
+        "evidence": "performance-evidence/phase7-local-remaining-2026-10-06.json",
+        "comparisonEvidence": "performance-evidence/phase7-local-remaining-2026-10-06.json",
+        "sourceScope": "Base commit plus recorded source hashes, including replay-memory admission and rate-scope lifecycle repairs. Separate build/target/temp directories match byte for byte; verified source cache and installed toolchain are shared. No native BT libraries in this bundle. Not final candidate acceptance.",
         "pathAudit": {
           "passed": true,
           "counts": {
@@ -405,9 +405,7 @@
             "unixHome": 0
           },
           "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
-        },
-        "repeatPreparationRecordSha256": "bce0420644cb13b91cc35c5c75e3657d30b944743e0a35c5574d15edda211d14",
-        "comparisonEvidence": "performance-evidence/phase7-release-verification-2026-10-05.json"
+        }
       },
       "runtime": {
         "systemLibraries": [
@@ -417,9 +415,7 @@
         ],
         "additionalRuntimeFiles": [],
         "minimumGlibc": "2.34",
-        "interpreter": "/lib64/ld-linux-x86-64.so.2",
-        "scope": "Inspected imports of this exact remapped binary; system libraries are not shipped.",
-        "inspectionSha256": "168f2c1202db9031a5b574833464a8fb3d3940d46f1707cca0c5e8e1e8436030"
+        "interpreter": "/lib64/ld-linux-x86-64.so.2"
       },
       "dependencyClosure": [
         "adler2@2.0.1",
@@ -452,7 +448,7 @@
         "cc@1.4.0",
         "cfg-if@1.0.4",
         "cfg_aliases@0.2.2",
-        "chacha20@0.10.1",
+        "chacha20@0.10.2",
         "chrono@0.4.45",
         "cipher@0.5.2",
         "cmov@0.5.4",
@@ -519,9 +515,9 @@
         "hashlink@0.12.1",
         "hex@0.4.3",
         "hex-literal@1.1.0",
-        "hickory-net@0.26.1",
-        "hickory-proto@0.26.1",
-        "hickory-resolver@0.26.1",
+        "hickory-net@0.26.2",
+        "hickory-proto@0.26.2",
+        "hickory-resolver@0.26.2",
         "hkdf@0.13.0",
         "hmac@0.13.0",
         "http@1.5.0",
@@ -619,11 +615,10 @@
         "russh-util@0.52.0",
         "rustc_version@0.4.1",
         "rustix@1.1.4",
-        "rustls@0.23.42",
+        "rustls@0.23.45",
         "rustls-native-certs@0.8.2",
-        "rustls-pemfile@2.2.0",
         "rustls-pki-types@1.15.1",
-        "rustls-webpki@0.103.13",
+        "rustls-webpki@0.103.15",
         "rustversion@1.0.23",
         "ryu@1.0.23",
         "salsa20@0.11.0",
@@ -708,16 +703,15 @@
       ],
       "nativeDependencies": [],
       "remaining": [
-        "Release-candidate build identity and applicable acceptance matrix.",
-        "Fresh-OS package acceptance on intended supported versions; current-host checks cover only exercised operations."
+        "Final candidate matrix and fresh/minimum OS acceptance."
       ],
       "hostSmoke": {
-        "evidence": "performance-evidence/phase7-release-verification-2026-10-05.json",
-        "recordSha256": "0d74225c59fd144ab92cd7b3dd6322ab8c4e16606ad7771a9284b48d0d103442",
+        "evidence": "performance-evidence/phase7-local-remaining-2026-10-06.json",
+        "recordSha256": "d2a185536234e39fc7035565514802c1ff425d14e5664024c98a46deaecd5e27",
         "functionalPassed": true,
-        "onlySystemModulesObserved": false,
+        "onlySystemOrPackagedModulesObserved": false,
         "freshOsAcceptance": false,
-        "scope": "Reduced environment on current development host; help, NDJSON RPC, EOF shutdown, SQLite reopening and observed loaded modules."
+        "scope": "Reduced environment on current development host; extracted package help, feature query, RPC rejection, EOF shutdown, SQLite reopen and observed loaded modules. Linux retains its configured system preload."
       }
     },
     {
@@ -743,19 +737,19 @@
       "binary": {
         "artifactPath": "cli-linux-a/full/ariax",
         "destination": "ariax",
-        "sha256": "aeefb1627c9f2c78db852c15d14506974b93905fe4f38337b40a3d3324cc30b8",
-        "bytes": 25330208,
-        "sourceCommit": "d6a8afccdc7e804b6213afa5998115629376c482",
-        "sourceDateEpoch": "1791224426",
-        "preparationRecordSha256": "47da787b17f186b5a6217ab16d93ca482e7901a6ff2bb4288e179fc4be7a6609",
-        "repeatPreparationRecordSha256": "0ee5671115b6078e1a93410735b9a14fca755b9fc5aab51f08473b4a4dcd7eb1",
+        "sha256": "934b7dcd95a31f508b2822c17366fe9355e6b2bde4170ee8336fe0ea391baee8",
+        "bytes": 25400800,
+        "sourceCommit": "23da28b7cee2e9b5710c0a9aaa9dfa0ab37af048",
+        "sourceDateEpoch": "1791286491",
+        "preparationRecordSha256": "0c44f8383803c92c2bcf5da841c270001410f37065d1ef4b9114e0fb475eec55",
+        "repeatPreparationRecordSha256": "4863c2e6fdc4409b8175cb93d46e660ffe6275abe1d5aeb628dc20ee74cd40ca",
         "independentBuildMatched": true,
         "independentNativeBuildMatched": true,
         "nativeComparison": {
           "inputs": {
-            "sourcesSha256": "b55bc045afe126bad7e48d9ca6e9a5b40f762e2bdea6cbc54997dcee32991819",
+            "sourcesSha256": "8a63fe7dbfb58368d20f7ccaa175a12b0025ff1c3e6e3d01a1dbea7f5295717d",
             "patchSha256": "8d377c5622d0308bda2f7fc161913954f4a4cb3af19f6e1400d2cde84446a409",
-            "opensslPatchSha256": "e12670d73045bda8fb086f51f1080ccaffd60e54dd8902577aea3b3ad2a5a748",
+            "opensslPatchSha256": "9ca3d04c61c1bd582a338bf4fb19737f25cdf68c52c247cc31a5a83de133c80a",
             "builderSha256": "00ea493529c145e7f4d4ade28638fa510506192ad83ed36721c8317435ea7add",
             "sanitizer": "none",
             "releasePaths": {
@@ -763,7 +757,7 @@
                 "/ariax-native-sources",
                 "/ariax-native-work"
               ],
-              "sourceDateEpoch": "1791224426",
+              "sourceDateEpoch": "1791286491",
               "opensslDirectories": {
                 "OPENSSLDIR": "/etc/ssl",
                 "ENGINESDIR": "/usr/lib/ariax/engines-3",
@@ -773,16 +767,17 @@
           },
           "compiler": "c++ (Debian 14.2.0-19) 14.2.0\nCopyright (C) 2024 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.",
           "consumedFiles": 16772,
-          "filesSha256": "04998739ffff1557b2bacddb04ee99dc3d4264849d8bfacb9e951c0ba535108a",
+          "filesSha256": "f9f307fc4d55ddab660d0b53641bec88ebcca8a26bd8f4f2eede77e3a0915554",
           "archives": {
-            "lib/libcrypto.a": "66bb5adbbcae1ec54df5ee9fd2ca8eaa02731a380bf769b058cb1a2a7816251b",
-            "lib/libssl.a": "b1b3c9680bfe44d200f29f8edd2611b157b957b8c815a8c5fd92dfdaa297be64",
+            "lib/libcrypto.a": "2bba4d374008470a1da0e81b3181f2cf46ceb231280809f943d7de01b33838c2",
+            "lib/libssl.a": "37f0c526c4dc4a4904f0b9a8aa60e63d64753048c3d9bf7c534562b06b8b9140",
             "lib/libtorrent-rasterbar.a": "89796a74fba0e5c122f964853ca541ff45c44ef1316afca10bf2208f548e411e"
           }
         },
-        "evidence": "performance-evidence/phase7-release-blockers-2026-10-06.json",
-        "comparisonEvidence": "performance-evidence/phase7-release-blockers-2026-10-06.json",
-        "sourceScope": "Base commit plus recorded source hashes, including local release-helper changes. Separate native/build/target/temp directories match byte for byte; verified source cache and installed toolchain are shared. Not final candidate acceptance.",
+        "supersedesBinarySha256": "aeefb1627c9f2c78db852c15d14506974b93905fe4f38337b40a3d3324cc30b8",
+        "evidence": "performance-evidence/phase7-local-remaining-2026-10-06.json",
+        "comparisonEvidence": "performance-evidence/phase7-local-remaining-2026-10-06.json",
+        "sourceScope": "Base commit plus recorded source hashes, including replay-memory admission and rate-scope lifecycle repairs. Separate native/build/target/temp directories match byte for byte; verified source cache and installed toolchain are shared. Not final candidate acceptance.",
         "pathAudit": {
           "passed": true,
           "counts": {
@@ -840,7 +835,7 @@
         "cc@1.4.0",
         "cfg-if@1.0.4",
         "cfg_aliases@0.2.2",
-        "chacha20@0.10.1",
+        "chacha20@0.10.2",
         "chrono@0.4.45",
         "cipher@0.5.2",
         "cmov@0.5.4",
@@ -912,9 +907,9 @@
         "hashlink@0.12.1",
         "hex@0.4.3",
         "hex-literal@1.1.0",
-        "hickory-net@0.26.1",
-        "hickory-proto@0.26.1",
-        "hickory-resolver@0.26.1",
+        "hickory-net@0.26.2",
+        "hickory-proto@0.26.2",
+        "hickory-resolver@0.26.2",
         "hkdf@0.13.0",
         "hmac@0.13.0",
         "http@1.5.0",
@@ -1014,11 +1009,10 @@
         "russh-util@0.52.0",
         "rustc_version@0.4.1",
         "rustix@1.1.4",
-        "rustls@0.23.42",
+        "rustls@0.23.45",
         "rustls-native-certs@0.8.2",
-        "rustls-pemfile@2.2.0",
         "rustls-pki-types@1.15.1",
-        "rustls-webpki@0.103.13",
+        "rustls-webpki@0.103.15",
         "rustversion@1.0.23",
         "ryu@1.0.23",
         "salsa20@0.11.0",
@@ -1107,11 +1101,19 @@
       "nativeDependencies": [
         "libtorrent@2.1.1",
         "boost@1.91.0",
-        "openssl@3.6.3"
+        "openssl@3.6.5"
       ],
       "remaining": [
         "Final candidate matrix and fresh/minimum OS acceptance."
-      ]
+      ],
+      "hostSmoke": {
+        "evidence": "performance-evidence/phase7-local-remaining-2026-10-06.json",
+        "recordSha256": "d2a185536234e39fc7035565514802c1ff425d14e5664024c98a46deaecd5e27",
+        "functionalPassed": true,
+        "onlySystemOrPackagedModulesObserved": false,
+        "freshOsAcceptance": false,
+        "scope": "Reduced environment on current development host; extracted package help, feature query, RPC rejection, EOF shutdown, SQLite reopen and observed loaded modules. Linux retains its configured system preload."
+      }
     },
     {
       "id": "x86_64-unknown-linux-gnu-compat",
@@ -1136,19 +1138,19 @@
       "binary": {
         "artifactPath": "cli-linux-a/compat/ariax",
         "destination": "ariax",
-        "sha256": "55ce1ea917a0a4bcd071803331211ee78583453b7ec66218b416a9a85e678d37",
-        "bytes": 25330208,
-        "sourceCommit": "d6a8afccdc7e804b6213afa5998115629376c482",
-        "sourceDateEpoch": "1791224426",
-        "preparationRecordSha256": "47da787b17f186b5a6217ab16d93ca482e7901a6ff2bb4288e179fc4be7a6609",
-        "repeatPreparationRecordSha256": "0ee5671115b6078e1a93410735b9a14fca755b9fc5aab51f08473b4a4dcd7eb1",
+        "sha256": "e0146e274e6c880af633d5ef80009f515ae3adda61fd9141252a9236392ef5f9",
+        "bytes": 25400800,
+        "sourceCommit": "23da28b7cee2e9b5710c0a9aaa9dfa0ab37af048",
+        "sourceDateEpoch": "1791286491",
+        "preparationRecordSha256": "0c44f8383803c92c2bcf5da841c270001410f37065d1ef4b9114e0fb475eec55",
+        "repeatPreparationRecordSha256": "4863c2e6fdc4409b8175cb93d46e660ffe6275abe1d5aeb628dc20ee74cd40ca",
         "independentBuildMatched": true,
         "independentNativeBuildMatched": true,
         "nativeComparison": {
           "inputs": {
-            "sourcesSha256": "b55bc045afe126bad7e48d9ca6e9a5b40f762e2bdea6cbc54997dcee32991819",
+            "sourcesSha256": "8a63fe7dbfb58368d20f7ccaa175a12b0025ff1c3e6e3d01a1dbea7f5295717d",
             "patchSha256": "8d377c5622d0308bda2f7fc161913954f4a4cb3af19f6e1400d2cde84446a409",
-            "opensslPatchSha256": "e12670d73045bda8fb086f51f1080ccaffd60e54dd8902577aea3b3ad2a5a748",
+            "opensslPatchSha256": "9ca3d04c61c1bd582a338bf4fb19737f25cdf68c52c247cc31a5a83de133c80a",
             "builderSha256": "00ea493529c145e7f4d4ade28638fa510506192ad83ed36721c8317435ea7add",
             "sanitizer": "none",
             "releasePaths": {
@@ -1156,7 +1158,7 @@
                 "/ariax-native-sources",
                 "/ariax-native-work"
               ],
-              "sourceDateEpoch": "1791224426",
+              "sourceDateEpoch": "1791286491",
               "opensslDirectories": {
                 "OPENSSLDIR": "/etc/ssl",
                 "ENGINESDIR": "/usr/lib/ariax/engines-3",
@@ -1166,16 +1168,17 @@
           },
           "compiler": "c++ (Debian 14.2.0-19) 14.2.0\nCopyright (C) 2024 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.",
           "consumedFiles": 16772,
-          "filesSha256": "04998739ffff1557b2bacddb04ee99dc3d4264849d8bfacb9e951c0ba535108a",
+          "filesSha256": "f9f307fc4d55ddab660d0b53641bec88ebcca8a26bd8f4f2eede77e3a0915554",
           "archives": {
-            "lib/libcrypto.a": "66bb5adbbcae1ec54df5ee9fd2ca8eaa02731a380bf769b058cb1a2a7816251b",
-            "lib/libssl.a": "b1b3c9680bfe44d200f29f8edd2611b157b957b8c815a8c5fd92dfdaa297be64",
+            "lib/libcrypto.a": "2bba4d374008470a1da0e81b3181f2cf46ceb231280809f943d7de01b33838c2",
+            "lib/libssl.a": "37f0c526c4dc4a4904f0b9a8aa60e63d64753048c3d9bf7c534562b06b8b9140",
             "lib/libtorrent-rasterbar.a": "89796a74fba0e5c122f964853ca541ff45c44ef1316afca10bf2208f548e411e"
           }
         },
-        "evidence": "performance-evidence/phase7-release-blockers-2026-10-06.json",
-        "comparisonEvidence": "performance-evidence/phase7-release-blockers-2026-10-06.json",
-        "sourceScope": "Base commit plus recorded source hashes, including local release-helper changes. Separate native/build/target/temp directories match byte for byte; verified source cache and installed toolchain are shared. Not final candidate acceptance.",
+        "supersedesBinarySha256": "55ce1ea917a0a4bcd071803331211ee78583453b7ec66218b416a9a85e678d37",
+        "evidence": "performance-evidence/phase7-local-remaining-2026-10-06.json",
+        "comparisonEvidence": "performance-evidence/phase7-local-remaining-2026-10-06.json",
+        "sourceScope": "Base commit plus recorded source hashes, including replay-memory admission and rate-scope lifecycle repairs. Separate native/build/target/temp directories match byte for byte; verified source cache and installed toolchain are shared. Not final candidate acceptance.",
         "pathAudit": {
           "passed": true,
           "counts": {
@@ -1233,7 +1236,7 @@
         "cc@1.4.0",
         "cfg-if@1.0.4",
         "cfg_aliases@0.2.2",
-        "chacha20@0.10.1",
+        "chacha20@0.10.2",
         "chrono@0.4.45",
         "cipher@0.5.2",
         "cmov@0.5.4",
@@ -1305,9 +1308,9 @@
         "hashlink@0.12.1",
         "hex@0.4.3",
         "hex-literal@1.1.0",
-        "hickory-net@0.26.1",
-        "hickory-proto@0.26.1",
-        "hickory-resolver@0.26.1",
+        "hickory-net@0.26.2",
+        "hickory-proto@0.26.2",
+        "hickory-resolver@0.26.2",
         "hkdf@0.13.0",
         "hmac@0.13.0",
         "http@1.5.0",
@@ -1407,11 +1410,10 @@
         "russh-util@0.52.0",
         "rustc_version@0.4.1",
         "rustix@1.1.4",
-        "rustls@0.23.42",
+        "rustls@0.23.45",
         "rustls-native-certs@0.8.2",
-        "rustls-pemfile@2.2.0",
         "rustls-pki-types@1.15.1",
-        "rustls-webpki@0.103.13",
+        "rustls-webpki@0.103.15",
         "rustversion@1.0.23",
         "ryu@1.0.23",
         "salsa20@0.11.0",
@@ -1500,11 +1502,19 @@
       "nativeDependencies": [
         "libtorrent@2.1.1",
         "boost@1.91.0",
-        "openssl@3.6.3"
+        "openssl@3.6.5"
       ],
       "remaining": [
         "Final candidate matrix and fresh/minimum OS acceptance."
-      ]
+      ],
+      "hostSmoke": {
+        "evidence": "performance-evidence/phase7-local-remaining-2026-10-06.json",
+        "recordSha256": "d2a185536234e39fc7035565514802c1ff425d14e5664024c98a46deaecd5e27",
+        "functionalPassed": true,
+        "onlySystemOrPackagedModulesObserved": false,
+        "freshOsAcceptance": false,
+        "scope": "Reduced environment on current development host; extracted package help, feature query, RPC rejection, EOF shutdown, SQLite reopen and observed loaded modules. Linux retains its configured system preload."
+      }
     },
     {
       "id": "x86_64-pc-windows-gnu-minimal",
@@ -1563,19 +1573,19 @@
         }
       ],
       "binary": {
-        "artifactPath": "windows-complete/minimal/ariax.exe",
+        "artifactPath": "cli-windows-a/minimal/ariax.exe",
         "destination": "ariax.exe",
-        "sha256": "3b72f64ee7a2fd6656fb96a2e597cc4c29839a72a6014ce1a1caba4f582de00c",
-        "bytes": 10223616,
-        "sourceCommit": "473045d78e9f4a35a058c6d3333665da393287c8",
-        "buildRecordSha256": "0a52a3a84730d54a27b16efee8d1f975f29de2b9373318ce4ef914f38f6708ef",
-        "preparationRecordSha256": "3c2e2dc50d5460c39934b085676877ae86959a6c241661b7506119c6ed3e11b4",
-        "repeatBuildRecordSha256": "8d1b8ab89cb0fe7198863a31b1892abae80cf7770d716661871d96031f6edcd1",
+        "sha256": "cfefb3f5a4e0daf96629029200df8646356ea03c14206e0d964a8b2316042f5e",
+        "bytes": 10270208,
+        "sourceCommit": "23da28b7cee2e9b5710c0a9aaa9dfa0ab37af048",
+        "sourceDateEpoch": "1791286491",
+        "preparationRecordSha256": "a9b48953c59185c9019f05c88e1c72ac6d68f85c80d7d3296cf54ff9cbaac316",
+        "repeatPreparationRecordSha256": "26deb48d5d5374e62266fb4e1309ce9c3cd7c328471649498c3b3dc1d9d8eec5",
         "independentBuildMatched": true,
-        "sourceDateEpoch": "1791193771",
-        "evidence": "performance-evidence/phase7-release-paths-2026-10-05.json",
-        "sourceScope": "Two builds with separate target/temp directories match byte for byte; production inputs, source cache and installed toolchain are shared. Not final candidate acceptance.",
-        "supersedesBinarySha256": "a53b2b017c24d0ece2fc50271d18339fb381be17593f4315172f5fe0c02b6051",
+        "supersedesBinarySha256": "3b72f64ee7a2fd6656fb96a2e597cc4c29839a72a6014ce1a1caba4f582de00c",
+        "evidence": "performance-evidence/phase7-local-remaining-2026-10-06.json",
+        "comparisonEvidence": "performance-evidence/phase7-local-remaining-2026-10-06.json",
+        "sourceScope": "Base commit plus recorded source hashes, including replay-memory admission and rate-scope lifecycle repairs. Separate build/target/temp directories match byte for byte; verified source cache and installed toolchain are shared. No native BT libraries in this bundle. Not final candidate acceptance.",
         "pathAudit": {
           "passed": true,
           "counts": {
@@ -1585,9 +1595,7 @@
             "unixHome": 0
           },
           "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
-        },
-        "repeatPreparationRecordSha256": "184eb91893f77b1f66c8352f1348e3ab90d162567d58cd6e0f2ad55687ca2375",
-        "comparisonEvidence": "performance-evidence/phase7-release-verification-2026-10-05.json"
+        }
       },
       "runtime": {
         "systemLibraries": [
@@ -1603,9 +1611,7 @@
           "oleaut32.dll",
           "ws2_32.dll"
         ],
-        "additionalRuntimeFiles": [],
-        "scope": "Inspected imports of this exact remapped binary; system libraries are not shipped.",
-        "inspectionSha256": "d8d25183808c4d4c5bf362e69de5dc96c74f76e9e59be83b763d7a3784a1af98"
+        "additionalRuntimeFiles": []
       },
       "dependencyClosure": [
         "ariax-bt-metadata@0.1.0",
@@ -1625,7 +1631,7 @@
         "bytes@1.12.1",
         "cc@1.4.0",
         "cfg-if@1.0.4",
-        "chacha20@0.10.1",
+        "chacha20@0.10.2",
         "const-oid@0.10.2",
         "cookie@0.18.1",
         "cookie_store@0.22.1",
@@ -1661,9 +1667,9 @@
         "getrandom@0.4.3",
         "hashbrown@0.17.1",
         "hashlink@0.12.1",
-        "hickory-net@0.26.1",
-        "hickory-proto@0.26.1",
-        "hickory-resolver@0.26.1",
+        "hickory-net@0.26.2",
+        "hickory-proto@0.26.2",
+        "hickory-resolver@0.26.2",
         "http@1.5.0",
         "http-body@1.1.0",
         "http-body-util@0.1.4",
@@ -1720,11 +1726,10 @@
         "ring@0.17.14",
         "rusqlite@0.40.2",
         "rustc_version@0.4.1",
-        "rustls@0.23.42",
+        "rustls@0.23.45",
         "rustls-native-certs@0.8.2",
-        "rustls-pemfile@2.2.0",
         "rustls-pki-types@1.15.1",
-        "rustls-webpki@0.103.13",
+        "rustls-webpki@0.103.15",
         "ryu@1.0.23",
         "schannel@0.1.29",
         "scopeguard@1.2.0",
@@ -1799,16 +1804,15 @@
       ],
       "nativeDependencies": [],
       "remaining": [
-        "Release-candidate build identity and applicable acceptance matrix.",
-        "Fresh-OS package acceptance on intended supported versions; current-host checks cover only exercised operations."
+        "Final candidate matrix and fresh/minimum OS acceptance."
       ],
       "hostSmoke": {
-        "evidence": "performance-evidence/phase7-release-verification-2026-10-05.json",
-        "recordSha256": "fbb16cf506e2eb8f7932701b8766789de2a891b6cb2295f79cb3001452931e79",
+        "evidence": "performance-evidence/phase7-local-remaining-2026-10-06.json",
+        "recordSha256": "f8622071a5529e16855a1b096fcdaf33a658aaff50404503d7a6ce33d11dd757",
         "functionalPassed": true,
-        "onlySystemModulesObserved": true,
+        "onlySystemOrPackagedModulesObserved": true,
         "freshOsAcceptance": false,
-        "scope": "Reduced environment on current development host; help, NDJSON RPC, EOF shutdown, SQLite reopening and observed loaded modules."
+        "scope": "Reduced environment on current development host; extracted package help, feature query, RPC rejection, EOF shutdown, SQLite reopen and observed loaded modules. Linux retains its configured system preload."
       }
     },
     {
@@ -1868,19 +1872,19 @@
         }
       ],
       "binary": {
-        "artifactPath": "windows-complete/standard/ariax.exe",
+        "artifactPath": "cli-windows-a/standard/ariax.exe",
         "destination": "ariax.exe",
-        "sha256": "ed2d7860bd5867a6d9bb465bdd2c6d90fde46fc42f0e135bef9725195945b10c",
-        "bytes": 14087680,
-        "sourceCommit": "473045d78e9f4a35a058c6d3333665da393287c8",
-        "buildRecordSha256": "4a51fde449f7386a58f7ce60af5e1dd9da710babc7259d0fbdffdf9c58ff37a6",
-        "preparationRecordSha256": "3c2e2dc50d5460c39934b085676877ae86959a6c241661b7506119c6ed3e11b4",
-        "repeatBuildRecordSha256": "b941c32e2b1bc66edd406e5f6a61af0385e75483a1167548e0e2f585c8a7a308",
+        "sha256": "28b7d0acc34dacf8b4246d77db6ee7f2e9bd173bf75a6275be91d85577300fb5",
+        "bytes": 14136832,
+        "sourceCommit": "23da28b7cee2e9b5710c0a9aaa9dfa0ab37af048",
+        "sourceDateEpoch": "1791286491",
+        "preparationRecordSha256": "a9b48953c59185c9019f05c88e1c72ac6d68f85c80d7d3296cf54ff9cbaac316",
+        "repeatPreparationRecordSha256": "26deb48d5d5374e62266fb4e1309ce9c3cd7c328471649498c3b3dc1d9d8eec5",
         "independentBuildMatched": true,
-        "sourceDateEpoch": "1791193771",
-        "evidence": "performance-evidence/phase7-release-paths-2026-10-05.json",
-        "sourceScope": "Two builds with separate target/temp directories match byte for byte; production inputs, source cache and installed toolchain are shared. Not final candidate acceptance.",
-        "supersedesBinarySha256": "a0526835471dddf2dae4e62df23782e11ba787a27feebd416c95e9e0b5f60cbf",
+        "supersedesBinarySha256": "ed2d7860bd5867a6d9bb465bdd2c6d90fde46fc42f0e135bef9725195945b10c",
+        "evidence": "performance-evidence/phase7-local-remaining-2026-10-06.json",
+        "comparisonEvidence": "performance-evidence/phase7-local-remaining-2026-10-06.json",
+        "sourceScope": "Base commit plus recorded source hashes, including replay-memory admission and rate-scope lifecycle repairs. Separate build/target/temp directories match byte for byte; verified source cache and installed toolchain are shared. No native BT libraries in this bundle. Not final candidate acceptance.",
         "pathAudit": {
           "passed": true,
           "counts": {
@@ -1890,9 +1894,7 @@
             "unixHome": 0
           },
           "scope": "Known absolute workstation/cache path patterns; not a complete reproducibility proof."
-        },
-        "repeatPreparationRecordSha256": "184eb91893f77b1f66c8352f1348e3ab90d162567d58cd6e0f2ad55687ca2375",
-        "comparisonEvidence": "performance-evidence/phase7-release-verification-2026-10-05.json"
+        }
       },
       "runtime": {
         "systemLibraries": [
@@ -1908,9 +1910,7 @@
           "oleaut32.dll",
           "ws2_32.dll"
         ],
-        "additionalRuntimeFiles": [],
-        "scope": "Inspected imports of this exact remapped binary; system libraries are not shipped.",
-        "inspectionSha256": "098b0b3b423a3aee813dd9c4038cfdfd167e14b138d29aa3b923f9677a75e9a8"
+        "additionalRuntimeFiles": []
       },
       "dependencyClosure": [
         "adler2@2.0.1",
@@ -1943,7 +1943,7 @@
         "cbc@0.2.1",
         "cc@1.4.0",
         "cfg-if@1.0.4",
-        "chacha20@0.10.1",
+        "chacha20@0.10.2",
         "chrono@0.4.45",
         "cipher@0.5.2",
         "cmov@0.5.4",
@@ -2009,9 +2009,9 @@
         "hashlink@0.12.1",
         "hex@0.4.3",
         "hex-literal@1.1.0",
-        "hickory-net@0.26.1",
-        "hickory-proto@0.26.1",
-        "hickory-resolver@0.26.1",
+        "hickory-net@0.26.2",
+        "hickory-proto@0.26.2",
+        "hickory-resolver@0.26.2",
         "hkdf@0.13.0",
         "hmac@0.13.0",
         "http@1.5.0",
@@ -2106,11 +2106,10 @@
         "russh-sftp@2.3.0",
         "russh-util@0.52.0",
         "rustc_version@0.4.1",
-        "rustls@0.23.42",
+        "rustls@0.23.45",
         "rustls-native-certs@0.8.2",
-        "rustls-pemfile@2.2.0",
         "rustls-pki-types@1.15.1",
-        "rustls-webpki@0.103.13",
+        "rustls-webpki@0.103.15",
         "rustversion@1.0.23",
         "ryu@1.0.23",
         "salsa20@0.11.0",
@@ -2211,16 +2210,15 @@
       ],
       "nativeDependencies": [],
       "remaining": [
-        "Release-candidate build identity and applicable acceptance matrix.",
-        "Fresh-OS package acceptance on intended supported versions; current-host checks cover only exercised operations."
+        "Final candidate matrix and fresh/minimum OS acceptance."
       ],
       "hostSmoke": {
-        "evidence": "performance-evidence/phase7-release-verification-2026-10-05.json",
-        "recordSha256": "fbb16cf506e2eb8f7932701b8766789de2a891b6cb2295f79cb3001452931e79",
+        "evidence": "performance-evidence/phase7-local-remaining-2026-10-06.json",
+        "recordSha256": "f8622071a5529e16855a1b096fcdaf33a658aaff50404503d7a6ce33d11dd757",
         "functionalPassed": true,
-        "onlySystemModulesObserved": true,
+        "onlySystemOrPackagedModulesObserved": true,
         "freshOsAcceptance": false,
-        "scope": "Reduced environment on current development host; help, NDJSON RPC, EOF shutdown, SQLite reopening and observed loaded modules."
+        "scope": "Reduced environment on current development host; extracted package help, feature query, RPC rejection, EOF shutdown, SQLite reopen and observed loaded modules. Linux retains its configured system preload."
       }
     },
     {
@@ -2282,19 +2280,19 @@
       "binary": {
         "artifactPath": "cli-windows-a/full/ariax.exe",
         "destination": "ariax.exe",
-        "sha256": "c8f4eda1effea435db0d7377e2a4f0b446a0867ee4050adcf7d4fb59bb197ca8",
-        "bytes": 24616960,
-        "sourceCommit": "d6a8afccdc7e804b6213afa5998115629376c482",
-        "sourceDateEpoch": "1791224426",
-        "preparationRecordSha256": "7a141e3d5bfe884d2baf98a5803955adf416dd0f6b4251c559d1550e93bb7560",
-        "repeatPreparationRecordSha256": "604a6406fcc80544f59b92f49b0b378930e7b10cfe4d38981def241073dade49",
+        "sha256": "77c19dfa55a49fc9a0557940160c4149f0b690ecc01910f9247a8bec97090a30",
+        "bytes": 24679424,
+        "sourceCommit": "23da28b7cee2e9b5710c0a9aaa9dfa0ab37af048",
+        "sourceDateEpoch": "1791286491",
+        "preparationRecordSha256": "a9b48953c59185c9019f05c88e1c72ac6d68f85c80d7d3296cf54ff9cbaac316",
+        "repeatPreparationRecordSha256": "26deb48d5d5374e62266fb4e1309ce9c3cd7c328471649498c3b3dc1d9d8eec5",
         "independentBuildMatched": true,
         "independentNativeBuildMatched": true,
         "nativeComparison": {
           "inputs": {
-            "sourcesSha256": "b55bc045afe126bad7e48d9ca6e9a5b40f762e2bdea6cbc54997dcee32991819",
+            "sourcesSha256": "8a63fe7dbfb58368d20f7ccaa175a12b0025ff1c3e6e3d01a1dbea7f5295717d",
             "patchSha256": "8d377c5622d0308bda2f7fc161913954f4a4cb3af19f6e1400d2cde84446a409",
-            "opensslPatchSha256": "e12670d73045bda8fb086f51f1080ccaffd60e54dd8902577aea3b3ad2a5a748",
+            "opensslPatchSha256": "9ca3d04c61c1bd582a338bf4fb19737f25cdf68c52c247cc31a5a83de133c80a",
             "builderSha256": "00ea493529c145e7f4d4ade28638fa510506192ad83ed36721c8317435ea7add",
             "sanitizer": "none",
             "releasePaths": {
@@ -2302,7 +2300,7 @@
                 "/ariax-native-sources",
                 "/ariax-native-work"
               ],
-              "sourceDateEpoch": "1791224426",
+              "sourceDateEpoch": "1791286491",
               "opensslDirectories": {
                 "OPENSSLDIR": "C:/Program Files/Common Files/SSL",
                 "ENGINESDIR": "C:/Program Files/Ariax/engines-3",
@@ -2312,16 +2310,17 @@
           },
           "compiler": "g++.exe (Rev3, Built by MSYS2 project) 16.2.0\nCopyright (C) 2026 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.",
           "consumedFiles": 16772,
-          "filesSha256": "338701b5389b961cd384c37685972652d1fd6f6f85d8a157fb63e15878a2db0c",
+          "filesSha256": "d9078b1ac521affa6c6a96e40369e944783d50230cda5a1c435c27be6495928b",
           "archives": {
-            "lib/libcrypto.a": "0e6d93067189b774a4b798177d1d91db258f9e6fc6a15bf7e6bb56817d592079",
-            "lib/libssl.a": "8e57730a427322e3cb12e552fec67127b1accaff7a73f9cacb217c1deb2fd49c",
+            "lib/libcrypto.a": "363b315b1c29c86f67922e8bef67e0c18963cedab60564f7dc640e137059f9c0",
+            "lib/libssl.a": "495a403effc77686e08e46c7c78d72324031f5c9c1807441fee49fe6b7b196f4",
             "lib/libtorrent-rasterbar.a": "a1b45cad7712d6416dc1e639ef28f38e904e10d0d7dee92a7de38a3781a12c32"
           }
         },
-        "evidence": "performance-evidence/phase7-release-blockers-2026-10-06.json",
-        "comparisonEvidence": "performance-evidence/phase7-release-blockers-2026-10-06.json",
-        "sourceScope": "Base commit plus recorded source hashes, including local release-helper changes. Separate native/build/target/temp directories match byte for byte; verified source cache and installed toolchain are shared. Not final candidate acceptance.",
+        "supersedesBinarySha256": "c8f4eda1effea435db0d7377e2a4f0b446a0867ee4050adcf7d4fb59bb197ca8",
+        "evidence": "performance-evidence/phase7-local-remaining-2026-10-06.json",
+        "comparisonEvidence": "performance-evidence/phase7-local-remaining-2026-10-06.json",
+        "sourceScope": "Base commit plus recorded source hashes, including replay-memory admission and rate-scope lifecycle repairs. Separate native/build/target/temp directories match byte for byte; verified source cache and installed toolchain are shared. Not final candidate acceptance.",
         "pathAudit": {
           "passed": true,
           "counts": {
@@ -2441,7 +2440,7 @@
         "cbc@0.2.1",
         "cc@1.4.0",
         "cfg-if@1.0.4",
-        "chacha20@0.10.1",
+        "chacha20@0.10.2",
         "chrono@0.4.45",
         "cipher@0.5.2",
         "cmov@0.5.4",
@@ -2512,9 +2511,9 @@
         "hashlink@0.12.1",
         "hex@0.4.3",
         "hex-literal@1.1.0",
-        "hickory-net@0.26.1",
-        "hickory-proto@0.26.1",
-        "hickory-resolver@0.26.1",
+        "hickory-net@0.26.2",
+        "hickory-proto@0.26.2",
+        "hickory-resolver@0.26.2",
         "hkdf@0.13.0",
         "hmac@0.13.0",
         "http@1.5.0",
@@ -2611,11 +2610,10 @@
         "russh-sftp@2.3.0",
         "russh-util@0.52.0",
         "rustc_version@0.4.1",
-        "rustls@0.23.42",
+        "rustls@0.23.45",
         "rustls-native-certs@0.8.2",
-        "rustls-pemfile@2.2.0",
         "rustls-pki-types@1.15.1",
-        "rustls-webpki@0.103.13",
+        "rustls-webpki@0.103.15",
         "rustversion@1.0.23",
         "ryu@1.0.23",
         "salsa20@0.11.0",
@@ -2720,11 +2718,19 @@
       "nativeDependencies": [
         "libtorrent@2.1.1",
         "boost@1.91.0",
-        "openssl@3.6.3"
+        "openssl@3.6.5"
       ],
       "remaining": [
         "Final candidate matrix and fresh/minimum OS acceptance."
-      ]
+      ],
+      "hostSmoke": {
+        "evidence": "performance-evidence/phase7-local-remaining-2026-10-06.json",
+        "recordSha256": "f8622071a5529e16855a1b096fcdaf33a658aaff50404503d7a6ce33d11dd757",
+        "functionalPassed": true,
+        "onlySystemOrPackagedModulesObserved": true,
+        "freshOsAcceptance": false,
+        "scope": "Reduced environment on current development host; extracted package help, feature query, RPC rejection, EOF shutdown, SQLite reopen and observed loaded modules. Linux retains its configured system preload."
+      }
     },
     {
       "id": "x86_64-pc-windows-gnu-compat",
@@ -2785,19 +2791,19 @@
       "binary": {
         "artifactPath": "cli-windows-a/compat/ariax.exe",
         "destination": "ariax.exe",
-        "sha256": "48c7b7c66c65e1aa5752347392743829471ec9fa976212b5d2c71d925e42e578",
-        "bytes": 24616960,
-        "sourceCommit": "d6a8afccdc7e804b6213afa5998115629376c482",
-        "sourceDateEpoch": "1791224426",
-        "preparationRecordSha256": "7a141e3d5bfe884d2baf98a5803955adf416dd0f6b4251c559d1550e93bb7560",
-        "repeatPreparationRecordSha256": "604a6406fcc80544f59b92f49b0b378930e7b10cfe4d38981def241073dade49",
+        "sha256": "499019a8b4d9b97b7b3eef1f081c42c7220374481dbc8eaf7fb7ca7c10381f89",
+        "bytes": 24679424,
+        "sourceCommit": "23da28b7cee2e9b5710c0a9aaa9dfa0ab37af048",
+        "sourceDateEpoch": "1791286491",
+        "preparationRecordSha256": "a9b48953c59185c9019f05c88e1c72ac6d68f85c80d7d3296cf54ff9cbaac316",
+        "repeatPreparationRecordSha256": "26deb48d5d5374e62266fb4e1309ce9c3cd7c328471649498c3b3dc1d9d8eec5",
         "independentBuildMatched": true,
         "independentNativeBuildMatched": true,
         "nativeComparison": {
           "inputs": {
-            "sourcesSha256": "b55bc045afe126bad7e48d9ca6e9a5b40f762e2bdea6cbc54997dcee32991819",
+            "sourcesSha256": "8a63fe7dbfb58368d20f7ccaa175a12b0025ff1c3e6e3d01a1dbea7f5295717d",
             "patchSha256": "8d377c5622d0308bda2f7fc161913954f4a4cb3af19f6e1400d2cde84446a409",
-            "opensslPatchSha256": "e12670d73045bda8fb086f51f1080ccaffd60e54dd8902577aea3b3ad2a5a748",
+            "opensslPatchSha256": "9ca3d04c61c1bd582a338bf4fb19737f25cdf68c52c247cc31a5a83de133c80a",
             "builderSha256": "00ea493529c145e7f4d4ade28638fa510506192ad83ed36721c8317435ea7add",
             "sanitizer": "none",
             "releasePaths": {
@@ -2805,7 +2811,7 @@
                 "/ariax-native-sources",
                 "/ariax-native-work"
               ],
-              "sourceDateEpoch": "1791224426",
+              "sourceDateEpoch": "1791286491",
               "opensslDirectories": {
                 "OPENSSLDIR": "C:/Program Files/Common Files/SSL",
                 "ENGINESDIR": "C:/Program Files/Ariax/engines-3",
@@ -2815,16 +2821,17 @@
           },
           "compiler": "g++.exe (Rev3, Built by MSYS2 project) 16.2.0\nCopyright (C) 2026 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.",
           "consumedFiles": 16772,
-          "filesSha256": "338701b5389b961cd384c37685972652d1fd6f6f85d8a157fb63e15878a2db0c",
+          "filesSha256": "d9078b1ac521affa6c6a96e40369e944783d50230cda5a1c435c27be6495928b",
           "archives": {
-            "lib/libcrypto.a": "0e6d93067189b774a4b798177d1d91db258f9e6fc6a15bf7e6bb56817d592079",
-            "lib/libssl.a": "8e57730a427322e3cb12e552fec67127b1accaff7a73f9cacb217c1deb2fd49c",
+            "lib/libcrypto.a": "363b315b1c29c86f67922e8bef67e0c18963cedab60564f7dc640e137059f9c0",
+            "lib/libssl.a": "495a403effc77686e08e46c7c78d72324031f5c9c1807441fee49fe6b7b196f4",
             "lib/libtorrent-rasterbar.a": "a1b45cad7712d6416dc1e639ef28f38e904e10d0d7dee92a7de38a3781a12c32"
           }
         },
-        "evidence": "performance-evidence/phase7-release-blockers-2026-10-06.json",
-        "comparisonEvidence": "performance-evidence/phase7-release-blockers-2026-10-06.json",
-        "sourceScope": "Base commit plus recorded source hashes, including local release-helper changes. Separate native/build/target/temp directories match byte for byte; verified source cache and installed toolchain are shared. Not final candidate acceptance.",
+        "supersedesBinarySha256": "48c7b7c66c65e1aa5752347392743829471ec9fa976212b5d2c71d925e42e578",
+        "evidence": "performance-evidence/phase7-local-remaining-2026-10-06.json",
+        "comparisonEvidence": "performance-evidence/phase7-local-remaining-2026-10-06.json",
+        "sourceScope": "Base commit plus recorded source hashes, including replay-memory admission and rate-scope lifecycle repairs. Separate native/build/target/temp directories match byte for byte; verified source cache and installed toolchain are shared. Not final candidate acceptance.",
         "pathAudit": {
           "passed": true,
           "counts": {
@@ -2944,7 +2951,7 @@
         "cbc@0.2.1",
         "cc@1.4.0",
         "cfg-if@1.0.4",
-        "chacha20@0.10.1",
+        "chacha20@0.10.2",
         "chrono@0.4.45",
         "cipher@0.5.2",
         "cmov@0.5.4",
@@ -3015,9 +3022,9 @@
         "hashlink@0.12.1",
         "hex@0.4.3",
         "hex-literal@1.1.0",
-        "hickory-net@0.26.1",
-        "hickory-proto@0.26.1",
-        "hickory-resolver@0.26.1",
+        "hickory-net@0.26.2",
+        "hickory-proto@0.26.2",
+        "hickory-resolver@0.26.2",
         "hkdf@0.13.0",
         "hmac@0.13.0",
         "http@1.5.0",
@@ -3114,11 +3121,10 @@
         "russh-sftp@2.3.0",
         "russh-util@0.52.0",
         "rustc_version@0.4.1",
-        "rustls@0.23.42",
+        "rustls@0.23.45",
         "rustls-native-certs@0.8.2",
-        "rustls-pemfile@2.2.0",
         "rustls-pki-types@1.15.1",
-        "rustls-webpki@0.103.13",
+        "rustls-webpki@0.103.15",
         "rustversion@1.0.23",
         "ryu@1.0.23",
         "salsa20@0.11.0",
@@ -3223,11 +3229,19 @@
       "nativeDependencies": [
         "libtorrent@2.1.1",
         "boost@1.91.0",
-        "openssl@3.6.3"
+        "openssl@3.6.5"
       ],
       "remaining": [
         "Final candidate matrix and fresh/minimum OS acceptance."
-      ]
+      ],
+      "hostSmoke": {
+        "evidence": "performance-evidence/phase7-local-remaining-2026-10-06.json",
+        "recordSha256": "f8622071a5529e16855a1b096fcdaf33a658aaff50404503d7a6ce33d11dd757",
+        "functionalPassed": true,
+        "onlySystemOrPackagedModulesObserved": true,
+        "freshOsAcceptance": false,
+        "scope": "Reduced environment on current development host; extracted package help, feature query, RPC rejection, EOF shutdown, SQLite reopen and observed loaded modules. Linux retains its configured system preload."
+      }
     }
   ],
   "excludedSourceArtifacts": [
@@ -3237,5 +3251,6 @@
     "distribution/aria2-source-notice.txt",
     "distribution/licenses/aria2-GPL-2.0.txt"
   ],
-  "otherPlatforms": "macOS and Windows-MSVC require separate manifests and validation."
+  "otherPlatforms": "macOS and Windows-MSVC require separate manifests and validation.",
+  "noticeInventorySource": "performance-evidence/phase7-release-license-inventory-2026-10-06.json"
 }

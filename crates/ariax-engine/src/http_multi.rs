@@ -174,6 +174,14 @@ pub struct HttpIngressPermit {
     _resident: BytePermit,
 }
 
+impl ariax_storage::JournalReplayBudget for HttpIngressBudgets {
+    fn reserve(&self, bytes: usize) -> Option<ariax_storage::JournalReplayReservation> {
+        self.try_acquire(bytes)
+            .ok()
+            .map(ariax_storage::JournalReplayReservation::new)
+    }
+}
+
 impl fmt::Debug for HttpIngressPermit {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -842,6 +850,7 @@ pub struct HttpMultiRangeWorkerConfig {
     /// with the frame until positional disk submission has consumed it.
     pub ingress_budget: HttpIngressBudgets,
     pub protocol_metadata: HttpIngressBudgets,
+    pub journal_replay: HttpIngressBudgets,
     pub server_stats: crate::ServerStatistics,
     pub metadata_follow: crate::MetadataFollowQueue,
     pub sftp_ingress: HttpIngressBudgets,
@@ -880,6 +889,7 @@ impl Default for HttpMultiRangeWorkerConfig {
             discard_budget: HttpDiscardBudget::default(),
             ingress_budget: HttpIngressBudgets::new(DEFAULT_HTTP_INGRESS_BUDGET_BYTES),
             protocol_metadata: HttpIngressBudgets::new(32 * 1024 * 1024),
+            journal_replay: HttpIngressBudgets::new(128 * 1024 * 1024),
             server_stats: crate::ServerStatistics::default(),
             metadata_follow: crate::MetadataFollowQueue::default(),
             sftp_ingress: HttpIngressBudgets::new(16 * 1024 * 1024),
@@ -1828,8 +1838,11 @@ impl HttpMultiRangeWorker {
         generation: Generation,
     ) -> Result<OpenedTaskJournal, HttpMultiRangeError> {
         if let Some(session) = &self.session {
-            match session.execute(SessionCommand::SnapshotJournal { gid: task.gid() }) {
-                Ok(ariax_storage::SessionCommandResult::JournalSnapshot(framing)) => {
+            match session.execute(SessionCommand::SnapshotJournalBudgeted {
+                gid: task.gid(),
+                budget: Arc::new(self.config.journal_replay.clone()),
+            }) {
+                Ok(ariax_storage::SessionCommandResult::BudgetedJournalSnapshot(framing)) => {
                     let replay = recover_journal_state(
                         &framing.records,
                         task.task(),
@@ -1869,7 +1882,7 @@ impl HttpMultiRangeWorker {
             )
             .map_err(KnownLengthHttpError::from)?;
             if !paths.is_empty() {
-                let (appender, framing) = ControlJournalAppender::open_recovered(
+                let (appender, framing) = ControlJournalAppender::open_recovered_with_budget(
                     &directory,
                     &paths,
                     task.gid(),
@@ -1877,6 +1890,7 @@ impl HttpMultiRangeWorker {
                     ReplayLimits::default(),
                     generation,
                     now_unix_ms().unwrap_or(0),
+                    &self.config.journal_replay,
                 )
                 .map_err(KnownLengthHttpError::from)?;
                 let replay = recover_journal_state(

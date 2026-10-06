@@ -280,7 +280,8 @@ pub fn directory_names(directory: &File) -> io::Result<Vec<OsString>> {
     directory_names_limited(directory, 65_536, 16 * 1024 * 1024)
 }
 
-fn directory_names_limited(
+/// Enumerates descriptor-relative names with caller-supplied allocation caps.
+pub fn directory_names_limited(
     directory: &File,
     max_names: usize,
     max_bytes: usize,

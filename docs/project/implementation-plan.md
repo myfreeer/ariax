@@ -615,6 +615,11 @@ The [release-blocker follow-up](../../performance-evidence/phase7-release-blocke
 closes those local packaging blockers with independent native/CLI build matches,
 verified runtime notices and four extracted-package checks. The Windows timing
 failure and external platform acceptance requirements remain open.
+The [remaining-local-work campaign](../../performance-evidence/phase7-local-remaining-2026-10-06.md)
+addresses replay-memory admission, retained rate history, OpenSSL 3.6.5 native
+validation, advisory applicability and current package preparation. Historical
+Windows `changeUri`/`addUri` and native Linux mixed-burst latency attribution are
+explicitly deferred in that local goal, with failures and thresholds preserved.
 The work below retains its full acceptance requirements; Phase-6 completion
 and local hardening results are not release approval.
 

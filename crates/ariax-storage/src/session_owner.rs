@@ -218,6 +218,10 @@ pub enum SessionCommand {
     SnapshotJournal {
         gid: Gid,
     },
+    SnapshotJournalBudgeted {
+        gid: Gid,
+        budget: Arc<dyn crate::JournalReplayBudget>,
+    },
     FlushAllJournals,
     CloseJournal {
         gid: Gid,
@@ -256,6 +260,7 @@ pub enum SessionCommandResult {
     JournalAppended(Appended),
     JournalFlushed(Flushed),
     JournalSnapshot(Box<crate::JournalReplay>),
+    BudgetedJournalSnapshot(crate::ReservedJournalReplay),
     JournalsFlushed(usize),
     JournalsClosed(usize),
 }
@@ -1155,6 +1160,11 @@ fn execute_command(
             .appender
             .snapshot(crate::ReplayLimits::default())
             .map(|replay| SessionCommandResult::JournalSnapshot(Box::new(replay)))
+            .map_err(|error| journal_error(gid, error)),
+        SessionCommand::SnapshotJournalBudgeted { gid, budget } => journal_mut(journals, gid)?
+            .appender
+            .snapshot_with_budget(crate::ReplayLimits::default(), budget.as_ref())
+            .map(SessionCommandResult::BudgetedJournalSnapshot)
             .map_err(|error| journal_error(gid, error)),
         SessionCommand::CloseJournal { gid } => {
             let journal = journal_mut(journals, gid)?;
@@ -2336,6 +2346,83 @@ mod tests {
             ))
         ));
         handle.shutdown().expect("shutdown");
+    }
+
+    #[test]
+    fn budgeted_snapshot_completion_owns_credit_and_rejection_keeps_the_owner_usable() {
+        #[derive(Debug)]
+        struct Budget(Arc<std::sync::atomic::AtomicUsize>, bool);
+        #[derive(Debug)]
+        struct Charge(Arc<std::sync::atomic::AtomicUsize>);
+        impl Drop for Charge {
+            fn drop(&mut self) {
+                self.0.store(0, Ordering::SeqCst);
+            }
+        }
+        impl crate::JournalReplayBudget for Budget {
+            fn reserve(&self, bytes: usize) -> Option<crate::JournalReplayReservation> {
+                if !self.1 {
+                    return None;
+                }
+                assert_eq!(self.0.swap(bytes, Ordering::SeqCst), 0);
+                Some(crate::JournalReplayReservation::new(Charge(self.0.clone())))
+            }
+        }
+        let directory = TestDirectory::new();
+        let task_gid = gid(1);
+        let (handle, _) = SessionOwner::spawn(owner_config(&directory, 4), |_: &str| true).unwrap();
+        handle
+            .execute(SessionCommand::InstallJournalAppender {
+                gid: task_gid,
+                appender: appender(&directory, task_gid, 1),
+            })
+            .unwrap();
+        handle
+            .execute(SessionCommand::AppendJournal {
+                gid: task_gid,
+                generation: Generation::INITIAL,
+                payload: JournalPayload::TaskCreated {
+                    durability: crate::DurabilityMode::Balanced,
+                    creator_version: 1,
+                },
+            })
+            .unwrap();
+        let used = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        assert!(matches!(
+            handle.execute(SessionCommand::SnapshotJournalBudgeted {
+                gid: task_gid,
+                budget: Arc::new(Budget(used.clone(), false)),
+            }),
+            Err(SessionOwnerError::Persistence(
+                SessionPersistenceError::Journal {
+                    error: JournalAppenderError::RecoveryMemoryLimit { .. },
+                    ..
+                }
+            ))
+        ));
+        assert_eq!(used.load(Ordering::SeqCst), 0);
+        let completion = handle
+            .try_submit(SessionCommand::SnapshotJournalBudgeted {
+                gid: task_gid,
+                budget: Arc::new(Budget(used.clone(), true)),
+            })
+            .unwrap();
+        handle.execute(SessionCommand::IntegrityCheck).unwrap();
+        assert!(used.load(Ordering::SeqCst) > 0);
+        drop(completion);
+        assert_eq!(used.load(Ordering::SeqCst), 0);
+        let result = handle
+            .execute(SessionCommand::SnapshotJournalBudgeted {
+                gid: task_gid,
+                budget: Arc::new(Budget(used.clone(), true)),
+            })
+            .unwrap();
+        let clone = result.clone();
+        drop(result);
+        assert!(used.load(Ordering::SeqCst) > 0);
+        drop(clone);
+        assert_eq!(used.load(Ordering::SeqCst), 0);
+        handle.shutdown().unwrap();
     }
 
     #[test]

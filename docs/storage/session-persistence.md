@@ -1,5 +1,15 @@
 # Session Persistence
 
+Active-transfer journal replay accepts a caller-provided memory budget without
+depending on the runtime crate. A descriptor-checked input-size estimate narrows
+the existing framing limits before admission; the subsequent read and replay
+must enforce those same limits even if a file changes. The immutable budgeted
+result keeps its reservation until its final owner drops it. Shared result
+clones must not make uncharged copies of record payloads. Budget rejection and
+replay failure release every acquired reservation and preserve journal write
+ownership. Bootstrap's separately staged recovery APIs retain their existing
+contracts.
+
 JSON export measures borrowed task metadata and encoded blob lengths before
 allocating the result. Oversized BitTorrent metainfo or resume data fails within
 the response budget; base64 encoding never creates an unreserved scratch copy.

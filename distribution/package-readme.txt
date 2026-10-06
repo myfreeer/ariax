@@ -25,6 +25,7 @@ also carry libstdc++-6.dll, libgcc_s_seh-1.dll and libwinpthread-1.dll beside
 ariax.exe. Keep those files together; a developer toolchain on PATH is not
 required. The manifest records the exact reviewed runtime files and licenses.
 
-Read LICENSE, THIRD-PARTY-NOTICES.txt, DATA-NOTICE.txt, license-review.json and
-the applicable licenses/ files. The notice collection is conservative and may
-include unused build/source materials. Upstream terms remain in force.
+Read LICENSE, THIRD-PARTY-NOTICES.txt, DATA-NOTICE.txt, license-inventory.json,
+license-review.json and the applicable licenses/ files. The inventory identifies
+the notice texts and bundle dependency closures. The collection is conservative
+and may include unused build/source materials. Upstream terms remain in force.

@@ -639,7 +639,20 @@ native suites that were uncompiled at that checkpoint.
 
 ## Phase 7 Local Validation
 
-The [current four-item local follow-up](../../performance-evidence/phase7-local-four-2026-10-06.md)
+The completed [remaining-local-work campaign](../../performance-evidence/phase7-local-remaining-2026-10-06.md)
+supersedes the earlier goal's completion scope. Historical latency attribution
+is explicitly deferred. Both hosts now build OpenSSL 3.6.5/libtorrent and pass
+all four native probes; independent installations match all 16,772 consumed
+files on each host. Isolated replay returns live allocations to baseline.
+Framing-memory admission and implicit rate-bucket reclamation pass ownership,
+debt, rejection and related regressions. Rebuilt Windows consumers pass a
+30-minute, 1,798-cycle active resource run with flat requested live-memory
+medians and both recovery checks. All eight updated draft binaries match
+independent builds and pass notice, archive, import and extracted-package
+operation checks. The local audit is complete. External platform gates and the deferred latency
+findings remain visible and are not counted as successful validation.
+
+The [earlier four-item local follow-up](../../performance-evidence/phase7-local-four-2026-10-06.md)
 remains incomplete on historical timing attribution. Its short active-transfer fixture found a restart/shutdown/restart
 journal failure (`GenerationNotDrained`) after a process crash. The startup drain
 repair passes Linux/Windows regressions and a corrected active fixture; the
@@ -665,13 +678,14 @@ unknown-channel reply/callback delivery; the upstream client channel-state
 checks are backported to the pinned russh vendor and pass the regression plus
 the 17-scenario SFTP fixture on Linux and native Windows. RSA and the other SSH
 advisory dispositions remain tracked. The OpenSSL 3.6.5 source/patch update
-passes exact-application and syntax checks but still needs linked native
-validation. The new dependency policy passes license/source/backend checks and
+passed exact-application and syntax checks at that checkpoint; the current
+campaign above supplies linked native validation. The dependency policy passes license/source/backend checks and
 retains the unresolved RSA error; yanked chacha20 is replaced and SFTP
 regressions pass on both hosts. A predeclared 100-attempt trace run passes all source mutations but retains a
 new 91.107 ms `addUri` failure; the original source timing failure remains
-unattributed. The exact-source draft inventory is refreshed. These findings are additional open local work,
-not closed by the earlier packaging or empty-session checks.
+unattributed. The exact-source draft inventory was refreshed. These checkpoint
+findings motivated the remaining-local-work campaign above; earlier packaging
+and empty-session checks alone did not close them.
 
 The approved [local hardening campaign](../../performance-evidence/phase7-local-hardening-2026-10-05.md)
 is complete on `local/phase7-hardening`. Phase 7 remains active; these results
@@ -679,8 +693,8 @@ do not approve a release or replace the remaining platform gates.
 
 | Work Package | Completed Local Evidence | Remaining Acceptance |
 | --- | --- | --- |
-| `P7-01` | Earlier 41 native Windows diagnostics and the [bounded campaign's 410 attempts](../../performance-evidence/phase7-local-campaign-2026-10-05.md#transport-diagnostics), preserving one 100.250 ms `changeUri` timing failure. Host observations do not attribute that delay. | Attribute the retained native Linux 530.097 ms mixed-burst failure and the Windows mutation delay; establish repeated native Linux stability. |
-| `P7-02` | Four security/resource repairs with success and rejection regressions; ownership, policy, persistence and dependency review. | Retain strict Unix fixture and kernel/backend coverage on suitable native systems. |
+| `P7-01` | Earlier 41 native Windows diagnostics and the [bounded campaign's 410 attempts](../../performance-evidence/phase7-local-campaign-2026-10-05.md#transport-diagnostics), preserving one 100.250 ms `changeUri` timing failure. Host observations do not attribute that delay. | Historical Windows `changeUri`/`addUri` and native Linux 530.097 ms mixed-burst attribution are explicitly deferred in the current local goal. They remain full Phase-7 acceptance work and are not fixed. |
+| `P7-02` | Security/resource repairs with success and rejection regressions; ownership, policy, persistence and dependency review. The latest local campaign adds budgeted replay ownership and reclamation of fully replenished implicit rate scopes, with bounded active/recovery evidence. | Retain strict Unix fixture and kernel/backend coverage on suitable native systems; upstream RSA assurance remains open. |
 | `P7-03` | All 11 Rust-ASan targets pass the additional three-round campaign: 506,880 accepted executions, including 440,792 mutations. Native ASan/UBSan and TSan probes pass; the maintained direct TSan driver adds ten passing native case executions. Earlier evidence remains retained. | Fully instrumented Rust standard-library/harness race coverage; nine failed native-only harness invocations remain retained. |
 | `P7-04` | Additional 2,000 WSL and 2,400 Windows lifecycle/recovery invocations pass, alongside focused BT/protocol/configuration/runtime checks. All eight Linux/Windows-GNU drafts have independent binary matches, notices, path/import checks and reduced-environment RPC/reopen evidence. The [full/compat follow-up](../../performance-evidence/phase7-release-blockers-2026-10-06.md) also verifies independent native builds and four extracted archives with the reviewed Windows runtime closure. | Fresh/minimum OS, macOS/MSVC, remaining release matrix, hardware power loss and compatibility decisions. Reviewed handler coverage remains 54/207. |
 

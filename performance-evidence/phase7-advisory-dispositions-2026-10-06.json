@@ -39,7 +39,8 @@
           "path": "vendor/russh/src/keys/agent/client.rs",
           "sha256": "c3ec1417037e0b5b03110e6bc2b187db2bbf3f37a79007a6d1436110d64e682b"
         }
-      ]
+      ],
+      "localApplicabilityReviewComplete": true
     },
     {
       "id": "RUSTSEC-2023-0071",
@@ -69,7 +70,15 @@
           "path": "advisories/deny-result-ssh-backport.json",
           "sha256": "547c634d87a8128877629977500832ceb2a77c634c07171afa8f5772f64ea320"
         }
-      ]
+      ],
+      "localApplicabilityReviewComplete": true,
+      "availableFixReviewComplete": true,
+      "remainingGate": "Upstream cryptographic assurance; retain the policy error. Published rc19 does not change the affected private operation/padding/signing sources.",
+      "latestReview": {
+        "artifactRoot": "<remaining-local-run>",
+        "path": "advisory-review/rsa-disposition.json",
+        "sha256": "3e7c5153163e41a0042fc5c183734c930d5e93f719290824f142f2c1947df216"
+      }
     },
     {
       "id": "GHSA-35g8-35p8-c8fw",
@@ -87,7 +96,8 @@
           "path": "crates/ariax-engine/src/sftp.rs",
           "sha256": "017ef91b45493327c3ba95969a0d89990240e74cf8d61594b16a51f199b8b032"
         }
-      ]
+      ],
+      "localApplicabilityReviewComplete": true
     },
     {
       "id": "GHSA-47hw-gvq5-r2gm",
@@ -117,7 +127,8 @@
           "path": "recovery/checks-ssh-channel-fixed-windows.json",
           "sha256": "23f5faf7868659528ed6b003dbb88777e9eae330b26eb2b218306cc43078a4a3"
         }
-      ]
+      ],
+      "localApplicabilityReviewComplete": true
     },
     {
       "id": "GHSA-g6xm-f9xp-qq35",
@@ -135,7 +146,8 @@
           "path": "crates/ariax-engine/src/sftp.rs",
           "sha256": "017ef91b45493327c3ba95969a0d89990240e74cf8d61594b16a51f199b8b032"
         }
-      ]
+      ],
+      "localApplicabilityReviewComplete": true
     },
     {
       "id": "GHSA-m65r-rprj-r5rg",
@@ -153,7 +165,8 @@
           "path": "crates/ariax-engine/src/sftp.rs",
           "sha256": "017ef91b45493327c3ba95969a0d89990240e74cf8d61594b16a51f199b8b032"
         }
-      ]
+      ],
+      "localApplicabilityReviewComplete": true
     },
     {
       "id": "GHSA-p8qx-h547-fjw9",
@@ -179,7 +192,8 @@
           "path": "recovery/checks-ssh-channel-fixed-windows.json",
           "sha256": "23f5faf7868659528ed6b003dbb88777e9eae330b26eb2b218306cc43078a4a3"
         }
-      ]
+      ],
+      "localApplicabilityReviewComplete": true
     },
     {
       "id": "GHSA-w3jg-pjxf-73p4",
@@ -205,11 +219,21 @@
           "path": "recovery/checks-ssh-channel-fixed-windows.json",
           "sha256": "23f5faf7868659528ed6b003dbb88777e9eae330b26eb2b218306cc43078a4a3"
         }
-      ]
+      ],
+      "localApplicabilityReviewComplete": true
     }
   ],
   "allFindingsPatched": false,
   "policyAdvisoryCheckPassed": false,
   "ignoredAdvisories": [],
-  "releaseApproved": false
+  "releaseApproved": false,
+  "followUp": "performance-evidence/phase7-local-remaining-2026-10-06.md",
+  "latestQuery": {
+    "artifactRoot": "<remaining-local-run>",
+    "path": "advisory-review/final-osv/result.json",
+    "sha256": "26427ce73776e61be972671963871791d00582ccd9184d4d55116acfb8673129",
+    "registryPackages": 355,
+    "additionalVendorUpstreamQueries": 1,
+    "matches": 8
+  }
 }

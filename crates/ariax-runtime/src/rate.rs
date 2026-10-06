@@ -225,6 +225,9 @@ struct RateArbiterState {
     hosts: BTreeMap<u64, BucketEntry>,
     tasks: BTreeMap<u64, BucketEntry>,
     streams: BTreeMap<(u64, u64), BucketEntry>,
+    host_cleanup_cursor: Option<u64>,
+    task_cleanup_cursor: Option<u64>,
+    stream_cleanup_cursor: Option<(u64, u64)>,
     waiters: VecDeque<Waiter>,
     grants: BTreeMap<u64, Grant>,
     next_waiter_id: u64,
@@ -234,6 +237,7 @@ struct RateArbiterState {
 struct BucketEntry {
     bucket: Bucket,
     explicit: bool,
+    owners: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -313,6 +317,10 @@ impl Bucket {
         }
     }
 
+    fn is_replenished(&self) -> bool {
+        self.limit.is_unlimited() || self.tokens >= i128::from(self.limit.burst_bytes)
+    }
+
     fn refund(&mut self, bytes: usize) {
         if !self.limit.is_unlimited() {
             self.tokens = self
@@ -354,6 +362,9 @@ impl RateArbiterState {
             hosts: BTreeMap::new(),
             tasks: BTreeMap::new(),
             streams: BTreeMap::new(),
+            host_cleanup_cursor: None,
+            task_cleanup_cursor: None,
+            stream_cleanup_cursor: None,
             waiters: VecDeque::new(),
             grants: BTreeMap::new(),
             next_waiter_id: 1,
@@ -365,6 +376,9 @@ impl RateArbiterState {
     }
 
     fn ensure_path(&mut self, path: RatePath, now: Instant) -> Result<(), RateArbiterError> {
+        prune_next(&mut self.hosts, &mut self.host_cleanup_cursor, now);
+        prune_next(&mut self.tasks, &mut self.task_cleanup_cursor, now);
+        prune_next(&mut self.streams, &mut self.stream_cleanup_cursor, now);
         let missing = usize::from(!self.hosts.contains_key(&path.host))
             + usize::from(!self.tasks.contains_key(&path.task))
             + usize::from(!self.streams.contains_key(&(path.task, path.stream)));
@@ -374,18 +388,52 @@ impl RateArbiterState {
         self.hosts.entry(path.host).or_insert_with(|| BucketEntry {
             bucket: Bucket::new(self.config.default_host, now),
             explicit: false,
+            owners: 0,
         });
         self.tasks.entry(path.task).or_insert_with(|| BucketEntry {
             bucket: Bucket::new(self.config.default_task, now),
             explicit: false,
+            owners: 0,
         });
         self.streams
             .entry((path.task, path.stream))
             .or_insert_with(|| BucketEntry {
                 bucket: Bucket::new(self.config.default_stream, now),
                 explicit: false,
+                owners: 0,
             });
         Ok(())
+    }
+
+    fn retain_path(&mut self, path: RatePath) {
+        self.hosts
+            .get_mut(&path.host)
+            .expect("registered host")
+            .owners += 1;
+        self.tasks
+            .get_mut(&path.task)
+            .expect("registered task")
+            .owners += 1;
+        self.streams
+            .get_mut(&(path.task, path.stream))
+            .expect("registered stream")
+            .owners += 1;
+    }
+
+    fn release_path(&mut self, path: RatePath, now: Instant) {
+        self.hosts.get_mut(&path.host).expect("owned host").owners -= 1;
+        self.tasks.get_mut(&path.task).expect("owned task").owners -= 1;
+        self.streams
+            .get_mut(&(path.task, path.stream))
+            .expect("owned stream")
+            .owners -= 1;
+        self.prune_path(path, now);
+    }
+
+    fn prune_path(&mut self, path: RatePath, now: Instant) {
+        prune_idle(&mut self.hosts, path.host, now);
+        prune_idle(&mut self.tasks, path.task, now);
+        prune_idle(&mut self.streams, (path.task, path.stream), now);
     }
 
     fn refill_path(&mut self, path: RatePath, now: Instant) {
@@ -502,6 +550,8 @@ impl RateArbiterState {
         }
         let id = self.next_waiter_id;
         self.next_waiter_id = self.next_waiter_id.checked_add(1).unwrap_or(1);
+        // Ownership transfers from waiter to grant to permit without a gap.
+        self.retain_path(path);
         self.waiters.push_back(Waiter {
             id,
             path,
@@ -545,10 +595,12 @@ impl RateArbiterState {
 
     fn remove_waiter(&mut self, id: u64, now: Instant) {
         if let Some(index) = self.waiters.iter().position(|waiter| waiter.id == id) {
-            let _removed = self.waiters.remove(index);
+            let removed = self.waiters.remove(index).expect("located waiter");
+            self.release_path(removed.path, now);
         }
         if let Some(grant) = self.grants.remove(&id) {
             self.refund(grant.path, grant.bytes, now);
+            self.release_path(grant.path, now);
         }
     }
 
@@ -597,12 +649,41 @@ impl RateArbiterState {
         Ok(())
     }
 
-    fn contains_scope(&self, scope: RateScope) -> bool {
+    fn scope_mut(&mut self, scope: RateScope) -> Option<&mut BucketEntry> {
         match scope {
-            RateScope::Host(key) => self.hosts.contains_key(&key),
-            RateScope::Task(key) => self.tasks.contains_key(&key),
-            RateScope::Stream { task, stream } => self.streams.contains_key(&(task, stream)),
+            RateScope::Host(key) => self.hosts.get_mut(&key),
+            RateScope::Task(key) => self.tasks.get_mut(&key),
+            RateScope::Stream { task, stream } => self.streams.get_mut(&(task, stream)),
         }
+    }
+}
+
+fn prune_idle<K: Ord>(map: &mut BTreeMap<K, BucketEntry>, key: K, now: Instant) {
+    let Some(entry) = map.get_mut(&key) else {
+        return;
+    };
+    if entry.explicit || entry.owners != 0 {
+        return;
+    }
+    entry.bucket.refill(now);
+    if entry.bucket.is_replenished() {
+        map.remove(&key);
+    }
+}
+
+fn prune_next<K: Copy + Ord>(
+    map: &mut BTreeMap<K, BucketEntry>,
+    cursor: &mut Option<K>,
+    now: Instant,
+) {
+    use std::ops::Bound::{Excluded, Unbounded};
+    let next = cursor
+        .and_then(|key| map.range((Excluded(key), Unbounded)).next())
+        .or_else(|| map.first_key_value())
+        .map(|(&key, _)| key);
+    *cursor = next;
+    if let Some(key) = next {
+        prune_idle(map, key, now);
     }
 }
 
@@ -625,17 +706,31 @@ pub struct PreparedRateLimit {
 impl PreparedRateLimit {
     pub fn apply(self) {
         let mut state = lock_unpoisoned(&self.inner.state);
-        // Tracked buckets are never removed, so preparation reserves no new state.
-        let entry = match self.scope {
-            RateScope::Host(key) => state.hosts.get_mut(&key),
-            RateScope::Task(key) => state.tasks.get_mut(&key),
-            RateScope::Stream { task, stream } => state.streams.get_mut(&(task, stream)),
-        }
-        .expect("prepared rate bucket remains tracked");
+        let entry = state
+            .scope_mut(self.scope)
+            .expect("prepared update owns its bucket");
         entry.bucket.reconfigure(self.limit, Instant::now());
         entry.explicit = true;
         drop(state);
         self.inner.notify.notify_waiters();
+    }
+}
+
+impl Drop for PreparedRateLimit {
+    fn drop(&mut self) {
+        let mut state = lock_unpoisoned(&self.inner.state);
+        state
+            .scope_mut(self.scope)
+            .expect("prepared update owns its bucket")
+            .owners -= 1;
+        let now = Instant::now();
+        match self.scope {
+            RateScope::Host(key) => prune_idle(&mut state.hosts, key, now),
+            RateScope::Task(key) => prune_idle(&mut state.tasks, key, now),
+            RateScope::Stream { task, stream } => {
+                prune_idle(&mut state.streams, (task, stream), now);
+            }
+        }
     }
 }
 
@@ -657,6 +752,7 @@ fn set_limit_entry<K: Ord>(
         .or_insert_with(|| BucketEntry {
             bucket: Bucket::new(limit, now),
             explicit: true,
+            owners: 0,
         });
     Ok(())
 }
@@ -736,9 +832,12 @@ impl RateArbiter {
         if !limit.validate() {
             return Err(RateArbiterError::InvalidConfig);
         }
-        let state = lock_unpoisoned(&self.inner.state);
-        let tracked = state.contains_scope(scope);
-        Ok(tracked.then(|| PreparedRateLimit {
+        let mut state = lock_unpoisoned(&self.inner.state);
+        let Some(entry) = state.scope_mut(scope) else {
+            return Ok(None);
+        };
+        entry.owners += 1;
+        Ok(Some(PreparedRateLimit {
             inner: self.inner.clone(),
             scope,
             limit,
@@ -756,6 +855,7 @@ impl RateArbiter {
         let mut state = lock_unpoisoned(&self.inner.state);
         state.ensure_path(path, now)?;
         if !state.waiters.is_empty() {
+            state.prune_path(path, now);
             return Ok(None);
         }
         let available = state.available_for(path, now);
@@ -764,9 +864,11 @@ impl RateArbiter {
             .min(state.config.quantum_bytes.get())
             .min(usize::try_from(available).unwrap_or(usize::MAX));
         if bytes == 0 {
+            state.prune_path(path, now);
             return Ok(None);
         }
         state.reserve(path, bytes, now);
+        state.retain_path(path);
         Ok(Some(RatePermit::new(Arc::clone(&self.inner), path, bytes)))
     }
 
@@ -785,7 +887,13 @@ impl RateArbiter {
                 let mut state = lock_unpoisoned(&self.inner.state);
                 state.ensure_path(path, now)?;
                 if registration.id.is_none() {
-                    registration.id = Some(state.enqueue(path, requested.get())?);
+                    match state.enqueue(path, requested.get()) {
+                        Ok(id) => registration.id = Some(id),
+                        Err(error) => {
+                            state.prune_path(path, now);
+                            return Err(error);
+                        }
+                    }
                 }
                 let (wait, granted_any) = state.dispatch(now);
                 let id = registration.id.expect("waiter registration has an id");
@@ -888,11 +996,12 @@ impl RatePermit {
 
 impl Drop for RatePermit {
     fn drop(&mut self) {
-        if self.settled {
-            return;
-        }
         let mut state = lock_unpoisoned(&self.inner.state);
-        state.refund(self.path, self.reserved, Instant::now());
+        let now = Instant::now();
+        if !self.settled {
+            state.refund(self.path, self.reserved, now);
+        }
+        state.release_path(self.path, now);
         drop(state);
         self.inner.notify.notify_waiters();
     }
@@ -1321,6 +1430,7 @@ mod tests {
     fn one_thousand_active_streams_stay_within_scope_tracking_bound() {
         let arbiter = RateArbiter::new(RateDirection::Download, RateArbiterConfig::default())
             .expect("arbiter");
+        let mut permits = Vec::new();
         for stream in 0..1_000 {
             let path = RatePath {
                 host: stream,
@@ -1331,12 +1441,185 @@ mod tests {
                 .try_acquire(path, request(1))
                 .expect("admission")
                 .expect("unlimited permit");
-            let _charge = permit.settle(1);
+            permits.push(permit);
         }
         let stats = arbiter.stats();
         assert_eq!(stats.tracked_scopes, 3_000);
         assert!(stats.tracked_scopes <= MAX_RATE_TRACKED_SCOPES);
         assert_eq!(stats.queued_waiters, 0);
         assert_eq!(stats.pending_grants, 0);
+        drop(permits);
+        assert_eq!(arbiter.stats().tracked_scopes, 0);
+    }
+
+    #[test]
+    fn repeated_unique_streams_release_implicit_scope_ownership() {
+        let arbiter =
+            RateArbiter::new(RateDirection::Download, RateArbiterConfig::default()).unwrap();
+        for cycle in 0..64 {
+            let mut permits = Vec::new();
+            for stream in 0..16 {
+                let key = cycle * 16 + stream;
+                let path = RatePath {
+                    host: key,
+                    task: key,
+                    stream: key,
+                };
+                permits.push(arbiter.try_acquire(path, request(16)).unwrap().unwrap());
+            }
+            assert_eq!(arbiter.stats().tracked_scopes, 48);
+            for (index, permit) in permits.into_iter().enumerate() {
+                if index % 2 == 0 {
+                    let _ = permit.settle(32);
+                } else {
+                    drop(permit);
+                }
+            }
+            assert_eq!(arbiter.stats().tracked_scopes, 0);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_scope_cleanup_preserves_debt_until_full_refill() {
+        let finite = RateLimit::per_second(10);
+        let arbiter = RateArbiter::new(
+            RateDirection::Download,
+            RateArbiterConfig {
+                default_host: finite,
+                default_task: finite,
+                default_stream: finite,
+                ..RateArbiterConfig::default()
+            },
+        )
+        .unwrap();
+        let permit = arbiter.try_acquire(PATH, request(10)).unwrap().unwrap();
+        assert_eq!(permit.settle(20).debt_bytes, 10);
+        assert_eq!(arbiter.stats().tracked_scopes, 3);
+        for _ in 0..16 {
+            assert!(arbiter.try_acquire(PATH, request(1)).unwrap().is_none());
+        }
+        tokio::time::advance(Duration::from_millis(1_100)).await;
+        let permit = arbiter.try_acquire(PATH, request(10)).unwrap().unwrap();
+        assert_eq!(
+            permit.reserved_bytes(),
+            1,
+            "recreation cannot restore the full burst"
+        );
+        drop(permit);
+        assert_eq!(arbiter.stats().tracked_scopes, 3);
+        tokio::time::advance(Duration::from_millis(900)).await;
+        let other = RatePath {
+            host: 90,
+            task: 91,
+            stream: 92,
+        };
+        let permit = arbiter.try_acquire(other, request(1)).unwrap().unwrap();
+        assert_eq!(
+            arbiter.stats().tracked_scopes,
+            3,
+            "old fully refilled path was reclaimed"
+        );
+        drop(permit);
+        assert_eq!(arbiter.stats().tracked_scopes, 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn prepared_updates_pin_implicit_scopes_until_apply_or_abandonment() {
+        for scope in [
+            RateScope::Host(PATH.host),
+            RateScope::Task(PATH.task),
+            RateScope::Stream {
+                task: PATH.task,
+                stream: PATH.stream,
+            },
+        ] {
+            let arbiter =
+                RateArbiter::new(RateDirection::Download, RateArbiterConfig::default()).unwrap();
+            let permit = arbiter.try_acquire(PATH, request(8)).unwrap().unwrap();
+            let abandoned = arbiter
+                .prepare_scoped_limit(scope, RateLimit::per_second(1))
+                .unwrap()
+                .unwrap();
+            let committed = arbiter
+                .prepare_scoped_limit(scope, RateLimit::per_second(2))
+                .unwrap()
+                .unwrap();
+            drop(permit);
+            assert_eq!(arbiter.stats().tracked_scopes, 1);
+            drop(abandoned);
+            assert_eq!(arbiter.stats().tracked_scopes, 1);
+            committed.apply();
+            arbiter.reconfigure(RateArbiterConfig::default()).unwrap();
+            tokio::time::advance(Duration::from_secs(1)).await;
+            let permit = arbiter.try_acquire(PATH, request(8)).unwrap().unwrap();
+            assert_eq!(permit.reserved_bytes(), 2);
+            drop(permit);
+            assert_eq!(
+                arbiter.stats().tracked_scopes,
+                1,
+                "explicit limit survives cleanup"
+            );
+        }
+        let arbiter =
+            RateArbiter::new(RateDirection::Download, RateArbiterConfig::default()).unwrap();
+        let permit = arbiter.try_acquire(PATH, request(8)).unwrap().unwrap();
+        let abandoned = arbiter
+            .prepare_scoped_limit(RateScope::Task(PATH.task), RateLimit::per_second(1))
+            .unwrap()
+            .unwrap();
+        drop(permit);
+        drop(abandoned);
+        assert_eq!(arbiter.stats().tracked_scopes, 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelled_waiters_and_unclaimed_grants_release_scope_ownership() {
+        let arbiter = RateArbiter::new(
+            RateDirection::Download,
+            RateArbiterConfig {
+                global: RateLimit::per_second(1),
+                max_waiters: request(1),
+                ..RateArbiterConfig::default()
+            },
+        )
+        .unwrap();
+        let _ = arbiter
+            .try_acquire(PATH, request(1))
+            .unwrap()
+            .unwrap()
+            .settle(1);
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        let mut waiter = Box::pin(arbiter.acquire(PATH, request(1)));
+        assert!(std::future::Future::poll(waiter.as_mut(), &mut context).is_pending());
+        let other = RatePath {
+            host: 90,
+            task: 91,
+            stream: 92,
+        };
+        assert!(matches!(
+            arbiter.acquire(other, request(1)).await,
+            Err(RateArbiterError::WaiterLimit)
+        ));
+        assert_eq!(arbiter.stats().tracked_scopes, 3);
+        drop(waiter);
+        assert_eq!(arbiter.stats().tracked_scopes, 0);
+
+        let mut waiter = Box::pin(arbiter.acquire(PATH, request(1)));
+        assert!(std::future::Future::poll(waiter.as_mut(), &mut context).is_pending());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        // A different reader can dispatch the grant before its owner is polled.
+        {
+            let mut state = lock_unpoisoned(&arbiter.inner.state);
+            assert!(state.dispatch(Instant::now()).1);
+        }
+        assert_eq!(arbiter.stats().pending_grants, 1);
+        assert_eq!(arbiter.stats().tracked_scopes, 3);
+        assert!(arbiter.try_acquire(other, request(1)).unwrap().is_none());
+        drop(waiter);
+        let stats = arbiter.stats();
+        assert_eq!(stats.pending_grants, 0);
+        assert_eq!(stats.queued_waiters, 0);
+        assert_eq!(stats.tracked_scopes, 0);
+        assert_eq!(stats.global_available_bytes, 1);
     }
 }

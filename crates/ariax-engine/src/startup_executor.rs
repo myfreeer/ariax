@@ -448,6 +448,7 @@ fn command_result_code(result: &SessionCommandResult) -> &'static str {
         SessionCommandResult::JournalsFlushed(_) => "journals_flushed",
         SessionCommandResult::JournalsClosed(_) => "journals_closed",
         SessionCommandResult::JournalSnapshot(_) => "journal_snapshot",
+        SessionCommandResult::BudgetedJournalSnapshot(_) => "budgeted_journal_snapshot",
     }
 }
 

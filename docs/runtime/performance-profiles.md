@@ -638,6 +638,8 @@ accounted_resident_limit ≥
                                        buffer_reserved)
   + bt_reserved                       (libtorrent session budget, full build only;
                                        configured into libtorrent settings)
+  + journal_replay_reserved            (active HTTP framing and input scratch;
+                                       shared immutable results retain charges)
   + fixed_process_reserve             (TLS roots and runtime stacks:
                                        thread_count × stack size)
 ```
@@ -651,6 +653,14 @@ sublimits on the same pooled lease; diagnostics show both the stage charge and
 its parent allocation domain but the resident sum uses only the parent once.
 RSS sampling is a defensive earlier-stop signal, not permission to allocate
 outside these charges.
+
+Active HTTP replay has a process-wide 128 MiB domain ceiling, clamped to the
+profile's accounted resident limit. It competes with the other domains for the
+same resident permits. Input-size estimates narrow the existing replay limits;
+the reservation covers those enforced limits and recovery directory enumeration
+is capped from the installed segment count before collecting names. This bounds
+allocation pressure, but does not make retained history constant-size or prove
+long-term private-memory stability.
 
 The `concurrency` C10k gate is 10,000 concurrently open low-activity sockets,
 not 10,000 retained HTTP keep-alive pool entries (that pool remains capped at

@@ -16,7 +16,7 @@ crates/ariax-bt-libtorrent-sys/tests/fixtures/*.torrent -text
 crates/ariax-bt-libtorrent-sys/tests/fixtures/payload.bin -text
 # The review draft retains original third-party notice bytes and whitespace.
 # OpenSSL's original Authors heading uses seven equals signs.
-performance-evidence/phase7-third-party-notices-2026-10-05.txt -text -whitespace conflict-marker-size=32
+performance-evidence/phase7-third-party-notices-*.txt -text -whitespace conflict-marker-size=32
 # Distribution notices retain upstream bytes, including Markdown-style rulers.
 distribution/licenses/** -text -whitespace conflict-marker-size=32
 distribution/aria2-source-notice.txt -text -whitespace conflict-marker-size=32

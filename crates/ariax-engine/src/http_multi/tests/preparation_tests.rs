@@ -3,6 +3,58 @@ use super::*;
 
 struct ReleaseGate(Arc<storage_preparation::PreparationGate>);
 
+#[tokio::test]
+async fn preparation_replay_budget_rejection_preserves_journal_and_allows_retry() {
+    let root = TestDirectory::new("preparation-budget-output");
+    let journal = TestDirectory::new("preparation-budget-journal");
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let spec = Arc::new(task(&root, [listener.local_addr().unwrap()], MIB));
+    let worker = worker(
+        &journal,
+        SharedHttpTransferStats::new(NonZeroUsize::new(1).unwrap()),
+        1,
+    );
+    let prepared = worker
+        .prepare_storage_async(spec.clone(), Generation::INITIAL, HttpCancellation::new())
+        .await
+        .unwrap();
+    worker
+        .handoff_journal(spec.gid(), prepared.into_appender())
+        .await
+        .unwrap();
+    let path = http_journal_directory(&journal.0, spec.gid())
+        .join(ariax_storage::journal_segment_file_name(0));
+    let before = fs::read(&path).unwrap();
+    let held = worker
+        .config
+        .journal_replay
+        .try_acquire(worker.config.journal_replay.limit())
+        .unwrap();
+    assert!(
+        worker
+            .prepare_storage_async(spec.clone(), Generation::INITIAL, HttpCancellation::new())
+            .await
+            .is_err()
+    );
+    assert_eq!(worker.preparation_slot.available_permits(), 1);
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), listener.accept())
+            .await
+            .is_err()
+    );
+    drop(held);
+    let prepared = worker
+        .prepare_storage_async(spec.clone(), Generation::INITIAL, HttpCancellation::new())
+        .await
+        .unwrap();
+    assert_eq!(worker.config.journal_replay.used(), 0);
+    worker
+        .handoff_journal(spec.gid(), prepared.into_appender())
+        .await
+        .unwrap();
+}
+
 impl Drop for ReleaseGate {
     fn drop(&mut self) {
         self.0.release();

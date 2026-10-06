@@ -282,9 +282,14 @@ HTTP journal preparation, semantic replay and descriptor-bound recovered-piece
 readback run outside Tokio's async workers. Worker clones share one preparation
 slot, acquired asynchronously before submitting blocking work. Existing journal
 segment, record and payload limits continue to bound replay; the slot prevents
-concurrent preparations from multiplying that scratch allocation. This does not
-make journal scratch part of the resident-byte accounting or remove its growth
-with retained history.
+concurrent preparations from multiplying that scratch allocation. Active HTTP
+replay also reserves a journal-domain and shared resident-byte charge before
+reading proportional input buffers. The charge covers encoded input, copied
+payloads, record-vector capacity and bounded recovery bookkeeping. It remains
+owned by the immutable replay result through semantic replay; cloning that
+result shares its data and charge. Exhaustion rejects preparation before those
+allocations. Replay still grows with retained history, and the reservation is
+not a measurement of allocator overhead or operating-system private memory.
 
 Cancellation before submission creates no journal. Once submitted, preparation
 remains part of the transfer's drain: cancellation waits for the job, journal

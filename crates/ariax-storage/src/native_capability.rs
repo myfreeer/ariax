@@ -365,6 +365,14 @@ impl JournalDirectoryCapability {
         self.0.entries()
     }
 
+    pub(crate) fn entries_limited(
+        &self,
+        max_names: usize,
+        max_bytes: usize,
+    ) -> Result<Vec<OsString>, NativeCapabilityError> {
+        platform::directory_entries_limited(&self.0.native, max_names, max_bytes)
+    }
+
     pub(crate) fn open_regular_file(
         &self,
         name: &OsStr,
@@ -1061,6 +1069,15 @@ mod platform {
         directory_names(handle).map_err(Into::into)
     }
 
+    pub(super) fn directory_entries_limited(
+        handle: &DirectoryHandle,
+        max_names: usize,
+        max_bytes: usize,
+    ) -> Result<Vec<OsString>, NativeCapabilityError> {
+        ariax_windows_security::directory_names_limited(handle, max_names, max_bytes)
+            .map_err(Into::into)
+    }
+
     pub(super) fn create_new_file(
         directory: &DirectoryHandle,
         name: &OsStr,
@@ -1185,6 +1202,7 @@ mod platform {
     unavailable!(file_identity_allow_alias(file: &File, expected: NativeObjectKind) -> NativeIdentityV1);
     unavailable!(regular_file_link_count(file: &File) -> u64);
     unavailable!(directory_entries(handle: &DirectoryHandle) -> Vec<OsString>);
+    unavailable!(directory_entries_limited(handle: &DirectoryHandle, max_names: usize, max_bytes: usize) -> Vec<OsString>);
     unavailable!(create_new_file(directory: &DirectoryHandle, name: &OsStr) -> File);
     unavailable!(link_no_replace(directory: &DirectoryHandle, source: &OsStr, destination: &OsStr) -> ());
     unavailable!(remove_file(directory: &DirectoryHandle, name: &OsStr) -> ());

@@ -90,6 +90,17 @@ invalidate/recompute sleeping deadlines without revoking already consumed
 bytes. Libtorrent's separately allocated share remains outside these project
 bucket paths as described below.
 
+Implicit host/task/stream buckets are reclaimed only after their last waiter,
+grant, permit and prepared configuration update has released ownership, and
+their tokens have fully refilled. Unlimited implicit buckets can be reclaimed
+immediately. An exhausted bucket or overshoot debt survives cancellation and
+pause/resume; recreating a bucket must never replenish consumed tokens early.
+Each admission examines at most one older entry per hierarchy level, and final
+ownership release also checks its own path. This bounds maintenance without an
+allocation or a scan of the full table on a read. Explicit scoped configuration
+remains tracked for the lifetime of the arbiter and survives default changes.
+The 300,000-entry cap rejects admission atomically when no capacity remains.
+
 ## Streaming Read Gate
 
 For project-owned downloads, the normal order before a protocol read is:

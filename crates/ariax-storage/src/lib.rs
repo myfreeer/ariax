@@ -41,8 +41,9 @@ pub use journal_appender::{
     ALL_JOURNAL_APPENDER_ERROR_CODES, ALL_JOURNAL_APPENDER_FAULTS, ALL_JOURNAL_IO_OPERATIONS,
     ALL_JOURNAL_TAIL_MISMATCHES, Appended, ControlJournalAppender, Flushed,
     JOURNAL_SEGMENT_FILE_PREFIX, JOURNAL_SEGMENT_FILE_SUFFIX, JOURNAL_TEMP_FILE_SUFFIX,
-    JournalAppenderError, JournalAppenderFault, JournalIoOperation, JournalRotation,
-    JournalTailMismatch, PreparedJournalSet, journal_segment_file_name, journal_segment_path,
+    JournalAppenderError, JournalAppenderFault, JournalIoOperation, JournalReplayBudget,
+    JournalReplayReservation, JournalRotation, JournalTailMismatch, PreparedJournalSet,
+    ReservedJournalReplay, journal_segment_file_name, journal_segment_path,
 };
 pub use journal_payload::{
     ALL_JOURNAL_DIGEST_ALGORITHMS, ALL_PAYLOAD_CODEC_ERROR_CLASSES, AppendPayloadError,

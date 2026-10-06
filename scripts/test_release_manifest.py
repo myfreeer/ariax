@@ -65,6 +65,44 @@ class ReleaseManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'hash or size mismatch'):
             rm.validate(self.catalog)
 
+    def test_explicit_inventory_binds_lock_and_packaged_notice_collection(self):
+        catalog = copy.deepcopy(self.catalog)
+        source = 'performance-evidence/phase7-release-license-inventory-2026-10-06.json'
+        inventory = json.loads((rm.ROOT / source).read_text())
+        catalog.update(noticeInventorySource=source,
+                       noticeInventorySha256=rm.digest(rm.ROOT / source),
+                       dependencyLockSha256=rm.digest(rm.ROOT / 'Cargo.lock'))
+        catalog['commonFiles'] = [item for item in catalog['commonFiles']
+                                  if item['destination'] not in {
+                                      'license-inventory.json', 'THIRD-PARTY-NOTICES.txt'}]
+        for name, destination in ((source, 'license-inventory.json'),
+                                  (inventory['noticeArtifact']['path'], 'THIRD-PARTY-NOTICES.txt')):
+            path = rm.ROOT / name
+            catalog['commonFiles'].append({'source': name, 'destination': destination,
+                                           'sha256': rm.digest(path), 'bytes': path.stat().st_size})
+        rm.validate(catalog)
+        for destination, message in (('license-inventory.json', 'packaged inventory'),
+                                     ('THIRD-PARTY-NOTICES.txt', 'notice collection drift')):
+            modified = copy.deepcopy(catalog)
+            modified['commonFiles'] = [item for item in modified['commonFiles']
+                                       if item['destination'] != destination]
+            with self.subTest(destination=destination), self.assertRaisesRegex(ValueError, message):
+                rm.validate(modified)
+        modified = copy.deepcopy(catalog)
+        modified['noticeInventorySource'] = '../outside.json'
+        with self.assertRaisesRegex(ValueError, 'unsafe path'):
+            rm.validate(modified)
+        for field, message in (('cargoLockSha256', 'inventory lock drift'),
+                               ('noticeArtifact', 'notice collection drift')):
+            stale = copy.deepcopy(inventory)
+            if field == 'noticeArtifact':
+                stale[field]['sha256'] = '0' * 64
+            else:
+                stale[field] = '0' * 64
+            with patch.object(rm.json, 'loads', return_value=stale):
+                with self.assertRaisesRegex(ValueError, message):
+                    rm.validate(catalog)
+
     def test_unreviewed_runtime_dependencies_and_approval_reject(self):
         for target, field, value in (
                 ('windows-gnu', 'systemLibraries', sorted(rm.WINDOWS_SYSTEM | {'libstdc++-6.dll'})),

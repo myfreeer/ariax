@@ -41,6 +41,18 @@ the winapi import-library payload, IANA terms, aria2 source-artifact scope and
 retained bundle runtime inventories. The earlier inventory remains
 historical; the follow-up records the current scope and remaining work.
 
+The [remaining-local-work campaign](../../performance-evidence/phase7-local-remaining-2026-10-06.md)
+adds an [updated locked inventory](../../performance-evidence/phase7-release-license-inventory-2026-10-06.json)
+and [notice collection](../../performance-evidence/phase7-third-party-notices-2026-10-06.txt)
+for 314 selected packages and OpenSSL 3.6.5. Notice bodies are checked against
+their exact source archives or retained upstream provenance. Git attributes
+preserve the original notice bytes and whitespace in every dated collection.
+All eight updated
+draft binaries match independent builds. Their assembled and extracted archives
+pass notice, path, import, runtime-loading, RPC and database-reopening checks.
+Historical packages retain their original build and notice identities in the
+earlier evidence; the catalog now points to the rebuilt drafts.
+
 ## Embedded And Native Materials
 
 Every current bundle embeds the [public-suffix snapshot](../../assets/public-suffix-list.dat)
@@ -91,6 +103,11 @@ The [package catalog](../../distribution/package-manifests.json) uses an explici
 allowlist for each target and CLI bundle. The
 [distribution guide](../../distribution/README.md) documents validation and
 staging through `scripts/release_manifest.py`.
+The catalog names its notice inventory explicitly and binds its hash, current
+dependency lock and notice collection to the packaged `license-inventory.json`
+and `THIRD-PARTY-NOTICES.txt`. Updating a dated inventory cannot leave a package
+pointing at the older collection. Historical catalogs without the explicit
+inventory field retain their original October 5 interpretation.
 The layout includes `LICENSE`, third-party notices, runtime notices, the exact
 MPL-covered source and provenance, source-availability information, release
 limitations, file hashes and the binary's build identity. It does not copy the
