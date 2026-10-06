@@ -67,8 +67,42 @@ targets. No complete workspace or native-library build was run.
 The corrected 60-second active fixture passes crash recovery, clean RPC shutdown
 and a second recovery. Both bootstraps retain all 132 tasks, and the interrupted
 task retains its GID with zero completed bytes: provisional payload was not
-promoted to trusted progress. The planned 30-minute run is now in progress;
-its completion and resource assessment are still pending.
+promoted to trusted progress. The 30-minute run also completes both recovery
+checks, with 60 samples, six pause/resume cycles and 900 payload pulses. However,
+accounted resident memory grows by about 1 MiB per pause/resume cycle. Passing
+its coarse 32 MiB private-memory growth screen does not establish stability.
+
+The original 120-second dense probe confirms the growth: private memory rises
+from 11,419,648 to 115,916,800 bytes between its first and 90-second samples.
+Its assessment fails because the runner collected four samples while requiring
+six. That runner defect does not invalidate the raw growth observation, and
+neither the failed assessment nor its fixture is discarded.
+
+The ingress path dropped pooled buffers on cancelled reads, failed reply
+channels and admission backpressure. Ordinary `BufferLease` drop quarantines
+unreleased ownership, and pool shutdown permanently retains quarantined storage
+and its resident permits. A protocol-only guard now explicitly releases known
+`NetworkFill`/`Filled` ownership and holds the originating pool alive until the
+release or storage handoff. Unexpected ownership still quarantines; no OS or
+storage completion invariant is weakened. HTTP, FTP and SFTP use this guard.
+
+Four lifecycle regressions pass on Linux and Windows: repeated cancellation and
+closed replies reuse one allocation, task abort releases its pending buffer,
+storage handoff retains ownership, and unexpected disk ownership quarantines.
+Windows passes all 43 HTTP multi-range tests and three focused FTP/SFTP tests.
+The first Windows driver stopped after requesting a nonexistent SFTP test filter;
+a separate direct run uses the actual subsystem/transfer filters and passes.
+Linux passes 42 of those 43 HTTP tests; a first-durable-piece timeout in the
+remaining recovery test passes three unchanged reruns. The original timeout
+remains unexplained and retained. The repaired 180-second dense probe passes 178 pause/resume cycles, 90 pulses,
+and both recovery checks. It collects 18 samples at ten-second intervals and
+additionally screens accounted resident growth at 2 MiB. First/last three-sample
+medians are 13,005,001/13,006,025 accounted resident bytes, 12,300,288/15,110,144
+private bytes, 422/418 handles, and 14/11 threads. This removes the observed
+per-cycle pooled-buffer retention; the remaining private-memory drift and
+longer-term stability are not declared resolved. The probe uses separately
+retained executables and unchanged transfer gates. All owned fixture processes
+exit, all 132 tasks recover, and interrupted payload remains untrusted.
 
 ## Compatibility And Advisory Review
 
@@ -82,21 +116,51 @@ task metadata; boolean/string pause and a reviewed split option succeed, while
 invalid pause/split values reject. The configuration document distinguishes
 current executable support from target category ownership. This does not claim
 full parity or that startup flags are unsupported in their separate CLI scope.
-The broader experimental support/rejection review remains open.
+Six selected compatibility checks pass on each host, covering advertised RPC
+dispatch, typed option bounds, rejection before metadata creation, and real-worker
+slow-slot/retry-wait behavior. Full aria2 parity remains outside
+this experimental subset; registry labels do not promise unimplemented behavior.
 
-A live OSV query covers all 357 registry packages in the current workspace lock
-and retains request/response hashes. Matches require applicability review for
-`hickory-resolver`, `rustls`, `russh`, `pageant`, `rsa`, and `rustls-pemfile`.
-The rustls entries include duplicate identifiers for the same issue; the PEM
-entry is an unmaintained-package advisory. Registry version matches alone do
-not establish reachability, and this is not yet the exact release closure.
+The initial live OSV query covers 357 registry packages. The updated lock has
+356; its rescan has no matches for the repaired DNS/TLS dependencies or removed
+PEM wrapper. All three Hickory crates are locked at 0.26.2, rustls at 0.23.45,
+and rustls-webpki at 0.103.15. A first build exposed Resolver's insufficient
+transitive lower bound; aligning Hickory's network/protocol crates resolves it.
+The retained failed compile is not counted as validation. Rustls's maintained
+`pki_types` PEM API replaces the unmaintained `rustls-pemfile` dependency.
+Ten HTTP/TLS tests and seven resolver tests pass on both hosts, including
+certificate selection and malformed PEM rejection. All updated crates declare
+MSRVs at or below 1.88; that declaration is not a fresh full MSRV build.
 
-Published fixes `hickory-resolver` 0.26.2 and `rustls` 0.23.45 declare MSRVs
-compatible with 1.88. `russh` 0.63.2 and `pageant` 0.2.3 declare Rust 1.89,
-so blindly updating to those releases would violate the repository's MSRV.
-Review enabled algorithms, client/server reachability and possible compatible
-backports before selecting the SSH remediation. No dependency change has yet
-been validated, and current retained packages remain drafts.
+Remaining registry matches require these distinctions:
+
+| Dependency/Advisory | Local Applicability Review | Remaining Work |
+| --- | --- | --- |
+| russh client channel callbacks (`GHSA-47hw-gvq5-r2gm`) | Ariax overrides only host-key checking and KEX diagnostics, not the channel callbacks identified by the advisory. | Confirm transport-level effects and choose a compatible fix/backport; not a blanket clearance. |
+| russh MAC `none` / hybrid KEX (`GHSA-p8qx-h547-fjw9`, `GHSA-w3jg-pjxf-73p4`) | Negotiation allowlists exclude MAC `none` and hybrid ML-KEM. Diagnostic `none` denotes AEAD and is not the negotiation allowlist. | Preserve these restrictions and review the security backports. |
+| russh server advisories (`GHSA-35g8-35p8-c8fw`, `GHSA-g6xm-f9xp-qq35`, `GHSA-m65r-rprj-r5rg`) | Production uses the SSH client; server implementations are test fixtures. | Track the vulnerable dependency separately from production reachability. |
+| Pageant (`GHSA-g4mp-vgx3-xrvm`) | Windows authentication connects to the OpenSSH named pipe; it does not invoke Pageant. | Keep the dependency match visible until upgrade/backport review closes it. |
+| RSA Marvin (`RUSTSEC-2023-0071`) | SSH authentication uses signatures; the advisory concerns private-key decryption. No fixed version is published. | Finish private-decryption reachability review. |
+
+Russh 0.63.2 and Pageant 0.2.3 require Rust 1.89. Upstream patches and archive
+checksums are retained, but none is silently substituted for the current
+MSRV-compatible pins.
+
+OpenSSL's official vulnerability index lists 24 affected-version matches for
+pinned 3.6.3, fixed in 3.6.4/3.6.5. These include relative-CRLDP certificate
+memory amplification (`CVE-2026-35189`); the QUIC, DTLS, CMP, CMS, signing and
+other entries need individual applicability review. The empty GitHub repository
+advisory response is not clearance. An OpenSSL upgrade must also reconcile the
+existing callback backport and pass its strict/native regressions. No native
+source pin or retained installation is relabeled as repaired. The attempted
+Boost/libtorrent security-page URLs returned 404; their review remains open.
+
+The exact-source draft inventory records eight normal/build dependency graphs
+(minimal/standard/full/compat on Linux and Windows-GNU), 314 distinct packages,
+declared licenses/MSRVs, cached archive verification, native source/patch hashes,
+and 416 implementation/packaging source hashes. All eight graphs pass the
+protocol/provider policy checker. It is a source inventory, not rebuilt release
+packages. The historical packages still contain their original dependencies.
 
 Raw evidence is under `/mnt/f/temp/ariax/phase7-local-four-20261006`.
 Unique artifacts and failures remain retained. Native Linux timing/kernel

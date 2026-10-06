@@ -103,7 +103,7 @@ impl HttpMultiRangeWorker {
         path: RatePath,
         cancellation: &HttpCancellation,
         stats: &HttpTransferStats,
-    ) -> Result<(BufferLease, HttpIngressPermit, RatePermit), HttpMultiRangeError> {
+    ) -> Result<(NetworkBuffer, HttpIngressPermit, RatePermit), HttpMultiRangeError> {
         let _pressure = stats.local_wait();
         let deadline = tokio::time::Instant::now() + self.config.storage.shutdown_timeout;
         loop {
@@ -111,6 +111,7 @@ impl HttpMultiRangeWorker {
                 return Err(HttpMultiRangeError::Cancelled);
             }
             if let Ok(buffer) = storage.reserve_network_buffer(requested) {
+                let buffer = NetworkBuffer::new(buffer, storage.buffer_pool().clone());
                 if let Ok(ingress) = self.config.ingress_budget.try_acquire(buffer.capacity()) {
                     let requested =
                         NonZeroUsize::new(requested).ok_or(HttpMultiRangeError::Protocol)?;
@@ -118,7 +119,7 @@ impl HttpMultiRangeWorker {
                     rate = self.config.download_rate.acquire(path,requested) => rate.map_err(|_| HttpMultiRangeError::InvalidConfig)? };
                     return Ok((buffer, ingress, rate));
                 }
-                storage.discard_network_buffer(buffer)?;
+                storage.discard_network_buffer(buffer.into_lease())?;
             }
             if tokio::time::Instant::now() >= deadline {
                 return Err(crate::ProtocolFailure::ResourceLimit.into());

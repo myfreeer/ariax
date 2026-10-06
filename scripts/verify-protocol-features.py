@@ -39,7 +39,7 @@ def verify(graph, bundle):
 
 
 def self_test():
-    base = {"quick-xml": {"0.41.0": set()}, "rustls": {"0.23.42": {"ring", "std", "tls12"}}}
+    base = {"quick-xml": {"0.41.0": set()}, "rustls": {"0.23.45": {"ring", "std", "tls12"}}}
     verify(base, "minimal")
     standard = copy.deepcopy(base)
     standard.update({n: {v: f.copy()} for n, (v, f) in EXPECTED.items()})
@@ -59,7 +59,7 @@ def self_test():
         else:
             raise AssertionError("native BT leaked into a smaller bundle")
     for change, bundle in [(lambda g: g.update({"des": {"1": set()}}), "standard"),
-                           (lambda g: g["rustls"]["0.23.42"].add("aws_lc_rs"), "standard"),
+                           (lambda g: g["rustls"]["0.23.45"].add("aws_lc_rs"), "standard"),
                            (lambda g: g["russh"]["0.62.4"].add("default"), "standard"),
                            (lambda g: None, "minimal")]:
         bad = copy.deepcopy(standard)

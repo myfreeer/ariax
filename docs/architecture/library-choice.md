@@ -3,7 +3,8 @@
 [Documentation](../README.md)
 
 Status: reviewed decision record. Ecosystem snapshot: 2026-07-25, with the
-rusqlite MSRV maintenance pin updated on 2026-08-10.
+rusqlite MSRV maintenance pin updated on 2026-08-10 and DNS/TLS advisory
+maintenance on 2026-10-06.
 
 The downloader should reuse mature infrastructure, but the core should still
 own correctness-sensitive behavior: range validation, disk placement,
@@ -567,9 +568,9 @@ tarballs per the README build rules.
   and catch panics at every exported boundary.
 
 Exact direct versions selected by the review and subsequent compatibility
-maintenance through 2026-08-10 are a controlled snapshot, not unconstrained
+maintenance through 2026-10-06 are a controlled snapshot, not unconstrained
 version requirements: Hyper 1.11.0, hyper-util
-0.1.20, hyper-rustls 0.27.9, Hickory Resolver 0.26.1, rustls 0.23.42 stable,
+0.1.20, hyper-rustls 0.27.9, Hickory Resolver 0.26.2, rustls 0.23.45 stable,
 Tokio 1.53.1, tokio-util 0.7.19, russh 0.62.4, russh-sftp 2.3.0 (patched),
 ssh-key 0.7.0-rc.11 (exact russh dependency), SuppaFTP 10.0.1 (patched),
 quick-xml 0.41.0, tokio-uring 0.5.0, io-uring 0.7.13, rusqlite 0.40.2,
@@ -581,6 +582,15 @@ flate2 1.1.9, tokio-tungstenite 0.30.0, clap 4.6.x, serde 1.0.x, secrecy
 cargo-auditable 0.7.5, and cargo-cyclonedx 0.5.9. Phase 0 must pin, audit,
 license-check, and build the resolved graph rather than copying this list
 blindly.
+
+The October 6 advisory review selects Hickory Resolver 0.26.2 for DNS response
+validation/retry fixes and rustls 0.23.45 for TLS 1.3 encryption-boundary checks.
+The lock also aligns Hickory Net/Proto at 0.26.2. These versions preserve the
+declared Rust 1.88 baseline. PEM trust parsing uses the
+maintained `rustls-pki-types` API re-exported by rustls; it retains certificate
+selection, malformed-block rejection and existing bundle limits without the
+unmaintained `rustls-pemfile` wrapper. Focused Linux/Windows transport and
+resolver checks pass; the remaining release matrix is still required.
 
 ## References
 

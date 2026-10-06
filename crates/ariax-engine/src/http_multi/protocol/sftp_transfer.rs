@@ -69,7 +69,7 @@ impl Drop for AttemptDrain {
 }
 struct ReadCompletion {
     offset: u64,
-    result: Result<BufferLease, RangeAttemptFailure>,
+    result: Result<NetworkBuffer, RangeAttemptFailure>,
     ingress: HttpIngressPermit,
     _decode: HttpIngressPermit,
     _slot: tokio::sync::OwnedSemaphorePermit,
@@ -163,7 +163,7 @@ async fn read_exact(
     session: Arc<SftpSession>,
     offset: u64,
     count: usize,
-    mut buffer: BufferLease,
+    mut buffer: NetworkBuffer,
     rate: RatePermit,
     ingress: HttpIngressPermit,
     decode: HttpIngressPermit,

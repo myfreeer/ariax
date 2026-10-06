@@ -1005,14 +1005,11 @@ pub(crate) fn build_tls_config(policy: &HttpTlsPolicy) -> Result<ClientConfig, H
                 "custom trust bundle size is outside the bounded range".to_owned(),
             ));
         }
-        let mut reader = &bytes[..];
+        use rustls::pki_types::pem::PemObject;
         let mut count = 0_usize;
-        while let Some(item) = rustls_pemfile::read_one(&mut reader)
-            .map_err(|error| HttpTransportError::TlsConfiguration(error.to_string()))?
-        {
-            let rustls_pemfile::Item::X509Certificate(certificate) = item else {
-                continue;
-            };
+        for certificate in rustls::pki_types::CertificateDer::pem_slice_iter(&bytes) {
+            let certificate = certificate
+                .map_err(|error| HttpTransportError::TlsConfiguration(error.to_string()))?;
             count = count
                 .checked_add(1)
                 .ok_or(HttpTransportError::TlsConfiguration(
@@ -1238,6 +1235,36 @@ e31pxMIvRBTw+dGS6spzZo+W4ft31it0tEUmShjy5iE5lqwPpp9GaF3UadN+fWJy
         .expect("plaintext transport construction does not load TLS roots");
     }
 
+    #[test]
+    fn pem_trust_migration_preserves_certificate_selection_and_rejects_malformed_blocks() {
+        let trust = TestTrustFile::new();
+        let policy = HttpTlsPolicy {
+            minimum_version: HttpMinimumTlsVersion::Tls12,
+            trust: HttpTrustSource::CustomPem(trust.path().to_path_buf()),
+        };
+        for text in [
+            TEST_ROOT_CERTIFICATE_PEM.to_owned(),
+            format!("{TEST_SERVER_PRIVATE_KEY_PEM}\n{TEST_ROOT_CERTIFICATE_PEM}"),
+        ] {
+            fs::write(trust.path(), text).unwrap();
+            assert!(super::build_tls_config(&policy).is_ok());
+        }
+        for text in [
+            String::new(),
+            TEST_SERVER_PRIVATE_KEY_PEM.to_owned(),
+            "-----BEGIN CERTIFICATE-----\n%%%\n-----END CERTIFICATE-----\n".to_owned(),
+            format!(
+                "{TEST_ROOT_CERTIFICATE_PEM}\n-----BEGIN PRIVATE KEY-----\n%%%\n-----END PRIVATE KEY-----\n"
+            ),
+        ] {
+            fs::write(trust.path(), text).unwrap();
+            assert!(matches!(
+                super::build_tls_config(&policy),
+                Err(HttpTransportError::TlsConfiguration(_))
+            ));
+        }
+    }
+
     #[tokio::test]
     async fn trusted_https_reuses_one_origin_connection() {
         let trust = TestTrustFile::new();
@@ -1441,14 +1468,16 @@ e31pxMIvRBTw+dGS6spzZo+W4ft31it0tEUmShjy5iE5lqwPpp9GaF3UadN+fWJy
     }
 
     pub(crate) fn test_server_config() -> Arc<ServerConfig> {
-        let mut certificates = TEST_SERVER_CERTIFICATE_PEM.as_bytes();
-        let certificates = rustls_pemfile::certs(&mut certificates)
-            .collect::<Result<Vec<_>, _>>()
-            .expect("server certificate");
-        let mut private_key = TEST_SERVER_PRIVATE_KEY_PEM.as_bytes();
-        let private_key = rustls_pemfile::private_key(&mut private_key)
-            .expect("parse server private key")
-            .expect("server private key");
+        use rustls::pki_types::pem::PemObject;
+        let certificates = rustls::pki_types::CertificateDer::pem_slice_iter(
+            TEST_SERVER_CERTIFICATE_PEM.as_bytes(),
+        )
+        .collect::<Result<Vec<_>, _>>()
+        .expect("server certificate");
+        let private_key = rustls::pki_types::PrivateKeyDer::from_pem_slice(
+            TEST_SERVER_PRIVATE_KEY_PEM.as_bytes(),
+        )
+        .expect("server private key");
         let mut config =
             ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
                 .with_safe_default_protocol_versions()

@@ -68,7 +68,9 @@
     "reviewedRegistryEntries": 108,
     "reviewedUpstreamOptionHandlers": 54,
     "pinnedUpstreamOptionHandlers": 207,
-    "reviewComplete": false
+    "reviewComplete": false,
+    "selectedChecksPerHost": 6,
+    "selectedChecksPassedBothHosts": true
   },
   "releaseApproved": false,
   "evidenceHashes": {
@@ -86,12 +88,106 @@
     "recovery/checks-final.json": "ee89627c69971004fde1272251b98def58b32cd08704abaedce670e867d15e4a",
     "recovery/checks-linux.json": "085ee7922ea5cf0834040b373e8b2118960b2ff9407115d1f55373bd0cd7cd30",
     "recovery/build-final.json": "6efe0a05cc7b70552ffd22b965ce1d2d48b4e310a88e4af32fc7d1a2539f7945",
-    "recovery/active-soak-fixed-smoke/result.json": "8f7c437273c2baed68ade9ce88bc5707e5e60ee00593556b2e403ad6cfb75250"
+    "recovery/active-soak-fixed-smoke/result.json": "8f7c437273c2baed68ade9ce88bc5707e5e60ee00593556b2e403ad6cfb75250",
+    "recovery/active-soak-1800/result.json": "7d83e58013bb0c4f34dc6b3d61209a54e8f8bdefee3080fcf11ca9fe91d90811",
+    "recovery/active-churn-120/result.json": "8eade51ec84cb3af9abec1b939786bc9298912bc37c3acfbc9963accf20b1c09",
+    "recovery/checks-ingress-v2-linux.json": "43634570a1ef59a199e7ca43147d70b457bcfb36eb95fe95f4f3293b4a8d6d40",
+    "recovery/checks-ingress-windows.json": "b967f7b7365720855ff1ab127b6dd91a9d78434dca30cac281b78cbe808d2d19",
+    "recovery/checks-protocol-ingress.json": "dcf5779dc3866d983ea86d546f215c5b852cd6f2772cdc1c37df04624deb07a0",
+    "recovery/ingress-validator-repeats.json": "9f2df5d7d700429c30b2de16f8dc047d7925ebb118a119fa84d07666dd9d8954",
+    "recovery/build-ingress.json": "a6d0db8a12c174775eed4d8b67863dad487e40d8ff355d061ac1801751d0784f",
+    "advisories/updated-query/result.json": "bb3a38ca1649ec0c305397d88ce04c5492d314018425b87092d5062c5b810a20",
+    "advisories/updated-query/openssl-3.6.3-matches.json": "3e7649ae89429149c987d440015ad33105ac2e1977851198af9cdfd3e802c025",
+    "candidate-inventory/inventory.json": "0745d0d2973259a59a000339c3fd210609b447a8460cf5f2bf012b17e49b09fc",
+    "recovery/active-churn-fixed-180/result.json": "465e7118a47e7840a8749b64c6e907bac8c12b2b9ea79879f118e32656832a6b",
+    "recovery/active-churn-fixed.py": "3f0c2b396d794e011d3ac8fe2282e3a72c9e063d4fb8144165804cecb40d69d1",
+    "recovery/compat-linux.json": "38e8a4de6df5ab6df8685055906d6eed140bbe3527ce6f48f139f1d685085986",
+    "recovery/compat-windows.json": "b9fec6054ca93a533737e4a7ffcc58b697c42ab5fcfd64edd4405401dbc7e130"
   },
   "recoveryRepair": {
-    "status": "short-fixture-and-regressions-passed",
-    "remaining": "30-minute soak running; retained original failed fixture remains unchanged",
-    "longSoakSession": 36095,
+    "status": "short-and-30-minute-recovery-checks-passed",
+    "remaining": "Historical failures retained; long-term resource acceptance remains open",
     "description": "Durably abort abandoned nonterminal leases before scheduler publication; advance recovered projection only after exact flush acknowledgement."
+  },
+  "ingressRepair": {
+    "status": "focused-regressions-and-178-cycle-native-probe-passed",
+    "linuxHttpTests": {
+      "passed": 42,
+      "failed": 1,
+      "unchangedFocusedRepeatsPassed": 3,
+      "originalTimeoutUnresolved": true
+    },
+    "windowsHttpTestsPassed": 43,
+    "lifecycleTestsPerHost": 4,
+    "windowsFtpSftpTestsPassed": 3,
+    "denseProbe": {
+      "passed": true,
+      "resourceSummary": {
+        "privateBytes": {
+          "firstMedian": 12300288,
+          "lastMedian": 15110144,
+          "maximum": 15142912,
+          "allowedIncrease": 33554432
+        },
+        "handles": {
+          "firstMedian": 422,
+          "lastMedian": 418,
+          "maximum": 423,
+          "allowedIncrease": 64
+        },
+        "threads": {
+          "firstMedian": 14,
+          "lastMedian": 11,
+          "maximum": 14,
+          "allowedIncrease": 16
+        },
+        "accountedResidentBytes": {
+          "firstMedian": 13005001,
+          "lastMedian": 13006025,
+          "maximum": 14112457,
+          "allowedIncrease": 2097152
+        }
+      },
+      "ownedProcessesExited": true,
+      "cleanShutdown": true,
+      "recoveredTask": {
+        "completedLength": "0",
+        "gid": "c1a0ed93d80b3771",
+        "status": "waiting"
+      },
+      "pulses": 90,
+      "cycles": 178,
+      "samples": 18
+    }
+  },
+  "advisoryUpdate": {
+    "lockSha256": "c5ff4ec73ea2c4b3ee5358e8d636713d5539f2454db181c02246e8192ec58944",
+    "registryQueries": 356,
+    "remainingMatchedPackages": [
+      "pageant",
+      "rsa",
+      "russh"
+    ],
+    "nativeOpenSslAffectedVersionMatches": 24,
+    "reviewComplete": false,
+    "updatedVersions": {
+      "hickory-resolver": "0.26.2",
+      "hickory-net": "0.26.2",
+      "hickory-proto": "0.26.2",
+      "rustls": "0.23.45",
+      "rustls-webpki": "0.103.15"
+    },
+    "removed": [
+      "rustls-pemfile"
+    ],
+    "httpTlsTestsPerHost": 10,
+    "resolverTestsPerHost": 7
+  },
+  "candidateInventory": {
+    "file": "candidate-inventory/inventory.json",
+    "packages": 314,
+    "targetBundleGraphs": 8,
+    "sourceFiles": 416,
+    "releaseClosureRebuilt": false
   }
 }

@@ -643,9 +643,13 @@ The [current four-item local follow-up](../../performance-evidence/phase7-local-
 is in progress. Its short active-transfer fixture found a restart/shutdown/restart
 journal failure (`GenerationNotDrained`) after a process crash. The startup drain
 repair passes Linux/Windows regressions and a corrected active fixture; the
-original failure remains retained and the longer soak is running. Its live dependency
-advisory review also has unresolved matches requiring applicability review and
-MSRV-compatible remediation. These findings are additional open local work,
+original failure remains retained. The completed 30-minute soak exposes resident
+memory growth under pause/resume; an ingress-release repair passes focused
+regressions and a 178-cycle dense native probe with essentially flat accounted
+resident memory. Longer-term resource acceptance remains open. DNS/TLS advisory updates and
+PEM migration pass focused Linux/Windows tests. SSH/RSA and native OpenSSL
+advisory applicability/remediation remain open, with an exact-source draft
+inventory recorded. These findings are additional open local work,
 not closed by the earlier packaging or empty-session checks.
 
 The approved [local hardening campaign](../../performance-evidence/phase7-local-hardening-2026-10-05.md)

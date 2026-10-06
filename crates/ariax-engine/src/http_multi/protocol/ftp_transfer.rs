@@ -346,9 +346,9 @@ impl HttpMultiRangeWorker {
                     let read_limit = requested.min(rate.reserved_bytes()).min(buffer.capacity());
                     let count = FtpSession::read(data.as_mut().expect("data is open"),&mut buffer.writable().map_err(|_| HttpMultiRangeError::Protocol)?[..read_limit],task.options().response_body_timeout,cancellation).await?;
                     let charge = rate.settle(count); stats.set_rate_debt(charge.debt_bytes); stats.add_raw(count);
-                    if count == 0 { storage.discard_network_buffer(buffer)?; return Err(HttpMultiRangeError::ShortBody); }
+                    if count == 0 { storage.discard_network_buffer(buffer.into_lease())?; return Err(HttpMultiRangeError::ShortBody); }
                     buffer.mark_filled(count,OwnerTag::Storage).map_err(|_| HttpMultiRangeError::Protocol)?;
-                    let write = storage.write_block(WriteBlock { task:task.task(),generation,lease,global_offset:offset,expected_len:count,buffer,piece:PieceId::new(offset/task.options().piece_length) }).await;
+                    let write = storage.write_block(WriteBlock { task:task.task(),generation,lease,global_offset:offset,expected_len:count,buffer:buffer.into_lease(),piece:PieceId::new(offset/task.options().piece_length) }).await;
                     drop(ingress);
                     if let Err(error) = write { record_discarded(discard,stats,count)?; return Err(error.into()); }
                     offset += count as u64; provisional += count;
@@ -358,7 +358,7 @@ impl HttpMultiRangeWorker {
                     let (mut buffer,ingress,rate) = self.acquire_storage_read(storage,1,rate_path,cancellation,stats).await?;
                     let count = FtpSession::read(data.as_mut().expect("data is open"),&mut buffer.writable().map_err(|_| HttpMultiRangeError::Protocol)?[..1],task.options().response_body_timeout,cancellation).await?;
                     let charge = rate.settle(count); stats.set_rate_debt(charge.debt_bytes); stats.add_raw(count);
-                    storage.discard_network_buffer(buffer)?; drop(ingress);
+                    storage.discard_network_buffer(buffer.into_lease())?; drop(ingress);
                     if count != 0 { record_discarded(discard,stats,count)?; return Err(HttpMultiRangeError::OversizedBody); }
                     tokio::select! { biased; _ = cancellation.cancelled() => return Err(HttpMultiRangeError::Cancelled), result = ftp.finish(data.take().expect("data is open")) => result? };
                 }

@@ -1,5 +1,7 @@
 //! Journal-backed non-overlapping multi-mirror HTTP range worker.
 mod metadata_follow;
+mod network_buffer;
+use network_buffer::NetworkBuffer;
 mod protocol;
 use protocol::PreparedValidator;
 
@@ -26,10 +28,9 @@ use ariax_core::{
     PublicError, RetryClass, TaskId, TransferAttemptId, UriId,
 };
 use ariax_runtime::{
-    BudgetError, BufferLease, ByteBudget, BytePermit, ConnectionCondition,
-    ConnectionConditionReason, OwnerTag, RateArbiter, RateArbiterConfig, RateDirection, RateLimit,
-    RatePath, RatePermit, RateScope, SizeClass, StatsCounters, StatsDiagnostic, StatsProfile,
-    StatsSampler, StatsSamplerConfig,
+    BudgetError, ByteBudget, BytePermit, ConnectionCondition, ConnectionConditionReason, OwnerTag,
+    RateArbiter, RateArbiterConfig, RateDirection, RateLimit, RatePath, RatePermit, RateScope,
+    SizeClass, StatsCounters, StatsDiagnostic, StatsProfile, StatsSampler, StatsSamplerConfig,
 };
 use ariax_storage::{
     ControlJournalAppender, FileLayout, GlobalSpan, JournalContributor, JournalDigest,
@@ -2491,7 +2492,7 @@ impl HttpMultiRangeWorker {
                     buffer, discard, ..
                 } => {
                     let data_len = buffer.len();
-                    storage.discard_network_buffer(buffer)?;
+                    storage.discard_network_buffer(buffer.into_lease())?;
                     if let Err(error) = record_discarded(&discard, stats, data_len) {
                         cleanup_error.get_or_insert(error);
                     }
@@ -3287,12 +3288,12 @@ enum AttemptEvent {
     PrepareRead {
         lease: LeaseId,
         minimum_capacity: usize,
-        response: oneshot::Sender<Option<BufferLease>>,
+        response: oneshot::Sender<Option<NetworkBuffer>>,
     },
     Chunk {
         lease: LeaseId,
         offset: u64,
-        buffer: BufferLease,
+        buffer: NetworkBuffer,
         _ingress: HttpIngressPermit,
         discard: HttpDiscardAttemptGuard,
     },
@@ -3937,7 +3938,7 @@ async fn acquire_read_slot(
     discard: &HttpDiscardAttemptGuard,
     cancellation: &HttpCancellation,
     stats: &HttpTransferStats,
-) -> Result<(BufferLease, HttpIngressPermit, RatePermit), RangeAttemptFailure> {
+) -> Result<(NetworkBuffer, HttpIngressPermit, RatePermit), RangeAttemptFailure> {
     let _local_wait = stats.local_wait();
     let requested = NonZeroUsize::new(minimum_capacity).ok_or(RangeAttemptFailure::Cancelled)?;
     loop {
@@ -4175,7 +4176,8 @@ async fn process_attempt_event(
             let buffer = active
                 .get(&lease)
                 .filter(|attempt| attempt.opened)
-                .and_then(|_| storage.reserve_network_buffer(minimum_capacity).ok());
+                .and_then(|_| storage.reserve_network_buffer(minimum_capacity).ok())
+                .map(|buffer| NetworkBuffer::new(buffer, storage.buffer_pool().clone()));
             let _sent = response.send(buffer);
         }
         AttemptEvent::Chunk {
@@ -4187,12 +4189,12 @@ async fn process_attempt_event(
         } => {
             let data_len = buffer.len();
             if endgame_losers.contains_key(&lease) || cancelled_leases.contains(&lease) {
-                storage.discard_network_buffer(buffer)?;
+                storage.discard_network_buffer(buffer.into_lease())?;
                 record_discarded(&discard, stats, data_len)?;
                 return Ok(AttemptAction::None);
             }
             let Some(attempt) = active.get(&lease).cloned() else {
-                storage.discard_network_buffer(buffer)?;
+                storage.discard_network_buffer(buffer.into_lease())?;
                 record_discarded(&discard, stats, data_len)?;
                 return Ok(AttemptAction::None);
             };
@@ -4212,7 +4214,7 @@ async fn process_attempt_event(
                     lease,
                     global_offset: offset,
                     expected_len: data_len,
-                    buffer,
+                    buffer: buffer.into_lease(),
                     piece: attempt.assignment.piece,
                 })
                 .await?;

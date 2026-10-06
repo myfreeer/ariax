@@ -277,6 +277,13 @@ For Windows:
   cancellation budget merely by failing validation.
 - Logs never dump payload contents by default.
 
+HTTP, FTP, and SFTP ingress own an explicit release guard while a pooled
+buffer is only used by safe Rust protocol code. Cancelling a read, dropping a
+reply channel, or rejecting ingress admission releases that guard back to its
+originating pool. The guard keeps the pool alive and transfers the bare lease
+only at storage submission. It must not recycle disk-in-flight or otherwise
+unexpected ownership states; those retain the ordinary quarantine behavior.
+
 ## Metrics
 
 Expose:
