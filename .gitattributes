@@ -9,6 +9,7 @@ fuzz/seeds/** -text
 # Preserve upstream whitespace and patch context without reformatting copies.
 vendor/suppaftp/** -whitespace
 vendor/russh-sftp/** -whitespace
+vendor/russh/** -whitespace
 vendor/*.patch -whitespace
 native/libtorrent/*.patch -text -whitespace
 crates/ariax-bt-libtorrent-sys/tests/fixtures/*.torrent -text

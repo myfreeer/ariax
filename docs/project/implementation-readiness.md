@@ -647,7 +647,11 @@ original failure remains retained. The completed 30-minute soak exposes resident
 memory growth under pause/resume; an ingress-release repair passes focused
 regressions and a 178-cycle dense native probe with essentially flat accounted
 resident memory. Longer-term resource acceptance remains open. DNS/TLS advisory updates and
-PEM migration pass focused Linux/Windows tests. SSH/RSA advisory review remains open. The OpenSSL 3.6.5 source/patch update
+PEM migration pass focused Linux/Windows tests. A bounded SSH probe reproduced
+unknown-channel reply/callback delivery; the upstream client channel-state
+checks are backported to the pinned russh vendor and pass the regression plus
+the 17-scenario SFTP fixture on Linux and native Windows. RSA and the other SSH
+advisory dispositions remain tracked. The OpenSSL 3.6.5 source/patch update
 passes exact-application and syntax checks but still needs linked native
 validation. The new dependency policy passes license/source/backend checks and
 retains the unresolved RSA error; yanked chacha20 is replaced and SFTP

@@ -1,6 +1,6 @@
 # Protocol Forks
 
-The workspace pins SuppaFTP 10.0.1 and russh-sftp 2.3.0 through local Cargo
+The workspace pins SuppaFTP 10.0.1, russh-sftp 2.3.0 and russh 0.62.4 through local Cargo
 patches. Upstream archive hashes, VCS commits and original file inventories are
 in `*-upstream.json`. `protocol-patches.json` records the complete patched
 inventories and tree/patch hashes; `*.patch` contains the reproducible changes.
@@ -13,6 +13,20 @@ listener APIs let Ariax authorize active peers before TLS and bound rejection.
 russh-sftp checks frame lengths before allocation, closes malformed streams,
 bounds outstanding requests and drains terminal replies exactly once. SFTP
 handles are opaque bytes throughout the client, server and example APIs.
+
+Russh backports the client channel-state checks from upstream commit
+`3430fd26ecafc0dc3705210f5f39a9119fa22774` (`GHSA-47hw-gvq5-r2gm`).
+Unknown open failures return before the unbounded handle reply queue and callback;
+legitimate pending-channel rejection remains supported. Other channel events
+require a confirmed channel. The common-session helper is unchanged, inserted
+before `newkeys` because 0.62.4 lacks the newer surrounding helper. Server hunks
+are excluded: Ariax's production adapter is a client, and the newer server patch
+requires additional upstream changes. This backport does not clear the other
+russh advisories. A bounded real SSH regression exercises unknown and pending
+channel failures; the existing SFTP fixture covers successful transfers.
+
+The russh archive omits its root license. `russh-licenses.json` records the
+Apache-2.0 `LICENSE.txt` fetched from the exact upstream VCS commit.
 
 The original SuppaFTP archive omitted its parent-directory license files.
 `suppaftp-licenses.json` identifies the MIT and Apache-2.0 files fetched from its

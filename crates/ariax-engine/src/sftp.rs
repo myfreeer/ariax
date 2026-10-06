@@ -697,3 +697,7 @@ mod subsystem_tests {
         assert!(subsystem_approved(Some(russh::ChannelMsg::Success), &mut remaining).is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "sftp_channel_tests.rs"]
+mod channel_tests;

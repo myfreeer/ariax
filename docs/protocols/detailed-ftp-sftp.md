@@ -315,6 +315,13 @@ SFTP read. AEAD diagnostics may report `none`; that does not add it to the MAC
 negotiation allowlist. These restrictions are covered by the native SFTP
 integration fixture and are relevant to the pinned russh advisory review.
 
+Channel-scoped replies must refer to a channel in the client's authoritative
+SSH channel table. An open failure may name a pending local open; ordinary
+channel events require a confirmed channel. Unknown open failures must not
+reach application callbacks or enqueue replies on the client handle. Otherwise
+a malicious authenticated SFTP server can grow an unconsumed reply queue during
+an active transfer even when application channel callbacks are no-ops.
+
 Session behavior:
 
 - `connect-timeout`/`timeout` apply to TCP+handshake and per-request

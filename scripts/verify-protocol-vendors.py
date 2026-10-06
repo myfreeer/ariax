@@ -10,7 +10,7 @@ import tarfile
 
 ROOT = Path(__file__).resolve().parents[1]
 VENDOR = ROOT / "vendor"
-NAMES = ("russh-sftp", "suppaftp")
+NAMES = ("russh-sftp", "suppaftp", "russh")
 
 
 def sha(data):
@@ -31,6 +31,13 @@ def sources(name):
 
 
 def source_contracts():
+    ssh = (VENDOR / "russh/src/client/encrypted.rs").read_text()
+    failure = ssh.split("Some((&msg::CHANNEL_OPEN_FAILURE, mut r)) => {")[1].split("Some((&msg::CHANNEL_DATA")[0]
+    assert failure.index("if !known") < failure.index("self.sender.send(Reply::ChannelOpenFailure")
+    assert "enc.channels.remove(&channel_num).is_some()" in failure
+    assert ssh.count("if !self.common.is_established_channel(channel_num)") == 8
+    common = (VENDOR / "russh/src/session.rs").read_text()
+    assert ".is_some_and(|channel| channel.confirmed)" in common
     ftp = (ROOT / "crates/ariax-engine/src/ftp.rs").read_text()
     for token in ("connect_with_stream(", "connect_secure_implicit_with_stream(",
                   "passive_stream_builder(", "active_listener(", "connect_protocol("):
@@ -110,6 +117,8 @@ def verify():
         assert sha((VENDOR / f"{name}-upstream.json").read_bytes()) == package["upstream_manifest_sha256"]
     for license in json.loads((VENDOR / "suppaftp-licenses.json").read_text()):
         assert sha((VENDOR / "suppaftp" / license["path"]).read_bytes()) == license["sha256"]
+    for license in json.loads((VENDOR / "russh-licenses.json").read_text()):
+        assert sha((VENDOR / "russh" / license["path"]).read_bytes()) == license["sha256"]
     assert (VENDOR / "russh-sftp/LICENSE").is_file()
     source_contracts()
     print("Verified protocol fork inventories, patches, licenses and bounded source entry points.")

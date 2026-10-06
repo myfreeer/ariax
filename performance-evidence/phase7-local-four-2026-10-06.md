@@ -136,15 +136,15 @@ Remaining registry matches require these distinctions:
 
 | Dependency/Advisory | Local Applicability Review | Remaining Work |
 | --- | --- | --- |
-| russh client channel callbacks (`GHSA-47hw-gvq5-r2gm`) | Ariax overrides only host-key checking and KEX diagnostics, not the channel callbacks identified by the advisory. | Confirm transport-level effects and choose a compatible fix/backport; not a blanket clearance. |
+| russh client channel callbacks (`GHSA-47hw-gvq5-r2gm`) | Unknown channel-open failures also enqueue unbounded handle replies. A bounded wire probe reproduced 256 unknown callbacks. The upstream client channel-state checks are now backported to the pinned vendor. | Linux and native Windows pass the unknown-channel/pending-rejection regression and existing 17-scenario SFTP fixture. Other russh advisories remain separately tracked. |
 | russh MAC `none` / hybrid KEX (`GHSA-p8qx-h547-fjw9`, `GHSA-w3jg-pjxf-73p4`) | Negotiation allowlists exclude MAC `none` and hybrid ML-KEM. Real offers restricted to either combination reject before authentication/read on Linux and Windows. Diagnostic `none` denotes AEAD and is not the negotiation allowlist. | The upstream crate remains affected; these negotiated configurations are excluded in Ariax. |
 | russh server advisories (`GHSA-35g8-35p8-c8fw`, `GHSA-g6xm-f9xp-qq35`, `GHSA-m65r-rprj-r5rg`) | Production uses the SSH client; server implementations are test fixtures. | Track the vulnerable dependency separately from production reachability. |
 | Pageant (`GHSA-g4mp-vgx3-xrvm`) | Windows authentication connects to the OpenSSH named pipe; it does not invoke Pageant. | Keep the dependency match visible until upgrade/backport review closes it. |
-| RSA Marvin (`RUSTSEC-2023-0071`) | The SSH signing path reaches `rsa_decrypt_and_check` through PKCS#1 signing without a blinding RNG. Signing-only use is insufficient evidence for clearance. | No published fixed version; retain the RustSec failure and finish vetted mitigation/applicability review. |
+| RSA Marvin (`RUSTSEC-2023-0071`) | The SSH signing path reaches `rsa_decrypt_and_check` through PKCS#1 signing without a blinding RNG. This shared primitive does not establish a Marvin decryption oracle; no RSA decryption API was found in the production russh/ssh-key path. | No published fixed version; retain the RustSec failure and finish vetted mitigation/applicability review. |
 
 Russh 0.63.2 and Pageant 0.2.3 require Rust 1.89. Upstream patches and archive
-checksums are retained, but none is silently substituted for the current
-MSRV-compatible pins.
+checksums are retained, with the client-only channel-state backport documented in `vendor/README.md`; no
+MSRV-incompatible version is substituted.
 
 OpenSSL's official vulnerability index lists 24 affected-version matches for
 pinned 3.6.3, fixed in 3.6.4/3.6.5. These include relative-CRLDP certificate
@@ -162,14 +162,25 @@ definition and succeeds. Eighteen native-builder Python tests pass with mocked
 builds, not native compilation. Linked callback/endpoint/native runtime tests
 against new libraries remain required. Retained 3.6.3 installations and package
 manifests are preserved and are not relabeled as repaired. The attempted
-Boost/libtorrent security-page URLs returned 404; their review remains open.
+Boost/libtorrent security-page URLs returned 404. Subsequent dated NVD review
+found five historical Rasterbar libtorrent CVEs with listed ranges at or below
+1.1.3, outside the pinned 2.1.1. The Boost CPE query returned four historical
+entries covering Regex 1.33/1.34, Locale 1.48–1.52, and zlib through Boost before
+1.78; pinned Boost 1.91 is outside those described ranges. The keyword query's
+yt-grabber result concerns another application. These retained database results
+are version-applicability evidence, not proof of absence of vulnerabilities.
 
 The exact-source draft inventory records eight normal/build dependency graphs
 (minimal/standard/full/compat on Linux and Windows-GNU), 314 distinct packages,
 declared licenses/MSRVs, cached archive verification, native source/patch hashes,
-and 417 implementation/packaging/policy source hashes in the refreshed snapshot. All eight graphs pass the
+and 504 implementation/packaging/policy source hashes in the refreshed snapshot. All eight graphs pass the
 protocol/provider policy checker. It is a source inventory, not rebuilt release
 packages. The historical packages still contain their original dependencies.
+The latest snapshot is `candidate-inventory-ssh-backport/inventory.json`, SHA-256
+`f5dc10c85dde033c6ebae348578da1089f0ac344dc3a9b28eb9a2449fb22a88a`.
+It embeds the complete protocol-vendor provenance. Russh becoming a local path
+package does not erase its upstream advisory matches; the OSV snapshot remains
+tracked alongside the client-only backport.
 
 The previously missing `deny.toml` now defines an executable workspace policy.
 Checksum-verified cargo-deny 0.19.0 runs directly from F: without toolchain or
@@ -190,6 +201,27 @@ trust correctly rejected it; the unchanged executable passes with Linux `/tmp`
 fixtures, where 0600 is preserved. Both observations and the first failure are
 retained. RustSec lacks the additional GitHub-only matches recorded by OSV;
 passing one database would not erase the other review obligations.
+
+The SSH channel baseline delivers all 256 forged unknown-channel callbacks and
+fails the zero-delivery assertion. The patched Linux and native Windows runs
+pass with zero unknown deliveries while preserving a real pending open rejection.
+The regression observes callback delivery; the accompanying source check proves
+the rejection precedes the unbounded handle reply enqueue. Each host also passes
+the existing 17-scenario SFTP fixture. Results are retained in
+`recovery/checks-ssh-channel-{baseline-v2-linux,fixed-linux,fixed-windows}.json`.
+The initial fixture-path compile error remains retained separately. Applying the
+recorded patch to the verified archive reproduces all 83 vendor files exactly.
+The refreshed cargo-deny policy passes licenses/bans/sources and reports only
+the unresolved RSA advisory, with no advisory ignore or yanked warning.
+
+The RSA upstream review retains PRs 702 (open; decryption blinding) and 680
+(open draft; implicit rejection for PKCS#1 v1.5 decryption), plus issue 626.
+Neither is a published fix to apply blindly. Upstream distinguishes signing
+blinding defense in depth from Marvin's decryption oracle. The RSA policy error
+stays visible with no ignore entry pending a supported disposition. Pageant's
+`connect_pageant` uses `PageantStream`; Ariax's `connect_named_pipe` uses Tokio's
+Windows named-pipe client and does not invoke that shared-memory path.
+Research responses are retained under `advisories/remaining-research`.
 
 Raw evidence is under `/mnt/f/temp/ariax/phase7-local-four-20261006`.
 Unique artifacts and failures remain retained. Native Linux timing/kernel

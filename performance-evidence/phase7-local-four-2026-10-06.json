@@ -197,14 +197,17 @@
     ],
     "httpTlsTestsPerHost": 10,
     "resolverTestsPerHost": 7,
-    "latestOsvResult": "advisories/final-query/result.json"
+    "latestOsvResult": "advisories/final-query/result.json",
+    "currentLockSha256": "88354f509ecd03283a5f7121b3f700cbdd820785dfd9413900cd91a3debadd6f",
+    "vendorAdvisoryTracking": "russh upstream 0.62.4 findings retained from advisories/final-query/result.json despite local Cargo patch"
   },
   "candidateInventory": {
-    "file": "candidate-inventory-updated/inventory.json",
+    "file": "candidate-inventory-ssh-backport/inventory.json",
     "packages": 314,
     "targetBundleGraphs": 8,
-    "sourceFiles": 417,
-    "releaseClosureRebuilt": false
+    "sourceFiles": 504,
+    "releaseClosureRebuilt": false,
+    "sha256": "f5dc10c85dde033c6ebae348578da1089f0ac344dc3a9b28eb9a2449fb22a88a"
   },
   "nativeAdvisoryPreparation": {
     "selectedOpenSsl": "3.6.5",
@@ -226,12 +229,34 @@
     "remainingRustSecErrors": [
       "RUSTSEC-2023-0071"
     ],
-    "remainingYankedWarnings": 0
+    "remainingYankedWarnings": 0,
+    "latestResult": "advisories/deny-result-ssh-backport.json"
   },
   "sshAdvisoryChecks": {
     "scenariosPerHost": 17,
     "windowsPassed": true,
     "linuxPassedOnNativeFilesystem": true,
     "initialLinuxHostTrustFailure": "F: returned 0777 for a requested 0600 fixture; unchanged binary passes using Linux /tmp"
+  },
+  "sshChannelBackport": {
+    "advisory": "GHSA-47hw-gvq5-r2gm",
+    "upstreamCommit": "3430fd26ecafc0dc3705210f5f39a9119fa22774",
+    "scope": "Client channel-state checks only; other russh advisories remain separately tracked",
+    "baselineUnknownCallbacks": 256,
+    "expectedUnknownCallbacks": 0,
+    "baseline": "recovery/checks-ssh-channel-baseline-v2-linux.json",
+    "linux": "recovery/checks-ssh-channel-fixed-linux.json",
+    "windows": "recovery/checks-ssh-channel-fixed-windows.json",
+    "linuxPassed": true,
+    "windowsPassed": true,
+    "otherRusshAdvisoriesCleared": false,
+    "linuxResultSha256": "68671d7e5137df93d8be341bd6d17ef365af35edbe63fc622e38fc6d74d88583",
+    "windowsResultSha256": "23f5faf7868659528ed6b003dbb88777e9eae330b26eb2b218306cc43078a4a3",
+    "patchRoundtrip": {
+      "passed": true,
+      "files": 83,
+      "patchSha256": "907c8ccbf3016b25919b8f817ee52d2f78aae7ab9ed38bba9eac22571041c97e",
+      "archiveSha256": "b8b67b5a0d8068c89dcbe9d95df986af7a851d1f3c604525274c37468e60464f"
+    }
   }
 }
