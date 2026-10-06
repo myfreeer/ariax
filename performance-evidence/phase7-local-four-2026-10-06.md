@@ -78,9 +78,21 @@ places `addUri` at sample 159. The end-to-end check exposes the mistake. The
 failed executable, source diff, command logs and leftover fixture remain
 retained; its final host snapshot shows no live fixture processes. The mapping
 is corrected; focused rebuilds and seven correlation tests pass on both hosts.
-The corrected `admission-diagnostics-v2` run has valid end-to-end correlations
-and is continuing through its predeclared 100 attempts.
-No latency attribution or production timing fix is claimed yet.
+The corrected `admission-diagnostics-v2` run completes all 100 predeclared
+attempts in 632.72 seconds, with valid end-to-end correlations and no failed
+gates. All 1,000 source calls and 1,000 admissions pass. Two hundred command
+logs and 100 host reports verify, and fixture cleanup completes. Other matching
+build processes appear in 85 attempts; no build is started by this slice.
+Maximum source latency is 25.892 ms, including a 16.949 ms preparation-to-commit
+interval. Maximum admission latency is 31.418 ms, including 20.961 ms between
+finalization observation and scheduler start. The latter interval includes
+journal installation, asynchronous completion polling and owner progress; it
+does not isolate storage service time. Median admission preparation-worker time
+is 3.825 ms, finalization-worker time 0.015 ms, installation/owner progress
+2.865 ms, and scheduler-publication time 3.003 ms. These are elapsed intervals,
+not exclusive CPU measurements. The new trace localizes the longest passing
+admission but does not attribute the retained 91.107 ms failure. Neither
+historical latency failure is cleared, and no production timing fix is claimed.
 
 ## Active-Transfer Recovery Finding
 

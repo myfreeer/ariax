@@ -431,9 +431,140 @@
     "nativeBenchmarkSha256": "7f51d1849b92f15e6a52830551f87e1ce958f61b123aa9ae8b84ef40e34738df",
     "build": "admission-diagnostics-v2/build.json",
     "measurements": "admission-diagnostics-v2/measurements/result.json",
-    "measurementStatus": "running; corrected sample 159 mapping validated end to end",
+    "measurementStatus": "completed; all 100 attempts passed; historical failures remain unattributed",
     "historicalFailuresStillRejected": true,
     "initialCorrelationFailure": "admission-diagnostics/measurements/result.json",
-    "initialFailureFixturePreserved": true
+    "initialFailureFixturePreserved": true,
+    "summary": "admission-diagnostics-v2/summary.json",
+    "summarySha256": "37a37c7e1edd8b6ba76be6c2a0a7a52ccad46d06c6815459db01fb3d3fd3e68b",
+    "measurement": {
+      "completed": true,
+      "passed": true,
+      "attempts": 100,
+      "elapsedSeconds": 632.719500541687,
+      "failedAttempts": [],
+      "compilerActivityAttempts": 85,
+      "commandLogsVerified": 200,
+      "hostReportsVerified": 100,
+      "binarySha256": "7f51d1849b92f15e6a52830551f87e1ce958f61b123aa9ae8b84ef40e34738df",
+      "resultSha256": "26b6ee2a2f7ae8e69422ed6b96e9970c8b647d64f274bf31dbdcfb51a7829a05",
+      "planSha256": "4a95ceeed83318a35666c0d3be02e76b1509d2985cf083596720e5063507e861",
+      "streams": {
+        "sourceMutationTiming": {
+          "calls": 1000,
+          "above50ms": 0,
+          "maximum": {
+            "attempt": 77,
+            "scenario": "content-length",
+            "backendNs": 25667900,
+            "backendStartedUnixNs": 1791277153155302300,
+            "burst": 2,
+            "clientStartedUnixNs": 1791277153155194900,
+            "ordinal": 2,
+            "outsideBackendNs": 224500,
+            "roundTripNs": 25892400,
+            "sampleIndex": 419,
+            "stageOffsetsNs": [
+              4600,
+              69000,
+              94900,
+              17044300,
+              25555900,
+              25653800
+            ]
+          },
+          "scenarios": {
+            "content-length": {
+              "calls": 500,
+              "medianNs": 14285100.0,
+              "p99Ns": 18644900,
+              "maxNs": 25892400
+            },
+            "ndjson": {
+              "calls": 500,
+              "medianNs": 13967900.0,
+              "p99Ns": 17456200,
+              "maxNs": 19670300
+            }
+          }
+        },
+        "admissionTiming": {
+          "calls": 1000,
+          "above50ms": 0,
+          "maximum": {
+            "attempt": 38,
+            "scenario": "ndjson",
+            "backendNs": 31307600,
+            "backendStartedUnixNs": 1791276911922010500,
+            "burst": 2,
+            "clientStartedUnixNs": 1791276911921974900,
+            "ordinal": 2,
+            "outsideBackendNs": 110400,
+            "roundTripNs": 31418000,
+            "sampleIndex": 479,
+            "stageOffsetsNs": [
+              4500,
+              64500,
+              96000,
+              144100,
+              3799400,
+              4594700,
+              4728700,
+              4741700,
+              4757400,
+              7109100,
+              28069600,
+              31168000,
+              31296600
+            ]
+          },
+          "scenarios": {
+            "content-length": {
+              "calls": 500,
+              "medianNs": 13866850.0,
+              "p99Ns": 18574000,
+              "maxNs": 27535800
+            },
+            "ndjson": {
+              "calls": 500,
+              "medianNs": 13688800.0,
+              "p99Ns": 17583900,
+              "maxNs": 31418000
+            }
+          },
+          "maximumStageIntervalsNs": {
+            "mailboxWait": 60000,
+            "dispatchPreparation": 31500,
+            "preparationQueueWait": 48100,
+            "preparationWorkerElapsed": 3655300,
+            "preparationObservationWait": 795300,
+            "revalidation": 134000,
+            "finalizationQueueWait": 13000,
+            "finalizationWorkerElapsed": 15700,
+            "finalizationObservationWait": 2351700,
+            "installationAndOwnerProgress": 20960500,
+            "schedulerPublication": 3098400,
+            "replyDelivery": 128600
+          },
+          "medianStageIntervalsNs": {
+            "mailboxWait": 49400.0,
+            "dispatchPreparation": 27600.0,
+            "preparationQueueWait": 16850.0,
+            "preparationWorkerElapsed": 3825200.0,
+            "preparationObservationWait": 1255450.0,
+            "revalidation": 116950.0,
+            "finalizationQueueWait": 12600.0,
+            "finalizationWorkerElapsed": 14500.0,
+            "finalizationObservationWait": 2745350.0,
+            "installationAndOwnerProgress": 2864750.0,
+            "schedulerPublication": 3003400.0,
+            "replyDelivery": 86150.0
+          }
+        }
+      },
+      "originalChangeUriFailureAttributed": false,
+      "originalAddUriFailureAttributed": false,
+      "releaseApproved": false
+    }
   }
 }
