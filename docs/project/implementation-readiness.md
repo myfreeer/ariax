@@ -640,7 +640,7 @@ native suites that were uncompiled at that checkpoint.
 ## Phase 7 Local Validation
 
 The [current four-item local follow-up](../../performance-evidence/phase7-local-four-2026-10-06.md)
-is in progress. Its short active-transfer fixture found a restart/shutdown/restart
+remains incomplete on historical timing attribution. Its short active-transfer fixture found a restart/shutdown/restart
 journal failure (`GenerationNotDrained`) after a process crash. The startup drain
 repair passes Linux/Windows regressions and a corrected active fixture; the
 original failure remains retained. The completed 30-minute soak exposes resident
@@ -648,7 +648,18 @@ memory growth under pause/resume; an ingress-release repair passes focused
 regressions and a 178-cycle dense native probe with essentially flat accounted
 resident memory. A subsequent 30-minute dense run passes 1,798 cycles and both
 recovery checks with identical accounted-memory medians, while retaining
-unexplained private-memory drift. Longer-term resource acceptance remains open. DNS/TLS advisory updates and
+unexplained private-memory drift. The resumed source review finds synchronous
+journal replay and recovered-piece readback on a Tokio worker; preparation and
+journal handoff now use one shared blocking slot and remain awaited through
+cancellation. Three new drain/reactor/rejection checks and all 43 existing HTTP
+worker tests pass on Linux and native Windows. Temporary replay allocations
+grow with journal history; this does not attribute private-memory drift or the
+historical latency failures. Longer-term resource acceptance remains open.
+New native binaries pass 178 pause/resume cycles, forced termination, recovery,
+clean shutdown and a second recovery with flat accounted-memory medians; six
+compatibility checks also pass on both hosts. The final four-item audit records
+the missing contemporaneous request-stage evidence as the attribution blocker.
+DNS/TLS advisory updates and
 PEM migration pass focused Linux/Windows tests. A bounded SSH probe reproduced
 unknown-channel reply/callback delivery; the upstream client channel-state
 checks are backported to the pinned russh vendor and pass the regression plus

@@ -1,11 +1,12 @@
-# Phase 7 Local Follow-Up In Progress
+# Phase 7 Local Follow-Up
 
 [Documentation](../docs/README.md) · [Evidence](phase7-local-four-2026-10-06.json)
 
 The local goal covers Windows mutation attribution, active-transfer stability,
 experimental compatibility review, and candidate inventory/advisory preparation.
-It is **in progress**. No release, push, CI dispatch, migration or replacement
-of aria2 is approved by these results.
+It remains **incomplete because historical timing attribution is unproven**.
+No release, push, CI dispatch, migration or replacement of aria2 is approved by
+these results.
 
 ## Source-Mutation Stages
 
@@ -184,6 +185,77 @@ predate the latest dependency updates and are evidence for the ingress repair,
 not a rebuilt candidate or release acceptance. The longer result strengthens
 the buffer-lifecycle finding without clearing remaining private-memory drift.
 
+## Resumed Preparation Repair
+
+Session `01a10d11-0980-7a11-a2aa-b279dc7d5119` was recovered at source commit
+`9fbed6b`. All 46 checked retained-evidence hashes match, including the original
+failed results. The unfinished read-only journal investigation also verifies:
+the long-run journal has 93,550 records, 8,018,088 encoded bytes and 4,650,184
+copied payload bytes. Snapshot preparation therefore holds at least 12,668,272
+bytes before record-vector, semantic-state and allocator overhead. This is
+temporary allocation pressure proportional to retained history, not proof of
+live leaked memory or attribution of the observed private-memory drift.
+
+HTTP startup called journal snapshot/replay and recovered-piece file hashing
+directly on a Tokio async worker. The repair moves preparation and its error or
+cancellation handoff to blocking execution. Worker clones share one execution
+slot, acquired asynchronously and retained through result delivery. Cancellation
+before submission creates no journal. Once work is submitted, the transfer
+waits for preparation and journal handoff/flush before reporting its drain.
+Existing replay limits and persistence checks remain unchanged. This scheduling
+repair does not account journal scratch in the global resident-byte budget or
+establish the cause of either historical latency failure.
+
+Three focused tests pass on Linux and native Windows: a gated job leaves the
+single-thread reactor responsive and drains after cancellation without network
+I/O; cancellation while waiting for the shared slot has no journal effects;
+and successful preparation/path rejection both release the slot and preserve a
+reopenable journal. All 43 existing HTTP worker tests also pass on each host,
+including recovery, checksums, stale validators, retries and endgame rejection.
+Two initial test-harness compile failures (module path and stats constructor)
+remain retained. The corrected runs are under `recovery/preparation-v3-*` and
+`recovery/preparation-regressions-*`.
+
+The six compatibility checks also pass on each host with the new test binaries,
+including scheduler slow-slot/retry-wait behavior and rejection before task
+metadata is created. The raw reports are `recovery/checks-preparation-compat-*`.
+
+The retained 100.250 ms `changeUri` report has no `sourceMutationTiming` stream;
+the retained 91.107 ms `addUri` report has no `admissionTiming` stream. Their
+aggregate owner counters do not reconstruct request-specific scheduling or
+persistence intervals. Both still exceed the unchanged 50 ms bound. Attribution
+requires a failure captured with the paired trace or additional contemporaneous
+telemetry. Neither passing later samples nor the preparation repair supplies
+that missing causal evidence; this requirement remains incomplete.
+
+New native Windows CLI and benchmark binaries pass a bounded 180-second run
+with 178 pause/resume cycles, 90 payload pulses and 18 resource samples. Both
+bootstraps recover all 132 tasks across forced termination and clean RPC
+shutdown. The interrupted task keeps its GID and zero trusted completed bytes.
+First/last three-sample accounted-memory medians are identical at 13,006,585
+bytes; private-memory medians increase from 13,172,736 to 15,138,816 bytes.
+Handles decrease from 421 to 418 and threads from 13 to 11. The unchanged
+resource screens pass, without establishing long-term memory acceptance.
+The final process snapshot independently confirms that neither executable is
+running. The new binaries, source identities, logs and fixture remain under
+`recovery/build-preparation.json` and `recovery/active-churn-preparation-180`;
+earlier binaries and failures are preserved.
+
+## Four-Item Completion Audit
+
+| Requested Item | Verified Local Work | Remaining Requirement |
+| --- | --- | --- |
+| 1. Windows timing attribution and demonstrated defects | Paired request-stage diagnostics, retained-failure audit, and the preparation scheduling repair with Linux/Windows regressions. | Neither historical failed call contains its required stage trace. Attribution needs additional contemporaneous evidence or an instrumented failure; the goal cannot be marked complete. |
+| 2. Bounded active-transfer/resource coverage | Retained 30-minute dense run, current-source three-minute run, cancellation/drain tests, crash recovery, clean shutdown and second recovery. | Longer-term private-memory acceptance remains open; passing bounded screens is not a leak-freedom claim. |
+| 3. Experimental compatibility assessment | Reviewed inventory, explicit unsupported-option rejection and six current-source support/rejection checks on each host. | Full aria2 parity remains outside this experimental scope. |
+| 4. Candidate inventory and advisory review | Eight target/bundle graphs, 314 packages, 507 source hashes, all 301 selected registry archives verified, and all eight remaining advisory dispositions retained. | RSA assurance and linked OpenSSL 3.6.5/native/platform/release acceptance remain separate gates; source preparation is not release clearance. |
+
+The repeated attribution blocker was already present in the recovered goal's
+last continuations and persists after this repair. The final audit is retained
+in `resumed-goal-audit.json`. No additional timing retries, pushes, CI dispatch,
+toolchain installation, tags, releases or migration were performed in this
+resumed work.
+
 ## Compatibility And Advisory Review
 
 The compatibility inventory has 108 reviewed registry entries, including 54
@@ -261,11 +333,11 @@ are version-applicability evidence, not proof of absence of vulnerabilities.
 The exact-source draft inventory records eight normal/build dependency graphs
 (minimal/standard/full/compat on Linux and Windows-GNU), 314 distinct packages,
 declared licenses/MSRVs, cached archive verification, native source/patch hashes,
-and 505 implementation/packaging/policy source hashes in the refreshed snapshot. All eight graphs pass the
+and 507 implementation/packaging/policy source hashes in the refreshed snapshot. All eight graphs pass the
 protocol/provider policy checker. It is a source inventory, not rebuilt release
 packages. The historical packages still contain their original dependencies.
-The latest snapshot is `candidate-inventory-admission-v2/inventory.json`, SHA-256
-`5993904e5bce1ac837ab0f7bd6f3d4c3c7d072e72286cf543b9819a05dfb6d62`.
+The latest snapshot is `candidate-inventory-preparation/inventory.json`, SHA-256
+`59cf396919910188afb63487f475ffe2e775908ce6e4a95e1402412bbfe6cf8e`.
 It embeds the complete protocol-vendor provenance. Russh becoming a local path
 package does not erase its upstream advisory matches; the OSV snapshot remains
 tracked alongside the client-only backport.

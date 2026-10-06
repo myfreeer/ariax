@@ -1,5 +1,5 @@
 {
-  "status": "in-progress",
+  "status": "blocked-on-historical-attribution",
   "baseCommit": "7f1255c",
   "rawRoot": "/mnt/f/temp/ariax/phase7-local-four-20261006",
   "timing": {
@@ -202,12 +202,12 @@
     "vendorAdvisoryTracking": "russh upstream 0.62.4 findings retained from advisories/final-query/result.json despite local Cargo patch"
   },
   "candidateInventory": {
-    "file": "candidate-inventory-admission-v2/inventory.json",
+    "file": "candidate-inventory-preparation/inventory.json",
     "packages": 314,
     "targetBundleGraphs": 8,
-    "sourceFiles": 505,
+    "sourceFiles": 507,
     "releaseClosureRebuilt": false,
-    "sha256": "5993904e5bce1ac837ab0f7bd6f3d4c3c7d072e72286cf543b9819a05dfb6d62"
+    "sha256": "59cf396919910188afb63487f475ffe2e775908ce6e4a95e1402412bbfe6cf8e"
   },
   "nativeAdvisoryPreparation": {
     "selectedOpenSsl": "3.6.5",
@@ -566,5 +566,134 @@
       "originalAddUriFailureAttributed": false,
       "releaseApproved": false
     }
+  },
+  "preparationRepair": {
+    "sourceSession": "01a10d11-0980-7a11-a2aa-b279dc7d5119",
+    "sourceBaseCommit": "9fbed6b",
+    "retainedEvidenceAudit": {
+      "file": "resumed-retained-evidence-audit.json",
+      "sha256": "fa8100e3103a477242d145402487e01a0451af003479e378dc1001c841d87dd2",
+      "checked": 46,
+      "passed": true
+    },
+    "description": "Move HTTP preparation and journal handoff off Tokio async workers; share one blocking slot and await accepted work through cancellation.",
+    "tests": {
+      "linux": {
+        "preparationTests": 3,
+        "existingHttpTests": 43,
+        "passed": true,
+        "evidence": {
+          "recovery/checks-preparation-v3-linux.json": "74bf5e41ed68f1c01474094a1258dee85add48baaad6beac66dca5e5c97aec8a",
+          "recovery/checks-preparation-regressions-linux.json": "d02ef86075a3c0cd4d114c3e31f9190d95ff2e7f9f54e4f750d533d65bcf1260",
+          "recovery/checks-preparation-compat-linux.json": "878ca15be15aeb4c16838fa639a78295d2ee05ceae0396c93250f890544fa44d"
+        },
+        "compatibilityTests": 6
+      },
+      "windows": {
+        "preparationTests": 3,
+        "existingHttpTests": 43,
+        "passed": true,
+        "evidence": {
+          "recovery/checks-preparation-v3-windows.json": "6fb74b6e5d0ae5c9934ebcf10addc58842403f42701d98701634518b795bedb0",
+          "recovery/checks-preparation-regressions-windows.json": "7f681a32a4d0e5ed70a76bb64c6c86563c3fb5648c52002b18ad453fdcf4d0cf",
+          "recovery/checks-preparation-compat-windows.json": "c579e63a6bd261b8927b8106dfcf05d0d3c524e3a486733e9883476b6a619c8a"
+        },
+        "compatibilityTests": 6
+      }
+    },
+    "journalScratchInventory": {
+      "file": "recovery/active-churn-fixed-1800/journal-allocation-inventory.json",
+      "sha256": "f0b27efe80358171698ef93fadefb17fa1c6b03da2256b5a21f07da22e1d0e90",
+      "records": 93550,
+      "encodedBytes": 8018088,
+      "copiedPayloadBytes": 4650184,
+      "lowerBoundBytes": 12668272
+    },
+    "historicalLatencyFailuresAttributed": false,
+    "privateMemoryDriftAttributed": false,
+    "journalScratchResidentAccounted": false,
+    "releaseApproved": false,
+    "historicalAttributionAudit": {
+      "file": "resumed-timing-evidence-audit.json",
+      "sha256": "cd682d52680610f8a922467d6a9ca95b3070cb8e271673a5ecca6f278ea97c9e",
+      "originalChangeUriTracePresent": false,
+      "originalAddUriTracePresent": false,
+      "requiredNewEvidence": "A failure captured with request-local source/admission stages, or additional contemporaneous telemetry that resolves the original failed intervals."
+    },
+    "activeRun": {
+      "file": "recovery/active-churn-preparation-180/result.json",
+      "sha256": "c7797e60eb0c247304f8107f024cd1994488e55414844ab21581d7b912bf78ab",
+      "build": "recovery/build-preparation.json",
+      "buildSha256": "9b95e87c54f925d3cec56023d2ea53783c1f430a1e7aebe04d6ff0ae591c2fa3",
+      "passed": true,
+      "cycles": 178,
+      "pulses": 90,
+      "samples": 18,
+      "elapsedSeconds": 183.10872554779053,
+      "binarySha256": "741fb5f0ef358b857a3622ffe21a1650207a1fb9d56f84f9a15a9c33a2c4d439",
+      "recoveryCliSha256": "7847c1eda21577813fa970493db7058a159264a64fd5de4d03c5bb4dbd80cefa",
+      "resourceSummary": {
+        "privateBytes": {
+          "firstMedian": 13172736,
+          "lastMedian": 15138816,
+          "maximum": 15822848,
+          "allowedIncrease": 33554432
+        },
+        "handles": {
+          "firstMedian": 421,
+          "lastMedian": 418,
+          "maximum": 423,
+          "allowedIncrease": 64
+        },
+        "threads": {
+          "firstMedian": 13,
+          "lastMedian": 11,
+          "maximum": 13,
+          "allowedIncrease": 16
+        },
+        "accountedResidentBytes": {
+          "firstMedian": 13006585,
+          "lastMedian": 13006585,
+          "maximum": 13007609,
+          "allowedIncrease": 2097152
+        }
+      },
+      "bothRecoveriesPassed": true,
+      "ownedProcessesExited": true,
+      "processVerification": "recovery/preparation-final-processes.json",
+      "processVerificationSha256": "f2dde5f780f8d2826bd09c4b7bdb63ea927cdd70c7c079471b4588c3d55bd9d7"
+    }
+  },
+  "completionAudit": {
+    "goalComplete": false,
+    "status": "blocked-on-historical-attribution",
+    "items": [
+      {
+        "item": 1,
+        "status": "incomplete",
+        "missing": "Request-local stage evidence for the two retained failed calls; later passing traces and the scheduling repair do not prove their causes."
+      },
+      {
+        "item": 2,
+        "status": "bounded-local-coverage-complete",
+        "externalAcceptance": "Long-term private-memory stability is not established."
+      },
+      {
+        "item": 3,
+        "status": "experimental-scope-assessed-and-tested",
+        "excluded": "Full aria2 parity."
+      },
+      {
+        "item": 4,
+        "status": "source-inventory-and-advisory-review-prepared",
+        "externalAcceptance": "RSA assurance, linked OpenSSL/native validation and release/platform acceptance remain open."
+      }
+    ],
+    "ciDispatched": false,
+    "pushed": false,
+    "toolchainsInstalled": false,
+    "releaseApproved": false,
+    "file": "resumed-goal-audit.json",
+    "sha256": "e622e8ba9cfb63a44d5cb970a7af6008b3f62aa473a26543637af2ea78cabe2b"
   }
 }

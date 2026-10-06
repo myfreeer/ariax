@@ -1,6 +1,7 @@
 //! Journal-backed non-overlapping multi-mirror HTTP range worker.
 mod metadata_follow;
 mod network_buffer;
+mod storage_preparation;
 use network_buffer::NetworkBuffer;
 mod protocol;
 use protocol::PreparedValidator;
@@ -898,6 +899,9 @@ pub struct HttpMultiRangeWorker {
     config: HttpMultiRangeWorkerConfig,
     stats: SharedHttpTransferStats,
     session: Option<SessionHandle>,
+    preparation_slot: Arc<tokio::sync::Semaphore>,
+    #[cfg(test)]
+    preparation_gate: Arc<Mutex<Option<Arc<storage_preparation::PreparationGate>>>>,
 }
 
 impl fmt::Debug for HttpMultiRangeWorker {
@@ -934,6 +938,9 @@ impl HttpMultiRangeWorker {
             config,
             stats,
             session: None,
+            preparation_slot: Arc::new(tokio::sync::Semaphore::new(1)),
+            #[cfg(test)]
+            preparation_gate: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -1039,17 +1046,9 @@ impl HttpMultiRangeWorker {
             discard_snapshot.task_remaining,
         );
         self.stats.clear_completion(task.task());
-        let prepared_storage = match self.prepare_storage(&task, generation) {
-            Ok(storage) => storage,
-            Err(error) => {
-                self.handoff_new_or_recovered_journal(&task, generation)
-                    .await?;
-                return Err(error);
-            }
-        };
-        let prepared_storage = prepared_storage
-            .manage(self.session.as_ref(), task.gid())
-            .map_err(KnownLengthHttpError::from)?;
+        let prepared_storage = self
+            .prepare_storage_async(Arc::clone(&task), generation, cancellation.clone())
+            .await?;
         if task.options().checksum.is_some()
             && let Some(total_length) = prepared_storage.fully_durable_length()
         {
@@ -1923,6 +1922,19 @@ impl HttpMultiRangeWorker {
         task: &TransferTaskSpec,
         generation: Generation,
     ) -> Result<(), HttpMultiRangeError> {
+        let worker = self.clone();
+        let task = task.clone();
+        self.blocking_storage(move || {
+            worker.handoff_new_or_recovered_journal_blocking(&task, generation)
+        })
+        .await?
+    }
+
+    fn handoff_new_or_recovered_journal_blocking(
+        &self,
+        task: &TransferTaskSpec,
+        generation: Generation,
+    ) -> Result<(), HttpMultiRangeError> {
         if let Some(session) = &self.session {
             match session.execute(SessionCommand::FlushJournalHead { gid: task.gid() }) {
                 Ok(ariax_storage::SessionCommandResult::JournalFlushed(_)) => return Ok(()),
@@ -1933,10 +1945,20 @@ impl HttpMultiRangeWorker {
             }
         }
         let journal = self.open_task_journal(task, generation)?;
-        self.handoff_journal(task.gid(), journal.appender).await
+        self.handoff_journal_blocking(task.gid(), journal.appender)
     }
 
     async fn handoff_journal(
+        &self,
+        gid: Gid,
+        journal: StorageJournal,
+    ) -> Result<(), HttpMultiRangeError> {
+        let worker = self.clone();
+        self.blocking_storage(move || worker.handoff_journal_blocking(gid, journal))
+            .await?
+    }
+
+    fn handoff_journal_blocking(
         &self,
         gid: Gid,
         journal: StorageJournal,
@@ -4810,6 +4832,7 @@ fn write_unpoisoned<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod preparation_tests;
     use crate::storage_engine::StorageEngineDiskFault;
     use crate::{
         DEFAULT_HTTP_DISCARD_ATTEMPT_BYTES, DEFAULT_HTTP_DISCARD_HOST_BYTES,

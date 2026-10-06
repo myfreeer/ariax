@@ -278,6 +278,21 @@ The path and journal are ready before network I/O. No response body byte is
 accepted, buffered for placement, or submitted to storage before its layout is
 open. A response head is not itself progress.
 
+HTTP journal preparation, semantic replay and descriptor-bound recovered-piece
+readback run outside Tokio's async workers. Worker clones share one preparation
+slot, acquired asynchronously before submitting blocking work. Existing journal
+segment, record and payload limits continue to bound replay; the slot prevents
+concurrent preparations from multiplying that scratch allocation. This does not
+make journal scratch part of the resident-byte accounting or remove its growth
+with retained history.
+
+Cancellation before submission creates no journal. Once submitted, preparation
+remains part of the transfer's drain: cancellation waits for the job, journal
+ownership handoff and flush before reporting completion. Preparation errors use
+the same journal recovery/handoff path on the blocking worker. A cancelled
+preparation never starts a network request. The slot is held through result
+delivery, including failure, and is independent of control-query execution.
+
 ## User Header Policy
 
 User-provided headers are parsed once into a validated, case-insensitive header
