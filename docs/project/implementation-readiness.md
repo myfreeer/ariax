@@ -646,7 +646,9 @@ repair passes Linux/Windows regressions and a corrected active fixture; the
 original failure remains retained. The completed 30-minute soak exposes resident
 memory growth under pause/resume; an ingress-release repair passes focused
 regressions and a 178-cycle dense native probe with essentially flat accounted
-resident memory. Longer-term resource acceptance remains open. DNS/TLS advisory updates and
+resident memory. A subsequent 30-minute dense run passes 1,798 cycles and both
+recovery checks with identical accounted-memory medians, while retaining
+unexplained private-memory drift. Longer-term resource acceptance remains open. DNS/TLS advisory updates and
 PEM migration pass focused Linux/Windows tests. A bounded SSH probe reproduced
 unknown-channel reply/callback delivery; the upstream client channel-state
 checks are backported to the pinned russh vendor and pass the regression plus
@@ -655,7 +657,9 @@ advisory dispositions remain tracked. The OpenSSL 3.6.5 source/patch update
 passes exact-application and syntax checks but still needs linked native
 validation. The new dependency policy passes license/source/backend checks and
 retains the unresolved RSA error; yanked chacha20 is replaced and SFTP
-regressions pass on both hosts. The exact-source draft inventory is refreshed. These findings are additional open local work,
+regressions pass on both hosts. A predeclared 100-attempt trace run passes all source mutations but retains a
+new 91.107 ms `addUri` failure; the original source timing failure remains
+unattributed. The exact-source draft inventory is refreshed. These findings are additional open local work,
 not closed by the earlier packaging or empty-session checks.
 
 The approved [local hardening campaign](../../performance-evidence/phase7-local-hardening-2026-10-05.md)

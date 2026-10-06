@@ -32,6 +32,31 @@ include asynchronous completion polling and scheduling, not disk service time
 alone. The retained 100.250 ms failure is still unexplained and still fails the
 50 ms gate; passing new measurements cannot replace it.
 
+A subsequent predeclared sequence completes 100 alternating attempts in 615.64
+seconds using the retained six-stage diagnostic binary, after the long active
+soak exits. All 1,000 `changeUri` calls pass: maxima are 20.847 ms for
+Content-Length and 23.105 ms for NDJSON. Median preparation-to-commit intervals
+are 5.303/5.347 ms, and commit-to-publication intervals are 8.320/8.260 ms.
+These intervals still include scheduling and asynchronous completion polling.
+The original 100.250 ms source-mutation failure remains unattributed.
+
+The overall sequence **fails**: Content-Length attempt 81 records a 91.107 ms
+`addUri` call against the unchanged 50 ms gate. Its worst completed burst is
+405.853 ms, within the separate 500 ms burst bound. Maximum owner lock wait and
+active-turn duration are 16/586 microseconds; neither measures time between
+turns or persistence waits. The source-only stage trace cannot attribute this
+new admission delay. The complete audit corrects the interim progress report,
+which missed this failure in abbreviated output. All attempts, including the
+failure, remain retained in `measurements-extended`, with summary in
+`timing-extended-summary.json`.
+
+Two hundred command-log hashes and 100 host-sample hashes verify; correlation,
+report/exit agreement and cleanup checks pass. No build is started by this
+slice. Unrelated compiler/build activity appears in 43 attempts after the
+initial quiet portion; that observation does not establish causation. Passing
+source calls do not erase either failed mutation measurement or establish
+release acceptance.
+
 ## Active-Transfer Recovery Finding
 
 A bounded 60-second fixture check exercises 16 active HTTP ranges, periodic

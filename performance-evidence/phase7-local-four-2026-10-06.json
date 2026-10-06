@@ -318,5 +318,104 @@
         "sha256": "1d016972d8fee1062b0748324d0a51dce34567d97f8a8d88bd49a8234c34cb39"
       }
     ]
+  },
+  "extendedSourceTiming": {
+    "summary": "timing-extended-summary.json",
+    "summarySha256": "113b15262cdc7be1b3f6335cdfc9dcf4a7c2690619f47e5223b1d29fc4f1f22c",
+    "completed": true,
+    "attempts": 100,
+    "calls": 1000,
+    "failedAttempts": [
+      81
+    ],
+    "timingPassed": false,
+    "sourceMutationFailures": 0,
+    "compilerActivityAttempts": 43,
+    "elapsedSeconds": 615.6437594890594,
+    "binarySha256": "6a509ecf98c6d4fe177f607df6ba631bf991517366c63d28cade887a06f2aaf1",
+    "scenarios": {
+      "content-length": {
+        "calls": 500,
+        "maxRoundTripNs": 20846600,
+        "medianRoundTripNs": 13999700.0,
+        "p99RoundTripNs": 17601500,
+        "stageMedianNs": {
+          "admissionToDispatch": 44400.0,
+          "dispatchToPrepared": 22100.0,
+          "preparedToCommit": 5302800.0,
+          "commitToPublication": 8320100.0,
+          "publicationToDelivery": 72550.0
+        }
+      },
+      "ndjson": {
+        "calls": 500,
+        "maxRoundTripNs": 23105000,
+        "medianRoundTripNs": 13934200.0,
+        "p99RoundTripNs": 17168200,
+        "stageMedianNs": {
+          "admissionToDispatch": 42250.0,
+          "dispatchToPrepared": 21350.0,
+          "preparedToCommit": 5347000.0,
+          "commitToPublication": 8259500.0,
+          "publicationToDelivery": 72100.0
+        }
+      }
+    },
+    "failedOperationEvidence": [
+      {
+        "attempt": 81,
+        "scenario": "content-length",
+        "operationsAbove50ms": {
+          "addUri": {
+            "calls": 10,
+            "maxUs": 91107,
+            "p50Us": 14739,
+            "p99Us": 91107
+          }
+        },
+        "burstTiming": {
+          "otherUs": 34674,
+          "primaryUs": 1641316,
+          "verificationUs": 16501,
+          "version": 1,
+          "worstCompletedBurst": {
+            "burst": 3,
+            "elapsedNs": 405853600,
+            "elapsedUs": 405853,
+            "firstSampleIndex": 798,
+            "last": {
+              "durationUs": 321,
+              "operation": "addUri",
+              "phase": "verification",
+              "sampleIndex": 1119,
+              "startUs": 405531
+            },
+            "otherUs": 6817,
+            "primaryCalls": 322,
+            "primaryUs": 395743,
+            "slowest": {
+              "durationUs": 91107,
+              "operation": "addUri",
+              "phase": "primary",
+              "sampleIndex": 1119,
+              "startUs": 314422
+            },
+            "startedUnixNs": 1791271860452287300,
+            "verificationCalls": 17,
+            "verificationUs": 3292
+          }
+        },
+        "controlRuntime": {
+          "maxLockWaitUs": 16,
+          "maxSteps": 12,
+          "maxTurnUs": 586,
+          "totalLockWaitUs": 54,
+          "turns": 2226
+        },
+        "compilerActivityObserved": true
+      }
+    ],
+    "originalFailureAttributed": false,
+    "originalFailureStillFails": true
   }
 }
