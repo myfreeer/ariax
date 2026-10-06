@@ -104,6 +104,24 @@ longer-term stability are not declared resolved. The probe uses separately
 retained executables and unchanged transfer gates. All owned fixture processes
 exit, all 132 tasks recover, and interrupted payload remains untrusted.
 
+The retained ingress-repair binaries also pass a predeclared 30-minute dense
+run: 1,798 pause/resume cycles, 900 payload pulses and 180 resource samples.
+First/last three-sample accounted-memory medians are identical at 13,005,529
+bytes. Handles decrease from 421 to 419 and threads from 13 to 11. Private-memory
+medians rise from 13,164,544 to 25,423,872 bytes, within the unchanged 32 MiB
+growth screen but still an unexplained drift. Read-only `VirtualQueryEx`
+snapshots show increasing committed private regions and unchanged mapped/image
+commitment; they do not identify the allocator or establish a leak. Each query
+took less than 6 ms and inspected region metadata, not process contents.
+
+After the full run, forced termination, recovery of all 132 tasks, clean RPC
+shutdown and a second bootstrap pass. The interrupted task retains its GID and
+zero trusted completed bytes; all owned processes exit. Raw results and region
+snapshots remain in `recovery/active-churn-fixed-1800`. These exact binaries
+predate the latest dependency updates and are evidence for the ingress repair,
+not a rebuilt candidate or release acceptance. The longer result strengthens
+the buffer-lifecycle finding without clearing remaining private-memory drift.
+
 ## Compatibility And Advisory Review
 
 The compatibility inventory has 108 reviewed registry entries, including 54

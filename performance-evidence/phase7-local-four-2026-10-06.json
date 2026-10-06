@@ -258,5 +258,65 @@
       "patchSha256": "907c8ccbf3016b25919b8f817ee52d2f78aae7ab9ed38bba9eac22571041c97e",
       "archiveSha256": "b8b67b5a0d8068c89dcbe9d95df986af7a851d1f3c604525274c37468e60464f"
     }
+  },
+  "activeChurnLongRun": {
+    "result": "recovery/active-churn-fixed-1800/result.json",
+    "resultSha256": "57acd8611e6bf19add35bbe7a596b78b6fc4fa40214232c73d033701d870ffa8",
+    "passed": true,
+    "cycles": 1798,
+    "samples": 180,
+    "pulses": 900,
+    "elapsedSeconds": 1806.2679924964905,
+    "binarySha256": "91f47a316b99e854f6cf21c921edae13236ffeaf2266a0741bfdfdcd3495ba14",
+    "recoveryCliSha256": "be6e3cfc2ccd43c9becf6b855fe2952f8d98c58795244097c7a5180b8c21551a",
+    "scope": "Retained ingress-repair binaries; predates latest dependency updates. Not current-candidate or release acceptance.",
+    "resources": {
+      "privateBytes": {
+        "firstMedian": 13164544,
+        "lastMedian": 25423872,
+        "maximum": 25886720,
+        "allowedIncrease": 33554432
+      },
+      "handles": {
+        "firstMedian": 421,
+        "lastMedian": 419,
+        "maximum": 423,
+        "allowedIncrease": 64
+      },
+      "threads": {
+        "firstMedian": 13,
+        "lastMedian": 11,
+        "maximum": 14,
+        "allowedIncrease": 16
+      },
+      "accountedResidentBytes": {
+        "firstMedian": 13005529,
+        "lastMedian": 13005529,
+        "maximum": 14112985,
+        "allowedIncrease": 2097152
+      }
+    },
+    "privateMemoryDriftResolved": false,
+    "recoveredTask": {
+      "completedLength": "0",
+      "gid": "e22b4c377c5e7098",
+      "status": "waiting"
+    },
+    "cleanShutdown": true,
+    "ownedProcessesExited": true,
+    "regionSnapshots": [
+      {
+        "file": "recovery/active-churn-fixed-1800/regions-early.json",
+        "sha256": "3ceb32457ee2c0c68e9b6d4e4a9cc75843d3d26b9394681096642fd48f43d2a6"
+      },
+      {
+        "file": "recovery/active-churn-fixed-1800/regions-late.json",
+        "sha256": "9d963ceeb51828190c14ec90a12c8c0f44420ce6f40755b7a07e291cb51df0f5"
+      },
+      {
+        "file": "recovery/active-churn-fixed-1800/regions-middle.json",
+        "sha256": "1d016972d8fee1062b0748324d0a51dce34567d97f8a8d88bd49a8234c34cb39"
+      }
+    ]
   }
 }
