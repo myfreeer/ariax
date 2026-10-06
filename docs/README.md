@@ -92,6 +92,7 @@ They explain earlier decisions; current subsystem contracts take precedence.
 - [Bounded Phase 7 local campaign](../performance-evidence/phase7-local-campaign-2026-10-05.md)
 - [Release packaging and licenses](development/release-packaging.md)
 - [Local release-blocker fixes](../performance-evidence/phase7-release-blockers-2026-10-06.md)
+- [Local source-mutation timing](../performance-evidence/phase7-source-timing-2026-10-06.md)
 - [Distribution manifests and notices](../distribution/README.md)
 - [Retained performance evidence](../performance-evidence)
 - [Fuzz targets](../fuzz/README.md)

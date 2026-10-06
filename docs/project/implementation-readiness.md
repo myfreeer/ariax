@@ -655,6 +655,14 @@ adds a longest-burst snapshot and separate primary/verification/untimed totals.
 Focused regressions and report validation pass locally; new native Linux
 measurements are still needed to use these fields for attribution.
 
+The [source-mutation timing slice](../../performance-evidence/phase7-source-timing-2026-10-06.md)
+adds opt-in, bounded benchmark correlation for `changeUri`. Twenty planned
+Windows attempts pass and retain 200 paired backend/round-trip measurements.
+The largest calls are 18.443 ms for Content-Length and 17.388 ms for NDJSON,
+mostly within the backend interval. This narrows investigation to the backend
+path for these calls; it neither explains nor replaces the retained 100.250 ms
+failure. Production code and the 50 ms limit are unchanged.
+
 The [pre-release analysis](../../performance-evidence/phase7-prerelease-analysis-2026-10-05.md)
 adds burst wall-clock anchors and bounded host/process telemetry for future
 native Linux measurements. Eight Rust regressions, 110 Python helper tests,

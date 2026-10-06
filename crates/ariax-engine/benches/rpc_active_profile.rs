@@ -37,6 +37,8 @@ mod burst_timing;
 use burst_timing::{BurstTiming, CompletedBursts, Phase};
 #[path = "rpc_active_profile/setup.rs"]
 mod setup;
+#[path = "rpc_active_profile/source_timing.rs"]
+mod source_timing;
 use setup::{build_control_plane, private_directory};
 #[path = "rpc_active_profile/origin_metrics.rs"]
 mod origin_metrics;
@@ -52,6 +54,11 @@ static WORKLOAD: OnceLock<workload::Workload> = OnceLock::new();
 const PULSE_BYTES: usize = 1024;
 const EVENT_BYTES: usize = 512 * 1024;
 static METRICS_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+fn source_timing_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("ARIAX_BENCH_SOURCE_TIMING").as_deref() == Ok("1"))
+}
 
 fn workload() -> workload::Workload {
     *WORKLOAD.get().expect("benchmark workload initialized")
@@ -374,6 +381,7 @@ struct BenchBackend {
     stats: SharedHttpTransferStats,
     event: RpcEvent,
     consumers: Mutex<[Option<RpcClientBudgetObserver>; 2]>,
+    source_timing: Option<Arc<Mutex<source_timing::BackendLog>>>,
     #[cfg(feature = "bt")]
     bt: Option<(ariax_bt::BtHandle, u64)>,
 }
@@ -411,6 +419,40 @@ impl HttpRpcBackend for BenchBackend {
             return Box::pin(async move {
                 broker.publish(event);
                 Ok(json!("OK"))
+            });
+        }
+        if method == "bench.sourceTiming" {
+            let result = self
+                .source_timing
+                .as_ref()
+                .ok_or("source timing disabled")
+                .and_then(|timing| timing.lock().expect("source timing").report());
+            return Box::pin(async move {
+                result.map_err(|error| HttpRpcBackendError::new(-32000, error))
+            });
+        }
+        if method == "aria2.changeUri"
+            && let Some(timing) = &self.source_timing
+        {
+            let timing = timing.clone();
+            let ordinal = timing.lock().expect("source timing").begin();
+            let started_unix_ns = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_nanos());
+            let started = Instant::now();
+            let future = self.inner.call_with_context(method, params, context);
+            return Box::pin(async move {
+                let result = future.await;
+                let elapsed = started.elapsed();
+                if let Some(ordinal) = ordinal {
+                    timing.lock().expect("source timing").finish(
+                        ordinal,
+                        started_unix_ns,
+                        elapsed,
+                        result.is_ok(),
+                    );
+                }
+                result
             });
         }
         if method != "bench.metrics" {
@@ -596,6 +638,8 @@ async fn engine(origins: &[SocketAddr], scenario: &str) -> Result<()> {
         resources,
         stats,
         consumers: Mutex::new([None, None]),
+        source_timing: source_timing_enabled()
+            .then(|| Arc::new(Mutex::new(source_timing::BackendLog::default()))),
         #[cfg(feature = "bt")]
         bt,
         event: RpcEvent::notification(
@@ -1257,6 +1301,11 @@ async fn measure(scenario: &str) -> Result<()> {
     )
     .await?;
     let mut samples = Vec::with_capacity(workload().samples);
+    let mut source_samples = Vec::with_capacity(if source_timing_enabled() {
+        source_timing::CAPACITY
+    } else {
+        0
+    });
     let mut bursts = 0;
     let mut controls = 0;
     let mut verification_calls = 0;
@@ -1360,6 +1409,9 @@ async fn measure(scenario: &str) -> Result<()> {
             {
                 break;
             }
+            let source_started = (source_timing_enabled() && method == "changeUri")
+                .then(|| SystemTime::now().duration_since(UNIX_EPOCH))
+                .transpose()?;
             let sent = Instant::now();
             let result = client.call(&payload).await.map_err(|error| {
                 format!(
@@ -1368,6 +1420,17 @@ async fn measure(scenario: &str) -> Result<()> {
                 )
             })?;
             let elapsed = sent.elapsed();
+            if let Some(started) = source_started {
+                if source_samples.len() == source_timing::CAPACITY {
+                    return Err("client source timing overflow".into());
+                }
+                source_samples.push(source_timing::ClientSample {
+                    sample_index: samples.len(),
+                    burst: bursts + 1,
+                    started_unix_ns: started.as_nanos(),
+                    elapsed,
+                });
+            }
             timing.record(
                 method,
                 Phase::Primary,
@@ -1527,6 +1590,13 @@ async fn measure(scenario: &str) -> Result<()> {
         "per-client weak observers; outstanding response owners; complete release after disconnect"
     );
     report["burstTiming"] = completed_bursts.report();
+    if source_timing_enabled() {
+        let backend = client
+            .call(&request("bench.sourceTiming", json!([])))
+            .await?;
+        report["sourceMutationTiming"] =
+            source_timing::correlate(&source_samples, &backend, workload().samples)?;
+    }
     report["measurementKind"] = json!(workload().measurement_kind());
     report["acceptanceEligible"] = json!(!workload().diagnostic_small);
     report["stalledConsumerCleanupVerified"] = json!(true);

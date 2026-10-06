@@ -52,6 +52,23 @@ require these diagnostics; historical reports without `burstTiming` remain
 readable, and any present diagnostics must validate. This does not change
 sample latency measurements or acceptance limits; partial runs remain failures.
 
+For local attribution, `ARIAX_BENCH_SOURCE_TIMING=1` enables benchmark-only
+`changeUri` timing. It records at most 125 backend calls and the corresponding
+primary round trips, correlated by their ordinal in the single auxiliary
+mutation stream. Reports require the exact expected sample positions and
+successful backend completions; missing, extra or inconsistent records fail
+diagnostic validation. The backend interval covers admission, owner queueing,
+persistence and publication until the production backend future completes.
+The remaining round-trip interval includes transport, dispatcher work, response
+encoding/decoding and scheduling. Neither interval isolates a root cause.
+
+Timing storage is preallocated and bounded; reports are assembled after measured
+bursts. Each record retains a Unix-time anchor for external correlation and
+nanosecond durations from monotonic clocks. Wall-clock adjustments limit anchor
+comparison. This opt-in mode adds observation overhead, does not alter the
+workload or timing limits, and cannot retrospectively attribute earlier failures.
+Production binaries and public RPC methods gain no diagnostic interface.
+
 Fresh burst snapshots also carry `startedUnixNs`, sampled immediately before
 the monotonic burst timer starts. Failed-burst diagnostics retain that anchor.
 Historical snapshots may omit it. Native CI collects a separate bounded

@@ -82,6 +82,14 @@ memory and overall time limits. It preserves the original nine diagnostic
 attempts when continuing after a runner accounting error. A retained timing
 failure is not retried or exempted because other host activity was observed.
 
+To correlate the auxiliary `changeUri` stream in a bounded local benchmark,
+set `ARIAX_BENCH_SOURCE_TIMING=1`. The opt-in benchmark wrapper records backend
+and round-trip durations for the same calls; it adds no production API. The
+[measurement contract](../runtime/performance-profiles.md#control-plane-measurement-protocol)
+defines the 125-record cap, sample ordinals, clocks and attribution limits.
+Retain every planned attempt and the unchanged 50 ms gate. A later passing
+instrumented run does not replace an earlier failed measurement.
+
 After verifying all corpus bytes, redundant earlier generations may be removed
 only when every member remains available in the final corpus. Keep each original
 generation's hash inventory, the retained location and deletion counts/bytes so

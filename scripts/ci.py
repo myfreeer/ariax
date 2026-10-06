@@ -397,6 +397,46 @@ def validate_burst_timing(report, *, required=False):
     require(worst["slowest"]["durationUs"] >= worst["last"]["durationUs"], "slowest step is shorter than last")
 
 
+def validate_source_timing(report):
+    """Validate optional benchmark-only source-call correlation, including failed timings."""
+    if "sourceMutationTiming" not in report:
+        return
+    timing = report["sourceMutationTiming"]
+    require(isinstance(timing, dict) and type(timing.get("version")) is int
+            and timing["version"] == 1, "invalid source timing version")
+    require(timing.get("capacity") == 125, "invalid source timing capacity")
+    samples = integer(report.get("samples"), "samples", minimum=160)
+    require(samples % 160 == 0, "invalid source timing workload")
+    expected = samples // 160
+    calls = integer(timing.get("calls"), "source.calls", minimum=1, maximum=125)
+    rows = timing.get("samples")
+    require(calls == expected and isinstance(rows, list) and len(rows) == calls,
+            "incomplete source timing records")
+    operation = report.get("operations", {}).get("changeUri", {})
+    require(operation.get("calls") == calls, "source timing operation count mismatch")
+    durations = []
+    previous_burst = 1
+    bursts = integer(report.get("bursts"), "bursts", minimum=1)
+    for ordinal, row in enumerate(rows):
+        require(isinstance(row, dict), "invalid source timing row")
+        require(type(row.get("ordinal")) is int and row["ordinal"] == ordinal
+                and type(row.get("sampleIndex")) is int and row["sampleIndex"] == 99 + 160 * ordinal,
+                "source timing ordinal mismatch")
+        previous_burst = integer(row.get("burst"), "source.burst", minimum=previous_burst, maximum=bursts)
+        integer(row.get("clientStartedUnixNs"), "source.clientStartedUnixNs", minimum=1)
+        integer(row.get("backendStartedUnixNs"), "source.backendStartedUnixNs", minimum=1)
+        elapsed = integer(row.get("roundTripNs"), "source.roundTripNs")
+        backend = integer(row.get("backendNs"), "source.backendNs", maximum=elapsed)
+        outside = integer(row.get("outsideBackendNs"), "source.outsideBackendNs", maximum=elapsed)
+        require(backend + outside == elapsed, "inconsistent source timing composition")
+        durations.append(elapsed)
+    durations.sort()
+    for key, value in (("p50Us", durations[calls // 2] // 1000),
+                       ("p99Us", durations[(calls * 99 + 99) // 100 - 1] // 1000),
+                       ("maxUs", durations[-1] // 1000)):
+        require(operation.get(key) == value, "source timing disagrees with operation latency")
+
+
 def validate_benchmark(report, scenario, metalink=True, *, expected_os="linux", require_burst_timing=False):
     return _validate_benchmark(report, scenario, metalink, expected_os=expected_os, diagnostic=False,
                                require_burst_timing=require_burst_timing)
@@ -496,6 +536,7 @@ def _validate_benchmark(report, scenario, metalink, *, expected_os, diagnostic, 
     require({name: value["calls"] for name, value in report["operations"].items()} == counts,
             "incomplete per-operation measurements")
     validate_burst_timing(report, required=require_burst_timing)
+    validate_source_timing(report)
     for peak, cap in (("maxRpcBytes", "rpcLimit"), ("maxResidentBytes", "residentLimit"),
                       ("maxSampledRssBytes", "rssLimit")):
         integer(report.get(peak), peak, maximum=integer(report.get(cap), cap, minimum=1))
