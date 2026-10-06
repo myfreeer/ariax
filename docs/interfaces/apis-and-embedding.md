@@ -328,6 +328,16 @@ their request leases. Native calls share those client and projection budgets.
 Scheduler simulation and status-draft copies of existing tasks are forecast
 before mutation and retained with the input lease while a driver chain remains
 pending. Idle cleanup discards unused plans before refunding their input.
+Local builds with `control-diagnostics` may attach an explicit request-local
+transfer `addUri` trace (excluding torrent/magnet admission). Thirteen fixed monotonic offsets distinguish mailbox and
+owner admission, preparation worker queue/start/finish/observation, finalization
+queue/start/finish/observation, scheduler start, publication and reply delivery.
+Traces contain no parameters, URLs or credentials. Missing, duplicate or
+misordered stages reject diagnostic validation; rejection is not reported as a
+successful complete admission. Ordinary builds and admission semantics are
+unchanged. Worker intervals measure elapsed time, including possible scheduling
+pauses, rather than CPU or disk service time alone.
+
 After admission, add, option, and source changes retain a bounded owner-held
 continuation independently of the transport's reply wait. It keeps the catalog
 replacement and request credit until the scheduler publishes the accepted

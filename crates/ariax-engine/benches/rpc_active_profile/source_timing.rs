@@ -6,19 +6,22 @@ use std::time::Duration;
 pub const CAPACITY: usize = 125;
 
 #[derive(Clone, Copy)]
-struct BackendSample {
+struct BackendSample<const STAGES: usize> {
     started_unix_ns: u128,
     elapsed: Duration,
     succeeded: bool,
-    stages: Option<[u64; 6]>,
+    stages: Option<[u64; STAGES]>,
 }
 
-pub struct BackendLog {
-    samples: Vec<Option<BackendSample>>,
+pub type BackendLog = StageLog<6>;
+pub type AdmissionLog = StageLog<13>;
+
+pub struct StageLog<const STAGES: usize> {
+    samples: Vec<Option<BackendSample<STAGES>>>,
     invalid: bool,
 }
 
-impl Default for BackendLog {
+impl<const STAGES: usize> Default for StageLog<STAGES> {
     fn default() -> Self {
         Self {
             samples: Vec::with_capacity(CAPACITY),
@@ -27,7 +30,7 @@ impl Default for BackendLog {
     }
 }
 
-impl BackendLog {
+impl<const STAGES: usize> StageLog<STAGES> {
     pub fn begin(&mut self) -> Option<usize> {
         if self.samples.len() == CAPACITY {
             self.invalid = true;
@@ -59,12 +62,12 @@ impl BackendLog {
     }
 
     #[cfg(any(feature = "control-diagnostics", test))]
-    pub fn attach_stages(&mut self, ordinal: usize, stages: Result<[u64; 6], &'static str>) {
+    pub fn attach_stages(&mut self, ordinal: usize, stages: Result<[u64; STAGES], &'static str>) {
         match (self.samples.get_mut(ordinal), stages) {
             (Some(Some(sample)), Ok(stages))
                 if sample.stages.is_none()
                     && stages.windows(2).all(|pair| pair[0] <= pair[1])
-                    && u128::from(stages[5]) <= sample.elapsed.as_nanos() =>
+                    && u128::from(stages[STAGES - 1]) <= sample.elapsed.as_nanos() =>
             {
                 sample.stages = Some(stages);
             }
@@ -84,7 +87,7 @@ impl BackendLog {
                 let mut row = json!({"ordinal": ordinal, "startedUnixNs": sample.started_unix_ns,
                     "elapsedNs": sample.elapsed.as_nanos(), "succeeded": sample.succeeded});
                 if let Some(stages) = sample.stages {
-                    row["stageOffsetsNs"] = json!(stages);
+                    row["stageOffsetsNs"] = json!(stages.as_slice());
                 }
                 Ok(row)
             })
@@ -105,6 +108,23 @@ pub fn correlate(
     backend: &Value,
     total_samples: usize,
 ) -> Result<Value, &'static str> {
+    correlate_at::<6>(client, backend, total_samples, 99)
+}
+
+pub fn correlate_admission(
+    client: &[ClientSample],
+    backend: &Value,
+    total_samples: usize,
+) -> Result<Value, &'static str> {
+    correlate_at::<13>(client, backend, total_samples, 159)
+}
+
+fn correlate_at<const STAGES: usize>(
+    client: &[ClientSample],
+    backend: &Value,
+    total_samples: usize,
+    first_index: usize,
+) -> Result<Value, &'static str> {
     let backend = backend.as_array().ok_or("missing backend source timing")?;
     let expected = total_samples / 160;
     if total_samples == 0
@@ -117,7 +137,7 @@ pub fn correlate(
     }
     let mut samples = Vec::with_capacity(expected);
     for (ordinal, (client, backend)) in client.iter().zip(backend).enumerate() {
-        if client.sample_index != 99 + ordinal * 160
+        if client.sample_index != first_index + ordinal * 160
             || client.burst == 0
             || client.started_unix_ns == 0
             || backend["ordinal"].as_u64() != Some(ordinal as u64)
@@ -142,7 +162,7 @@ pub fn correlate(
             "backendNs": elapsed, "outsideBackendNs": outside.as_nanos()});
         if let Some(stages) = backend.get("stageOffsetsNs") {
             let offsets = stages.as_array().ok_or("invalid source stages")?;
-            if offsets.len() != 6 {
+            if offsets.len() != STAGES {
                 return Err("invalid source stage count");
             }
             let mut previous = 0;

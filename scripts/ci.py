@@ -398,10 +398,18 @@ def validate_burst_timing(report, *, required=False):
 
 
 def validate_source_timing(report):
+    validate_mutation_timing(report, "sourceMutationTiming", "changeUri", 99, 6)
+
+
+def validate_admission_timing(report):
+    validate_mutation_timing(report, "admissionTiming", "addUri", 159, 13)
+
+
+def validate_mutation_timing(report, field, method, first_index, stage_count):
     """Validate optional benchmark-only source-call correlation, including failed timings."""
-    if "sourceMutationTiming" not in report:
+    if field not in report:
         return
-    timing = report["sourceMutationTiming"]
+    timing = report[field]
     require(isinstance(timing, dict) and type(timing.get("version")) is int
             and timing["version"] == 1, "invalid source timing version")
     require(timing.get("capacity") == 125, "invalid source timing capacity")
@@ -412,7 +420,7 @@ def validate_source_timing(report):
     rows = timing.get("samples")
     require(calls == expected and isinstance(rows, list) and len(rows) == calls,
             "incomplete source timing records")
-    operation = report.get("operations", {}).get("changeUri", {})
+    operation = report.get("operations", {}).get(method, {})
     require(operation.get("calls") == calls, "source timing operation count mismatch")
     durations = []
     previous_burst = 1
@@ -420,7 +428,7 @@ def validate_source_timing(report):
     for ordinal, row in enumerate(rows):
         require(isinstance(row, dict), "invalid source timing row")
         require(type(row.get("ordinal")) is int and row["ordinal"] == ordinal
-                and type(row.get("sampleIndex")) is int and row["sampleIndex"] == 99 + 160 * ordinal,
+                and type(row.get("sampleIndex")) is int and row["sampleIndex"] == first_index + 160 * ordinal,
                 "source timing ordinal mismatch")
         previous_burst = integer(row.get("burst"), "source.burst", minimum=previous_burst, maximum=bursts)
         integer(row.get("clientStartedUnixNs"), "source.clientStartedUnixNs", minimum=1)
@@ -431,7 +439,7 @@ def validate_source_timing(report):
         require(backend + outside == elapsed, "inconsistent source timing composition")
         if "stageOffsetsNs" in row:
             stages = row["stageOffsetsNs"]
-            require(isinstance(stages, list) and len(stages) == 6, "invalid source stage count")
+            require(isinstance(stages, list) and len(stages) == stage_count, "invalid source stage count")
             previous = 0
             for offset in stages:
                 previous = integer(offset, "source.stageOffsetNs", minimum=previous, maximum=backend)
@@ -545,6 +553,7 @@ def _validate_benchmark(report, scenario, metalink, *, expected_os, diagnostic, 
             "incomplete per-operation measurements")
     validate_burst_timing(report, required=require_burst_timing)
     validate_source_timing(report)
+    validate_admission_timing(report)
     for peak, cap in (("maxRpcBytes", "rpcLimit"), ("maxResidentBytes", "residentLimit"),
                       ("maxSampledRssBytes", "rssLimit")):
         integer(report.get(peak), peak, maximum=integer(report.get(cap), cap, minimum=1))

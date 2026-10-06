@@ -202,12 +202,12 @@
     "vendorAdvisoryTracking": "russh upstream 0.62.4 findings retained from advisories/final-query/result.json despite local Cargo patch"
   },
   "candidateInventory": {
-    "file": "candidate-inventory-ssh-backport/inventory.json",
+    "file": "candidate-inventory-admission-v2/inventory.json",
     "packages": 314,
     "targetBundleGraphs": 8,
-    "sourceFiles": 504,
+    "sourceFiles": 505,
     "releaseClosureRebuilt": false,
-    "sha256": "f5dc10c85dde033c6ebae348578da1089f0ac344dc3a9b28eb9a2449fb22a88a"
+    "sha256": "5993904e5bce1ac837ab0f7bd6f3d4c3c7d072e72286cf543b9819a05dfb6d62"
   },
   "nativeAdvisoryPreparation": {
     "selectedOpenSsl": "3.6.5",
@@ -417,5 +417,23 @@
     ],
     "originalFailureAttributed": false,
     "originalFailureStillFails": true
+  },
+  "admissionTrace": {
+    "stages": 13,
+    "capacityPerStream": 125,
+    "scope": "Opt-in transfer addUri diagnostics; excludes torrent/magnet. No thresholds or admission semantics changed.",
+    "engineTestsPerHost": 3,
+    "sourceTraceRegressionTestsPerHost": 3,
+    "correlationTestsPerHost": 7,
+    "pythonTimingTests": 5,
+    "ciHelperTests": 37,
+    "linuxOrdinaryBuildChecked": true,
+    "nativeBenchmarkSha256": "7f51d1849b92f15e6a52830551f87e1ce958f61b123aa9ae8b84ef40e34738df",
+    "build": "admission-diagnostics-v2/build.json",
+    "measurements": "admission-diagnostics-v2/measurements/result.json",
+    "measurementStatus": "running; corrected sample 159 mapping validated end to end",
+    "historicalFailuresStillRejected": true,
+    "initialCorrelationFailure": "admission-diagnostics/measurements/result.json",
+    "initialFailureFixturePreserved": true
   }
 }

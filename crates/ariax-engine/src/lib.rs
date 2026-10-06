@@ -217,6 +217,10 @@ mod rpc_client;
 mod source_trace;
 #[cfg(feature = "control-diagnostics")]
 pub use source_trace::SourceMutationTrace;
+#[cfg(feature = "control-diagnostics")]
+mod admission_trace;
+#[cfg(feature = "control-diagnostics")]
+pub use admission_trace::AdmissionTrace;
 mod rpc_compat;
 mod slow_slots;
 pub use http_supervisor::{

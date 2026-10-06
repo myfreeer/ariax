@@ -11,6 +11,8 @@ pub struct RpcClientContext {
     local_admin: bool,
     #[cfg(feature = "control-diagnostics")]
     pub(crate) source_trace: Option<crate::SourceMutationTrace>,
+    #[cfg(feature = "control-diagnostics")]
+    pub(crate) admission_trace: Option<crate::AdmissionTrace>,
 }
 
 #[derive(Default)]
@@ -27,6 +29,14 @@ impl RpcClientContext {
     #[must_use]
     pub fn with_source_trace(mut self, trace: crate::SourceMutationTrace) -> Self {
         self.source_trace = Some(trace);
+        self
+    }
+
+    /// Attaches bounded transfer addUri timing without changing authorization.
+    #[cfg(feature = "control-diagnostics")]
+    #[must_use]
+    pub fn with_admission_trace(mut self, trace: crate::AdmissionTrace) -> Self {
+        self.admission_trace = Some(trace);
         self
     }
 
@@ -66,6 +76,8 @@ impl RpcClientContext {
             local_admin: false,
             #[cfg(feature = "control-diagnostics")]
             source_trace: None,
+            #[cfg(feature = "control-diagnostics")]
+            admission_trace: None,
         };
         if !authentication_required {
             context.authorize()?;
@@ -84,6 +96,8 @@ impl RpcClientContext {
             local_admin: self.local_admin,
             #[cfg(feature = "control-diagnostics")]
             source_trace: self.source_trace.clone(),
+            #[cfg(feature = "control-diagnostics")]
+            admission_trace: self.admission_trace.clone(),
         }
     }
 

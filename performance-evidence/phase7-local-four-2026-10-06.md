@@ -57,6 +57,31 @@ initial quiet portion; that observation does not establish causation. Passing
 source calls do not erase either failed mutation measurement or establish
 release acceptance.
 
+The new admission diagnostic uses 13 fixed request-local offsets: mailbox
+admission, dispatch, preparation queue/start/finish/observation, finalization
+queue/start/finish/observation, scheduler start, publication and reply delivery.
+It is opt-in under `control-diagnostics` and records no request parameters.
+Its independent 125-call benchmark stream uses `addUri` sample positions rather
+than the source stream's positions. A shared correlation checker preserves the
+distinct six- and thirteen-stage schemas. Incomplete, misordered and rejected
+admissions do not become complete successful samples. Worker elapsed intervals
+still include scheduling, so they are not pure CPU or filesystem service time.
+
+Three admission-trace engine tests and three existing source-trace tests pass
+on Linux and native Windows. Seven correlation tests pass on each host, along
+with five Python timing checks and 37 CI-helper tests. The ordinary Linux
+engine build without diagnostics and the Linux benchmark check pass. The native
+benchmark is rebuilt into `admission-diagnostics`; older binaries remain retained.
+Both historical failures still reject under the updated report validator. The first measured attempt stops on a correlation error: the new checker and
+its unit fixture both used sample 119, while the actual eight-phase workload
+places `addUri` at sample 159. The end-to-end check exposes the mistake. The
+failed executable, source diff, command logs and leftover fixture remain
+retained; its final host snapshot shows no live fixture processes. The mapping
+is corrected; focused rebuilds and seven correlation tests pass on both hosts.
+The corrected `admission-diagnostics-v2` run has valid end-to-end correlations
+and is continuing through its predeclared 100 attempts.
+No latency attribution or production timing fix is claimed yet.
+
 ## Active-Transfer Recovery Finding
 
 A bounded 60-second fixture check exercises 16 active HTTP ranges, periodic
@@ -224,11 +249,11 @@ are version-applicability evidence, not proof of absence of vulnerabilities.
 The exact-source draft inventory records eight normal/build dependency graphs
 (minimal/standard/full/compat on Linux and Windows-GNU), 314 distinct packages,
 declared licenses/MSRVs, cached archive verification, native source/patch hashes,
-and 504 implementation/packaging/policy source hashes in the refreshed snapshot. All eight graphs pass the
+and 505 implementation/packaging/policy source hashes in the refreshed snapshot. All eight graphs pass the
 protocol/provider policy checker. It is a source inventory, not rebuilt release
 packages. The historical packages still contain their original dependencies.
-The latest snapshot is `candidate-inventory-ssh-backport/inventory.json`, SHA-256
-`f5dc10c85dde033c6ebae348578da1089f0ac344dc3a9b28eb9a2449fb22a88a`.
+The latest snapshot is `candidate-inventory-admission-v2/inventory.json`, SHA-256
+`5993904e5bce1ac837ab0f7bd6f3d4c3c7d072e72286cf543b9819a05dfb6d62`.
 It embeds the complete protocol-vendor provenance. Russh becoming a local path
 package does not erase its upstream advisory matches; the OSV snapshot remains
 tracked alongside the client-only backport.

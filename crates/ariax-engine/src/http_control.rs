@@ -228,6 +228,8 @@ enum MutationPublication {
         parent_spec: Option<Box<TransferTaskSpec>>,
     },
     Admission {
+        #[cfg(feature = "control-diagnostics")]
+        trace: Option<crate::AdmissionTrace>,
         gid: Gid,
         readmission_started: bool,
     },
@@ -1067,6 +1069,8 @@ impl HttpControlPlane {
                 Ok(result)
             }
             MutationPublication::Admission {
+                #[cfg(feature = "control-diagnostics")]
+                trace,
                 gid,
                 readmission_started,
             } => {
@@ -1086,6 +1090,8 @@ impl HttpControlPlane {
                     if !self.engine_idle() {
                         self.pending_mutation = Some(PendingMutation {
                             publication: MutationPublication::Admission {
+                                #[cfg(feature = "control-diagnostics")]
+                                trace,
                                 gid,
                                 readmission_started: true,
                             },
@@ -1093,6 +1099,10 @@ impl HttpControlPlane {
                         });
                         return;
                     }
+                }
+                #[cfg(feature = "control-diagnostics")]
+                if let Some(trace) = &trace {
+                    trace.mark(crate::admission_trace::Stage::Published);
                 }
                 Ok(Value::String(gid.to_string()))
             }
@@ -1307,6 +1317,24 @@ impl HttpControlPlane {
         request: Option<crate::rpc_budget::RpcRequestLease>,
         local_admin: bool,
     ) -> Result<ControlReply, HttpControlError> {
+        self.begin_call_authorized_traced(
+            method,
+            params,
+            request,
+            local_admin,
+            #[cfg(feature = "control-diagnostics")]
+            None,
+        )
+    }
+
+    fn begin_call_authorized_traced(
+        &mut self,
+        method: &str,
+        params: Value,
+        request: Option<crate::rpc_budget::RpcRequestLease>,
+        local_admin: bool,
+        #[cfg(feature = "control-diagnostics")] trace: Option<crate::AdmissionTrace>,
+    ) -> Result<ControlReply, HttpControlError> {
         let request = self.reserve_command_memory(method, &params, request.as_ref())?;
         let torrent = matches!(method, "aria2.addTorrent" | "addTorrent");
         let magnet = matches!(method, "aria2.addUri" | "addUri")
@@ -1344,7 +1372,7 @@ impl HttpControlPlane {
             method,
             "ariax.importSession" | "aria2.addUri" | "addUri" | "aria2.addMetalink" | "addMetalink"
         ) {
-            return self.begin_admission(
+            return self.begin_admission_traced(
                 params,
                 request.expect("command reservation"),
                 if method == "ariax.importSession" {
@@ -1355,6 +1383,8 @@ impl HttpControlPlane {
                     admission::AdmissionKind::Uri
                 },
                 local_admin,
+                #[cfg(feature = "control-diagnostics")]
+                trace,
             );
         }
         if self.admission_fenced() && !query::is_query(method) {
@@ -6339,6 +6369,47 @@ mod tests {
         assert_eq!(recovered.tasks.len(), 1);
         assert_eq!(recovered.engine.snapshot_reader().load().len(), 1);
         recovered.shutdown().expect("recovery shutdown");
+    }
+
+    #[cfg(feature = "control-diagnostics")]
+    #[tokio::test]
+    async fn admission_trace_follows_publication_and_rejects_invalid_input() {
+        let directory = TestDirectory::new();
+        let shared = Arc::new(Mutex::new(directory.control_plane()));
+        let trace = crate::AdmissionTrace::new(Instant::now());
+        let admitted = HttpControlPlane::call_shared_with_context(
+            &shared,
+            "aria2.addUri",
+            json!([["http://127.0.0.1:9/file.bin"], {"pause": true}]),
+            crate::RpcClientContext::default().with_admission_trace(trace.clone()),
+        )
+        .await
+        .expect("published admission");
+        assert!(admitted.as_str().is_some());
+        let offsets = trace.offsets_ns().expect("all admission stages");
+        assert!(offsets.windows(2).all(|pair| pair[0] <= pair[1]));
+        let rejected = crate::AdmissionTrace::new(Instant::now());
+        assert!(
+            HttpControlPlane::call_shared_with_context(
+                &shared,
+                "aria2.addUri",
+                json!([]),
+                crate::RpcClientContext::default().with_admission_trace(rejected.clone()),
+            )
+            .await
+            .is_err()
+        );
+        assert!(rejected.offsets_ns().is_err());
+        assert_eq!(shared.lock().await.engine.snapshot_reader().load().len(), 1);
+        let backend = HttpControlBackend::from_shared(shared.clone()).await;
+        backend.drain_control_runtime().await.expect("drain");
+        drop(backend);
+        Arc::try_unwrap(shared)
+            .expect("sole owner")
+            .into_inner()
+            .shutdown_async()
+            .await
+            .expect("shutdown");
     }
 
     #[cfg(feature = "control-diagnostics")]

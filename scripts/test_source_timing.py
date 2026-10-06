@@ -15,6 +15,22 @@ class SourceTimingTests(unittest.TestCase):
                      'backendStartedUnixNs': 1791000000000100000,
                      'roundTripNs': 100250123, 'backendNs': 90000001, 'outsideBackendNs': 10250122}]}}
 
+    def test_admission_uses_distinct_positions_and_stage_schema(self):
+        report = self.report()
+        report['admissionTiming'] = report.pop('sourceMutationTiming')
+        report['operations']['addUri'] = report['operations'].pop('changeUri')
+        row = report['admissionTiming']['samples'][0]
+        row['sampleIndex'] = 159
+        row['stageOffsetsNs'] = list(range(1, 14))
+        ci.validate_admission_timing(report)
+        with self.assertRaises(RuntimeError):
+            ci.validate_latencies(report['operations'], 50000)
+        for index, stages in [(99, list(range(13))), (159, list(range(6)))]:
+            bad = copy.deepcopy(report)
+            bad['admissionTiming']['samples'][0].update(sampleIndex=index, stageOffsetsNs=stages)
+            with self.assertRaises(RuntimeError):
+                ci.validate_admission_timing(bad)
+
     def test_valid_diagnostics_do_not_make_a_timing_failure_pass(self):
         report = self.report()
         ci.validate_source_timing(report)

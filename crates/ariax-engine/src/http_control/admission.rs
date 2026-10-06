@@ -141,6 +141,8 @@ enum Stage {
 }
 
 pub(super) struct PendingAdmission {
+    #[cfg(feature = "control-diagnostics")]
+    trace: Option<crate::AdmissionTrace>,
     stage: Stage,
     import: bool,
     reply: Option<oneshot::Sender<Result<Value, HttpControlError>>>,
@@ -195,6 +197,26 @@ impl HttpControlPlane {
         kind: AdmissionKind,
         local_admin: bool,
     ) -> Result<ControlReply, HttpControlError> {
+        self.begin_admission_traced(
+            params,
+            request,
+            kind,
+            local_admin,
+            #[cfg(feature = "control-diagnostics")]
+            None,
+        )
+    }
+
+    pub(super) fn begin_admission_traced(
+        &mut self,
+        params: Value,
+        request: crate::rpc_budget::RpcRequestLease,
+        kind: AdmissionKind,
+        local_admin: bool,
+        #[cfg(feature = "control-diagnostics")] trace: Option<crate::AdmissionTrace>,
+    ) -> Result<ControlReply, HttpControlError> {
+        #[cfg(feature = "control-diagnostics")]
+        let trace = trace.filter(|_| kind == AdmissionKind::Uri);
         let import = kind != AdmissionKind::Uri;
         #[cfg(feature = "bt")]
         if self.bt.admission.is_some() {
@@ -232,15 +254,32 @@ impl HttpControlPlane {
         let retained_request = request.clone();
         #[cfg(test)]
         let gate = self.admission_gate.clone();
+        #[cfg(feature = "control-diagnostics")]
+        let worker_trace = trace.clone();
+        #[cfg(feature = "control-diagnostics")]
+        if let Some(trace) = &trace {
+            trace.mark(crate::admission_trace::Stage::PreparationQueued);
+        }
         let receiver = spawn(&self.cpu_pool, work.clone(), move || {
+            #[cfg(feature = "control-diagnostics")]
+            if let Some(trace) = &worker_trace {
+                trace.mark(crate::admission_trace::Stage::PreparationStarted);
+            }
             #[cfg(test)]
             if let Some(gate) = gate {
                 gate.wait();
             }
-            preparation.prepare(params, &retained_request, kind)
+            let result = preparation.prepare(params, &retained_request, kind);
+            #[cfg(feature = "control-diagnostics")]
+            if let Some(trace) = &worker_trace {
+                trace.mark(crate::admission_trace::Stage::PreparationFinished);
+            }
+            result
         })?;
         let (reply, receiver_reply) = oneshot::channel();
         self.pending_admission = Some(PendingAdmission {
+            #[cfg(feature = "control-diagnostics")]
+            trace,
             stage: Stage::Preparing(receiver),
             import,
             reply: Some(reply),
@@ -304,6 +343,10 @@ impl HttpControlPlane {
         match &mut pending.stage {
             Stage::Preparing(receiver) => {
                 if let Some(prepared) = receive(receiver)? {
+                    #[cfg(feature = "control-diagnostics")]
+                    if let Some(trace) = &pending.trace {
+                        trace.mark(crate::admission_trace::Stage::PreparationReceived);
+                    }
                     pending.stage = Stage::Ready(prepared);
                     self.turn.mark_progress();
                 }
@@ -401,8 +444,18 @@ impl HttpControlPlane {
                 #[cfg(feature = "bt")]
                 let bt = self.bt.catalog.clone();
                 let import = pending.import;
+                #[cfg(feature = "control-diagnostics")]
+                let worker_trace = pending.trace.clone();
+                #[cfg(feature = "control-diagnostics")]
+                if let Some(trace) = &pending.trace {
+                    trace.mark(crate::admission_trace::Stage::FinalizationQueued);
+                }
                 pending.stage =
                     Stage::Finalizing(spawn(&self.cpu_pool, pending.work.clone(), move || {
+                        #[cfg(feature = "control-diagnostics")]
+                        if let Some(trace) = &worker_trace {
+                            trace.mark(crate::admission_trace::Stage::FinalizationStarted);
+                        }
                         for member in &prepared.members {
                             match member {
                                 Member::Transfer(member) => {
@@ -424,12 +477,21 @@ impl HttpControlPlane {
                                 }
                             }
                         }
-                        finalize(prepared, import)
+                        let result = finalize(prepared, import);
+                        #[cfg(feature = "control-diagnostics")]
+                        if let Some(trace) = &worker_trace {
+                            trace.mark(crate::admission_trace::Stage::FinalizationFinished);
+                        }
+                        result
                     })?);
                 self.turn.mark_progress();
             }
             Stage::Finalizing(receiver) => {
                 if let Some(finalized) = receive(receiver)? {
+                    #[cfg(feature = "control-diagnostics")]
+                    if let Some(trace) = &pending.trace {
+                        trace.mark(crate::admission_trace::Stage::FinalizationReceived);
+                    }
                     pending.stage = Stage::Installing(Box::new(finalized));
                     self.turn.mark_progress();
                 }
@@ -469,6 +531,10 @@ impl HttpControlPlane {
                     return Ok(false);
                 }
                 self.next_task_id = finalized.next_id;
+                #[cfg(feature = "control-diagnostics")]
+                if let Some(trace) = &pending.trace {
+                    trace.mark(crate::admission_trace::Stage::SchedulerStarted);
+                }
                 self.prepare_and_begin(
                     finalized.first.plan.clone(),
                     finalized.first.command.clone(),
@@ -485,6 +551,8 @@ impl HttpControlPlane {
                         unreachable!()
                     };
                     MutationPublication::Admission {
+                        #[cfg(feature = "control-diagnostics")]
+                        trace: pending.trace.clone(),
                         gid,
                         readmission_started: false,
                     }

@@ -60,6 +60,11 @@ fn source_timing_enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var("ARIAX_BENCH_SOURCE_TIMING").as_deref() == Ok("1"))
 }
 
+fn admission_timing_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("ARIAX_BENCH_ADMISSION_TIMING").as_deref() == Ok("1"))
+}
+
 fn workload() -> workload::Workload {
     *WORKLOAD.get().expect("benchmark workload initialized")
 }
@@ -382,6 +387,7 @@ struct BenchBackend {
     event: RpcEvent,
     consumers: Mutex<[Option<RpcClientBudgetObserver>; 2]>,
     source_timing: Option<Arc<Mutex<source_timing::BackendLog>>>,
+    admission_timing: Option<Arc<Mutex<source_timing::AdmissionLog>>>,
     #[cfg(feature = "bt")]
     bt: Option<(ariax_bt::BtHandle, u64)>,
 }
@@ -459,6 +465,49 @@ impl HttpRpcBackend for BenchBackend {
                     timing
                         .lock()
                         .expect("source timing")
+                        .attach_stages(ordinal, trace.offsets_ns());
+                }
+                result
+            });
+        }
+        if method == "bench.admissionTiming" {
+            let result = self
+                .admission_timing
+                .as_ref()
+                .ok_or("admission timing disabled")
+                .and_then(|timing| timing.lock().expect("admission timing").report());
+            return Box::pin(async move {
+                result.map_err(|error| HttpRpcBackendError::new(-32000, error))
+            });
+        }
+        if method == "aria2.addUri"
+            && let Some(timing) = &self.admission_timing
+        {
+            let timing = timing.clone();
+            let ordinal = timing.lock().expect("admission timing").begin();
+            let started_unix_ns = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_nanos());
+            let started = Instant::now();
+            #[cfg(feature = "control-diagnostics")]
+            let trace = ariax_engine::AdmissionTrace::new(started);
+            #[cfg(feature = "control-diagnostics")]
+            let context = context.with_admission_trace(trace.clone());
+            let future = self.inner.call_with_context(method, params, context);
+            return Box::pin(async move {
+                let result = future.await;
+                let elapsed = started.elapsed();
+                if let Some(ordinal) = ordinal {
+                    timing.lock().expect("admission timing").finish(
+                        ordinal,
+                        started_unix_ns,
+                        elapsed,
+                        result.is_ok(),
+                    );
+                    #[cfg(feature = "control-diagnostics")]
+                    timing
+                        .lock()
+                        .expect("admission timing")
                         .attach_stages(ordinal, trace.offsets_ns());
                 }
                 result
@@ -649,6 +698,8 @@ async fn engine(origins: &[SocketAddr], scenario: &str) -> Result<()> {
         consumers: Mutex::new([None, None]),
         source_timing: source_timing_enabled()
             .then(|| Arc::new(Mutex::new(source_timing::BackendLog::default()))),
+        admission_timing: admission_timing_enabled()
+            .then(|| Arc::new(Mutex::new(source_timing::AdmissionLog::default()))),
         #[cfg(feature = "bt")]
         bt,
         event: RpcEvent::notification(
@@ -1315,6 +1366,11 @@ async fn measure(scenario: &str) -> Result<()> {
     } else {
         0
     });
+    let mut admission_samples = Vec::with_capacity(if admission_timing_enabled() {
+        source_timing::CAPACITY
+    } else {
+        0
+    });
     let mut bursts = 0;
     let mut controls = 0;
     let mut verification_calls = 0;
@@ -1421,6 +1477,9 @@ async fn measure(scenario: &str) -> Result<()> {
             let source_started = (source_timing_enabled() && method == "changeUri")
                 .then(|| SystemTime::now().duration_since(UNIX_EPOCH))
                 .transpose()?;
+            let admission_started = (admission_timing_enabled() && method == "addUri")
+                .then(|| SystemTime::now().duration_since(UNIX_EPOCH))
+                .transpose()?;
             let sent = Instant::now();
             let result = client.call(&payload).await.map_err(|error| {
                 format!(
@@ -1434,6 +1493,17 @@ async fn measure(scenario: &str) -> Result<()> {
                     return Err("client source timing overflow".into());
                 }
                 source_samples.push(source_timing::ClientSample {
+                    sample_index: samples.len(),
+                    burst: bursts + 1,
+                    started_unix_ns: started.as_nanos(),
+                    elapsed,
+                });
+            }
+            if let Some(started) = admission_started {
+                if admission_samples.len() == source_timing::CAPACITY {
+                    return Err("client admission timing overflow".into());
+                }
+                admission_samples.push(source_timing::ClientSample {
                     sample_index: samples.len(),
                     burst: bursts + 1,
                     started_unix_ns: started.as_nanos(),
@@ -1605,6 +1675,13 @@ async fn measure(scenario: &str) -> Result<()> {
             .await?;
         report["sourceMutationTiming"] =
             source_timing::correlate(&source_samples, &backend, workload().samples)?;
+    }
+    if admission_timing_enabled() {
+        let backend = client
+            .call(&request("bench.admissionTiming", json!([])))
+            .await?;
+        report["admissionTiming"] =
+            source_timing::correlate_admission(&admission_samples, &backend, workload().samples)?;
     }
     report["measurementKind"] = json!(workload().measurement_kind());
     report["acceptanceEligible"] = json!(!workload().diagnostic_small);

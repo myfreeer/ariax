@@ -102,6 +102,8 @@ impl Drop for Credit {
 struct Caller {
     #[cfg(feature = "control-diagnostics")]
     source_trace: Option<crate::SourceMutationTrace>,
+    #[cfg(feature = "control-diagnostics")]
+    admission_trace: Option<crate::AdmissionTrace>,
     reply: oneshot::Sender<Result<Value, HttpControlError>>,
     _request: crate::rpc_budget::RpcRequestLease,
     _credit: Credit,
@@ -149,6 +151,10 @@ impl PendingReplies {
             #[cfg(feature = "control-diagnostics")]
             if let Some(trace) = &caller.source_trace {
                 trace.mark(crate::source_trace::Stage::Delivered);
+            }
+            #[cfg(feature = "control-diagnostics")]
+            if let Some(trace) = &caller.admission_trace {
+                trace.mark(crate::admission_trace::Stage::Delivered);
             }
             let _ = caller
                 .reply
@@ -302,6 +308,8 @@ impl ControlRuntime {
         let caller = Caller {
             #[cfg(feature = "control-diagnostics")]
             source_trace: context.source_trace.clone(),
+            #[cfg(feature = "control-diagnostics")]
+            admission_trace: context.admission_trace.clone(),
             reply: send,
             _request: request.clone(),
             _credit: reply_credit,
@@ -386,6 +394,10 @@ impl ControlRuntime {
             #[cfg(feature = "control-diagnostics")]
             if let Some(trace) = &envelope.context.source_trace {
                 trace.mark(crate::source_trace::Stage::Admitted);
+            }
+            #[cfg(feature = "control-diagnostics")]
+            if let Some(trace) = &envelope.context.admission_trace {
+                trace.mark(crate::admission_trace::Stage::Admitted);
             }
             if urgent {
                 mailbox.urgent.push_back(envelope);
@@ -663,6 +675,10 @@ fn progress(
     if let Some(trace) = &context.source_trace {
         trace.mark(crate::source_trace::Stage::Dispatched);
     }
+    #[cfg(feature = "control-diagnostics")]
+    if let Some(trace) = &context.admission_trace {
+        trace.mark(crate::admission_trace::Stage::Dispatched);
+    }
     owner.turn.mark_progress();
     owner.dispatch_sequence = Some(sequence);
     owner.dispatch_bulk = captured;
@@ -694,11 +710,13 @@ fn progress(
             result
         })()
     } else {
-        owner.begin_call_authorized(
+        owner.begin_call_authorized_traced(
             &method,
             params,
             context.request_lease(),
             context.is_local_admin(),
+            #[cfg(feature = "control-diagnostics")]
+            context.admission_trace.clone(),
         )
     };
     owner.dispatch_sequence = None;

@@ -2401,6 +2401,8 @@ impl HttpControlPlane {
                 .ok_or(HttpControlError::InvalidConfig)?;
             self.pending_mutation = Some(PendingMutation {
                 publication: MutationPublication::Admission {
+                    #[cfg(feature = "control-diagnostics")]
+                    trace: None,
                     gid,
                     readmission_started: false,
                 },

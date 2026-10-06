@@ -139,3 +139,33 @@ fn stages_require_complete_monotonic_offsets_within_backend_interval() {
     log.attach_stages(0, Ok([1, 2, 3, 4, 5, 6]));
     assert!(correlate(&[client(0), client(1)], &log.report().unwrap(), 320).is_err());
 }
+
+#[test]
+fn admission_calls_use_their_own_sample_positions_and_thirteen_stages() {
+    let mut log = source_timing::AdmissionLog::default();
+    let ordinal = log.begin().unwrap();
+    log.finish(
+        ordinal,
+        1_791_000_000_000_100_000,
+        Duration::from_nanos(90_000_001),
+        true,
+    );
+    log.attach_stages(ordinal, Ok(std::array::from_fn(|i| (i as u64 + 1) * 1000)));
+    let mut sample = client(0);
+    sample.sample_index = 159;
+    let backend = log.report().unwrap();
+    let report = source_timing::correlate_admission(&[sample], &backend, 160).unwrap();
+    assert_eq!(
+        report["samples"][0]["stageOffsetsNs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        13
+    );
+    assert!(source_timing::correlate_admission(&[client(0)], &backend, 160).is_err());
+    let mut wrong_stages = backend;
+    wrong_stages[0]["stageOffsetsNs"] = json!([1, 2, 3, 4, 5, 6]);
+    let mut sample = client(0);
+    sample.sample_index = 159;
+    assert!(source_timing::correlate_admission(&[sample], &wrong_stages, 160).is_err());
+}
