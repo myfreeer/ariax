@@ -197,7 +197,8 @@ Phase 6 adds `--scenario=mixed-bt` on native Linux with the `bt` feature.
 The fixture creates its scheduler with two active-task slots at process
 bootstrap so the HTTP and BT tasks can run together. The other scenarios retain
 one active-task slot. A shared setup helper is exercised by ordinary integration
-tests, including rejection of unsupported runtime options, before the opt-in
+tests, including bounded live slot changes and rejection of zero or
+above-bootstrap-capacity values, before the opt-in
 load measurement. The existing 1,000 HTTP ranges remain active alongside 1,000
 TCP BitTorrent peer simulators. Each peer binds a distinct loopback address,
 completes the v1 handshake, advertises a disjoint set of pieces and sends a

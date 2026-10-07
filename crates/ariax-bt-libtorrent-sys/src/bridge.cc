@@ -1,3 +1,4 @@
+#include "asio_platform.h"
 #include "ariax-bt-libtorrent-sys/src/lib.rs.h"
 #include "bridge.h"
 #include "bounded_output.h"

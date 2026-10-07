@@ -2,103 +2,45 @@
 
 [Documentation](../README.md)
 
-Status: the [full functional CI matrix passes](../../performance-evidence/phase6-full-ci-2026-10-05.md)
-at `a6f9b0d`. Review verified nine artifacts and all 87 command-log hashes,
-including every configured platform, MSRV, feature-bundle and sanitizer job.
-Benchmarks remain manual-only. The separate
-[manual rerun](../../performance-evidence/phase6-benchmarks-rerun-2026-10-05.md)
-passes all six scenarios at `9107ecb`; mixed HTTP/BT completes with 8.000 ms
-aggregate p99 and a 486 ms maximum burst. The earlier 530.097 ms mixed failure
-remains retained. Automatic functional CI was skipped at `9107ecb`; final
-Phase-6 acceptance is now [closed by audited source equivalence](../../performance-evidence/phase6-acceptance-2026-10-05.md).
-Production code and build inputs match the full-CI source; the benchmark
-diagnostics have separate focused and native validation. Phase 7 hardening is
-next. Each retained run keeps its original source and binary identity.
-The historical remote and CI baseline passes at `af5d193`.
-[Run 35720518419 and its retained evidence](../../performance-evidence/ci-baseline-2026-09-22.md)
-cover every required platform, feature and MSRV job and all five native Linux
-benchmark scenarios. The prerequisite is complete; Phase 6 may proceed.
+Phase 6 is accepted in the [closure record](../../performance-evidence/phase6-acceptance-2026-10-05.md),
+including the historical full platform/MSRV/feature matrix and native benchmarks.
+Phase 7 has subsequent production and build changes; those historical passes do
+not validate the current candidate. Current local scope and deferred gates live
+in [implementation readiness](../project/implementation-readiness.md#phase-7-local-validation).
 
 ## Repository And Branch
 
 The canonical remote is `git@github.com:myfreeer/ariax.git`; `main` is the remote's
 default branch. The full `ci.yml` runs on pushes, pull requests and manual
 dispatch. Ordinary branch pushes and pull requests validate Linux and Windows
-MSVC; pushes to `main`, tag pushes and manual dispatch select the full matrix.
+MSVC; pushes to `main`, tag pushes and default manual dispatch select the full matrix.
+Manual dispatch can explicitly select the initial native batch described below.
 The workflow uses read-only repository permissions and cancels an older run for
 the same ref and event group. Benchmarks run only through manual dispatch of
 `native-linux-rpc-benchmarks.yml`; CI never invokes or waits for that workflow.
 
+### Initial Native Validation
+
+The temporary validation branch can select `validation_scope=initial-native`
+through manual dispatch. This runs preflight followed by Linux, Windows MSVC
+and macOS: the native platforms that the local WSL/Windows-GNU pass cannot fully
+replace. Validation jobs run one at a time (`max-parallel: 1`), and a failure
+stops the remaining matrix jobs. This selection is permitted only on non-main
+branches through manual dispatch; main and tags keep their full-matrix policy.
+
+Manual dispatch defaults to `validation_scope=full`. An initial-native pass is
+not a full matrix or release approval; feature bundles, both MSRV jobs, Windows
+GNU and the sanitizer/fuzz job retain their separate acceptance requirements.
+Preparing the branch and workflow does not push or dispatch them.
+
 ### Temporary Focused Validation
 
-The temporary branch `local/removable-storage-mixed-bt-20261003` used a single
-focused Ubuntu job during the investigation. Its retained helper command,
-`python3 scripts/ci.py focused`, runs helper tests, documentation, workflow syntax,
-publication-path and whitespace checks, and formatting before verifying the
-cached libtorrent/OpenSSL installation. Missing or invalid native caches fail
-the job; this temporary campaign never rebuilds native dependencies. The
-[first focused slice passed](../../performance-evidence/phase6-focused-linux-2026-10-04.md).
-The [BT transfer, security and recovery slice also passed](../../performance-evidence/phase6-focused-bt-linux-2026-10-04.md)
-at `38d07e4`, with 24 Rust harness tests, four native probes and 70 Python helper
-tests. The [interface and feature slice passed](../../performance-evidence/phase6-focused-interfaces-linux-2026-10-04.md)
-at `a1f8f4f`: 21 Rust test executions, 70 Python helper tests and all four CLI
-feature graphs. Typed Rust and CLI/RPC tests cover BT success, rejection without
-state creation, restart projections and transport ownership.
-
-The [sanitizer and parser-fuzz slice passed](../../performance-evidence/phase6-focused-sanitizers-linux-2026-10-04.md)
-at `596332b`: four native ASan/UBSan probes, 14 Rust tests and 70 Python helper
-tests. The BT metadata parser completed 799,033 fuzz executions with no crash
-artifacts or sanitizer diagnostics. Its 20-second budget finished in a reported
-21 seconds; the complete validation command took 187.679 seconds including
-compilation. Its native C++/bridge code receives ASan/UBSan instrumentation;
-ordinary Rust test harnesses link the runtime, while the parser fuzz executable
-receives Rust ASan and coverage instrumentation.
-
-The [storage/CLI and release-bundle slice passed](../../performance-evidence/phase6-focused-storage-cli-linux-2026-10-04.md)
-at `6dab0a5`: 236 storage passes, 118 CLI test executions, all four `release-cli`
-builds and 70 Python helper tests. Five storage helpers are ignored by the
-top-level harness and exercised by passing parent tests; 23 child-process runs
-are recorded separately. All 18 command-log hashes and native input digests
-verify. The validation command took 937.483 seconds including compilation.
-The slice covers:
-
-- Verify the ordinary native installation once using the `bt-native-linux`
-  cache and sanitizer mode `none`. Missing or invalid caches fail without
-  rebuilding native dependencies.
-- Validate all four resolved CLI feature graphs.
-- Run the complete `ariax-storage` test suite with all features, including
-  persistence, checkpoint/crash recovery and permission-policy tests.
-- For each of `minimal`, `standard`, `full` and `compat`, run the complete
-  `ariax-cli` test suite with default features disabled and the explicit bundle,
-  then build that bundle with the `release-cli` profile. This includes CLI smoke,
-  removable-storage, permission-policy and RPC interface tests without filters.
-
-Tests run in release mode with one test thread and the locked dependency graph.
-Each bundle's tests precede its release build; both must pass before the next
-bundle starts. The command reuses `toolchains/ci-target/benchmarks` and its
-ordinary `ci-benchmarks` cache from the earlier focused runs. Cargo keeps the
-`release-cli` outputs in their own profile directory under that target.
-The sanitizer campaign retains its separate `bt-safety` cache and evidence.
-
-No benchmark executable is built or run by this job. A failure stops subsequent
-work; command logs and native provenance are uploaded even on failure. The job
-saves updated ordinary Cargo outputs. Rust builds use at most two jobs, and the
-job has a 30-minute ceiling.
-
-This campaign requires native Linux and rejects WSL before running checks. It
-has passing native sanitizer and bounded parser-fuzz evidence at `596332b` and
-complete storage/CLI tests and Linux release-bundle builds at `6dab0a5`.
-Those focused artifacts alone do not establish the complete platform/MSRV matrix
-or workspace coverage; the later full run at `a6f9b0d` supplies that evidence.
-Every performance acceptance scenario remains separate required coverage. Each
-passing artifact establishes only its selected tests and source commit.
-Artifacts are named `ci-focused-linux`, and the job is not named `CI Required`.
-Focused success cannot stand in for the complete validation or release gates.
-
-The full `ci.yml` is restored from `9dc928c` with automatic benchmark invocation
-removed. The temporary job is no longer selected by CI. Its evidence remains
-bound to the source commits above; full validation and manually dispatched
-benchmarks require their own passing results.
+The earlier `local/removable-storage-mixed-bt-20261003` branch ran focused native
+Linux investigations through `python3 scripts/ci.py focused`. Its
+[final storage/CLI slice](../../performance-evidence/phase6-focused-storage-cli-linux-2026-10-04.md)
+and [full Phase-6 closure](../../performance-evidence/phase6-acceptance-2026-10-05.md)
+retain the command lists, hashes and earlier slices. That temporary job is no
+longer selected by CI; its passes keep their original source and scope.
 
 ## Fail-Fast Topology
 
@@ -114,7 +56,8 @@ The full workflow has two ordered stages:
    the sanitizer/fuzz job.
    The four CLI feature bundles run sequentially in one job and share Cargo
    outputs; each still runs its own tests and `release-cli` build.
-   Its `fail-fast: true` cancels sibling jobs after a failure. Every script
+   Matrix jobs run serially with `max-parallel: 1`; `fail-fast: true` cancels
+   remaining jobs after a failure. Every script
    propagates native-command and pipeline failures; no required check uses
    `continue-on-error` or automatic job/test retry. Native archive downloads
    have bounded retries for transient transport failures; integrity failures
@@ -138,10 +81,11 @@ workflow manually on the candidate commit before release approval; the explicit
 release tag gate remains closed. Main pushes require the full functional matrix;
 they do not launch benchmarks.
 
-Full builds, tests, native provisioning and benchmark collection run in CI.
-Local documentation checks and focused debugging should avoid recreating the
-platform matrix or accumulating native build artifacts. See the
-[development guide](README.md) for the lightweight local workflow.
+CI supplies the native platforms and kernel facilities unavailable locally.
+An explicitly requested local pre-CI pass may exercise available host checks
+with the same flags, isolated test outputs and verified native dependencies.
+It does not establish other-platform acceptance. Consolidate useful results and
+remove disposable outputs; see the [local guide](local-hardening.md).
 
 ## Reproducible Validation
 
@@ -227,6 +171,11 @@ Windows GNU links against the active MinGW toolchain with
 Rust-linked C++ code on the same MinGW runtime as the native dependency build.
 Mixing Rust's bundled runtime archives with MSYS2's C++ runtime can leave
 Boost.Asio threads alive after session destruction and cause access violations.
+The native target also configures Asio before platform headers in every Windows
+translation unit. Mixing Asio's Win32 and POSIX thread implementations can free
+live thread state even with matching compiler runtimes. A native timer probe and
+compile-time rejection check guard the selection; full-workspace native transfer
+and checkpoint tests exercise teardown across the linked boundary.
 Removable-filesystem validation runs the same native Windows executables with
 their test temporary directory on FAT32 and on NTFS, keeping compiler outputs
 on the build volume. Required cases cover bootstrap, no-clobber journal/backup

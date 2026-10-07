@@ -3,6 +3,8 @@
 Ariax is an experimental Rust downloader with aria2-style configuration, queue
 control and JSON-RPC. It combines resumable, multi-source transfers with bounded
 memory, responsive controls and crash-aware persistence.
+Ariax ships as a standalone command with best-effort aria2 compatibility;
+it does not provide an `aria2c` replacement or alias.
 
 [Documentation](docs/README.md) ·
 [Implementation status](docs/project/implementation-readiness.md) ·

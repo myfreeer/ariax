@@ -144,7 +144,8 @@ class BurstTimingTests(unittest.TestCase):
 
             with mock.patch.object(ci, "compiler_processes", return_value=[]), \
                     mock.patch.object(ci.subprocess, "Popen", side_effect=launch), \
-                    mock.patch.object(ci.os, "killpg"), \
+                    mock.patch.object(ci.os, "killpg", create=True), \
+                    mock.patch.object(ci.signal, "SIGKILL", 9, create=True), \
                     mock.patch.object(ci.host_telemetry, "Sampler") as sampler:
                 sampler.return_value.close.return_value = {"samples": 0}
                 with self.assertRaisesRegex(RuntimeError, "missing completed-burst"):

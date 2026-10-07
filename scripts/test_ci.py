@@ -110,6 +110,39 @@ class CommandTests(unittest.TestCase):
 
 
 class MatrixTests(unittest.TestCase):
+    def test_matrix_command_reads_manual_scope_and_writes_github_output(self):
+        environment = {"GITHUB_EVENT_NAME": "workflow_dispatch",
+                       "GITHUB_REF": "refs/heads/validation/candidate",
+                       "ARIAX_CI_VALIDATION_SCOPE": "initial-native"}
+        output = io.StringIO()
+        with mock.patch.dict(os.environ, environment, clear=True), \
+                mock.patch.object(sys, "argv", ["ci.py", "matrix"]), \
+                contextlib.redirect_stdout(output):
+            self.assertEqual(ci.main(), 0)
+        key, value = output.getvalue().strip().split("=", 1)
+        self.assertEqual(key, "matrix")
+        self.assertEqual([job["check"] for job in json.loads(value)["include"]],
+                         ["linux", "windows-msvc", "macos"])
+
+    def test_initial_native_dispatch_selects_only_the_three_native_platforms(self):
+        matrix = ci.validation_matrix("workflow_dispatch", "refs/heads/validation/candidate", "initial-native")
+        self.assertEqual([job["check"] for job in matrix["include"]],
+                         ["linux", "windows-msvc", "macos"])
+
+    def test_explicit_full_dispatch_keeps_every_coverage_group(self):
+        self.assertEqual(ci.validation_matrix("workflow_dispatch", "refs/heads/validation/candidate", "full"),
+                         ci.validation_matrix("workflow_dispatch", "refs/heads/validation/candidate"))
+
+    def test_initial_scope_cannot_reduce_main_tags_or_automatic_validation(self):
+        for event, ref, scope in (
+                ("workflow_dispatch", "refs/heads/main", "initial-native"),
+                ("workflow_dispatch", "refs/tags/candidate", "initial-native"),
+                ("push", "refs/heads/validation/candidate", "initial-native"),
+                ("pull_request", "refs/pull/1/merge", "initial-native"),
+                ("workflow_dispatch", "refs/heads/validation/candidate", "unknown")):
+            with self.subTest(event=event, ref=ref, scope=scope), self.assertRaises(RuntimeError):
+                ci.validation_matrix(event, ref, scope)
+
     def test_routine_pushes_and_pull_requests_keep_linux_and_msvc(self):
         for event, ref in (("push", "refs/heads/fix"), ("pull_request", "refs/pull/1/merge")):
             matrix = ci.validation_matrix(event, ref)["include"]

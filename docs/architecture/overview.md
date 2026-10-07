@@ -553,8 +553,9 @@ hashing, recovery, throttling, or cancellation semantics. See
   remotely exposed.
 - Untrusted remote RPC cannot use proxy-side DNS or arbitrary CONNECT targets
   unless the proxy is explicitly trusted and destination-filtered.
-- User headers cannot override generated Host, framing, range, encoding,
-  validator, integrity, or credential headers.
+- User headers may override `Host`, `Authorization`, `Proxy-Authorization` and
+  `Cookie` under the documented origin/proxy policy. Other reserved framing,
+  range, encoding, validator and integrity headers reject with value-free warnings.
 - XML external entity expansion is disabled.
 - Archive extraction is out of scope; the downloader writes exactly requested
   files.

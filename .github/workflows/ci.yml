@@ -4,12 +4,20 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      validation_scope:
+        description: Validation coverage (initial-native is not release approval)
+        type: choice
+        options:
+          - full
+          - initial-native
+        default: full
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && 'manual-full' || 'automatic' }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && 'manual-validation' || 'automatic' }}
   cancel-in-progress: true
 
 env:
@@ -34,8 +42,10 @@ jobs:
       - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
         with:
           python-version: "3.13"
-      - name: Select routine or full validation
+      - name: Select validation coverage
         id: matrix
+        env:
+          ARIAX_CI_VALIDATION_SCOPE: ${{ inputs.validation_scope || 'auto' }}
         run: python3 scripts/ci.py matrix >> "$GITHUB_OUTPUT"
       - name: Install pinned Rust
         run: rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt
@@ -62,6 +72,7 @@ jobs:
     needs: preflight
     strategy:
       fail-fast: true
+      max-parallel: 1
       matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60

@@ -90,6 +90,7 @@ fn native() {
     println!("cargo:rerun-if-changed=src/lib.rs");
     println!("cargo:rerun-if-changed=src/bridge.cc");
     println!("cargo:rerun-if-changed=include/bridge.h");
+    println!("cargo:rerun-if-changed=include/asio_platform.h");
     println!("cargo:rerun-if-changed=include/bounded_output.h");
     // The reviewed archives must precede compiler runtime search paths: MSYS2
     // can also contain an unrelated, unpatched libtorrent/OpenSSL installation.

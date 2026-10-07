@@ -61,6 +61,13 @@ class ParserTests(unittest.TestCase):
 
 
 class SamplerTests(unittest.TestCase):
+    def setUp(self):
+        # These fixtures model Linux /proc and process groups on every CI host.
+        self.enterContext(mock.patch.object(
+            ht.os, 'sysconf', side_effect={'SC_CLK_TCK': 100}.__getitem__, create=True))
+        self.enterContext(mock.patch.object(ci.os, 'killpg', create=True))
+        self.enterContext(mock.patch.object(ci.signal, 'SIGKILL', 9, create=True))
+
     def test_missing_metrics_are_explicit_and_sample_and_byte_caps_hold(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

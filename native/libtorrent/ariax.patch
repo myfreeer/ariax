@@ -1,6 +1,25 @@
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -645,7 +645,7 @@
+@@ -581,6 +581,18 @@
+ 		BOOST_ASIO_HAS_STD_CHRONO
+ )
+ 
++# Configure Asio before platform headers expose _POSIX_THREADS on MinGW.
++# Every translation unit must create and join the same kind of thread.
++if (WIN32)
++	if (MSVC)
++		target_compile_options(torrent-rasterbar PUBLIC
++			"/FIboost/asio/detail/config.hpp")
++	else()
++		target_compile_options(torrent-rasterbar PUBLIC
++			"-include" "boost/asio/detail/config.hpp")
++	endif()
++endif()
++
+ if (NOT WIN32)
+ 	target_compile_definitions(torrent-rasterbar
+ 		PRIVATE
+@@ -645,7 +657,7 @@
  if (WIN32)
  	target_link_libraries(torrent-rasterbar
  		PUBLIC

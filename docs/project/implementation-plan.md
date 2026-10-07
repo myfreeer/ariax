@@ -601,46 +601,26 @@ Exit criteria:
 
 ## Phase 7: Hardening
 
-Status: active after the accepted Phase-6 milestone. Existing
-passing CI, sanitizer/fuzz, benchmark and OpenSSH evidence supplies its baseline.
-The [local hardening campaign](../../performance-evidence/phase7-local-hardening-2026-10-05.md)
-records review repairs, bounded local campaigns and their platform limits.
-The [short local follow-up](../../performance-evidence/phase7-short-followup-2026-10-05.md)
-compares the retained mixed-burst artifacts and maintains the direct native
-TSan driver without another benchmark or dependency build.
-The [bounded local campaign](../../performance-evidence/phase7-local-campaign-2026-10-05.md)
-extends lifecycle/recovery and parser coverage, preserves a Windows timing
-failure, and records full/compat native-path and runtime-packaging blockers.
-The [release-blocker follow-up](../../performance-evidence/phase7-release-blockers-2026-10-06.md)
-closes those local packaging blockers with independent native/CLI build matches,
-verified runtime notices and four extracted-package checks. The Windows timing
-failure and external platform acceptance requirements remain open.
-The [remaining-local-work campaign](../../performance-evidence/phase7-local-remaining-2026-10-06.md)
-addresses replay-memory admission, retained rate history, OpenSSL 3.6.5 native
-validation, advisory applicability and current package preparation. Historical
-Windows `changeUri`/`addUri` and native Linux mixed-burst latency attribution are
-explicitly deferred in that local goal, with failures and thresholds preserved.
-The [compatibility options follow-up](../../performance-evidence/phase7-compatibility-options-2026-10-07.md)
-adds effective option queries, live bounded concurrency and per-task HTTP
-headers with redirect isolation, redaction and recoverable header resupply.
-The [compatibility and crypto-policy follow-up](../../performance-evidence/phase7-compatibility-policy-2026-10-07.md)
-adds aria2 CLI spellings through typed admission, corrects upstream option
-classification and makes OpenSSL reuse automatic for full/compat builds.
-The [OpenSSL and static-runtime follow-up](../../performance-evidence/phase7-openssl-static-tsan-2026-10-07.md)
-adds optional OpenSSL TLS/RSA selection, Windows system-DLL-only builds and
-current package checks. Its isolated local TSan work rebuilds Rust std/libtest;
-production toolchains and CI do not acquire that rebuild requirement.
-Real power-loss recovery is explicitly deferred to a future VM campaign.
-Existing process-kill and deterministic durable-prefix tests remain useful local
-evidence; they do not establish power-loss durability. A VM campaign must record
-its storage/cache model and does not by itself prove physical-device guarantees.
-Compatibility work first implements straightforward gaps through existing typed
-boundaries, then records behavior and migration tradeoffs before any replacement
-artifact decision. Existing aria2 partial downloads and `.aria2` control-file
-migration are excluded from compatibility scope and P7 acceptance; Ariax's own
-resume and recovery remain required. OpenSSL-linked builds reuse OpenSSL for
-TLS and SSH RSA; other builds document the RustCrypto RSA limitation without
-hiding the advisory.
+Status: active after accepted Phase 6. The
+[current readiness record](implementation-readiness.md#phase-7-local-validation)
+consolidates completed local security/resource repairs, fuzz/sanitizer and
+lifecycle campaigns, compatibility improvements and final package/size checks.
+Its evidence table links the dated source identities and historical failures;
+older passes are not silently transferred to the current candidate.
+
+Ariax remains standalone with best-effort aria2 compatibility. Complete parity
+and an `aria2c` replacement/alias are outside P7 acceptance. Existing aria2
+partial downloads and `.aria2` control-file migration remain excluded; Ariax-owned
+resume/recovery and implemented behavior still require acceptance evidence.
+OpenSSL-linked builds reuse it for TLS and SSH RSA; other builds document the
+RustCrypto RSA limitation without hiding the advisory.
+
+Historical Linux/Windows latency attribution and real power-loss recovery remain
+explicitly deferred. Current process-kill and deterministic recovery models do
+not prove power-loss durability. A future VM campaign must record its storage/cache
+model. Fully instrumented TSan has local evidence; production toolchains and CI
+do not acquire a Rust std rebuild requirement.
+
 The work below retains its full acceptance requirements; Phase-6 completion
 and local hardening results are not release approval.
 
@@ -649,11 +629,11 @@ and local hardening results are not release approval.
 | `P7-01` Mixed-burst stability | Investigate the retained 530.097 ms failure alongside the later 486 ms maximum passing burst. Run bounded repeated native Linux measurements with the existing workload, limits and failed-step diagnostics. | Every attempt retained, including failures; tail latency and failure frequency reported, with attributed delays guiding any fix. One passing rerun is not a stability claim. |
 | `P7-02` Security and FFI review | Review unsafe/ABI ownership, metadata admission, destination policy, private files, cancellation and persistence boundaries. | Findings tied to code and success/rejection regressions; security fixes retain resource and recovery invariants. |
 | `P7-03` Fuzzing and sanitizers | Extend bounded parser fuzz campaigns and ASan/UBSan coverage; establish TSan coverage for supported FFI configurations. | Reproducible seeds/budgets, instrumentation provenance and retained failures; unsupported configurations are explicit. |
-| `P7-04` Platform stress and release preparation | Stress lifecycle/resource/recovery behavior on Linux, Windows and macOS; verify generated documentation, compatibility parity and reproducible release artifacts. | Platform-specific results, bounded-resource and forced-kill evidence, and documented release/compatibility decisions. |
+| `P7-04` Platform stress and release preparation | Stress lifecycle/resource/recovery behavior on Linux, Windows and macOS; verify generated documentation, documented best-effort compatibility and reproducible release artifacts. | Platform-specific results, bounded-resource and forced-kill evidence, and documented release/compatibility decisions. |
 
 - Documentation generated from metadata.
-- Decide, from recorded parity results, whether `ariax` remains parallel or may
-  provide the `aria2c` compatibility artifact; document migration and rollback.
+- Preserve the resolved standalone `ariax` artifact and document best-effort
+  compatibility, unsupported behavior and Ariax-owned recovery expectations.
 - Optional C ABI design/prototype after Rust API stabilization.
 - HTTP/3/ECH/DoH/DoT remain feature-gated unless maturity gates pass.
 - No supported load-testing product surface or multi-instance orchestration

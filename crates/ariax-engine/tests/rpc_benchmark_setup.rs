@@ -4,10 +4,6 @@
 #[path = "../benches/rpc_active_profile/setup.rs"]
 mod setup;
 
-#[cfg(feature = "bt")]
-use ariax_core::OptionPatchRejectReason;
-#[cfg(feature = "bt")]
-use ariax_engine::HttpControlError;
 use ariax_engine::HttpProcessResources;
 use ariax_runtime::RuntimeProfile;
 #[cfg(feature = "bt")]
@@ -177,24 +173,38 @@ async fn ordinary_setup_bootstraps_and_shuts_down() {
 
 #[cfg(feature = "bt")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mixed_setup_bootstraps_without_unsupported_runtime_patch() {
+async fn mixed_setup_bootstraps_with_bounded_live_slot_changes() {
     let root = Root::new();
     let resources = HttpProcessResources::for_profile(RuntimeProfile::Concurrency).unwrap();
     let (mut plane, _) = setup::build_control_plane(&root.0, &resources, 32, true).unwrap();
-    // Keep the public rejection contract; the fixture must configure slots at startup.
-    let error = plane
-        .call(
-            "aria2.changeGlobalOption",
-            json!([{"max-concurrent-downloads":2}]),
-        )
-        .unwrap_err();
-    match error {
-        HttpControlError::OptionPatchRejected(rejected) => {
-            assert_eq!(rejected.len(), 1);
-            assert_eq!(rejected[0].name, "max-concurrent-downloads");
-            assert_eq!(rejected[0].reason, OptionPatchRejectReason::Unsupported);
+    assert_eq!(
+        plane.call("aria2.getGlobalOption", json!([])).unwrap()["max-concurrent-downloads"],
+        "2"
+    );
+    for slots in [1, 2] {
+        assert_eq!(
+            plane
+                .call(
+                    "aria2.changeGlobalOption",
+                    json!([{"max-concurrent-downloads":slots}]),
+                )
+                .unwrap(),
+            "OK"
+        );
+        for rejected in [0, 3] {
+            assert!(
+                plane
+                    .call(
+                        "aria2.changeGlobalOption",
+                        json!([{"max-concurrent-downloads":rejected}]),
+                    )
+                    .is_err()
+            );
+            assert_eq!(
+                plane.call("aria2.getGlobalOption", json!([])).unwrap()["max-concurrent-downloads"],
+                slots.to_string()
+            );
         }
-        error => panic!("unexpected rejection: {error}"),
     }
     assert_eq!(plane.diagnostics().task_count, 0);
     plane.shutdown_async().await.unwrap();

@@ -3018,10 +3018,10 @@
         "destination": "ariax",
         "sha256": "76b4c0e577375c7bf522100c94ae2f98f576689f52a87a2c32bcf708eeb8c99d",
         "bytes": 21603400,
-        "sourceCommit": "ccd587b65463f56227802f030ebae200a4724de0",
+        "sourceCommit": "86dfcacdb5f3824330e704170100fc36a6e98bc5",
         "sourceDateEpoch": "1791286491",
-        "evidence": "performance-evidence/phase7-size-reduction-2026-10-07.json",
-        "sourceScope": "Exact compiled inputs are hash-bound in the size-reduction evidence; local worktree on the recorded analysis checkpoint. Native dependencies were rebuilt with the recorded recipe. No independent reproducibility claim.",
+        "evidence": "performance-evidence/phase7-pre-ci-local-2026-10-07.json",
+        "sourceScope": "Exact compiled inputs are hash-bound in the pre-CI local evidence, built from the recorded base plus current worktree changes. Native provenance is verified for patch level 6. No independent reproducibility claim.",
         "pathAudit": {
           "passed": true,
           "counts": {
@@ -3361,14 +3361,14 @@
       "retention": {
         "binaryPresent": true,
         "scope": "The one final selected build for this platform.",
-        "validationEvidence": "performance-evidence/phase7-size-reduction-2026-10-07.json"
+        "validationEvidence": "performance-evidence/phase7-pre-ci-local-2026-10-07.json"
       },
       "hostSmoke": {
         "passed": true,
         "functionalPassed": true,
         "freshOsAcceptance": false,
-        "validationEvidence": "performance-evidence/phase7-size-reduction-2026-10-07.json",
-        "scope": "Current binary package inventory, reduced-environment help, RPC/features, unknown-method rejection, EOF shutdown and SQLite reopen passed. Windows observed only application/system modules; Linux existing preload is recorded. Not fresh-OS acceptance."
+        "validationEvidence": "performance-evidence/phase7-pre-ci-local-2026-10-07.json",
+        "scope": "Current binary inventory, reduced-environment help, RPC/features, unknown-method rejection, EOF shutdown and SQLite reopen passed. Windows observed only application/system modules; Linux existing preload is recorded. Not fresh-OS acceptance."
       },
       "buildSelection": {
         "features": "full",
@@ -3439,12 +3439,12 @@
       "binary": {
         "artifactPath": "build/windows/release-cli/ariax.exe",
         "destination": "ariax.exe",
-        "sha256": "ad9c10966ed8b37c868dc295056800a7c8f77022cf5dbce084d4077dad4004d6",
-        "bytes": 24444416,
-        "sourceCommit": "ccd587b65463f56227802f030ebae200a4724de0",
+        "sha256": "2472a2f5b98955100598e59024582109c9dcb49150f0cc6c2a34bcd342a46636",
+        "bytes": 24450048,
+        "sourceCommit": "86dfcacdb5f3824330e704170100fc36a6e98bc5",
         "sourceDateEpoch": "1791286491",
-        "evidence": "performance-evidence/phase7-size-reduction-2026-10-07.json",
-        "sourceScope": "Exact compiled inputs are hash-bound in the size-reduction evidence; local worktree on the recorded analysis checkpoint. Native dependencies were rebuilt with the recorded recipe. No independent reproducibility claim.",
+        "evidence": "performance-evidence/phase7-pre-ci-local-2026-10-07.json",
+        "sourceScope": "Exact compiled inputs are hash-bound in the pre-CI local evidence, built from the recorded base plus current worktree changes. Native provenance is verified for patch level 6. No independent reproducibility claim.",
         "pathAudit": {
           "passed": true,
           "counts": {
@@ -3800,14 +3800,14 @@
       "retention": {
         "binaryPresent": true,
         "scope": "The one final selected build for this platform.",
-        "validationEvidence": "performance-evidence/phase7-size-reduction-2026-10-07.json"
+        "validationEvidence": "performance-evidence/phase7-pre-ci-local-2026-10-07.json"
       },
       "hostSmoke": {
         "passed": true,
         "functionalPassed": true,
         "freshOsAcceptance": false,
-        "validationEvidence": "performance-evidence/phase7-size-reduction-2026-10-07.json",
-        "scope": "Current binary package inventory, reduced-environment help, RPC/features, unknown-method rejection, EOF shutdown and SQLite reopen passed. Windows observed only application/system modules; Linux existing preload is recorded. Not fresh-OS acceptance."
+        "validationEvidence": "performance-evidence/phase7-pre-ci-local-2026-10-07.json",
+        "scope": "Current binary inventory, reduced-environment help, RPC/features, unknown-method rejection, EOF shutdown and SQLite reopen passed. Windows observed only application/system modules; Linux existing preload is recorded. Not fresh-OS acceptance."
       },
       "buildSelection": {
         "features": "full",

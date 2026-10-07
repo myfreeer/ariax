@@ -2,123 +2,23 @@
 
 [Documentation](../README.md)
 
-Status: overall implementation is underway. The P0 contract blockers recorded
-in [final-preimplementation-review.md](../reviews/final-preimplementation-review.md) are resolved in their normative
-documents, the scoped Phase-3B/3C HTTP(S) downloader milestone is checkpointed
-at `1099be9`, and the Phase-4 control-plane checkpoint is executable at
-`ec415ff`; Phase-4B implementation and native Windows benchmark evidence are
-checkpointed at `f9edb5c`. A 2026-09-06 implementation audit found that the Phase-4
-checkpoint needed multicall authentication ordering, authenticated pushed
-events, complete registry-backed retry admission, active option restart replay,
-active source replacement outcome handling, and per-client RPC budget
-reservation. Phase 4B implements these six repairs and completes the runtime
-option, configuration, session, interface and slow-slot integration gates.
-P4-11 control progress at `8fefde2` adds immutable query projection outside
-the control owner, one managed runtime, nonblocking mutation/admission continuations, and
-bounded bulk progress with later per-task intent taking precedence. The expanded
-Windows campaign is tracked separately from the historical status/global-template
-report. Native Linux benchmark acceptance passes in the September 22 CI
-baseline at `af5d193`; release matrix work remains governed by the exit
-criteria below and [implementation-plan.md](implementation-plan.md).
+Phase 6 is [accepted](../../performance-evidence/phase6-acceptance-2026-10-05.md);
+Phase 7 hardening is active. The [current local status](#phase-7-local-validation)
+records completed work, settled product decisions and remaining platform gates.
+Ariax remains standalone with best-effort aria2 compatibility.
 
-Phase 5 implementation at `88d1a83` now passes all six local
-[shared transfer gates](../protocols/detailed-protocol-transfers.md#scope-and-checkpoints).
-The [September 15 validation record](../../performance-evidence/phase5-validation-2026-09-15.md)
-covers shared protocol transfers, verification and the historical session
-format. Current-format sessions require v3 as described below.
+The implementation includes shared scheduling, resource accounting, journal and
+SQLite recovery, HTTP/FTP/SFTP/Metalink transfers, isolated BitTorrent, and one
+CLI/Rust/RPC control plane. Current sessions require v3; older formats reject
+without migration. The normative subsystem contracts and requirement mappings
+remain authoritative for advertised behavior and deferred extensions.
 
-Phase 6 is [accepted](../../performance-evidence/phase6-acceptance-2026-10-05.md)
-with verified production/build source equivalence and separate validation of
-benchmark-only changes. Phase 7 hardening is active, with its
-[local campaign](../../performance-evidence/phase7-local-hardening-2026-10-05.md)
-recording security repairs, focused and repeated checks, and supported local
-release preparation. Remaining backend, release and compatibility requirements
-retain their existing scope.
-
-This document is the handoff checklist from architecture design to detailed
-module design and implementation.
-
-Repository scaffolding, generated inventories, core/config types, the scheduler
-kernel and ordered driver, journal/SQLite persistence, bounded startup repair,
-native capability handoff, runtime adapters, stats sampling, and process
-bootstrap have executable checkpoints. The completed Phase-3B checkpoint now
-connects that foundation to ordinary HTTP(S) URI admission and the real
-scheduler: task/source/options persist atomically, recovery rebuilds the source
-catalog, the policy client owns DNS/SSRF/Happy-Eyeballs/redirect/proxy/auth/cookie
-decisions. DNS cache-miss leaders and followers share the configured total
-waiter cap, and dropping all receivers cancels the backend lookup and releases
-its capacity. Deterministic virtual-time coverage pins the second Happy
-Eyeballs racer to the configured fallback delay, and a changed zero-TTL answer
-set is part of direct-transport identity so it cannot reuse the old idle
-connection. Supervised multi-mirror range workers commit only validated
-non-overlapping leases. Durable-piece restart and terminal evidence are
-persisted before public completion. Five bounded JSON-RPC methods run over
-loopback HTTP/1.1 and Content-Length stdio and expose packet-independent live
-stats. Same-origin strong-ETag endgame duplicate fencing, candidate settlement,
-dirty-overlap rollback, and crash-safe replay are now executable. The bounded
-SHA-256 `Repr-Digest` profile also verifies probe/range bodies and admits
-secondary origins only for exact-range endgame after digest equality is fenced.
-The process-owned profile-capacity boundary is also executable for HTTP: profile
-resolution, native handle subtraction, shared resident and transport-socket
-permits (including proxy routes), selected storage-file descriptor permits,
-profile selection in RPC startup, and the local C10k/active-range harness are
-covered. HTTP discarded payload is also bounded by a process-owned atomic
-process/host/task/attempt guard, including probe, retry/cancel, checksum, and
-endgame cleanup paths, with separate RPC diagnostics. The broader evictable
-file-handle LRU remains pending; Phase 5 adds the FTP/SFTP consumers. The latest retry
-decision is now a bounded `tellStatus` object with exact live cause/status,
-attempt credit, wait policy, numeric source/piece/lease correlation, prior
-lease disposition, and next action. Restart reconstructs only journaled
-error-class/reason/cap/wait evidence and labels it recovered. Hot-backup publication
-residue now has descriptor-bound same-file/link-count recovery, no-clobber race
-preservation, crash-point, and temporary-unlink fault coverage. A standalone,
-workspace-excluded cargo-fuzz package now covers HTTP response/request headers,
-retry specifications, discard-budget invariants, and journal replay; the
-first-slice interruption matrix now covers one byte before a piece boundary,
-the exact boundary, and one byte into the next lease while checking that every
-begun lease receives exactly one commit or abort disposition. The remaining
-read-admission evidence proves storage/buffer backpressure withholds the next
-HTTP body poll while remaining cancellation-responsive. A deterministic
-scheduler/storage race now also delivers cancellation after disk completion but
-before provisional acknowledgement, proves `CancellationDrained`, and audits a
-single cancelled lease with no false durable progress. Multi-range injected
-disk rejection records one exact `storage_rejected` abort. A URI-scoped
-oversized transport-frame fault now exercises the full range pipeline, charges
-the bounded discard hierarchy, records one `oversized_body` abort, publishes an
-`InvalidRange`/`DisableSource` diagnostic, and admits no retry or durable byte.
-Implemented redirects settle before `BeginLease`; the redirect-policy contract
-still proves that an adapter with an open lease must abort it. Scheduler
-cancellation covers both a blocked body read and the disk-completion boundary.
-Representation restart now flushes an explicit `restarting` journal marker
-before `NextAdmission`; staged-prefix recovery preserves that reason, accepts
-only the exact task snapshot, appends only the missing generation suffix, and
-the promoted prefix exposes no old durable piece. The live control path records
-the exact marker/snapshot/`representation_restart` sequence. The required local
-protocol/crash matrix is executable, including parent-driven storage-process
-kills at every provisional-write/data-sync/journal boundary on Linux and native
-Windows-GNU.
-The minimal process shutdown path now drives the fixed coordinator through real
-runtime admission, bounded HTTP-worker drain, all-journal flush/close, bounded
-session-owner join, and clean/dirty session-marker persistence. Cooperative
-drain is clean; active synchronous abort and asynchronous timeout are dirty.
-The control-plane checkpoint now adds one shared JSON-RPC dispatcher with
-aria2 method tokens, notifications, bounded batches and multicall, query/queue/
-source/typed-option/config/session controls, unique GID prefixes, loopback
-WebSocket, a bounded coalescing event broker, direct CLI controls, and a typed
-Rust embedding API. HTTP, WebSocket, stdio request/response, CLI, and the
-library facade all reach the same process-owned control plane. Content-Length
-and NDJSON stdio use the same bounded pushed event broker. Optional HTTP Basic,
-aria2 text-session compatibility, combined transports, EOF policies, event
-filters and compatibility modes have executable success/rejection coverage.
-This remains a phase checkpoint, not a release/tag: broader RFC 9530
-identity, `Content-Digest`, alternate HTTP digest negotiation, broader validators,
-growing/chunked transfers, HTTP/2, broader RPC, adaptive profile tuning, and the
-complete release matrix remain gates. Optimized
-Linux and native Windows-GNU capacity evidence, including mandatory process
-residency samples, is recorded in
-[performance-profiles.md](../runtime/performance-profiles.md); each remaining
-adapter, transfer module, and integration still follows its Definition Of Ready
-checklist below.
+Historical Phase 4B repair gates and cross-phase acceptance records remain below.
+The [traceability index](requirements-traceability.md) links their dated evidence;
+source-equivalence rules preserve each run's actual commit and platform scope.
+Those passes do not automatically validate subsequent production/build changes
+or authorize a release. The exit criteria and
+[implementation plan](implementation-plan.md) govern the remaining work.
 
 ## Start Here
 
@@ -211,8 +111,9 @@ These are not optional implementation details:
   user-rate-limit backpressure.
 - Range/split/resume requests use identity encoding and a known representation
   extent; decoded/wire offsets are never mixed.
-- User headers cannot override generated Host, framing, range, encoding,
-  validator, integrity, or credential headers.
+- User headers may override `Host`, `Authorization`, `Proxy-Authorization` and
+  `Cookie` under the documented origin/proxy policy. Other reserved framing,
+  range, encoding, validator and integrity headers reject with value-free warnings.
 - RPC request, response, batch, list, per-client work, and serialized-byte
   bounds are enforced before amplification; list queries use immutable
   membership indexes rather than scanning the scheduler in an actor turn.
@@ -505,284 +406,85 @@ is separate from the historical P4 reports.
 
 ## Phase 6 Acceptance And Phase 7 Handoff
 
-Status: `P6-01` through `P6-06` are accepted for the scoped BitTorrent milestone.
-The [closure record](../../performance-evidence/phase6-acceptance-2026-10-05.md)
-maps their behavior and evidence and records the audited source equivalence.
-Historical records below retain their actual commits and earlier open items;
-this closure supersedes those provisional acceptance statuses.
+`P6-01` through `P6-06` are accepted for the scoped BitTorrent milestone. The
+[closure record](../../performance-evidence/phase6-acceptance-2026-10-05.md)
+maps the behavior, full platform/MSRV/feature matrix, native transfer/security
+and recovery tests, sanitizers, parser fuzzing and OpenSSH evidence. It also
+records the source-equivalence audit used across the final Phase-6 checkpoints.
+Those results keep their historical source identities and do not validate later
+Phase-7 production or build changes.
 
-The local Phase-6 implementation and acceptance harness are complete, including
-native integration, safe metadata admission, shared scheduler/resource ownership,
-fresh SQLite/JSON v3 persistence
-and the Rust/CLI/RPC owners. `P6-01` through `P6-06` map to the
-[implementation work packages](implementation-plan.md#phase-6-bittorrent-full-build).
-Older development stores and JSON formats are rejected unchanged; the historical
-Phase-5 migration evidence does not describe the current v3 contract.
-
-The unreleased API now uses concrete shared transfer types and one
-`ContentChecksum` field for every supported algorithm. Obsolete HTTP type
-aliases, checksum conversions and the legacy config-dump shape are removed.
-HTTP final verification preserves fully durable offline rechecks for all four
-algorithms. JSON is the default config-dump format, BT task-effective dumps
-share the option query, and global statistics include BT download/upload rates
-and selected-file progress through immutable snapshots.
-
-The acceptance harness now covers real torrent and magnet transfers for v1, v2
-and hybrid metadata, multi-piece v2 hash recovery, selected-file collision
-mapping, seeding, dropped callers, checkpointed pause/removal, dirty payload
-rechecks and active shutdown. Separate native probes cover tracker/web-seed
-redirects, resolved private destinations, tracker-discovered peers and outgoing
-DHT filtering. The BT parser has a bounded fuzz target, and the native bridge
-has a separate ASan/UBSan job. The mixed benchmark adds 1,000 actual BT peers to
-the existing 1,000 HTTP ranges and preserves the established operation, burst,
-memory and complete-run limits.
-
-The [October 4 focused native Linux run](../../performance-evidence/phase6-focused-linux-2026-10-04.md)
-passes at `12386f7`: 35 Rust regressions and 70 Python helper tests, including
-stalled-consumer socket cleanup, bounded peer and mixed-task setup, permission
-policy, and acknowledged BT option updates during a peer refresh. The run
-verified the cached native dependencies and produced no benchmark measurements.
-This supplies the previously missing native Linux evidence for those focused
-regressions.
-
-The [second focused native Linux run](../../performance-evidence/phase6-focused-bt-linux-2026-10-04.md)
-passes at `38d07e4`: 24 Rust harness tests, four native probes and 70 Python
-helper tests. It validates bridge/adapter transfers and resource ownership,
-torrent/magnet admission and file selection, pause/remove/shutdown checkpoints,
-dirty-payload recovery and SQLite checkpoint crashes before/after commit in
-both journal modes. Native destination-policy, private-storage, bounded-output
-and OpenSSL callback probes pass; all 16 endpoint cases complete. Cached native
-input digests and all 15 command logs were verified. The validation command took
-285.902 seconds including compilation, with no benchmark execution.
-
-The [interface and feature slice](../../performance-evidence/phase6-focused-interfaces-linux-2026-10-04.md)
-passes at `a1f8f4f`: 21 Rust test executions, 70 Python helper tests and all four
-CLI dependency graphs. Typed BT API tests pass with BT enabled and disabled.
-`minimal`/`standard` reject torrent admission without session artifacts;
-`full`/`compat` preserve v1/v2/hybrid admission and matching Rust/RPC projections
-after restart. HTTP/stdio ownership and EOF cases pass in every bundle.
-All 15 command logs and native input digests were verified. The command took
-468.687 seconds including compilation, without benchmark execution.
-
-The [sanitizer and parser-fuzz slice](../../performance-evidence/phase6-focused-sanitizers-linux-2026-10-04.md)
-passes at `596332b`: four native ASan/UBSan probes, 14 Rust tests and 70 Python
-helper tests. All 16 endpoint cases complete. Native C++/bridge code is
-instrumented; ordinary Rust test harnesses link its sanitizer runtime. The
-Rust-ASan parser fuzz target completes 799,033 executions in a reported
-21 seconds against a 20-second budget, without sanitizer diagnostics or crash
-artifacts. All 14 command logs and native input digests were verified. The
-command took 187.679 seconds including compilation, without benchmark execution.
-This supplies passing evidence for the selected native sanitizer and bounded
-BT parser-fuzz campaign.
-
-The [storage/CLI and release-bundle slice](../../performance-evidence/phase6-focused-storage-cli-linux-2026-10-04.md)
-passes at `6dab0a5`: 236 storage passes, 118 CLI test executions, all four resolved
-feature graphs and `release-cli` builds, plus 70 Python helper tests. All CLI
-suites run without filters under `minimal`, `standard`, `full` and `compat`.
-Five storage entries are ignored child helpers exercised by passing parent tests;
-23 child-process runs are recorded separately from the top-level totals. All
-18 command-log hashes and ordinary native input digests were verified. The
-command took 937.483 seconds including compilation, without benchmark execution.
-
-The [full functional CI matrix](../../performance-evidence/phase6-full-ci-2026-10-05.md)
-passes at `a6f9b0d`. Review verifies nine artifacts and all 87 command-log hashes:
-preflight, Linux, macOS, Windows MSVC/GNU, both MSRV jobs, all four CLI feature
-tests/release builds and native sanitizers. All platform workspace builds,
-default/all-feature tests and strict Clippy pass. Twenty native probe executions
-pass across the four platforms and the sanitizer job. The Rust-ASan parser
-fuzzer completes 709,762 executions without crash artifacts or sanitizer reports.
-
-The [manual native Linux campaign](../../performance-evidence/phase6-benchmarks-2026-10-05.md)
-at the same `a6f9b0d` source passes HTTP, WebSocket, Content-Length, NDJSON and
-administrative scenarios. Mixed HTTP/BT fails on a 530.097 ms burst against
-the 500 ms limit after more than 9,500 primary calls; no complete mixed report
-is emitted. The [manual rerun](../../performance-evidence/phase6-benchmarks-rerun-2026-10-05.md)
-at `9107ecb` then passes all six scenarios with added burst diagnostics and
-unchanged limits. All 488 source-file hashes and 17 command/scenario-log hashes
-verify. Mixed HTTP/BT completes 20,000 primary calls and 2,000 verifications;
-aggregate p99 is 8.000 ms, worst operation p99 is 31.311 ms, and maximum burst
-is 486 ms. All 44 renewed peer barriers, resource and cleanup checks pass.
-This supplies the complete mixed measurement; the earlier failure remains
-retained and its cause is unresolved.
-
-Automatic functional CI was skipped at `9107ecb`. Only benchmark diagnostics,
-their tests and documentation/evidence changed since the full `a6f9b0d` matrix;
-the six-scenario measurement gate passes. The closure audit confirms identical
-paths, modes and content for all 418 compared files outside documentation and
-the three reviewed benchmark/test files. Separate focused tests and the passing
-native benchmark validate those code changes. This satisfies `P6-06` under the
-[source-equivalence rule](../protocols/libtorrent-integration.md#phase-6-gates)
-without claiming a second full matrix execution.
-
-Fresh [local OpenSSH interoperability](../../performance-evidence/phase6-openssh-local-2026-10-05.md)
-passes at `624af25` for both WSL Linux and native Windows-GNU clients against
-OpenSSH 10.5p1 on Windows/MSYS2. Each focused `sftp` test verifies public-key
-authentication, SHA-512 checked offset reads, final attributes, exact durable
-bytes and reservation refunds. Both servers terminate, their listeners close,
-and all temporary payload/credential directories are removed. The user-approved
-disk-backed WSL credential directory is also removed. All 490 source hashes
-and six build/test/server log hashes verify. Only documentation/evidence changed
-since the passing benchmark source. The live fixture remains opt-in in ordinary
-workspace CI; this separate run supplies its fresh local evidence.
-The configured full matrix passes and fresh local OpenSSH evidence is complete.
-Phase 7 starts with the [hardening work packages](implementation-plan.md#phase-7-hardening),
-including repeated mixed-burst diagnostics, security/FFI review, extended
-sanitizer/fuzz coverage and platform stress. The earlier burst failure remains
-unexplained; the passing campaign is not a repeated-run stability claim.
-Separate kernel/backend, custom BT storage, release-platform and tagging
-requirements remain open. Historical reports retain their recorded scope;
-reuse across commits requires the explicit source audit.
-
-The historical [September 26 local validation record](../../performance-evidence/phase6-local-validation-2026-09-26.md)
-records the earlier offline checks, unavailable cached storage dependency and
-native suites that were uncompiled at that checkpoint.
+The [passing native benchmark campaign](../../performance-evidence/phase6-benchmarks-rerun-2026-10-05.md)
+completed all six scenarios, including mixed HTTP/BT with a 486 ms maximum
+burst. The earlier 530.097 ms failure remains unexplained; the later pass does
+not establish repeated-run stability. Current SQLite/JSON sessions use v3 and
+reject older development formats unchanged. Ariax-owned resume and crash
+recovery remain required.
 
 ## Phase 7 Local Validation
 
-The completed [remaining-local-work campaign](../../performance-evidence/phase7-local-remaining-2026-10-06.md)
-supersedes the earlier goal's completion scope. Historical latency attribution
-is explicitly deferred. Both hosts now build OpenSSL 3.6.5/libtorrent and pass
-all four native probes; independent installations match all 16,772 consumed
-files on each host. Isolated replay returns live allocations to baseline.
-Framing-memory admission and implicit rate-bucket reclamation pass ownership,
-debt, rejection and related regressions. Rebuilt Windows consumers pass a
-30-minute, 1,798-cycle active resource run with flat requested live-memory
-medians and both recovery checks. All eight updated draft binaries match
-independent builds and pass notice, archive, import and extracted-package
-operation checks. The local audit is complete. External platform gates and the deferred latency
-findings remain visible and are not counted as successful validation.
+Phase 7 is active. Its local implementation and bounded hardening campaigns are
+complete for their recorded scopes; final platform acceptance remains open.
+Current decisions are:
 
-The [earlier four-item local follow-up](../../performance-evidence/phase7-local-four-2026-10-06.md)
-remains incomplete on historical timing attribution. Its short active-transfer fixture found a restart/shutdown/restart
-journal failure (`GenerationNotDrained`) after a process crash. The startup drain
-repair passes Linux/Windows regressions and a corrected active fixture; the
-original failure remains retained. The completed 30-minute soak exposes resident
-memory growth under pause/resume; an ingress-release repair passes focused
-regressions and a 178-cycle dense native probe with essentially flat accounted
-resident memory. A subsequent 30-minute dense run passes 1,798 cycles and both
-recovery checks with identical accounted-memory medians, while retaining
-unexplained private-memory drift. The resumed source review finds synchronous
-journal replay and recovered-piece readback on a Tokio worker; preparation and
-journal handoff now use one shared blocking slot and remain awaited through
-cancellation. Three new drain/reactor/rejection checks and all 43 existing HTTP
-worker tests pass on Linux and native Windows. Temporary replay allocations
-grow with journal history; this does not attribute private-memory drift or the
-historical latency failures. Longer-term resource acceptance remains open.
-New native binaries pass 178 pause/resume cycles, forced termination, recovery,
-clean shutdown and a second recovery with flat accounted-memory medians; six
-compatibility checks also pass on both hosts. The final four-item audit records
-the missing contemporaneous request-stage evidence as the attribution blocker.
-DNS/TLS advisory updates and
-PEM migration pass focused Linux/Windows tests. A bounded SSH probe reproduced
-unknown-channel reply/callback delivery; the upstream client channel-state
-checks are backported to the pinned russh vendor and pass the regression plus
-the 17-scenario SFTP fixture on Linux and native Windows. RSA and the other SSH
-advisory dispositions remain tracked. The OpenSSL 3.6.5 source/patch update
-passed exact-application and syntax checks at that checkpoint; the current
-campaign above supplies linked native validation. The dependency policy passes license/source/backend checks and
-retains the unresolved RSA error; yanked chacha20 is replaced and SFTP
-regressions pass on both hosts. A predeclared 100-attempt trace run passes all source mutations but retains a
-new 91.107 ms `addUri` failure; the original source timing failure remains
-unattributed. The exact-source draft inventory was refreshed. These checkpoint
-findings motivated the remaining-local-work campaign above; earlier packaging
-and empty-session checks alone did not close them.
+- Ariax remains standalone with best-effort aria2 compatibility. Complete parity
+  and an `aria2c` replacement/alias are outside P7 acceptance. Implemented and
+  advertised behavior still requires its documented success/rejection coverage.
+- Existing aria2 partial downloads and `.aria2` control-file migration are
+  excluded. Ariax's own resume/recovery and text task-input importer stay in scope.
+- Linked OpenSSL supplies rustls TLS and SSH RSA. Builds without it retain the
+  documented RUSTSEC-2023-0071 limitation; the advisory is not suppressed.
+- Windows binaries import only Windows-provided DLLs. One final full/OpenSSL
+  build per host is retained, together with toolchains, dependencies and useful
+  evidence; superseded binary collections and temporary outputs are removed.
+- Historical latency failures and real power-loss recovery are explicitly
+  deferred. Process-kill and deterministic durable-prefix tests do not prove
+  power-loss durability; a future VM campaign must record its storage/cache model.
 
-The approved [local hardening campaign](../../performance-evidence/phase7-local-hardening-2026-10-05.md)
-is complete on `local/phase7-hardening`. Phase 7 remains active; these results
-do not approve a release or replace the remaining platform gates.
-
-The [compatibility options follow-up](../../performance-evidence/phase7-compatibility-options-2026-10-07.md)
-adds effective option queries, live bounded concurrency and per-task HTTP
-headers with redirect isolation, redaction and recoverable header resupply.
-The [compatibility and crypto-policy follow-up](../../performance-evidence/phase7-compatibility-policy-2026-10-07.md)
-adds aria2 CLI spellings through typed admission, corrects upstream option
-classification and makes OpenSSL reuse automatic for full/compat builds.
-The [OpenSSL and static-runtime follow-up](../../performance-evidence/phase7-openssl-static-tsan-2026-10-07.md)
-validates optional rustls OpenSSL and SSH RSA selection on Linux and native
-Windows, including MSRV, Clippy, security regressions and package RPC/reopen
-checks. Windows imports only system DLLs. The RSA advisory remains visible;
-other SSH algorithms and key/certificate handling retain existing crypto
-dependencies. Fully instrumented local TSan passes its clean/racy controls,
-std/libtest harness, 73 runtime, 36 replay/storage and two native FFI tests.
-
-The [compatibility scope decision](aria2-compatibility.md#resolved-scope)
-excludes existing aria2 partial downloads and `.aria2` control-file migration
-from P7 acceptance. Ariax's own resume and recovery remain required.
+The [standalone compatibility decision](aria2-compatibility.md#resolved-scope)
+is settled. Further frontend/protocol improvements are documented opportunities,
+not parity requirements silently added to the release scope.
 
 | Work Package | Completed Local Evidence | Remaining Acceptance |
 | --- | --- | --- |
-| `P7-01` | Earlier 41 native Windows diagnostics and the [bounded campaign's 410 attempts](../../performance-evidence/phase7-local-campaign-2026-10-05.md#transport-diagnostics), preserving one 100.250 ms `changeUri` timing failure. Host observations do not attribute that delay. | Historical Windows `changeUri`/`addUri` and native Linux 530.097 ms mixed-burst attribution are explicitly deferred in the current local goal. They remain full Phase-7 acceptance work and are not fixed. |
-| `P7-02` | Security/resource repairs with success and rejection regressions; ownership, policy, persistence and dependency review. The latest local campaign adds budgeted replay ownership and reclamation of fully replenished implicit rate scopes, with bounded active/recovery evidence. | Retain strict Unix fixture and kernel/backend coverage on suitable native systems. RSA disposition: reuse OpenSSL whenever linked; document RUSTSEC-2023-0071 for builds without it, with no advisory suppression. |
-| `P7-03` | All 11 Rust-ASan targets pass the additional three-round campaign: 506,880 accepted executions, including 440,792 mutations. Native sanitizer probes and the direct TSan driver pass. The October 7 run adds instrumented Rust std/libtest, successful clean/racy controls and 111 passing runtime, replay/storage and native FFI tests. | Other supported platform/compiler configurations remain acceptance work. The nine earlier failed native-only harness invocations remain historical evidence; the corrected local configuration does not erase them. |
-| `P7-04` | Additional 2,000 WSL and 2,400 Windows lifecycle/recovery invocations pass, alongside focused BT/protocol/configuration/runtime checks. All eight Linux/Windows-GNU drafts have independent binary matches, notices, path/import checks and reduced-environment RPC/reopen evidence. The [full/compat follow-up](../../performance-evidence/phase7-release-blockers-2026-10-06.md) also verifies independent native builds and four extracted archives with the reviewed Windows runtime closure. | Fresh/minimum OS, macOS/MSVC and the remaining release matrix. Real power-loss recovery is deferred to a VM campaign; current crash/model tests do not close that gate. Effective options, bounded live concurrency and per-task HTTP headers are implemented; remaining compatibility choices are documented separately. Reviewed handler-name coverage is 58/207. |
+| `P7-01` Mixed-burst stability | Bounded Linux/Windows diagnostics preserve successful attempts and original failures with unchanged thresholds. | Deferred Windows `changeUri`/`addUri` failures and native Linux 530.097 ms mixed-burst attribution remain unresolved. |
+| `P7-02` Security and FFI review | Boundary repairs cover metadata, paths, ownership, cancellation, replay-memory admission, rate-scope reclamation and protocol advisories. OpenSSL/RSA disposition is settled. | Strict native Unix and kernel/backend coverage for the final candidate; keep advisory limitations visible. |
+| `P7-03` Fuzzing and sanitizers | Eleven Rust-ASan targets completed 506,880 accepted executions. Fully instrumented local TSan passed clean/racy controls and 111 runtime, replay/storage and native FFI tests. | Affected final-source coverage and other supported platform/compiler configurations; local evidence is not blanket platform acceptance. TSan std rebuilding stays local. |
+| `P7-04` Platform stress and release preparation | Lifecycle/recovery campaigns, a 30-minute active Windows resource run, compatibility success/rejection checks, and current package smoke checks pass. Latest size reductions preserve supported formats/protocols and Windows system-only imports. | Longer native platform stress, fresh/minimum OS, macOS/MSVC, the final feature/MSRV/platform matrix and reproducibility of the final candidate. VM power-loss recovery remains deferred. |
 
-The [completed-burst diagnostic slice](../../performance-evidence/phase7-burst-diagnostics-2026-10-05.md)
-adds a longest-burst snapshot and separate primary/verification/untimed totals.
-Focused regressions and report validation pass locally; new native Linux
-measurements are still needed to use these fields for attribution.
+Current evidence is consolidated by scope:
 
-The [source-mutation timing slice](../../performance-evidence/phase7-source-timing-2026-10-06.md)
-adds opt-in, bounded benchmark correlation for `changeUri`. Twenty planned
-Windows attempts pass and retain 200 paired backend/round-trip measurements.
-The largest calls are 18.443 ms for Content-Length and 17.388 ms for NDJSON,
-mostly within the backend interval. This narrows investigation to the backend
-path for these calls; it neither explains nor replaces the retained 100.250 ms
-failure. Production code and the 50 ms limit are unchanged.
+| Scope | Record |
+| --- | --- |
+| Security/resource fixes, bounded fuzz and lifecycle campaigns, historical failures | [Completed local campaign](../../performance-evidence/phase7-local-remaining-2026-10-06.md), with links to its earlier attempts |
+| OpenSSL selection, Windows static runtimes, MSRV and fully instrumented local TSan | [OpenSSL/static-runtime/TSan record](../../performance-evidence/phase7-openssl-static-tsan-2026-10-07.md) |
+| CLI spellings, feature/backend selection and standalone compatibility boundaries | [Crypto/compatibility policy](../../performance-evidence/phase7-compatibility-policy-2026-10-07.md), [compatibility scope](aria2-compatibility.md) |
+| Effective options, live concurrency and per-task headers | [Compatibility options](../../performance-evidence/phase7-compatibility-options-2026-10-07.md) |
+| Size and performance analysis of the earlier optimized candidate | [Size-reduction validation](../../performance-evidence/phase7-size-reduction-2026-10-07.md) |
+| Current executable identities, serial local validation, native Asio repair, package operation and cleanup | [Pre-CI local validation](../../performance-evidence/phase7-pre-ci-local-2026-10-07.md) |
 
-The [pre-release analysis](../../performance-evidence/phase7-prerelease-analysis-2026-10-05.md)
-adds burst wall-clock anchors and bounded host/process telemetry for future
-native Linux measurements. Eight Rust regressions, 110 Python helper tests,
-focused benchmark Clippy and historical-report validation pass locally. A short
-WSL sampler smoke reports unavailable counters explicitly; it establishes no
-native performance result or explanation of the old failure.
+The [package catalog](../../distribution/package-manifests.json) retains two
+full/OpenSSL drafts and eight historical `validated-removed` entries. The
+[current notice inventory](../../performance-evidence/phase7-release-license-inventory-2026-10-07.json)
+covers 16 selections and 320 packages. Earlier independently matching artifacts
+remain historical: the latest binaries have focused local validation and do not
+inherit an independent reproducibility result from older builds. Linux's host
+preload also prevents treating local package smoke as fresh-OS acceptance.
 
-The [release packaging checklist](../development/release-packaging.md) records
-MIT inheritance for all 11 workspace packages, separate third-party licenses,
-305 external packages across eight Linux/Windows-GNU bundle closures, native
-library notices and the embedded MPL-2.0 public-suffix source obligation.
-The [package review](../../performance-evidence/phase7-packaging-review-2026-10-05.md)
-resolves the winapi payload provenance and IANA/aria2 terms. Four retained
-minimal/standard drafts pass file, checksum, notice and covered-source checks;
-all 120 Python helper tests pass. Four full/compat layouts were still planned.
-Those earlier binaries contain absolute Cargo-cache paths despite matching
-independent builds. The [remapping follow-up](../../performance-evidence/phase7-release-paths-2026-10-05.md)
-resolves that finding in all four rebuilt local drafts. Known path matches drop
-to zero; imports and CLI smoke checks pass. All 131 Python tests and eleven
-native Windows helper tests pass. The [verification follow-up](../../performance-evidence/phase7-release-verification-2026-10-05.md)
-now records independent matches for all four remapped binaries with fresh
-target/temp directories and a shared source cache/toolchain. Reduced-environment
-RPC and database reopening checks pass on WSL1 and native Windows; Linux also
-loads its configured system preload. All 137 Python tests and 27 native Windows
-release-helper tests pass. The [bounded campaign](../../performance-evidence/phase7-local-campaign-2026-10-05.md)
-records full/compat runtime inventories and four binaries with absolute
-native-dependency paths. The [October 6 follow-up](../../performance-evidence/phase7-release-blockers-2026-10-06.md)
-resolves those path and packaging findings: 16,772 consumed native files match
-between two independent installations per platform, and all four CLI binaries
-match independent builds with zero known absolute workstation-path matches.
-Linux requirements remain glibc 2.38 and GLIBCXX 3.4.30. Windows archives contain
-exactly the reviewed three-DLL closure with verified notices and live loading
-from the package directory. All four extracted packages pass feature, RPC,
-rejection, EOF and SQLite reopening checks. Fifty-three focused Python helper
-tests, two Rust native integration tests and three/four native probes pass on
-Linux/Windows respectively. The original Windows CTest report-parser failure is
-retained; its successful raw test output was reassessed without rerunning tests.
-Fresh/minimum-OS checks and the final candidate matrix remain open. The drafts
-are not release candidates. License-only manifest changes also change source
-fingerprints; do not bypass retained-evidence checks to reuse older TSan or
-release build records.
+The pre-CI pass completes Windows default/all-feature tests and both hosts'
+Clippy/MSRV checks, plus all four CLI feature profiles on Linux. WSL1 workspace
+runs exclude only the unchanged stalled-RPC socket test after raw TCP controls
+reproduce the host limitation; native Linux must run that test unchanged. The
+local validation branch has not been pushed or dispatched.
+Two local HTTP response timeouts remain unattributed despite later passing
+checks; their original failures remain in the pre-CI record for native Linux
+candidate acceptance. No deadline was relaxed or additional test excluded.
 
-That campaign records 5,475 scheduled test/probe invocations, excluding one
-zero-work helper from the 5,474 behavioral invocations, plus ten direct native
-TSan cases. All 137 Python helper tests, formatting, generated contracts and
-dependency-feature checks pass. Raw failures, corpus inventories and verified
-duplicate-file cleanup remain bound to the portable evidence.
-A separate 30-minute Windows empty-session RPC process passes 18,000 queries
-and expected rejections, followed by EOF shutdown and database reopening.
-Its sampled memory, handles and threads show no sustained growth; active-transfer
-and multi-hour stability remain separate acceptance work.
-
-Benchmarks remain manual-triggered. No push, CI dispatch, tag, migration or
-`aria2c` replacement is part of this local campaign.
+Follow the [release checklist](../development/release-packaging.md#release-checklist)
+and [initial native CI plan](../development/continuous-integration.md#initial-native-validation)
+for candidate acceptance. Local checks and the standalone decision do not enable
+the release tag gate. Deferred failures remain visible rather than counted as
+passes; raw historical evidence is retained in its dated records.
 
 ## Deferred But Tracked
 

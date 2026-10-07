@@ -2,252 +2,35 @@
 
 [Documentation](../README.md)
 
-Phase 4B completion is tracked by gates `P4-01` through `P4-11` in
-[implementation-readiness.md](implementation-readiness.md). Each gate requires a named regression or
-integration test and recorded platform evidence before its status is closed.
-The selected real-download RPC p99 target is 50 ms; the existing mock dispatcher
-benchmark does not satisfy that requirement.
+Phase 6 is accepted; Phase 7 is active. Current gates and dispositions live in
+[implementation readiness](implementation-readiness.md#phase-7-local-validation),
+and the [implementation plan](implementation-plan.md#phase-7-hardening) defines
+the work packages. The requirement mappings below identify normative owners;
+dated evidence records retain their original source, commands and platform limits.
 
-Phase 5 gates `P5-01` through `P5-06` in
-[the shared protocol transfer contract](../protocols/detailed-protocol-transfers.md) pass
-local validation at `88d1a83`. The
-[validation record](../../performance-evidence/phase5-validation-2026-09-15.md) maps
-the gates to named regressions, protocol/security and OpenSSH evidence,
-Linux-under-WSL/native Windows checks, ten bounded fuzz targets and five passing
-native Windows scenarios. That historical checkpoint included Metalink JSON v2
-with v1 import; the current format is v3 only. The
-[September 22 CI baseline](../../performance-evidence/ci-baseline-2026-09-22.md)
-closes native Linux control-plane acceptance at `af5d193`, with all five reports
-and the complete passing platform/feature/MSRV matrix retained and verified.
+| Scope | Acceptance And Evidence |
+| --- | --- |
+| Phase 4B control plane | Gates `P4-01`–`P4-11` are mapped in [readiness](implementation-readiness.md#phase-4-repair-gates). The [Windows validation](../../performance-evidence/p4-11-validation-2026-09-14.md) and [September 22 CI baseline](../../performance-evidence/ci-baseline-2026-09-22.md) retain actual-download latency and native platform evidence. Mock-dispatcher timing does not satisfy the 50 ms RPC p99 target. |
+| Phase 5 protocols | The [shared transfer gates](../protocols/detailed-protocol-transfers.md#scope-and-checkpoints) and [validation record](../../performance-evidence/phase5-validation-2026-09-15.md) map protocol, security, fuzz and OpenSSH coverage. Historical v2 import tests are not a current-format compatibility promise. |
+| Phase 6 BitTorrent | The [closure record](../../performance-evidence/phase6-acceptance-2026-10-05.md) links the full functional matrix, native benchmarks and verified source equivalence. The earlier 530.097 ms mixed-burst failure remains recorded; a later pass did not establish its cause or repeated-run stability. |
+| Phase 7 security and lifecycle | The [security review](../reviews/phase7-local-security-review.md), [local hardening](../../performance-evidence/phase7-local-hardening-2026-10-05.md) and [bounded campaign](../../performance-evidence/phase7-local-campaign-2026-10-05.md) map repairs and local fuzz, sanitizer, lifecycle and recovery evidence. Native-platform acceptance remains separate. |
+| Phase 7 build and packaging | [Release-blocker repairs](../../performance-evidence/phase7-release-blockers-2026-10-06.md) and [current pre-CI evidence](../../performance-evidence/phase7-pre-ci-local-2026-10-07.md) record provenance, imports, package checks and source limits. The [catalog](../../distribution/package-manifests.json) retains two final full/OpenSSL draft artifacts; eight superseded layouts are recorded as removed. |
 
-Phase 6 work packages `P6-01` through `P6-06` are accepted in the
-[closure record](../../performance-evidence/phase6-acceptance-2026-10-05.md),
-with their behavior mapped in the [implementation plan](implementation-plan.md#phase-6-bittorrent-full-build).
-Phase 7 hardening is active. Its
-[local campaign](../../performance-evidence/phase7-local-hardening-2026-10-05.md)
-maps `P7-S01` through `P7-S04` to boundary regressions and retains separate
-fuzz, sanitizer, lifecycle/recovery and release-preparation evidence. Local
-results do not close the remaining native-platform acceptance requirements.
-Real power-loss recovery is explicitly deferred to a future VM campaign.
-Existing process-kill and deterministic durable-prefix tests remain useful local
-evidence; they do not establish power-loss durability. A VM campaign must record
-its storage/cache model and does not by itself prove physical-device guarantees.
-Compatibility work first implements straightforward gaps through existing typed
-boundaries, then records behavior and migration tradeoffs before any replacement
-artifact decision. OpenSSL-linked builds reuse OpenSSL for TLS and SSH RSA;
-other builds document the RustCrypto RSA limitation without hiding the advisory.
+Ariax remains standalone with [best-effort aria2 compatibility](aria2-compatibility.md).
+Complete parity, an `aria2c` replacement/alias and existing aria2 partial-file
+migration are outside acceptance. Advertised behavior still requires its stated
+contracts and success/rejection coverage. Current SQLite and JSON persistence
+require fresh v3 stores; older formats reject without migration or mutation.
+OpenSSL-linked builds reuse OpenSSL for TLS and SSH RSA; other builds document
+the RustCrypto RSA limitation without hiding its advisory.
 
-The [bounded local campaign](../../performance-evidence/phase7-local-campaign-2026-10-05.md)
-adds 5,474 behavioral test/probe invocations, ten direct TSan cases and 506,880
-accepted fuzz executions. Its 410 Windows diagnostic attempts retain one
-100.250 ms mutation delay without attributing it to host load. Full/compat
-runtime inventories were recorded with native-dependency path and runtime
-packaging blockers. The [October 6 follow-up](../../performance-evidence/phase7-release-blockers-2026-10-06.md)
-resolves those local blockers: full/compat native and CLI builds match independent
-builds, path/import audits pass, and four extracted archives pass package checks.
-All eight layouts remain retained drafts pending external release acceptance.
-The [focused native Linux BT evidence](../../performance-evidence/phase6-focused-bt-linux-2026-10-04.md)
-at `38d07e4` verifies the selected bridge/adapter, transfer/security/recovery and
-checkpoint-crash fixtures. The [interface and feature slice](../../performance-evidence/phase6-focused-interfaces-linux-2026-10-04.md)
-at `a1f8f4f` adds typed API, CLI/RPC restart parity, feature-disabled rejection
-and all four resolved feature graphs. The
-[sanitizer and parser-fuzz slice](../../performance-evidence/phase6-focused-sanitizers-linux-2026-10-04.md)
-at `596332b` passes four native ASan/UBSan probes, 14 Rust tests linked to the
-instrumented native runtime and 799,033 Rust-ASan parser fuzz executions without
-sanitizer diagnostics or crash artifacts. The
-[storage/CLI and release-bundle slice](../../performance-evidence/phase6-focused-storage-cli-linux-2026-10-04.md)
-at `6dab0a5` passes 236 storage tests and 118 CLI test executions plus all four
-Linux `release-cli` builds. Its five ignored storage helper entries are exercised
-by passing parent fixtures. The
-[full functional CI matrix](../../performance-evidence/phase6-full-ci-2026-10-05.md)
-at `a6f9b0d` now verifies all configured platform/MSRV/workspace, CLI feature and
-release-build, and sanitizer jobs at one source commit. Nine artifacts and
-87 command-log hashes match; 20 native probe executions and 709,762 bounded
-parser fuzz executions pass. The
-[manual benchmark campaign](../../performance-evidence/phase6-benchmarks-2026-10-05.md)
-at the same source passes the four transport scenarios and administrative
-scenario, but mixed HTTP/BT fails on a 530.097 ms burst against the 500 ms limit.
-No complete mixed report is emitted. The
-[manual rerun](../../performance-evidence/phase6-benchmarks-rerun-2026-10-05.md)
-at `9107ecb` passes all six complete measurements with unchanged limits and
-added burst diagnostics. Mixed aggregate p99 is 8.000 ms, worst operation p99
-is 31.311 ms, and maximum burst is 486 ms. All 488 source hashes, five command
-logs and twelve scenario logs verify. The earlier failure remains retained;
-the rerun does not establish its cause or repeated-run stability. The
-[current acceptance status](implementation-readiness.md#phase-6-acceptance-and-phase-7-handoff)
-records the six-scenario measurement gate as passing. Full functional evidence
-remains at `a6f9b0d`; the closure audit verifies 418 unchanged production and
-validation-input files across the evidence commits. The only code changes are
-three separately validated benchmark diagnostic/test files. This satisfies
-`P6-06` through recorded source equivalence, preserving each run's actual SHA.
-Fresh [local OpenSSH evidence](../../performance-evidence/phase6-openssh-local-2026-10-05.md)
-at `624af25` passes for WSL Linux and native Windows-GNU clients, including
-private-key authentication, checked offset reads, final attributes and complete
-fixture/reservation cleanup. The server is OpenSSH 10.5p1 on Windows/MSYS2;
-all 490 source hashes and six build/test/server log hashes verify. Separate
-backend/release-platform evidence remains open.
-Current SQLite and JSON persistence require fresh v3 stores; older formats are
-rejected without migration or mutation. Historical Phase-5 v2 import evidence is not a
-current-format compatibility promise.
-The local cleanup consolidates shared task/checksum types, removes the legacy
-config-dump shape, and adds BT option-dump and aggregate-statistics coverage.
-
-Status: reviewed contract; the scoped Phase-3B/3C HTTP(S) downloader milestone
-is checkpointed at `1099be9`, and the bounded Phase-4 control-plane checkpoint
-is executable at `ec415ff`; Phase-4B implementation and native Windows benchmark
-evidence are checkpointed at `f9edb5c`. Phase 4B repairs authentication, retry
-admission, active option journal recovery, live-rate changes and source mutations. Shared
-RPC reservations, transport ownership, borrowed result preflight, and typed
-input/native projection accounting are implemented. Scheduler simulations and
-status drafts reserve before mutation and retain credit through pending driver
-work. Runtime option application, bounded URL rules, configuration reload/dumps,
-interface parity, sanitized sessions and slow-slot scheduling are implemented
-and tested. P4-11 control progress at `8fefde2` adds immutable query projection
-outside the owner, one managed runtime, nonblocking mutation/admission continuations, and bulk
-controls that preserve later per-task intent. Expanded Windows evidence is
-tracked separately from the historical status/global-template report; native
-Linux benchmark acceptance passes in the September 22 CI baseline at `af5d193`.
-Core scheduling, bounded persistence/recovery, native storage handoff, runtime ownership,
-packet-independent stats, process bootstrap, and the first public Phase-3B
-multi-mirror HTTP(S) slice have executable checkpoints. The latter includes
-atomic source-aware admission/recovery, DNS/SSRF/Happy-Eyeballs,
-redirect/proxy/auth/cookie policy, supervised range/retry workers, and a shared
-real-scheduler JSON-RPC/CLI/library control surface. It also includes
-method-token authentication, bounded batch/multicall/list work, unique GID
-prefixes, typed option/source/config/session controls, loopback WebSocket,
-bounded scheduler-observed events, and process-owned pooling/bounded ingress,
-hierarchical rate limiting and stall diagnostics, persisted retry waits, and
-strong-ETag-bound single-source/strict-fallback recovery with pre-network
-durable-piece digest verification. A bounded `tellStatus.retryDiagnostic`
-snapshot now exposes exact live trigger/status, remaining total/per-source
-attempt credit, wait selection, numeric source/piece/lease correlation,
-disposition, and next action without URI text; restart labels its coarser
-journaled error-class/reason reconstruction. Persisted user SHA-256 now also provides
-strict concurrent-mirror identity, digest-bound restart, bounded descriptor-
-based final verification, and terminal digest evidence. Persisted
-stale-validator `fail`, fresh `revalidate`, and descriptor-authorized bounded
-`restart-if-safe` now cross the worker, scheduler, session schema v3/control
-journal, and public option
-boundaries without retaining old durable bytes. A flushed `restarting` marker
-preserves representation-restart reason authority across the staged
-next-admission crash window; recovery reuses only an exact matching snapshot,
-and generation promotion invalidates old progress before new admission.
-Same-origin strong-ETag endgame
-fencing, candidate settlement, dirty-overlap rollback, and crash-safe replay are
-implemented. The bounded SHA-256 `Repr-Digest` profile now negotiates strict
-probe/range evidence, verifies response bodies, journals accepted digests, and
-admits secondary origins only for exact-range endgame. Its persisted
-digest/length identity now drives fail-closed restart reprobe and durable-range
-network revalidation before pending work is released. Phase 5 adds Metalink
-identity and SHA-512/SHA-256/SHA-1/MD5 content checksums. Broader RFC 9530
-identity, `Content-Digest`, Last-Modified/unsafe-override resume, adaptive
-profile tuning, and the complete release matrix remain incomplete. BitTorrent
-native acceptance is closed by the Phase-6 record above. Optimized
-Linux and native Windows-GNU capacity evidence, including mandatory RSS or
-working-set samples, is recorded in [performance-profiles.md](../runtime/performance-profiles.md).
-
-The Phase-4 audit of `ec415ff` identified six control-plane repair gates: multicall
-envelopes must be dispatched before outer token parsing while checking every
-inner token; pushed WebSocket/stdio events must wait for successful client
-authentication; every accepted retry option must be registry- and
-persistence-approved; active option patches must replay through one staged
-snapshot; active source replacement must not report failure after committing
-source rows; and all RPC transports must enforce the documented client and
-process budgets. Each gate's owner and required evidence are tracked in
-[implementation-readiness.md](implementation-readiness.md#phase-4-repair-gates).
-Phase 4B closes `P4-01` through `P4-03` with Linux, MSRV, and native Windows-GNU
-regressions. The `P4-04` journal/live-rate repairs pass the same platforms,
-including delayed cancellation, durable prefixes, exact mirror promotion, and
-consecutive generations. `P4-05` now covers cancellation drain, desired pause
-state, remove races, disconnected callers, retry timer cancellation, atomic
-source/queue rollback, and restart before and after commit. These regressions
-pass on Linux, MSRV, and native Windows-GNU. Shared RPC request/response/event
-reservations, bounded request parsing, blocked-writer ownership, and release
-paths pass the same workspace test matrix. Borrowed source/session preflight,
-bounded result accumulation, typed input forecasts, retained option-patch leases,
-and native admission/projection credit also pass that matrix. Scheduler/draft
-reservations cover mutation rejection before journal creation, pending-driver
-timeouts, unused-plan cleanup, event retention, and resumed admission after
-credit release. An allocation-contract test covers 1,000 active scheduler tasks;
-real-download latency/RSS evidence is recorded separately under `P4-11`.
-`P4-07` now includes real output-path and piece-geometry restarts, grouped
-value-free patch rejection, versioned atomic reload, bounded URL rules, resolved
-retry precedence and redacted flat/JSON/TOML dumps. Its success, rejection and
-rollback regressions pass.
-
-`P4-08` now covers strict whole-document JSON/aria2 parsing, atomic batch task
-metadata with crash recovery, private configured exports, periodic/final saves,
-and CLI/Rust/RPC import/export parity. Tests prove invalid suffixes publish no
-task prefix, disconnected accepted imports finish, and export failures leave
-complete old or new bytes. Linux/native Windows workspace tests and Clippy,
-Linux MSRV 1.88, generated contracts, and a short 2,000-run parser fuzz smoke
-check pass. Native Windows file creation supplies a protected private ACL;
-the September 13 checkpoint records 2,000 instrumented runs of all eight parser targets.
-
-`P4-09` covers every advertised method, typed Rust query/control/configuration/
-session operations, CLI JSON calls, combined HTTP/WebSocket/stdio transports,
-both stdio framings, EOF policies, authenticated event filters, diagnostics and
-all compatibility modes. Disabled download protocols return explicit feature
-rejections. `P4-10` has real-worker slow demotion/pause and retry-slot tests,
-queue-policy and user-action recovery, preserved retry deadlines/attempt counts,
-and concurrent local-pressure exclusions. Both gates are implemented and tested.
-
-The P4-11 implementation binds immutable query membership/status to matching
-catalog and configuration snapshots, bounds query execution and retained
-generations, and shares one runtime across CLI, transports and Rust calls.
-Owned session submissions and completion polling keep persistence waits outside
-owner turns. One filesystem preparation slot precedes atomic import fencing;
-current queue positions are revalidated one member per turn. Bulk controls
-capture identities once and skip work superseded by later per-task actions.
-
-Named regressions include `published_queries_complete_while_the_control_owner_is_locked`,
-`filesystem_preparation_preserves_queries_urgent_progress_and_import_fencing`,
-`delayed_sqlite_option_write_keeps_queries_and_owner_turns_available`,
-`thousand_task_bulk_progress_is_bounded_and_later_controls_win`, and
-`coalescing_preserves_intervening_task_actions_and_lane_limits`. Lifetime and
-budget regressions cover disconnected callers, the last owner/backend handle,
-query saturation, failed projection, unavailable session writes and bulk rejection.
-
-Expanded native Windows measurements cover 20,000 calls per transport under
-1,000 active ranges, substantial projections and actual auxiliary mutations.
-Administrative bulk/import/export/save/purge/shutdown use separate cardinalities
-and concurrent progress checks. All five native Windows scenarios pass; worst
-ordinary operation p99 is 37.543 ms and longest burst 421 ms. The
-[validation record](../../performance-evidence/p4-11-validation-2026-09-14.md) records
-workspace, MSRV, lint, contract and bounded fuzz evidence. See the
-[measurement protocol and results](../runtime/performance-profiles.md#native-windows-control-plane-evidence).
-The September 13 status/global-template report remains historical. Native Linux
-acceptance now passes in the September 22 CI baseline with the same gates and
-complete reports. WSL validation remains distinct from native measurement and
-the broader release-platform matrix.
-
-The implemented HTTP discard hierarchy now has deterministic process/task/host
-fault coverage and a standalone bounded fuzz package (`fuzz/`) for HTTP
-headers, retry specifications, discard accounting, and journal replay. The
-storage boundary also has deterministic ENOSPC, permission-denied, short-write,
-partial-fsync, torn-tail, and same-inode publication coverage that leaves no
-false durable progress and removes same-file residue only after installed
-header/linkage replay succeeds. Scheduler cancellation after disk completion is
-fenced before lease commit and drains with exactly one cancelled journal
-disposition; multi-range disk rejection terminates its opened lease once with
-the `storage_rejected` reason. A bounded URI-scoped oversized frame is discarded
-before storage, aborts the opened lease once as `oversized_body`, and disables
-the offending source as a non-retriable invalid range. Redirects in the
-implemented client settle before lease admission, while the redirect-policy
-contract retains the mandatory open-lease abort for future adapters.
-Child-process exit and parent-driven kill tests cover every provisional-write,
-data-sync, and journal-publication barrier on Linux and native Windows-GNU. An
-OS-surviving kill retains a complete visible `PieceDurable` record, while the
-Linux durable-prefix power-loss cut removes its unflushed tail and recovers only
-the prior barrier. Hot-backup publication residue now has descriptor-bound
-same-file/link-count recovery, no-clobber raced-destination preservation, and
-crash/unlink fault coverage. Minimal real-process shutdown now closes admission,
-boundedly drains HTTP workers, flushes/closes every installed journal, joins the
-session owner, and writes a clean marker only after those barriers; failure or
-timeout persists dirty recovery evidence. Native release and real poweroff
-evidence remain incomplete until supporting CI runs.
-
-This maps the requested properties to design documents.
+The deferred Windows `changeUri`/`addUri` and native Linux mixed-burst failures
+remain unresolved. Real power-loss recovery is deferred to a VM campaign with
+an explicit storage/cache model. Process-kill and deterministic durable-prefix
+tests establish their narrower recovery properties, not physical-device durability.
+Final native kernel/backend, other-platform, minimum-OS and release acceptance
+must use candidate-matching evidence. Historical passes do not automatically
+validate subsequent production or build changes.
 
 ## Coverage Index
 
@@ -763,7 +546,7 @@ Design coverage:
 
 - [Architecture overview](../architecture/overview.md): standalone `ariax` workspace, pinned aria2 reference checkout,
   packaging, native and cross-toolchain policy.
-- [implementation-plan.md](implementation-plan.md): Phase-0 build baseline and Phase-7 parity decision.
+- [implementation-plan.md](implementation-plan.md): Phase-0 build baseline and resolved Phase-7 standalone artifact decision.
 - [library-choice.md](../architecture/library-choice.md): Tokio/Mio and platform adapter ownership.
 
 Acceptance:
@@ -772,8 +555,8 @@ Acceptance:
 - the aria2 C++ tree is used only as a pinned read-only compatibility reference,
 - release CI builds the exact feature profiles on Linux, Windows, and macOS,
 - Cargo.lock and dependency-vendoring policy are represented in release tarballs,
-- an `aria2c` replacement/alias is not shipped until parity, migration, and
-  rollback are explicitly approved.
+- `ariax` remains standalone, with documented best-effort aria2 compatibility
+  and no `aria2c` replacement or alias.
 
 ## Non-Goals
 

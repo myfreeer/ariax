@@ -81,6 +81,16 @@ settings are specific to the target ABI; an installed system libtorrent is
 not a substitute for the pinned patched source. Disable WebTorrent, I2P,
 mutable torrents and dependency logging explicitly.
 
+On Windows the bridge and native library must both use Asio's Win32 thread
+implementation. The native CMake target forces Asio configuration before every
+C++ translation unit and propagates that requirement to CMake consumers.
+Include `asio_platform.h` before other bridge headers: MinGW
+headers can expose `_POSIX_THREADS` before Asio configures itself, selecting a
+different thread implementation with incompatible ownership. The guard rejects
+an already selected POSIX implementation. Native probes cover normal selection
+and rejection; full-workspace transfer/checkpoint/destruction tests exercise the
+actual linked boundary. C++ language-mode changes do not repair this mismatch.
+
 The pinned OpenSSL source also receives the reviewed callback-adapter patch
 in `native/libtorrent/openssl.patch`. Typed callbacks must be invoked through
 their matching function signatures; sanitizer failures must not be hidden by

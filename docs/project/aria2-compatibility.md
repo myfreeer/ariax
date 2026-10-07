@@ -1,8 +1,10 @@
 # Aria2 Compatibility Progress And Decisions
 
-The first compatibility pass fills spelling gaps through existing executable
-handlers. Ariax remains a separate experimental command while behavior and
-migration differences are evaluated. This is not an aria2c replacement approval.
+Ariax remains a standalone command. Aria2 compatibility is best-effort within
+the documented behavior, resource and security contracts. The release does not
+provide an `aria2c` replacement or alias, and complete aria2 parity is not a
+P7 acceptance requirement. The first compatibility pass fills spelling gaps
+through existing executable handlers.
 The pinned reference is `9e7273583f83e881e3ec067b523ba88724088d2f`.
 
 ## Implemented First Pass
@@ -24,7 +26,7 @@ The [configuration contract](../interfaces/configuration.md#compatibility-matrix
 explains admission and syntax. The [generated inventory](../../generated/aria2_compat.json)
 contains 112 registry entries: 58 shared upstream names and 54 extensions,
 against 207 pinned handlers. The 149 names absent from the registry are an audit
-input, not 153 proven missing implementations; some have standalone CLI owners.
+input, not a count of proven missing implementations; some have standalone CLI owners.
 Status and executable behavior remain separate from name coverage. All 36
 pinned RPC method names and six notifications are present in the public method
 and event inventories, which does not prove complete semantic parity.
@@ -54,6 +56,11 @@ remain separate compatibility decisions.
 
 ## Resolved Scope
 
+The standalone artifact decision is settled. Missing aria2 options and frontend
+conventions remain documented compatibility opportunities, rather than release
+blockers merely because aria2 supports them. Implemented and advertised behavior
+still requires success, rejection, persistence and feature-availability coverage.
+
 Existing aria2 partial downloads and `.aria2` control-file migration are excluded
 from compatibility scope and P7 acceptance. No importer for that progress is
 required. Ariax's own resumable downloads and crash recovery remain in scope.
@@ -64,12 +71,12 @@ descriptions; it does not import existing partial-file progress.
 
 | Area | Existing Boundary And Required Choice | Recommended Next Step |
 | --- | --- | --- |
-| Bare URI invocation and aria2 configuration | Current commands explicitly name the session store, control directory and output root. Implicit paths and auto-loaded config change ownership and startup precedence. | Design an opt-in frontend with documented paths and precedence before an aria2c alias. |
+| Bare URI invocation and aria2 configuration | Current commands explicitly name the session store, control directory and output root. Implicit paths and auto-loaded config change ownership and startup precedence. | Consider an opt-in Ariax frontend only with documented paths and precedence; no aria2c alias is planned. |
 | `-d`, `-c` and integrity | `-d` cannot replace the authorized output root. Ariax recovery uses its own journals and v3 sessions; direct `-c` remains unsupported. | Define path containment, integrity checks and any continuation spelling for Ariax-owned progress. Existing aria2 partial-file support is excluded. |
 | HTTP/2, unknown-length bodies and XML-RPC | These require protocol, storage or parser work beyond argument spelling. | Prioritize concrete client workloads and retain explicit unsupported responses until each path has acceptance evidence. |
 | Hooks and security differences | Shell execution, weakened host-key checks, unsafe paths or relaxed SSRF rules would change existing security contracts. | Preserve those boundaries; compatibility must not silently weaken them. |
 
-The next decision is the desired frontend and workload scope, after reviewing
-these implemented improvements. Release/platform acceptance, the deferred
+These opportunities do not reopen the standalone artifact decision.
+Release/platform acceptance, the deferred
 latency failures and VM power-loss campaign remain tracked in
-[implementation readiness](implementation-readiness.md#phase-6-acceptance-and-phase-7-handoff).
+[implementation readiness](implementation-readiness.md#phase-7-local-validation).

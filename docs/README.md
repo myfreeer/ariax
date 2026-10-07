@@ -12,7 +12,7 @@
 | Embed or control Ariax | [Rust API, RPC and embedding](interfaces/apis-and-embedding.md) |
 | Understand the design | [Architecture overview](architecture/overview.md), [library choices](architecture/library-choice.md) |
 | Find remaining work | [Implementation plan](project/implementation-plan.md), [readiness gates](project/implementation-readiness.md) |
-| Assess validation evidence | [Phase 6 acceptance and source audit](../performance-evidence/phase6-acceptance-2026-10-05.md), [Requirements traceability](project/requirements-traceability.md), [CI baseline](../performance-evidence/ci-baseline-2026-09-22.md), [Phase 6 full functional CI](../performance-evidence/phase6-full-ci-2026-10-05.md), [Phase 6 passing manual benchmarks](../performance-evidence/phase6-benchmarks-rerun-2026-10-05.md), [Local OpenSSH interoperability](../performance-evidence/phase6-openssh-local-2026-10-05.md), [Phase 6 focused Linux checks](../performance-evidence/phase6-focused-linux-2026-10-04.md), [BT transfer/security/recovery checks](../performance-evidence/phase6-focused-bt-linux-2026-10-04.md), [Interface and feature checks](../performance-evidence/phase6-focused-interfaces-linux-2026-10-04.md), [Sanitizer and parser-fuzz checks](../performance-evidence/phase6-focused-sanitizers-linux-2026-10-04.md), [Storage/CLI tests and release builds](../performance-evidence/phase6-focused-storage-cli-linux-2026-10-04.md) |
+| Assess validation evidence | [Current P7 evidence and gates](project/implementation-readiness.md#phase-7-local-validation), [Phase 6 acceptance](../performance-evidence/phase6-acceptance-2026-10-05.md), [Requirements traceability](project/requirements-traceability.md) |
 
 ## Source Of Truth
 

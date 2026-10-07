@@ -31,44 +31,20 @@ missing published license files only from the package's pinned upstream
 revision, recording URL and digest. Preserve unresolved omissions explicitly.
 Inspect nested native sources and embedded data independently of Cargo metadata.
 
-The [October 5 inventory](../../performance-evidence/phase7-release-license-inventory-2026-10-05.json)
-and [notice draft](../../performance-evidence/phase7-third-party-notices-2026-10-05.txt)
-cover Linux and Windows-GNU CLI bundles. They retain original texts and hashes,
-including conservative source-only notices. Their explicit open items must be
-resolved against actual release archives before using them as final notices.
-The subsequent [license review](../../distribution/license-review.json) resolves
-the winapi import-library payload, IANA terms, aria2 source-artifact scope and
-retained bundle runtime inventories. The earlier inventory remains
-historical; the follow-up records the current scope and remaining work.
-
-The [remaining-local-work campaign](../../performance-evidence/phase7-local-remaining-2026-10-06.md)
-adds an [updated locked inventory](../../performance-evidence/phase7-release-license-inventory-2026-10-06.json)
-and [notice collection](../../performance-evidence/phase7-third-party-notices-2026-10-06.txt)
-for 314 selected packages and OpenSSL 3.6.5. Notice bodies are checked against
-their exact source archives or retained upstream provenance. Git attributes
-preserve the original notice bytes and whitespace in every dated collection.
-All eight updated
-draft binaries match independent builds. Their assembled and extracted archives
-pass notice, path, import, runtime-loading, RPC and database-reopening checks.
-Historical packages retain their original build and notice identities in the
-earlier evidence; the catalog now points to the rebuilt drafts.
-
-The [October 7 follow-up](../../performance-evidence/phase7-openssl-static-tsan-2026-10-07.md)
-supersedes retained binaries with one full OpenSSL build per host. It records
-14 successful default/OpenSSL CLI variants and both final package smokes.
 The [current inventory](../../performance-evidence/phase7-release-license-inventory-2026-10-07.json)
-and [notices](../../performance-evidence/phase7-third-party-notices-2026-10-07.txt)
-cover 16 selections and 320 packages. Validated variants whose binaries were
-removed remain historical records; the catalog cannot stage those entries.
+and [notice collection](../../performance-evidence/phase7-third-party-notices-2026-10-07.txt)
+cover 16 Linux/Windows-GNU selections and 320 packages. The
+[license review](../../distribution/license-review.json) records the winapi,
+IANA and aria2 source-artifact dispositions. Notice bytes remain checked against
+their pinned archives or upstream provenance; Git attributes preserve them.
 
-The [dependency and binary-size analysis](../../performance-evidence/phase7-binary-size-2026-10-07.md)
-records the full/OpenSSL baseline, separates build dependencies from linked
-code, and measures bounded linker experiments. The
-[implemented reductions](../../performance-evidence/phase7-size-reduction-2026-10-07.md)
-replace the two retained builds and refresh their package identities and local
-validation evidence. Size changes must preserve
-protocol policy, persistence compatibility and Windows system-only DLL imports;
-code-generation changes also require relevant performance checks.
+The catalog currently retains one full/OpenSSL binary per host. The
+[pre-CI local validation](../../performance-evidence/phase7-pre-ci-local-2026-10-07.md)
+owns their current hashes, imports, focused checks and package smoke evidence.
+Its [dependency analysis](../../performance-evidence/phase7-binary-size-2026-10-07.md)
+distinguishes build dependencies from linked code. Earlier independently matching
+builds and removed variants retain their dated records; they cannot be staged
+or used as reproducibility evidence for a changed current binary.
 
 Linux GNU release-helper builds using OpenSSL pack relative relocations with
 `-Wl,-z,pack-relative-relocs`. These artifacts already require glibc 2.38;
@@ -136,21 +112,15 @@ MPL-covered source and provenance, source-availability information, release
 limitations, file hashes and the binary's build identity. It does not copy the
 repository tree or toolchain directory wholesale.
 
-Manifests for retained minimal/standard artifacts are drafts, tied to their
-recorded binary hashes and historical build evidence. Newer package metadata
-does not make those binaries current release candidates. Linux records its
-interpreter, required shared objects and maximum required glibc symbol version.
-Windows records case-insensitive DLL imports; system DLLs come from Windows,
-while each additional DLL must have an explicit reviewed source, hash and notice.
-An unknown import or missing required file rejects preparation.
-The initial October 5 binaries failed the absolute-path audit because dependency
-Cargo-cache paths were not remapped. The historical manifests retain that
-finding; byte-for-byte reproducibility does not establish path portability.
-Candidate builds must add
-Cargo registry/git-cache source remaps, preserve existing repository/output
-remaps, and inspect the resulting binary. Native C/C++ objects need equivalent
-file/debug-prefix mapping when their paths are present. Reuse of native builds
-must still satisfy the existing provenance checks.
+Retained full/OpenSSL entries are unapproved drafts, bound to exact binary
+hashes and validation evidence. Linux records its interpreter, required shared
+objects and maximum glibc symbol requirement. Windows records case-insensitive
+system DLL imports and rejects additional runtime DLLs. Unknown imports or
+missing required files reject preparation.
+
+Candidate Rust and native C/C++ builds must remap repository, dependency-cache
+and output paths and pass binary inspection. Reproducibility does not establish
+path portability; native reuse must satisfy its recorded provenance checks.
 
 For full/compat, `bt_native.py --release-paths --work-dir ABSOLUTE_DIRECTORY`
 builds a separate installation. `--source-cache` reuses an existing verified
@@ -201,34 +171,12 @@ selects the pinned native toolchain and prepares these remaps for all four
 bundles. Its records include source hashes, encoded Rust arguments, quoted
 C/C++ flags, actual imports and CLI startup checks. A single rebuilt artifact
 must not inherit a prior artifact's independent-reproducibility result.
-The [remapping follow-up](../../performance-evidence/phase7-release-paths-2026-10-05.md)
-rebuilds all four local drafts and verifies zero known absolute-path matches,
-the expected remapped dependency paths, unchanged imports and CLI startup.
-The [verification follow-up](../../performance-evidence/phase7-release-verification-2026-10-05.md)
-now establishes byte-for-byte matches for all four remapped binaries, using new
-target/temp directories on the same host with a shared source cache/toolchain.
-The manifests retain both build identities. Reduced-environment package checks
-also pass on WSL1 and native Windows, including live RPC and SQLite reopening.
-Linux processes load the configured system preload; Windows observations cover
-only the exercised module paths. Fresh-OS, minimum-OS and candidate-matrix
-acceptance remain separate gates.
-
-The [bounded local campaign](../../performance-evidence/phase7-local-campaign-2026-10-05.md#full-and-compat-artifact-inspection)
-originally found 20 native-dependency path matches per Linux full/compat binary
-and 37 per Windows binary. Those failed artifacts remain historical evidence.
-The [October 6 follow-up](../../performance-evidence/phase7-release-blockers-2026-10-06.md)
-resolves the path and runtime-packaging blockers. Every rebuilt binary has zero
-known absolute workstation-path matches and matches an independent native/CLI
-build. The reviewed runtime closure and notices are verified in four assembled
-and extracted full/compat archives. Live feature queries, RPC rejection, EOF
-shutdown, SQLite reopening and packaged Windows DLL loading pass.
-
-Those eight default variants were subsequently validated with static Windows
-runtimes and removed during the October 7 cleanup. The current catalog retains
-two full OpenSSL drafts and preserves the default variants as `validated-removed`
-records. Same-host independent builds and current-host package operation do not
-close fresh/minimum-OS acceptance or the final candidate matrix. macOS and MSVC
-remain separate platform work.
+Historical [path/reproducibility work](../../performance-evidence/phase7-release-blockers-2026-10-06.md)
+and [static-runtime validation](../../performance-evidence/phase7-openssl-static-tsan-2026-10-07.md)
+retain the earlier artifact identities. Current paths and results are in the
+[pre-CI local record](../../performance-evidence/phase7-pre-ci-local-2026-10-07.md).
+Fresh/minimum-OS operation, the complete candidate matrix, macOS/MSVC packaging
+and independent reproduction of the latest binaries remain separate gates.
 
 ## Release Checklist
 

@@ -78,6 +78,11 @@ cover nested payload restore and rejection of shared writable paths.
 Patch level 5 gives Windows native and stdio payloads, part files, and directories
 protected private ACLs at creation. Opening an existing path preserves its ACL.
 Native storage tests and adapter restore tests verify the resulting protection.
+Patch level 6 configures Asio before other headers in every Windows translation
+unit and propagates that order to CMake consumers. This prevents MinGW's POSIX
+declarations from selecting pthread ownership for Win32-created Asio threads.
+The bridge has the same early configuration and rejects conflicting settings;
+the native platform probe checks timer teardown and the rejection boundary.
 
 The patcher reads UTF-8 and writes LF independently of the host locale. It
 validates all source hunks before writing, including on Windows with a legacy

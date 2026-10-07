@@ -52,9 +52,16 @@ def aggregate_success(event, ref, preflight, validation):
             and preflight == "success" and validation == "success")
 
 
-def validation_matrix(event, ref):
+def validation_matrix(event, ref, scope="auto"):
     require(event in {"push", "pull_request", "workflow_dispatch"}, "unsupported CI event")
     require(isinstance(ref, str) and ref.startswith("refs/"), "missing CI ref")
+    require(scope in {"auto", "full", "initial-native"}, "unknown validation scope")
+    require(scope == "auto" or event == "workflow_dispatch", "explicit scope requires manual dispatch")
+    if scope == "initial-native":
+        require(ref.startswith("refs/heads/") and ref != "refs/heads/main",
+                "initial native validation requires a non-main branch")
+        checks = VALIDATION_MATRIX[:3]
+        return {"include": [dict(zip(("check", "os", "toolchain", "native"), check)) for check in checks]}
     full = (event == "workflow_dispatch" or
             event == "push" and (ref == "refs/heads/main" or ref.startswith("refs/tags/")))
     checks = VALIDATION_MATRIX if full else VALIDATION_MATRIX[:2]
@@ -721,7 +728,8 @@ def main():
     args = parser.parse_args()
     if args.command == "matrix":
         print("matrix=" + json.dumps(validation_matrix(os.environ.get("GITHUB_EVENT_NAME"),
-                                                       os.environ.get("GITHUB_REF"))))
+                                                       os.environ.get("GITHUB_REF"),
+                                                       os.environ.get("ARIAX_CI_VALIDATION_SCOPE", "auto"))))
         return 0
     if args.command == "resolve-toolchain":
         print("ARIAX_TOOLCHAIN_ROOT=" + str(resolve_toolchain()))

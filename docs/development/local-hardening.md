@@ -15,6 +15,34 @@ Linux timing, kernel backend, or Unix private-permission coverage on DrvFs.
 Windows GNU supplies native Windows coverage. Existing mixed-BT platform and
 workload restrictions remain unchanged. Benchmarks remain manual-only.
 
+The October 7 pre-CI pass reproduced blocked TCP writes after peer close on
+WSL1, including in a raw socket probe without Ariax. The unchanged stalled-RPC
+socket test passes on native Windows. Preserve the WSL failure and label any
+local workspace run excluding that exact test as a subset; do not add a test
+skip to CI or relax its six-second cleanup bound. Native Linux still must run
+the unchanged test. Deterministic gated-writer ownership checks remain enabled
+locally. This capability limit is separate from deferred performance failures.
+
+Local pre-CI validation also runs the Python helper suite on native Windows.
+Tests of Linux telemetry and process-group cleanup supply explicit simulated
+Unix APIs; they do not require those APIs on the host or claim native Linux
+coverage. Generated Linux-only TSan fixtures preserve canonical UTF-8/LF bytes
+so identity and lockfile checks exercise the intended rejection on every host.
+
+The same pass found incompatible Asio thread implementations in the Windows
+native library and bridge. Patch level 6 configures Asio consistently before
+platform headers; validate both native probes and the full-feature transfer
+test under the debugger. Preserve the original access violation. This host
+also emits debugger messages inside Windows `GetAdaptersAddresses`: an isolated
+Windows API program reproduces them while returning success. Record those OS
+messages separately from crashes and test failures; do not suppress them.
+
+The mixed-BT bootstrap reserves more than 1,024 handles, including its peer
+budget. The local shell's 1,024-file soft limit correctly rejects that setup.
+Run these checks in an isolated process with its `RLIMIT_NOFILE` soft limit
+raised to 65,536 within the existing hard limit; record both values. This
+changes neither system limits nor the fixture's capacity or rejection policy.
+
 ## Execution And Evidence
 
 The October 5 bounded campaign has a four-to-six-hour total budget, including
@@ -33,9 +61,11 @@ only the affected focused targets, once per required configuration.
 Use the selected temporary volume with sufficient headroom; the user's F:
 temporary root is the fallback when E: is full. Keep payloads, state, logs and
 corpora bounded. Remove disposable fixtures after preserving results and verify
-child-process cleanup. Preserve reusable binaries, libraries, source caches,
-unique failures and essential evidence. Record deleted file counts and bytes;
-do not delete useful compilation caches merely to rebuild them later.
+child-process cleanup. Keep the toolchains, verified dependencies, one final build root per platform,
+unique failures and consolidated useful evidence. Remove superseded executables
+and disposable validation outputs after the final required run; do not create
+saved-binary collections or apply filesystem compression. Record cleanup counts
+and bytes. Current local validation runs one job at a time.
 
 Select the pinned standalone Rust distribution and locked dependencies. Keep
 native ABIs and instrumentation in separate output directories, verify native
