@@ -480,14 +480,45 @@ mod tests {
 
     #[test]
     fn generation_writes_checks_and_uses_pinned_git_objects() {
-        let fixture = Fixture::new(None);
+        let mut fixture = Fixture::new(None);
+        // The end-to-end generator validates every declared aria2 option.
+        // Keep the small parser fixtures, and supply the remaining names for
+        // this integration test of generation and committed-object reads.
+        let registry = ariax_config::builtin_registry();
+        let upstream = registry
+            .definitions()
+            .iter()
+            .filter(|definition| definition.aria2_available)
+            .collect::<Vec<_>>();
+        let mut preferences = fixture_content("src/prefs.cc");
+        let mut handlers = fixture_content("src/OptionHandlerFactory.cc");
+        for (index, definition) in upstream.iter().enumerate() {
+            if matches!(definition.name, "dir" | "split") {
+                continue;
+            }
+            preferences.push_str(&format!(
+                "PrefPtr PREF_FIXTURE_{index} = makePref({:?});\n",
+                definition.name
+            ));
+            handlers.push_str(&format!(
+                "{{ OptionHandler* op(new StringOptionHandler(PREF_FIXTURE_{index}, TEXT_FIXTURE)); handlers.push_back(op); }}\n"
+            ));
+        }
+        fs::write(fixture.aria2.join("src/prefs.cc"), preferences).unwrap();
+        fs::write(fixture.aria2.join("src/OptionHandlerFactory.cc"), handlers).unwrap();
+        fixture.commit_all("complete contract-generation fixture");
+        fixture.write_pin();
         let source = fixture.aria2.as_os_str().to_owned();
         let output = execute(
             [OsString::from("generate"), source.clone()],
             &fixture.workspace,
         )
         .expect("generate inventories");
-        assert!(output.contains("2 preferences, 2 handlers, 2 manual directives"));
+        assert!(output.contains(&format!(
+            "{} preferences, {} handlers, 2 manual directives",
+            upstream.len(),
+            upstream.len()
+        )));
 
         let options_path = fixture.workspace.join("generated/aria2_options.json");
         let rpc_path = fixture.workspace.join("generated/aria2_rpc.json");
@@ -570,7 +601,10 @@ mod tests {
             .expect("write workspace manifest fixture");
             fs::write(
                 workspace.join(".cargo/config.toml"),
-                "[env]\nLIBSQLITE3_FLAGS = { value = \"-DSQLITE_MAX_LIKE_PATTERN_LENGTH=65536\", force = true }\n",
+                format!(
+                    "[env]\nLIBSQLITE3_FLAGS = {{ value = {:?}, force = true }}\n",
+                    ariax_storage::SESSION_BUNDLED_SQLITE_FLAGS
+                ),
             )
             .expect("write Cargo config fixture");
             fs::create_dir_all(&aria2).expect("create aria2 fixture");

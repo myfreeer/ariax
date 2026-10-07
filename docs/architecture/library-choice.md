@@ -388,6 +388,9 @@ Distributions may add a separately tested system-SQLite build feature later.
 The bundled build is compiled with
 `-DSQLITE_MAX_LIKE_PATTERN_LENGTH=65536` from repository Cargo configuration so
 the required 64 KiB runtime limit is attainable and verified exactly.
+The same configuration disables the unused FTS3/FTS4/FTS5 and RTree modules;
+the session format uses ordinary strict tables and indexes. Thread safety,
+API armor, query-planner settings, backup and durability behavior are preserved.
 The 0.40.2 patch pin selects `libsqlite3-sys` 0.38.2, whose build-script MSRV
 shim preserves the declared Rust 1.88 check; 0.40.1/0.38.1 does not compile
 that bundled build script on Rust 1.88.

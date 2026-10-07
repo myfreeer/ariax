@@ -102,6 +102,19 @@ def bundle_features(bundle, crypto_backend):
     return bundle + (',tls-openssl' if bundle == 'minimal' else ',crypto-openssl')
 
 
+def cli_link_args(bundle, crypto_backend, windows):
+    """Only the reviewed OpenSSL Linux artifacts already require glibc 2.38."""
+    backend = rm.effective_crypto_backend(bundle, crypto_backend)
+    return ['-C', 'link-arg=-Wl,-z,pack-relative-relocs'] if backend == 'openssl' and not windows else []
+
+
+def cli_build_command(cargo, bundle, crypto_backend, windows):
+    link_args = cli_link_args(bundle, crypto_backend, windows)
+    return [cargo, 'rustc' if link_args else 'build', '--locked', '--offline', '-p', 'ariax-cli',
+            '--no-default-features', '--features', bundle_features(bundle, crypto_backend),
+            '--profile', 'release-cli', *(['--', *link_args] if link_args else [])]
+
+
 def runtime_inventory(output, windows, bundle='minimal', crypto_backend='default'):
     require(bundle in rm.BUNDLES, 'unknown bundle')
     require(crypto_backend in {'default', 'openssl'}, 'unknown crypto backend')
@@ -298,11 +311,15 @@ def prepare(args, root=ROOT):
                         'compiler identity drift')
         for bundle in bundles:
             item = {'bundle': bundle, 'features': bundle_features(bundle, crypto_backend),
-                    'cryptoBackend': rm.effective_crypto_backend(bundle, crypto_backend)}
+                    'cryptoBackend': rm.effective_crypto_backend(bundle, crypto_backend),
+                    'linkArgs': cli_link_args(bundle, crypto_backend, windows)}
+            for prior in (reference, previous):
+                if prior:
+                    prior_item = next(row for row in prior['builds'] if row['bundle'] == bundle)
+                    require(item['linkArgs'] == prior_item.get('linkArgs', []), 'CLI link policy drift')
             record['builds'].append(item)
             h.save(args.output / 'result.json', record)
-            command = [cargo, 'build', '--locked', '--offline', '-p', 'ariax-cli',
-                       '--no-default-features', '--features', item['features'], '--profile', 'release-cli']
+            command = cli_build_command(cargo, bundle, crypto_backend, windows)
             item['build'] = checked(command, bundle + '/build', timeout=args.build_timeout)
             binary = args.output / bundle / ('ariax' + suffix)
             shutil.copyfile(Path(roots['target']) / 'release-cli' / binary.name, binary)

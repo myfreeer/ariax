@@ -984,23 +984,14 @@ fn validate_origin(uri: &Uri) -> Result<(), HttpTransportError> {
 fn tls_provider() -> rustls::crypto::CryptoProvider {
     #[cfg(feature = "crypto-openssl")]
     {
-        let mut provider = rustls_openssl::default_provider();
-        // Keep the reviewed classical group set even when the native OpenSSL
-        // installation also offers post-quantum groups.
-        provider.kx_groups.retain(|group| {
-            matches!(
-                group.name(),
-                rustls::NamedGroup::X25519
-                    | rustls::NamedGroup::secp256r1
-                    | rustls::NamedGroup::secp384r1
-            )
-        });
-        provider.kx_groups.sort_by_key(|group| match group.name() {
-            rustls::NamedGroup::X25519 => 0,
-            rustls::NamedGroup::secp256r1 => 1,
-            _ => 2,
-        });
-        provider
+        use rustls_openssl::kx_group::{SECP256R1, SECP384R1, X25519};
+        // Match the provider's runtime availability check, without generating
+        // keys for hybrid groups excluded by our protocol policy.
+        let groups = [X25519, SECP256R1, SECP384R1]
+            .into_iter()
+            .filter(|group| group.start().is_ok())
+            .collect();
+        rustls_openssl::custom_provider(rustls_openssl::available_cipher_suites(), groups)
     }
     #[cfg(not(feature = "crypto-openssl"))]
     {
@@ -1235,7 +1226,19 @@ e31pxMIvRBTw+dGS6spzZo+W4ft31it0tEUmShjy5iE5lqwPpp9GaF3UadN+fWJy
         // These pinned providers expose distinct Debug identities. Check the
         // provider actually used, not only Cargo's resolved dependency graph.
         #[cfg(feature = "crypto-openssl")]
-        assert_eq!(format!("{:?}", provider.secure_random), "SecureRandom");
+        {
+            assert_eq!(format!("{:?}", provider.secure_random), "SecureRandom");
+            let defaults = rustls_openssl::default_provider();
+            assert_eq!(provider.cipher_suites, defaults.cipher_suites);
+            assert_eq!(
+                provider
+                    .signature_verification_algorithms
+                    .supported_schemes(),
+                defaults
+                    .signature_verification_algorithms
+                    .supported_schemes()
+            );
+        }
         #[cfg(not(feature = "crypto-openssl"))]
         assert_eq!(format!("{:?}", provider.secure_random), "Ring");
         assert_eq!(

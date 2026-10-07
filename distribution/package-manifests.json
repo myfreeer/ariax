@@ -3016,12 +3016,12 @@
       "binary": {
         "artifactPath": "build/linux/release-cli/ariax",
         "destination": "ariax",
-        "sha256": "3ab5d4799d16a5b7035ff3c9bdfc91af1d67e802139698a10ffeaa24333dc5c2",
-        "bytes": 24991648,
-        "sourceCommit": "211767d3d16aebfa3734c71a0e62808e0926d2e8",
+        "sha256": "76b4c0e577375c7bf522100c94ae2f98f576689f52a87a2c32bcf708eeb8c99d",
+        "bytes": 21603400,
+        "sourceCommit": "ccd587b65463f56227802f030ebae200a4724de0",
         "sourceDateEpoch": "1791286491",
-        "evidence": "performance-evidence/phase7-compatibility-options-2026-10-07.json",
-        "sourceScope": "Exact compiled inputs hash-bound in evidence; includes the local worktree on the recorded baseline. Native dependencies reused; no new independent reproducibility claim.",
+        "evidence": "performance-evidence/phase7-size-reduction-2026-10-07.json",
+        "sourceScope": "Exact compiled inputs are hash-bound in the size-reduction evidence; local worktree on the recorded analysis checkpoint. Native dependencies were rebuilt with the recorded recipe. No independent reproducibility claim.",
         "pathAudit": {
           "passed": true,
           "counts": {
@@ -3360,19 +3360,24 @@
       "cryptoBackend": "openssl",
       "retention": {
         "binaryPresent": true,
-        "scope": "The one final selected build for this platform."
+        "scope": "The one final selected build for this platform.",
+        "validationEvidence": "performance-evidence/phase7-size-reduction-2026-10-07.json"
       },
       "hostSmoke": {
         "passed": true,
         "functionalPassed": true,
         "freshOsAcceptance": false,
-        "validationEvidence": "performance-evidence/phase7-compatibility-policy-2026-10-07.json",
-        "scope": "Current binary reduced-environment package inventory, help, live RPC/features, unknown-method rejection, EOF shutdown and SQLite reopen. Windows observes only application/system modules; Linux existing preload remains recorded."
+        "validationEvidence": "performance-evidence/phase7-size-reduction-2026-10-07.json",
+        "scope": "Current binary package inventory, reduced-environment help, RPC/features, unknown-method rejection, EOF shutdown and SQLite reopen passed. Windows observed only application/system modules; Linux existing preload is recorded. Not fresh-OS acceptance."
       },
       "buildSelection": {
         "features": "full",
         "requestedCryptoBackend": "default",
-        "effectiveCryptoBackend": "openssl"
+        "effectiveCryptoBackend": "openssl",
+        "linkArgs": [
+          "-C",
+          "link-arg=-Wl,-z,pack-relative-relocs"
+        ]
       }
     },
     {
@@ -3434,12 +3439,12 @@
       "binary": {
         "artifactPath": "build/windows/release-cli/ariax.exe",
         "destination": "ariax.exe",
-        "sha256": "09e77ab9f3dc8e6f5bde3ad072c5f4a2f72f4b0c3ab30d23067eb7044ea38370",
-        "bytes": 25228288,
-        "sourceCommit": "211767d3d16aebfa3734c71a0e62808e0926d2e8",
+        "sha256": "ad9c10966ed8b37c868dc295056800a7c8f77022cf5dbce084d4077dad4004d6",
+        "bytes": 24444416,
+        "sourceCommit": "ccd587b65463f56227802f030ebae200a4724de0",
         "sourceDateEpoch": "1791286491",
-        "evidence": "performance-evidence/phase7-compatibility-options-2026-10-07.json",
-        "sourceScope": "Exact compiled inputs hash-bound in evidence; includes the local worktree on the recorded baseline. Native dependencies reused; no new independent reproducibility claim.",
+        "evidence": "performance-evidence/phase7-size-reduction-2026-10-07.json",
+        "sourceScope": "Exact compiled inputs are hash-bound in the size-reduction evidence; local worktree on the recorded analysis checkpoint. Native dependencies were rebuilt with the recorded recipe. No independent reproducibility claim.",
         "pathAudit": {
           "passed": true,
           "counts": {
@@ -3794,19 +3799,21 @@
       "cryptoBackend": "openssl",
       "retention": {
         "binaryPresent": true,
-        "scope": "The one final selected build for this platform."
+        "scope": "The one final selected build for this platform.",
+        "validationEvidence": "performance-evidence/phase7-size-reduction-2026-10-07.json"
       },
       "hostSmoke": {
         "passed": true,
         "functionalPassed": true,
         "freshOsAcceptance": false,
-        "validationEvidence": "performance-evidence/phase7-compatibility-policy-2026-10-07.json",
-        "scope": "Current binary reduced-environment package inventory, help, live RPC/features, unknown-method rejection, EOF shutdown and SQLite reopen. Windows observes only application/system modules; Linux existing preload remains recorded."
+        "validationEvidence": "performance-evidence/phase7-size-reduction-2026-10-07.json",
+        "scope": "Current binary package inventory, reduced-environment help, RPC/features, unknown-method rejection, EOF shutdown and SQLite reopen passed. Windows observed only application/system modules; Linux existing preload is recorded. Not fresh-OS acceptance."
       },
       "buildSelection": {
         "features": "full",
         "requestedCryptoBackend": "default",
-        "effectiveCryptoBackend": "openssl"
+        "effectiveCryptoBackend": "openssl",
+        "linkArgs": []
       }
     }
   ],

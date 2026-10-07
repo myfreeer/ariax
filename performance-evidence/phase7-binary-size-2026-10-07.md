@@ -12,6 +12,10 @@ release flags and the package catalog remain unchanged. The
 [current build evidence](phase7-compatibility-options-2026-10-07.md).
 They do not close the outstanding P7 release gates.
 
+The [implementation follow-up](phase7-size-reduction-2026-10-07.md) records
+the adopted changes, replacement binaries, focused validation and cleanup.
+The baseline measurements and recommendations below remain historical.
+
 ## Scope And Method
 
 Source: `5d7f902869fd1c4d8ce66c79513b73535bd4d97e`. Both targets use

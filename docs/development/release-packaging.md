@@ -62,11 +62,19 @@ cover 16 selections and 320 packages. Validated variants whose binaries were
 removed remain historical records; the catalog cannot stage those entries.
 
 The [dependency and binary-size analysis](../../performance-evidence/phase7-binary-size-2026-10-07.md)
-measures the two current full/OpenSSL binaries, separates build dependencies
-from linked code, and records bounded linker experiments. Its recommendations
-do not change the release profile or package catalog. Size changes must preserve
+records the full/OpenSSL baseline, separates build dependencies from linked
+code, and measures bounded linker experiments. The
+[implemented reductions](../../performance-evidence/phase7-size-reduction-2026-10-07.md)
+replace the two retained builds and refresh their package identities and local
+validation evidence. Size changes must preserve
 protocol policy, persistence compatibility and Windows system-only DLL imports;
 code-generation changes also require relevant performance checks.
+
+Linux GNU release-helper builds using OpenSSL pack relative relocations with
+`-Wl,-z,pack-relative-relocs`. These artifacts already require glibc 2.38;
+the relocation format requires glibc 2.36 and does not raise that floor.
+The option is applied to the final CLI link per bundle. Smaller ring-only
+bundles retain their glibc 2.34 policy, and Windows receives no ELF link flags.
 
 ## Embedded And Native Materials
 

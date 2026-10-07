@@ -30,7 +30,11 @@ pub use bt::{
 pub const SESSION_SCHEMA_VERSION: u32 = 3;
 pub const SESSION_RUSQLITE_VERSION: &str = "0.40.2";
 pub const SESSION_RUSQLITE_FEATURES: [&str; 4] = ["bundled", "backup", "cache", "limits"];
-pub const SESSION_BUNDLED_SQLITE_FLAGS: &str = "-DSQLITE_MAX_LIKE_PATTERN_LENGTH=65536";
+pub const SESSION_BUNDLED_SQLITE_FLAGS: &str = concat!(
+    "-DSQLITE_MAX_LIKE_PATTERN_LENGTH=65536 ",
+    "-USQLITE_ENABLE_FTS3 -USQLITE_ENABLE_FTS3_PARENTHESIS ",
+    "-USQLITE_ENABLE_FTS5 -USQLITE_ENABLE_RTREE"
+);
 pub const SESSION_PAGE_SIZE_BYTES: i64 = 4096;
 pub const SESSION_BUSY_TIMEOUT_MS: u64 = 5000;
 pub const SESSION_WAL_AUTO_CHECKPOINT_PAGES: i64 = 1000;
@@ -6683,6 +6687,47 @@ mod tests {
             .expect("seek main header");
         file.write_all(bytes).expect("corrupt main header");
         file.sync_all().expect("sync main corruption");
+    }
+
+    #[test]
+    fn bundled_sqlite_preserves_transactions_and_rejects_unused_virtual_modules() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE ordinary(id INTEGER PRIMARY KEY) STRICT; \
+                 INSERT INTO ordinary VALUES (1); \
+                 BEGIN; INSERT INTO ordinary VALUES (2); ROLLBACK;",
+            )
+            .unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM ordinary", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        for module in ["fts3", "fts4", "fts5", "rtree"] {
+            let error = connection
+                .execute_batch(&format!(
+                    "CREATE VIRTUAL TABLE unused USING {module}(id, min_x, max_x)"
+                ))
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("no such module"),
+                "{module}: {error}"
+            );
+        }
+        for option in ["THREADSAFE=1", "ENABLE_API_ARMOR", "ENABLE_STAT4"] {
+            assert_eq!(
+                connection
+                    .query_row("SELECT sqlite_compileoption_used(?1)", [option], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+                1,
+                "{option}"
+            );
+        }
     }
 
     #[test]

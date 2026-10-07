@@ -299,6 +299,8 @@ def build(args):
     work = getattr(args, "work_dir", None) or default_work
     flags = (["-fsanitize=" + {"address": "address,undefined", "thread": "thread"}[args.sanitizer],
               "-fno-omit-frame-pointer"] if args.sanitizer != "none" else [])
+    sections = (["-ffunction-sections", "-fdata-sections"]
+                if args.target.endswith(("linux-gnu", "windows-gnu")) else [])
     retained_cache = getattr(args, "source_cache", None)
     cache = retained_cache or work / "cache"
     require(work.is_absolute() and cache.is_absolute(), "absolute native directory required")
@@ -351,7 +353,7 @@ def build(args):
             shutil.rmtree(ssl)
         shutil.copytree(upstream, ssl)
         apply_patch(ssl, OPENSSL_PATCH)
-        ssl_flags = ([] if os.name == "nt" else ["-fPIC"]) + flags
+        ssl_flags = ([] if os.name == "nt" else ["-fPIC"]) + flags + sections
         if release:
             # GCC reads the actual maps; OpenSSL records only this relative name
             # in its compiler description. Preserve all arguments in the manifest.
@@ -360,7 +362,7 @@ def build(args):
                 encoding="utf-8")
             ssl_flags = ["CFLAGS=" + " ".join(["-O3", *ssl_flags, "@ariax-remap.rsp"])]
         run(["perl", "Configure", openssl_target, "no-shared", "no-tests", "no-apps", "no-docs",
-             "no-module", "no-legacy", "no-engine", "no-zlib", "no-asm", "--libdir=lib",
+             "no-module", "no-legacy", "no-engine", "no-zlib", "no-asm", "no-quic", "--libdir=lib",
              "--prefix=" + str(ssl_prefix), *ssl_flags], cwd=ssl)
         make = "nmake" if args.target.endswith("msvc") else "make"
         parallel = [] if make == "nmake" else ["-j" + str(args.jobs)]
@@ -388,12 +390,12 @@ def build(args):
                "-DBoost_INCLUDE_DIR=" + str(boost), "-DBOOST_ROOT=" + str(boost),
                "-DOPENSSL_ROOT_DIR=" + str(ssl_prefix)]
     settings = spec["settings"].copy()
-    if release:
-        command_flags = subprocess.list2cmdline(release["flags"]) if os.name == "nt" else shlex.join(release["flags"])
+    compile_flags = (release["flags"] if release else []) + sections + flags
+    if compile_flags:
+        command_flags = subprocess.list2cmdline(compile_flags) if os.name == "nt" else shlex.join(compile_flags)
         settings.update(CMAKE_CXX_FLAGS=command_flags, CMAKE_C_FLAGS=command_flags)
     if flags:
-        settings.update(CMAKE_BUILD_TYPE="RelWithDebInfo", CMAKE_CXX_FLAGS=" ".join(flags),
-                        CMAKE_C_FLAGS=" ".join(flags), CMAKE_CXX_FLAGS_RELWITHDEBINFO="-O1 -g")
+        settings.update(CMAKE_BUILD_TYPE="RelWithDebInfo", CMAKE_CXX_FLAGS_RELWITHDEBINFO="-O1 -g")
     command += ["-D" + key + "=" + value for key, value in settings.items()]
     run(command)
     configuration = settings["CMAKE_BUILD_TYPE"]

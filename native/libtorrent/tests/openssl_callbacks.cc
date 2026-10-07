@@ -11,6 +11,10 @@
 #include <string>
 #include <vector>
 
+#ifndef OPENSSL_NO_QUIC
+#error "The reviewed native OpenSSL build must exclude its unused QUIC transport"
+#endif
+
 static void require(bool value, char const* message) {
     if (!value) throw std::runtime_error(message);
 }

@@ -9,6 +9,20 @@ import release_build as rb
 
 
 class ReleaseBuildTests(unittest.TestCase):
+    def test_packed_relocations_are_scoped_to_compatible_linux_cli_links(self):
+        for bundle in rb.rm.BUNDLES:
+            for backend in ('default', 'openssl'):
+                for windows in (False, True):
+                    command = rb.cli_build_command('cargo', bundle, backend, windows)
+                    eligible = not windows and (backend == 'openssl' or bundle in {'full', 'compat'})
+                    self.assertEqual('link-arg=-Wl,-z,pack-relative-relocs' in command, eligible)
+                    self.assertEqual(command[1], 'rustc' if eligible else 'build')
+                    self.assertEqual('--' in command, eligible)
+                    self.assertIn('release-cli', command)
+        for bundle, backend in (('unknown', 'default'), ('full', 'native-tls')):
+            with self.assertRaises(ValueError):
+                rb.cli_build_command('cargo', bundle, backend, False)
+
     def test_explicit_crypto_selection_preserves_bundle_boundaries(self):
         self.assertEqual(rb.bundle_features('minimal', 'openssl'), 'minimal,tls-openssl')
         for bundle in ('standard', 'full', 'compat'):

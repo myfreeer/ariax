@@ -206,6 +206,9 @@ features are unified; configuration and handshake
 failures never fall back to ring. TLS still runs through rustls with the same
 trust roots, hostname verification and minimum-version rules. The provider
 offers only the existing classical X25519/P-256/P-384 key exchange groups.
+Construct and availability-check only those groups, in that order, rather than
+probing excluded hybrid groups before discarding them. Cipher-suite and
+signature-algorithm availability filtering remains the provider's responsibility.
 Use the reviewed static OpenSSL installation through `OPENSSL_DIR` and
 `OPENSSL_STATIC=1`. SSH AEAD still requires ring in SFTP builds; this option
 does not claim to eliminate every other cryptographic implementation.

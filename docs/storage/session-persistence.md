@@ -1132,6 +1132,13 @@ SQLite:
   `-DSQLITE_MAX_LIKE_PATTERN_LENGTH=65536`; without that repository-scoped
   hard ceiling SQLite clamps the required runtime limit to 50,000 and startup
   correctly fails closed,
+- the internal session schema uses ordinary strict tables and indexes, never
+  FTS3/FTS4/FTS5 or RTree virtual tables. The bundled build undefines
+  `SQLITE_ENABLE_FTS3`, `SQLITE_ENABLE_FTS3_PARENTHESIS`,
+  `SQLITE_ENABLE_FTS5` and `SQLITE_ENABLE_RTREE`. User-created virtual-table
+  schemas are outside the session format. Existing supported session schemas,
+  migration, backups, thread safety, API armor and durability settings remain
+  unchanged; external SQLite tools can still inspect ordinary session tables,
 - WAL auto-checkpoint is 1000 pages. The executable truncate-checkpoint primitive
   reports a busy checkpoint and is a no-op in DELETE mode; clean-shutdown and
   size-trigger invocation of that primitive remain pending integration work,

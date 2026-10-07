@@ -2,7 +2,7 @@
 xtask = "run --locked --package ariax-xtask --"
 
 [env]
-LIBSQLITE3_FLAGS = { value = "-DSQLITE_MAX_LIKE_PATTERN_LENGTH=65536", force = true }
+LIBSQLITE3_FLAGS = { value = "-DSQLITE_MAX_LIKE_PATTERN_LENGTH=65536 -USQLITE_ENABLE_FTS3 -USQLITE_ENABLE_FTS3_PARENTHESIS -USQLITE_ENABLE_FTS5 -USQLITE_ENABLE_RTREE", force = true }
 OPENSSL_STATIC = { value = "1", force = true }
 
 # Native C++ dependencies use the active MinGW runtime. Do not mix in

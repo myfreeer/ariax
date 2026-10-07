@@ -47,6 +47,13 @@ helper separately remaps installed headers when compiling the bridge.
 Changing builder inputs invalidates older installation provenance; do not
 rewrite an old manifest to claim a new recipe built its libraries.
 
+GNU Linux and Windows builds use function/data sections at the existing
+optimization level so the final linker can discard unreferenced native code.
+OpenSSL is built with `no-quic`: current transports use TLS over TCP and do not
+expose OpenSSL QUIC. TLS versions, cryptographic algorithms, callback adapters
+and exception support remain available. Native provenance includes the recipe
+and flags; changes require fresh libraries and callback/transport validation.
+
 `ariax.patch` adds a storage admission hold checked by every torrent
 initialization path. Held metadata is queryable independently of alerts.
 Approval installs every file mapping and priority together before initialization;
@@ -88,6 +95,8 @@ the pinned OpenSSL. It covers typed-stack lookup/copy/free, failed-copy cleanup,
 random generation, known SHA and AES vectors, certificate decoding/encoding,
 and rejected algorithm, key-length and malformed-certificate inputs. Run it
 with the same fail-fast sanitizers as the native integration tests.
+`tests/tls.cc` additionally drives libssl TLS 1.2 and 1.3 over memory BIOs,
+checking trusted payload exchange and rejection of an untrusted certificate.
 
 Libtorrent uses the upstream BSD license, Boost the Boost Software License 1.0,
 and OpenSSL Apache 2.0. The builder retains their license texts in the native
