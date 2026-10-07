@@ -957,6 +957,9 @@ follows that transaction. Invalid input publishes no task prefix. Uncertain
 accepted persistence faults the driver for recovery. JSON import retains its
 paused-by-default behavior; aria2 input-file import honors validated per-task
 pause options. Existing progress is never inferred from an exported text file.
+Importing existing aria2 partial downloads or `.aria2` control files is outside
+compatibility scope. Ariax resumes its own journaled progress; the supported
+aria2 text importer admits task descriptions without migrating aria2 progress.
 
 One import admits at most 1,000 tasks and 8 MiB of owned batch metadata, also
 subject to the shared RPC and scheduler limits. Its first task-persistence

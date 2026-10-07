@@ -702,6 +702,10 @@ other SSH algorithms and key/certificate handling retain existing crypto
 dependencies. Fully instrumented local TSan passes its clean/racy controls,
 std/libtest harness, 73 runtime, 36 replay/storage and two native FFI tests.
 
+The [compatibility scope decision](aria2-compatibility.md#resolved-scope)
+excludes existing aria2 partial downloads and `.aria2` control-file migration
+from P7 acceptance. Ariax's own resume and recovery remain required.
+
 | Work Package | Completed Local Evidence | Remaining Acceptance |
 | --- | --- | --- |
 | `P7-01` | Earlier 41 native Windows diagnostics and the [bounded campaign's 410 attempts](../../performance-evidence/phase7-local-campaign-2026-10-05.md#transport-diagnostics), preserving one 100.250 ms `changeUri` timing failure. Host observations do not attribute that delay. | Historical Windows `changeUri`/`addUri` and native Linux 530.097 ms mixed-burst attribution are explicitly deferred in the current local goal. They remain full Phase-7 acceptance work and are not fixed. |

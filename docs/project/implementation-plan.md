@@ -633,8 +633,11 @@ evidence; they do not establish power-loss durability. A VM campaign must record
 its storage/cache model and does not by itself prove physical-device guarantees.
 Compatibility work first implements straightforward gaps through existing typed
 boundaries, then records behavior and migration tradeoffs before any replacement
-artifact decision. OpenSSL-linked builds reuse OpenSSL for TLS and SSH RSA;
-other builds document the RustCrypto RSA limitation without hiding the advisory.
+artifact decision. Existing aria2 partial downloads and `.aria2` control-file
+migration are excluded from compatibility scope and P7 acceptance; Ariax's own
+resume and recovery remain required. OpenSSL-linked builds reuse OpenSSL for
+TLS and SSH RSA; other builds document the RustCrypto RSA limitation without
+hiding the advisory.
 The work below retains its full acceptance requirements; Phase-6 completion
 and local hardening results are not release approval.
 

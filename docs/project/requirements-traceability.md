@@ -779,6 +779,10 @@ Acceptance:
 
 Requirement clarification:
 
+- Existing aria2 partial downloads and `.aria2` control-file migration are
+  excluded from compatibility and P7 acceptance. Ariax's own resume/recovery
+  and the supported text input-file importer remain in scope; see the
+  [compatibility scope decision](aria2-compatibility.md#resolved-scope).
 - load-testing and multi-instance/server orchestration are explicitly non-goals.
 
 Design coverage:

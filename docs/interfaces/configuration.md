@@ -531,7 +531,10 @@ accept a bare flag as `true`; use `=false` to disable them. `--` ends option
 parsing. Aliases are canonicalized before duplicate and semantic validation;
 unknown options, unavailable features and unsupported options still reject
 before bootstrap. In particular, `-d` cannot override the explicit output root
-and `-c` does not enable arbitrary aria2 partial-file import.
+and `-c` remains unsupported on direct add commands. Importing existing aria2
+partial downloads or their `.aria2` control files is outside compatibility
+scope and is not a P7 acceptance requirement. Ariax's own resume and recovery
+remain in scope; aria2 text input-file import still admits task descriptions.
 
 Startup accepts `-i FILE` and `-iFILE` as aliases for `--input-file`, within
 the existing RPC-service session-import boundary. `--profile VALUE` and
@@ -555,9 +558,9 @@ Basic public behavior:
   output-root boundary and is unavailable as a direct CLI override.
 - `input-file` is wired for RPC-service startup, with `-i` as an alias.
   `help`/`version` are standalone CLI commands.
-- Public `max-concurrent-downloads`, `check-integrity` and aria2 `continue`
-  semantics remain gaps; existing scheduling, checksum verification and Ariax
-  journal recovery do not establish their aria2 behavior. See the
+- Public `max-concurrent-downloads` and `check-integrity` semantics remain gaps.
+  Any future `continue` spelling must define its behavior for Ariax-owned
+  progress; it does not require existing aria2 partial-file support. See the
   [compatibility decisions](../project/aria2-compatibility.md).
 
 HTTP/FTP/SFTP:
