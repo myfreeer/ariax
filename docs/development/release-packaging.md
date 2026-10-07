@@ -61,6 +61,13 @@ and [notices](../../performance-evidence/phase7-third-party-notices-2026-10-07.t
 cover 16 selections and 320 packages. Validated variants whose binaries were
 removed remain historical records; the catalog cannot stage those entries.
 
+The [dependency and binary-size analysis](../../performance-evidence/phase7-binary-size-2026-10-07.md)
+measures the two current full/OpenSSL binaries, separates build dependencies
+from linked code, and records bounded linker experiments. Its recommendations
+do not change the release profile or package catalog. Size changes must preserve
+protocol policy, persistence compatibility and Windows system-only DLL imports;
+code-generation changes also require relevant performance checks.
+
 ## Embedded And Native Materials
 
 Every current bundle embeds the [public-suffix snapshot](../../assets/public-suffix-list.dat)

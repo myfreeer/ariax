@@ -1,0 +1,1306 @@
+{
+  "schema": 1,
+  "status": "Analysis complete; production binaries, build policy and catalog unchanged",
+  "releaseApproved": false,
+  "sourceCommit": "5d7f902869fd1c4d8ce66c79513b73535bd4d97e",
+  "inputs": {
+    "Cargo.toml": "3108256b0163efad232213b42f7d28d3868270597a2a97edfc39d027455265b3",
+    "Cargo.lock": "f9e83b58a90b9aff33cc144cb59d680b2aa8b4f2f0b86614006dd3783268e365"
+  },
+  "profile": {
+    "name": "release-cli",
+    "optLevel": 3,
+    "panic": "abort",
+    "lto": "fat",
+    "codegenUnits": 1,
+    "strip": "symbols"
+  },
+  "method": {
+    "toolchain": "1.97.1",
+    "maxCompilerWorkers": 2,
+    "buildScope": "One CLI-only unstripped relink per host, reusing all existing dependency artifacts; no native rebuild or full matrix",
+    "graph": "Pinned full CLI, no default features, target-filtered normal edges with --no-dedupe; procedural macro subtrees excluded. Workspace metadata used only to explain parents, not runtime feature counts.",
+    "symbolScope": "Post-LTO names are lower bounds and can overlap generic instantiations. Inlined code is not reliably attributable to a crate. Exact duplicate byte counts do not establish safe removability.",
+    "reproduce": [
+      "Use scripts/release_build.py build_environment with the existing final build roots, native installations and epoch 1791286491",
+      "cargo tree --locked --offline -p ariax-cli --no-default-features --features full --target TARGET -e normal --no-dedupe --prefix depth --format \"{p} {f}\"",
+      "cargo rustc --locked --offline -p ariax-cli --no-default-features --features full --profile release-cli -- --emit=link=SCRATCH/ariax-symbols -Cstrip=none -Csave-temps=yes -Clink-arg=-Wl,-Map=SCRATCH/ariax.map --print=link-args",
+      "Inspect ELF/PE sections, nm -S --demangle, archive member sections, and actual link maps",
+      "Reuse the printed Linux link command and saved objects, change only output path, add -Wl,-s and each listed experiment flag; remove all analysis artifacts afterward"
+    ]
+  },
+  "hosts": {
+    "linux": {
+      "binary": {
+        "bytes": 24991648,
+        "sha256": "3ab5d4799d16a5b7035ff3c9bdfc91af1d67e802139698a10ffeaa24333dc5c2",
+        "sections": {
+          "NULL": {
+            "bytes": 0,
+            "address": 0,
+            "type": "0000000000000000",
+            "flags": "",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          ".interp": {
+            "bytes": 28,
+            "address": 736,
+            "type": "PROGBITS",
+            "flags": "A",
+            "sha256": "9097c98ea70f6f3b01d50145eb72bf55ad1f4e9713bccf27bd6405d6254eed00"
+          },
+          ".note.ABI-tag": {
+            "bytes": 32,
+            "address": 764,
+            "type": "NOTE",
+            "flags": "A",
+            "sha256": "6e48317ad93a8ac2dc04321465ede06d1274543fc8ab172e68171a9d684bb313"
+          },
+          ".note.gnu.build-id": {
+            "bytes": 36,
+            "address": 796,
+            "type": "NOTE",
+            "flags": "A",
+            "sha256": "a256681776170dc34da17e7ebc0b364d810c4498e61929f0692da9923350b941"
+          },
+          ".dynsym": {
+            "bytes": 10080,
+            "address": 832,
+            "type": "DYNSYM",
+            "flags": "A",
+            "sha256": "bd17d404156d04f976b83c22b8532d561ed4e5a9678f72d47fbca6f0519563a7"
+          },
+          ".gnu.version": {
+            "bytes": 840,
+            "address": 10912,
+            "type": "VERSYM",
+            "flags": "A",
+            "sha256": "aad03301d5467f9ee9f1dd4abf109c0e29d03802a1272cc09cf9ac49dd319d76"
+          },
+          ".gnu.version_r": {
+            "bytes": 864,
+            "address": 11752,
+            "type": "VERNEED",
+            "flags": "A",
+            "sha256": "fa605b17c6a8dfec3a9d8e277b79ed8e7fcf6886d9b16ef2d71646d6beeb0516"
+          },
+          ".gnu.hash": {
+            "bytes": 28,
+            "address": 12616,
+            "type": "GNU_HASH",
+            "flags": "A",
+            "sha256": "0fce9686b7f517dc3d8c4e2dbbf2d02b23c9509f4d590766f776e4346d1acbba"
+          },
+          ".dynstr": {
+            "bytes": 9186,
+            "address": 12644,
+            "type": "STRTAB",
+            "flags": "A",
+            "sha256": "aff3c3af9ce80454b374d17fe5b7c14add8596e54302ef1c8412c11373350b72"
+          },
+          ".rela.dyn": {
+            "bytes": 1132848,
+            "address": 21832,
+            "type": "RELA",
+            "flags": "A",
+            "sha256": "e7dc1f410449426c9d57403265b73fa5d771b8a24bf0d5036d32e8abd893cae3"
+          },
+          ".rela.plt": {
+            "bytes": 7824,
+            "address": 1154680,
+            "type": "RELA",
+            "flags": "AI",
+            "sha256": "d9728fd96b931c4183fe5e05f35e60da9e3003c9faaa7278dc9f25064acf9c0e"
+          },
+          ".rodata": {
+            "bytes": 2084345,
+            "address": 1162560,
+            "type": "PROGBITS",
+            "flags": "AMS",
+            "sha256": "e4c0bf2b437916dab4e125a3f31c13a008905197091f5596d03ee7b6b3e3564f"
+          },
+          ".gcc_except_table": {
+            "bytes": 141292,
+            "address": 3246908,
+            "type": "PROGBITS",
+            "flags": "A",
+            "sha256": "f8ffa6c7fe3831d18033ae60c1631845c5bcb1efac70281ca80774979f0893c1"
+          },
+          ".eh_frame_hdr": {
+            "bytes": 277924,
+            "address": 3388200,
+            "type": "PROGBITS",
+            "flags": "A",
+            "sha256": "7385bcd41fdbe2bebd1b3bdaf860f671d9c20ad70a2144d25b06e3640880ba5f"
+          },
+          ".eh_frame": {
+            "bytes": 1793080,
+            "address": 3666128,
+            "type": "PROGBITS",
+            "flags": "A",
+            "sha256": "682c81a7583fac2314f45782fddd0380323b54bd28f25f161eb6e4b378e2365f"
+          },
+          ".text": {
+            "bytes": 18435214,
+            "address": 5463360,
+            "type": "PROGBITS",
+            "flags": "AX",
+            "sha256": "6a036892518528bbae560f71575fafac6bf2f28b35413dd748ce5a0b1ec2bad9"
+          },
+          ".init": {
+            "bytes": 23,
+            "address": 23898576,
+            "type": "PROGBITS",
+            "flags": "AX",
+            "sha256": "cbaf5396264d32d32940ae66d39412ea6c2202eb3733487add6291cf8dc51853"
+          },
+          ".fini": {
+            "bytes": 9,
+            "address": 23898600,
+            "type": "PROGBITS",
+            "flags": "AX",
+            "sha256": "66e6f54550612182b4ad78f30b140dd08318b968db3878de2db65fef87dc04d7"
+          },
+          ".plt": {
+            "bytes": 5232,
+            "address": 23898624,
+            "type": "PROGBITS",
+            "flags": "AX",
+            "sha256": "5dcab050b0980a5cbe8f6c82a960cde8f76676cb0d44c1603978fe051c467be1"
+          },
+          ".tdata": {
+            "bytes": 120,
+            "address": 23907952,
+            "type": "PROGBITS",
+            "flags": "WAT",
+            "sha256": "3c0c8ec2bd7185e22c5b2a5b25bfadaebd3271e9e8bb9f62a405108616897b67"
+          },
+          ".tbss": {
+            "bytes": 5624,
+            "address": 23908080,
+            "type": "NOBITS",
+            "flags": "WAT",
+            "sha256": null
+          },
+          ".fini_array": {
+            "bytes": 8,
+            "address": 23908072,
+            "type": "FINI_ARRAY",
+            "flags": "WA",
+            "sha256": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc"
+          },
+          ".init_array": {
+            "bytes": 704,
+            "address": 23908080,
+            "type": "INIT_ARRAY",
+            "flags": "WA",
+            "sha256": "2dd23156fbb26642d6f2194611e536f77213eb212f6a23654f9d5319a82ac556"
+          },
+          ".data.rel.ro": {
+            "bytes": 840984,
+            "address": 23908800,
+            "type": "PROGBITS",
+            "flags": "WA",
+            "sha256": "6ec628daeb304583685e315d937276e9a0c03efef7b41f1ef0abe569019aabcc"
+          },
+          ".dynamic": {
+            "bytes": 496,
+            "address": 24749784,
+            "type": "DYNAMIC",
+            "flags": "WA",
+            "sha256": "e72dbddc1c514ffec6152a994229ce16dd53d8e8a54e4e7ee79921bf12f8f08a"
+          },
+          ".got": {
+            "bytes": 3096,
+            "address": 24750280,
+            "type": "PROGBITS",
+            "flags": "WA",
+            "sha256": "9077a7b633be5045840169c6b10fbec400fe3dcb1ffe071fc12c7a5a915fa592"
+          },
+          ".got.plt": {
+            "bytes": 2632,
+            "address": 24753376,
+            "type": "PROGBITS",
+            "flags": "WA",
+            "sha256": "9c40173879ab4bb20bc2af23d08f51e1bd8de46f36b6b82692c807d6e9130ba1"
+          },
+          ".relro_padding": {
+            "bytes": 216,
+            "address": 24756008,
+            "type": "NOBITS",
+            "flags": "WA",
+            "sha256": null
+          },
+          ".tm_clone_table": {
+            "bytes": 0,
+            "address": 24760104,
+            "type": "PROGBITS",
+            "flags": "WA",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          ".data": {
+            "bytes": 241176,
+            "address": 24760128,
+            "type": "PROGBITS",
+            "flags": "WA",
+            "sha256": "9afa1091c40733d5d831dcf8bcecc1f99667841b25fe3cdb29d9d6173ce81e77"
+          },
+          ".bss": {
+            "bytes": 31400,
+            "address": 25001344,
+            "type": "NOBITS",
+            "flags": "WA",
+            "sha256": null
+          },
+          ".comment": {
+            "bytes": 195,
+            "address": 0,
+            "type": "PROGBITS",
+            "flags": "MS",
+            "sha256": "fa21e9f07c89c07cf55249784b20643fd61011fc6a8a19096e5d94529cd82205"
+          },
+          ".shstrtab": {
+            "bytes": 323,
+            "address": 0,
+            "type": "STRTAB",
+            "flags": "",
+            "sha256": "7510186a71c7089c233b14a6312dc39dea7dc055e0d10db2ee7f133aa1571daf"
+          }
+        }
+      },
+      "target": "x86_64-unknown-linux-gnu",
+      "nativeManifestSha256": "72ec758bc826e738ecd080b35fb244e641758a67bf1b960b9bfd21cc0b81d5a5",
+      "runtime": {
+        "systemLibraries": [
+          "ld-linux-x86-64.so.2",
+          "libc.so.6",
+          "libgcc_s.so.1",
+          "libm.so.6",
+          "libstdc++.so.6"
+        ],
+        "additionalRuntimeFiles": [],
+        "cryptoBackend": "openssl",
+        "minimumGlibc": "2.38",
+        "interpreter": "/lib64/ld-linux-x86-64.so.2",
+        "minimumGlibcxx": "3.4.30"
+      },
+      "normalRuntimePackageCountIncludingWorkspace": 257,
+      "multiversionPackages": {
+        "generic-array": [
+          "0.14.9",
+          "1.4.5"
+        ],
+        "getrandom": [
+          "0.2.17",
+          "0.4.3"
+        ],
+        "hashbrown": [
+          "0.14.5",
+          "0.17.1"
+        ],
+        "sha3": [
+          "0.11.0",
+          "0.12.0"
+        ],
+        "winnow": [
+          "0.7.15",
+          "1.0.4"
+        ]
+      },
+      "analysisEquivalence": {
+        "allBaselineAllocatedSectionsMatch": true,
+        "exception": "ELF build-id differs because unstripped link output differs"
+      },
+      "attribution": {
+        "textBytesByObjectGroup": {
+          "other": 126325,
+          "Rust (fat LTO)": 9907673,
+          "C++ bridge": 66461,
+          "torrent-rasterbar": 3674615,
+          "ssl": 612749,
+          "crypto": 2333087,
+          "ring native": 40659,
+          "SQLite": 1662280
+        },
+        "openSslQuicTextBytes": 188975,
+        "textInputObjects": 1087,
+        "nativeOpenSslTextByRlib": {
+          "libariax_bt_libtorrent_sys-059e04db02884a8a.rlib": 2945836
+        }
+      }
+    },
+    "windows": {
+      "binary": {
+        "bytes": 25228288,
+        "sha256": "09e77ab9f3dc8e6f5bde3ad072c5f4a2f72f4b0c3ab30d23067eb7044ea38370",
+        "sections": {
+          ".text": {
+            "virtualBytes": 20261920,
+            "rawBytes": 20262400,
+            "address": 4096,
+            "flags": 1610612768,
+            "sha256": "33180d14e10966fb421f8f82795dfa1b61b91dc7e0557b14e7462ffdfbf9bafb"
+          },
+          ".data": {
+            "virtualBytes": 257056,
+            "rawBytes": 257536,
+            "address": 20267008,
+            "flags": 3221225536,
+            "sha256": "069a74ef823cb5c344aee8f1aa717b844c6a4161c80b0961cb934ffcbff8ddc9"
+          },
+          ".rdata": {
+            "virtualBytes": 3503968,
+            "rawBytes": 3504128,
+            "address": 20525056,
+            "flags": 1073741888,
+            "sha256": "111a926eba14ae08784df0d0a0ffaf09d07fe5a52faae3d3b542d5f1d6624e00"
+          },
+          ".pdata": {
+            "virtualBytes": 451392,
+            "rawBytes": 451584,
+            "address": 24031232,
+            "flags": 1073741888,
+            "sha256": "a96e63a776a1445f89422d86886b6e4979465faf9eed63e1137ed640e1952309"
+          },
+          ".xdata": {
+            "virtualBytes": 625864,
+            "rawBytes": 626176,
+            "address": 24485888,
+            "flags": 1073741888,
+            "sha256": "74971a6e60cd356ca6f4adb8b0aae1c34bb831f3b0c83cb7e9c947f711f9e53f"
+          },
+          ".bss": {
+            "virtualBytes": 27144,
+            "rawBytes": 0,
+            "address": 25112576,
+            "flags": 3221225600,
+            "sha256": null
+          },
+          ".idata": {
+            "virtualBytes": 16528,
+            "rawBytes": 16896,
+            "address": 25141248,
+            "flags": 1073741888,
+            "sha256": "3a9bd33b0766eacdcdd34935520e9c165cd555b49878811fa285c55e83735166"
+          },
+          ".tls": {
+            "virtualBytes": 2648,
+            "rawBytes": 3072,
+            "address": 25161728,
+            "flags": 3221225536,
+            "sha256": "e80232b4d18d0bb7e794be263ba937626f383f9917d4b8a737ba893a8f752293"
+          },
+          ".rsrc": {
+            "virtualBytes": 800,
+            "rawBytes": 1024,
+            "address": 25165824,
+            "flags": 1073741888,
+            "sha256": "96a544d13e1ee7914671a30265b95b4a138d3758b2092041764b3b4135df48c2"
+          },
+          ".reloc": {
+            "virtualBytes": 103992,
+            "rawBytes": 104448,
+            "address": 25169920,
+            "flags": 1107296320,
+            "sha256": "f3eb4981f97c13d53d339d1b2cc53f0bf33068feda9950d9127aaa73c843b8e2"
+          }
+        }
+      },
+      "target": "x86_64-pc-windows-gnu",
+      "nativeManifestSha256": "66d13b7b9a11a74848992c7bc48851e4c8191d1e22f9c1dd257593b81a648440",
+      "runtime": {
+        "systemLibraries": [
+          "advapi32.dll",
+          "api-ms-win-core-synch-l1-2-0.dll",
+          "bcryptprimitives.dll",
+          "crypt32.dll",
+          "iphlpapi.dll",
+          "kernel32.dll",
+          "msvcrt.dll",
+          "mswsock.dll",
+          "ntdll.dll",
+          "oleaut32.dll",
+          "user32.dll",
+          "ws2_32.dll"
+        ],
+        "additionalRuntimeFiles": [],
+        "cryptoBackend": "openssl"
+      },
+      "normalRuntimePackageCountIncludingWorkspace": 268,
+      "multiversionPackages": {
+        "generic-array": [
+          "0.14.9",
+          "1.4.5"
+        ],
+        "getrandom": [
+          "0.2.17",
+          "0.4.3"
+        ],
+        "hashbrown": [
+          "0.14.5",
+          "0.17.1"
+        ],
+        "sha3": [
+          "0.11.0",
+          "0.12.0"
+        ],
+        "winnow": [
+          "0.7.15",
+          "1.0.4"
+        ]
+      },
+      "analysisEquivalence": {
+        "allBaselineAllocatedSectionsMatch": true,
+        "exception": null
+      },
+      "attribution": {
+        "textBytesByObjectGroup": {
+          "Windows C/C++ runtime + other": 924745,
+          "Rust (fat LTO)": 10082264,
+          "torrent-rasterbar": 4039344,
+          "ssl": 696096,
+          "crypto": 2671760,
+          "ring native": 43909,
+          "SQLite": 1726688,
+          "C++ bridge": 69232
+        },
+        "nativeOpenSslTextByRlib": {
+          "libariax_bt_libtorrent_sys-a80bf97ddac1e1e4.rlib": 3367856
+        },
+        "openSslQuicTextBytes": 210528
+      },
+      "importsRechecked": true,
+      "importDescriptorCounts": {
+        "advapi32.dll": 4,
+        "api-ms-win-core-synch-l1-2-0.dll": 1,
+        "bcryptprimitives.dll": 1,
+        "crypt32.dll": 1,
+        "iphlpapi.dll": 1,
+        "kernel32.dll": 9,
+        "msvcrt.dll": 1,
+        "mswsock.dll": 1,
+        "ntdll.dll": 2,
+        "oleaut32.dll": 1,
+        "user32.dll": 2,
+        "ws2_32.dll": 2
+      },
+      "importDescriptorNote": "Repeated system DLL descriptors from multiple import-library/raw-dylib producers; 12 unique Windows DLLs, not separate runtime distributions. Whole .idata is 16528 bytes; no loader/import coalescing change proposed."
+    }
+  },
+  "nativeArchiveSections": {
+    "linux": {
+      "crypto": {
+        "archiveBytes": 10667284,
+        "textBytes": 2619746,
+        "separateFunctionSectionBytes": 31,
+        "sectionNames": 18
+      },
+      "ssl": {
+        "archiveBytes": 2094246,
+        "textBytes": 661838,
+        "separateFunctionSectionBytes": 52,
+        "sectionNames": 17
+      },
+      "torrent-rasterbar": {
+        "archiveBytes": 23607670,
+        "textBytes": 2507668,
+        "separateFunctionSectionBytes": 2584109,
+        "sectionNames": 5309
+      }
+    },
+    "windows": {
+      "crypto": {
+        "archiveBytes": 8634688,
+        "textBytes": 2976976,
+        "separateFunctionSectionBytes": 112,
+        "sectionNames": 269
+      },
+      "ssl": {
+        "archiveBytes": 1726798,
+        "textBytes": 747360,
+        "separateFunctionSectionBytes": 128,
+        "sectionNames": 57
+      },
+      "torrent-rasterbar": {
+        "archiveBytes": 28664288,
+        "textBytes": 3053648,
+        "separateFunctionSectionBytes": 3040656,
+        "sectionNames": 11523
+      }
+    }
+  },
+  "conflicts": {
+    "linux": {
+      "strongGlobalSymbolNames": 9661,
+      "namesAtMultipleAddresses": {},
+      "permissiveMultipleDefinitionFlagObserved": false,
+      "representativeOpenSslSymbols": {
+        "SSL_new": [
+          "1261da0"
+        ],
+        "EVP_DigestInit_ex": [
+          "136a770"
+        ],
+        "EVP_PKEY_sign": [
+          "139a2b0"
+        ],
+        "OPENSSL_init_crypto": [
+          "13a5d20"
+        ]
+      }
+    },
+    "windows": {
+      "strongGlobalSymbolNames": 23588,
+      "namesAtMultipleAddresses": {},
+      "permissiveMultipleDefinitionFlagObserved": false,
+      "representativeOpenSslSymbols": {
+        "SSL_new": [
+          "140b559c0"
+        ],
+        "EVP_DigestInit_ex": [
+          "140c2af30"
+        ],
+        "EVP_PKEY_sign": [
+          "140c55a40"
+        ],
+        "OPENSSL_init_crypto": [
+          "140c5fa40"
+        ]
+      }
+    }
+  },
+  "identicalFunctionBytesLinux": {
+    "minFunctionBytes": 32,
+    "groups": 81,
+    "duplicateBytesUpperBound": 39979,
+    "largestGroups": [
+      {
+        "bytesEach": 55,
+        "copies": 145,
+        "duplicateBytesUpperBound": 7920,
+        "symbols": [
+          "PrivateKeyInfo_der2dh_does_selection",
+          "PrivateKeyInfo_der2dhx_does_selection",
+          "PrivateKeyInfo_der2dsa_does_selection",
+          "PrivateKeyInfo_der2ec_does_selection",
+          "PrivateKeyInfo_der2ed25519_does_selection"
+        ]
+      },
+      {
+        "bytesEach": 55,
+        "copies": 87,
+        "duplicateBytesUpperBound": 4730,
+        "symbols": [
+          "SubjectPublicKeyInfo_der2dh_does_selection",
+          "SubjectPublicKeyInfo_der2dhx_does_selection",
+          "SubjectPublicKeyInfo_der2dsa_does_selection",
+          "SubjectPublicKeyInfo_der2ec_does_selection",
+          "SubjectPublicKeyInfo_der2ed25519_does_selection"
+        ]
+      },
+      {
+        "bytesEach": 181,
+        "copies": 21,
+        "duplicateBytesUpperBound": 3620,
+        "symbols": [
+          "unsigned int const* std::__find_if<unsigned int const*, __gnu_cxx::__ops::_Iter_negate<libtorrent::digest32<160l>::is_all_zeros() const::{lambda(unsigned int)#1}> >(unsigned int const*, unsigned int const*, __gnu_cxx::__ops::_Iter_negate<libtorrent::digest32<160l>::is_all_zeros() const::{lambda(unsigned int)#1}>, std::random_access_iterator_tag) [clone .isra.0]",
+          "unsigned int const* std::__find_if<unsigned int const*, __gnu_cxx::__ops::_Iter_negate<libtorrent::digest32<160l>::is_all_zeros() const::{lambda(unsigned int)#1}> >(unsigned int const*, unsigned int const*, __gnu_cxx::__ops::_Iter_negate<libtorrent::digest32<160l>::is_all_zeros() const::{lambda(unsigned int)#1}>, std::random_access_iterator_tag) [clone .isra.0]",
+          "unsigned int const* std::__find_if<unsigned int const*, __gnu_cxx::__ops::_Iter_negate<libtorrent::digest32<160l>::is_all_zeros() const::{lambda(unsigned int)#1}> >(unsigned int const*, unsigned int const*, __gnu_cxx::__ops::_Iter_negate<libtorrent::digest32<160l>::is_all_zeros() const::{lambda(unsigned int)#1}>, std::random_access_iterator_tag) [clone .isra.0]",
+          "unsigned int const* std::__find_if<unsigned int const*, __gnu_cxx::__ops::_Iter_negate<libtorrent::digest32<160l>::is_all_zeros() const::{lambda(unsigned int)#1}> >(unsigned int const*, unsigned int const*, __gnu_cxx::__ops::_Iter_negate<libtorrent::digest32<160l>::is_all_zeros() const::{lambda(unsigned int)#1}>, std::random_access_iterator_tag) [clone .isra.0]",
+          "unsigned int const* std::__find_if<unsigned int const*, __gnu_cxx::__ops::_Iter_negate<libtorrent::digest32<160l>::is_all_zeros() const::{lambda(unsigned int)#1}> >(unsigned int const*, unsigned int const*, __gnu_cxx::__ops::_Iter_negate<libtorrent::digest32<160l>::is_all_zeros() const::{lambda(unsigned int)#1}>, std::random_access_iterator_tag) [clone .isra.0]"
+        ]
+      },
+      {
+        "bytesEach": 3074,
+        "copies": 2,
+        "duplicateBytesUpperBound": 3074,
+        "symbols": [
+          "<aes::backends::x86_aes::Aes<15>>::encrypt::<<ctr::ctr_core::CtrCore<_, _> as cipher::stream::core_api::StreamCipherCore>::process_with_backend::Closure<ctr::flavors::ctr32::Ctr32BE, typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UTerm, typenum::bit::B1>, typenum::bit::B0>, typenum::bit::B0>, typenum::bit::B0>, typenum::bit::B0>, cipher::stream::core_api::ApplyBlocksCtx<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UTerm, typenum::bit::B1>, typenum::bit::B0>, typenum::bit::B0>, typenum::bit::B0>, typenum::bit::B0>>>>",
+          "<aes::backends::x86_aes::AesEnc<15>>::encrypt::<<ctr::ctr_core::CtrCore<_, _> as cipher::stream::core_api::StreamCipherCore>::process_with_backend::Closure<ctr::flavors::ctr32::Ctr32BE, typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UTerm, typenum::bit::B1>, typenum::bit::B0>, typenum::bit::B0>, typenum::bit::B0>, typenum::bit::B0>, cipher::stream::core_api::ApplyBlocksCtx<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UTerm, typenum::bit::B1>, typenum::bit::B0>, typenum::bit::B0>, typenum::bit::B0>, typenum::bit::B0>>>>"
+        ]
+      },
+      {
+        "bytesEach": 2419,
+        "copies": 2,
+        "duplicateBytesUpperBound": 2419,
+        "symbols": [
+          "<aes::backends::x86_aes::Aes<11>>::encrypt::<<ctr::ctr_core::CtrCore<_, _> as cipher::stream::core_api::StreamCipherCore>::process_with_backend::Closure<ctr::flavors::ctr32::Ctr32BE, typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UTerm, typenum::bit::B1>, typenum::bit::B0>, typenum::bit::B0>, typenum::bit::B0>, typenum::bit::B0>, cipher::stream::core_api::ApplyBlocksCtx<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UTerm, typenum::bit::B1>, typenum::bit::B0>, typenum::bit::B0>, typenum::bit::B0>, typenum::bit::B0>>>>",
+          "<aes::backends::x86_aes::AesEnc<11>>::encrypt::<<ctr::ctr_core::CtrCore<_, _> as cipher::stream::core_api::StreamCipherCore>::process_with_backend::Closure<ctr::flavors::ctr32::Ctr32BE, typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UTerm, typenum::bit::B1>, typenum::bit::B0>, typenum::bit::B0>, typenum::bit::B0>, typenum::bit::B0>, cipher::stream::core_api::ApplyBlocksCtx<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UTerm, typenum::bit::B1>, typenum::bit::B0>, typenum::bit::B0>, typenum::bit::B0>, typenum::bit::B0>>>>"
+        ]
+      },
+      {
+        "bytesEach": 1854,
+        "copies": 2,
+        "duplicateBytesUpperBound": 1854,
+        "symbols": [
+          "boost::multi_index::detail::ordered_index_node_impl<boost::multi_index::detail::null_augment_policy, std::allocator<char> >::rebalance_for_extract(boost::multi_index::detail::ordered_index_node_impl<boost::multi_index::detail::null_augment_policy, std::allocator<char> >*, boost::multi_index::detail::ordered_index_node_compressed_base<boost::multi_index::detail::null_augment_policy, std::allocator<char> >::parent_ref, boost::multi_index::detail::ordered_index_node_impl<boost::multi_index::detail::null_augment_policy, std::allocator<char> >*&, boost::multi_index::detail::ordered_index_node_impl<boost::multi_index::detail::null_augment_policy, std::allocator<char> >*&) [clone .isra.0]",
+          "boost::multi_index::detail::ordered_index_node_impl<boost::multi_index::detail::null_augment_policy, std::allocator<char> >::rebalance_for_extract(boost::multi_index::detail::ordered_index_node_impl<boost::multi_index::detail::null_augment_policy, std::allocator<char> >*, boost::multi_index::detail::ordered_index_node_compressed_base<boost::multi_index::detail::null_augment_policy, std::allocator<char> >::parent_ref, boost::multi_index::detail::ordered_index_node_impl<boost::multi_index::detail::null_augment_policy, std::allocator<char> >*&, boost::multi_index::detail::ordered_index_node_impl<boost::multi_index::detail::null_augment_policy, std::allocator<char> >*&) [clone .isra.0]"
+        ]
+      },
+      {
+        "bytesEach": 1093,
+        "copies": 2,
+        "duplicateBytesUpperBound": 1093,
+        "symbols": [
+          "<hybrid_array::Array<u8, typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UTerm, typenum::bit::B1>, typenum::bit::B1>, typenum::bit::B0>, typenum::bit::B0>, typenum::bit::B0>, typenum::bit::B0>> as core::convert::From<p384::arithmetic::scalar::Scalar>>::from",
+          "<p384::arithmetic::scalar::Scalar as ff::PrimeField>::to_repr"
+        ]
+      },
+      {
+        "bytesEach": 471,
+        "copies": 3,
+        "duplicateBytesUpperBound": 942,
+        "symbols": [
+          "<std::hash::random::DefaultHasher as core::hash::Hasher>::write",
+          "<core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as core::hash::Hasher>::write",
+          "<core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as core::hash::Hasher>::write"
+        ]
+      },
+      {
+        "bytesEach": 55,
+        "copies": 16,
+        "duplicateBytesUpperBound": 825,
+        "symbols": [
+          "DHX_der2dhx_does_selection",
+          "DH_der2dh_does_selection",
+          "dh_to_DH_der_does_selection",
+          "dh_to_DH_pem_does_selection",
+          "dh_to_PKCS3_der_does_selection"
+        ]
+      },
+      {
+        "bytesEach": 756,
+        "copies": 2,
+        "duplicateBytesUpperBound": 756,
+        "symbols": [
+          "crypto_bigint::modular::mul::mul_montgomery_form::<6>",
+          "crypto_bigint::modular::mul::mul_montgomery_form::<6>"
+        ]
+      },
+      {
+        "bytesEach": 244,
+        "copies": 4,
+        "duplicateBytesUpperBound": 732,
+        "symbols": [
+          "<alloc::string::String as core::fmt::Write>::write_char",
+          "<alloc::string::String as core::fmt::Write>::write_char",
+          "<alloc::string::String as core::fmt::Write>::write_char",
+          "<alloc::string::String as core::fmt::Write>::write_char"
+        ]
+      },
+      {
+        "bytesEach": 55,
+        "copies": 13,
+        "duplicateBytesUpperBound": 660,
+        "symbols": [
+          "EC_der2ec_does_selection",
+          "ec_to_EC_der_does_selection",
+          "ec_to_EC_pem_does_selection",
+          "ec_to_X9_62_der_does_selection",
+          "ec_to_X9_62_pem_does_selection"
+        ]
+      }
+    ],
+    "scope": "Exact bytes only, distinct addresses, aliases deduplicated. Not proof of safe merging: pointer identity and section-root semantics matter."
+  },
+  "linuxSymbolSamples": {
+    "topTextSymbols": [
+      {
+        "address": 12686544,
+        "bytes": 82943,
+        "name": "regex_automata::meta::strategy::new"
+      },
+      {
+        "address": 10148512,
+        "bytes": 70596,
+        "name": "<ariax_engine::http_multi::HttpMultiRangeWorker>::run_ranges::{closure#0}"
+      },
+      {
+        "address": 5682816,
+        "bytes": 52145,
+        "name": "ariax_engine::process_bootstrap::bootstrap_after_owner::<ariax_config::registry::persisted_option_is_safe>"
+      },
+      {
+        "address": 23404160,
+        "bytes": 50554,
+        "name": "sqlite3VdbeExec"
+      },
+      {
+        "address": 14713888,
+        "bytes": 40689,
+        "name": "<ssh_key::private::keypair::KeypairData as signature::signer::Signer<ssh_key::signature::Signature>>::try_sign"
+      },
+      {
+        "address": 8102544,
+        "bytes": 37734,
+        "name": "<ariax_engine::http_cookie::HttpCookieJar>::store_raw_cookie"
+      },
+      {
+        "address": 8497184,
+        "bytes": 37394,
+        "name": "<ariax_engine::http_control::admission::Preparation>::prepare"
+      },
+      {
+        "address": 5634032,
+        "bytes": 35687,
+        "name": "ariax_storage::session_owner::owner_main::<ariax_config::registry::persisted_option_is_safe>"
+      },
+      {
+        "address": 12438000,
+        "bytes": 35652,
+        "name": "<primeorder::tables::basepoint::BasepointTable<_, _>>::new::init_table::<primeorder::projective::ProjectivePoint<p521::NistP521>, 67>"
+      },
+      {
+        "address": 12360672,
+        "bytes": 35134,
+        "name": "<primeorder::tables::basepoint::BasepointTable<_, _>>::new::init_table::<primeorder::projective::ProjectivePoint<p256::NistP256>, 33>"
+      },
+      {
+        "address": 10325632,
+        "bytes": 33873,
+        "name": "<ariax_engine::http_multi::HttpMultiRangeWorker>::run_ranges::{closure#0}::{closure#4}"
+      },
+      {
+        "address": 6415536,
+        "bytes": 33826,
+        "name": "<ariax_bt::native::Worker>::run"
+      }
+    ],
+    "symbolNameFamilyMatches": {
+      "ring": {
+        "symbolCount": 24,
+        "symbolBytes": 18480,
+        "samples": [
+          "ring::aead::aes_gcm::open_strided::<ring::aead::aes::vp::Key, ring::aead::gcm::fallback::Key>",
+          "ring::aead::aes_gcm::open_strided::<ring::aead::aes::fallback::Key, ring::aead::gcm::fallback::Key>",
+          "ring::aead::aes_gcm::open"
+        ]
+      },
+      "rustls::crypto::ring": {
+        "symbolCount": 0,
+        "symbolBytes": 0,
+        "samples": []
+      },
+      "rustls_openssl": {
+        "symbolCount": 131,
+        "symbolBytes": 58960,
+        "samples": [
+          "<rustls_openssl::verify::OpenSslAlgorithm as rustls_pki_types::SignatureVerificationAlgorithm>::verify_signature",
+          "<rustls_openssl::cipher::CipherKind>::load",
+          "<rustls_openssl::kx_group::kem::X25519HybridKxGroup as rustls::crypto::SupportedKxGroup>::start_and_complete"
+        ]
+      },
+      "rsa": {
+        "symbolCount": 31,
+        "symbolBytes": 39111,
+        "samples": [
+          "<rsa::key::RsaPrivateKey>::from_components",
+          "<rsa::key::RsaPrivateKey>::precompute",
+          "<ssh_key::private::rsa::RsaKeypair as core::convert::TryFrom<rsa::key::RsaPrivateKey>>::try_from"
+        ]
+      },
+      "sha3": {
+        "symbolCount": 3,
+        "symbolBytes": 706,
+        "samples": [
+          "<sha3::Shake128Reader as digest::XofReader>::read_boxed",
+          "<sha3::Shake128Reader as digest::XofReader>::read",
+          "core::ptr::drop_glue::<sha3::Shake128Reader>"
+        ]
+      },
+      "keccak": {
+        "symbolCount": 1,
+        "symbolBytes": 1385,
+        "samples": [
+          "keccak::backends::soft::keccak_p::<u64, 24>"
+        ]
+      },
+      "winnow": {
+        "symbolCount": 0,
+        "symbolBytes": 0,
+        "samples": []
+      },
+      "hashbrown": {
+        "symbolCount": 61,
+        "symbolBytes": 53740,
+        "samples": [
+          "<hashbrown::raw::RawTable<(alloc::string::String, cookie_store::cookie::Cookie)>>::reserve_rehash::<hashbrown::map::make_hasher<alloc::string::String, cookie_store::cookie::Cookie, std::hash::random::RandomState>::{closure#0}>",
+          "<hashbrown::raw::RawTable<(hickory_proto::rr::domain::name::Name, hickory_resolver::hosts::LookupType)>>::reserve_rehash::<hashbrown::map::make_hasher<hickory_proto::rr::domain::name::Name, hickory_resolver::hosts::LookupType, std::hash::random::RandomState>::{closure#0}>",
+          "<hashbrown::raw::RawTable<(rustls_pki_types::server_name::ServerName, rustls::client::handy::cache::ServerData)>>::reserve_rehash::<hashbrown::map::make_hasher<rustls_pki_types::server_name::ServerName, rustls::client::handy::cache::ServerData, std::hash::random::RandomState>::{closure#0}>"
+        ]
+      },
+      "generic_array": {
+        "symbolCount": 0,
+        "symbolBytes": 0,
+        "samples": []
+      },
+      "getrandom": {
+        "symbolCount": 8,
+        "symbolBytes": 2026,
+        "samples": [
+          "getrandom::backends::use_file::open_or_wait",
+          "<std::sync::once::Once>::call_once_force::<<std::sync::once_lock::OnceLock<std::fs::File>>::initialize<std::sys::random::linux::getrandom::{closure#0}, std::io::error::Error>::{closure#0}>::{closure#0}",
+          "<<std::sync::once::Once>::call_once_force<<std::sync::once_lock::OnceLock<std::fs::File>>::initialize<std::sys::random::linux::getrandom::{closure#0}, std::io::error::Error>::{closure#0}>::{closure#0} as core::ops::function::FnOnce<(&std::sync::once::OnceState,)>>::call_once::{shim:vtable#0}"
+        ]
+      },
+      "regex_automata": {
+        "symbolCount": 401,
+        "symbolBytes": 350024,
+        "samples": [
+          "regex_automata::meta::strategy::new",
+          "<regex_automata::nfa::thompson::compiler::Compiler>::c",
+          "<regex_automata::meta::regex::Builder>::build"
+        ]
+      },
+      "icu_normalizer": {
+        "symbolCount": 15,
+        "symbolBytes": 14696,
+        "samples": [
+          "core::slice::sort::stable::quicksort::quicksort::<icu_normalizer::CharacterAndClass, <[icu_normalizer::CharacterAndClass]>::sort_by_key<icu_normalizer::CanonicalCombiningClass, icu_normalizer::sort_slice_by_ccc::{closure#1}>::{closure#0}>",
+          "<icu_normalizer::Decomposition<core::iter::adapters::copied::Copied<core::slice::iter::Iter<char>>>>::decomposing_next",
+          "<icu_normalizer::Decomposition<utf8_iter::Utf8Chars>>::decomposing_next"
+        ]
+      },
+      "icu_properties": {
+        "symbolCount": 2,
+        "symbolBytes": 447,
+        "samples": [
+          "<icu_collections::codepointtrie::cptrie::CodePointTrie<icu_properties::props::gc::GeneralCategory>>::get32_by_small_index",
+          "<icu_collections::codepointtrie::cptrie::CodePointTrie<icu_properties::props::JoiningType>>::get32_by_small_index"
+        ]
+      }
+    },
+    "journalProcessRecordsCopies": [
+      {
+        "address": 9069952,
+        "bytes": 33393,
+        "name": "ariax_storage::journal_state::process_records::<dyn ariax_storage::journal_state::PersistedOptionPolicy + core::marker::Send + core::marker::Sync>"
+      },
+      {
+        "address": 7689696,
+        "bytes": 33219,
+        "name": "ariax_storage::journal_state::process_records::<<ariax_engine::http_multi::HttpMultiRangeWorker>::open_task_journal::{closure#1}>"
+      },
+      {
+        "address": 7646640,
+        "bytes": 33217,
+        "name": "ariax_storage::journal_state::process_records::<ariax_config::registry::persisted_option_is_safe>"
+      }
+    ],
+    "scope": "Post-LTO symbol attribution is a lower bound; inlined code cannot be charged reliably to crates. Family matches overlap generic instantiations and are not additive.",
+    "retainedOptionalSubsystemNameMatches": {
+      "SQLite FTS": {
+        "symbols": 394,
+        "textBytes": 351742,
+        "examples": [
+          "sqlite3Fts3Incrmerge",
+          "sqlite3Fts5IndexQuery",
+          "fts3InitVtab"
+        ]
+      },
+      "SQLite RTree": {
+        "symbols": 39,
+        "textBytes": 29702,
+        "examples": [
+          "rtreeInsertCell",
+          "rtreeStepToLeaf",
+          "rtreeInit"
+        ]
+      },
+      "OpenSSL KEM wrappers": {
+        "symbols": 16,
+        "textBytes": 8904,
+        "examples": [
+          "<rustls_openssl::kx_group::kem::X25519HybridKxGroup as rustls::crypto::SupportedKxGroup>::start_and_complete",
+          "<rustls_openssl::kx_group::kem::X25519HybridKeyExchange as rustls::crypto::ActiveKeyExchange>::complete_hybrid_component",
+          "<rustls_openssl::kx_group::kem::KeyExchange as rustls::crypto::ActiveKeyExchange>::complete"
+        ]
+      }
+    }
+  },
+  "linuxLinkExperiments": [
+    {
+      "variant": "baseline",
+      "bytes": 24991648,
+      "flags": [],
+      "smoke": [
+        {
+          "args": [
+            "--version"
+          ],
+          "exit": 0,
+          "passed": true
+        },
+        {
+          "args": [
+            "--help"
+          ],
+          "exit": 0,
+          "passed": true
+        },
+        {
+          "args": [
+            "--ariax-intentionally-invalid-option"
+          ],
+          "exit": 2,
+          "passed": true
+        }
+      ],
+      "sha256": "3ab5d4799d16a5b7035ff3c9bdfc91af1d67e802139698a10ffeaa24333dc5c2",
+      "savedBytes": 0,
+      "savedPercent": 0.0
+    },
+    {
+      "variant": "relr",
+      "bytes": 23893768,
+      "flags": [
+        "-Wl,-z,pack-relative-relocs"
+      ],
+      "smoke": [
+        {
+          "args": [
+            "--version"
+          ],
+          "exit": 0,
+          "passed": true
+        },
+        {
+          "args": [
+            "--help"
+          ],
+          "exit": 0,
+          "passed": true
+        },
+        {
+          "args": [
+            "--ariax-intentionally-invalid-option"
+          ],
+          "exit": 2,
+          "passed": true
+        }
+      ],
+      "sha256": "fef176fb287510ee33032da4dd86935ee20f70ab6cfb848ca4b1c35b9de6e263",
+      "savedBytes": 1097880,
+      "savedPercent": 4.393
+    },
+    {
+      "variant": "icf-safe",
+      "bytes": 24991648,
+      "flags": [
+        "-Wl,--icf=safe"
+      ],
+      "smoke": [
+        {
+          "args": [
+            "--version"
+          ],
+          "exit": 0,
+          "passed": true
+        },
+        {
+          "args": [
+            "--help"
+          ],
+          "exit": 0,
+          "passed": true
+        },
+        {
+          "args": [
+            "--ariax-intentionally-invalid-option"
+          ],
+          "exit": 2,
+          "passed": true
+        }
+      ],
+      "sha256": "3ab5d4799d16a5b7035ff3c9bdfc91af1d67e802139698a10ffeaa24333dc5c2",
+      "savedBytes": 0,
+      "savedPercent": 0.0
+    },
+    {
+      "variant": "relr-icf-safe",
+      "bytes": 23893768,
+      "flags": [
+        "-Wl,-z,pack-relative-relocs",
+        "-Wl,--icf=safe"
+      ],
+      "smoke": [
+        {
+          "args": [
+            "--version"
+          ],
+          "exit": 0,
+          "passed": true
+        },
+        {
+          "args": [
+            "--help"
+          ],
+          "exit": 0,
+          "passed": true
+        },
+        {
+          "args": [
+            "--ariax-intentionally-invalid-option"
+          ],
+          "exit": 2,
+          "passed": true
+        }
+      ],
+      "sha256": "fef176fb287510ee33032da4dd86935ee20f70ab6cfb848ca4b1c35b9de6e263",
+      "savedBytes": 1097880,
+      "savedPercent": 4.393
+    }
+  ],
+  "linuxValidation": {
+    "noGcBytes": 25099744,
+    "rpc": {
+      "baseline": {
+        "passed": true,
+        "error": null,
+        "exitCode": 0,
+        "reopenExitCode": 0,
+        "responses": [
+          {
+            "id": 1,
+            "jsonrpc": "2.0",
+            "result": {
+              "enabledFeatures": [
+                "HTTP",
+                "HTTPS",
+                "JSON-RPC",
+                "Session",
+                "Async DNS",
+                "BitTorrent",
+                "Metalink",
+                "FTP",
+                "SFTP"
+              ],
+              "version": "0.1.0"
+            }
+          },
+          {
+            "id": 2,
+            "jsonrpc": "2.0",
+            "result": {
+              "completedLength": "0",
+              "downloadSpeed": "0",
+              "numActive": "0",
+              "numStopped": "0",
+              "numWaiting": "0",
+              "uploadSpeed": "0"
+            }
+          },
+          {
+            "error": {
+              "code": -32601,
+              "message": "method not found"
+            },
+            "id": 3,
+            "jsonrpc": "2.0"
+          }
+        ],
+        "loadedModules": [
+          {
+            "path": "${TEMP}/work/size-analysis/linux-baseline",
+            "kind": "application"
+          },
+          {
+            "path": "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+            "kind": "system"
+          },
+          {
+            "path": "/usr/lib/x86_64-linux-gnu/libc.so.6",
+            "kind": "system"
+          },
+          {
+            "path": "/usr/lib/x86_64-linux-gnu/libgcc_s.so.1",
+            "kind": "system"
+          },
+          {
+            "path": "/usr/lib/x86_64-linux-gnu/libm.so.6",
+            "kind": "system"
+          },
+          {
+            "path": "/usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.33",
+            "kind": "system"
+          },
+          {
+            "path": "/usr/local/lib/libnanosleep.so",
+            "kind": "host-extra"
+          }
+        ]
+      },
+      "relr": {
+        "passed": true,
+        "error": null,
+        "exitCode": 0,
+        "reopenExitCode": 0,
+        "responses": [
+          {
+            "id": 1,
+            "jsonrpc": "2.0",
+            "result": {
+              "enabledFeatures": [
+                "HTTP",
+                "HTTPS",
+                "JSON-RPC",
+                "Session",
+                "Async DNS",
+                "BitTorrent",
+                "Metalink",
+                "FTP",
+                "SFTP"
+              ],
+              "version": "0.1.0"
+            }
+          },
+          {
+            "id": 2,
+            "jsonrpc": "2.0",
+            "result": {
+              "completedLength": "0",
+              "downloadSpeed": "0",
+              "numActive": "0",
+              "numStopped": "0",
+              "numWaiting": "0",
+              "uploadSpeed": "0"
+            }
+          },
+          {
+            "error": {
+              "code": -32601,
+              "message": "method not found"
+            },
+            "id": 3,
+            "jsonrpc": "2.0"
+          }
+        ],
+        "loadedModules": [
+          {
+            "path": "${TEMP}/work/size-analysis/linux-relr",
+            "kind": "application"
+          },
+          {
+            "path": "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+            "kind": "system"
+          },
+          {
+            "path": "/usr/lib/x86_64-linux-gnu/libc.so.6",
+            "kind": "system"
+          },
+          {
+            "path": "/usr/lib/x86_64-linux-gnu/libgcc_s.so.1",
+            "kind": "system"
+          },
+          {
+            "path": "/usr/lib/x86_64-linux-gnu/libm.so.6",
+            "kind": "system"
+          },
+          {
+            "path": "/usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.33",
+            "kind": "system"
+          },
+          {
+            "path": "/usr/local/lib/libnanosleep.so",
+            "kind": "host-extra"
+          }
+        ]
+      }
+    },
+    "startup": {
+      "baseline": {
+        "medianMs": 6.5114,
+        "minMs": 5.8726,
+        "maxMs": 8.2815,
+        "sampleCount": 50
+      },
+      "relr": {
+        "medianMs": 6.21265,
+        "minMs": 5.6573,
+        "maxMs": 16.0898,
+        "sampleCount": 50
+      }
+    },
+    "startupScope": "Alternating 50 warm process launches per binary on WSL1; includes process creation, not transfer throughput or tail-latency acceptance.",
+    "harnessNote": "Initial RPC harness call supplied a list instead of the required runtime inventory mapping; corrected and both variants passed.",
+    "currentGcSavingsBytes": 108096,
+    "gcRemovalLogEntries": 4883
+  },
+  "recommendations": [
+    {
+      "priority": 1,
+      "candidate": "Linux -Wl,-z,pack-relative-relocs",
+      "measuredSavedBytes": 1097880,
+      "status": "Recommended for the existing glibc >=2.38 artifact; not applied",
+      "requirements": "DT_RELR requires compatible loader (glibc >=2.36). Preserve a separate policy for any future older-glibc target. Run package validation when promoting."
+    },
+    {
+      "priority": 2,
+      "candidate": "Build native OpenSSL and libtorrent with function/data sections, retaining -O3 and section GC",
+      "measuredSavedBytes": null,
+      "status": "Native archive structure confirms the opportunity; rebuild and measure",
+      "requirements": "Regenerate native provenance; native callback/FFI tests, TLS/RSA/BT tests and focused throughput/startup comparisons. Constructors, dispatch tables and required exports stay rooted."
+    },
+    {
+      "priority": 3,
+      "candidate": "Construct and availability-check only the already permitted OpenSSL rustls groups",
+      "measuredSavedBytes": null,
+      "status": "Default provider currently probes hybrid KEM before runtime filtering; 8904 named wrapper text bytes remain",
+      "requirements": "Preserve available cipher suites, signature algorithm filtering, classical group order and unavailable-provider error behavior; compare TLS handshakes."
+    },
+    {
+      "priority": 4,
+      "candidate": "Omit SQLite FTS3/FTS5 and RTree if internal database contract excludes them",
+      "measuredSavedBytes": null,
+      "status": "351742 FTS and 29702 RTree named Linux text bytes retained; savings not measured",
+      "requirements": "Explicit storage contract decision, existing-session/migration/backup/recovery tests. Keep thread safety, API armor, durability and query-planner settings."
+    },
+    {
+      "priority": 5,
+      "candidate": "Disable native OpenSSL QUIC if current feature policy excludes its use",
+      "measuredSavedBytes": null,
+      "status": "188975 Linux / 210528 Windows linked QUIC object text bytes; not all necessarily removable",
+      "requirements": "Review libtorrent SSL-peer/tracker and rustls provider API interactions, then rebuild and test without disabling supported TLS/SSH algorithms."
+    },
+    {
+      "priority": 6,
+      "candidate": "Factor journal replay logic independent of its policy type",
+      "measuredSavedBytes": null,
+      "status": "Three process_records specializations total 99829 bytes; not identical functions",
+      "requirements": "Retain policy checks, benchmark replay and test recovery/rejection behavior. Avoid adding per-record dynamic dispatch without measurements."
+    }
+  ],
+  "notRecommendedWithoutSeparateEvidence": [
+    "ICF safe: measured zero savings",
+    "ICF all or forced duplicate-symbol suppression: observable function identity can change",
+    "opt-level s/z, reduced inlining or size-oriented crypto: throughput effects unmeasured",
+    "Remove ring outright: SSH AES-GCM and OpenSSH ChaCha20-Poly1305 still use it; OpenSSL native build currently has no-asm",
+    "Remove RustCrypto RSA outright: key decoding, certificates and non-RSA paths retain dependencies; advisory disposition remains unchanged",
+    "Strip unwind/exception data: C++ exceptions, Windows unwind and existing ABI behavior require it",
+    "UPX, NTFS compression, dynamic Windows C++/OpenSSL runtimes or removal of supported protocol/Unicode/crypto behavior"
+  ],
+  "cleanup": {
+    "status": "passed",
+    "removed": [
+      {
+        "root": "${TEMP}/build/linux",
+        "files": 11,
+        "logicalBytes": 253981923
+      },
+      {
+        "root": "${TEMP}/build/windows",
+        "files": 11,
+        "logicalBytes": 244578538
+      },
+      {
+        "root": "${TEMP}/work/size-analysis",
+        "files": 602,
+        "logicalBytes": 386155353
+      }
+    ],
+    "logicalBytesRemoved": 884715814,
+    "originalBinaryHashesPreserved": true,
+    "originalBuildEntriesPreserved": true,
+    "preserved": "Existing toolchains/dependencies and original final Linux/Windows build roots; no extra binary retained"
+  }
+}
