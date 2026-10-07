@@ -19,7 +19,7 @@ multiple-versions = "warn"
 wildcards = "deny"
 # Unpublished workspace path dependencies are local source, not registry ranges.
 allow-wildcard-paths = true
-# OpenSSL is permitted only through the explicit TLS/RSA backend features;
+# OpenSSL is selected for both TLS/RSA when BT or a crypto selector links it;
 # verify-protocol-features.py checks the per-bundle provider graph.
 deny = ["native-tls", "des", "dsa"]
 

@@ -28,6 +28,15 @@ Phase 7 hardening is active. Its
 maps `P7-S01` through `P7-S04` to boundary regressions and retains separate
 fuzz, sanitizer, lifecycle/recovery and release-preparation evidence. Local
 results do not close the remaining native-platform acceptance requirements.
+Real power-loss recovery is explicitly deferred to a future VM campaign.
+Existing process-kill and deterministic durable-prefix tests remain useful local
+evidence; they do not establish power-loss durability. A VM campaign must record
+its storage/cache model and does not by itself prove physical-device guarantees.
+Compatibility work first implements straightforward gaps through existing typed
+boundaries, then records behavior and migration tradeoffs before any replacement
+artifact decision. OpenSSL-linked builds reuse OpenSSL for TLS and SSH RSA;
+other builds document the RustCrypto RSA limitation without hiding the advisory.
+
 The [bounded local campaign](../../performance-evidence/phase7-local-campaign-2026-10-05.md)
 adds 5,474 behavioral test/probe invocations, ten direct TSan cases and 506,880
 accepted fuzz executions. Its 410 Windows diagnostic attempts retain one

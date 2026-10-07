@@ -9,13 +9,13 @@ publish.workspace = true
 [features]
 default = []
 control-diagnostics = []
-bt = ["dep:ariax-bt", "ariax-bt/libtorrent"]
+bt = ["dep:ariax-bt", "ariax-bt/libtorrent", "crypto-openssl"]
 metalink = ["dep:quick-xml"]
 ftp = ["dep:suppaftp"]
 sftp = ["dep:russh", "dep:russh-sftp", "dep:hmac", "dep:zeroize"]
-sftp-openssl-rsa = ["russh?/openssl-rsa"]
-tls-openssl = ["dep:rustls-openssl"]
-crypto-openssl = ["tls-openssl", "sftp-openssl-rsa"]
+sftp-openssl-rsa = ["crypto-openssl"]
+tls-openssl = ["crypto-openssl"]
+crypto-openssl = ["dep:rustls-openssl", "russh?/openssl-rsa"]
 
 [dependencies]
 ariax-bt = { workspace = true, optional = true }

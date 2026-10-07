@@ -156,7 +156,7 @@
   "serialized_appender": {
     "segment_file_name": {"prefix": "segment-", "decimal_index_width": 10, "suffix": ".arxj", "temporary_suffix": ".tmp"},
     "acknowledgements": {"appended": "complete_record_bytes_written_to_active_handle", "flushed": "sync_all_completed_through_sequence"},
-    "errors": ["payload", "journal", "io", "faulted", "flush_beyond_appended", "unflushed_records", "segment_path_exists", "tail_mismatch", "recovery_segment_path", "recovery_input_bytes_exceeded", "recovery_task_mismatch", "recovery_journal_mismatch", "recovery_stopped"],
+    "errors": ["payload", "journal", "io", "faulted", "flush_beyond_appended", "unflushed_records", "segment_path_exists", "tail_mismatch", "recovery_segment_path", "recovery_input_bytes_exceeded", "recovery_memory_limit", "recovery_task_mismatch", "recovery_journal_mismatch", "recovery_stopped"],
     "faults": ["write_record", "flush", "rotation", "reopen"],
     "io_operations": ["create_directory", "inspect_segment_path", "create_temporary_segment", "write_segment_header", "sync_segment", "install_segment", "sync_directory", "open_active_segment", "inspect_active_segment", "read_active_segment", "inspect_recovery_segment", "open_recovery_segment", "read_recovery_segment", "repair_recovery_segment", "write_record"],
     "tail_mismatches": ["length", "header", "invalid_tail_record", "tail_fingerprint"],

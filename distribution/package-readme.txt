@@ -25,7 +25,12 @@ Windows-GNU builds import only Windows-provided DLLs. The C++, GCC exception,
 thread and optional OpenSSL runtimes are linked statically. No separate runtime
 DLLs or developer toolchain are required. Their applicable notices remain in
 this package. The manifest identifies the selected default or OpenSSL crypto
-backend; both retain rustls for TLS protocol and certificate policy.
+backend; both retain rustls for TLS protocol and certificate policy. Current
+full/compat builds always reuse OpenSSL for TLS and SSH RSA. Smaller bundles
+without OpenSSL retain RustCrypto RSA: RUSTSEC-2023-0071 (RSA timing leakage)
+remains unresolved. Use an OpenSSL build or non-RSA SSH authentication when
+that limitation is unacceptable. OpenSSL selection does not remove every
+RustCrypto dependency used for key formats, certificates and other algorithms.
 
 Read LICENSE, THIRD-PARTY-NOTICES.txt, DATA-NOTICE.txt, license-inventory.json,
 license-review.json and the applicable licenses/ files. The inventory identifies

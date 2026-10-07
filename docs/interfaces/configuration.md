@@ -523,6 +523,24 @@ coverage. The category lists below describe target ownership; they do not
 override the generated status, executable option allowlists or feature gates.
 Full aria2 parity remains an open acceptance decision for the experimental CLI.
 
+Direct add commands accept `--name=value` and `--name value` for executable
+download options. The registry's short aliases accept separated or attached
+values, including `-o file`, `-s4`, `-x2`, `-k1M` and `-t30`; `-p` and `-n`
+select FTP passive mode and disable netrc respectively. Boolean options
+accept a bare flag as `true`; use `=false` to disable them. `--` ends option
+parsing. Aliases are canonicalized before duplicate and semantic validation;
+unknown options, unavailable features and unsupported options still reject
+before bootstrap. In particular, `-d` cannot override the explicit output root
+and `-c` does not enable arbitrary aria2 partial-file import.
+
+Startup accepts `-i FILE` and `-iFILE` as aliases for `--input-file`, within
+the existing RPC-service session-import boundary. `--profile VALUE` and
+`--profile=VALUE` are equivalent. These syntax additions do not introduce
+aria2's bare-URI command, implicit configuration loading or stdin file imports.
+The upstream inventory marks shared protocol names as aria2 options even when
+their Ariax behavior differs; availability is distinct from implementation
+status, runtime-update compatibility and executable admission.
+
 At the `addUri` per-download boundary, options absent from the reviewed registry
 are rejected before task creation. The explicit `pause` admission flag is the
 exception and accepts only a boolean or its `true`/`false` string form. A startup
@@ -531,10 +549,16 @@ an `addUri` option map. Invalid mixed option maps must not leave task metadata.
 Supported registry entries still require the appropriate scope, security class,
 feature and executable handler; parsing alone never establishes support.
 
-Basic:
+Basic public behavior:
 
-- `dir`, `out`, `input-file`, `max-concurrent-downloads`,
-  `check-integrity`, `continue`, `help`, `version`: implemented.
+- `out` uses typed download admission; `dir` is constrained by the explicit
+  output-root boundary and is unavailable as a direct CLI override.
+- `input-file` is wired for RPC-service startup, with `-i` as an alias.
+  `help`/`version` are standalone CLI commands.
+- Public `max-concurrent-downloads`, `check-integrity` and aria2 `continue`
+  semantics remain gaps; existing scheduling, checksum verification and Ariax
+  journal recovery do not establish their aria2 behavior. See the
+  [compatibility decisions](../project/aria2-compatibility.md).
 
 HTTP/FTP/SFTP:
 

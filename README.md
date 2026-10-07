@@ -99,6 +99,11 @@ Choose a CLI bundle with `--no-default-features --features <bundle>`.
 
 Full/compat BT behavior passes the
 [six Phase 6 gates](docs/protocols/libtorrent-integration.md#phase-6-gates).
+Full/compat reuse the linked OpenSSL for both rustls TLS and SSH RSA operations.
+Smaller bundles can opt in with `crypto-openssl` (or either legacy selector,
+`tls-openssl` / `sftp-openssl-rsa`); this does not enable SFTP by itself. Without
+OpenSSL, SFTP retains RustCrypto RSA and the documented
+[RUSTSEC-2023-0071 limitation](docs/protocols/detailed-ftp-sftp.md).
 Shell hooks remain unsupported. Runtime `--profile` settings are separate from
 these compile-time feature bundles.
 

@@ -23,6 +23,8 @@ pub(crate) fn generate_config_contracts(
     let mut definitions = registry.definitions().iter().collect::<Vec<_>>();
     definitions.sort_unstable_by_key(|definition| definition.name);
 
+    validate_upstream_names(upstream_options, &definitions)?;
+
     let outputs = [
         (PathBuf::from(OPTIONS_OUTPUT), render_options(&definitions)),
         (
@@ -54,6 +56,21 @@ pub(crate) fn generate_config_contracts(
         reviewed_upstream,
         upstream_options.len()
     ))
+}
+
+fn validate_upstream_names(
+    upstream: &BTreeSet<String>,
+    definitions: &[&OptionDef],
+) -> Result<(), String> {
+    for definition in definitions {
+        if definition.aria2_available != upstream.contains(definition.name) {
+            return Err(format!(
+                "aria2 availability disagrees with pinned handlers: {}",
+                definition.name
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn render_options(definitions: &[&OptionDef]) -> String {
@@ -420,6 +437,22 @@ mod tests {
         assert!(compatibility.contains("\"upstream_without_registry\": [\"upstream-only\"]"));
         assert!(compatibility.contains("\"registry_claims_missing_upstream\""));
         assert!(compatibility.contains("\"split\""));
+    }
+
+    #[test]
+    fn upstream_availability_rejects_both_false_extensions_and_missing_claims() {
+        let definitions = definitions();
+        let mut upstream = definitions
+            .iter()
+            .filter(|definition| definition.aria2_available)
+            .map(|definition| definition.name.to_owned())
+            .collect::<BTreeSet<_>>();
+        assert!(super::validate_upstream_names(&upstream, &definitions).is_ok());
+        upstream.insert("slow-slot-policy".to_owned());
+        assert!(super::validate_upstream_names(&upstream, &definitions).is_err());
+        upstream.remove("slow-slot-policy");
+        upstream.remove("ftp-user");
+        assert!(super::validate_upstream_names(&upstream, &definitions).is_err());
     }
 
     #[test]

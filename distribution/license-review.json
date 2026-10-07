@@ -636,13 +636,14 @@
     }
   },
   "currentFollowUp": {
-    "scope": "Optional OpenSSL Rust bindings and static Windows runtime policy; final binary evidence recorded separately.",
+    "scope": "Automatic OpenSSL reuse for linked builds and static Windows runtime policy; current binary evidence recorded separately.",
     "noticeInventory": "performance-evidence/phase7-release-license-inventory-2026-10-07.json",
     "cryptoSelection": {
-      "default": "ring rustls provider and RustCrypto RSA operations",
+      "default": "Full/compat automatically reuse OpenSSL for rustls TLS and SSH RSA. Smaller bundles without an OpenSSL selector retain ring TLS and RustCrypto RSA.",
       "openssl": "rustls-openssl 0.4.2 and russh OpenSSL RSA operations, statically linked to the reviewed OpenSSL 3.6.5 installation",
       "retainedOtherCrypto": "russh ring AEAD; RustCrypto key formats, certificate verification and non-RSA SSH algorithms",
-      "advisory": "RUSTSEC-2023-0071 remains visible for retained rsa dependency; no ignore or timing assurance claim."
+      "advisory": "RUSTSEC-2023-0071 remains visible for retained rsa dependency; no ignore or timing assurance claim.",
+      "legacySelectors": "Either tls-openssl or sftp-openssl-rsa selects the combined crypto backend; neither implicitly enables SFTP."
     },
     "newCargoLicenses": {
       "openssl@0.10.81": "Apache-2.0",

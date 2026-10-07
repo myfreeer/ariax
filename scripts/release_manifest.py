@@ -40,6 +40,12 @@ def require(condition, message):
         raise ValueError(message)
 
 
+def effective_crypto_backend(bundle, requested):
+    """Resolve current build policy; historical manifests keep their recorded backend."""
+    require(bundle in BUNDLES and requested in {'default', 'openssl'}, 'unknown build selection')
+    return 'openssl' if bundle in {'full', 'compat'} else requested
+
+
 def digest(path):
     with path.open('rb') as stream:
         return hashlib.file_digest(stream, 'sha256').hexdigest()

@@ -18,6 +18,15 @@ class ReleaseBuildTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 rb.bundle_features(bundle, backend)
 
+    def test_default_bt_policy_resolves_openssl_and_smaller_bundles_remain_optional(self):
+        for bundle in rb.rm.BUNDLES:
+            self.assertEqual(rb.rm.effective_crypto_backend(bundle, 'default'),
+                             'openssl' if bundle in {'full', 'compat'} else 'default')
+            self.assertEqual(rb.rm.effective_crypto_backend(bundle, 'openssl'), 'openssl')
+        for bundle, backend in (('unknown', 'default'), ('full', 'ring')):
+            with self.assertRaises(ValueError):
+                rb.rm.effective_crypto_backend(bundle, backend)
+
     def test_openssl_windows_imports_exclude_the_unused_ring_random_provider(self):
         libraries = rb.rm.WINDOWS_BT_SYSTEM - {'bcrypt.dll'}
         output = '\n'.join('DLL Name: ' + name for name in libraries)
@@ -98,9 +107,9 @@ class ReleaseBuildTests(unittest.TestCase):
             rb.native_comparison(second)
 
     def test_full_runtime_inventory_requires_exact_platform_imports_and_versions(self):
-        output = '\n'.join('DLL Name: ' + name for name in rb.rm.WINDOWS_BT_SYSTEM)
+        output = '\n'.join('DLL Name: ' + name for name in rb.rm.WINDOWS_BT_SYSTEM - {'bcrypt.dll'})
         self.assertEqual(rb.runtime_inventory(output, True, 'full')['additionalRuntimeFiles'], [])
-        for name in ('libstdc++-6.dll', 'libgcc_s_seh-1.dll', 'libwinpthread-1.dll'):
+        for name in ('bcrypt.dll', 'libstdc++-6.dll', 'libgcc_s_seh-1.dll', 'libwinpthread-1.dll'):
             with self.assertRaises(ValueError):
                 rb.runtime_inventory(output + '\nDLL Name: ' + name, True, 'full')
         with self.assertRaises(ValueError):

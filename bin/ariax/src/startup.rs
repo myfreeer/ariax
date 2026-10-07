@@ -60,9 +60,13 @@ impl StartupOptions {
         let mut rpc_names = BTreeSet::new();
         let mut bt_settings = Vec::new();
         while let Some(argument) = arguments.get(cursor).and_then(|arg| arg.to_str()) {
-            let (local_name, inline) = argument
-                .split_once('=')
-                .map_or((argument, None), |(name, value)| (name, Some(value)));
+            let (local_name, inline) = if let Some(value) = argument.strip_prefix("-i") {
+                ("--input-file", (!value.is_empty()).then_some(value))
+            } else {
+                argument
+                    .split_once('=')
+                    .map_or((argument, None), |(name, value)| (name, Some(value)))
+            };
             if local_name == "--require-private-permissions" {
                 if !session_names.insert(local_name) {
                     return Err("duplicate --require-private-permissions".to_owned());
@@ -259,20 +263,27 @@ impl StartupOptions {
                 session.insert(local_name, value);
                 continue;
             }
-            if let Some(value) = argument.strip_prefix("--profile=") {
+            if local_name == "--profile" {
                 if options.profile.is_some() {
                     return Err("duplicate --profile".to_owned());
                 }
+                cursor += 1;
+                let value = match inline {
+                    Some(value) => value,
+                    None => {
+                        let value = arguments
+                            .get(cursor)
+                            .and_then(|arg| arg.to_str())
+                            .filter(|value| !value.starts_with('-'))
+                            .ok_or("--profile requires a value")?;
+                        cursor += 1;
+                        value
+                    }
+                };
                 options.profile = Some(RuntimeProfile::parse(value).map_err(|_| {
                     "invalid runtime profile; expected auto, concurrency, throughput, latency, or compact".to_owned()
                 })?);
-                cursor += 1;
                 continue;
-            }
-            if argument == "--profile" {
-                return Err(
-                    "--profile requires =auto|concurrency|throughput|latency|compact".to_owned(),
-                );
             }
             let (name, inline) = argument
                 .split_once('=')
@@ -521,6 +532,32 @@ mod tests {
                 StartupOptions::parse(&invalid.into_iter().map(OsString::from).collect::<Vec<_>>())
                     .is_err()
             );
+        }
+    }
+
+    #[test]
+    fn input_file_alias_and_spaced_profile_preserve_startup_boundaries() {
+        for input in [vec!["-i", "input.txt"], vec!["-iinput.txt"]] {
+            let mut values = input;
+            values.extend(["--profile", "compact", "--rpc-stdio"]);
+            let values = values.into_iter().map(OsString::from).collect::<Vec<_>>();
+            let (options, rest) = StartupOptions::parse(&values).unwrap();
+            assert!(options.input_file.unwrap().0.ends_with("input.txt"));
+            assert_eq!(options.profile, Some(RuntimeProfile::Compact));
+            assert_eq!(rest, &[OsString::from("--rpc-stdio")]);
+        }
+        for values in [
+            vec!["-i"],
+            vec!["-i", "--rpc-stdio"],
+            vec!["-ione", "--input-file=two"],
+            vec!["--input-file=one", "-itwo"],
+            vec!["--profile"],
+            vec!["--profile", "--rpc-stdio"],
+            vec!["--profile", "invalid"],
+            vec!["--profile", "compact", "--profile=auto"],
+        ] {
+            let values = values.into_iter().map(OsString::from).collect::<Vec<_>>();
+            assert!(StartupOptions::parse(&values).is_err());
         }
     }
 

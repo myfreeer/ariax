@@ -195,11 +195,13 @@ IP subject alternative name. `Host` continues to use the original authority.
 
 Custom PEM loading happens once while constructing the immutable TLS policy.
 
-The optional Cargo feature `tls-openssl` selects the `rustls-openssl`
-CryptoProvider for this shared HTTPS/FTPS configuration path. The combined
-`crypto-openssl` feature on `ariax-cli` selects both `tls-openssl` and
-`sftp-openssl-rsa` (for example, `--features full,crypto-openssl`). OpenSSL
-takes precedence when features are unified; configuration and handshake
+The `crypto-openssl` feature selects the `rustls-openssl` CryptoProvider for
+this shared HTTPS/FTPS configuration path and OpenSSL SSH RSA operations.
+Engine `bt` and CLI `full`/`compat` select it automatically, reusing the OpenSSL
+already linked by libtorrent. `tls-openssl` and `sftp-openssl-rsa` are aliases
+for the combined selection. Smaller bundles without OpenSSL retain ring TLS
+and the documented RustCrypto RSA limitation. OpenSSL takes precedence when
+features are unified; configuration and handshake
 failures never fall back to ring. TLS still runs through rustls with the same
 trust roots, hostname verification and minimum-version rules. The provider
 offers only the existing classical X25519/P-256/P-384 key exchange groups.

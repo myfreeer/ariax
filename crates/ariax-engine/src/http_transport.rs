@@ -980,7 +980,7 @@ fn validate_origin(uri: &Uri) -> Result<(), HttpTransportError> {
 }
 
 fn tls_provider() -> rustls::crypto::CryptoProvider {
-    #[cfg(feature = "tls-openssl")]
+    #[cfg(feature = "crypto-openssl")]
     {
         let mut provider = rustls_openssl::default_provider();
         // Keep the reviewed classical group set even when the native OpenSSL
@@ -1000,7 +1000,7 @@ fn tls_provider() -> rustls::crypto::CryptoProvider {
         });
         provider
     }
-    #[cfg(not(feature = "tls-openssl"))]
+    #[cfg(not(feature = "crypto-openssl"))]
     {
         rustls::crypto::ring::default_provider()
     }
@@ -1230,6 +1230,12 @@ e31pxMIvRBTw+dGS6spzZo+W4ft31it0tEUmShjy5iE5lqwPpp9GaF3UadN+fWJy
     #[test]
     fn tls_provider_preserves_classical_groups_and_explicit_version_policy() {
         let provider = super::tls_provider();
+        // These pinned providers expose distinct Debug identities. Check the
+        // provider actually used, not only Cargo's resolved dependency graph.
+        #[cfg(feature = "crypto-openssl")]
+        assert_eq!(format!("{:?}", provider.secure_random), "SecureRandom");
+        #[cfg(not(feature = "crypto-openssl"))]
+        assert_eq!(format!("{:?}", provider.secure_random), "Ring");
         assert_eq!(
             provider
                 .kx_groups

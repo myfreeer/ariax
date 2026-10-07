@@ -4,7 +4,7 @@
   "status": "Eight validated default variants removed after checks; two final OpenSSL drafts retained in the platform build directories.",
   "releaseApproved": false,
   "dependencyLockSha256": "f9e83b58a90b9aff33cc144cb59d680b2aa8b4f2f0b86614006dd3783268e365",
-  "noticeInventorySha256": "9a40d0a6774e6164ca01a81db69b2cec993ae17416f06b86aef8b7cf98c4384d",
+  "noticeInventorySha256": "dec28772517d6ce941e799bab5298fd3787a226a33745bd09891dc41610dc449",
   "noticeScope": "Conservative union of all target/bundle normal and build dependency notices; includes unused/source-only notices. Supplemented by current license-review.json.",
   "commonFiles": [
     {
@@ -22,14 +22,14 @@
     {
       "source": "distribution/package-readme.txt",
       "destination": "README.txt",
-      "bytes": 2032,
-      "sha256": "29e7a89625f99401b28275050a7d70b57a6897743dd56711cdfe6d15c97ff559"
+      "bytes": 2423,
+      "sha256": "06bd0af051d03517977593bc5e5822be4730fc96b91150fcbb96aabe92b5a9bd"
     },
     {
       "source": "distribution/license-review.json",
       "destination": "license-review.json",
-      "bytes": 26121,
-      "sha256": "56fb4752befb0add44313ccc40b64a1dd23fefba58d56f313c6437375600fbf2"
+      "bytes": 26368,
+      "sha256": "b0738d8d09e8110c94f61de9f8d3eb19d58d4dc43d9587fd7a0eda742e376c36"
     },
     {
       "source": "performance-evidence/phase7-third-party-notices-2026-10-07.txt",
@@ -106,8 +106,8 @@
     {
       "source": "performance-evidence/phase7-release-license-inventory-2026-10-07.json",
       "destination": "license-inventory.json",
-      "bytes": 744873,
-      "sha256": "9a40d0a6774e6164ca01a81db69b2cec993ae17416f06b86aef8b7cf98c4384d"
+      "bytes": 748278,
+      "sha256": "dec28772517d6ce941e799bab5298fd3787a226a33745bd09891dc41610dc449"
     }
   ],
   "packages": [
@@ -3016,12 +3016,12 @@
       "binary": {
         "artifactPath": "build/linux/release-cli/ariax",
         "destination": "ariax",
-        "sha256": "d4cffcd7ad2e84ca5e77e232609bf044dc5d55a5d60e7604690d1c6748770be3",
-        "bytes": 24950272,
-        "sourceCommit": "58f603c72fe9c65cdb0a45e2af658d8a8abbbf81",
+        "sha256": "b6173b4a7f10a62d0ba611809e53d2f25dfc88d09c7e2ab6e0076247475ecca9",
+        "bytes": 24951072,
+        "sourceCommit": "33caf87f8a9a86562b27466aa71c1365bee1e1a2",
         "sourceDateEpoch": "1791286491",
-        "evidence": "performance-evidence/phase7-openssl-static-tsan-2026-10-07.json",
-        "sourceScope": "Current worktree compiled inputs are hash-bound in the evidence. Native dependency reproducibility is inherited; these builds do not claim a new independent dependency build.",
+        "evidence": "performance-evidence/phase7-compatibility-policy-2026-10-07.json",
+        "sourceScope": "Final compiled inputs hash-bound below; worktree changes included, native installations reused. No new independent reproducibility claim.",
         "pathAudit": {
           "passed": true,
           "counts": {
@@ -3366,8 +3366,13 @@
         "passed": true,
         "functionalPassed": true,
         "freshOsAcceptance": false,
-        "scope": "Reduced-PATH help, RPC/features, unknown-method rejection, shutdown and database reopen; Windows loads only application and system modules. Linux existing system preload remains unchanged.",
-        "validationEvidence": "performance-evidence/phase7-openssl-static-tsan-2026-10-07.json"
+        "validationEvidence": "performance-evidence/phase7-compatibility-policy-2026-10-07.json",
+        "scope": "Current binary reduced-environment package inventory, help, live RPC/features, unknown-method rejection, EOF shutdown and SQLite reopen. Windows observes only application/system modules; Linux existing preload remains recorded."
+      },
+      "buildSelection": {
+        "features": "full",
+        "requestedCryptoBackend": "default",
+        "effectiveCryptoBackend": "openssl"
       }
     },
     {
@@ -3429,12 +3434,12 @@
       "binary": {
         "artifactPath": "build/windows/release-cli/ariax.exe",
         "destination": "ariax.exe",
-        "sha256": "9adabe7caeeb6d45cff5f94c15b158abc0411f922dd4f5931279e52260393531",
-        "bytes": 25185280,
-        "sourceCommit": "58f603c72fe9c65cdb0a45e2af658d8a8abbbf81",
+        "sha256": "f52793eb0116c9360716f200a5e56ff6ed6966329e9c2c0a9f293f4602b46bec",
+        "bytes": 25186304,
+        "sourceCommit": "33caf87f8a9a86562b27466aa71c1365bee1e1a2",
         "sourceDateEpoch": "1791286491",
-        "evidence": "performance-evidence/phase7-openssl-static-tsan-2026-10-07.json",
-        "sourceScope": "Current worktree compiled inputs are hash-bound in the evidence. Native dependency reproducibility is inherited; these builds do not claim a new independent dependency build.",
+        "evidence": "performance-evidence/phase7-compatibility-policy-2026-10-07.json",
+        "sourceScope": "Final compiled inputs hash-bound below; worktree changes included, native installations reused. No new independent reproducibility claim.",
         "pathAudit": {
           "passed": true,
           "counts": {
@@ -3795,8 +3800,13 @@
         "passed": true,
         "functionalPassed": true,
         "freshOsAcceptance": false,
-        "scope": "Reduced-PATH help, RPC/features, unknown-method rejection, shutdown and database reopen; Windows loads only application and system modules. Linux existing system preload remains unchanged.",
-        "validationEvidence": "performance-evidence/phase7-openssl-static-tsan-2026-10-07.json"
+        "validationEvidence": "performance-evidence/phase7-compatibility-policy-2026-10-07.json",
+        "scope": "Current binary reduced-environment package inventory, help, live RPC/features, unknown-method rejection, EOF shutdown and SQLite reopen. Windows observes only application/system modules; Linux existing preload remains recorded."
+      },
+      "buildSelection": {
+        "features": "full",
+        "requestedCryptoBackend": "default",
+        "effectiveCryptoBackend": "openssl"
       }
     }
   ],

@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod arguments;
 mod bittorrent;
 mod rpc_service;
 mod startup;
@@ -31,7 +32,7 @@ use ariax_storage::{
 };
 
 const DEFAULT_HTTP_PIECE_LENGTH: u64 = 1024 * 1024;
-const HELP: &str = "ariax — experimental bounded downloader\n\nUsage: ariax [--help|--version]\n       ariax --check-bootstrap SESSION_DB CONTROL_DIR [OUTPUT_ROOT ...]\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --add-uri SESSION_DB CONTROL_DIR OUTPUT_ROOT URI [URI ...]\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --status SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --pause SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --resume SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --remove SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --rpc-http SESSION_DB CONTROL_DIR OUTPUT_ROOT LOOPBACK_ADDR\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --rpc-ws SESSION_DB CONTROL_DIR OUTPUT_ROOT LOOPBACK_ADDR\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --rpc-stdio SESSION_DB CONTROL_DIR OUTPUT_ROOT\n       ariax --add-torrent SESSION_DB CONTROL_DIR OUTPUT_ROOT FILE [--NAME=VALUE ...]\n       ariax --add-magnet SESSION_DB CONTROL_DIR OUTPUT_ROOT MAGNET [--NAME=VALUE ...]\n       ariax --add-metalink SESSION_DB CONTROL_DIR OUTPUT_ROOT FILE [--NAME=VALUE ...]\n       ariax approve-host-key SESSION_DB CONTROL_DIR OUTPUT_ROOT GID CHALLENGE SHA256_FINGERPRINT\n       ariax --download-http-pinned GID JOURNAL_ID URI PEER OUTPUT_ROOT OUTPUT_PATH JOURNAL_DIR [PIECE_LENGTH]\n       ariax --resume-http-pinned GID JOURNAL_ID URI PEER OUTPUT_ROOT JOURNAL_DIR\n\nRPC is JSON-RPC 2.0 over loopback HTTP/1.1, loopback WebSocket, or Content-Length-framed stdio. Direct control commands use the same engine/control plane. Add commands accept --NAME=VALUE download options, including checksum, uri-selector, server-stat-timeout, FTP/SFTP settings, follow-metalink and Metalink selection filters. BitTorrent commands accept select-file, index-out, discovery, rate, metadata and seeding options. Explicit torrent input accepts repeated --web-seed=URI and --position. Explicit Metalink input also accepts --metalink-base-uri and --position. Supported checksums: sha-512, sha-256, sha-1 and md5. The pinned HTTP commands accept an already policy-approved numeric PEER (IP:port); they do not perform DNS or SSRF-policy resolution.\n";
+const HELP: &str = "ariax — experimental bounded downloader\n\nUsage: ariax [--help|--version]\n       ariax --check-bootstrap SESSION_DB CONTROL_DIR [OUTPUT_ROOT ...]\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --add-uri SESSION_DB CONTROL_DIR OUTPUT_ROOT URI [URI ...]\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --status SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --pause SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --resume SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --remove SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --rpc-http SESSION_DB CONTROL_DIR OUTPUT_ROOT LOOPBACK_ADDR\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --rpc-ws SESSION_DB CONTROL_DIR OUTPUT_ROOT LOOPBACK_ADDR\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --rpc-stdio SESSION_DB CONTROL_DIR OUTPUT_ROOT\n       ariax --add-torrent SESSION_DB CONTROL_DIR OUTPUT_ROOT FILE [--NAME=VALUE ...]\n       ariax --add-magnet SESSION_DB CONTROL_DIR OUTPUT_ROOT MAGNET [--NAME=VALUE ...]\n       ariax --add-metalink SESSION_DB CONTROL_DIR OUTPUT_ROOT FILE [--NAME=VALUE ...]\n       ariax approve-host-key SESSION_DB CONTROL_DIR OUTPUT_ROOT GID CHALLENGE SHA256_FINGERPRINT\n       ariax --download-http-pinned GID JOURNAL_ID URI PEER OUTPUT_ROOT OUTPUT_PATH JOURNAL_DIR [PIECE_LENGTH]\n       ariax --resume-http-pinned GID JOURNAL_ID URI PEER OUTPUT_ROOT JOURNAL_DIR\n\nRPC is JSON-RPC 2.0 over loopback HTTP/1.1, loopback WebSocket, or Content-Length-framed stdio. Direct control commands use the same engine/control plane. Add commands accept --NAME=VALUE or --NAME VALUE download options; short aliases include -o, -s, -x, -k and -t. Boolean flags imply true; use =false to disable. Use -- before literal dash-leading inputs. Startup also accepts -iFILE or -i FILE and --profile VALUE. Download options include including checksum, uri-selector, server-stat-timeout, FTP/SFTP settings, follow-metalink and Metalink selection filters. BitTorrent commands accept select-file, index-out, discovery, rate, metadata and seeding options. Explicit torrent input accepts repeated --web-seed=URI and --position. Explicit Metalink input also accepts --metalink-base-uri and --position. Supported checksums: sha-512, sha-256, sha-1 and md5. The pinned HTTP commands accept an already policy-approved numeric PEER (IP:port); they do not perform DNS or SSRF-policy resolution.\n";
 
 fn main() -> ExitCode {
     run(env::args_os().skip(1))
@@ -582,19 +583,9 @@ fn parse_transfer_flags(
     let mut options = Vec::new();
     let mut selection = ariax_engine::MetalinkSelection::default();
     let mut position = None;
-    let mut literal = false;
-    for argument in arguments {
-        let text = argument
-            .to_str()
-            .ok_or("transfer arguments must be UTF-8")?;
-        if text == "--" && !literal {
-            literal = true;
-            continue;
-        }
-        if !literal && let Some(flag) = text.strip_prefix("--") {
-            let (name, value) = flag
-                .split_once('=')
-                .ok_or("download options require --NAME=VALUE")?;
+    let mut arguments = arguments::Arguments::new(arguments);
+    while let Some(argument) = arguments.next()? {
+        if let arguments::Argument::Option(name, value) = argument {
             if name == "metalink-base-uri" && metalink {
                 if selection.base_uri.replace(value.to_owned()).is_some() {
                     return Err("duplicate Metalink base URI".into());
@@ -611,7 +602,7 @@ fn parse_transfer_flags(
             } else {
                 options.push((name.to_owned(), value.to_owned()));
             }
-        } else {
+        } else if let arguments::Argument::Positional(text) = argument {
             positional.push(text.to_owned());
         }
     }
@@ -1288,6 +1279,68 @@ fn check_bootstrap(
 #[cfg(test)]
 mod phase5_cli_tests {
     use super::*;
+    #[test]
+    fn cli_aria2_spellings_reach_typed_download_options() {
+        let flags = [
+            "https://example.test/file",
+            "-o",
+            "file.bin",
+            "-s4",
+            "-x2",
+            "-k1M",
+            "-t30",
+            "--max-tries",
+            "3",
+            "--pause",
+        ];
+        let (uris, options, _, _) =
+            parse_transfer_flags(&flags.map(OsString::from), false).unwrap();
+        assert_eq!(uris, ["https://example.test/file"]);
+        assert_eq!(options.output.as_deref(), Some("file.bin"));
+        assert_eq!(options.split.unwrap().get(), 4);
+        assert_eq!(options.max_connections_per_server.unwrap().get(), 2);
+        assert_eq!(options.min_split_size, Some(1024 * 1024));
+        assert_eq!(options.timeout_seconds, Some(30));
+        assert!(options.pause);
+        assert!(options.retry.is_some());
+        let (_, _, selection, position) = parse_transfer_flags(
+            &[
+                "--metalink-base-uri",
+                "https://example.test/",
+                "--position",
+                "0",
+            ]
+            .map(OsString::from),
+            true,
+        )
+        .unwrap();
+        assert_eq!(selection.base_uri.as_deref(), Some("https://example.test/"));
+        assert_eq!(position, Some(0));
+        let (literal, _, _, _) =
+            parse_transfer_flags(&["--", "-s4", "--pause"].map(OsString::from), false).unwrap();
+        assert_eq!(literal, ["-s4", "--pause"]);
+    }
+
+    #[test]
+    fn cli_aliases_preserve_duplicates_bounds_and_output_authority() {
+        for flags in [
+            vec!["-s2", "--split", "3"],
+            vec!["-s0"],
+            vec!["-x0"],
+            vec!["-t601"],
+            vec!["-d", "elsewhere"],
+            vec!["-c"],
+            vec!["--pause", "--pause=false"],
+            vec!["-s", "--pause"],
+            vec!["--unknown", "secret-canary"],
+            vec!["-Zsecret-canary"],
+        ] {
+            let flags = flags.into_iter().map(OsString::from).collect::<Vec<_>>();
+            let error = parse_transfer_flags(&flags, false).unwrap_err();
+            assert!(!error.contains("canary"));
+        }
+    }
+
     #[test]
     fn cli_options_use_shared_validation_and_reject_unknown_or_duplicate_flags() {
         let flags = [

@@ -96,7 +96,7 @@ def option_rejected(result, stderr):
 
 
 def bundle_features(bundle, crypto_backend):
-    require(bundle in rm.BUNDLES and crypto_backend in {'default', 'openssl'}, 'unknown build selection')
+    rm.effective_crypto_backend(bundle, crypto_backend)
     if crypto_backend == 'default':
         return bundle
     return bundle + (',tls-openssl' if bundle == 'minimal' else ',crypto-openssl')
@@ -106,6 +106,7 @@ def runtime_inventory(output, windows, bundle='minimal', crypto_backend='default
     require(bundle in rm.BUNDLES, 'unknown bundle')
     require(crypto_backend in {'default', 'openssl'}, 'unknown crypto backend')
     bt = bundle in {'full', 'compat'}
+    crypto_backend = rm.effective_crypto_backend(bundle, crypto_backend)
     openssl = crypto_backend == 'openssl'
     if windows:
         libraries = sorted({value.lower() for value in re.findall(r'DLL Name:\s*(\S+)', output)})
@@ -194,6 +195,7 @@ def prepare(args, root=ROOT):
     require(crypto_backend in {'default', 'openssl'}, 'unknown crypto backend')
     require(bundles and len(bundles) == len(set(bundles)) and set(bundles) <= rm.BUNDLES, 'invalid bundle set')
     native = getattr(args, 'native_dir', None)
+    uses_openssl = any(rm.effective_crypto_backend(bundle, crypto_backend) == 'openssl' for bundle in bundles)
     require(bool(native) == (bool(set(bundles) & {'full', 'compat'}) or crypto_backend == 'openssl'),
             'full/compat and OpenSSL builds require an explicit native installation')
     require(args.output.is_absolute() and args.toolchain.is_absolute() and args.cargo_home.is_absolute(),
@@ -239,7 +241,7 @@ def prepare(args, root=ROOT):
     env, flags = build_environment(os.environ, roots, args.toolchain, windows, epoch)
     if native:
         env.update(ARIAX_BT_NATIVE_DIR=str(native), ARIAX_BT_SANITIZER='none')
-        if crypto_backend == 'openssl':
+        if uses_openssl:
             env.update(OPENSSL_DIR=str(native), OPENSSL_STATIC='1')
     if reference:
         require(comparison_flags(flags) == comparison_flags(reference['flags']), 'reference build option drift')
@@ -260,7 +262,7 @@ def prepare(args, root=ROOT):
         record['nativeManifestSha256'] = h.digest(native / 'ariax-native.json')
         record['nativeComparison'] = native_comparison(native_manifest)
         record['environment'].update(ARIAX_BT_NATIVE_DIR=str(native), ARIAX_BT_SANITIZER='none')
-        if crypto_backend == 'openssl':
+        if uses_openssl:
             record['environment'].update(OPENSSL_DIR=str(native), OPENSSL_STATIC='1')
         if reference:
             require(record['nativeComparison'] == reference.get('nativeComparison'), 'native reference drift')
@@ -295,7 +297,8 @@ def prepare(args, root=ROOT):
                         record['nativeCompiler']['binarySha256'] == prior['nativeCompiler']['binarySha256'],
                         'compiler identity drift')
         for bundle in bundles:
-            item = {'bundle': bundle, 'features': bundle_features(bundle, crypto_backend)}
+            item = {'bundle': bundle, 'features': bundle_features(bundle, crypto_backend),
+                    'cryptoBackend': rm.effective_crypto_backend(bundle, crypto_backend)}
             record['builds'].append(item)
             h.save(args.output / 'result.json', record)
             command = [cargo, 'build', '--locked', '--offline', '-p', 'ariax-cli',

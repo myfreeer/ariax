@@ -620,10 +620,21 @@ addresses replay-memory admission, retained rate history, OpenSSL 3.6.5 native
 validation, advisory applicability and current package preparation. Historical
 Windows `changeUri`/`addUri` and native Linux mixed-burst latency attribution are
 explicitly deferred in that local goal, with failures and thresholds preserved.
+The [compatibility and crypto-policy follow-up](../../performance-evidence/phase7-compatibility-policy-2026-10-07.md)
+adds aria2 CLI spellings through typed admission, corrects upstream option
+classification and makes OpenSSL reuse automatic for full/compat builds.
 The [OpenSSL and static-runtime follow-up](../../performance-evidence/phase7-openssl-static-tsan-2026-10-07.md)
 adds optional OpenSSL TLS/RSA selection, Windows system-DLL-only builds and
 current package checks. Its isolated local TSan work rebuilds Rust std/libtest;
 production toolchains and CI do not acquire that rebuild requirement.
+Real power-loss recovery is explicitly deferred to a future VM campaign.
+Existing process-kill and deterministic durable-prefix tests remain useful local
+evidence; they do not establish power-loss durability. A VM campaign must record
+its storage/cache model and does not by itself prove physical-device guarantees.
+Compatibility work first implements straightforward gaps through existing typed
+boundaries, then records behavior and migration tradeoffs before any replacement
+artifact decision. OpenSSL-linked builds reuse OpenSSL for TLS and SSH RSA;
+other builds document the RustCrypto RSA limitation without hiding the advisory.
 The work below retains its full acceptance requirements; Phase-6 completion
 and local hardening results are not release approval.
 

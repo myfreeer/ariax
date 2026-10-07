@@ -169,11 +169,16 @@ epochs. Reusing a verified dependency does not require rebuilding it after each
 CLI commit; independent comparisons must match both recorded build identities.
 `scripts/release_build.py --crypto-backend openssl` selects the OpenSSL TLS/RSA
 features and requires `--native-dir` even for minimal/standard. Minimal enables
-only the TLS provider. The default selection remains ring TLS/RustCrypto RSA.
+only the TLS provider because it has no SFTP. Full/compat automatically use
+OpenSSL for TLS and SSH RSA even with `--crypto-backend default`; smaller bundles
+without an OpenSSL selector retain ring TLS/RustCrypto RSA. Either legacy
+selector selects the common crypto backend wherever those protocols are enabled.
+The RustCrypto-only RSA limitation is documented in the
+[SFTP contract](../protocols/detailed-ftp-sftp.md); the advisory is not suppressed.
 
 Package records marked `validated-removed` preserve completed validation after
 cleanup and are excluded from staging. Only `draft-retained` entries identify
-available binaries. Optional OpenSSL entries use the `-openssl` package suffix;
+available binaries. OpenSSL entries, including automatic full/compat builds, use the `-openssl` package suffix;
 their manifests record the selected crypto backend and measured imports.
 
 The maintained [local build helper](local-hardening.md#local-release-preparation)

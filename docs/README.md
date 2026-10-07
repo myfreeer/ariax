@@ -82,6 +82,7 @@ They explain earlier decisions; current subsystem contracts take precedence.
 ## Implementation And Validation
 
 - [Implementation plan](project/implementation-plan.md)
+- [Aria2 Compatibility Progress And Decisions](project/aria2-compatibility.md)
 - [Implementation readiness](project/implementation-readiness.md)
 - [Requirements traceability](project/requirements-traceability.md)
 - [Implementation history](project/implementation-history.md): checkpoint

@@ -217,13 +217,14 @@ def main():
     try:
         require(len(args.bundles) == len(set(args.bundles)), 'duplicate bundle')
         for bundle in args.bundles:
+            backend = rm.effective_crypto_backend(bundle, args.crypto_backend)
             package = args.packages / (target + '-' + bundle
-                                      + ('-openssl' if args.crypto_backend == 'openssl' else ''))
-            manifest, binary = verify_package(package, args.crypto_backend)
+                                      + ('-openssl' if backend == 'openssl' else ''))
+            manifest, binary = verify_package(package, backend)
             work = args.output / bundle; work.mkdir()
             for name in ('tmp', 'cwd'):(work / name).mkdir()
             env = reduced_environment(os.environ, work / 'tmp', windows)
-            row = {'bundle': bundle, 'cryptoBackend': args.crypto_backend,
+            row = {'bundle': bundle, 'cryptoBackend': backend,
                    'binarySha256': h.digest(binary), 'environment': env}
             report['packages'].append(row)
             row['help'] = h.run([binary, '--help'], work / 'help', timeout=30, env=env, cwd=work / 'cwd')

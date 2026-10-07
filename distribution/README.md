@@ -8,7 +8,9 @@ The project [MIT license](../LICENSE) applies to Ariax-owned code; files under
 `licenses/` preserve original third-party terms and bytes.
 
 `package-manifests.json` records the four default bundles for Linux and
-Windows-GNU and optional OpenSSL package selections. `draft-retained` entries
+Windows-GNU and OpenSSL package selections. Current full/compat automatically
+select OpenSSL for TLS and SSH RSA; older removed records keep their original
+backend identity. `draft-retained` entries
 identify available binaries; `validated-removed` entries preserve validation
 records after cleanup and cannot be staged. Keep only the final selected binary
 in each platform's build directory. macOS and MSVC need separate manifests.
@@ -40,7 +42,8 @@ adds four archives with verified extracted inventories, notices, independent
 native/CLI build matches and reduced-environment package operation on both
 hosts. All eight entries remain drafts; their distinct source identities are
 retained. Temporary combined inputs and duplicate staging copies were removed
-after verification; archives, extracted packages and independent binaries remain.
+after verification. Superseded archives, extracted packages and independent
+binaries have also been removed; the reports retain their validation results.
 
 The conservative dependency notice collection includes normal/build dependency
 closures across all eight bundles. It can contain unused source notices and

@@ -19,17 +19,9 @@ fn arguments(values: &[OsString]) -> Result<Arguments, String> {
     let mut position = None;
     let mut web_seeds = Vec::new();
     let mut positional = Vec::new();
-    let mut literal = false;
-    for value in values {
-        let text = value.to_str().ok_or("BitTorrent arguments must be UTF-8")?;
-        if !literal && text == "--" {
-            literal = true;
-            continue;
-        }
-        if !literal && let Some(flag) = text.strip_prefix("--") {
-            let (name, value) = flag
-                .split_once('=')
-                .ok_or("BitTorrent options require --NAME=VALUE")?;
+    let mut arguments = super::arguments::Arguments::new(values);
+    while let Some(argument) = arguments.next()? {
+        if let super::arguments::Argument::Option(name, value) = argument {
             match name {
                 "position" => {
                     let value = value
@@ -49,7 +41,7 @@ fn arguments(values: &[OsString]) -> Result<Arguments, String> {
                 }
                 _ => pairs.push((name.to_owned(), value.to_owned())),
             }
-        } else {
+        } else if let super::arguments::Argument::Positional(text) = argument {
             if positional.len() == 1 || text.len() > 65536 {
                 return Err("expected one bounded BitTorrent input".into());
             }
@@ -122,6 +114,48 @@ pub(super) async fn run(engine: &Engine, request: Admission) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "full")]
+    #[test]
+    fn spaced_torrent_options_preserve_web_seeds_and_duplicate_rejection() {
+        let args = arguments(
+            &[
+                "--pause",
+                "--bt-max-peers",
+                "32",
+                "--position",
+                "0",
+                "--web-seed",
+                "https://example.test/a",
+                "--web-seed=https://example.test/b",
+            ]
+            .map(OsString::from),
+        )
+        .unwrap();
+        assert_eq!(args.position, Some(0));
+        assert_eq!(args.web_seeds.len(), 2);
+        assert!(args.positional.is_empty());
+        for values in [
+            vec!["--pause", "--pause=false"],
+            vec!["--bt-max-peers", "0"],
+            vec!["--position", "0", "--position=1"],
+            vec!["--web-seed"],
+        ] {
+            assert!(
+                arguments(&values.into_iter().map(OsString::from).collect::<Vec<_>>()).is_err()
+            );
+        }
+        assert!(
+            magnet(
+                &[
+                    "--pause",
+                    "magnet:?xt=urn:btih:0123456789012345678901234567890123456789"
+                ]
+                .map(OsString::from)
+            )
+            .is_ok()
+        );
+    }
 
     #[test]
     fn cli_torrent_options_share_bounds_and_feature_rejection() {

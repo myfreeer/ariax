@@ -297,9 +297,9 @@ minimum-supported-OS acceptance. Keep their host limitations explicit.
 After staging packages, run `python3 -B scripts/release_smoke.py --packages
 ABSOLUTE_PACKAGE_ROOT --output FRESH_ABSOLUTE_OUTPUT` on each native platform.
 Use MSYS2's native Python for Windows. Select `--bundles` (default
-`minimal standard`). For BT
-bundles it verifies that every reviewed Windows runtime DLL actually loads from
-the package directory with the recorded bytes. It verifies the file/checksum
+`minimal standard`). Full/compat automatically select the OpenSSL package even
+when the backend selector is `default`. Current Windows packages must import
+only Windows-provided DLLs and need no adjacent runtime files. It verifies the file/checksum
 inventory, clears inherited developer paths and environment overrides, and
 uses isolated working, temporary and state directories. It checks help, live
 NDJSON version/stat queries with the exact expected feature set, unknown-method

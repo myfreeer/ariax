@@ -691,6 +691,9 @@ The approved [local hardening campaign](../../performance-evidence/phase7-local-
 is complete on `local/phase7-hardening`. Phase 7 remains active; these results
 do not approve a release or replace the remaining platform gates.
 
+The [compatibility and crypto-policy follow-up](../../performance-evidence/phase7-compatibility-policy-2026-10-07.md)
+adds aria2 CLI spellings through typed admission, corrects upstream option
+classification and makes OpenSSL reuse automatic for full/compat builds.
 The [OpenSSL and static-runtime follow-up](../../performance-evidence/phase7-openssl-static-tsan-2026-10-07.md)
 validates optional rustls OpenSSL and SSH RSA selection on Linux and native
 Windows, including MSRV, Clippy, security regressions and package RPC/reopen
@@ -702,9 +705,9 @@ std/libtest harness, 73 runtime, 36 replay/storage and two native FFI tests.
 | Work Package | Completed Local Evidence | Remaining Acceptance |
 | --- | --- | --- |
 | `P7-01` | Earlier 41 native Windows diagnostics and the [bounded campaign's 410 attempts](../../performance-evidence/phase7-local-campaign-2026-10-05.md#transport-diagnostics), preserving one 100.250 ms `changeUri` timing failure. Host observations do not attribute that delay. | Historical Windows `changeUri`/`addUri` and native Linux 530.097 ms mixed-burst attribution are explicitly deferred in the current local goal. They remain full Phase-7 acceptance work and are not fixed. |
-| `P7-02` | Security/resource repairs with success and rejection regressions; ownership, policy, persistence and dependency review. The latest local campaign adds budgeted replay ownership and reclamation of fully replenished implicit rate scopes, with bounded active/recovery evidence. | Retain strict Unix fixture and kernel/backend coverage on suitable native systems; upstream RSA assurance remains open. |
+| `P7-02` | Security/resource repairs with success and rejection regressions; ownership, policy, persistence and dependency review. The latest local campaign adds budgeted replay ownership and reclamation of fully replenished implicit rate scopes, with bounded active/recovery evidence. | Retain strict Unix fixture and kernel/backend coverage on suitable native systems. RSA disposition: reuse OpenSSL whenever linked; document RUSTSEC-2023-0071 for builds without it, with no advisory suppression. |
 | `P7-03` | All 11 Rust-ASan targets pass the additional three-round campaign: 506,880 accepted executions, including 440,792 mutations. Native sanitizer probes and the direct TSan driver pass. The October 7 run adds instrumented Rust std/libtest, successful clean/racy controls and 111 passing runtime, replay/storage and native FFI tests. | Other supported platform/compiler configurations remain acceptance work. The nine earlier failed native-only harness invocations remain historical evidence; the corrected local configuration does not erase them. |
-| `P7-04` | Additional 2,000 WSL and 2,400 Windows lifecycle/recovery invocations pass, alongside focused BT/protocol/configuration/runtime checks. All eight Linux/Windows-GNU drafts have independent binary matches, notices, path/import checks and reduced-environment RPC/reopen evidence. The [full/compat follow-up](../../performance-evidence/phase7-release-blockers-2026-10-06.md) also verifies independent native builds and four extracted archives with the reviewed Windows runtime closure. | Fresh/minimum OS, macOS/MSVC, remaining release matrix, hardware power loss and compatibility decisions. Reviewed handler coverage remains 54/207. |
+| `P7-04` | Additional 2,000 WSL and 2,400 Windows lifecycle/recovery invocations pass, alongside focused BT/protocol/configuration/runtime checks. All eight Linux/Windows-GNU drafts have independent binary matches, notices, path/import checks and reduced-environment RPC/reopen evidence. The [full/compat follow-up](../../performance-evidence/phase7-release-blockers-2026-10-06.md) also verifies independent native builds and four extracted archives with the reviewed Windows runtime closure. | Fresh/minimum OS, macOS/MSVC and the remaining release matrix. Real power-loss recovery is deferred to a VM campaign; current crash/model tests do not close that gate. Implement straightforward compatibility gaps before deciding broader tradeoffs; reviewed handler coverage remains 54/207. |
 
 The [completed-burst diagnostic slice](../../performance-evidence/phase7-burst-diagnostics-2026-10-05.md)
 adds a longest-burst snapshot and separate primary/verification/untimed totals.
@@ -810,9 +813,9 @@ feature-gate status must exist from the start:
 - russh plus a pinned receive-cap patch for russh-sftp 2.3.0,
 - russh's exact re-exported ssh-key 0.7.0-rc.11 for one OpenSSH key,
   certificate, and `known_hosts` representation,
-- russh defaults disabled with ring+flate2+rsa, plus optional `openssl-rsa`
-  for RSA authentication and exchange signatures; optional `tls-openssl`
-  selects OpenSSL within rustls for HTTPS/FTPS,
+- russh defaults disabled with ring+flate2+rsa; full/compat and explicit crypto
+  selectors reuse OpenSSL for both RSA operations and rustls HTTPS/FTPS crypto.
+  Smaller builds without OpenSSL retain the documented RustCrypto RSA limitation,
 - a pinned control-reply-cap patch for SuppaFTP 10.0.1 with Tokio/rustls for FTP
   and FTPS protocol mechanics,
 - the low-level io-uring crate behind the project-owned Linux disk adapter,

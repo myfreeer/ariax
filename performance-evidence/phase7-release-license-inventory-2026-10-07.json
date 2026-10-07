@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "status": "current locked default and OpenSSL feature inventory; package validation recorded separately",
+  "status": "Current locked feature inventory with automatic full/compat OpenSSL reuse; historical removed binary records keep their original selection.",
   "date": "2026-10-07",
   "baselineCommit": "58f603c72fe9c65cdb0a45e2af658d8a8abbbf81",
   "projectLicense": "MIT",
@@ -199,6 +199,7 @@
       "external": 174,
       "cargoTreeSha256": "ad8afe30d533e8dd1d6745aeb45515fd130543a44a4ded894f7beba5a6a8f943",
       "features": "minimal",
+      "requestedCryptoBackend": "default",
       "cryptoBackend": "default",
       "resolvedFeatures": {
         "ariax-bt-metadata@0.1.0": [],
@@ -972,8 +973,9 @@
       ],
       "total": 187,
       "external": 180,
-      "cargoTreeSha256": "3819d856f446d79579353f92bd1c174f93a27bbe5c10e6fb6c50888de78c1e5c",
+      "cargoTreeSha256": "1880ef2e453e314d2d4aeb1857ba9adcbbf69e18fe095e924c7d2775b783773d",
       "features": "minimal,tls-openssl",
+      "requestedCryptoBackend": "openssl",
       "cryptoBackend": "openssl",
       "resolvedFeatures": {
         "ariax-bt-metadata@0.1.0": [],
@@ -984,6 +986,7 @@
         "ariax-config@0.1.0": [],
         "ariax-core@0.1.0": [],
         "ariax-engine@0.1.0": [
+          "crypto-openssl",
           "default",
           "metalink",
           "tls-openssl"
@@ -1856,6 +1859,7 @@
       "external": 275,
       "cargoTreeSha256": "d9aa7fcfd950c5cc3d744d9e95debef11061edb80b099faa01062df12f0f7295",
       "features": "standard",
+      "requestedCryptoBackend": "default",
       "cryptoBackend": "default",
       "resolvedFeatures": {
         "adler2@2.0.1": [],
@@ -3238,8 +3242,9 @@
       ],
       "total": 288,
       "external": 281,
-      "cargoTreeSha256": "2b68cb420d9efd787e7223839294de82aa9850bfaa92154c77bdf08f1dddc117",
+      "cargoTreeSha256": "7e4fc15f37e6a1a0284dd5f2012b87311313f719e30bdb85d88680c63976de68",
       "features": "standard,crypto-openssl",
+      "requestedCryptoBackend": "openssl",
       "cryptoBackend": "openssl",
       "resolvedFeatures": {
         "adler2@2.0.1": [],
@@ -3271,6 +3276,7 @@
         "ariax-config@0.1.0": [],
         "ariax-core@0.1.0": [],
         "ariax-engine@0.1.0": [
+          "crypto-openssl",
           "default",
           "ftp",
           "metalink",
@@ -4429,6 +4435,8 @@
         "find-msvc-tools@0.1.9",
         "flate2@1.1.10",
         "foldhash@0.2.0",
+        "foreign-types-shared@0.1.1",
+        "foreign-types@0.3.2",
         "form_urlencoded@1.2.2",
         "fs2@0.4.3",
         "futures-channel@0.3.33",
@@ -4506,7 +4514,10 @@
         "num-integer@0.1.47",
         "num-traits@0.2.19",
         "once_cell@1.21.4",
+        "openssl-macros@0.1.1",
         "openssl-probe@0.1.6",
+        "openssl-sys@0.9.117",
+        "openssl@0.10.81",
         "p256@0.14.0",
         "p384@0.14.0",
         "p521@0.14.0",
@@ -4554,6 +4565,7 @@
         "rustc_version@0.4.1",
         "rustix@1.1.4",
         "rustls-native-certs@0.8.2",
+        "rustls-openssl@0.4.2",
         "rustls-pki-types@1.15.1",
         "rustls-webpki@0.103.15",
         "rustls@0.23.45",
@@ -4642,11 +4654,12 @@
         "zerovec-derive@0.11.3",
         "zerovec@0.11.6"
       ],
-      "total": 294,
-      "external": 285,
-      "cargoTreeSha256": "7533d8de912ad52027067684b29e26a682f644dfb8a11ef2bd94d0a2acef4f37",
+      "total": 300,
+      "external": 291,
+      "cargoTreeSha256": "7601eb87bb731c28e394f808b385404d884b47375f51eeccdf0a636a0640d09a",
       "features": "full",
-      "cryptoBackend": "default",
+      "requestedCryptoBackend": "default",
+      "cryptoBackend": "openssl",
       "resolvedFeatures": {
         "adler2@2.0.1": [],
         "aead@0.6.1": [
@@ -4684,6 +4697,7 @@
         "ariax-core@0.1.0": [],
         "ariax-engine@0.1.0": [
           "bt",
+          "crypto-openssl",
           "default",
           "ftp",
           "metalink",
@@ -4927,6 +4941,8 @@
         "foldhash@0.2.0": [
           "std"
         ],
+        "foreign-types-shared@0.1.1": [],
+        "foreign-types@0.3.2": [],
         "form_urlencoded@1.2.2": [
           "alloc",
           "std"
@@ -5210,7 +5226,12 @@
           "race",
           "std"
         ],
+        "openssl-macros@0.1.1": [],
         "openssl-probe@0.1.6": [],
+        "openssl-sys@0.9.117": [],
+        "openssl@0.10.81": [
+          "default"
+        ],
         "p256@0.14.0": [
           "alloc",
           "arithmetic",
@@ -5433,6 +5454,7 @@
         "russh-util@0.52.0": [],
         "russh@0.62.4": [
           "flate2",
+          "openssl-rsa",
           "ring",
           "rsa"
         ],
@@ -5444,6 +5466,9 @@
           "std"
         ],
         "rustls-native-certs@0.8.2": [],
+        "rustls-openssl@0.4.2": [
+          "tls12"
+        ],
         "rustls-pki-types@1.15.1": [
           "alloc",
           "default",
@@ -6081,8 +6106,9 @@
       ],
       "total": 300,
       "external": 291,
-      "cargoTreeSha256": "67f097557eb53c645bf6365d27af5519e15277e2e4d2a02bc36efb693dcb7fa4",
+      "cargoTreeSha256": "b2f8feec22dd98a0dbd459dbe0ae26a910b204eb9490183c96fc7e50c64d058d",
       "features": "full,crypto-openssl",
+      "requestedCryptoBackend": "openssl",
       "cryptoBackend": "openssl",
       "resolvedFeatures": {
         "adler2@2.0.1": [],
@@ -6124,6 +6150,7 @@
         "ariax-core@0.1.0": [],
         "ariax-engine@0.1.0": [
           "bt",
+          "crypto-openssl",
           "default",
           "ftp",
           "metalink",
@@ -7313,6 +7340,8 @@
         "find-msvc-tools@0.1.9",
         "flate2@1.1.10",
         "foldhash@0.2.0",
+        "foreign-types-shared@0.1.1",
+        "foreign-types@0.3.2",
         "form_urlencoded@1.2.2",
         "fs2@0.4.3",
         "futures-channel@0.3.33",
@@ -7390,7 +7419,10 @@
         "num-integer@0.1.47",
         "num-traits@0.2.19",
         "once_cell@1.21.4",
+        "openssl-macros@0.1.1",
         "openssl-probe@0.1.6",
+        "openssl-sys@0.9.117",
+        "openssl@0.10.81",
         "p256@0.14.0",
         "p384@0.14.0",
         "p521@0.14.0",
@@ -7438,6 +7470,7 @@
         "rustc_version@0.4.1",
         "rustix@1.1.4",
         "rustls-native-certs@0.8.2",
+        "rustls-openssl@0.4.2",
         "rustls-pki-types@1.15.1",
         "rustls-webpki@0.103.15",
         "rustls@0.23.45",
@@ -7526,11 +7559,12 @@
         "zerovec-derive@0.11.3",
         "zerovec@0.11.6"
       ],
-      "total": 294,
-      "external": 285,
-      "cargoTreeSha256": "2c537d89b27f3f70fa814f6a6ffeef3cb981c87964dc098ff5deed2510b1f813",
+      "total": 300,
+      "external": 291,
+      "cargoTreeSha256": "bd02b090cfe26cdb8799921e18f7bec4ef6bab2504b03177db91c255a79f6fd3",
       "features": "compat",
-      "cryptoBackend": "default",
+      "requestedCryptoBackend": "default",
+      "cryptoBackend": "openssl",
       "resolvedFeatures": {
         "adler2@2.0.1": [],
         "aead@0.6.1": [
@@ -7569,6 +7603,7 @@
         "ariax-core@0.1.0": [],
         "ariax-engine@0.1.0": [
           "bt",
+          "crypto-openssl",
           "default",
           "ftp",
           "metalink",
@@ -7812,6 +7847,8 @@
         "foldhash@0.2.0": [
           "std"
         ],
+        "foreign-types-shared@0.1.1": [],
+        "foreign-types@0.3.2": [],
         "form_urlencoded@1.2.2": [
           "alloc",
           "std"
@@ -8095,7 +8132,12 @@
           "race",
           "std"
         ],
+        "openssl-macros@0.1.1": [],
         "openssl-probe@0.1.6": [],
+        "openssl-sys@0.9.117": [],
+        "openssl@0.10.81": [
+          "default"
+        ],
         "p256@0.14.0": [
           "alloc",
           "arithmetic",
@@ -8318,6 +8360,7 @@
         "russh-util@0.52.0": [],
         "russh@0.62.4": [
           "flate2",
+          "openssl-rsa",
           "ring",
           "rsa"
         ],
@@ -8329,6 +8372,9 @@
           "std"
         ],
         "rustls-native-certs@0.8.2": [],
+        "rustls-openssl@0.4.2": [
+          "tls12"
+        ],
         "rustls-pki-types@1.15.1": [
           "alloc",
           "default",
@@ -8966,8 +9012,9 @@
       ],
       "total": 300,
       "external": 291,
-      "cargoTreeSha256": "1d7e9dd244d95741259d99801eedf2622759e2410f7369e1be5d353eb4edc1a3",
+      "cargoTreeSha256": "b484be71dff2fee99eeae3697f0da6ff5164797b8ba3b9969cc236a4feb9a4b2",
       "features": "compat,crypto-openssl",
+      "requestedCryptoBackend": "openssl",
       "cryptoBackend": "openssl",
       "resolvedFeatures": {
         "adler2@2.0.1": [],
@@ -9010,6 +9057,7 @@
         "ariax-core@0.1.0": [],
         "ariax-engine@0.1.0": [
           "bt",
+          "crypto-openssl",
           "default",
           "ftp",
           "metalink",
@@ -10309,6 +10357,7 @@
       "external": 179,
       "cargoTreeSha256": "7b3429ed0adf68c08dca00964378d5630c3637b7bd9861bae6fc28131fe2359a",
       "features": "minimal",
+      "requestedCryptoBackend": "default",
       "cryptoBackend": "default",
       "resolvedFeatures": {
         "ariax-bt-metadata@0.1.0": [],
@@ -11131,8 +11180,9 @@
       ],
       "total": 193,
       "external": 185,
-      "cargoTreeSha256": "81c44db826850ba920d19414fe1c7633d5f474c30489ffe42edc39f28e709268",
+      "cargoTreeSha256": "aa77cec32552a8965d88d0196bc7cfb440f718c5edeac6ad06628ad32a78e244",
       "features": "minimal,tls-openssl",
+      "requestedCryptoBackend": "openssl",
       "cryptoBackend": "openssl",
       "resolvedFeatures": {
         "ariax-bt-metadata@0.1.0": [],
@@ -11143,6 +11193,7 @@
         "ariax-config@0.1.0": [],
         "ariax-core@0.1.0": [],
         "ariax-engine@0.1.0": [
+          "crypto-openssl",
           "default",
           "metalink",
           "tls-openssl"
@@ -12070,6 +12121,7 @@
       "external": 286,
       "cargoTreeSha256": "a027c384dac694fb0940673b48912c09fc487ad2e1260d479a36ee6a9b54925e",
       "features": "standard",
+      "requestedCryptoBackend": "default",
       "cryptoBackend": "default",
       "resolvedFeatures": {
         "adler2@2.0.1": [],
@@ -13537,8 +13589,9 @@
       ],
       "total": 300,
       "external": 292,
-      "cargoTreeSha256": "bb312db3cd4754d21f50e56c1f8cac82c9b284c0399463f5a61bdea5fe411f28",
+      "cargoTreeSha256": "7ef0200c9061bd5d5b33a85ad5c0811f83e1e20599bb28081083a060d5cc00f8",
       "features": "standard,crypto-openssl",
+      "requestedCryptoBackend": "openssl",
       "cryptoBackend": "openssl",
       "resolvedFeatures": {
         "adler2@2.0.1": [],
@@ -13570,6 +13623,7 @@
         "ariax-config@0.1.0": [],
         "ariax-core@0.1.0": [],
         "ariax-engine@0.1.0": [
+          "crypto-openssl",
           "default",
           "ftp",
           "metalink",
@@ -14800,6 +14854,8 @@
         "find-msvc-tools@0.1.9",
         "flate2@1.1.10",
         "foldhash@0.2.0",
+        "foreign-types-shared@0.1.1",
+        "foreign-types@0.3.2",
         "form_urlencoded@1.2.2",
         "fs2@0.4.3",
         "futures-channel@0.3.33",
@@ -14875,6 +14931,9 @@
         "num-integer@0.1.47",
         "num-traits@0.2.19",
         "once_cell@1.21.4",
+        "openssl-macros@0.1.1",
+        "openssl-sys@0.9.117",
+        "openssl@0.10.81",
         "p256@0.14.0",
         "p384@0.14.0",
         "p521@0.14.0",
@@ -14922,6 +14981,7 @@
         "russh@0.62.4",
         "rustc_version@0.4.1",
         "rustls-native-certs@0.8.2",
+        "rustls-openssl@0.4.2",
         "rustls-pki-types@1.15.1",
         "rustls-webpki@0.103.15",
         "rustls@0.23.45",
@@ -15026,11 +15086,12 @@
         "zerovec-derive@0.11.3",
         "zerovec@0.11.6"
       ],
-      "total": 306,
-      "external": 296,
-      "cargoTreeSha256": "5e2881a0a4a1c196156d4f06d39a078ed828241ae983466cf37121ed6b5dabf2",
+      "total": 312,
+      "external": 302,
+      "cargoTreeSha256": "96db2edc7c87ea76ab6d69cc41488ffc2c450b23120440d39cf5707c582e923e",
       "features": "full",
-      "cryptoBackend": "default",
+      "requestedCryptoBackend": "default",
+      "cryptoBackend": "openssl",
       "resolvedFeatures": {
         "adler2@2.0.1": [],
         "aead@0.6.1": [
@@ -15068,6 +15129,7 @@
         "ariax-core@0.1.0": [],
         "ariax-engine@0.1.0": [
           "bt",
+          "crypto-openssl",
           "default",
           "ftp",
           "metalink",
@@ -15306,6 +15368,8 @@
         "foldhash@0.2.0": [
           "std"
         ],
+        "foreign-types-shared@0.1.1": [],
+        "foreign-types@0.3.2": [],
         "form_urlencoded@1.2.2": [
           "alloc",
           "std"
@@ -15576,6 +15640,11 @@
           "race",
           "std"
         ],
+        "openssl-macros@0.1.1": [],
+        "openssl-sys@0.9.117": [],
+        "openssl@0.10.81": [
+          "default"
+        ],
         "p256@0.14.0": [
           "alloc",
           "arithmetic",
@@ -15803,11 +15872,15 @@
         "russh-util@0.52.0": [],
         "russh@0.62.4": [
           "flate2",
+          "openssl-rsa",
           "ring",
           "rsa"
         ],
         "rustc_version@0.4.1": [],
         "rustls-native-certs@0.8.2": [],
+        "rustls-openssl@0.4.2": [
+          "tls12"
+        ],
         "rustls-pki-types@1.15.1": [
           "alloc",
           "default",
@@ -16550,8 +16623,9 @@
       ],
       "total": 312,
       "external": 302,
-      "cargoTreeSha256": "5a06d5ab9a0d7077f6fd8cf233a95fa2287e12e5d52a972e369112a5670ec0e0",
+      "cargoTreeSha256": "be16d116145ac2e6e90b1f79678761613ab4f0ddef26348e1a99f4b96f115ea7",
       "features": "full,crypto-openssl",
+      "requestedCryptoBackend": "openssl",
       "cryptoBackend": "openssl",
       "resolvedFeatures": {
         "adler2@2.0.1": [],
@@ -16593,6 +16667,7 @@
         "ariax-core@0.1.0": [],
         "ariax-engine@0.1.0": [
           "bt",
+          "crypto-openssl",
           "default",
           "ftp",
           "metalink",
@@ -17854,6 +17929,8 @@
         "find-msvc-tools@0.1.9",
         "flate2@1.1.10",
         "foldhash@0.2.0",
+        "foreign-types-shared@0.1.1",
+        "foreign-types@0.3.2",
         "form_urlencoded@1.2.2",
         "fs2@0.4.3",
         "futures-channel@0.3.33",
@@ -17929,6 +18006,9 @@
         "num-integer@0.1.47",
         "num-traits@0.2.19",
         "once_cell@1.21.4",
+        "openssl-macros@0.1.1",
+        "openssl-sys@0.9.117",
+        "openssl@0.10.81",
         "p256@0.14.0",
         "p384@0.14.0",
         "p521@0.14.0",
@@ -17976,6 +18056,7 @@
         "russh@0.62.4",
         "rustc_version@0.4.1",
         "rustls-native-certs@0.8.2",
+        "rustls-openssl@0.4.2",
         "rustls-pki-types@1.15.1",
         "rustls-webpki@0.103.15",
         "rustls@0.23.45",
@@ -18080,11 +18161,12 @@
         "zerovec-derive@0.11.3",
         "zerovec@0.11.6"
       ],
-      "total": 306,
-      "external": 296,
-      "cargoTreeSha256": "5f0448bd3f2321a1bbc05d62a4f403f2b7e8475f92ace03d04dfb38ab77441a8",
+      "total": 312,
+      "external": 302,
+      "cargoTreeSha256": "735ca624719c4a774b2b12c1787f82be4b12b05b6e9879113b837545ba1750b7",
       "features": "compat",
-      "cryptoBackend": "default",
+      "requestedCryptoBackend": "default",
+      "cryptoBackend": "openssl",
       "resolvedFeatures": {
         "adler2@2.0.1": [],
         "aead@0.6.1": [
@@ -18123,6 +18205,7 @@
         "ariax-core@0.1.0": [],
         "ariax-engine@0.1.0": [
           "bt",
+          "crypto-openssl",
           "default",
           "ftp",
           "metalink",
@@ -18361,6 +18444,8 @@
         "foldhash@0.2.0": [
           "std"
         ],
+        "foreign-types-shared@0.1.1": [],
+        "foreign-types@0.3.2": [],
         "form_urlencoded@1.2.2": [
           "alloc",
           "std"
@@ -18631,6 +18716,11 @@
           "race",
           "std"
         ],
+        "openssl-macros@0.1.1": [],
+        "openssl-sys@0.9.117": [],
+        "openssl@0.10.81": [
+          "default"
+        ],
         "p256@0.14.0": [
           "alloc",
           "arithmetic",
@@ -18858,11 +18948,15 @@
         "russh-util@0.52.0": [],
         "russh@0.62.4": [
           "flate2",
+          "openssl-rsa",
           "ring",
           "rsa"
         ],
         "rustc_version@0.4.1": [],
         "rustls-native-certs@0.8.2": [],
+        "rustls-openssl@0.4.2": [
+          "tls12"
+        ],
         "rustls-pki-types@1.15.1": [
           "alloc",
           "default",
@@ -19605,8 +19699,9 @@
       ],
       "total": 312,
       "external": 302,
-      "cargoTreeSha256": "a03b2d6b41c2b56f2d0b7ff20a0b8bbf031815dd7866d646d76c8ed81633558e",
+      "cargoTreeSha256": "410351d0906998f4acfeea59642cc05069cfda47e798181ee9b5f1ee1f073e48",
       "features": "compat,crypto-openssl",
+      "requestedCryptoBackend": "openssl",
       "cryptoBackend": "openssl",
       "resolvedFeatures": {
         "adler2@2.0.1": [],
@@ -19649,6 +19744,7 @@
         "ariax-core@0.1.0": [],
         "ariax-engine@0.1.0": [
           "bt",
+          "crypto-openssl",
           "default",
           "ftp",
           "metalink",
@@ -28369,5 +28465,7 @@
     "path": "performance-evidence/phase7-release-license-inventory-2026-10-06.json",
     "sha256": "302c4cc76dc7aedc747543b3e71c90cf158ff33945382d4c14728a63a2811288",
     "scope": "Unchanged notice and native-source provenance inherited; new crate archives and notices independently hashed."
-  }
+  },
+  "cryptoPolicy": "All supported OpenSSL-linked selections use OpenSSL for rustls TLS and available SFTP RSA; selecting crypto alone never enables SFTP.",
+  "refreshMethod": "cargo tree --locked --offline -p ariax-cli --no-default-features --features SELECTION --target TARGET -e normal,build --prefix none --format {p}|{f}; all packages must exist in the reviewed notice collection."
 }

@@ -300,15 +300,14 @@ password-equivalent keyboard-interactive path accepts exactly one non-echoing
 Agent framing has a pinned 256 KiB cap; its frame, decoded identities, and
 request workspace are included in the live SSH reservation.
 
-The optional Cargo feature `sftp-openssl-rsa` on `ariax-cli` and
-`ariax-engine` selects OpenSSL for RSA authentication signatures and SSH
-exchange-signature verification. Build with, for example,
-`--no-default-features --features full,sftp-openssl-rsa`. Without this feature
-the existing RustCrypto backend remains selected. Feature unification gives
-OpenSSL precedence; an OpenSSL failure is terminal, with no RustCrypto
-fallback. Only RSA SHA-256 and SHA-512 signatures are supported by this
-backend. Agent signatures still run in the external agent; non-RSA algorithms
-and the ring/rustls TLS provider are unchanged.
+Builds linking OpenSSL select it for RSA authentication signatures and SSH
+exchange-signature verification, as well as the rustls TLS provider. Engine
+`bt` and CLI `full`/`compat` enable this policy automatically because libtorrent
+already links OpenSSL. Smaller bundles may select `crypto-openssl`;
+`sftp-openssl-rsa` and `tls-openssl` are aliases for the same combined policy.
+An OpenSSL failure is terminal, with no RustCrypto fallback. Only RSA SHA-256
+and SHA-512 signatures are supported by this backend. Agent signatures still
+run in the external agent; non-RSA SSH algorithms retain their existing owners.
 Backend selection alone does not enable SFTP; select `standard`, `full` or
 `compat` on the CLI, or `sftp` on the engine.
 
@@ -319,6 +318,10 @@ public-key modulus/exponent admission checks, and
 `ssh-key` certificate validation. This switches the production private-key
 authentication operation away from RustCrypto; it does not remove or waive
 `RUSTSEC-2023-0071` for the retained dependency or establish a timing proof.
+Builds without OpenSSL retain RustCrypto RSA signing/verification and its
+unresolved timing assurance. They must not claim that advisory is fixed;
+select the OpenSSL build when local RSA private-key authentication is needed
+without that implementation. No backend-specific advisory suppression is added.
 
 Algorithm policy follows russh defaults minus legacy algorithms: no SHA-1 KEX
 (`diffie-hellman-group14-sha1` and older), no `ssh-rsa` (SHA-1 signature) host

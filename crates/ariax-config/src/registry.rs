@@ -1636,7 +1636,11 @@ const fn protocol_option(
 ) -> OptionDef {
     OptionDef {
         name,
-        short: None,
+        short: match name.as_bytes() {
+            b"ftp-pasv" => Some('p'),
+            b"no-netrc" => Some('n'),
+            _ => None,
+        },
         value_type,
         default,
         category: "transfer",
@@ -1646,8 +1650,52 @@ const fn protocol_option(
         build_features: MINIMAL,
         security: SecurityClass::Normal,
         compat: PARTIAL,
-        aria2_available: false,
-        aria2_runtime_update: RuntimeUpdate::None,
+        // Name presence in the pinned aria2 handler inventory, not behavior parity.
+        aria2_available: matches!(
+            name.as_bytes(),
+            b"follow-metalink"
+                | b"ftp-passwd"
+                | b"ftp-pasv"
+                | b"ftp-reuse-connection"
+                | b"ftp-type"
+                | b"ftp-user"
+                | b"metalink-base-uri"
+                | b"metalink-enable-unique-protocol"
+                | b"metalink-language"
+                | b"metalink-location"
+                | b"metalink-os"
+                | b"metalink-preferred-protocol"
+                | b"metalink-version"
+                | b"netrc-path"
+                | b"no-netrc"
+                | b"realtime-chunk-checksum"
+                | b"select-file"
+                | b"server-stat-timeout"
+                | b"ssh-host-key-md"
+                | b"uri-selector"
+        ),
+        aria2_runtime_update: match name.as_bytes() {
+            b"follow-metalink"
+            | b"ftp-passwd"
+            | b"ftp-pasv"
+            | b"ftp-reuse-connection"
+            | b"ftp-type"
+            | b"ftp-user"
+            | b"metalink-enable-unique-protocol"
+            | b"metalink-language"
+            | b"metalink-location"
+            | b"metalink-os"
+            | b"metalink-preferred-protocol"
+            | b"metalink-version"
+            | b"no-netrc"
+            | b"realtime-chunk-checksum"
+            | b"select-file"
+            | b"ssh-host-key-md"
+            | b"uri-selector" => RuntimeUpdate::WaitingOnly,
+            b"netrc-path" | b"server-stat-timeout" => RuntimeUpdate::StartupOnly,
+            b"metalink-base-uri" => RuntimeUpdate::NewGeneration,
+            _ => RuntimeUpdate::None,
+        },
         compatibility_difference: CompatibilityDifference::Intentional,
         docs: "docs/protocols/detailed-protocol-transfers.md#scope-and-checkpoints",
         behavior_tests: NONE,

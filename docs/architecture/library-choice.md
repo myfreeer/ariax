@@ -241,11 +241,13 @@ CA modes remain downloader-owned policy.
 
 Use the ring crypto provider in `minimal`/`standard` by explicitly disabling
 dependency defaults and selecting ring consistently in rustls, hyper-rustls,
-SuppaFTP, and russh in the default build. The explicit `tls-openssl` feature
-selects `rustls-openssl` instead for HTTPS/FTPS; `crypto-openssl` additionally
-selects the OpenSSL SSH RSA backend. These use the same reviewed static
-OpenSSL installation as BitTorrent when enabled together. Feature unification
-gives OpenSSL precedence in the selected operations, without fallback.
+SuppaFTP, and russh in builds without OpenSSL. Whenever a supported engine/CLI
+build links OpenSSL, use it for both rustls HTTPS/FTPS and SSH RSA operations.
+Engine `bt` and CLI `full`/`compat` enable `crypto-openssl` automatically;
+the `tls-openssl` and `sftp-openssl-rsa` selectors also enable that combined
+policy. These use the same reviewed static OpenSSL installation as BitTorrent.
+Feature unification gives OpenSSL precedence without fallback. Builds without
+OpenSSL retain the documented RustCrypto RSA timing-assurance limitation.
 Ring remains required for russh's SSH AEAD ciphers, and RustCrypto remains
 for SSH key formats and other SSH algorithms. This is not an OpenSSL-only
 cryptographic dependency graph. AWS-LC and implicit native TLS remain rejected

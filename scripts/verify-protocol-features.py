@@ -14,7 +14,8 @@ EXPECTED = {
 }
 
 
-def verify(graph, bundle, *, openssl_rsa=False, tls_openssl=False):
+def verify(graph, bundle, *, openssl=False):
+    openssl = openssl or bundle in {"full", "compat"}
     assert "quick-xml" in graph, "Metalink missing from bundle"
     native = {"ariax-bt", "ariax-bt-libtorrent-sys", "cxx", "cxx-build"}
     if bundle in {"full", "compat"}:
@@ -26,14 +27,14 @@ def verify(graph, bundle, *, openssl_rsa=False, tls_openssl=False):
         assert not native & graph.keys(), "BitTorrent dependency outside full/compat"
     for name in graph:
         assert name not in {"aws-lc-rs", "aws-lc-sys", "native-tls", "des", "dsa"}, f"unapproved dependency: {name}"
-    if openssl_rsa or tls_openssl:
+    if openssl:
         assert set(graph.get("openssl", {})) == {"0.10.81"}, "unexpected OpenSSL binding"
         assert set(graph.get("openssl-sys", {})) == {"0.9.117"}, "unexpected OpenSSL sys binding"
         assert "openssl-src" not in graph, "use the reviewed native OpenSSL installation"
         assert not (graph["openssl"]["0.10.81"] & {"vendored"}), "unreviewed OpenSSL build"
     else:
         assert not ({"openssl", "openssl-sys"} & graph.keys()), "unselected OpenSSL backend"
-    if tls_openssl:
+    if openssl:
         assert graph.get("rustls-openssl") == {"0.4.2": {"tls12"}}, "unexpected TLS provider features"
     else:
         assert "rustls-openssl" not in graph, "unselected OpenSSL TLS provider"
@@ -44,7 +45,7 @@ def verify(graph, bundle, *, openssl_rsa=False, tls_openssl=False):
         assert not ({"russh", "russh-sftp", "suppaftp", "ssh-key"} & graph.keys()), "protocol dependency in minimal"
     else:
         for name, (version, features) in EXPECTED.items():
-            selected = features | ({"openssl-rsa"} if name == "russh" and openssl_rsa else set())
+            selected = features | ({"openssl-rsa"} if name == "russh" and openssl else set())
             assert graph.get(name) == {version: selected}, f"unexpected {name} graph: {graph.get(name)}"
         assert set(graph.get("ssh-key", {})) == {"0.7.0-rc.11"}, "ssh-key must match russh's exact re-export"
         assert not (graph["ssh-key"]["0.7.0-rc.11"] & {"dsa", "des", "3des"}), "legacy SSH feature"
@@ -61,7 +62,7 @@ def self_test():
     selected["russh"]["0.62.4"].add("openssl-rsa")
     selected.update({"openssl": {"0.10.81": {"default"}}, "openssl-sys": {"0.9.117": set()},
                      "rustls-openssl": {"0.4.2": {"tls12"}}})
-    verify(selected, "standard", openssl_rsa=True, tls_openssl=True)
+    verify(selected, "standard", openssl=True)
     for bad in (selected, dict(selected, **{"openssl-src": {"3": set()}})):
         try:
             verify(bad, "standard")
@@ -70,12 +71,23 @@ def self_test():
         else:
             raise AssertionError("accepted an unselected OpenSSL backend")
 
-    full = copy.deepcopy(standard)
+    full = copy.deepcopy(selected)
     full.update({"ariax-bt": {"0.1.0": {"libtorrent"}},
                  "ariax-bt-libtorrent-sys": {"0.1.0": {"native"}},
                  "cxx": {"1.0.202": {"std"}}, "cxx-build": {"1.0.202": set()}})
     verify(full, "full")
     verify(full, "compat")
+    for change in (lambda g: g.pop("rustls-openssl"),
+                   lambda g: g["russh"]["0.62.4"].remove("openssl-rsa"),
+                   lambda g: g.pop("openssl")):
+        bad = copy.deepcopy(full)
+        change(bad)
+        try:
+            verify(bad, "full")
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("accepted split crypto backends despite linked OpenSSL")
     for bundle in ("minimal", "standard"):
         try:
             verify(full, bundle)
@@ -119,6 +131,5 @@ if __name__ == "__main__":
                 assert match, f"unrecognized Cargo graph row: {line}"
                 name, version, resolved_features = match.groups()
                 graph.setdefault(name, {}).setdefault(version, set()).update(filter(None, resolved_features.split(",")))
-            verify(graph, bundle, openssl_rsa=bundle != "minimal" and extra in {"sftp-openssl-rsa", "crypto-openssl"},
-                   tls_openssl=extra in {"tls-openssl", "crypto-openssl"})
-            print(f"Verified {features}: bounded protocol forks and explicit crypto providers.")
+            verify(graph, bundle, openssl=bool(extra))
+            print(f"Verified {features}: bounded protocol forks and unified OpenSSL selection.")
