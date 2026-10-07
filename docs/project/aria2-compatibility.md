@@ -22,12 +22,35 @@ The pinned reference is `9e7273583f83e881e3ec067b523ba88724088d2f`.
 
 The [configuration contract](../interfaces/configuration.md#compatibility-matrix-categories)
 explains admission and syntax. The [generated inventory](../../generated/aria2_compat.json)
-contains 108 registry entries: 54 shared upstream names and 54 extensions,
-against 207 pinned handlers. The 153 names absent from the registry are an audit
+contains 112 registry entries: 58 shared upstream names and 54 extensions,
+against 207 pinned handlers. The 149 names absent from the registry are an audit
 input, not 153 proven missing implementations; some have standalone CLI owners.
 Status and executable behavior remain separate from name coverage. All 36
 pinned RPC method names and six notifications are present in the public method
 and event inventories, which does not prove complete semantic parity.
+
+## Implemented Follow-Up
+
+- `getOption` includes executable transfer defaults such as `ftp-pasv=true`,
+  filtered by compiled protocol availability. Secrets and internal bindings are
+  omitted; persisted snapshots remain sparse.
+- `max-concurrent-downloads` and startup `-j N` / `-jN` control the shared active
+  task limit within bootstrap capacity. Decreases let occupied slots drain;
+  increases admit queued work. Zero, excessive limits and invalid mixed patches
+  reject before publication. Omitting the setting uses bootstrap capacity.
+- Per-download `header`, `user-agent` and `referer` reach probes, range requests
+  and metadata fetches. Repeated CLI headers and RPC header arrays are accepted.
+  `Host`, `Authorization`, `Proxy-Authorization` and `Cookie` may override
+  generated fields; other reserved fields reject with value-free warnings.
+  Custom headers stay bound to their original origin; proxy authorization goes
+  only to the selected proxy, including CONNECT. All three options support
+  waiting-task changes; `user-agent` also supports inherited global defaults.
+
+Header and referer values are deliberately volatile. Recovered tasks requiring
+them remain blocked, and URI replacement cannot silently remove that requirement.
+Waiting or paused tasks accept resupplied headers through `changeOption`, keeping
+their progress. Persistent secret storage and global secret-bearing templates
+remain separate compatibility decisions.
 
 ## Resolved Scope
 
@@ -43,9 +66,6 @@ descriptions; it does not import existing partial-file progress.
 | --- | --- | --- |
 | Bare URI invocation and aria2 configuration | Current commands explicitly name the session store, control directory and output root. Implicit paths and auto-loaded config change ownership and startup precedence. | Design an opt-in frontend with documented paths and precedence before an aria2c alias. |
 | `-d`, `-c` and integrity | `-d` cannot replace the authorized output root. Ariax recovery uses its own journals and v3 sessions; direct `-c` remains unsupported. | Define path containment, integrity checks and any continuation spelling for Ariax-owned progress. Existing aria2 partial-file support is excluded. |
-| `max-concurrent-downloads` / `-j` | Active-task limits share bounded scheduler and process resources; startup, global mutation, decreases and queued work need consistent meaning. | Map the limit to existing scheduler capacity with defined live-decrease behavior and admission tests. |
-| Custom headers, user agent and referer | The HTTP layer has bounded custom-header support, but public per-task options require persistence, reserved-header rejection, redaction and redirect credential rules. | Add typed options through admission, storage and redirects as one change; reject unsupported names rather than passing arbitrary data through. |
-| Effective option queries | `getOption` currently reports sanitized persisted options; some default transfer values are omitted. Persisted storage need not duplicate every default. | Define a separate effective-option response projection, with protocol/feature filtering and the existing response-size budget. |
 | HTTP/2, unknown-length bodies and XML-RPC | These require protocol, storage or parser work beyond argument spelling. | Prioritize concrete client workloads and retain explicit unsupported responses until each path has acceptance evidence. |
 | Hooks and security differences | Shell execution, weakened host-key checks, unsafe paths or relaxed SSRF rules would change existing security contracts. | Preserve those boundaries; compatibility must not silently weaken them. |
 

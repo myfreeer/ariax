@@ -191,7 +191,8 @@ A reused connection retains its original approved peer. Every new physical
 connection performs fresh resolution and full destination admission before TCP
 connect. For HTTPS, the original canonical URI host—not the numeric peer—is
 used for SNI and certificate verification; an IP-literal URI is verified as an
-IP subject alternative name. `Host` continues to use the original authority.
+IP subject alternative name. `Host` uses the original authority unless explicitly
+overridden under the user-header policy; that override never changes TLS identity.
 
 Custom PEM loading happens once while constructing the immutable TLS policy.
 
@@ -315,25 +316,40 @@ delivery, including failure, and is independent of control-query execution.
 ## User Header Policy
 
 User-provided headers are parsed once into a validated, case-insensitive header
-list. A field name must be an HTTP token, a value must contain no CR, LF, NUL, or
-other forbidden control byte, and invalid syntax rejects the option/task before
+list. A field name must be an HTTP token; values use printable ASCII with no
+CR, LF, NUL, or other control byte, and invalid syntax rejects the option/task before
 any request is sent.
 
-The request builder owns safety-critical and connection-specific fields. User
-headers MUST NOT set `Host`, `Content-Length`, `Transfer-Encoding`, `Range`,
-`If-Range`, `Accept-Encoding`, `Authorization`, `Proxy-Authorization`,
-`Cookie`, `Content-Digest`, `Repr-Digest`, `Want-Repr-Digest`, `Signature`, or
-`Signature-Input`. A
-case-insensitive conflict or duplicate is rejected; it is never resolved by
-last-write-wins. The generated value is authoritative inside the request
-builder as a defense in depth.
+Public `header` accepts repeated CLI options or a newline-delimited RPC string
+(or an array of header lines). `user-agent` and `referer` provide single-field
+conveniences. Duplicate names, including conflicts with those conveniences,
+reject case-insensitively.
 
-Other custom headers retain their configured order. Duplicate fields are
-allowed only where the HTTP field definition permits list/repeated semantics;
-ambiguous singleton duplicates are rejected. Every redirect rebuilds the
-request from the validated custom-header list and re-runs this policy rather
-than forwarding the prior header map. Credentials and cookies are added only by
-their origin-scoped subsystems (see [redirect-policy.md](redirect-policy.md)).
+Users may override `Host`, `Authorization`, `Proxy-Authorization`, and `Cookie`.
+An explicit override takes precedence over generated credentials or cookies.
+Other reserved fields (`Content-Length`, `Transfer-Encoding`, `Range`,
+`If-Range`, `Accept-Encoding`, `Connection`, `Expect`, `TE`, `Trailer`,
+`Upgrade`, `Content-Digest`, `Repr-Digest`, `Want-Repr-Digest`, `Signature`,
+and `Signature-Input`) reject admission and emit a warning containing only the
+reserved field name, never its value. Ordinary custom fields are allowed.
+
+Custom fields and `referer` are bound to the first submitted source origin
+(scheme, host, effective port), including later range requests after probing.
+Cross-origin redirects, mirrors and metadata children do not receive those
+fields. `user-agent` may accompany every HTTP request. `Host` changes only the
+HTTP field; destination checks, DNS, proxy routing and TLS SNI still use the URL.
+`Proxy-Authorization` goes only to the selected HTTP proxy: on a forward request
+or its CONNECT handshake, never inside a tunnel or directly to an origin.
+
+Custom-header values and `referer` are volatile and redacted in diagnostics,
+option queries and session exports. Persistence records only that headers are
+required. After restart, the task remains `NeedsCredentials`; replacing its URI
+alone cannot clear this requirement. Headers can be supplied again through `changeOption` while the task is waiting
+or paused. This restores only persisted safe HTTP sources and clears the matching
+credential requirement atomically with the option update; pause intent and
+existing progress are preserved. A missing signed URI still needs URI replacement.
+`user-agent` is persisted normally. All three options support waiting-task
+changes; only `user-agent` also supports inherited global defaults.
 
 ## Content Encoding And Range Requests
 

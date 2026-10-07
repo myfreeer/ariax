@@ -620,6 +620,9 @@ addresses replay-memory admission, retained rate history, OpenSSL 3.6.5 native
 validation, advisory applicability and current package preparation. Historical
 Windows `changeUri`/`addUri` and native Linux mixed-burst latency attribution are
 explicitly deferred in that local goal, with failures and thresholds preserved.
+The [compatibility options follow-up](../../performance-evidence/phase7-compatibility-options-2026-10-07.md)
+adds effective option queries, live bounded concurrency and per-task HTTP
+headers with redirect isolation, redaction and recoverable header resupply.
 The [compatibility and crypto-policy follow-up](../../performance-evidence/phase7-compatibility-policy-2026-10-07.md)
 adds aria2 CLI spellings through typed admission, corrects upstream option
 classification and makes OpenSSL reuse automatic for full/compat builds.

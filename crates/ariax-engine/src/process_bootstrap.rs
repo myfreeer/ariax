@@ -106,6 +106,13 @@ impl BootstrappedEngine {
         self.driver.scheduler()
     }
 
+    pub(crate) fn configure_active_limit(
+        &mut self,
+        limit: std::num::NonZeroUsize,
+    ) -> Result<(), SchedulerDriverInputError> {
+        self.driver.configure_active_limit(limit)
+    }
+
     pub(crate) fn configure_queue_policies(
         &mut self,
         retry_wait_holds_slot: bool,

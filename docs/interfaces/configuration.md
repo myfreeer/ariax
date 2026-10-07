@@ -511,13 +511,24 @@ other restart-required settings change. The authoritative adapter behavior is in
 
 - Return string values compatible with aria2 response shapes for implemented
   options.
+- `getOption` projects effective task values, including supported transfer
+  defaults. It filters unavailable protocol options and excludes secret and
+  administrative values. This projection does not expand persisted option maps.
 - Include build-feature dependent options only if present in the build or
   configured as visible compatibility stubs.
+
+`max-concurrent-downloads` (`-j` at service startup) limits active scheduler
+slots. It accepts positive values within the process's configured active-task
+capacity. `changeGlobalOption` and configuration reload apply it atomically:
+increasing it permits more admissions; decreasing it preserves running tasks
+and admits no new task until usage falls below the limit. Invalid mixed patches
+leave the limit and other configuration unchanged. It does not resize process
+resources or cancel transfers. An omitted value uses the process bootstrap cap.
 
 ## Compatibility Matrix Categories
 
 The [generated compatibility inventory](../../generated/aria2_compat.json)
-records the current reviewed registry: 108 entries, covering 54 of the pinned
+records the current reviewed registry: 112 entries, covering 58 of the pinned
 aria2 reference's 207 option handlers. These counts do not measure RPC-method
 coverage. The category lists below describe target ownership; they do not
 override the generated status, executable option allowlists or feature gates.
@@ -558,12 +569,19 @@ Basic public behavior:
   output-root boundary and is unavailable as a direct CLI override.
 - `input-file` is wired for RPC-service startup, with `-i` as an alias.
   `help`/`version` are standalone CLI commands.
-- Public `max-concurrent-downloads` and `check-integrity` semantics remain gaps.
+- Public `max-concurrent-downloads` is live within bootstrap capacity; `-j` is
+  its startup alias. `check-integrity` remains a gap.
   Any future `continue` spelling must define its behavior for Ariax-owned
   progress; it does not require existing aria2 partial-file support. See the
   [compatibility decisions](../project/aria2-compatibility.md).
 
 HTTP/FTP/SFTP:
+
+HTTP admission accepts `header`, `user-agent`, and `referer` under the
+[HTTP user-header policy](../protocols/detailed-http-first-slice.md#user-header-policy).
+Header and referer values are volatile; their recovery requirement survives
+session persistence. All three options support waiting-task changes and header
+resupply. Only `user-agent` participates in global defaults.
 
 - Proxy: `all-proxy`, protocol proxies, proxy user/password, `no-proxy`,
   `proxy-method`: implemented for supported protocols.

@@ -257,7 +257,10 @@ impl TransferTaskOptions {
                 // when this build cannot start SFTP connections.
                 "sftp-host-key-sha256" => value.transfer.set(name, setting)?,
                 _ if crate::TransferOptions::handles(name)
-                    || matches!(name, "verification-manifest" | "metadata-expansion") =>
+                    || matches!(
+                        name,
+                        "verification-manifest" | "metadata-expansion" | "http-headers-required"
+                    ) =>
                 {
                     value.transfer.set(name, setting)?
                 }
@@ -611,7 +614,7 @@ impl TransferTaskSpec {
         source_uris: impl IntoIterator<Item = String>,
         output_root: PathBuf,
         output: SafeRelativePath,
-        options: TransferTaskOptions,
+        mut options: TransferTaskOptions,
         needs_credentials: bool,
     ) -> Result<Self, TransferTaskSpecError> {
         options.validate()?;
@@ -628,6 +631,15 @@ impl TransferTaskSpec {
             let initial: Uri = uri_text
                 .parse()
                 .map_err(|_| TransferTaskSpecError::InvalidUri)?;
+            if options.transfer.http_header_origin.is_none()
+                && options.transfer.has_volatile_http_headers()
+            {
+                options.transfer.http_header_origin = Some(
+                    url::Url::parse(&uri_text)
+                        .map_err(|_| TransferTaskSpecError::InvalidUri)?
+                        .origin(),
+                );
+            }
             let protocol = crate::TransferProtocol::parse(
                 initial
                     .scheme_str()
@@ -691,6 +703,8 @@ impl TransferTaskSpec {
                 uri: Some(canonical),
                 priority,
                 needs_credentials: needs_credentials
+                    || options.transfer.http_headers_required
+                    || options.transfer.has_volatile_http_headers()
                     || persistence_safe_uri.is_none()
                     || credentials.is_some()
                     || (!protocol.is_http()
@@ -772,13 +786,14 @@ impl TransferTaskSpec {
                 protocol,
                 credentials: None,
                 id: UriId::new(record.uri_id),
-                uri: (!record.needs_credentials)
+                uri: (!record.needs_credentials && !options.transfer.http_headers_required)
                     .then(|| persistence_safe_uri.clone())
                     .flatten(),
                 persistence_safe_uri,
                 redacted_fingerprint: record.redacted_fingerprint,
                 priority: record.priority,
-                needs_credentials: record.needs_credentials,
+                needs_credentials: record.needs_credentials
+                    || options.transfer.http_headers_required,
             });
         }
         Ok(Self {
@@ -875,6 +890,25 @@ impl TransferTaskSpec {
 
     pub fn requires_protocol_dispatch(&self) -> bool {
         self.verification.is_some() || self.sources.iter().any(|source| !source.protocol.is_http())
+    }
+
+    pub(crate) fn restore_http_header_sources(&mut self) {
+        if !self.options.transfer.has_volatile_http_headers() {
+            return;
+        }
+        for source in Arc::make_mut(&mut self.sources) {
+            source.needs_credentials = true;
+            if source.protocol.is_http() && source.uri.is_none() {
+                source.uri = source.persistence_safe_uri.clone();
+            }
+            if self.options.transfer.http_header_origin.is_none() && source.protocol.is_http() {
+                self.options.transfer.http_header_origin = source
+                    .uri
+                    .as_deref()
+                    .and_then(|uri| url::Url::parse(uri).ok())
+                    .map(|uri| uri.origin());
+            }
+        }
     }
 
     pub(crate) fn with_options(

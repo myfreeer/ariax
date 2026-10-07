@@ -61,10 +61,24 @@ impl DownloadOptions {
             if bytes > crate::MAX_HTTP_RPC_REQUEST_BYTES
                 || values.len() >= ariax_storage::MAX_OPTION_MAP_ENTRIES
                 || name == "dir"
-                || values.insert(name, Value::String(value)).is_some()
             {
                 return Err(NativeApiError::InvalidConfiguration(
                     "duplicate, oversized or unsupported download option",
+                ));
+            }
+            if name == "header" {
+                let entry = values
+                    .entry(name)
+                    .or_insert_with(|| Value::String(String::new()));
+                let previous = entry.as_str().expect("header text");
+                *entry = Value::String(if previous.is_empty() {
+                    value
+                } else {
+                    format!("{previous}\n{value}")
+                });
+            } else if values.insert(name, Value::String(value)).is_some() {
+                return Err(NativeApiError::InvalidConfiguration(
+                    "duplicate download option",
                 ));
             }
         }
@@ -171,10 +185,16 @@ impl DownloadOptions {
             for (name, value) in transfer.persisted() {
                 if !matches!(
                     name.as_str(),
-                    "verification-manifest" | "metadata-expansion"
+                    "verification-manifest" | "metadata-expansion" | "http-headers-required"
                 ) {
                     options.insert(name, Value::String(value));
                 }
+            }
+            if !transfer.http_headers.values().is_empty() {
+                options.insert("header".into(), Value::String(transfer.http_headers.text()));
+            }
+            if let Some(referer) = &transfer.referer {
+                options.insert("referer".into(), Value::String(referer.expose().to_owned()));
             }
             if let Some(credentials) = transfer.credentials {
                 options.insert(
@@ -1528,6 +1548,43 @@ fn prepare_control_directory(
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn repeated_headers_roundtrip_through_typed_admission_without_exposure() {
+        let options = DownloadOptions::from_pairs([
+            ("header".into(), "Authorization: Bearer canary".into()),
+            ("header".into(), "X-Client: client".into()),
+            (
+                "referer".into(),
+                "https://example.test/?token=canary".into(),
+            ),
+            ("user-agent".into(), "client/1".into()),
+        ])
+        .unwrap();
+        assert!(!format!("{options:?}").contains("canary"));
+        let value = options.into_value(true).unwrap();
+        assert!(
+            value["header"]
+                .as_str()
+                .unwrap()
+                .contains("authorization: Bearer canary")
+        );
+        assert_eq!(value["user-agent"], "client/1");
+        assert!(value.get("http-headers-required").is_none());
+        for settings in [
+            vec![("header".into(), "Range: bytes=0-1".into())],
+            vec![
+                ("header".into(), "Host: one".into()),
+                ("header".into(), "host: two".into()),
+            ],
+            vec![
+                ("user-agent".into(), "a".into()),
+                ("user-agent".into(), "b".into()),
+            ],
+        ] {
+            assert!(DownloadOptions::from_pairs(settings).is_err());
+        }
+    }
 
     #[test]
     fn typed_checksums_round_trip_every_algorithm_and_reject_invalid_input() {

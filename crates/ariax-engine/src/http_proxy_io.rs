@@ -20,6 +20,10 @@ pub const MAX_SOCKS5_DOMAIN_BYTES: usize = 253;
 pub struct HttpProxyAuthorization(String);
 
 impl HttpProxyAuthorization {
+    pub(crate) fn from_header(value: &hyper::header::HeaderValue) -> Self {
+        Self(value.to_str().expect("validated custom header").to_owned())
+    }
+
     pub fn basic(username: &str, password: &str) -> Result<Self, HttpProxyConnectError> {
         if username.is_empty()
             || username.len() > 1024

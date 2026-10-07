@@ -124,6 +124,8 @@ impl HttpClientRequest {
 pub struct HttpPolicyClient {
     resolver: HttpResolver,
     config: Arc<HttpPolicyClientConfig>,
+    header_origin: Option<Arc<str>>,
+    task_headers: Option<Arc<HttpCustomHeaders>>,
     direct_transports: Arc<Mutex<DirectTransportCache>>,
 }
 
@@ -149,10 +151,55 @@ impl HttpPolicyClient {
         Self {
             resolver,
             config: Arc::new(config),
+            header_origin: None,
+            task_headers: None,
             direct_transports: Arc::new(Mutex::new(DirectTransportCache::new(
                 direct_transport_cache_capacity,
             ))),
         }
+    }
+
+    pub(crate) fn with_task_headers(
+        &self,
+        task: &crate::TransferTaskSpec,
+    ) -> Result<Self, HttpRequestPolicyError> {
+        let mut client = self.clone();
+        let task_headers = task
+            .options()
+            .transfer
+            .request_headers()
+            .map_err(|_| HttpRequestPolicyError::InvalidHeader)?;
+        client.task_headers = if task_headers.values().is_empty() {
+            None
+        } else {
+            let mut headers = std::collections::BTreeMap::new();
+            for header in self
+                .config
+                .custom_headers
+                .values()
+                .iter()
+                .chain(task_headers.values())
+            {
+                headers.insert(
+                    header.name().to_string(),
+                    header.value().to_str().expect("validated text").to_owned(),
+                );
+            }
+            Some(Arc::new(HttpCustomHeaders::new(headers)?))
+        };
+        client.header_origin = task
+            .options()
+            .transfer
+            .http_header_origin
+            .as_ref()
+            .map(|origin| Arc::from(origin.ascii_serialization()))
+            .or_else(|| {
+                task.sources()
+                    .iter()
+                    .find_map(|source| source.uri())
+                    .map(Arc::from)
+            });
+        Ok(client)
     }
 
     pub async fn execute(
@@ -165,6 +212,13 @@ impl HttpPolicyClient {
         {
             return Err(HttpPolicyClientError::InvalidRequest);
         }
+        let header_uri = self
+            .header_origin
+            .as_deref()
+            .unwrap_or(&request.top_level_uri);
+        let header_origin = url::Url::parse(header_uri)
+            .map_err(|_| HttpPolicyClientError::InvalidRequest)?
+            .origin();
         let mut redirects =
             HttpRedirectState::new(&request.uri, request.method.clone(), self.config.redirects)
                 .map_err(HttpPolicyClientError::Redirect)?;
@@ -204,9 +258,33 @@ impl HttpPolicyClient {
             } else {
                 None
             };
+            let original_route = self
+                .config
+                .proxy
+                .route(header_uri, destination.peer().ip())
+                .map_err(HttpPolicyClientError::ProxyPolicy)?;
+            let same_proxy = proxy_endpoint(&original_route).is_some()
+                && proxy_endpoint(&original_route) == proxy_endpoint(&route);
+            let custom_headers = self
+                .task_headers
+                .as_deref()
+                .unwrap_or(&self.config.custom_headers)
+                .for_destination(
+                    url::Url::parse(&current)
+                        .map_err(|_| HttpPolicyClientError::InvalidRequest)?
+                        .origin()
+                        == header_origin,
+                    same_proxy,
+                );
+            let custom_proxy_authorization = custom_headers.proxy_authorization();
             let proxy_authorization = forward_proxy_authorization(
                 &route,
-                self.config.proxy_request.connect.authorization.as_ref(),
+                custom_proxy_authorization.as_ref().or(self
+                    .config
+                    .proxy_request
+                    .connect
+                    .authorization
+                    .as_ref()),
             );
             let outbound = build_http_request(HttpRequestPolicy {
                 method: method.clone(),
@@ -218,11 +296,17 @@ impl HttpPolicyClient {
                 authorization: authorization.as_ref(),
                 proxy_authorization,
                 cookie: cookie.as_ref(),
-                custom_headers: &self.config.custom_headers,
+                custom_headers: &custom_headers,
             })
             .map_err(HttpPolicyClientError::Request)?;
             let (response, lease) = self
-                .open_route(&current, &route, destination.addresses(), outbound)
+                .open_route(
+                    &current,
+                    &route,
+                    destination.addresses(),
+                    outbound,
+                    custom_proxy_authorization,
+                )
                 .await?;
             self.store_response_cookies(&current, response.headers())
                 .await?;
@@ -268,6 +352,7 @@ impl HttpPolicyClient {
         route: &HttpProxyRoute,
         target_addresses: &[SocketAddr],
         request: HttpPolicyRequest,
+        custom_proxy_authorization: Option<HttpProxyAuthorization>,
     ) -> Result<(Response<Incoming>, HttpClientLease), HttpPolicyClientError> {
         match route {
             HttpProxyRoute::Direct { .. } => {
@@ -295,12 +380,16 @@ impl HttpPolicyClient {
                 )
                 .await
                 .map_err(HttpPolicyClientError::Destination)?;
+                let mut proxy_request = self.config.proxy_request.clone();
+                if let Some(authorization) = custom_proxy_authorization {
+                    proxy_request.connect.authorization = Some(authorization);
+                }
                 let mut streaming = open_http_proxy_request(
                     route,
                     proxy_destination.addresses(),
                     request,
                     uri.starts_with("https://"),
-                    self.config.proxy_request.clone(),
+                    proxy_request,
                 )
                 .await
                 .map_err(HttpPolicyClientError::ProxyRequest)?;
@@ -625,6 +714,15 @@ fn single_location(headers: &HeaderMap) -> Result<Option<String>, HttpPolicyClie
         .transpose()
 }
 
+fn proxy_endpoint(route: &HttpProxyRoute) -> Option<&crate::HttpProxyEndpoint> {
+    match route {
+        HttpProxyRoute::HttpForward { proxy, .. } | HttpProxyRoute::HttpConnect { proxy, .. } => {
+            Some(proxy)
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -664,6 +762,115 @@ mod tests {
             bytes.push(byte[0]);
         }
         String::from_utf8(bytes).expect("ASCII request")
+    }
+
+    #[tokio::test]
+    async fn custom_headers_follow_same_origin_but_not_redirected_range_destinations() {
+        let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let other = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin_uri = format!("http://{}/start", origin.local_addr().unwrap());
+        let final_uri = format!("http://{}/file", other.local_addr().unwrap());
+        let target = final_uri.clone();
+        let server = tokio::spawn(async move {
+            for location in ["/next".to_owned(), target] {
+                let (mut stream, _) = origin.accept().await.unwrap();
+                let head = read_head(&mut stream).await.to_ascii_lowercase();
+                assert!(head.contains("host: virtual.test\r\n"));
+                assert!(head.contains("authorization: bearer canary"));
+                assert!(head.contains("cookie: session=canary"));
+                assert!(head.contains("referer: https://ref.test/canary"));
+                assert!(!head.contains("proxy-authorization:"));
+                stream.write_all(format!("HTTP/1.1 302 Found\r\nConnection: close\r\nLocation: {location}\r\nContent-Length: 0\r\n\r\n").as_bytes()).await.unwrap();
+            }
+        });
+        let destination = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = other.accept().await.unwrap();
+                let head = read_head(&mut stream).await.to_ascii_lowercase();
+                assert!(!head.contains("canary"));
+                assert!(!head.contains("virtual.test"));
+                assert!(head.contains("user-agent: client/1"));
+                assert!(head.contains("range: bytes=0-1"));
+                stream.write_all(b"HTTP/1.1 206 Partial Content\r\nConnection: close\r\nContent-Length: 2\r\nContent-Range: bytes 0-1/2\r\n\r\nok").await.unwrap();
+            }
+        });
+        let mut client = test_client();
+        Arc::make_mut(&mut client.config).custom_headers = HttpCustomHeaders::parse("Host: virtual.test\nAuthorization: Bearer canary\nCookie: session=canary\nProxy-Authorization: Bearer proxy-canary\nReferer: https://ref.test/canary\nX-Key: canary\nUser-Agent: client/1").unwrap();
+        client.header_origin = Some(Arc::from(origin_uri.clone()));
+        for uri in [origin_uri, final_uri] {
+            let mut request = HttpClientRequest::get(uri);
+            request.range = Some(GlobalSpan { offset: 0, len: 2 });
+            let mut response = client.execute(request).await.unwrap();
+            assert_eq!(
+                response.next_data(Duration::from_secs(2)).await.unwrap(),
+                Some(Bytes::from_static(b"ok"))
+            );
+            assert!(
+                response
+                    .next_data(Duration::from_secs(2))
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        server.await.unwrap();
+        destination.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn proxy_header_override_reaches_forward_and_connect_handshakes() {
+        for secure in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let proxy = crate::HttpProxyEndpoint::new(
+                &format!("http://{}", listener.local_addr().unwrap()),
+                crate::HttpProxyKind::Http,
+                crate::HttpProxyNameResolution::LocalPinned,
+                None,
+            )
+            .unwrap();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let head = read_head(&mut stream).await.to_ascii_lowercase();
+                assert!(head.contains("proxy-authorization: bearer proxy-canary"));
+                assert!(!head.contains("basic "));
+                if secure {
+                    assert!(head.starts_with("connect "));
+                    assert!(!head.contains("origin-canary"));
+                    stream
+                        .write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+                        .await
+                        .unwrap();
+                } else {
+                    assert!(head.starts_with("get http://"));
+                    assert!(head.contains("authorization: bearer origin-canary"));
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .await
+                        .unwrap();
+                }
+            });
+            let mut client = test_client();
+            let config = Arc::make_mut(&mut client.config);
+            config.proxy_destination.allow_loopback = true;
+            config.proxy =
+                HttpProxyPolicy::new(Some(proxy.clone()), Some(proxy), None, []).unwrap();
+            config.proxy_request.connect.authorization =
+                Some(HttpProxyAuthorization::basic("old", "value").unwrap());
+            config.custom_headers = HttpCustomHeaders::parse(
+                "Proxy-Authorization: Bearer proxy-canary\nAuthorization: Bearer origin-canary",
+            )
+            .unwrap();
+            let response = client
+                .execute(HttpClientRequest::get(format!(
+                    "{}://127.0.0.1:12345/file",
+                    if secure { "https" } else { "http" }
+                )))
+                .await;
+            assert_eq!(response.is_err(), secure);
+            server.await.unwrap();
+        }
     }
 
     #[tokio::test]

@@ -32,7 +32,7 @@ use ariax_storage::{
 };
 
 const DEFAULT_HTTP_PIECE_LENGTH: u64 = 1024 * 1024;
-const HELP: &str = "ariax — experimental bounded downloader\n\nUsage: ariax [--help|--version]\n       ariax --check-bootstrap SESSION_DB CONTROL_DIR [OUTPUT_ROOT ...]\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --add-uri SESSION_DB CONTROL_DIR OUTPUT_ROOT URI [URI ...]\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --status SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --pause SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --resume SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --remove SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --rpc-http SESSION_DB CONTROL_DIR OUTPUT_ROOT LOOPBACK_ADDR\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --rpc-ws SESSION_DB CONTROL_DIR OUTPUT_ROOT LOOPBACK_ADDR\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --rpc-stdio SESSION_DB CONTROL_DIR OUTPUT_ROOT\n       ariax --add-torrent SESSION_DB CONTROL_DIR OUTPUT_ROOT FILE [--NAME=VALUE ...]\n       ariax --add-magnet SESSION_DB CONTROL_DIR OUTPUT_ROOT MAGNET [--NAME=VALUE ...]\n       ariax --add-metalink SESSION_DB CONTROL_DIR OUTPUT_ROOT FILE [--NAME=VALUE ...]\n       ariax approve-host-key SESSION_DB CONTROL_DIR OUTPUT_ROOT GID CHALLENGE SHA256_FINGERPRINT\n       ariax --download-http-pinned GID JOURNAL_ID URI PEER OUTPUT_ROOT OUTPUT_PATH JOURNAL_DIR [PIECE_LENGTH]\n       ariax --resume-http-pinned GID JOURNAL_ID URI PEER OUTPUT_ROOT JOURNAL_DIR\n\nRPC is JSON-RPC 2.0 over loopback HTTP/1.1, loopback WebSocket, or Content-Length-framed stdio. Direct control commands use the same engine/control plane. Add commands accept --NAME=VALUE or --NAME VALUE download options; short aliases include -o, -s, -x, -k and -t. Boolean flags imply true; use =false to disable. Use -- before literal dash-leading inputs. Startup also accepts -iFILE or -i FILE and --profile VALUE. Download options include including checksum, uri-selector, server-stat-timeout, FTP/SFTP settings, follow-metalink and Metalink selection filters. BitTorrent commands accept select-file, index-out, discovery, rate, metadata and seeding options. Explicit torrent input accepts repeated --web-seed=URI and --position. Explicit Metalink input also accepts --metalink-base-uri and --position. Supported checksums: sha-512, sha-256, sha-1 and md5. The pinned HTTP commands accept an already policy-approved numeric PEER (IP:port); they do not perform DNS or SSRF-policy resolution.\n";
+const HELP: &str = "ariax — experimental bounded downloader\n\nUsage: ariax [--help|--version]\n       ariax --check-bootstrap SESSION_DB CONTROL_DIR [OUTPUT_ROOT ...]\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --add-uri SESSION_DB CONTROL_DIR OUTPUT_ROOT URI [URI ...]\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --status SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --pause SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --resume SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --remove SESSION_DB CONTROL_DIR OUTPUT_ROOT GID\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --rpc-http SESSION_DB CONTROL_DIR OUTPUT_ROOT LOOPBACK_ADDR\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --rpc-ws SESSION_DB CONTROL_DIR OUTPUT_ROOT LOOPBACK_ADDR\n       ariax [--profile=auto|concurrency|throughput|latency|compact] --rpc-stdio SESSION_DB CONTROL_DIR OUTPUT_ROOT\n       ariax --add-torrent SESSION_DB CONTROL_DIR OUTPUT_ROOT FILE [--NAME=VALUE ...]\n       ariax --add-magnet SESSION_DB CONTROL_DIR OUTPUT_ROOT MAGNET [--NAME=VALUE ...]\n       ariax --add-metalink SESSION_DB CONTROL_DIR OUTPUT_ROOT FILE [--NAME=VALUE ...]\n       ariax approve-host-key SESSION_DB CONTROL_DIR OUTPUT_ROOT GID CHALLENGE SHA256_FINGERPRINT\n       ariax --download-http-pinned GID JOURNAL_ID URI PEER OUTPUT_ROOT OUTPUT_PATH JOURNAL_DIR [PIECE_LENGTH]\n       ariax --resume-http-pinned GID JOURNAL_ID URI PEER OUTPUT_ROOT JOURNAL_DIR\n\nRPC is JSON-RPC 2.0 over loopback HTTP/1.1, loopback WebSocket, or Content-Length-framed stdio. Direct control commands use the same engine/control plane. Add commands accept --NAME=VALUE or --NAME VALUE download options; short aliases include -o, -s, -x, -k and -t. Boolean flags imply true; use =false to disable. Use -- before literal dash-leading inputs. Startup also accepts -iFILE or -i FILE, -jN or -j N, and --profile VALUE. Download options include repeated --header, --user-agent, --referer, checksum, uri-selector, server-stat-timeout, FTP/SFTP settings, follow-metalink and Metalink selection filters. BitTorrent commands accept select-file, index-out, discovery, rate, metadata and seeding options. Explicit torrent input accepts repeated --web-seed=URI and --position. Explicit Metalink input also accepts --metalink-base-uri and --position. Supported checksums: sha-512, sha-256, sha-1 and md5. The pinned HTTP commands accept an already policy-approved numeric PEER (IP:port); they do not perform DNS or SSRF-policy resolution.\n";
 
 fn main() -> ExitCode {
     run(env::args_os().skip(1))
@@ -457,7 +457,7 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
     }
 }
 
-const RPC_STARTUP_HELP: &str = "\nRPC startup options (before the command):\n  --rpc-secret=VALUE   Method token; defaults to ARIAX_RPC_SECRET\n  --rpc-user=VALUE     HTTP Basic user; defaults to ARIAX_RPC_USER\n  --rpc-passwd=VALUE   HTTP Basic password; defaults to ARIAX_RPC_PASSWD\nBitTorrent startup options (before the command):\n  --bt-listen-address=IP:PORT  Native peer listener\n  --bt-encryption=required|preferred|disabled\n  --bt-allow-private-destinations=true|false  Default false\n  --enable-dht=true|false --enable-peer-exchange=true|false\nSession startup options:\n  --require-private-permissions=true|false  Enforce private state permissions; default false\n  --save-session=FILE  Atomically save unfinished downloads at shutdown\n  --save-session-format=aria2|json  Default aria2\n  --save-session-interval=SECONDS  Periodic saving; 0 disables it\n  --input-file=FILE    Import a complete bounded session before workers start\n  --input-file-format=aria2|json   Default aria2\nBoth Basic fields must be configured together. HTTP Basic applies to HTTP and WebSocket; method tokens also apply to stdio.\n";
+const RPC_STARTUP_HELP: &str = "\nRPC startup options (before the command):\n  --rpc-secret=VALUE   Method token; defaults to ARIAX_RPC_SECRET\n  --rpc-user=VALUE     HTTP Basic user; defaults to ARIAX_RPC_USER\n  --rpc-passwd=VALUE   HTTP Basic password; defaults to ARIAX_RPC_PASSWD\nBitTorrent startup options (before the command):\n  --bt-listen-address=IP:PORT  Native peer listener\n  --bt-encryption=required|preferred|disabled\n  --bt-allow-private-destinations=true|false  Default false\n  --enable-dht=true|false --enable-peer-exchange=true|false\nScheduler startup options:\n  -j N, --max-concurrent-downloads=N  Active downloads within startup capacity\nSession startup options:\n  --require-private-permissions=true|false  Enforce private state permissions; default false\n  --save-session=FILE  Atomically save unfinished downloads at shutdown\n  --save-session-format=aria2|json  Default aria2\n  --save-session-interval=SECONDS  Periodic saving; 0 disables it\n  --input-file=FILE    Import a complete bounded session before workers start\n  --input-file-format=aria2|json   Default aria2\nBoth Basic fields must be configured together. HTTP Basic applies to HTTP and WebSocket; method tokens also apply to stdio.\n";
 
 const RPC_INTERFACE_HELP: &str = "\nCombined RPC and compatibility commands:\n  --rpc SESSION_DB CONTROL_DIR OUTPUT_ROOT [LOOPBACK_ADDR]\n  --rpc-call SESSION_DB CONTROL_DIR OUTPUT_ROOT JSON_RPC_DOCUMENT\nAdditional startup options (before the command):\n  --rpc-transport=http|websocket|stdio|http+stdio|websocket+stdio\n  --rpc-stdio-framing=content-length|ndjson\n  --rpc-stdio-eof=shutdown|close-transport|ignore\n  --rpc-stdio-events=true|false\n  --rpc-stdio-max-request-size=SIZE  At most 2M\n  --rpc-compat=aria2|extended|strict\n  --conf-path=FILE   Reloadable HTTP task defaults\n  --url-rules=FILE   Bounded TOML rules\n";
 
@@ -1279,6 +1279,51 @@ fn check_bootstrap(
 #[cfg(test)]
 mod phase5_cli_tests {
     use super::*;
+    #[test]
+    fn cli_repeated_headers_and_conveniences_reach_typed_admission() {
+        let args = [
+            "https://example.test/file",
+            "--header",
+            "Host: virtual.test",
+            "--header=Authorization: Bearer canary",
+            "--user-agent",
+            "client/1",
+            "--referer=https://ref.test/",
+        ];
+        let (_, options, _, _) = parse_transfer_flags(&args.map(OsString::from), false).unwrap();
+        assert!(!format!("{options:?}").contains("canary"));
+        assert_eq!(
+            options
+                .transfer
+                .as_ref()
+                .unwrap()
+                .http_headers
+                .values()
+                .len(),
+            2
+        );
+        assert_eq!(
+            options.transfer.as_ref().unwrap().user_agent.as_deref(),
+            Some("client/1")
+        );
+        for args in [
+            vec!["https://example.test/file", "--header=Range: bytes=0-1"],
+            vec![
+                "https://example.test/file",
+                "--header=Host: a",
+                "--header=host: b",
+            ],
+        ] {
+            assert!(
+                parse_transfer_flags(
+                    &args.into_iter().map(OsString::from).collect::<Vec<_>>(),
+                    false
+                )
+                .is_err()
+            );
+        }
+    }
+
     #[test]
     fn cli_aria2_spellings_reach_typed_download_options() {
         let flags = [

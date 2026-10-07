@@ -7,9 +7,13 @@ Path audits, independent build comparisons and package-operation results apply
 only to the recorded artifacts and hosts. Fresh-OS and minimum-OS acceptance
 remain open. Earlier binaries and failed audits remain historical evidence.
 
-Ariax remains parallel to aria2; reviewed option-handler coverage is 54/207.
+Ariax remains parallel to aria2; reviewed option-handler coverage is 58/207.
 Do not install this draft as an aria2c replacement or infer a data migration.
 Use a separate configuration and download/session directory for evaluation.
+The current compatibility pass includes effective getOption defaults, live
+max-concurrent-downloads within startup capacity, and per-download header,
+user-agent and referer. Header and referer values are volatile: after restart,
+supply them again with changeOption on waiting or paused tasks to keep progress.
 
 The minimal bundle enables Metalink with the HTTP baseline. Standard also
 enables FTP/FTPS and SFTP. Full and compat additionally enable the native

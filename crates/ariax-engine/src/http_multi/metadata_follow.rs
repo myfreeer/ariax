@@ -214,6 +214,7 @@ impl HttpMultiRangeWorker {
                                 | "verification-manifest"
                                 | "metalink-file-index"
                                 | "metadata-expansion"
+                                | "http-headers-required"
                         )
                     })
                     .map(|(name, value)| (name.to_owned(), Value::String(value.to_owned())))

@@ -1,5 +1,13 @@
 # Download Scheduling
 
+The global `max-concurrent-downloads` option controls the current active-slot
+limit within the scheduler's bootstrap capacity. Lowering it may temporarily
+leave more occupied slots than the new limit; existing tasks retain ownership
+until their normal release. Raising it enables subsequent admissions without
+changing queue order. Zero and values above bootstrap capacity reject before
+any configuration is published. This limit is independent of per-task splits
+and connection limits.
+
 [Documentation](../README.md)
 
 Status: reviewed contract with executable scheduler transitions. Phase 4B

@@ -763,7 +763,7 @@ impl Preparation {
         )> = Vec::with_capacity(imported.len());
         #[cfg(feature = "bt")]
         let mut bt_validated = Vec::new();
-        for (index, task) in imported.into_iter().enumerate() {
+        for (index, mut task) in imported.into_iter().enumerate() {
             let task_id = self.next_available_task_id()?;
             self.next_id = task_id
                 .get()
@@ -819,6 +819,27 @@ impl Preparation {
                 continue;
             }
             let gid = derive_http_gid(self.session_id, task_id);
+            let headers_required = if import
+                && matches!(
+                    &task.sources,
+                    crate::session_file::ImportedSources::Persisted(_)
+                ) {
+                match task
+                    .options
+                    .as_object_mut()
+                    .and_then(|options| options.remove("http-headers-required"))
+                {
+                    None => false,
+                    Some(Value::String(value)) if value == "true" => true,
+                    _ => {
+                        return Err(HttpControlError::InvalidParams(
+                            "invalid HTTP header recovery requirement",
+                        ));
+                    }
+                }
+            } else {
+                false
+            };
             let (mut options, root, output, paused) = {
                 let first_uri = task.sources.uris().next();
                 let options =
@@ -835,6 +856,7 @@ impl Preparation {
                 options.transfer.verification_fingerprint = Some(manifest.fingerprint());
                 options.piece_length = manifest.chunk_length();
             }
+            options.transfer.http_headers_required |= headers_required;
             let spec = match task.sources {
                 crate::session_file::ImportedSources::Persisted(sources) => {
                     TransferTaskSpec::from_persisted_sources(

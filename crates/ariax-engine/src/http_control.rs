@@ -35,8 +35,8 @@ pub use control_runtime::ControlRuntimeMetrics;
 
 use crate::http_first_slice::append_initial_admission_with_options;
 use crate::rpc_result::{
-    DisplayValue, OptionMap, PersistedSources, RESULT_VALUE_BYTES, ResultList, SessionOptions,
-    SourceServers, SourceUris,
+    DisplayValue, PersistedSources, RESULT_VALUE_BYTES, ResultList, SessionOptions, SourceServers,
+    SourceUris,
 };
 use crate::{
     HttpRetryAfterPolicy, HttpRetryBackoff, HttpRetryPolicy, HttpRetryProfile, HttpRetryStatusSet,
@@ -431,6 +431,7 @@ impl HttpControlPlane {
             shared_disk: false,
         })
         .map_err(|_| HttpControlError::InvalidConfig)?;
+        let active_capacity = engine.scheduler().active_capacity();
         let mut plane = Self {
             #[cfg(feature = "bt")]
             bt: bittorrent::BtControl::default(),
@@ -446,7 +447,7 @@ impl HttpControlPlane {
             pending_follow: None,
             journal_sequences: BTreeMap::new(),
             next_task_id,
-            global_options: Arc::new(default_global_options()?),
+            global_options: Arc::new(default_global_options(active_capacity)?),
             flat_options: Arc::new(BTreeMap::new()),
             rpc_template: Arc::new(BTreeMap::new()),
             url_rules: Arc::new(ariax_config::UrlRules::default()),
@@ -1817,7 +1818,9 @@ impl HttpControlPlane {
             !configuration::discard_inherited_retry(name, |key| patch.contains_key(key))
         });
         for (name, entry) in &patch {
-            merged.insert(name.clone(), entry.canonical.clone());
+            if !matches!(name.as_str(), "header" | "referer") {
+                merged.insert(name.clone(), entry.canonical.clone());
+            }
         }
         let options = SanitizedOptionMap::new(merged)
             .map_err(|_| HttpControlError::InvalidParams("option patch exceeds bounds"))?;
@@ -1826,15 +1829,32 @@ impl HttpControlPlane {
                 "option patch violates persistence policy",
             ));
         }
-        let http_options = TransferTaskOptions::from_sanitized(&options).map_err(|_| {
+        let mut http_options = TransferTaskOptions::from_sanitized(&options).map_err(|_| {
             rejected_option_names(patch.keys(), OptionPatchRejectReason::InvalidValue)
         })?;
+        http_options.transfer.http_headers = current.options().transfer.http_headers.clone();
+        http_options.transfer.referer = current.options().transfer.referer.clone();
+        http_options.transfer.http_header_origin =
+            current.options().transfer.http_header_origin.clone();
+        for name in ["header", "referer"] {
+            if let Some(entry) = patch.get(name) {
+                http_options
+                    .transfer
+                    .set(name, &entry.canonical)
+                    .map_err(|_| {
+                        rejected_option_names([name], OptionPatchRejectReason::InvalidValue)
+                    })?;
+            }
+        }
         let output = TransferTaskSpec::persisted_output(&options).map_err(|_| {
             rejected_option_names(patch.keys(), OptionPatchRejectReason::InvalidValue)
         })?;
-        let replacement = current.with_options(output, http_options).map_err(|_| {
+        let mut replacement = current.with_options(output, http_options).map_err(|_| {
             rejected_option_names(patch.keys(), OptionPatchRejectReason::InvalidValue)
         })?;
+        if patch.contains_key("header") || patch.contains_key("referer") {
+            replacement.restore_http_header_sources();
+        }
         let replacement = self
             .tasks
             .snapshot()
@@ -1843,6 +1863,11 @@ impl HttpControlPlane {
         let options = replacement
             .persistence_options()
             .map_err(HttpControlError::TaskSpec)?;
+        if !self.engine.permits_persisted_options(&options) {
+            return Err(HttpControlError::InvalidParams(
+                "option patch violates persistence policy",
+            ));
+        }
 
         let patch_id =
             OptionPatchId::new(self.next_option_patch_id).ok_or(HttpControlError::InvalidConfig)?;
@@ -1881,7 +1906,26 @@ impl HttpControlPlane {
             gid,
             patch_id,
             kind,
-            satisfies_credentials: None,
+            satisfies_credentials: if current.options().transfer.http_headers_required
+                && (patch.contains_key("header") || patch.contains_key("referer"))
+                && replacement
+                    .sources()
+                    .iter()
+                    .any(|source| source.protocol().is_http() && source.uri().is_some())
+            {
+                self.engine
+                    .scheduler()
+                    .credential_requirement_key(gid)
+                    .filter(|key| {
+                        matches!(
+                            key.kind,
+                            ariax_core::CredentialKind::SourceUri
+                                | ariax_core::CredentialKind::HttpAuthentication
+                        )
+                    })
+            } else {
+                None
+            },
         };
         let mut simulation = self.engine.scheduler().clone();
         let outcome = simulation
@@ -1907,6 +1951,12 @@ impl HttpControlPlane {
             }
         };
         if kind == ValidatedOptionPatchKind::InPlace {
+            if patch.contains_key("header") || patch.contains_key("referer") {
+                writes.unit(SessionCommand::ReplaceTaskSources {
+                    gid,
+                    sources: replacement.persistence_sources(),
+                });
+            }
             writes.unit(SessionCommand::ReplaceTaskOptions {
                 gid,
                 scope: OptionsSnapshotScope::CurrentGeneration,
@@ -2035,6 +2085,13 @@ impl HttpControlPlane {
             return Err(HttpControlError::Busy);
         }
         let current = self.tasks.get_gid(gid).ok_or(HttpControlError::NotFound)?;
+        if current.options().transfer.http_headers_required
+            && !current.options().transfer.has_volatile_http_headers()
+        {
+            return Err(HttpControlError::InvalidParams(
+                "HTTP headers must be resupplied through changeOption",
+            ));
+        }
         let root = self.engine.snapshot_reader().load();
         let task = root.task(gid).ok_or(HttpControlError::NotFound)?;
         let status = task
@@ -3749,13 +3806,15 @@ fn parse_uri_array(value: &Value) -> Result<Vec<String>, HttpControlError> {
         .collect()
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 struct ParsedRegistryOption {
     canonical: String,
     runtime_update: RuntimeUpdate,
 }
 
-fn default_global_options() -> Result<BTreeMap<String, String>, HttpControlError> {
+fn default_global_options(
+    active_capacity: NonZeroUsize,
+) -> Result<BTreeMap<String, String>, HttpControlError> {
     let options = TransferTaskOptions {
         retry: Some(HttpRetryPolicy::default()),
         ..TransferTaskOptions::default()
@@ -3766,6 +3825,10 @@ fn default_global_options() -> Result<BTreeMap<String, String>, HttpControlError
         .entries()
         .map(|(name, value)| (name.to_owned(), value.to_owned()))
         .collect::<BTreeMap<_, _>>();
+    result.insert(
+        "max-concurrent-downloads".to_owned(),
+        active_capacity.to_string(),
+    );
     result.insert("max-overall-download-limit".to_owned(), "0".to_owned());
     #[cfg(feature = "bt")]
     for definition in builtin_registry()
@@ -3815,8 +3878,10 @@ fn is_executable_download_option(name: &str) -> bool {
 }
 
 fn is_executable_global_option(name: &str) -> bool {
-    name == "max-overall-download-limit"
-        || is_executable_bt_option(name)
+    matches!(
+        name,
+        "max-overall-download-limit" | "max-concurrent-downloads"
+    ) || is_executable_bt_option(name)
         || is_executable_download_option(name)
         || is_scheduling_option(name)
 }
@@ -3868,8 +3933,10 @@ fn parse_registry_options(
             if definition.compat == CompatStatus::UnsafeCompat {
                 return Err(OptionPatchRejectReason::UnsafeCompatRequired);
             }
+            let volatile_header =
+                scope == Scope::RpcChange && matches!(name.as_str(), "header" | "referer");
             if !definition.scopes.contains(scope)
-                || definition.security != SecurityClass::Normal
+                || (definition.security != SecurityClass::Normal && !volatile_header)
                 || matches!(definition.runtime_update, RuntimeUpdate::StartupOnly)
             {
                 return Err(OptionPatchRejectReason::NotRuntimeMutable);
@@ -3889,12 +3956,15 @@ fn parse_registry_options(
             {
                 return Err(OptionPatchRejectReason::Unsupported);
             }
-            let input =
-                option_input_text(value).map_err(|_| OptionPatchRejectReason::InvalidValue)?;
+            let input = download_option_input(name, value)
+                .map_err(|_| OptionPatchRejectReason::InvalidValue)?;
             let value = parse_option_value(definition, &input, None)
                 .map_err(|_| OptionPatchRejectReason::InvalidValue)?;
-            let canonical = canonical_option_value(&value)
-                .map_err(|_| OptionPatchRejectReason::InvalidValue)?;
+            let canonical = if volatile_header {
+                input
+            } else {
+                canonical_option_value(&value).map_err(|_| OptionPatchRejectReason::InvalidValue)?
+            };
             if name == "sftp-check-host-key" && canonical != "true" {
                 return Err(OptionPatchRejectReason::NotRuntimeMutable);
             }
@@ -3948,6 +4018,29 @@ where
     )
 }
 
+fn download_option_input(name: &str, value: &Value) -> Result<String, HttpControlError> {
+    if name == "header"
+        && let Value::Array(lines) = value
+    {
+        if lines.len() > crate::MAX_HTTP_CUSTOM_HEADERS {
+            return Err(HttpControlError::InvalidParams("too many HTTP headers"));
+        }
+        let lines = lines
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .filter(|line| !line.contains(['\r', '\n']))
+                    .ok_or(HttpControlError::InvalidParams(
+                        "header array requires single-line strings",
+                    ))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(lines.join("\n"));
+    }
+    option_input_text(value)
+}
+
 fn option_input_text(value: &Value) -> Result<String, HttpControlError> {
     match value {
         Value::String(value) => Ok(value.clone()),
@@ -3967,7 +4060,7 @@ fn canonical_option_value(value: &OptionValue) -> Result<String, HttpControlErro
         OptionValue::DurationSeconds(value) => value.to_string(),
         OptionValue::Enum(value) | OptionValue::String(value) => value.clone(),
         OptionValue::Path(value) => value.to_string_lossy().into_owned(),
-        OptionValue::HeaderList(values) => values.join(","),
+        OptionValue::HeaderList(values) => values.join("\n"),
         OptionValue::StatusCodeSet(values) => values
             .iter()
             .map(u16::to_string)
@@ -4230,7 +4323,7 @@ pub(crate) fn parse_add_options_authorized(
         {
             return Err(HttpControlError::InvalidParams("unsupported addUri option"));
         }
-        parse_option_value(definition, &option_input_text(value)?, None)
+        parse_option_value(definition, &download_option_input(name, value)?, None)
             .map_err(|_| HttpControlError::InvalidParams("invalid option value"))?;
     }
     let mut parsed = TransferTaskOptions::default();
@@ -4322,7 +4415,7 @@ pub(crate) fn parse_add_options_authorized(
             }
             _ if crate::TransferOptions::handles(name) => {
                 let definition = registry.find(name).expect("validated definition");
-                let input = option_input_text(value)?;
+                let input = download_option_input(name, value)?;
                 let value = parse_option_value(definition, &input, None)
                     .map_err(|_| HttpControlError::InvalidParams("invalid option value"))?;
                 let canonical = if definition.security == SecurityClass::Sensitive {
@@ -5616,6 +5709,378 @@ mod tests {
         );
 
         assert!(plane.shutdown().expect("shutdown control plane").is_clean());
+    }
+
+    #[test]
+    fn effective_options_include_executable_defaults_without_expanding_persistence() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let gid = add_paused(&mut plane);
+        let before = plane
+            .tasks
+            .get_gid(gid)
+            .unwrap()
+            .persistence_options()
+            .unwrap();
+        let options = plane
+            .call("aria2.getOption", json!([gid.to_string()]))
+            .unwrap();
+        assert_eq!(options["uri-selector"], "feedback");
+        assert_eq!(options["server-stat-timeout"], "86400");
+        assert_eq!(
+            options["ftp-pasv"].as_str(),
+            cfg!(feature = "ftp").then_some("true")
+        );
+        assert_eq!(
+            options["sftp-max-outstanding-reads"].as_str(),
+            cfg!(feature = "sftp").then_some("8")
+        );
+        for secret in [
+            "header",
+            "referer",
+            "ftp-passwd",
+            "sftp-private-key",
+            "http-headers-required",
+            "verification-manifest",
+        ] {
+            assert!(options.get(secret).is_none());
+        }
+        assert!(!before.entries().any(|(name, _)| name == "ftp-pasv"));
+        assert_eq!(
+            plane
+                .tasks
+                .get_gid(gid)
+                .unwrap()
+                .persistence_options()
+                .unwrap(),
+            before
+        );
+        plane
+            .call(
+                "aria2.changeOption",
+                json!([gid.to_string(), {"uri-selector":"inorder"}]),
+            )
+            .unwrap();
+        assert_eq!(
+            plane
+                .call("aria2.getOption", json!([gid.to_string()]))
+                .unwrap()["uri-selector"],
+            "inorder"
+        );
+        assert!(
+            plane
+                .call("aria2.getOption", json!(["ffffffffffffffff"]))
+                .is_err()
+        );
+        plane.shutdown().unwrap();
+    }
+
+    #[test]
+    fn concurrent_download_changes_validate_capacity_and_reject_patches_atomically() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane_with_active_limit(3);
+        assert_eq!(
+            plane.call("aria2.getGlobalOption", json!([])).unwrap()["max-concurrent-downloads"],
+            "3"
+        );
+        plane
+            .call(
+                "aria2.changeGlobalOption",
+                json!([{"max-concurrent-downloads":1, "timeout":42}]),
+            )
+            .unwrap();
+        assert_eq!(plane.engine.scheduler().active_limit().get(), 1);
+        for value in [0, 4, -1] {
+            assert!(
+                plane
+                    .call(
+                        "aria2.changeGlobalOption",
+                        json!([{"max-concurrent-downloads":value,"timeout":12}])
+                    )
+                    .is_err()
+            );
+            assert_eq!(plane.engine.scheduler().active_limit().get(), 1);
+            assert_eq!(plane.global_options["timeout"], "42");
+        }
+        plane
+            .call(
+                "aria2.changeGlobalOption",
+                json!([{"max-concurrent-downloads":3}]),
+            )
+            .unwrap();
+        assert_eq!(plane.engine.scheduler().active_limit().get(), 3);
+        assert!(
+            plane
+                .call(
+                    "ariax.reloadConfig",
+                    json!(["max-concurrent-downloads=4\ntimeout=10\n"])
+                )
+                .is_err()
+        );
+        plane.shutdown().unwrap();
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane_with_active_limit(3);
+        plane
+            .call(
+                "ariax.reloadConfig",
+                json!(["max-concurrent-downloads=1\n"]),
+            )
+            .unwrap();
+        assert_eq!(plane.engine.scheduler().active_limit().get(), 1);
+        plane.call("ariax.reloadConfig", json!([""])).unwrap();
+        assert_eq!(plane.engine.scheduler().active_limit().get(), 3);
+        plane.shutdown().unwrap();
+    }
+
+    #[test]
+    fn header_admission_redacts_persists_requirement_and_blocks_uri_only_recovery() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        for options in [
+            json!({"header":"Range: bytes=0-1"}),
+            json!({"header":["Authorization: a","authorization: b"]}),
+            json!({"header":["x-test: a\nx-other: b"]}),
+            json!({"header":"User-Agent: a", "user-agent":"b"}),
+        ] {
+            assert!(
+                plane
+                    .call(
+                        "aria2.addUri",
+                        json!([["http://example.test/file"], options])
+                    )
+                    .is_err()
+            );
+            assert_eq!(plane.tasks.len(), 0);
+        }
+        let gid = plane.call("aria2.addUri", json!([["http://example.test/file"], {
+            "pause":true, "header":["Authorization: Bearer canary", "Host: virtual.test", "Cookie: session=canary", "Proxy-Authorization: Bearer proxy-canary"],
+            "referer":"https://source.test/?token=canary", "user-agent":"client/1"
+        }])).unwrap();
+        let parsed_gid: Gid = gid.as_str().unwrap().parse().unwrap();
+        plane
+            .call("aria2.changeOption", json!([gid, {"timeout":31}]))
+            .unwrap();
+        assert_eq!(
+            plane
+                .tasks
+                .get_gid(parsed_gid)
+                .unwrap()
+                .options()
+                .transfer
+                .http_headers
+                .values()
+                .len(),
+            4
+        );
+        let query = plane.call("aria2.getOption", json!([gid])).unwrap();
+        assert_eq!(query["user-agent"], "client/1");
+        assert!(!query.to_string().contains("canary"));
+        assert!(query.get("header").is_none());
+        let export = plane.call("ariax.exportSession", json!([])).unwrap();
+        assert!(!export.to_string().contains("canary"));
+        assert_eq!(
+            export["tasks"][0]["options"]["http-headers-required"],
+            "true"
+        );
+        assert_eq!(export["tasks"][0]["sources"][0]["needsCredentials"], true);
+        assert!(
+            plane
+                .call(
+                    "aria2.changeGlobalOption",
+                    json!([{"header":"Authorization: canary"}])
+                )
+                .is_err()
+        );
+        plane.shutdown().unwrap();
+        let mut recovered = directory.control_plane();
+        assert!(
+            recovered
+                .engine
+                .scheduler()
+                .task(parsed_gid)
+                .unwrap()
+                .conditions
+                .needs_credentials
+        );
+        assert!(
+            recovered
+                .call(
+                    "aria2.changeUri",
+                    json!([gid, 1, [], ["http://example.test/file"]])
+                )
+                .is_err()
+        );
+        assert!(
+            recovered
+                .call(
+                    "aria2.changeOption",
+                    json!([gid, {"header":"Range: canary", "timeout":22}])
+                )
+                .is_err()
+        );
+        assert!(
+            recovered
+                .engine
+                .scheduler()
+                .task(parsed_gid)
+                .unwrap()
+                .conditions
+                .needs_credentials
+        );
+        recovered.call("aria2.changeOption", json!([gid, {"header":["Authorization: Bearer replacement-canary", "Host: virtual.test"]}])).unwrap();
+        assert!(
+            !recovered
+                .engine
+                .scheduler()
+                .task(parsed_gid)
+                .unwrap()
+                .conditions
+                .needs_credentials
+        );
+        assert!(
+            recovered
+                .engine
+                .scheduler()
+                .task(parsed_gid)
+                .unwrap()
+                .desired_paused
+        );
+        assert_eq!(
+            recovered.tasks.get_gid(parsed_gid).unwrap().sources()[0].uri(),
+            Some("http://example.test/file")
+        );
+        assert!(
+            !recovered
+                .call("ariax.exportSession", json!([]))
+                .unwrap()
+                .to_string()
+                .contains("canary")
+        );
+        recovered.shutdown().unwrap();
+        let again = directory.control_plane();
+        assert!(
+            again
+                .engine
+                .scheduler()
+                .task(parsed_gid)
+                .unwrap()
+                .conditions
+                .needs_credentials
+        );
+        again.shutdown().unwrap();
+        let target = TestDirectory::new();
+        let mut imported = target.control_plane();
+        let gids = imported
+            .call("ariax.importSession", json!([export]))
+            .unwrap();
+        assert!(
+            imported
+                .call(
+                    "aria2.changeUri",
+                    json!([gids[0], 1, [], ["http://example.test/file"]])
+                )
+                .is_err()
+        );
+        imported.shutdown().unwrap();
+    }
+
+    #[test]
+    fn header_resupply_cannot_restore_a_missing_signed_uri() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let gid = plane.call("aria2.addUri", json!([["http://example.test/file?token=canary"], {"pause":true,"header":"Authorization: Bearer canary"}])).unwrap();
+        let parsed_gid: Gid = gid.as_str().unwrap().parse().unwrap();
+        plane.shutdown().unwrap();
+        let mut plane = directory.control_plane();
+        plane
+            .call(
+                "aria2.changeOption",
+                json!([gid,{"header":"Authorization: Bearer replacement-canary"}]),
+            )
+            .unwrap();
+        assert!(
+            plane
+                .engine
+                .scheduler()
+                .task(parsed_gid)
+                .unwrap()
+                .conditions
+                .needs_credentials
+        );
+        assert!(
+            plane.tasks.get_gid(parsed_gid).unwrap().sources()[0]
+                .uri()
+                .is_none()
+        );
+        plane
+            .call(
+                "aria2.changeUri",
+                json!([gid, 1, [], ["http://example.test/file?token=new-canary"]]),
+            )
+            .unwrap();
+        assert!(
+            !plane
+                .engine
+                .scheduler()
+                .task(parsed_gid)
+                .unwrap()
+                .conditions
+                .needs_credentials
+        );
+        assert!(
+            !plane
+                .call("ariax.exportSession", json!([]))
+                .unwrap()
+                .to_string()
+                .contains("canary")
+        );
+        plane.shutdown().unwrap();
+    }
+
+    #[test]
+    fn adding_headers_to_a_waiting_task_preserves_recovery_requirement() {
+        let directory = TestDirectory::new();
+        let mut plane = directory.control_plane();
+        let gid = add_paused(&mut plane);
+        plane
+            .call(
+                "aria2.changeOption",
+                json!([gid.to_string(), {"header":"Authorization: Bearer late-canary"}]),
+            )
+            .unwrap();
+        let source = &plane.tasks.get_gid(gid).unwrap().persistence_sources()[0];
+        assert!(source.needs_credentials);
+        assert_eq!(
+            plane.call("ariax.exportSession", json!([])).unwrap()["tasks"][0]["options"]["http-headers-required"],
+            "true"
+        );
+        plane.shutdown().unwrap();
+        let mut restored = directory.control_plane();
+        assert!(
+            restored
+                .engine
+                .scheduler()
+                .task(gid)
+                .unwrap()
+                .conditions
+                .needs_credentials
+        );
+        restored
+            .call(
+                "aria2.changeOption",
+                json!([gid.to_string(), {"header":"Authorization: Bearer new-canary"}]),
+            )
+            .unwrap();
+        assert!(
+            !restored
+                .engine
+                .scheduler()
+                .task(gid)
+                .unwrap()
+                .conditions
+                .needs_credentials
+        );
+        restored.shutdown().unwrap();
     }
 
     #[test]
@@ -6918,7 +7383,7 @@ mod tests {
                     .call("ariax.importSession", json!([document]))
                     .is_err()
             );
-            assert!(plane.tasks.is_empty());
+            assert_eq!(plane.tasks.len(), 0);
             assert!(plane.engine.snapshot_reader().load().is_empty());
             assert!(
                 fs::read_dir(&directory.journals)
@@ -6935,7 +7400,7 @@ mod tests {
                 .call("ariax.importSession", json!([import_document(17)]))
                 .is_err()
         );
-        assert!(plane.tasks.is_empty());
+        assert_eq!(plane.tasks.len(), 0);
         let result = plane
             .call("ariax.importSession", json!([import_document(3)]))
             .expect("valid batch after rejection");
@@ -6986,7 +7451,7 @@ mod tests {
             plane.wait_for_mutation(reply),
             Err(HttpControlError::Busy)
         ));
-        assert!(plane.tasks.is_empty());
+        assert_eq!(plane.tasks.len(), 0);
         assert!(plane.engine.snapshot_reader().load().is_empty());
         assert!(
             fs::read_dir(&directory.journals)
@@ -7188,7 +7653,7 @@ mod tests {
             ),
             Err(HttpControlError::Busy)
         ));
-        assert!(plane.tasks.is_empty());
+        assert_eq!(plane.tasks.len(), 0);
         assert!(
             fs::read_dir(&directory.journals)
                 .expect("journals")
@@ -7382,7 +7847,7 @@ mod tests {
             plane.call_admitted("aria2.addUri", json!([[large_uri]]), Some(lease.clone())),
             Err(HttpControlError::Busy)
         ));
-        assert!(plane.tasks.is_empty());
+        assert_eq!(plane.tasks.len(), 0);
         assert!(
             fs::read_dir(&directory.journals)
                 .expect("journal directory")

@@ -66,11 +66,13 @@ case-insensitive reserved-header policy in [detailed-http-first-slice.md](detail
 then generates `Host`, framing, range, encoding, validator, authentication, and
 proxy-authentication fields for the new hop.
 
-A custom header containing invalid syntax, CR/LF, or a reserved field is rejected
-at task validation, so it cannot survive by changing case or by appearing twice.
-Harmless custom headers remain configured across redirects. Authorization,
-cookies, signatures, and other origin-bound fields are never classified as
-harmless custom headers and are re-derived under the rules below.
+A custom header containing invalid syntax, CR/LF, or a reserved field other than
+an explicitly permitted override is rejected at task validation. Changing case
+or supplying duplicates cannot bypass validation. Custom headers and explicit
+`referer` remain bound to the original source origin; `user-agent` may accompany
+later origins. Explicit `Host`, `Authorization` and `Cookie` overrides are
+stripped on cross-origin redirects. Proxy authorization stays bound to the
+selected proxy endpoint, including CONNECT handshakes.
 
 ## Credential Scoping (Security)
 
@@ -80,7 +82,7 @@ not blindly forwarded:
 - Drop `Authorization` when the redirect changes origin (scheme, host, or port).
   Re-derive credentials for the new origin only from configured per-host
   credentials or `.netrc`, never by forwarding the prior header.
-- Cookies follow the cookie jar's host scoping ([protocol-modernization.md](protocol-modernization.md)
+- Generated cookies follow the cookie jar's host scoping ([protocol-modernization.md](protocol-modernization.md)
   "Cookie Jar"); a cookie set for origin A is not sent to unrelated origin B.
 - Proxy credentials are re-evaluated for the new target host and proxy.
 - Refuse `https -> http` downgrade by default (`--allow-redirect-downgrade` to
@@ -118,7 +120,7 @@ flow through the same guardrail as the initial request:
 - strict redirect admission without a persisted whole-entity checksum cannot
   promote a target even if it advertises `Repr-Digest`,
 - redirect aborts any begun provisional lease before a new `LeaseId` is used,
-- harmless custom headers are rebuilt while reserved, credential, and framing
+- origin-scoped custom headers are rebuilt while reserved, credential, and framing
   fields cannot be overridden or blindly forwarded,
 - redirect target to a private/metadata address is refused under the SSRF
   guardrail,

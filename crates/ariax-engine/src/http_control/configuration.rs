@@ -12,6 +12,7 @@ struct PreparedConfiguration {
     effective: Arc<BTreeMap<String, String>>,
     rules: Arc<ariax_config::UrlRules>,
     scheduling: crate::SlowSlotConfig,
+    active_limit: NonZeroUsize,
     previous_generation: u64,
     result: Value,
     charge: crate::rpc_budget::RpcByteCharge,
@@ -129,6 +130,9 @@ impl HttpControlPlane {
                 "stale configuration generation",
             ));
         }
+        self.engine
+            .configure_active_limit(prepared.active_limit)
+            .map_err(|_| HttpControlError::Busy)?;
         self.engine
             .configure_queue_policies(
                 prepared.scheduling.retry_wait == crate::RetryWaitSlotPolicy::Retain,
@@ -328,7 +332,7 @@ impl super::query::ConfigurationSnapshot {
             )
         };
         let validate = || -> Result<_, HttpControlError> {
-            let mut effective = default_global_options()?;
+            let mut effective = default_global_options(self.active_capacity)?;
             merge_resolved_layer(&mut effective, &flat)?;
             merge_resolved_layer(&mut effective, &rpc)?;
             self.validate_template(&effective)?;
@@ -378,12 +382,14 @@ impl super::query::ConfigurationSnapshot {
                 },
             );
         let charge = owner.charge(bytes).map_err(|_| HttpControlError::Busy)?;
+        let active_limit = self.active_limit(&effective)?;
         Ok(PreparedConfiguration {
             flat: Arc::new(flat),
             rpc: Arc::new(rpc),
             effective: Arc::new(effective),
             rules,
             scheduling,
+            active_limit,
             previous_generation: self.config_generation,
             result,
             charge,
@@ -401,7 +407,7 @@ impl super::query::ConfigurationSnapshot {
         ))?;
         let explicit = explicit
             .iter()
-            .map(|(name, value)| Ok((name.clone(), option_input_text(value)?)))
+            .map(|(name, value)| Ok((name.clone(), download_option_input(name, value)?)))
             .collect::<Result<BTreeMap<_, _>, HttpControlError>>()?;
         let mut options = BTreeMap::new();
         let flat = self
@@ -550,10 +556,27 @@ impl super::query::ConfigurationSnapshot {
         })
     }
 
+    fn active_limit(
+        &self,
+        values: &BTreeMap<String, String>,
+    ) -> Result<NonZeroUsize, HttpControlError> {
+        match values.get("max-concurrent-downloads") {
+            None => Ok(self.active_capacity),
+            Some(value) => value
+                .parse::<NonZeroUsize>()
+                .ok()
+                .filter(|limit| *limit <= self.active_capacity)
+                .ok_or(HttpControlError::InvalidParams(
+                    "max-concurrent-downloads exceeds bootstrap capacity or is zero",
+                )),
+        }
+    }
+
     pub(super) fn validate_template(
         &self,
         values: &BTreeMap<String, String>,
     ) -> Result<(), HttpControlError> {
+        self.active_limit(values)?;
         crate::SlowSlotConfig::from_options(values)?;
         if values.keys().any(|name| !is_executable_global_option(name)) {
             return Err(HttpControlError::InvalidParams(

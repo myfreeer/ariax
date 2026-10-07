@@ -303,13 +303,32 @@ const NONE: &[&str] = &[];
 /// administrative settings never enter task journals or session option maps.
 #[must_use]
 pub fn persisted_option_is_safe(name: &str) -> bool {
-    builtin_registry()
-        .find(name)
-        .is_some_and(|definition| definition.security == SecurityClass::Normal)
+    name == "http-headers-required"
+        || builtin_registry()
+            .find(name)
+            .is_some_and(|definition| definition.security == SecurityClass::Normal)
 }
 
 /// The first reviewed registry slice. It grows until every upstream and extension option is covered.
 pub const BUILTIN_OPTIONS: &[OptionDef] = &[
+    http_header_option(
+        "header",
+        ValueType::HeaderList {
+            max_items: 64,
+            max_item_len: 8450,
+        },
+        SecurityClass::Sensitive,
+    ),
+    http_header_option(
+        "user-agent",
+        ValueType::String { max_len: 8192 },
+        SecurityClass::Normal,
+    ),
+    http_header_option(
+        "referer",
+        ValueType::SecretString { max_len: 4096 },
+        SecurityClass::Sensitive,
+    ),
     bt_option(
         "max-overall-upload-limit",
         ValueType::SizeBytes {
@@ -670,6 +689,23 @@ pub const BUILTIN_OPTIONS: &[OptionDef] = &[
         Some("1024"),
         "metalink",
     ),
+    OptionDef {
+        short: Some('j'),
+        default: None,
+        aria2_available: true,
+        aria2_runtime_update: RuntimeUpdate::Live,
+        compatibility_difference: CompatibilityDifference::Intentional,
+        docs: "docs/runtime/download-scheduling.md#core-queues",
+        behavior_tests: &["active_limit_updates_drain_and_resume_admissions"],
+        ..scheduling_option(
+            "max-concurrent-downloads",
+            ValueType::Integer {
+                min: 1,
+                max: 100000,
+            },
+            "64",
+        )
+    },
     scheduling_option(
         "slow-slot-policy",
         ValueType::Enum {
@@ -1699,6 +1735,27 @@ const fn protocol_option(
         compatibility_difference: CompatibilityDifference::Intentional,
         docs: "docs/protocols/detailed-protocol-transfers.md#scope-and-checkpoints",
         behavior_tests: NONE,
+    }
+}
+
+const fn http_header_option(
+    name: &'static str,
+    value_type: ValueType,
+    security: SecurityClass,
+) -> OptionDef {
+    OptionDef {
+        security,
+        aria2_available: true,
+        aria2_runtime_update: RuntimeUpdate::WaitingOnly,
+        scopes: if matches!(security, SecurityClass::Sensitive) {
+            ScopeSet::one(Scope::PerDownload).with(Scope::RpcChange)
+        } else {
+            DOWNLOAD_SCOPES
+        },
+        runtime_update: RuntimeUpdate::WaitingOnly,
+        docs: "docs/protocols/detailed-http-first-slice.md#user-header-policy",
+        behavior_tests: &["custom_header_overrides_preserve_generated_range_and_redact_values"],
+        ..protocol_option(name, value_type, None, "http")
     }
 }
 

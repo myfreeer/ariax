@@ -4550,3 +4550,55 @@ fn restore_rejects_incomplete_duplicate_and_mismatched_membership() {
         SchedulerRestoreError::DuplicateQueueMember(gid(1))
     );
 }
+
+#[test]
+fn active_limit_updates_drain_and_resume_admissions() {
+    let at = MonotonicInstant::now();
+    let mut scheduler = new_scheduler(5, 3, false);
+    let first = make_active(&mut scheduler, task_id(1), gid(1), at);
+    let second = make_active(&mut scheduler, task_id(2), gid(2), at);
+    add_task(&mut scheduler, task_id(3), gid(3), at);
+    scheduler
+        .configure_active_limit(NonZeroUsize::new(1).unwrap())
+        .unwrap();
+    assert_eq!(scheduler.active_slot_count(), 2);
+    assert_eq!(scheduler.task(gid(1)).unwrap().state, TaskState::Active);
+    assert!(scheduler.admit_next_at(later(at, 4)).is_err());
+    for (id, generation) in [(1, first), (2, second)] {
+        scheduler
+            .execute_command_at(
+                SchedulerCommand::Pause {
+                    gid: gid(id),
+                    force: true,
+                },
+                later(at, 5),
+            )
+            .unwrap();
+        scheduler
+            .handle_event_at(
+                TaskEvent::CancellationDrained {
+                    gid: gid(id),
+                    generation,
+                },
+                later(at, 6),
+            )
+            .unwrap();
+        if id == 1 {
+            assert!(scheduler.admit_next_at(later(at, 7)).is_err());
+        }
+    }
+    scheduler.admit_next_at(later(at, 8)).unwrap();
+    add_task(&mut scheduler, task_id(4), gid(4), at);
+    assert!(scheduler.admit_next_at(later(at, 9)).is_err());
+    scheduler
+        .configure_active_limit(NonZeroUsize::new(3).unwrap())
+        .unwrap();
+    scheduler.admit_next_at(later(at, 10)).unwrap();
+    assert_eq!(scheduler.active_slot_count(), 2);
+    assert_eq!(
+        scheduler.configure_active_limit(NonZeroUsize::new(4).unwrap()),
+        Err(ariax_core::SchedulerConfigError::ActiveLimitExceedsBootstrapCapacity)
+    );
+    assert_eq!(scheduler.active_limit().get(), 3);
+    assert_eq!(scheduler.active_capacity().get(), 3);
+}

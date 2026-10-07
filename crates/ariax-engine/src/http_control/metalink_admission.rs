@@ -54,7 +54,7 @@ pub(super) fn parse_upload(
         };
         let registry = builtin_registry();
         let definition = registry.find(name).expect("Metalink option registered");
-        let parsed = parse_option_value(definition, &option_input_text(&value)?, None)
+        let parsed = parse_option_value(definition, &download_option_input(name, &value)?, None)
             .map_err(|_| HttpControlError::InvalidParams("invalid Metalink option"))?;
         let value = canonical_option_value(&parsed)?;
         match name {

@@ -171,6 +171,7 @@ pub(crate) fn is_query(method: &str) -> bool {
 }
 
 pub(super) struct ConfigurationSnapshot {
+    pub(super) active_capacity: NonZeroUsize,
     pub(super) config: HttpControlPlaneConfig,
     pub(super) global_options: Arc<BTreeMap<String, String>>,
     pub(super) flat_options: Arc<BTreeMap<String, String>>,
@@ -217,6 +218,7 @@ impl HttpControlPlane {
             return root.configuration.clone();
         }
         Arc::new(ConfigurationSnapshot {
+            active_capacity: self.engine.scheduler().active_capacity(),
             config: self.config.clone(),
             global_options: self.global_options.clone(),
             flat_options: self.flat_options.clone(),
@@ -623,11 +625,27 @@ impl ControlQueryRoot {
 
     pub(super) fn get_option(&self, params: Value) -> Result<Value, HttpControlError> {
         let gid = self.resolve_gid_param(&params)?;
-        let options = self.task_options(gid)?;
-        Ok(crate::rpc_result::to_value(
-            &OptionMap(&options),
-            RESULT_VALUE_BYTES,
-        )?)
+        let persisted = self.task_options(gid)?;
+        let registry = builtin_registry();
+        let effective = self
+            .task_spec(gid)
+            .map_or_else(Vec::new, |spec| spec.options().transfer.effective());
+        let entries = persisted
+            .entries()
+            .filter(|(name, _)| {
+                !effective.iter().any(|(key, _)| key == name)
+                    && registry.find(name).is_some_and(|definition| {
+                        definition.security == SecurityClass::Normal
+                            && definition.scopes.contains(Scope::PerDownload)
+                    })
+            })
+            .chain(
+                effective
+                    .iter()
+                    .map(|(name, value)| (name.as_str(), value.as_str())),
+            )
+            .collect::<Vec<_>>();
+        Ok(string_map_value(entries.into_iter())?)
     }
 
     fn task_options(&self, gid: Gid) -> Result<Cow<'_, SanitizedOptionMap>, HttpControlError> {
@@ -927,7 +945,7 @@ impl ControlQueryRoot {
         let options =
             match mode {
                 "effective" => (*self.global_options).clone(),
-                "defaults" => default_global_options()?,
+                "defaults" => default_global_options(self.active_capacity)?,
                 "task-effective" => {
                     let gid = args.get(2).and_then(Value::as_str).ok_or(
                         HttpControlError::InvalidParams("task-effective dump requires a GID"),

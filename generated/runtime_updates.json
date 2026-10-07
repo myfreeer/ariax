@@ -33,8 +33,10 @@
     {"name": "ftp-ssl", "runtime_update": "waiting_only", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
     {"name": "ftp-type", "runtime_update": "waiting_only", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
     {"name": "ftp-user", "runtime_update": "waiting_only", "scopes": ["startup", "per_download"]},
+    {"name": "header", "runtime_update": "waiting_only", "scopes": ["per_download", "rpc_change"]},
     {"name": "index-out", "runtime_update": "bt_restart_required", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
     {"name": "lowest-speed-limit", "runtime_update": "active_restart", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
+    {"name": "max-concurrent-downloads", "runtime_update": "live", "scopes": ["startup", "global", "rpc_global"]},
     {"name": "max-connection-per-server", "runtime_update": "active_restart", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
     {"name": "max-download-limit", "runtime_update": "live", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
     {"name": "max-overall-download-limit", "runtime_update": "live", "scopes": ["global", "rpc_global"]},
@@ -62,6 +64,7 @@
     {"name": "piece-length", "runtime_update": "new_generation", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
     {"name": "profile", "runtime_update": "startup_only", "scopes": ["startup"]},
     {"name": "realtime-chunk-checksum", "runtime_update": "waiting_only", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
+    {"name": "referer", "runtime_update": "waiting_only", "scopes": ["per_download", "rpc_change"]},
     {"name": "require-private-permissions", "runtime_update": "startup_only", "scopes": ["startup"]},
     {"name": "retry-after", "runtime_update": "waiting_only", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
     {"name": "retry-after-max", "runtime_update": "waiting_only", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
@@ -108,6 +111,7 @@
     {"name": "stale-validator-policy", "runtime_update": "waiting_only", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
     {"name": "timeout", "runtime_update": "active_restart", "scopes": ["startup", "global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
     {"name": "uri-selector", "runtime_update": "waiting_only", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
+    {"name": "user-agent", "runtime_update": "waiting_only", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
     {"name": "verification-manifest", "runtime_update": "waiting_only", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]},
     {"name": "verify-mirror-identity", "runtime_update": "active_restart", "scopes": ["global", "per_download", "input_file", "rpc_change", "rpc_global", "url_rule"]}
   ]

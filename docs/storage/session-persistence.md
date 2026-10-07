@@ -329,6 +329,16 @@ at 64 MiB, pending-install materialization at 16 MiB, and each option map at
 4,096 entries/4 MiB. Task, stopped-result, host-key-challenge, and install reads
 stream rows against count and byte budgets, charge owned-record overhead as
 well as variable payload bytes, and decode every persisted value.
+HTTP custom headers and explicit referer values are never stored in option
+maps. The internal `http-headers-required=true` marker and each source's
+`needs_credentials` flag preserve their recovery requirement without retaining
+values. JSON export/import retains the marker. Recovery cannot resume such a
+task through URI replacement alone. A waiting-task header option update can
+restore safe HTTP source URIs and clear the matching credential requirement
+without persisting values or discarding progress.
+The ordinary `user-agent` option remains persistable. See the
+[HTTP header policy](../protocols/detailed-http-first-slice.md#user-header-policy).
+
 Task-option reads also reapply the current
 `PersistedOptionPolicy`; direct database tampering cannot turn a formerly or
 newly forbidden key into an accepted option.

@@ -561,13 +561,15 @@ impl HttpDirectTransport {
             .origin
             .authority()
             .ok_or(HttpTransportError::InvalidOrigin)?;
-        request.headers_mut().insert(
-            HOST,
-            authority
-                .as_str()
-                .parse()
-                .map_err(|_| HttpTransportError::InvalidOrigin)?,
-        );
+        if !request.headers().contains_key(HOST) {
+            request.headers_mut().insert(
+                HOST,
+                authority
+                    .as_str()
+                    .parse()
+                    .map_err(|_| HttpTransportError::InvalidOrigin)?,
+            );
+        }
         let mut connection = self.take_idle().await;
         let reused = connection.is_some();
         if !reused {

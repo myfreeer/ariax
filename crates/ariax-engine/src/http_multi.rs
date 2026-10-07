@@ -967,7 +967,12 @@ impl HttpMultiRangeWorker {
         cancellation: HttpCancellation,
     ) -> Result<HttpWorkerSuccess, HttpMultiRangeError> {
         self.initialize_task_rate(&task)?;
-        self.run_initialized_task(task, generation, cancellation)
+        let mut worker = self.clone();
+        worker.client = self.client.with_task_headers(&task).map_err(|error| {
+            HttpMultiRangeError::Client(crate::HttpPolicyClientError::Request(error))
+        })?;
+        worker
+            .run_initialized_task(task, generation, cancellation)
             .await
     }
 
@@ -2639,7 +2644,8 @@ impl HttpTaskWorker for HttpMultiRangeWorker {
         generation: Generation,
         cancellation: HttpCancellation,
     ) -> HttpWorkerFuture {
-        let worker = self.clone();
+        let mut worker = self.clone();
+        let header_client = worker.client.with_task_headers(&task);
         let retry_policy = task
             .options()
             .retry
@@ -2650,6 +2656,10 @@ impl HttpTaskWorker for HttpMultiRangeWorker {
             .map_err(|error| error.into_public(&retry_policy, generation));
         Box::pin(async move {
             rate_initialization?;
+            worker.client = header_client.map_err(|error| {
+                HttpMultiRangeError::Client(crate::HttpPolicyClientError::Request(error))
+                    .into_public(&retry_policy, generation)
+            })?;
             match worker
                 .run_initialized_task(task, generation, cancellation)
                 .await
@@ -4894,6 +4904,7 @@ mod tests {
     #[derive(Clone, Copy, Debug)]
     enum MirrorMode {
         Valid,
+        HeaderOverride,
         SharedRepresentationDigest,
         IncorrectRepresentationDigest,
         IncorrectRangeRepresentationDigest,
@@ -4912,6 +4923,13 @@ mod tests {
             for _ in 0..connections {
                 let (mut stream, _) = listener.accept().await.expect("accept");
                 let request = read_request_head(&mut stream).await;
+                if matches!(mode, MirrorMode::HeaderOverride) {
+                    let head = request.to_ascii_lowercase();
+                    assert!(head.contains("host: virtual.test"));
+                    assert!(head.contains("authorization: bearer canary"));
+                    assert!(head.contains("user-agent: client/1"));
+                    assert!(!head.contains("proxy-authorization:"));
+                }
                 let (start, end) = request_range(&request).expect("range request");
                 let probe = start == 0 && end == 0;
                 if !probe && matches!(mode, MirrorMode::IgnoreRange) {
@@ -4938,9 +4956,10 @@ mod tests {
                     MirrorMode::IncorrectRangeRepresentationDigest => {
                         format!("Repr-Digest: sha-256=:{}:\r\n", base64_encode(&[0x55; 32]))
                     }
-                    MirrorMode::Valid | MirrorMode::IgnoreRange | MirrorMode::ShortRange => {
-                        String::new()
-                    }
+                    MirrorMode::Valid
+                    | MirrorMode::HeaderOverride
+                    | MirrorMode::IgnoreRange
+                    | MirrorMode::ShortRange => String::new(),
                 };
                 let response = format!(
                     "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\nETag: \"v1\"\r\n{digest_header}Connection: close\r\n\r\n",
@@ -6353,6 +6372,52 @@ mod tests {
         let terminal = HttpMultiRangeError::Setup(KnownLengthHttpError::StaleValidator)
             .into_public(&fail, Generation::INITIAL);
         assert_eq!(terminal.retry_class(), RetryClass::Never);
+    }
+
+    #[tokio::test]
+    async fn task_headers_reach_probe_and_payload_in_direct_and_supervised_workers() {
+        for supervised in [false, true] {
+            let root = TestDirectory::new("headers-root");
+            let journal = TestDirectory::new("headers-journal");
+            let expected = data(MIB);
+            let (source, server) =
+                serve_mirror(Arc::clone(&expected), MirrorMode::HeaderOverride, 2).await;
+            let spec = task(&root, [source], expected.len());
+            let mut options = spec.options().clone();
+            options.transfer.set("header", "Host: virtual.test\nAuthorization: Bearer canary\nProxy-Authorization: Bearer proxy-canary").unwrap();
+            options.transfer.set("user-agent", "client/1").unwrap();
+            let spec = TransferTaskSpec::new(
+                spec.task(),
+                spec.gid(),
+                [format!("http://{source}/file")],
+                root.0.clone(),
+                spec.output().clone(),
+                options,
+                false,
+            )
+            .unwrap();
+            let worker = worker(
+                &journal,
+                SharedHttpTransferStats::new(NonZeroUsize::new(2).unwrap()),
+                2,
+            );
+            if supervised {
+                worker
+                    .start(Arc::new(spec), Generation::INITIAL, HttpCancellation::new())
+                    .await
+                    .unwrap();
+            } else {
+                worker
+                    .run_task(Arc::new(spec), Generation::INITIAL, HttpCancellation::new())
+                    .await
+                    .unwrap();
+            }
+            server.await.unwrap();
+            assert_eq!(
+                fs::read(root.0.join("output.bin")).unwrap(),
+                expected.as_ref()
+            );
+        }
     }
 
     #[tokio::test]

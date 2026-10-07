@@ -20,17 +20,15 @@ pub const MAX_HTTP_CUSTOM_HEADERS_BYTES: usize = 32 * 1024;
 
 const RESERVED_HEADERS: &[&str] = &[
     "accept-encoding",
-    "authorization",
     "connection",
     "content-digest",
     "content-length",
-    "cookie",
     "expect",
-    "host",
     "if-range",
-    "proxy-authorization",
     "range",
     "repr-digest",
+    "signature",
+    "signature-input",
     "te",
     "trailer",
     "transfer-encoding",
@@ -40,10 +38,19 @@ const RESERVED_HEADERS: &[&str] = &[
 
 const WANT_REPR_DIGEST: HeaderName = HeaderName::from_static("want-repr-digest");
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct HttpCustomHeader {
     name: HeaderName,
     value: HeaderValue,
+}
+
+impl fmt::Debug for HttpCustomHeader {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HttpCustomHeader")
+            .field("name", &self.name)
+            .field("value", &"[redacted]")
+            .finish()
+    }
 }
 
 impl HttpCustomHeader {
@@ -83,13 +90,21 @@ impl HttpCustomHeaders {
             let name = HeaderName::from_bytes(name.as_bytes())
                 .map_err(|_| HttpRequestPolicyError::InvalidHeader)?;
             if RESERVED_HEADERS.contains(&name.as_str()) {
+                eprintln!("warning: rejected reserved HTTP header: {name}");
                 return Err(HttpRequestPolicyError::ReservedHeader);
             }
             if !names.insert(name.as_str().to_owned()) {
                 return Err(HttpRequestPolicyError::DuplicateHeader);
             }
-            let value =
+            if value.bytes().any(|byte| byte.is_ascii_control()) {
+                return Err(HttpRequestPolicyError::InvalidHeader);
+            }
+            let mut value =
                 HeaderValue::from_str(&value).map_err(|_| HttpRequestPolicyError::InvalidHeader)?;
+            value
+                .to_str()
+                .map_err(|_| HttpRequestPolicyError::InvalidHeader)?;
+            value.set_sensitive(true);
             total_bytes = total_bytes
                 .checked_add(name.as_str().len() + value.as_bytes().len())
                 .ok_or(HttpRequestPolicyError::HeaderTooLarge)?;
@@ -99,6 +114,70 @@ impl HttpCustomHeaders {
             values.push(HttpCustomHeader { name, value });
         }
         Ok(Self { values })
+    }
+
+    pub(crate) fn parse(text: &str) -> Result<Self, HttpRequestPolicyError> {
+        if text.is_empty() {
+            return Ok(Self::default());
+        }
+        if text.len() > MAX_HTTP_CUSTOM_HEADERS_BYTES + 3 * MAX_HTTP_CUSTOM_HEADERS {
+            return Err(HttpRequestPolicyError::HeaderTooLarge);
+        }
+        let pairs = text
+            .split('\n')
+            .map(|line| {
+                let (name, value) = line
+                    .split_once(':')
+                    .ok_or(HttpRequestPolicyError::InvalidHeader)?;
+                Ok((name.to_owned(), value.trim_start_matches(' ').to_owned()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::new(pairs)
+    }
+
+    pub(crate) fn text(&self) -> String {
+        self.values
+            .iter()
+            .map(|header| {
+                format!(
+                    "{}: {}",
+                    header.name,
+                    header.value.to_str().expect("validated text")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    pub(crate) fn retained_bytes(&self) -> usize {
+        self.values
+            .iter()
+            .map(|header| header.name.as_str().len() + header.value.as_bytes().len() + 128)
+            .sum()
+    }
+
+    pub(crate) fn for_destination(&self, same_origin: bool, same_proxy: bool) -> Self {
+        Self {
+            values: self
+                .values
+                .iter()
+                .filter(|header| {
+                    if header.name == PROXY_AUTHORIZATION {
+                        same_proxy
+                    } else {
+                        same_origin || header.name == hyper::header::USER_AGENT
+                    }
+                })
+                .cloned()
+                .collect(),
+        }
+    }
+
+    pub(crate) fn proxy_authorization(&self) -> Option<HttpProxyAuthorization> {
+        self.values
+            .iter()
+            .find(|header| header.name == PROXY_AUTHORIZATION)
+            .map(|header| HttpProxyAuthorization::from_header(&header.value))
     }
 
     #[must_use]
@@ -159,9 +238,6 @@ pub fn build_http_request(
         .body(Empty::new())
         .map_err(|_| HttpRequestPolicyError::InvalidHeader)?;
     let headers = request.headers_mut();
-    for header in policy.custom_headers.values() {
-        headers.insert(header.name.clone(), header.value.clone());
-    }
     headers.insert(
         HOST,
         HeaderValue::from_str(authority.as_str())
@@ -213,6 +289,13 @@ pub fn build_http_request(
             HeaderValue::from_str(proxy_authorization.value())
                 .map_err(|_| HttpRequestPolicyError::InvalidHeader)?,
         );
+    }
+    for header in policy.custom_headers.values() {
+        if header.name != PROXY_AUTHORIZATION
+            || matches!(policy.route, Some(HttpProxyRoute::HttpForward { .. }))
+        {
+            headers.insert(header.name.clone(), header.value.clone());
+        }
     }
     Ok(request)
 }
@@ -270,6 +353,64 @@ mod tests {
     };
 
     #[test]
+    fn custom_header_overrides_preserve_generated_range_and_redact_values() {
+        let custom = HttpCustomHeaders::parse("Host: virtual.test\nAuthorization: Bearer canary\nProxy-Authorization: Bearer proxy-canary\nCookie: session=canary").unwrap();
+        assert!(!format!("{custom:?}").contains("canary"));
+        let generated = HttpBasicCredentials::new("user".into(), "generated".into())
+            .unwrap()
+            .authorization_header()
+            .unwrap();
+        let proxy = HttpProxyEndpoint::new(
+            "http://proxy.test:8080",
+            HttpProxyKind::Http,
+            HttpProxyNameResolution::LocalPinned,
+            None,
+        )
+        .unwrap();
+        let route = HttpProxyPolicy::new(Some(proxy), None, None, [])
+            .unwrap()
+            .route("http://origin.test/file", "203.0.113.8".parse().unwrap())
+            .unwrap();
+        for route in [None, Some(&route)] {
+            let request = build_http_request(HttpRequestPolicy {
+                method: Method::GET,
+                uri: "http://origin.test/file",
+                route,
+                range: Some(GlobalSpan { offset: 4, len: 6 }),
+                if_range: Some(b"\"v1\""),
+                want_repr_digest: false,
+                authorization: Some(&generated),
+                proxy_authorization: None,
+                cookie: None,
+                custom_headers: &custom,
+            })
+            .unwrap();
+            assert_eq!(request.headers()[HOST], "virtual.test");
+            assert_eq!(request.headers()[AUTHORIZATION], "Bearer canary");
+            assert_eq!(request.headers()[COOKIE], "session=canary");
+            assert_eq!(request.headers()[RANGE], "bytes=4-9");
+            assert_eq!(request.headers()[ACCEPT_ENCODING], "identity");
+            assert_eq!(
+                request
+                    .headers()
+                    .get(PROXY_AUTHORIZATION)
+                    .map(|value| value.to_str().unwrap()),
+                route.map(|_| "Bearer proxy-canary")
+            );
+        }
+        for name in RESERVED_HEADERS {
+            assert_eq!(
+                HttpCustomHeaders::new([(name.to_ascii_uppercase(), "canary".into())]),
+                Err(HttpRequestPolicyError::ReservedHeader)
+            );
+        }
+        assert_eq!(
+            HttpCustomHeaders::parse("Authorization: one\nauthorization: two"),
+            Err(HttpRequestPolicyError::DuplicateHeader)
+        );
+    }
+
+    #[test]
     fn rejects_reserved_case_variants_duplicates_and_invalid_values() {
         assert_eq!(
             HttpCustomHeaders::new([("rAnGe".to_owned(), "bytes=0-1".to_owned())]),
@@ -284,6 +425,10 @@ mod tests {
         );
         assert_eq!(
             HttpCustomHeaders::new([("x-test".to_owned(), "bad\r\nvalue".to_owned())]),
+            Err(HttpRequestPolicyError::InvalidHeader)
+        );
+        assert_eq!(
+            HttpCustomHeaders::parse("X-Test: café"),
             Err(HttpRequestPolicyError::InvalidHeader)
         );
     }

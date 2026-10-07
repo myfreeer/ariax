@@ -177,6 +177,7 @@ pub enum SchedulerDriverInputError {
     Busy,
     Faulted(SchedulerDriverFault),
     RestorePlanMismatch,
+    Configuration(ariax_core::SchedulerConfigError),
     Scheduler(SchedulerError),
     Snapshot(StatusSnapshotError),
 }
@@ -254,6 +255,16 @@ impl<S: SchedulerEffectSink> SchedulerDriver<S> {
     #[must_use]
     pub fn scheduler(&self) -> &RequestScheduler {
         &self.scheduler
+    }
+
+    pub fn configure_active_limit(
+        &mut self,
+        limit: std::num::NonZeroUsize,
+    ) -> Result<(), SchedulerDriverInputError> {
+        self.ensure_input_ready()?;
+        self.scheduler
+            .configure_active_limit(limit)
+            .map_err(SchedulerDriverInputError::Configuration)
     }
 
     pub fn configure_queue_policies(

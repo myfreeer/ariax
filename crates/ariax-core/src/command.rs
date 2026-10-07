@@ -59,6 +59,7 @@ impl SchedulerConfig {
 pub enum SchedulerConfigError {
     TaskLimitExceedsPersistenceLimit,
     ActiveLimitExceedsTaskLimit,
+    ActiveLimitExceedsBootstrapCapacity,
 }
 
 impl fmt::Display for SchedulerConfigError {
@@ -66,6 +67,9 @@ impl fmt::Display for SchedulerConfigError {
         formatter.write_str(match self {
             Self::TaskLimitExceedsPersistenceLimit => {
                 "task limit exceeds the persisted session-store bound"
+            }
+            Self::ActiveLimitExceedsBootstrapCapacity => {
+                "active task limit exceeds bootstrap capacity"
             }
             Self::ActiveLimitExceedsTaskLimit => "active task limit exceeds total task limit",
         })

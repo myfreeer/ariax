@@ -100,6 +100,11 @@ pub enum FollowMetadata {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TransferOptions {
+    pub http_headers: crate::HttpCustomHeaders,
+    pub user_agent: Option<String>,
+    pub referer: Option<ProtocolSecret>,
+    pub(crate) http_headers_required: bool,
+    pub(crate) http_header_origin: Option<url::Origin>,
     pub credentials: Option<TransferCredentials>,
     pub sftp_known_hosts: Option<std::path::PathBuf>,
     pub sftp_private_key: Option<std::path::PathBuf>,
@@ -133,6 +138,11 @@ pub struct TransferOptions {
 impl Default for TransferOptions {
     fn default() -> Self {
         Self {
+            http_headers: Default::default(),
+            user_agent: None,
+            referer: None,
+            http_headers_required: false,
+            http_header_origin: None,
             credentials: None,
             sftp_known_hosts: None,
             sftp_private_key: None,
@@ -190,6 +200,33 @@ impl TransferOptions {
                 | "metadata-max-sources"
         )
     }
+    pub(crate) fn has_volatile_http_headers(&self) -> bool {
+        !self.http_headers.values().is_empty() || self.referer.is_some()
+    }
+
+    pub(crate) fn request_headers(
+        &self,
+    ) -> Result<crate::HttpCustomHeaders, TransferTaskSpecError> {
+        let mut pairs: Vec<_> = self
+            .http_headers
+            .values()
+            .iter()
+            .map(|header| {
+                (
+                    header.name().to_string(),
+                    header.value().to_str().expect("validated text").to_owned(),
+                )
+            })
+            .collect();
+        if let Some(value) = &self.user_agent {
+            pairs.push(("user-agent".into(), value.clone()));
+        }
+        if let Some(value) = &self.referer {
+            pairs.push(("referer".into(), value.expose().to_owned()));
+        }
+        crate::HttpCustomHeaders::new(pairs).map_err(|_| TransferTaskSpecError::InvalidOptions)
+    }
+
     pub(crate) fn retained_bytes(&self) -> usize {
         let credentials = |value: &TransferCredentials| {
             value
@@ -198,7 +235,22 @@ impl TransferOptions {
                 .saturating_add(value.password.as_ref().map_or(0, |value| value.len()))
                 .saturating_add(64)
         };
-        let mut bytes = self.credentials.as_ref().map_or(0, credentials);
+        let mut bytes = self
+            .credentials
+            .as_ref()
+            .map_or(0, credentials)
+            .saturating_add(self.http_headers.retained_bytes())
+            .saturating_add(self.user_agent.as_ref().map_or(0, String::capacity))
+            .saturating_add(
+                self.http_header_origin
+                    .as_ref()
+                    .map_or(0, |origin| origin.ascii_serialization().len() + 128),
+            )
+            .saturating_add(
+                self.referer
+                    .as_ref()
+                    .map_or(0, |value| value.expose().len()),
+            );
         for path in [
             &self.sftp_known_hosts,
             &self.sftp_private_key,
@@ -252,6 +304,7 @@ impl TransferOptions {
     }
 
     pub(crate) fn validate(&self) -> Result<(), TransferTaskSpecError> {
+        self.request_headers()?;
         if self.server_stat_timeout.as_secs() > 31_536_000
             || self.metalink_filters.iter().any(|(name, value)| {
                 !Self::is_metalink_filter(name)
@@ -278,7 +331,8 @@ impl TransferOptions {
         Ok(())
     }
     pub(crate) fn handles(name: &str) -> bool {
-        Self::is_metalink_filter(name)
+        matches!(name, "header" | "user-agent" | "referer")
+            || Self::is_metalink_filter(name)
             || Self::is_bittorrent_option(name)
             || cfg!(feature = "bt") && name == "follow-torrent"
             || name == "server-stat-timeout"
@@ -319,6 +373,21 @@ impl TransferOptions {
     pub(crate) fn set(&mut self, name: &str, value: &str) -> Result<(), TransferTaskSpecError> {
         let invalid = || TransferTaskSpecError::InvalidOptions;
         match name {
+            "header" => {
+                self.http_headers = crate::HttpCustomHeaders::parse(value)
+                    .map_err(|_| TransferTaskSpecError::InvalidOptions)?;
+                self.http_headers_required = self.has_volatile_http_headers();
+            }
+            "user-agent" => self.user_agent = Some(value.to_owned()),
+            "referer" => {
+                self.referer = Some(ProtocolSecret::new(value.to_owned())?);
+                self.http_headers_required = true;
+            }
+            "http-headers-required" => {
+                self.http_headers_required = value
+                    .parse()
+                    .map_err(|_| TransferTaskSpecError::InvalidOptions)?
+            }
             "follow-torrent" => {
                 self.follow_torrent = match value {
                     "true" => FollowMetadata::Follow,
@@ -425,14 +494,37 @@ impl TransferOptions {
         Ok(())
     }
     pub(crate) fn persisted(&self) -> Vec<(String, String)> {
-        // Omit protocol defaults so unrelated tasks do not acquire feature-gated options.
+        self.projected(false)
+    }
+
+    pub(crate) fn effective(&self) -> Vec<(String, String)> {
+        let registry = ariax_config::builtin_registry();
+        self.projected(true)
+            .into_iter()
+            .filter(|(name, _)| {
+                Self::handles(name)
+                    && registry.find(name).is_some_and(|definition| {
+                        definition.security == ariax_config::SecurityClass::Normal
+                    })
+            })
+            .collect()
+    }
+
+    fn projected(&self, include_defaults: bool) -> Vec<(String, String)> {
+        // Persistence stays sparse; query projection includes executable defaults.
         let default = Self::default();
         let mut entries: Vec<_> = self
             .metalink_filters
             .iter()
             .map(|(name, value)| (name.clone(), value.clone()))
             .collect();
-        if self.server_stat_timeout != default.server_stat_timeout {
+        if let Some(value) = &self.user_agent {
+            entries.push(("user-agent".into(), value.clone()));
+        }
+        if self.http_headers_required || self.has_volatile_http_headers() {
+            entries.push(("http-headers-required".into(), "true".into()));
+        }
+        if include_defaults || self.server_stat_timeout != default.server_stat_timeout {
             entries.push((
                 "server-stat-timeout".into(),
                 self.server_stat_timeout.as_secs().to_string(),
@@ -525,7 +617,7 @@ impl TransferOptions {
                 self.sftp_max_packet_size.to_string(),
             ),
         ] {
-            if changed {
+            if include_defaults || changed {
                 entries.push((name.to_owned(), value));
             }
         }
@@ -537,6 +629,15 @@ impl TransferOptions {
             if let Some(value) = value {
                 entries.push((name.to_owned(), value.clone()));
             }
+        }
+        if include_defaults {
+            entries.extend([
+                ("ftp-type".into(), "binary".into()),
+                (
+                    "sftp-check-host-key".into(),
+                    self.sftp_check_host_key.to_string(),
+                ),
+            ]);
         }
         if let Some(expansion) = &self.metadata_expansion {
             entries.push((
@@ -619,6 +720,10 @@ impl TransferTaskOptions {
     pub(crate) fn without_live_authority(&self) -> Self {
         let mut options = self.clone();
         let transfer = &mut options.transfer;
+        transfer.http_headers_required |= transfer.has_volatile_http_headers();
+        transfer.http_headers = Default::default();
+        transfer.http_header_origin = None;
+        transfer.referer = None;
         transfer.credentials = None;
         transfer.sftp_known_hosts = None;
         transfer.sftp_private_key = None;

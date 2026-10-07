@@ -526,6 +526,7 @@ impl Error for SchedulerRestoreError {}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RequestScheduler {
     config: SchedulerConfig,
+    active_capacity: std::num::NonZeroUsize,
     tasks: BTreeMap<Gid, ScheduledTask>,
     task_ids: BTreeMap<TaskId, Gid>,
     highest_task_id: Option<TaskId>,
@@ -535,6 +536,28 @@ pub struct RequestScheduler {
 }
 
 impl RequestScheduler {
+    #[must_use]
+    pub const fn active_capacity(&self) -> std::num::NonZeroUsize {
+        self.active_capacity
+    }
+
+    #[must_use]
+    pub const fn active_limit(&self) -> std::num::NonZeroUsize {
+        self.config.max_active_tasks
+    }
+
+    /// Updates future admission decisions without revoking any occupied slot.
+    pub fn configure_active_limit(
+        &mut self,
+        limit: std::num::NonZeroUsize,
+    ) -> Result<(), crate::SchedulerConfigError> {
+        if limit > self.active_capacity {
+            return Err(crate::SchedulerConfigError::ActiveLimitExceedsBootstrapCapacity);
+        }
+        self.config.max_active_tasks = limit;
+        Ok(())
+    }
+
     /// Changes only policy for future decisions; accepted timers and task intent remain intact.
     pub fn configure_queue_policies(
         &mut self,
@@ -548,6 +571,7 @@ impl RequestScheduler {
     #[must_use]
     pub fn new(config: SchedulerConfig) -> Self {
         Self {
+            active_capacity: config.max_active_tasks,
             config,
             tasks: BTreeMap::new(),
             task_ids: BTreeMap::new(),

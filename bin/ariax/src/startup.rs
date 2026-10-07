@@ -62,6 +62,11 @@ impl StartupOptions {
         while let Some(argument) = arguments.get(cursor).and_then(|arg| arg.to_str()) {
             let (local_name, inline) = if let Some(value) = argument.strip_prefix("-i") {
                 ("--input-file", (!value.is_empty()).then_some(value))
+            } else if let Some(value) = argument.strip_prefix("-j") {
+                (
+                    "--max-concurrent-downloads",
+                    (!value.is_empty()).then_some(value),
+                )
             } else {
                 argument
                     .split_once('=')
@@ -430,6 +435,33 @@ fn parse_credential(name: &'static str, value: &str) -> Result<SecretString, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concurrent_download_aliases_validate_and_detect_duplicates() {
+        for args in [
+            vec!["-j2"],
+            vec!["-j", "2"],
+            vec!["--max-concurrent-downloads=2"],
+            vec!["--max-concurrent-downloads", "2"],
+        ] {
+            let args = args.into_iter().map(OsString::from).collect::<Vec<_>>();
+            let (options, rest) = StartupOptions::parse(&args).unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(options.scheduling["max-concurrent-downloads"], "2");
+        }
+        for args in [
+            vec!["-j0"],
+            vec!["-j-1"],
+            vec!["-j"],
+            vec!["-j2", "--max-concurrent-downloads=3"],
+            vec!["-j100001"],
+        ] {
+            assert!(
+                StartupOptions::parse(&args.into_iter().map(OsString::from).collect::<Vec<_>>())
+                    .is_err()
+            );
+        }
+    }
 
     #[test]
     fn private_permissions_default_off_accept_boolean_and_reject_invalid_or_duplicate_values() {

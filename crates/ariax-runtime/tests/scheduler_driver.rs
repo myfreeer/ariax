@@ -896,3 +896,23 @@ fn restore_rejects_a_plan_whose_batch_cursor_was_already_consumed() {
     assert!(driver.sink().offers.is_empty());
     assert_eq!(driver.snapshot_reader().load().revision(), 0);
 }
+
+#[test]
+fn active_limit_changes_require_idle_driver_and_preserve_bootstrap_bound() {
+    let mut driver = SchedulerDriver::new(scheduler(), TestSink::automatic());
+    let limit = driver.scheduler().active_capacity();
+    driver.configure_active_limit(limit).unwrap();
+    assert!(matches!(
+        driver.configure_active_limit(NonZeroUsize::new(limit.get() + 1).unwrap()),
+        Err(SchedulerDriverInputError::Configuration(_))
+    ));
+    driver
+        .execute_command(add_command(task_id(1), gid(1)))
+        .unwrap();
+    assert_eq!(
+        driver.configure_active_limit(limit),
+        Err(SchedulerDriverInputError::Busy)
+    );
+    drive_to_idle(&mut driver);
+    driver.configure_active_limit(limit).unwrap();
+}

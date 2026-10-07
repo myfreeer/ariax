@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "date": "2026-10-07",
-  "status": "Eight validated default variants removed after checks; two final OpenSSL drafts retained in the platform build directories.",
+  "status": "Two final full/OpenSSL CLI drafts retained after the compatibility-options follow-up; earlier variants remain removed.",
   "releaseApproved": false,
   "dependencyLockSha256": "f9e83b58a90b9aff33cc144cb59d680b2aa8b4f2f0b86614006dd3783268e365",
   "noticeInventorySha256": "dec28772517d6ce941e799bab5298fd3787a226a33745bd09891dc41610dc449",
@@ -22,8 +22,8 @@
     {
       "source": "distribution/package-readme.txt",
       "destination": "README.txt",
-      "bytes": 2423,
-      "sha256": "06bd0af051d03517977593bc5e5822be4730fc96b91150fcbb96aabe92b5a9bd"
+      "bytes": 2733,
+      "sha256": "02582f2c076a5667a37418e8fbe0e536d03276152ded2182691a5004ed46c8ce"
     },
     {
       "source": "distribution/license-review.json",
@@ -3016,12 +3016,12 @@
       "binary": {
         "artifactPath": "build/linux/release-cli/ariax",
         "destination": "ariax",
-        "sha256": "b6173b4a7f10a62d0ba611809e53d2f25dfc88d09c7e2ab6e0076247475ecca9",
-        "bytes": 24951072,
-        "sourceCommit": "33caf87f8a9a86562b27466aa71c1365bee1e1a2",
+        "sha256": "3ab5d4799d16a5b7035ff3c9bdfc91af1d67e802139698a10ffeaa24333dc5c2",
+        "bytes": 24991648,
+        "sourceCommit": "211767d3d16aebfa3734c71a0e62808e0926d2e8",
         "sourceDateEpoch": "1791286491",
-        "evidence": "performance-evidence/phase7-compatibility-policy-2026-10-07.json",
-        "sourceScope": "Final compiled inputs hash-bound below; worktree changes included, native installations reused. No new independent reproducibility claim.",
+        "evidence": "performance-evidence/phase7-compatibility-options-2026-10-07.json",
+        "sourceScope": "Exact compiled inputs hash-bound in evidence; includes the local worktree on the recorded baseline. Native dependencies reused; no new independent reproducibility claim.",
         "pathAudit": {
           "passed": true,
           "counts": {
@@ -3434,12 +3434,12 @@
       "binary": {
         "artifactPath": "build/windows/release-cli/ariax.exe",
         "destination": "ariax.exe",
-        "sha256": "f52793eb0116c9360716f200a5e56ff6ed6966329e9c2c0a9f293f4602b46bec",
-        "bytes": 25186304,
-        "sourceCommit": "33caf87f8a9a86562b27466aa71c1365bee1e1a2",
+        "sha256": "09e77ab9f3dc8e6f5bde3ad072c5f4a2f72f4b0c3ab30d23067eb7044ea38370",
+        "bytes": 25228288,
+        "sourceCommit": "211767d3d16aebfa3734c71a0e62808e0926d2e8",
         "sourceDateEpoch": "1791286491",
-        "evidence": "performance-evidence/phase7-compatibility-policy-2026-10-07.json",
-        "sourceScope": "Final compiled inputs hash-bound below; worktree changes included, native installations reused. No new independent reproducibility claim.",
+        "evidence": "performance-evidence/phase7-compatibility-options-2026-10-07.json",
+        "sourceScope": "Exact compiled inputs hash-bound in evidence; includes the local worktree on the recorded baseline. Native dependencies reused; no new independent reproducibility claim.",
         "pathAudit": {
           "passed": true,
           "counts": {

@@ -127,8 +127,10 @@ impl Serialize for SourceServers<'_> {
     }
 }
 
+#[cfg(feature = "bt")]
 pub(crate) struct OptionMap<'a>(pub(crate) &'a ariax_storage::SanitizedOptionMap);
 
+#[cfg(feature = "bt")]
 impl Serialize for OptionMap<'_> {
     fn serialize<S: ser::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_map(self.0.entries())

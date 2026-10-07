@@ -38,7 +38,7 @@ impl fmt::Display for SecretString {
 }
 
 /// A successfully parsed option value.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub enum OptionValue {
     Bool(bool),
     Integer(i64),
@@ -50,6 +50,21 @@ pub enum OptionValue {
     HeaderList(Vec<String>),
     StatusCodeSet(BTreeSet<u16>),
     Secret(SecretString),
+}
+
+impl fmt::Debug for OptionValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::HeaderList(_) => f.write_str("HeaderList([REDACTED])"),
+            Self::Secret(value) => value.fmt(f),
+            Self::Bool(value) => value.fmt(f),
+            Self::Integer(value) => value.fmt(f),
+            Self::SizeBytes(value) | Self::DurationSeconds(value) => value.fmt(f),
+            Self::Enum(value) | Self::String(value) => value.fmt(f),
+            Self::Path(value) => value.fmt(f),
+            Self::StatusCodeSet(value) => value.fmt(f),
+        }
+    }
 }
 
 /// A bounded option-value parsing failure.
@@ -452,6 +467,18 @@ mod tests {
     fn parse(name: &str, value: &str) -> Result<OptionValue, ParseOptionValueError> {
         let registry = builtin_registry();
         parse_option_value(registry.find(name).expect("registered option"), value, None)
+    }
+
+    #[test]
+    fn header_lists_are_bounded_and_redacted() {
+        let value = parse("header", "Authorization: Bearer canary\nX-Test: canary").unwrap();
+        assert!(!format!("{value:?}").contains("canary"));
+        assert!(matches!(value, OptionValue::HeaderList(lines) if lines.len() == 2));
+        assert!(parse("header", &vec!["X-Test: value"; 65].join("\n")).is_err());
+        assert!(parse("header", "X-Test: bad\rvalue").is_err());
+        assert!(!crate::persisted_option_is_safe("header"));
+        assert!(!crate::persisted_option_is_safe("referer"));
+        assert!(crate::persisted_option_is_safe("user-agent"));
     }
 
     #[test]
